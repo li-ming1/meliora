@@ -1,5 +1,11 @@
 # Meliora
 
+**简体中文** · [English](README_EN.md)
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4a90d9)]()
+
 一个用 Rust 编写、基于 GPUI 的轻量第三方桌面音乐播放器：单文件分发，内存占用低，启动速度快。
 
 Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的延续与重构，在保留本地音乐库与播放能力的基础上，集成了网易云音乐与酷狗音乐的在线服务（在线曲库、榜单、歌单、二维码登录、在线试听与下载）。

@@ -5,3 +5,14 @@
 *.md text eol=lf
 *.sql text eol=lf
 *.cmd text eol=crlf
+
+# GitHub 语言统计：非 Rust 代码（数据/资产/查询）不计入，令仓库显示 100% Rust
+translations/*.json linguist-vendored
+assets/*.json linguist-vendored
+assets/*.svg linguist-vendored
+assets/icons/*.svg linguist-vendored
+assets/images/* linguist-vendored
+assets/fonts/* linguist-vendored
+assets/icon.rc linguist-vendored
+migrations/*.sql linguist-vendored
+queries/*.sql linguist-vendored
