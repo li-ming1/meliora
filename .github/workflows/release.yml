@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-latest
+          - name: windows-x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml 钉死 Windows-msvc（仅本机非标准工具链需要），
+      # CI 上删除并改用各平台宿主 stable
+      - name: Drop machine-specific toolchain pin
+        run: rm -f rust-toolchain.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release (kugou, netease)
+        run: cargo build --release --features kugou,netease
+
+      - name: Package Windows (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/release/meliora.exe `
+            -DestinationPath meliora-${{ github.ref_name }}-${{ matrix.name }}.zip
+
+      - name: Package macOS (.app tar.gz)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="Meliora.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp target/release/meliora "$APP/Contents/MacOS/meliora"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>meliora</string>
+            <key>CFBundleIdentifier</key><string>com.meliora.player</string>
+            <key>CFBundleName</key><string>Meliora</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+          </dict>
+          </plist>
+          PLIST
+          tar -czf meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz "$APP"
+
+      - name: Package Linux (tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          tar -czf meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz -C target/release meliora
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: meliora-${{ github.ref_name }}-${{ matrix.name }}.*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
