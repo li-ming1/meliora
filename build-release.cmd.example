@@ -1,0 +1,8 @@
+@echo off
+rem 工具链（非标准布局）构建脚本模板。
+rem 复制为 build-release.cmd，把下面的占位路径替换成本机实际路径；
+rem 该文件已 gitignore，不要提交真实路径。
+rem 其余环境变量（INCLUDE/LIB/linker/jobs 等）由 .cargo/config.toml 提供。
+rem 默认启用 kugou（酷狗）与 netease（网易云）功能；如需追加其它 feature 直接加参数即可。
+set "PATH=<MSVC_BIN>;<SDK_BIN>;<CMAKE_BIN>;%PATH%"
+cargo build --release --features kugou,netease %*

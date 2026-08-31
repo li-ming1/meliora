@@ -1,0 +1,135 @@
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
+use std::path::Path;
+use std::sync::Arc;
+
+use gpui::{App, Entity, Render, RenderImage};
+use rustc_hash::FxHashMap;
+use tracing::debug;
+
+pub fn prune_views<T>(
+    views_model: &Entity<FxHashMap<usize, Entity<T>>>,
+    render_counter: &Entity<usize>,
+    current: usize,
+    cx: &mut App,
+) -> bool
+where
+    T: Render,
+{
+    let last = *render_counter.read(cx);
+    let mut to_remove: Vec<usize> = Vec::new();
+    let mut did_remove = false;
+
+    // determine whether or not we are at the start of a new render cycle
+    if current < last {
+        // we are at the start of a new render cycle
+        // prune views that are no longer in the bounds (current..last)
+        // don't prune the first view so this still works with uniform_list
+        for idx in views_model.read(cx).keys() {
+            if (*idx < current || *idx >= (last + 1)) && *idx != 0_usize {
+                to_remove.push(*idx);
+            }
+        }
+    }
+
+    for idx in to_remove {
+        did_remove = true;
+        views_model.update(cx, |m, _| {
+            debug!("Removing view at index: {}", idx);
+            m.remove(&idx);
+        });
+    }
+
+    // update the render counter
+    render_counter.update(cx, |m, _| {
+        *m = current;
+    });
+
+    did_remove
+}
+
+pub fn create_or_retrieve_view<T>(
+    views_model: &Entity<FxHashMap<usize, Entity<T>>>,
+    key: usize,
+    creation_fn: impl FnOnce(&mut App) -> Entity<T>,
+    cx: &mut App,
+) -> Entity<T>
+where
+    T: Render,
+{
+    let view = views_model.read(cx).get(&key).cloned();
+    match view {
+        Some(view) => view,
+        None => {
+            let view = creation_fn(cx);
+            views_model.update(cx, |m, _| {
+                m.insert(key, view.clone());
+            });
+            view
+        }
+    }
+}
+
+pub fn drop_image_from_app(cx: &mut App, image: Arc<RenderImage>) {
+    cx.defer(move |cx| {
+        debug!("attempting image drop");
+
+        for window in cx.windows() {
+            let image = image.clone();
+
+            debug!("dropping an image from {:?}", window.window_id());
+
+            window
+                .update(cx, move |_, window, _| {
+                    window.drop_image(image).expect("couldn't drop image");
+                })
+                .expect("couldn't get window");
+        }
+    });
+}
+
+pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
+    #[cfg(windows)]
+    {
+        // this is some crazy garbage but it has to be this way because of windows wonkyness
+        let path_for_reveal = match path.to_string_lossy().strip_prefix("\\\\?\\") {
+            Some(stripped) => PathBuf::from(stripped),
+            None => path.to_path_buf(),
+        };
+
+        cx.reveal_path(path_for_reveal.as_path());
+    }
+
+    #[cfg(not(windows))]
+    {
+        cx.reveal_path(path);
+    }
+}
+
+
+fn split_duration(secs: i64) -> (i64, i64, i64) {
+    let secs = secs.max(0);
+    (secs / 3_600, (secs % 3_600) / 60, secs % 60)
+}
+
+pub fn format_duration_compact(secs: i64) -> String {
+    let (hours, minutes, seconds) = split_duration(secs);
+
+    if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else {
+        format!("{minutes}m {seconds}s")
+    }
+}
+
+pub fn format_duration(secs: i64, pad_minutes: bool) -> String {
+    let (hours, minutes, seconds) = split_duration(secs);
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else if pad_minutes {
+        format!("{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}

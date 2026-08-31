@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 音符符杆（带标志性的弯钩） -->
+    <path d="M12.6 20.2 C10.2 20.2 8.3 18.3 8.3 15.9 C8.3 13.7 9.9 12.1 11.4 10.6 C12.6 9.4 13.7 8.3 13.7 6.9 C13.7 5.6 12.7 4.6 11.5 4.6 C10.3 4.6 9.4 5.5 9.3 6.7" />
+    <!-- 音符符头 -->
+    <ellipse cx="14.6" cy="17.4" rx="2.6" ry="2.1" transform="rotate(-20 14.6 17.4)" fill="currentColor" stroke="none" />
+    <!-- 符杆连接线 -->
+    <path d="M13.7 6.9 C15.5 8.2 17.2 10.4 17.2 13.6" />
+</svg>

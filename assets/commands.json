@@ -1,0 +1,94 @@
+{
+  "commands": [
+    {
+      "id": "meliora::quit",
+      "category": "Meliora",
+      "name_key": "ACTION_QUIT",
+      "action": "meliora::Quit"
+    },
+    {
+      "id": "meliora::about",
+      "category": "Meliora",
+      "name_key": "ACTION_ABOUT",
+      "action": "meliora::About"
+    },
+    {
+      "id": "meliora::search",
+      "category": "Meliora",
+      "name_key": "ACTION_SEARCH",
+      "action": "meliora::Search"
+    },
+    {
+      "id": "meliora::settings",
+      "category": "Meliora",
+      "name_key": "ACTION_SETTINGS",
+      "action": "meliora::Settings"
+    },
+    {
+      "id": "meliora::open_equalizer",
+      "category": "Meliora",
+      "name_key": "ACTION_OPEN_EQUALIZER",
+      "action": "meliora::OpenEqualizer"
+    },
+    {
+      "id": "meliora::open_log",
+      "category": "Meliora",
+      "name_key": "ACTION_OPEN_LOG",
+      "action": "meliora::OpenLog"
+    },
+    {
+      "id": "meliora::copy_troubleshooting_info",
+      "category": "Meliora",
+      "name_key": "ACTION_COPY_TROUBLESHOOTING_INFO",
+      "action": "meliora::CopyTroubleshootingInfo"
+    },
+    {
+      "id": "player::playpause",
+      "category": "Playback",
+      "name_key": "ACTION_PLAYPAUSE",
+      "action": "player::PlayPause"
+    },
+    {
+      "id": "player::next",
+      "category": "Playback",
+      "name_key": "ACTION_NEXT",
+      "action": "player::Next"
+    },
+    {
+      "id": "player::previous",
+      "category": "Playback",
+      "name_key": "ACTION_PREVIOUS",
+      "action": "player::Previous"
+    },
+    {
+      "id": "shuffle::all",
+      "category": "Playback",
+      "name_key": "ACTION_SHUFFLE_ALL",
+      "action": "player::ShuffleAll"
+    },
+    {
+      "id": "player::stop_after_current",
+      "category": "Playback",
+      "name_key": "ACTION_STOP_AFTER_CURRENT",
+      "action": "player::StopAfterCurrent"
+    },
+    {
+      "id": "scan::forcescan",
+      "category": "Scan",
+      "name_key": "ACTION_FORCESCAN",
+      "action": "scan::ForceScan"
+    },
+    {
+      "id": "undo::queue",
+      "category": "Queue",
+      "name_key": "ACTION_UNDO_QUEUE",
+      "action": "queue::Undo"
+    },
+    {
+      "id": "meliora::open_theme_folder",
+      "category": "Meliora",
+      "name_key": "ACTION_OPEN_THEME_FOLDER",
+      "action": "meliora::OpenThemeFolder"
+    }
+  ]
+}

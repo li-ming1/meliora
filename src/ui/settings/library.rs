@@ -1,0 +1,594 @@
+use camino::{Utf8Path, Utf8PathBuf};
+use cntp_i18n::tr;
+use gpui::{
+    AnyElement, App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, PathPromptOptions, Render, RenderOnce, SharedString,
+    StyleRefinement, Styled, WeakEntity, Window, div, prelude::FluentBuilder, px,
+};
+use smallvec::SmallVec;
+use tracing::warn;
+
+/// Adds new scan paths while ignoring duplicates.
+fn merge_scan_paths(
+    paths: &mut Vec<Utf8PathBuf>,
+    new_paths: impl IntoIterator<Item = Utf8PathBuf>,
+) -> bool {
+    let mut updated = false;
+
+    for path in new_paths {
+        if !paths.contains(&path) {
+            paths.push(path);
+            updated = true;
+        }
+    }
+
+    updated
+}
+
+use crate::{
+    library::scan::ScanInterface,
+    settings::{Settings, SettingsGlobal, save_settings, scan::MissingFolderPolicy},
+    ui::{
+        components::{
+            button::{ButtonIntent, ButtonStyle, button},
+            checkbox::checkbox,
+            dropdown::dropdown,
+            icons::{ALERT_CIRCLE, CIRCLE_PLUS, FOLDER_SEARCH, TRASH, icon},
+            label::label,
+            section_header::section_header,
+        },
+        global_actions::{ForceScan, ShuffleAll},
+        library::playlist_view::Import,
+        theme::Theme,
+    },
+};
+
+pub struct LibrarySettings {
+    settings: Entity<Settings>,
+    scanning_modified: bool,
+}
+
+impl LibrarySettings {
+    pub fn new(cx: &mut App) -> Entity<Self> {
+        let settings = cx.global::<SettingsGlobal>().model.clone();
+
+        cx.new(|cx| {
+            cx.observe(&settings, |_, _, cx| cx.notify()).detach();
+
+            Self {
+                settings,
+                scanning_modified: false,
+            }
+        })
+    }
+
+    fn add_folder(&self, view: WeakEntity<Self>, cx: &mut App) {
+        let path_future = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some(tr!("SCANNING_SELECT_FOLDERS", "Select folders to scan...").into()),
+        });
+
+        let settings = self.settings.clone();
+
+        cx.spawn(async move |cx| {
+            let Ok(Ok(Some(paths))) = path_future.await else {
+                return;
+            };
+
+            let paths = paths
+                .into_iter()
+                .filter_map(|path| {
+                    let path = path.canonicalize().unwrap_or(path);
+
+                    match Utf8PathBuf::try_from(path) {
+                        Ok(path) => Some(path),
+                        Err(_) => {
+                            warn!("Selected music directory path is not UTF-8: will not be added.");
+                            None
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if paths.is_empty() {
+                return;
+            }
+
+            let updated = settings.update(cx, move |settings, cx| {
+                if merge_scan_paths(&mut settings.scanning.paths, paths) {
+                    save_settings(cx, settings);
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
+            });
+
+            if updated {
+                let _ = view.update(cx, |this, cx| {
+                    this.scanning_modified = true;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn remove_folder(settings: Entity<Settings>, path: &Utf8Path, cx: &mut App) -> bool {
+        settings.update(cx, move |settings, cx| {
+            let before_len = settings.scanning.paths.len();
+            settings.scanning.paths.retain(|p| p != path);
+
+            let updated = settings.scanning.paths.len() != before_len;
+            if updated {
+                save_settings(cx, settings);
+                cx.notify();
+            }
+
+            updated
+        })
+    }
+}
+
+impl Render for LibrarySettings {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+        let view = cx.entity().downgrade();
+        let scanning = self.settings.read(cx).scanning.clone();
+        let paths = scanning.paths;
+
+        let list = if paths.is_empty() {
+            div()
+                .mt(px(12.0))
+                .text_sm()
+                .text_color(theme.text_secondary)
+                .child(tr!(
+                    "SCANNING_NO_FOLDERS",
+                    "No folders are currently scanned."
+                ))
+        } else {
+            let rows = paths.iter().enumerate().map(|(idx, path)| {
+                let path_clone = path.clone();
+                let settings = self.settings.clone();
+                let path_text: SharedString = path
+                    .to_string()
+                    .trim_start_matches("\\\\?\\")
+                    .to_string()
+                    .into();
+
+                div()
+                    .id(format!("library-scan-path-{idx}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .pl(px(12.0))
+                    .pr(px(8.0))
+                    .py(px(8.0))
+                    .border_1()
+                    .border_b_0()
+                    .when(idx == 0, |this| this.rounded_t(px(theme.radius_md)))
+                    .when(idx == paths.len() - 1, |this| {
+                        this.rounded_b(px(theme.radius_md)).border_b_1()
+                    })
+                    .border_color(theme.border_color)
+                    .bg(theme.background_secondary)
+                    .child(
+                        icon(FOLDER_SEARCH)
+                            .size(px(16.0))
+                            .text_color(theme.text_secondary),
+                    )
+                    .child(
+                        div()
+                            .flex_grow(1.0)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_sm()
+                            .child(path_text),
+                    )
+                    .child(
+                        button()
+                            .style(ButtonStyle::Minimal)
+                            .intent(ButtonIntent::Secondary)
+                            .child(icon(TRASH).size(px(14.0)))
+                            .id(format!("library-scan-remove-{idx}"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if LibrarySettings::remove_folder(settings.clone(), &path_clone, cx)
+                                {
+                                    this.scanning_modified = true;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+            });
+
+            div().flex().flex_col().children(rows)
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(section_header(tr!("LIBRARY")))
+            .child(
+                label("library-shuffle-all", tr!("LIBRARY_SHUFFLE_ALL", "Shuffle All"))
+                    .subtext(tr!(
+                        "LIBRARY_SHUFFLE_ALL_SUBTEXT",
+                        "Play every track in the library in a shuffled order."
+                    ))
+                    .w_full()
+                    .child(
+                        button()
+                            .style(ButtonStyle::Regular)
+                            .intent(ButtonIntent::Secondary)
+                            .child(tr!("LIBRARY_SHUFFLE_ALL"))
+                            .id("library-shuffle-all-button")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.defer(move |cx| cx.dispatch_action(&ShuffleAll));
+                            })),
+                    ),
+            )
+            .child(
+                label("library-rescan", tr!("LIBRARY_FORCE_RESCAN", "Rescan Entire Library"))
+                    .subtext(tr!(
+                        "LIBRARY_FORCE_RESCAN_SUBTEXT",
+                        "Force a full rescan of the library to detect any changes."
+                    ))
+                    .w_full()
+                    .child(
+                        button()
+                            .style(ButtonStyle::Regular)
+                            .intent(ButtonIntent::Secondary)
+                            .child(tr!("LIBRARY_FORCE_RESCAN"))
+                            .id("library-rescan-button")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.defer(move |cx| cx.dispatch_action(&ForceScan));
+                            })),
+                    ),
+            )
+            .child(
+                label("library-import-playlist", tr!("ACTION_IMPORT_PLAYLIST"))
+                    .subtext(tr!(
+                        "LIBRARY_IMPORT_PLAYLIST_SUBTEXT",
+                        "Import an M3U playlist file into the library."
+                    ))
+                    .w_full()
+                    .child(
+                        button()
+                            .style(ButtonStyle::Regular)
+                            .intent(ButtonIntent::Secondary)
+                            .child(tr!("ACTION_IMPORT_PLAYLIST"))
+                            .id("library-import-playlist-button")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.defer(move |cx| cx.dispatch_action(&Import));
+                            })),
+                    ),
+            )
+            .child(
+                section_header(tr!(
+                    "SCANNING",
+                    "Scanning",
+                    #description="This is the header of the \"Scanning\" category in the library \
+                        settings - it does NOT indicate that scanning is currently in progress."
+                ))
+                .subtitle(tr!(
+                    "SCANNING_SUBTITLE",
+                    "Changes apply on your next scan. Duplicate folders are ignored."
+                ))
+                .child(
+                    button()
+                        .style(ButtonStyle::Regular)
+                        .intent(ButtonIntent::Primary)
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(6.0))
+                                .child(icon(CIRCLE_PLUS).my_auto().size(px(14.0)))
+                                .child(tr!("SCANNING_ADD_FOLDERS", "Add Folders")),
+                        )
+                        .id("library-settings-add-folder")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.add_folder(view.clone(), cx);
+                        })),
+                ),
+            )
+            .child(
+                label(
+                    "missing-folder-policy",
+                    tr!(
+                        "SCANNING_MISSING_POLICY",
+                        "When a configured folder is missing"
+                    ),
+                )
+                .subtext(tr!(
+                    "SCANNING_MISSING_POLICY_SUBTEXT",
+                    "Choose whether to ask, keep metadata, or remove tracks when a folder is \
+                    unavailable."
+                ))
+                .w_full()
+                .child({
+                    let settings_c = self.settings.clone();
+                    dropdown::<MissingFolderPolicy>("missing-folder-policy-dropdown")
+                        .w(px(250.0))
+                        .selected(scanning.missing_folder_policy)
+                        .option(
+                            MissingFolderPolicy::Ask,
+                            tr!("SCANNING_MISSING_POLICY_ASK", "Ask when missing"),
+                        )
+                        .option(
+                            MissingFolderPolicy::KeepInLibrary,
+                            tr!("SCANNING_MISSING_POLICY_KEEP", "Keep in library"),
+                        )
+                        .option(
+                            MissingFolderPolicy::DeleteFromLibrary,
+                            tr!("SCANNING_MISSING_POLICY_DELETE", "Delete from library"),
+                        )
+                        .on_change(move |policy, _, cx| {
+                            settings_c.update(cx, |s, cx| {
+                                s.scanning.missing_folder_policy = *policy;
+                                save_settings(cx, s);
+                                cx.notify();
+                            });
+                        })
+                }),
+            )
+            .child(
+                label(
+                    "watch-for-changes",
+                    tr!("SCANNING_WATCH_CHANGES", "Watch for Changes"),
+                )
+                .subtext(tr!(
+                    "SCANNING_WATCH_CHANGES_SUBTEXT",
+                    "Automatically update your library when files change on disk."
+                ))
+                .w_full()
+                .child(checkbox(
+                    "watch-for-changes-checkbox",
+                    scanning.watch_for_changes,
+                ))
+                .on_click({
+                    let settings_c = self.settings.clone();
+                    move |_, _, cx| {
+                        settings_c.update(cx, |s, cx| {
+                            s.scanning.watch_for_changes = !s.scanning.watch_for_changes;
+                            save_settings(cx, s);
+                            cx.notify();
+                        });
+                    }
+                }),
+            )
+            .child(
+                label(
+                    "slow-disk-mode",
+                    tr!("SCANNING_SLOW_DISK", "Slow Disk Mode"),
+                )
+                .subtext(tr!(
+                    "SCANNING_SLOW_DISK_SUBTEXT",
+                    "Reduce scanning threads to avoid thrashing on hard drives. Recommended when your music library is on a slow disk."
+                ))
+                .w_full()
+                .child(checkbox("slow-disk-mode-checkbox", scanning.slow_disk_mode))
+                .on_click({
+                    let settings_c = self.settings.clone();
+                    move |_, _, cx| {
+                        settings_c.update(cx, |s, cx| {
+                            s.scanning.slow_disk_mode = !s.scanning.slow_disk_mode;
+                            save_settings(cx, s);
+                            cx.notify();
+                        });
+                    }
+                }),
+            )
+            .when(self.scanning_modified, |this| {
+                this.child(
+                    callout(tr!(
+                        "SCANNING_RESCAN_REQUIRED",
+                        "Your changes will be applied on your next scan."
+                    ))
+                    .title(tr!("SCANNING_RESCAN_REQUIRED_TITLE", "Rescan Required"))
+                    .icon(ALERT_CIRCLE)
+                    .child(
+                        button()
+                            .id("settings-rescan-button")
+                            .intent(ButtonIntent::Warning)
+                            .child(tr!("SCAN", "Scan"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.scanning_modified = false;
+
+                                let interface = cx.global::<ScanInterface>();
+                                interface.stop();
+                                interface.scan();
+
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+            .child(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_scan_paths;
+    use camino::Utf8PathBuf;
+
+    /// Adds multiple new paths in order.
+    #[test]
+    fn merge_scan_paths_adds_multiple_unique_paths() {
+        let mut paths = vec![Utf8PathBuf::from("/music/existing")];
+
+        let updated = merge_scan_paths(
+            &mut paths,
+            [
+                Utf8PathBuf::from("/music/one"),
+                Utf8PathBuf::from("/music/two"),
+            ],
+        );
+
+        assert!(updated);
+        assert_eq!(
+            paths,
+            vec![
+                Utf8PathBuf::from("/music/existing"),
+                Utf8PathBuf::from("/music/one"),
+                Utf8PathBuf::from("/music/two"),
+            ]
+        );
+    }
+
+    /// Ignores paths that already exist.
+    #[test]
+    fn merge_scan_paths_ignores_existing_paths() {
+        let mut paths = vec![Utf8PathBuf::from("/music/existing")];
+
+        let updated = merge_scan_paths(&mut paths, [Utf8PathBuf::from("/music/existing")]);
+
+        assert!(!updated);
+        assert_eq!(paths, vec![Utf8PathBuf::from("/music/existing")]);
+    }
+
+    /// Ignores duplicate paths in one batch.
+    #[test]
+    fn merge_scan_paths_ignores_duplicates_within_same_batch() {
+        let mut paths = Vec::new();
+
+        let updated = merge_scan_paths(
+            &mut paths,
+            [
+                Utf8PathBuf::from("/music/one"),
+                Utf8PathBuf::from("/music/one"),
+                Utf8PathBuf::from("/music/two"),
+            ],
+        );
+
+        assert!(updated);
+        assert_eq!(
+            paths,
+            vec![
+                Utf8PathBuf::from("/music/one"),
+                Utf8PathBuf::from("/music/two")
+            ]
+        );
+    }
+
+    /// Reports no change for an empty batch.
+    #[test]
+    fn merge_scan_paths_reports_no_change_when_batch_is_empty() {
+        let mut paths = vec![Utf8PathBuf::from("/music/existing")];
+
+        let updated = merge_scan_paths(&mut paths, []);
+
+        assert!(!updated);
+        assert_eq!(paths, vec![Utf8PathBuf::from("/music/existing")]);
+    }
+}
+
+#[derive(IntoElement)]
+pub struct Callout {
+    pub title: Option<SharedString>,
+    pub caption: SharedString,
+    pub icon: Option<&'static str>,
+    pub children: SmallVec<[AnyElement; 2]>,
+    pub parent_div: Div,
+}
+
+impl Callout {
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
+impl Styled for Callout {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.parent_div.style()
+    }
+}
+
+impl ParentElement for Callout {
+    fn extend(&mut self, elements: impl IntoIterator<Item = gpui::AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+
+impl RenderOnce for Callout {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let theme = cx.global::<Theme>();
+
+        self.parent_div
+            .rounded(px(theme.radius_md))
+            .bg(theme.callout_background)
+            .border_1()
+            .border_color(theme.callout_border)
+            .text_color(theme.callout_text)
+            .overflow_hidden()
+            .flex()
+            .when_some(self.icon, |this, the_icon| {
+                this.child(
+                    div()
+                        .flex()
+                        .h_full()
+                        .border_r_1()
+                        .p(px(8.0))
+                        .border_color(theme.callout_border)
+                        .child(icon(the_icon).size(px(22.0))),
+                )
+            })
+            .child(
+                div()
+                    .flex_col()
+                    .flex()
+                    .w_full()
+                    .flex_shrink(1.0)
+                    .pt(px(6.0))
+                    .pl(px(12.0))
+                    .pb(px(9.0))
+                    .gap(px(3.0))
+                    .overflow_hidden()
+                    .when_some(self.title, |this, title| {
+                        this.child(
+                            div()
+                                .flex_shrink(1.0)
+                                .overflow_hidden()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::BOLD)
+                                .child(title),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_shrink(1.0)
+                            .text_sm()
+                            .overflow_hidden()
+                            .child(self.caption),
+                    ),
+            )
+            .when(!self.children.is_empty(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .ml_auto()
+                        .items_end()
+                        .p(px(12.0))
+                        .children(self.children),
+                )
+            })
+    }
+}
+
+pub fn callout(caption: impl Into<SharedString>) -> Callout {
+    Callout {
+        title: None,
+        caption: caption.into(),
+        icon: None,
+        children: SmallVec::new(),
+        parent_div: div(),
+    }
+}

@@ -1,0 +1,26 @@
+# Rust 构建产物
+/target
+build.log
+
+# build.rs 会读取/自动创建的本地环境文件，可能含密钥
+.env
+
+# 本机工具链配置（含真实绝对路径，勿提交；模板见 .example）
+.cargo/config.toml
+build-release.cmd
+
+# 本机代理工作约定（仅本机适用，勿提交）
+AGENTS.md
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# 操作系统杂物
+.DS_Store
+Thumbs.db
+desktop.ini
+
+SKILL.md

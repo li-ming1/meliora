@@ -1,0 +1,157 @@
+use std::rc::Rc;
+
+use gpui::{
+    App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
+};
+use smallvec::SmallVec;
+
+use crate::ui::{
+    components::{icons::icon, tooltip::build_tooltip},
+    theme::Theme,
+};
+
+pub type ChangeHandler<T> = dyn Fn(&T, &mut Window, &mut App);
+
+#[derive(Clone)]
+pub enum SegmentContent {
+    Label(SharedString),
+    Icon {
+        path: SharedString,
+        tooltip: SharedString,
+    },
+}
+
+#[derive(IntoElement)]
+pub struct SegmentedControl<T: Clone + PartialEq + 'static> {
+    id: ElementId,
+    options: SmallVec<[(T, SegmentContent); 5]>,
+    selected: Option<T>,
+    on_change: Option<Rc<ChangeHandler<T>>>,
+    fit_content: bool,
+    div: Div,
+}
+
+impl<T: Clone + PartialEq + 'static> SegmentedControl<T> {
+    pub fn selected(mut self, selected: T) -> Self {
+        self.selected = Some(selected);
+        self
+    }
+
+    pub fn fit_content(mut self) -> Self {
+        self.fit_content = true;
+        self
+    }
+
+    pub fn option(mut self, value: T, label: impl Into<SharedString>) -> Self {
+        self.options
+            .push((value, SegmentContent::Label(label.into())));
+        self
+    }
+
+    pub fn option_icon(
+        mut self,
+        value: T,
+        path: impl Into<SharedString>,
+        tooltip: impl Into<SharedString>,
+    ) -> Self {
+        self.options.push((
+            value,
+            SegmentContent::Icon {
+                path: path.into(),
+                tooltip: tooltip.into(),
+            },
+        ));
+        self
+    }
+
+    pub fn on_change(mut self, on_change: impl Fn(&T, &mut Window, &mut App) + 'static) -> Self {
+        self.on_change = Some(Rc::new(on_change));
+        self
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> Styled for SegmentedControl<T> {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.div.style()
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+
+        let mut row = div()
+            .flex()
+            .when(!self.fit_content, |this| this.w_full())
+            .rounded(px(theme.radius_sm))
+            .gap(px(2.0))
+            .p(px(2.0))
+            .border_1()
+            .border_color(theme.elevated_border_color)
+            .bg(theme.background_secondary);
+
+        for (i, (value, content)) in self.options.iter().enumerate() {
+            let is_selected = self.selected.as_ref() == Some(value);
+            let on_change = self.on_change.clone();
+            let value = value.clone();
+            let segment_id: ElementId = format!("{}-seg-{}", self.id, i).into();
+
+            let segment = div()
+                .id(segment_id)
+                .when(!self.fit_content, |this| this.flex_1())
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(8.0))
+                .pt(px(3.0))
+                .pb(px(2.0))
+                .text_xs()
+                .cursor_pointer()
+                .rounded(px(theme.radius_sm))
+                .when(is_selected, |this| {
+                    this.bg(theme.button_primary)
+                        .text_color(theme.button_primary_text)
+                })
+                .when(!is_selected, |this| {
+                    this.text_color(theme.text_secondary)
+                        .hover(|this| this.bg(theme.playback_button_hover))
+                })
+                .on_click(move |_, window, cx| {
+                    if let Some(on_change) = &on_change {
+                        on_change(&value, window, cx);
+                    }
+                });
+
+            let text_color = if is_selected {
+                theme.button_primary_text
+            } else {
+                theme.text_secondary
+            };
+
+            let segment = match content {
+                SegmentContent::Label(label) => segment.child(label.clone()),
+                SegmentContent::Icon { path, tooltip } => segment
+                    .child(icon(path.clone()).size(px(16.0)).text_color(text_color))
+                    .tooltip(build_tooltip(tooltip.clone())),
+            };
+
+            row = row.child(segment);
+        }
+
+        self.div.id(self.id).child(row)
+    }
+}
+
+pub fn segmented_control<T: Clone + PartialEq + 'static>(
+    id: impl Into<ElementId>,
+) -> SegmentedControl<T> {
+    SegmentedControl {
+        id: id.into(),
+        options: SmallVec::new(),
+        selected: None,
+        on_change: None,
+        fit_content: false,
+        div: div(),
+    }
+}

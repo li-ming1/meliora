@@ -1,0 +1,80 @@
+use std::rc::Rc;
+
+use gpui::{prelude::FluentBuilder, *};
+
+use crate::{
+    library::types::{ArtistWithCounts, table::ArtistColumn},
+    ui::{
+        components::table::{Table, table_data::TABLE_MAX_WIDTH},
+        models::Models,
+    },
+};
+
+use super::{NavigationHistory, ViewSwitchMessage, table_view_header::TableViewHeader};
+
+#[derive(Clone)]
+pub struct ArtistView {
+    table: Entity<Table<ArtistWithCounts, ArtistColumn>>,
+    table_view_header: Entity<TableViewHeader<ArtistWithCounts, ArtistColumn>>,
+}
+
+impl ArtistView {
+    pub(super) fn new(
+        cx: &mut App,
+        view_switch_model: Entity<NavigationHistory>,
+        initial_scroll_offset: Option<f32>,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            let state = cx.global::<Models>().scan_state.clone();
+
+            let table_settings = cx.global::<Models>().table_settings.clone();
+            let initial_settings = table_settings
+                .read(cx)
+                .get(Table::<ArtistWithCounts, ArtistColumn>::get_table_name().as_str())
+                .cloned();
+
+            let handler_model = view_switch_model.clone();
+            let handler = Rc::new(move |cx: &mut App, id: &i64| {
+                handler_model.update(cx, |_, cx| cx.emit(ViewSwitchMessage::Artist(*id)))
+            });
+
+            let table = Table::new(
+                cx,
+                Some(handler),
+                (),
+                initial_scroll_offset,
+                initial_settings.as_ref(),
+            );
+
+            super::observe_scan_for_table(cx, &state, table.clone());
+
+            ArtistView {
+                table_view_header: TableViewHeader::new(cx, table.clone()),
+                table,
+            }
+        })
+    }
+
+    pub fn get_scroll_offset(&self, cx: &App) -> f32 {
+        self.table.read(cx).get_scroll_offset(cx)
+    }
+}
+
+impl Render for ArtistView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = cx
+            .global::<crate::settings::SettingsGlobal>()
+            .model
+            .read(cx);
+        let full_width = settings.interface.effective_full_width();
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .when(!full_width, |this: Div| this.max_w(px(TABLE_MAX_WIDTH)))
+            .child(self.table_view_header.clone())
+            .child(self.table.clone())
+    }
+}

@@ -1,0 +1,320 @@
+use gpui::{prelude::FluentBuilder, *};
+
+use crate::ui::{
+    components::{
+        icons::{CHECK, LOCK, icon},
+        tooltip::build_tooltip,
+    },
+    theme::Theme,
+};
+
+type ClickEvHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+fn icon_container() -> Div {
+    div()
+        .w(px(18.0))
+        .h(px(18.0))
+        .mr(px(7.0))
+        .pt(px(0.5))
+        .my_auto()
+        .flex()
+        .items_center()
+        .justify_center()
+}
+
+/// Shared base for all menu item variants.
+///
+/// This is intentionally not a usable component. Do not use it directly *ever*. Always use a proper
+/// menu item component - never ever use this.
+struct BaseMenuItem {
+    id: ElementId,
+    name: SharedString,
+    on_click: ClickEvHandler,
+    disabled: bool,
+    non_interactive: bool,
+    tooltip: Option<SharedString>,
+    text_color: Option<Rgba>,
+}
+
+impl BaseMenuItem {
+    pub fn new(
+        id: impl Into<ElementId>,
+        text: impl Into<SharedString>,
+        func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: text.into(),
+            on_click: Box::new(func),
+            disabled: false,
+            non_interactive: false,
+            tooltip: None,
+            text_color: None,
+        }
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn text_color(mut self, color: Rgba) -> Self {
+        self.text_color = Some(color);
+        self
+    }
+
+    pub fn render(
+        self,
+        theme: &Theme,
+        icon_slot: impl IntoElement,
+        right_element: Option<AnyElement>,
+    ) -> impl IntoElement {
+        let has_tooltip = self.tooltip.is_some();
+        let text_color = if self.disabled {
+            Some(theme.text_disabled)
+        } else {
+            self.text_color
+        };
+        let base = div()
+            .id(self.id)
+            .rounded(px(theme.radius_sm))
+            .flex()
+            .items_center()
+            .px(px(6.0))
+            .pt(px(5.0))
+            .pb(px(5.0))
+            .line_height(rems(1.25))
+            .min_w_full()
+            .bg(theme.menu_item)
+            .border_1()
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .child(icon_slot)
+            .child(
+                div()
+                    .ml(px(2.0))
+                    .child(self.name)
+                    .flex_1()
+                    .when_some(text_color, |this, color| this.text_color(color)),
+            )
+            .when_some(right_element, |this, el| {
+                this.child(div().ml(px(12.0)).child(el))
+            })
+            .when_some(self.tooltip, |this, text| this.tooltip(build_tooltip(text)))
+            .when(has_tooltip, |this| {
+                this.on_hover(|_, window, _| window.refresh())
+            });
+
+        if self.disabled || self.non_interactive {
+            base.cursor_default()
+        } else {
+            base.on_click(self.on_click)
+                .hover(|this| {
+                    this.bg(theme.menu_item_hover)
+                        .border_color(theme.menu_item_border_hover)
+                })
+                .active(|this| {
+                    this.bg(theme.menu_item_active)
+                        .border_color(theme.menu_item_border_active)
+                })
+        }
+    }
+}
+
+#[derive(IntoElement)]
+pub struct MenuItem {
+    base: BaseMenuItem,
+    icon_path: Option<SharedString>,
+    icon_color: Option<Rgba>,
+    never_icon: bool,
+}
+
+impl MenuItem {
+    pub fn new(
+        id: impl Into<ElementId>,
+        icon: Option<impl Into<SharedString>>,
+        text: impl Into<SharedString>,
+        func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            base: BaseMenuItem::new(id, text, func),
+            icon_path: icon.map(|v| v.into()),
+            icon_color: None,
+            never_icon: false,
+        }
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.base = self.base.disabled(disabled);
+        self
+    }
+
+    pub fn text_color(mut self, color: Rgba) -> Self {
+        self.base = self.base.text_color(color);
+        self
+    }
+
+    pub fn icon_color(mut self, color: Rgba) -> Self {
+        self.icon_color = Some(color);
+        self
+    }
+
+    pub fn never_icon(mut self) -> Self {
+        self.never_icon = true;
+        self
+    }
+}
+
+impl RenderOnce for MenuItem {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+
+        if self.never_icon {
+            self.base.render(theme, div(), None)
+        } else {
+            let icon_color = if self.base.disabled {
+                theme.text_disabled
+            } else {
+                self.icon_color.unwrap_or(theme.text_secondary)
+            };
+            let icon = icon_container().when_some(self.icon_path, |this, icon_path| {
+                this.child(icon(icon_path).size(px(18.0)).text_color(icon_color))
+            });
+
+            self.base.render(theme, icon, None)
+        }
+    }
+}
+
+#[derive(IntoElement)]
+pub struct CheckMenuItem {
+    base: BaseMenuItem,
+    checked: bool,
+}
+
+impl CheckMenuItem {
+    pub fn new(
+        id: impl Into<ElementId>,
+        checked: bool,
+        text: impl Into<SharedString>,
+        func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            base: BaseMenuItem::new(id, text, func),
+            checked,
+        }
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.base = self.base.disabled(disabled);
+        self
+    }
+}
+
+impl RenderOnce for CheckMenuItem {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+
+        let icon_path = if self.base.disabled {
+            Some(LOCK)
+        } else if self.checked {
+            Some(CHECK)
+        } else {
+            None
+        };
+
+        let icon = icon_container().when_some(icon_path, |this, path| {
+            this.child(icon(path).size(px(18.0)).text_color(if self.base.disabled {
+                theme.text_disabled
+            } else {
+                theme.text_secondary
+            }))
+        });
+
+        self.base.render(theme, icon, None)
+    }
+}
+
+/// A horizontal separator line for visually grouping menu items.
+#[derive(IntoElement)]
+pub struct MenuSeparator;
+
+impl RenderOnce for MenuSeparator {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+
+        div()
+            .min_w_full()
+            .h(px(1.0))
+            .flex_shrink_0()
+            .bg(theme.elevated_border_color)
+            .mx(px(4.0))
+            .my(px(2.0))
+    }
+}
+
+/// Creates a standard menu item with an optional icon.
+pub fn menu_item(
+    id: impl Into<ElementId>,
+    icon: Option<impl Into<SharedString>>,
+    text: impl Into<SharedString>,
+    func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> MenuItem {
+    MenuItem::new(id, icon, text, func)
+}
+
+/// Creates a checkable menu item.
+pub fn menu_check_item(
+    id: impl Into<ElementId>,
+    checked: bool,
+    text: impl Into<SharedString>,
+    func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> CheckMenuItem {
+    CheckMenuItem::new(id, checked, text, func)
+}
+
+/// Creates a menu separator.
+pub fn menu_separator() -> MenuSeparator {
+    MenuSeparator
+}
+
+/// A container for menu items.
+#[derive(IntoElement)]
+pub struct Menu {
+    items: Vec<AnyElement>,
+    div: Div,
+}
+
+impl Menu {
+    /// Adds an item to the menu.
+    pub fn item(mut self, item: impl IntoElement) -> Self {
+        self.items.push(item.into_any_element());
+        self
+    }
+}
+
+impl Styled for Menu {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.div.style()
+    }
+}
+
+impl RenderOnce for Menu {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        self.div
+            .min_w(px(200.0))
+            .px(px(3.0))
+            .py(px(3.0))
+            .flex()
+            .flex_col()
+            .children(self.items)
+    }
+}
+
+/// Creates a new empty menu container.
+pub fn menu() -> Menu {
+    Menu {
+        items: vec![],
+        div: div(),
+    }
+}
