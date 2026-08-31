@@ -14,9 +14,6 @@ on:
 permissions:
   contents: write
 
-# 平台过滤表达式：tag 全量；workflow_dispatch 按 inputs.platforms 子串匹配 matrix.name
-x-platform-filter: &platform_filter ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -71,14 +68,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        if: *platform_filter
+        if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
         env:
           # fdk-aac-sys 在 Windows ARM64 编译需要 __x86__ 宏 hack（与本地 .cargo/config.toml 一致）
           CFLAGS_aarch64_pc_windows_msvc: ${{ matrix.cflags }}
         run: cargo build --release --locked --target ${{ matrix.target }} --features kugou,netease
 
       - name: Package Windows (zip)
-        if: ${{ runner.os == 'Windows' && *platform_filter }}
+        if: ${{ runner.os == 'Windows' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         shell: pwsh
         run: |
           STAGE = "dist/meliora-${{ matrix.name }}"
@@ -88,7 +85,7 @@ jobs:
           Compress-Archive -Path "$STAGE/*" -DestinationPath "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.zip"
 
       - name: Package macOS (.app tar.gz)
-        if: ${{ runner.os == 'macOS' && *platform_filter }}
+        if: ${{ runner.os == 'macOS' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
@@ -115,7 +112,7 @@ jobs:
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" "Meliora.app"
 
       - name: Package Linux (tar.gz)
-        if: ${{ runner.os == 'Linux' && *platform_filter }}
+        if: ${{ runner.os == 'Linux' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         run: |
           set -euo pipefail
           STAGE="dist/meliora-${{ matrix.name }}"
@@ -125,7 +122,7 @@ jobs:
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" .
 
       - name: Upload artifact
-        if: *platform_filter
+        if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
         uses: actions/upload-artifact@v4
         with:
           name: meliora-${{ github.ref_name }}-${{ matrix.name }}
