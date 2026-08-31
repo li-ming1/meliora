@@ -1,6 +1,6 @@
 # Meliora
 
-A modern desktop music player written in Rust, built on GPUI.
+A lightweight third-party desktop music player written in Rust, built on GPUI — shipped as a single file, with low memory usage and fast startup.
 
 Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummingbird-player/hummingbird). It keeps the local music library and playback capabilities, and adds online services for NetEase Cloud Music and KuGou Music (online catalog, charts, playlists, QR-code login, online streaming and downloading).
 
@@ -65,8 +65,6 @@ A standard toolchain installation builds out of the box. If your toolchain has a
 cargo build --release --features kugou,netease
 ```
 
-Local maintainers can run the local `build-release.cmd` (gitignored; enables `--features kugou,netease` and embeds the app icon).
-
 ### Custom Features
 
 ```bash
@@ -82,7 +80,7 @@ Available features: `kugou`, `netease`, `online`, `console`, `runtime_shaders`.
 
 ## Acknowledgments
 
-This project references, draws inspiration from, and is grateful to the following open-source projects:
+This project references the following open-source projects:
 
 | Project | Purpose |
 |---|---|
