@@ -23,8 +23,6 @@ jobs:
             os: ubuntu-latest
           - name: linux-arm64
             os: ubuntu-24.04-arm
-          - name: macos-x86_64
-            os: macos-13
           - name: macos-arm64
             os: macos-latest
           - name: windows-x86_64
@@ -115,3 +113,25 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            ## ${{ github.ref_name }}
+
+            **Meliora** —— 基于 Rust + GPUI 的轻量第三方桌面音乐播放器：单文件分发、内存占用低、启动速度快。
+
+            **A lightweight third-party desktop music player written in Rust, built on GPUI** — shipped as a single file, with low memory usage and fast startup.
+
+            ### 支持平台 / Platforms
+
+            - Windows x86_64
+            - Linux x86_64 / arm64
+            - macOS arm64
+
+            ### 主要功能 / Features
+
+            - 本地音乐库：扫描与管理、元数据解析、内嵌封面、歌单、ReplayGain、歌词（LRC/KRC/YRC）
+            - Local library: scanning, metadata, embedded covers, playlists, ReplayGain, lyrics (LRC/KRC/YRC)
+            - 网易云音乐 / 酷狗音乐在线：扫码登录、搜索、歌单、榜单、在线播放与下载
+            - NetEase Cloud Music / KuGou online: QR login, search, playlists, charts, streaming and downloading
+            - 10 段均衡器与实时频谱可视化 / 10-band equalizer and real-time spectrum
+
+            **完整变更见下方自动生成的 Release Notes / Full changelog is generated below.**
