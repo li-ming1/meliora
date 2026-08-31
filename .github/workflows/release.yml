@@ -31,6 +31,7 @@ jobs:
       # rust-toolchain.toml 钉死 Windows-msvc（仅本机非标准工具链需要），
       # CI 上删除并改用各平台宿主 stable
       - name: Drop machine-specific toolchain pin
+        shell: bash
         run: rm -f rust-toolchain.toml
 
       - uses: dtolnay/rust-toolchain@stable
@@ -39,7 +40,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev pkg-config
+          sudo apt-get install -y \
+            libasound2-dev libpipewire-0.3-dev pkg-config \
+            libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev
 
       - uses: Swatinem/rust-cache@v2
 
