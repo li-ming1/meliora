@@ -29,7 +29,7 @@ use zed_reqwest::{
     header::{CONTENT_RANGE, RANGE},
 };
 
-use crate::media::{builtin::symphonia::SymphoniaProvider, traits::MediaStream};
+use crate::media::{symphonia::SymphoniaProvider, traits::MediaStream};
 
 /// Shared client for media streaming. Connection pooling keeps sequential
 /// reads cheap; no overall request timeout is set because an open-ended range

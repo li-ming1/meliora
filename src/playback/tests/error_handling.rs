@@ -1,4 +1,4 @@
-use crate::devices::builtin::dummy;
+use crate::devices::dummy;
 use crate::test_support::TestDir;
 
 use super::harness::{

@@ -1,14 +1,19 @@
-pub mod builtin;
 pub mod errors;
 // HTTP(S) range-request media source for online sources (kugou et al.)
 #[cfg(feature = "online_sources")]
 pub mod http_source;
+pub mod lofty;
 pub mod lookup_table;
 pub mod metadata;
 pub mod pipeline;
+pub mod symphonia;
 pub mod traits;
 
 use std::path::Path;
+
+/// Extensions every builtin provider claims; both parse the same formats.
+pub const SUPPORTED_EXTENSIONS: &[&str] =
+    &["ogg", "oga", "aac", "flac", "wav", "mp3", "m4a", "aiff", "opus"];
 
 /// Whether `path` carries an HTTP(S) URL instead of a filesystem location.
 /// Available unconditionally: queue metadata and availability checks consult

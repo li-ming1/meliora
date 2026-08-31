@@ -1,10 +1,15 @@
-use super::{models::Models, theme::Theme};
+use super::{
+    library::ViewSwitchMessage,
+    models::Models,
+    theme::Theme,
+};
 use crate::{
     library::scan::ScanEvent,
     settings::SettingsGlobal,
     ui::{
         components::{
-            icons::{FOLDER_BOLT, FOLDER_SEARCH, SEARCH, icon},
+            icons::{ARROW_LEFT, ARROW_RIGHT, FOLDER_BOLT, FOLDER_SEARCH, SEARCH, icon},
+            nav_button::nav_button,
             tooltip::build_complex_tooltip,
             window_header::header,
         },
@@ -12,11 +17,58 @@ use crate::{
             TITLEBAR_LEFT_PAD_BOTTOM, TITLEBAR_LEFT_PAD_TOP, TITLEBAR_LEFT_PAD_X,
         },
         global_actions::Search,
-        library::view_nav::nav_buttons,
     },
 };
 use cntp_i18n::tr;
 use gpui::{prelude::FluentBuilder, *};
+
+// ─── 导航按钮（后退/前进） ───────────────────────────────────────────────
+
+#[derive(IntoElement)]
+pub struct NavButtons {}
+
+impl RenderOnce for NavButtons {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let vsm = cx.global::<Models>().switcher_model.clone();
+        let can_go_back = vsm.read(cx).can_go_back();
+        let can_go_forward = vsm.read(cx).can_go_forward();
+
+        div()
+            .flex()
+            .occlude()
+            .mt(px(1.0))
+            .mr(px(6.0))
+            .gap(px(2.0))
+            .child(
+                nav_button("back", ARROW_LEFT)
+                    .disabled(!can_go_back)
+                    .on_click({
+                        let vsm = vsm.clone();
+                        move |_, _, cx| {
+                            vsm.update(cx, |_, cx| {
+                                cx.emit(ViewSwitchMessage::Back);
+                            })
+                        }
+                    }),
+            )
+            .child(
+                nav_button("forward", ARROW_RIGHT)
+                    .disabled(!can_go_forward)
+                    .on_click({
+                        let vsm = vsm.clone();
+                        move |_, _, cx| {
+                            vsm.update(cx, |_, cx| {
+                                cx.emit(ViewSwitchMessage::Forward);
+                            })
+                        }
+                    }),
+            )
+    }
+}
+
+pub fn nav_buttons() -> impl IntoElement {
+    NavButtons {}
+}
 
 pub struct Header {
     scan_status: Entity<ScanStatus>,

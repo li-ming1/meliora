@@ -227,7 +227,8 @@ impl Render for QueueItem {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let album_id = self.item.get_db_album_id();
         let track_id = self.item.get_db_id();
-        let ui_data = self.item.get_data(cx).read(cx).clone();
+        let data_entity = self.item.get_data(cx);
+        let ui_data = &*data_entity.read(cx);
         let theme = cx.global::<Theme>().clone();
         let is_available = self.is_available;
         let is_selected = self.selection.read(cx).contains(self.idx);

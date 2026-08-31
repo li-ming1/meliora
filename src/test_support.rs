@@ -20,9 +20,9 @@ use crate::{
         },
     },
     media::{
-        builtin::{lofty, symphonia},
-        lookup_table,
+        lofty, lookup_table,
         metadata::Metadata,
+        symphonia,
     },
 };
 

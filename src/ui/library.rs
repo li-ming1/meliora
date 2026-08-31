@@ -55,7 +55,6 @@ mod netease_playlists;
 #[cfg(feature = "netease")]
 mod netease_ranks;
 pub mod missing_folder_dialog;
-pub mod view_nav;
 pub mod playlist_view;
 mod release_view;
 pub mod sidebar;
@@ -66,6 +65,24 @@ mod update_playlist;
 pub mod view_header;
 
 actions!(library, [NavigateBack, NavigateForward, EscapeBack]);
+
+/// Absolute close button anchored to the detail-view host (album/release).
+pub fn detail_close_button(id: impl Into<ElementId>) -> impl IntoElement {
+    crate::ui::components::nav_button::nav_button(
+        id,
+        crate::ui::components::icons::CROSS,
+    )
+    .absolute()
+    .top(px(12.0))
+    .right(px(18.0))
+    .on_click(|_, window, cx| {
+        window.dispatch_action(Box::new(EscapeBack), cx);
+    })
+    .tooltip(crate::ui::components::tooltip::build_tooltip(tr!(
+        "CLOSE_RELEASE_DETAIL",
+        "Close"
+    )))
+}
 
 /// The navigation history + a cursor noting what the current message is.
 #[derive(Debug)]
@@ -288,7 +305,6 @@ pub struct Library {
     left_view: Option<LibraryView>,
     right_view: Option<LibraryView>,
     section: LibrarySection,
-    show_update_playlist: Entity<bool>,
     update_playlist: Entity<UpdatePlaylist>,
     focus_handle: FocusHandle,
     scroll_state: ScrollStateStorage,
@@ -636,6 +652,16 @@ impl Library {
 
             let show_update_playlist = cx.new(|_| false);
 
+            App::on_action(cx, {
+                let show_update_playlist = show_update_playlist.clone();
+                move |_: &Import, cx| {
+                    show_update_playlist.update(cx, |v, cx| {
+                        *v = true;
+                        cx.notify();
+                    })
+                }
+            });
+
             let settings = cx.global::<crate::settings::SettingsGlobal>().model.clone();
             cx.observe(&settings, {
                 let switcher_model = switcher_model.clone();
@@ -652,7 +678,6 @@ impl Library {
                 right_view: None,
                 section,
                 update_playlist: UpdatePlaylist::new(cx, show_update_playlist.clone()),
-                show_update_playlist,
                 focus_handle,
                 scroll_state,
                 reclaim_focus: true,
@@ -696,7 +721,6 @@ impl Render for Library {
             self.reclaim_focus = false;
             self.focus_handle.focus(window, cx);
         }
-        let show_update_playlist = self.show_update_playlist.clone();
         let settings = cx
             .global::<crate::settings::SettingsGlobal>()
             .model
@@ -737,13 +761,6 @@ impl Render for Library {
                 .child(render_library_view(view))
                 .into_any_element()
         };
-
-        App::on_action(cx, move |_: &Import, cx| {
-            show_update_playlist.update(cx, |v, cx| {
-                *v = true;
-                cx.notify();
-            })
-        });
 
         let content = if let (true, Some(left), Some(right)) = (
             two_column,

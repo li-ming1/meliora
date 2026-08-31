@@ -16,36 +16,17 @@ use crate::{
 pub struct RightSidebar {
     queue: Entity<Queue>,
     lyrics: Entity<Lyrics>,
-    pub show_queue: Entity<bool>,
-    pub show_lyrics: Entity<bool>,
 }
 
 impl RightSidebar {
-    pub fn new(cx: &mut App, show_queue: Entity<bool>, show_lyrics: Entity<bool>) -> Entity<Self> {
-        cx.new(|cx| {
-            let queue = Queue::new(cx, show_queue.clone());
-            let lyrics = Lyrics::new(cx);
+    pub fn new(cx: &mut App) -> Self {
+        let queue = Queue::new(cx, cx.global::<Models>().show_queue.clone());
+        let lyrics = Lyrics::new(cx);
 
-            let queue_width = cx.global::<Models>().queue_width.clone();
-            cx.observe(&queue_width, |_, _, cx| cx.notify()).detach();
-
-            let lyrics_height = cx.global::<Models>().lyrics_height.clone();
-            cx.observe(&lyrics_height, |_, _, cx| cx.notify()).detach();
-
-            Self {
-                queue,
-                lyrics,
-                show_queue,
-                show_lyrics,
-            }
-        })
+        Self { queue, lyrics }
     }
-}
 
-impl Render for RightSidebar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let show_queue = *self.show_queue.read(cx);
-        let show_lyrics = *self.show_lyrics.read(cx);
+    pub fn render(&self, cx: &mut App, show_queue: bool, show_lyrics: bool) -> impl IntoElement {
         let queue_width = cx.global::<Models>().queue_width.clone();
         let lyrics_height_entity = cx.global::<Models>().lyrics_height.clone();
 

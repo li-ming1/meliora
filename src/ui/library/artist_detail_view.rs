@@ -30,7 +30,7 @@ use crate::{
         library::{
             context_menus::{AlbumContextMenuContext, queue_items_from_tracks},
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
-            view_nav::detail_close_button,
+            detail_close_button,
         },
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,

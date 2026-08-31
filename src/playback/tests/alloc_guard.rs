@@ -1,4 +1,4 @@
-use crate::devices::builtin::dummy;
+use crate::devices::dummy;
 use crate::playback::thread::audio_engine::EngineCycleResult;
 use crate::test_support::{TestDir, alloc_guard::count_allocations};
 

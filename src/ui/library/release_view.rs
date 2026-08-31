@@ -32,7 +32,7 @@ use crate::{
                 navigate_to_album_artists, queue_items_from_tracks,
             },
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
-            view_nav::detail_close_button,
+            detail_close_button,
         },
         models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent, toggle_album_like},
         scroll_follow::SmoothScrollFollow,

@@ -2,7 +2,8 @@ use tracing::{info, warn};
 
 use crate::{
     devices::{
-        builtin::{cpal::CpalProvider, dummy::DummyDeviceProvider},
+        cpal::CpalProvider,
+        dummy::DummyDeviceProvider,
         errors::{FindError, OpenError, ResetError, StateError, SubmissionError},
         format::{ChannelSpec, FormatInfo},
         traits::{Device, DeviceProvider, OutputStream},

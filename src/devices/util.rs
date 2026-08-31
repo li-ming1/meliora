@@ -15,13 +15,6 @@ pub struct RingWriteTimeout {
     pub written: usize,
 }
 
-pub fn write_bounded<T: Copy>(
-    producer: &mut Producer<T>,
-    slice: &[T],
-) -> Result<(), RingWriteTimeout> {
-    write_bounded_planar(std::slice::from_mut(producer), &[slice], slice.len())
-}
-
 /// Write the first `total` samples of equal-length planes to their producers in lockstep, so the
 /// channels never desync
 pub fn write_bounded_planar<T: Copy>(

@@ -7,7 +7,7 @@ use crate::{
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         resample::SampleFrom,
         traits::{Device, DeviceProvider, OutputStream},
-        util::{AtomicF64, GainRamp, Scale, read_available, write_bounded},
+        util::{AtomicF64, GainRamp, Scale, read_available, write_bounded_planar},
     },
     media::pipeline::{ChannelConsumers, DEFAULT_BUFFER_FRAMES},
 };
@@ -397,7 +397,7 @@ where
             }
         }
 
-        write_bounded(&mut self.ring_buf, &self.interleave_buffer)
+        write_bounded_planar(std::slice::from_mut(&mut self.ring_buf), &[&self.interleave_buffer], self.interleave_buffer.len())
             .map_err(|_| SubmissionError::WriteTimeout)?;
 
         Ok(read)

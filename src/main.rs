@@ -9,8 +9,9 @@ use gpui::set_trace_enabled;
 use std::sync::LazyLock;
 
 use crate::media::{
-    builtin::{lofty::LoftyProvider, symphonia::SymphoniaProvider},
+    lofty::LoftyProvider,
     lookup_table::add_provider,
+    symphonia::SymphoniaProvider,
 };
 
 mod controllers;

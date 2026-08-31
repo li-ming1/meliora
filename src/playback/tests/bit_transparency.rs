@@ -1,4 +1,4 @@
-use crate::devices::builtin::dummy;
+use crate::devices::dummy;
 use crate::devices::resample::SampleFrom;
 use crate::test_support::TestDir;
 

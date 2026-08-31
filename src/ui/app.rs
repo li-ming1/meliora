@@ -67,7 +67,7 @@ use super::{
 struct MainWindow {
     pub controls: Entity<Controls>,
     pub sidebar: Entity<Sidebar>,
-    pub right_sidebar: Entity<RightSidebar>,
+    pub right_sidebar: RightSidebar,
     pub library: Entity<Library>,
     pub header: Entity<Header>,
     pub search: Entity<SearchView>,
@@ -87,7 +87,6 @@ impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         cx.global::<ModalActive>().0.store(false, Ordering::Relaxed);
 
-        let right_sidebar = self.right_sidebar.clone();
         let show_about = *self.show_about.read(cx);
         let show_corrupt_settings_dialog = matches!(
             cx.global::<Models>().settings_health.read(cx),
@@ -98,7 +97,9 @@ impl Render for MainWindow {
                 &*cx.global::<Models>().scan_state.read(cx),
                 ScanEvent::WaitingForMissingFolderDecision { .. }
             );
-        let show_sidebar = *self.show_queue.read(cx) || *self.show_lyrics.read(cx);
+        let show_queue = *self.show_queue.read(cx);
+        let show_lyrics = *self.show_lyrics.read(cx);
+        let show_sidebar = show_queue || show_lyrics;
 
         div()
             .image_cache(self.image_cache.clone())
@@ -161,7 +162,10 @@ impl Render for MainWindow {
                                                 ),
                                             )
                                             .when(show_sidebar, |this| {
-                                                this.child(right_sidebar)
+                                                this.child(
+                                                    self.right_sidebar
+                                                        .render(cx, show_queue, show_lyrics),
+                                                )
                                             }),
                                     )
                                     .child(
@@ -322,6 +326,14 @@ fn build_main_window(
         let show_about = cx.global::<Models>().show_about.clone();
         let about_focus = cx.focus_handle();
 
+        cx.observe(&show_queue, |_, _, cx| {
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&show_lyrics, |_, _, cx| {
+            cx.notify();
+        })
+        .detach();
         cx.observe(&show_about, |_, _, cx| {
             cx.notify();
         })
@@ -337,13 +349,19 @@ fn build_main_window(
         let sidebar_collapsed = cx.global::<Models>().sidebar_collapsed.clone();
         cx.observe(&sidebar_collapsed, |_, _, cx| cx.notify()).detach();
 
+        // 右侧栏布局跟随分栏宽度/歌词高度变化
+        let queue_width = cx.global::<Models>().queue_width.clone();
+        cx.observe(&queue_width, |_, _, cx| cx.notify()).detach();
+        let lyrics_height = cx.global::<Models>().lyrics_height.clone();
+        cx.observe(&lyrics_height, |_, _, cx| cx.notify()).detach();
+
         MainWindow {
             controls: Controls::new(cx, show_queue.clone(), show_lyrics.clone()),
             sidebar: {
                 let nav_model = cx.global::<Models>().switcher_model.clone();
                 Sidebar::new(cx, nav_model)
             },
-            right_sidebar: RightSidebar::new(cx, show_queue.clone(), show_lyrics.clone()),
+            right_sidebar: RightSidebar::new(cx),
             library: Library::new(cx),
             header: Header::new(cx),
             search: SearchView::new(cx),

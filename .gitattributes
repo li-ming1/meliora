@@ -1,0 +1,7 @@
+# 统一提交时行尾为 LF，避免跨平台 CRLF/LF 噪音导致整文件假 diff
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
+*.cmd text eol=crlf
