@@ -43,6 +43,14 @@ Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummin
 - System media controls: Windows SMTC, macOS Now Playing, Linux MPRIS
 - Supports Windows / macOS / Linux
 
+## Screenshots
+
+![Light theme](screenshots/light.png)
+
+![Dark theme](screenshots/dark.png)
+
+![Settings](screenshots/settings.png)
+
 ## Tech Stack
 
 - Rust 2024 edition

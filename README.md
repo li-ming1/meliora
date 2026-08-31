@@ -43,6 +43,14 @@ Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的
 - 系统媒体控制：Windows SMTC、macOS Now Playing、Linux MPRIS
 - 支持 Windows / macOS / Linux
 
+## 截图
+
+![浅色主题](screenshots/light.png)
+
+![深色主题](screenshots/dark.png)
+
+![设置界面](screenshots/settings.png)
+
 ## 技术栈
 
 - Rust 2024 edition
