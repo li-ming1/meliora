@@ -1,9 +1,9 @@
-name: Release
+name: Build & Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,35 +13,46 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
-            os: ubuntu-latest
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-          - name: macos-arm64
-            os: macos-latest
-          - name: windows-x86_64
-            os: windows-latest
+          # Windows
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,  name: windows-x64,   exe: meliora.exe }
+          - { os: windows-latest,   target: aarch64-pc-windows-msvc, name: windows-arm64, exe: meliora.exe }
+          # macOS（macos-13 Intel runner 已退役；x64 产物在 arm64 runner 上交叉编译，
+          # x86_64-apple-darwin 无需额外工具链）
+          - { os: macos-latest,     target: x86_64-apple-darwin,     name: macos-x64,     exe: meliora }
+          - { os: macos-latest,     target: aarch64-apple-darwin,    name: macos-arm64,   exe: meliora }
+          # Linux（ubuntu-24.04-arm = 原生 ARM64 runner，无需交叉编译）
+          - { os: ubuntu-latest,     target: x86_64-unknown-linux-gnu,  name: linux-x64,  exe: meliora }
+          - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu, name: linux-arm64, exe: meliora }
+
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       # rust-toolchain.toml 钉死 Windows-msvc（仅本机非标准工具链需要），
-      # CI 上删除并改用各平台宿主 stable
+      # CI 上删除并改用各平台宿主 stable + matrix target
       - name: Drop machine-specific toolchain pin
         shell: bash
         run: rm -f rust-toolchain.toml
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-      - name: Install Linux system deps
+      # opusic-sys（bundled）构建期用 cmake 编译 libopus，
+      # 显式安装统一版本避免 runner 预装版本差异
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
+      # Linux 系统依赖（cpal/GPUI）
+      - name: Install Linux deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y \
             libasound2-dev libpipewire-0.3-dev pkg-config \
             libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev \
@@ -50,24 +61,29 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release (kugou, netease)
-        run: cargo build --release --features kugou,netease
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }} --features kugou,netease
 
       - name: Package Windows (zip)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/release/meliora.exe `
-            -DestinationPath meliora-${{ github.ref_name }}-${{ matrix.name }}.zip
+          STAGE = "dist/meliora-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $STAGE | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$STAGE/"
+          Copy-Item README.md, LICENSE "$STAGE/"
+          Compress-Archive -Path "$STAGE/*" -DestinationPath "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.zip"
 
       - name: Package macOS (.app tar.gz)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          APP="Meliora.app"
+          STAGE="dist/meliora-${{ matrix.name }}"
+          APP="$STAGE/Meliora.app"
           mkdir -p "$APP/Contents/MacOS"
-          cp target/release/meliora "$APP/Contents/MacOS/meliora"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$APP/Contents/MacOS/meliora"
+          cp README.md LICENSE "$STAGE/"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -83,22 +99,29 @@ jobs:
           </dict>
           </plist>
           PLIST
-          tar -czf meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz "$APP"
+          tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" "Meliora.app"
 
       - name: Package Linux (tar.gz)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          tar -czf meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz -C target/release meliora
+          STAGE="dist/meliora-${{ matrix.name }}"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$STAGE/"
+          cp README.md LICENSE "$STAGE/"
+          tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" .
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: meliora-${{ github.ref_name }}-${{ matrix.name }}.*
+          name: meliora-${{ github.ref_name }}-${{ matrix.name }}.*
+          path: dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.*
           if-no-files-found: error
 
+  # Tag 推送时创建 GitHub Release：等全部平台完成后再发一次，
+  # 避免多 job 并行抢建同一 Release 引发 "Too many retries"
   release:
-    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -122,9 +145,9 @@ jobs:
 
             ### 支持平台 / Platforms
 
-            - Windows x86_64
+            - Windows x86_64 / arm64
             - Linux x86_64 / arm64
-            - macOS arm64
+            - macOS x86_64 / arm64
 
             ### 主要功能 / Features
 
