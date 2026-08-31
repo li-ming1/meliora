@@ -14,13 +14,14 @@ on:
 permissions:
   contents: write
 
+# 平台过滤表达式：tag 全量；workflow_dispatch 按 inputs.platforms 子串匹配 matrix.name
+x-platform-filter: &platform_filter ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-    # tag 推送全量构建；手动触发时按 inputs.platforms 过滤矩阵
-    if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
     strategy:
       fail-fast: false
       matrix:
@@ -70,13 +71,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release
+        if: *platform_filter
         env:
           # fdk-aac-sys 在 Windows ARM64 编译需要 __x86__ 宏 hack（与本地 .cargo/config.toml 一致）
           CFLAGS_aarch64_pc_windows_msvc: ${{ matrix.cflags }}
         run: cargo build --release --locked --target ${{ matrix.target }} --features kugou,netease
 
       - name: Package Windows (zip)
-        if: runner.os == 'Windows'
+        if: ${{ runner.os == 'Windows' && *platform_filter }}
         shell: pwsh
         run: |
           STAGE = "dist/meliora-${{ matrix.name }}"
@@ -86,7 +88,7 @@ jobs:
           Compress-Archive -Path "$STAGE/*" -DestinationPath "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.zip"
 
       - name: Package macOS (.app tar.gz)
-        if: runner.os == 'macOS'
+        if: ${{ runner.os == 'macOS' && *platform_filter }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
@@ -113,7 +115,7 @@ jobs:
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" "Meliora.app"
 
       - name: Package Linux (tar.gz)
-        if: runner.os == 'Linux'
+        if: ${{ runner.os == 'Linux' && *platform_filter }}
         run: |
           set -euo pipefail
           STAGE="dist/meliora-${{ matrix.name }}"
@@ -123,6 +125,7 @@ jobs:
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" .
 
       - name: Upload artifact
+        if: *platform_filter
         uses: actions/upload-artifact@v4
         with:
           name: meliora-${{ github.ref_name }}-${{ matrix.name }}
