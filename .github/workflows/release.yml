@@ -78,7 +78,7 @@ jobs:
         if: ${{ runner.os == 'Windows' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         shell: pwsh
         run: |
-          STAGE = "dist/meliora-${{ matrix.name }}"
+          $STAGE = "dist/meliora-${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path $STAGE | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$STAGE/"
           Copy-Item README.md, LICENSE "$STAGE/"
