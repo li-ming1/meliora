@@ -11,7 +11,6 @@ use super::{
 
 const ISSUES_URL: &str = "https://github.com/li-ming1/meliora/issues";
 const SOURCE_URL: &str = "https://github.com/li-ming1/meliora";
-const WEBSITE_URL: &str = "https://github.com/li-ming1/meliora";
 const LICENSE_URL: &str = "https://choosealicense.com/licenses/apache-2.0/";
 
 fn link_label(
@@ -105,19 +104,6 @@ impl RenderOnce for AboutDialog {
                                                 link_color,
                                                 tr!("ABOUT_LINKS_CODE", "view the source code"),
                                             ))
-                                            .child(tr!("ABOUT_LINKS_END", " on Codeberg.")),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .child(tr!("ABOUT_COMMUNITY_BEFORE_LINKS", "\u{200B}"))
-                                            .child(link_label(
-                                                "about-website-link",
-                                                WEBSITE_URL,
-                                                link_color,
-                                                tr!("ABOUT_COMMUNITY_WEBSITE", "Visit our website"),
-                                            ))
-                                            .child(tr!("ABOUT_COMMUNITY_END", ".")),
                                     )
                                     .child(div().mt(px(10.0)).child(tr!(
                                         "ABOUT_COPYRIGHT",
