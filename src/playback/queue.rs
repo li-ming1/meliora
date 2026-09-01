@@ -36,6 +36,21 @@ pub struct QueueItemData {
     /// lost across a restart unless persisted explicitly alongside the path.
     /// Written on queue-mutation and restored into the UI data on load.
     persisted_ui: Option<PersistedQueueUIData>,
+    /// Online-provider identity, persisted so a queue item whose signed stream
+    /// URL expired while the app was off can re-fetch a fresh one on restore.
+    #[cfg(feature = "online_sources")]
+    online_identity: Option<OnlineIdentity>,
+}
+
+/// Identifies which online service an HTTP queue item came from, enough to
+/// re-fetch a fresh (non-expired) stream URL for it after a restart.
+#[cfg(feature = "online_sources")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum OnlineIdentity {
+    /// KuGou: `song_url(hash, mix_song_id, album_id, quality, free_part)`.
+    Kugou { hash: String, mix_song_id: i64, album_id: i64 },
+    /// NetEase: `song_url(id, level)`.
+    Netease { id: i64 },
 }
 
 /// Serde-friendly copy of the display metadata that must survive a restart
@@ -54,12 +69,17 @@ impl serde::Serialize for QueueItemData {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("QueueItemData", 5)?;
+        let mut state = serializer.serialize_struct(
+            "QueueItemData",
+            5 + usize::from(cfg!(feature = "online_sources")),
+        )?;
         state.serialize_field("db_id", &self.db_id)?;
         state.serialize_field("db_album_id", &self.db_album_id)?;
         state.serialize_field("path", &self.path)?;
         state.serialize_field("persisted_ui", &self.persisted_ui)?;
         state.serialize_field("duration", &self.known_duration())?;
+        #[cfg(feature = "online_sources")]
+        state.serialize_field("online_identity", &self.online_identity)?;
         state.end()
     }
 }
@@ -80,6 +100,9 @@ impl<'de> serde::Deserialize<'de> for QueueItemData {
             persisted_ui: Option<PersistedQueueUIData>,
             #[serde(default)]
             duration: Option<i64>,
+            #[cfg(feature = "online_sources")]
+            #[serde(default)]
+            online_identity: Option<OnlineIdentity>,
         }
 
         let raw = QueueItemDataRaw::deserialize(deserializer)?;
@@ -97,6 +120,8 @@ impl<'de> serde::Deserialize<'de> for QueueItemData {
             duration: Arc::new(AtomicI64::new(
                 persisted_duration.unwrap_or(UNKNOWN_DURATION),
             )),
+            #[cfg(feature = "online_sources")]
+            online_identity: raw.online_identity,
         })
     }
 }
@@ -164,6 +189,8 @@ impl QueueItemData {
             data: Arc::new(RwLock::new(Some(cx.new(|_| None)))),
             persisted_ui: None,
             duration: Arc::new(AtomicI64::new(UNKNOWN_DURATION)),
+            #[cfg(feature = "online_sources")]
+            online_identity: None,
         }
     }
 
@@ -183,7 +210,37 @@ impl QueueItemData {
             data: Arc::new(RwLock::new(Some(cx.new(|_| Some(ui_data))))),
             persisted_ui,
             duration,
+            online_identity: None,
         }
+    }
+
+    /// Attaches the online-provider identity so an expired stream URL can be
+    /// re-fetched later (e.g. on a session restore).
+    #[cfg(feature = "online_sources")]
+    pub fn with_online_identity(mut self, identity: OnlineIdentity) -> Self {
+        self.online_identity = Some(identity);
+        self
+    }
+
+    /// The online-provider identity, if this item is an HTTP stream.
+    #[cfg(feature = "online_sources")]
+    pub fn online_identity(&self) -> Option<&OnlineIdentity> {
+        self.online_identity.as_ref()
+    }
+
+    /// Display metadata persisted with the item: (name, artist, duration, cover).
+    #[cfg(feature = "online_sources")]
+    pub fn persisted_display(
+        &self,
+    ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
+        self.persisted_ui.as_ref().map(|p| {
+            (
+                p.name.clone(),
+                p.artist_name.clone(),
+                p.duration,
+                p.cover_url.clone(),
+            )
+        })
     }
 
     /// Length in seconds once it is known, `None` while metadata is still

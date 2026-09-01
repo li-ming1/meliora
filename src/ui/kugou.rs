@@ -31,7 +31,7 @@ use smallvec::SmallVec;
 
 use crate::{
     kugou,
-    playback::queue::{DataSource, QueueItemData, QueueItemUIData},
+    playback::queue::{DataSource, OnlineIdentity, QueueItemData, QueueItemUIData},
     settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
     ui::{
@@ -618,17 +618,20 @@ enum PlayIntent {
     Queue,
 }
 
-/// Fetches a playable URL for `track` at the requested `quality`, falling
-/// back to the standard 128 kbps clip when the higher tier is unavailable
-/// (e.g. no VIP). Returns `None` when no playable URL comes back at all.
-async fn fetch_play_url(
+/// Fetches a playable URL for a KuGou track at the requested `quality`,
+/// falling back to the standard 128 kbps clip when the higher tier is
+/// unavailable (e.g. no VIP). Returns `None` when no playable URL comes back
+/// at all. Shared by live playback and the session-restore URL refresh.
+pub async fn fetch_stream_url(
     client: &kugou::KugouClient,
-    track: &KugouTrackInfo,
+    hash: &str,
+    mix_song_id: i64,
+    album_id: i64,
     quality: &str,
 ) -> Option<String> {
     let free_part = !client.has_active_vip();
     if let Ok(resp) = client
-        .song_url(&track.hash, track.mix_song_id, track.album_id, quality, free_part)
+        .song_url(hash, mix_song_id, album_id, quality, free_part)
         .await
         && let Some(url) = extract_song_url(&resp.body)
     {
@@ -636,7 +639,7 @@ async fn fetch_play_url(
     }
     if quality != "128" {
         let Ok(resp) = client
-            .song_url(&track.hash, track.mix_song_id, track.album_id, "128", free_part)
+            .song_url(hash, mix_song_id, album_id, "128", free_part)
             .await
         else {
             return None;
@@ -644,6 +647,30 @@ async fn fetch_play_url(
         return extract_song_url(&resp.body);
     }
     None
+}
+
+async fn fetch_play_url(
+    client: &kugou::KugouClient,
+    track: &KugouTrackInfo,
+    quality: &str,
+) -> Option<String> {
+    fetch_stream_url(
+        client,
+        &track.hash,
+        track.mix_song_id,
+        track.album_id,
+        quality,
+    )
+    .await
+}
+
+/// Mix-song ids whose play-URL fetch is currently in flight. Concurrent
+/// clicks on the same song coalesce into the first fetch so the track can't
+/// be queued twice while the (slow) URL request is still outstanding.
+static PENDING_FETCHES: OnceLock<RwLock<HashSet<i64>>> = OnceLock::new();
+
+fn pending_fetches() -> &'static RwLock<HashSet<i64>> {
+    PENDING_FETCHES.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
 fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
@@ -662,6 +689,17 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
         .to_string();
     let track = track.clone();
     cx.spawn(async move |cx| {
+        // Coalesce concurrent clicks on the same song: only the first click
+        // fetches and queues; later clicks in the same window are dropped so
+        // a double-click can't enqueue the track twice.
+        if !pending_fetches()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(track.mix_song_id)
+        {
+            return;
+        }
+
         let client = kugou::shared_client();
         let fetch_track = track.clone();
         let request = crate::RUNTIME
@@ -669,6 +707,10 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
             .await;
 
         let Some(url) = request.ok().flatten() else {
+            pending_fetches()
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&track.mix_song_id);
             tracing::warn!(hash = %track.hash, "kugou play_track: no playable URL in response");
             emit_toast(Toast::warning(tr!(
                 "KUGOU_NO_URL",
@@ -721,6 +763,11 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
                 PlayIntent::Queue => queue_item(cx, item),
             }
         });
+
+        pending_fetches()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&track.mix_song_id);
     })
     .detach();
 }
@@ -743,6 +790,11 @@ fn online_queue_item(cx: &mut App, url: String, track: &KugouTrackInfo) -> Queue
             cover_url: (!track.cover_url.is_empty()).then(|| track.cover_url.clone()),
         },
     )
+    .with_online_identity(OnlineIdentity::Kugou {
+        hash: track.hash.clone(),
+        mix_song_id: track.mix_song_id,
+        album_id: track.album_id,
+    })
 }
 
 /// Adds `track` to the KuGou "liked songs" playlist (listid 2) and toasts

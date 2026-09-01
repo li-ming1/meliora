@@ -32,7 +32,8 @@ use serde_json::Value;
 use smallvec::SmallVec;
 
 use crate::{
-    playback::queue::{DataSource, QueueItemData, QueueItemUIData},
+    netease,
+    playback::queue::{DataSource, OnlineIdentity, QueueItemData, QueueItemUIData},
     settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
     ui::{
@@ -407,13 +408,14 @@ enum PlayIntent {
     Queue,
 }
 
-/// Playable URL for `track` at the requested level, falling back to standard
-/// when the higher tier is unavailable. Trial clips are accepted for playback
-/// (that is what a non-VIP account gets for VIP songs, same as the web
-/// player); downloads reject them.
-async fn fetch_play_url(
-    client: &crate::netease::NeteaseClient,
-    track: &NeteaseTrackInfo,
+/// Playable URL for one NetEase song at the requested level, falling back to
+/// standard when the higher tier is unavailable. Trial clips are accepted for
+/// playback (that is what a non-VIP account gets for VIP songs, same as the
+/// web player); downloads reject them. Shared by live playback and the
+/// session-restore URL refresh.
+pub async fn fetch_stream_url(
+    client: &netease::NeteaseClient,
+    id: i64,
     quality: &str,
 ) -> Option<String> {
     let levels: [&str; 2] = if quality == "standard" {
@@ -422,13 +424,57 @@ async fn fetch_play_url(
         [quality, "standard"]
     };
     for &level in levels.iter().filter(|l| !l.is_empty()) {
-        if let Ok(resp) = client.song_url(track.id, level).await
+        if let Ok(resp) = client.song_url(id, level).await
             && let Some((url, _trial)) = extract_song_url(&resp.body)
         {
             return Some(url);
         }
     }
     None
+}
+
+async fn fetch_play_url(
+    client: &netease::NeteaseClient,
+    track: &NeteaseTrackInfo,
+    quality: &str,
+) -> Option<String> {
+    fetch_stream_url(client, track.id, quality).await
+}
+
+/// Re-fetches a fresh play URL for a restored NetEase queue item and
+/// re-records the new URL in the stream registry, so lyrics / like resolution
+/// for the running stream keeps working after the signed URL expired.
+pub async fn refresh_restored_url(
+    id: i64,
+    quality: &str,
+    name: Option<String>,
+    artist: Option<String>,
+    duration: Option<i64>,
+    cover_url: Option<String>,
+) -> Option<String> {
+    let client = netease::shared_client();
+    let url = fetch_stream_url(&client, id, quality).await?;
+    let track = NeteaseTrackInfo {
+        title: SharedString::from(name.unwrap_or_default()),
+        artist: SharedString::from(artist.unwrap_or_default()),
+        album: SharedString::default(),
+        duration: duration.unwrap_or(0),
+        id,
+        album_id: 0,
+        fee: 0,
+        cover_url: SharedString::from(cover_url.unwrap_or_default()),
+    };
+    remember_online_track(url.clone(), track);
+    Some(url)
+}
+
+/// Song ids whose play-URL fetch is currently in flight. Concurrent clicks on
+/// the same song coalesce into the first fetch so the track can't be queued
+/// twice while the (slow) URL request is still outstanding.
+static PENDING_FETCHES: OnceLock<RwLock<HashSet<i64>>> = OnceLock::new();
+
+fn pending_fetches() -> &'static RwLock<HashSet<i64>> {
+    PENDING_FETCHES.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
 fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
@@ -443,6 +489,17 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
         .to_string();
     let track = track.clone();
     cx.spawn(async move |cx| {
+        // Coalesce concurrent clicks on the same song: only the first click
+        // fetches and queues; later clicks in the same window are dropped so
+        // a double-click can't enqueue the track twice.
+        if !pending_fetches()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(track.id)
+        {
+            return;
+        }
+
         let client = crate::netease::shared_client();
         let fetch_track = track.clone();
         let request = crate::RUNTIME
@@ -450,6 +507,10 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
             .await;
 
         let Some(url) = request.ok().flatten() else {
+            pending_fetches()
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&track.id);
             tracing::warn!(id = track.id, "netease play_track: no playable URL in response");
             emit_toast(Toast::warning(tr!(
                 "NETEASE_NO_URL",
@@ -497,6 +558,11 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
                 PlayIntent::Queue => queue_item(cx, item),
             }
         });
+
+        pending_fetches()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&track.id);
     })
     .detach();
 }
@@ -524,6 +590,7 @@ fn online_queue_item(cx: &mut App, url: String, track: &NeteaseTrackInfo) -> Que
             cover_url: (!track.cover_url.is_empty()).then(|| track.cover_url.clone()),
         },
     )
+    .with_online_identity(OnlineIdentity::Netease { id: track.id })
 }
 
 // ---------------------------------------------------------------------------

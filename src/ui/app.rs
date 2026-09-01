@@ -484,6 +484,12 @@ pub fn run() -> anyhow::Result<()> {
             initial_repeat,
         );
 
+        // Revive restored online queue items whose signed stream URL expired
+        // while the app was off: re-fetch a fresh URL in the background and
+        // keep the current track / info section keyed on the fresh URL.
+        #[cfg(feature = "online_sources")]
+        refresh_restored_online_urls(cx, &queue, &playback_settings);
+
         super::keymap::load_default_keymap(cx);
 
         cx.set_global(modal::ModalActive(AtomicBool::new(false)));
@@ -611,6 +617,133 @@ pub fn run() -> anyhow::Result<()> {
     });
 
     Ok(())
+}
+
+/// Restored online queue items carry signed stream URLs that expire while the
+/// app is off; re-fetch a fresh URL for each one so a long-idle session still
+/// plays. If the refreshed item is the one currently playing, the current
+/// track path is updated in lockstep so the info section (cover/name/artist)
+/// stays keyed on the fresh URL. Network calls hop onto the Tokio runtime.
+#[cfg(feature = "online_sources")]
+fn refresh_restored_online_urls(
+    cx: &mut App,
+    queue: &Arc<RwLock<Vec<QueueItemData>>>,
+    playback: &crate::settings::playback::PlaybackSettings,
+) {
+    use crate::playback::queue::OnlineIdentity;
+
+    let stale: Vec<(usize, OnlineIdentity)> = queue
+        .read()
+        .expect("poisoned queue")
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| {
+            crate::media::is_http_path(item.get_path())
+                .then(|| item.online_identity().cloned())
+                .flatten()
+                .map(|identity| (idx, identity))
+        })
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+
+    // Owned so the spawned task outlives this scope; `as_str` is feature-gated.
+    #[cfg(feature = "kugou")]
+    let kugou_quality = playback.online_quality.as_str().to_string();
+    #[cfg(feature = "netease")]
+    let netease_quality = playback.netease_quality.as_str().to_string();
+
+    let queue = Arc::clone(queue);
+    let current_track = cx.global::<PlaybackInfo>().current_track.clone();
+    let current_track_path = current_track
+        .read(cx)
+        .as_ref()
+        .map(|track| track.get_path().clone());
+
+    cx.spawn(async move |cx| {
+        for (idx, identity) in stale {
+            let display = queue
+                .read()
+                .expect("poisoned queue")
+                .get(idx)
+                .and_then(|item| item.persisted_display());
+
+            let url = match &identity {
+                #[cfg(feature = "kugou")]
+                OnlineIdentity::Kugou { hash, mix_song_id, album_id } => {
+                    let client = crate::kugou::shared_client();
+                    let hash = hash.clone();
+                    let mix_song_id = *mix_song_id;
+                    let album_id = *album_id;
+                    let kugou_quality = kugou_quality.clone();
+                    crate::RUNTIME
+                        .spawn(async move {
+                            crate::ui::kugou::fetch_stream_url(
+                                &client,
+                                &hash,
+                                mix_song_id,
+                                album_id,
+                                &kugou_quality,
+                            )
+                            .await
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                #[cfg(feature = "netease")]
+                OnlineIdentity::Netease { id } => {
+                    let (name, artist, duration, cover) =
+                        display.unwrap_or((None, None, None, None));
+                    let id = *id;
+                    let netease_quality = netease_quality.clone();
+                    crate::RUNTIME
+                        .spawn(async move {
+                            crate::ui::netease::refresh_restored_url(
+                                id,
+                                &netease_quality,
+                                name,
+                                artist,
+                                duration,
+                                cover,
+                            )
+                            .await
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                #[allow(unreachable_patterns)]
+                _ => None,
+            };
+
+            let Some(url) = url else { continue };
+
+            let was_current = {
+                let Ok(mut guard) = queue.write() else { continue };
+                let Some(item) = guard.get_mut(idx) else { continue };
+                // the queue may have shifted since the snapshot; never clobber
+                // a different item
+                if item.online_identity() != Some(&identity) {
+                    continue;
+                }
+                let was_current = current_track_path
+                    .as_ref()
+                    .is_some_and(|path| path == item.get_path());
+                item.replace_path(PathBuf::from(url.clone()));
+                was_current
+            };
+
+            if was_current {
+                current_track.update(cx, |track, cx| {
+                    *track = Some(CurrentTrack::new(PathBuf::from(url)));
+                    cx.notify();
+                });
+            }
+        }
+    })
+    .detach();
 }
 
 #[derive(Parser, Debug)]
