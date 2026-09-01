@@ -127,14 +127,13 @@ impl Drop for TestDir {
 }
 
 /// Registers the built-in media providers exactly once per test process.
-///
-/// Must NOT be called from inside a `#[tokio::test]` — `add_provider` uses
-/// `blocking_write` on a tokio `RwLock`, which panics inside a runtime.
 pub(crate) fn register_test_media_providers() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        lookup_table::add_provider(Box::new(lofty::LoftyProvider));
-        lookup_table::add_provider(Box::new(symphonia::SymphoniaProvider));
+        lookup_table::register_providers(vec![
+            Box::new(lofty::LoftyProvider),
+            Box::new(symphonia::SymphoniaProvider),
+        ]);
     });
 }
 

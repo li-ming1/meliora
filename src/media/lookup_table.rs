@@ -1,28 +1,26 @@
 use std::{
     fs::File,
     path::Path,
-    sync::{Arc, LazyLock},
+    sync::OnceLock,
 };
 
-// use tokio rwlock because it is write-preferring
-use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::media::traits::{MediaProvider, MediaProviderFeatures, MediaStream};
 
-type LookupTableInnerType = Arc<RwLock<Vec<Box<dyn MediaProvider>>>>;
+static PROVIDERS: OnceLock<Vec<Box<dyn MediaProvider>>> = OnceLock::new();
 
-pub static LOOKUP_TABLE: LazyLock<LookupTableInnerType> =
-    LazyLock::new(|| Arc::new(RwLock::new(Vec::new())));
+/// Registers the media providers. Called once at startup before any reads.
+pub fn register_providers(providers: Vec<Box<dyn MediaProvider>>) {
+    info!("Registering {} media provider(s)", providers.len());
+    match PROVIDERS.set(providers) {
+        Ok(()) => {}
+        Err(_) => panic!("media providers registered twice"),
+    }
+}
 
-pub fn add_provider(provider: Box<dyn MediaProvider>) {
-    info!(
-        "Attempting to register media provider \"{}\"",
-        provider.name()
-    );
-
-    let mut write = LOOKUP_TABLE.blocking_write();
-    write.push(provider);
+fn providers() -> &'static [Box<dyn MediaProvider>] {
+    PROVIDERS.get().expect("media providers not registered")
 }
 
 #[allow(clippy::borrowed_box)]
@@ -46,8 +44,7 @@ fn provider_can_read(
 }
 
 pub fn can_be_read(path: &Path, required_features: MediaProviderFeatures) -> anyhow::Result<bool> {
-    let read = LOOKUP_TABLE.blocking_read();
-    for provider in read.iter() {
+    for provider in providers() {
         if provider_can_read(path, required_features, provider)? {
             return Ok(true);
         }
@@ -60,10 +57,9 @@ pub fn try_open_media(
     path: &Path,
     required_features: MediaProviderFeatures,
 ) -> anyhow::Result<Option<Box<dyn MediaStream>>> {
-    let read = LOOKUP_TABLE.blocking_read();
     let mut last_error = None;
 
-    for provider in read.iter() {
+    for provider in providers() {
         if provider_can_read(path, required_features, provider)? {
             let file = File::open(path)?;
             match provider.open(file, path.extension()) {

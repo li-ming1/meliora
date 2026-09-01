@@ -330,7 +330,7 @@ pub struct ChannelMixer {
     in_frame: Vec<f64>,
     out_frame: Vec<f64>,
     // needed for testing only
-    #[allow(dead_code)]
+    #[cfg(test)]
     out_channels: usize,
 }
 
@@ -350,6 +350,7 @@ impl ChannelMixer {
         Self {
             matrix,
             in_channels,
+            #[cfg(test)]
             out_channels,
             output_planes: (0..out_channels).map(|_| Vec::new()).collect(),
             in_frame: vec![0.0; in_channels],

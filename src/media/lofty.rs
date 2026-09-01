@@ -407,10 +407,6 @@ impl MediaProvider for LoftyProvider {
     fn supported_features(&self) -> MediaProviderFeatures {
         MediaProviderFeatures::ALLOWS_INDEXING | MediaProviderFeatures::PROVIDES_METADATA
     }
-
-    fn name(&self) -> &str {
-        "Lofty"
-    }
 }
 
 impl MediaStream for LoftyStream {

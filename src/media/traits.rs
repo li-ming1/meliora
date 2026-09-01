@@ -45,9 +45,6 @@ pub trait MediaProvider: Send + Sync {
     /// Returns a list of media provider feature bitflags that the plugin supports.
     /// See `MediaProviderFeatures` for more information.
     fn supported_features(&self) -> MediaProviderFeatures;
-
-    /// Returns the provider's name.
-    fn name(&self) -> &str;
 }
 
 /// The MediaStream trait defines the methods used to interact with an open media stream. A media

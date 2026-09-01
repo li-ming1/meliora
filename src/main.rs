@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use crate::media::{
     lofty::LoftyProvider,
-    lookup_table::add_provider,
+    lookup_table::register_providers,
     symphonia::SymphoniaProvider,
 };
 
@@ -79,8 +79,10 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!("version {VERSION_STRING}");
 
-    add_provider(Box::new(LoftyProvider));
-    add_provider(Box::new(SymphoniaProvider));
+    register_providers(vec![
+        Box::new(LoftyProvider),
+        Box::new(SymphoniaProvider),
+    ]);
 
     crate::ui::app::run()
 }

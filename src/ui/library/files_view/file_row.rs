@@ -54,6 +54,9 @@ pub struct FileRowItem {
     is_file_available: bool,
     show_add_to: Entity<bool>,
     add_to: Option<Entity<AddToPlaylist>>,
+    /// Stable element-id hash for the row context menu; the path never
+    /// changes for a row view's lifetime.
+    path_hash: usize,
 }
 
 fn path_hash(path: &Path) -> usize {
@@ -79,6 +82,7 @@ impl FileRowItem {
             });
 
             let is_file_available = is_track_path_available(&flat_row.path);
+            let path_hash = path_hash(&flat_row.path);
 
             if flat_row.is_audio {
                 let current_track = cx.global::<PlaybackInfo>().current_track.clone();
@@ -93,6 +97,7 @@ impl FileRowItem {
                 is_file_available,
                 show_add_to: cx.new(|_| false),
                 add_to: None,
+                path_hash,
             }
         })
     }
@@ -297,7 +302,7 @@ impl Render for FileRowItem {
             .interface
             .two_column_library;
 
-        let hash_id = path_hash(&path);
+        let hash_id = self.path_hash;
         let context_id = ElementId::named_usize("fctx", hash_id);
 
         let batch_items: Option<BatchItems> = {

@@ -371,10 +371,6 @@ impl MediaProvider for SymphoniaProvider {
             | MediaProviderFeatures::PROVIDES_DECODER
             | MediaProviderFeatures::PROVIDES_METADATA
     }
-
-    fn name(&self) -> &str {
-        "Symphonia"
-    }
 }
 
 impl MediaStream for SymphoniaStream {

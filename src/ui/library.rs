@@ -506,10 +506,6 @@ impl Library {
             // resizable queue/lyrics panel, and the two-column split)
             let queue_width = cx.global::<Models>().queue_width.clone();
             cx.observe(&queue_width, |_, _, cx| cx.notify()).detach();
-            let split_widths: Vec<_> = cx.global::<Models>().split_widths.values().cloned().collect();
-            for split_width in split_widths {
-                cx.observe(&split_width, |_, _, cx| cx.notify()).detach();
-            }
 
             cx.subscribe(
                 &switcher_model,

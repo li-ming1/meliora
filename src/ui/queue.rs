@@ -139,6 +139,9 @@ pub struct QueueItem {
     /// Computed once at view construction: a per-frame `path.exists()` stat
     /// for every visible row is far too expensive.
     is_available: bool,
+    /// Formatted duration text, rebuilt only when the item's duration changes.
+    duration_text: Option<SharedString>,
+    cached_duration: Option<i64>,
 }
 
 impl HasLikedState for QueueItem {
@@ -214,6 +217,8 @@ impl QueueItem {
                 track_id,
                 is_liked,
                 is_available,
+                duration_text: None,
+                cached_duration: None,
             }
         })
     }
@@ -234,6 +239,17 @@ impl Render for QueueItem {
         let is_selected = self.selection.read(cx).contains(self.idx);
 
         if let Some(item) = ui_data.as_ref() {
+            // Rebuild the duration text only when the item's duration changes.
+            let duration_text = if self.cached_duration == item.duration {
+                self.duration_text.clone()
+            } else {
+                let text = item
+                    .duration
+                    .map(|d| SharedString::from(crate::ui::util::format_duration_compact(d)));
+                self.cached_duration = item.duration;
+                self.duration_text = text.clone();
+                text
+            };
             let scrollbar_always_visible = {
                 let settings = cx.global::<SettingsGlobal>();
                 let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
@@ -459,14 +475,14 @@ impl Render for QueueItem {
                                                     || tr!("UNKNOWN_ARTIST").into(),
                                                 )),
                                         )
-                                        .when_some(item.duration, |child, duration| {
+                                        .when_some(duration_text, |child, text| {
                                             child.child(
                                                 div()
                                                     .flex_shrink_0()
                                                     .ml(px(6.0))
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .text_color(theme.text_secondary)
-                                                    .child(crate::ui::util::format_duration_compact(duration)),
+                                                    .child(text),
                                             )
                                         }),
                                 ),
