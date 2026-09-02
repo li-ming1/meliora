@@ -5,7 +5,10 @@ mod mpris;
 #[cfg(target_os = "windows")]
 mod windows;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use gpui::{App, Global, Window};
@@ -89,7 +92,7 @@ impl Global for PbcHandle {}
 #[derive(derive_more::Debug)]
 enum PbcEvent {
     MetadataChanged(#[debug(skip)] Box<Metadata>),
-    AlbumArtChanged(#[debug(skip)] Box<[u8]>),
+    AlbumArtChanged(#[debug(skip)] Arc<[u8]>),
     PositionChanged(u64),
     DurationChanged(u64),
     NewFile(PathBuf),
@@ -151,7 +154,6 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
 
     cx.subscribe(&albumart, |_, ImageEvent(img), cx| {
         let PbcHandle(tx, _) = cx.global();
-        // FIXME: this is really way too expensive
         if let Err(err) = tx.send(PbcEvent::AlbumArtChanged(img.clone())) {
             error!(msg = ?err.0, "failed to send pbc event: {err}");
         }

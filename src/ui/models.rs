@@ -39,7 +39,7 @@ use crate::{
 impl EventEmitter<Metadata> for Metadata {}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct ImageEvent(pub Box<[u8]>);
+pub struct ImageEvent(pub Arc<[u8]>);
 
 impl EventEmitter<ImageEvent> for Option<Arc<RenderImage>> {}
 

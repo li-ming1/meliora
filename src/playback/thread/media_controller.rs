@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tracing::info;
 
@@ -18,7 +21,7 @@ use crate::{
 
 pub struct CompleteMetadata {
     pub metadata: Box<Metadata>,
-    pub album_art: Option<Box<[u8]>>,
+    pub album_art: Option<Arc<[u8]>>,
 }
 
 /// Controller for media stream management.
@@ -152,7 +155,7 @@ impl MediaController {
         {
             metadata.fill_from_filename(path);
         }
-        let image = stream.read_image().ok().flatten();
+        let image = stream.read_image().ok().flatten().map(Arc::from);
 
         Some(CompleteMetadata {
             metadata: Box::new(metadata),

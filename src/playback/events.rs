@@ -7,7 +7,7 @@ use crate::{
 };
 
 use super::{queue::QueueItemData, thread::PlaybackState};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum RepeatState {
@@ -121,8 +121,8 @@ pub enum PlaybackEvent {
     /// interface. The Metadata is boxed to avoid enum size bloat.
     MetadataUpdate(Box<Metadata>),
     /// Indicates that the MediaProvider has provided a new album art image to be consumed by the
-    /// user interface.
-    AlbumArtUpdate(Option<Box<[u8]>>),
+    /// user interface. `Arc` so the bytes are shared across models without a copy per handler.
+    AlbumArtUpdate(Option<Arc<[u8]>>),
     /// Indicates that the position in the current file has changed, in milliseconds.
     PositionChanged(u64),
     /// Notification for when shuffling is disabled or enabled by the thread.

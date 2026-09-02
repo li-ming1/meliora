@@ -15,10 +15,10 @@ pub const UNKNOWN_DURATION: i64 = i64::MIN;
 
 #[derive(Clone, Debug)]
 pub struct QueueItemData {
-    // this is like this because this entity existing is important and it needs to be sent across
-    // copies
-    //
-    // TODO: make this less sucky
+    // hardcore: three layers are all required — `Arc` shares one entity slot
+    // across every clone of this item (the entity is only creatable on the UI
+    // thread), `RwLock` for lazy creation + `drop_data` reset, `Option` marks
+    // "entity not created yet" after deserialization.
     /// The UI data associated with the queue item.
     data: Arc<RwLock<Option<Entity<Option<QueueItemUIData>>>>>,
     /// The database ID of track the item is from, if it exists.
