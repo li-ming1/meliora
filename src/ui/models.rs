@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -62,6 +63,10 @@ pub struct Models {
     pub metadata: Entity<Metadata>,
     pub albumart: Entity<Option<Arc<RenderImage>>>,
     pub albumart_original: Entity<Option<Arc<RenderImage>>>,
+    /// Cached id set of the "Liked Songs" playlist, loaded once at startup
+    /// and re-loaded whenever that playlist changes. Lets track rows check
+    /// like state without one DB query per row.
+    pub liked_ids: Entity<Option<Arc<HashSet<i64>>>>,
     pub queue: Entity<Queue>,
     pub scan_state: Entity<ScanEvent>,
     pub settings_health: Entity<SettingsHealth>,
@@ -190,6 +195,8 @@ pub fn build_models(
 
     let playlist_tracker: Entity<PlaylistInfoTransfer> = cx.new(|_| PlaylistInfoTransfer);
 
+    let liked_ids: Entity<Option<Arc<HashSet<i64>>>> = cx.new(|_| None);
+
     let startup_view = resolve_startup_view(
         cx,
         cx.global::<SettingsGlobal>()
@@ -269,6 +276,7 @@ pub fn build_models(
         metadata,
         albumart,
         albumart_original,
+        liked_ids,
         queue,
         scan_state,
         settings_health,
@@ -291,6 +299,18 @@ pub fn build_models(
         controls_right_width,
         window_information,
     });
+
+    // Populate the liked-songs id set once at startup (Models is registered
+    // above), then again whenever the liked playlist changes — all like /
+    // unlike paths emit PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID).
+    reload_liked_ids(cx);
+    let tracker = cx.global::<Models>().playlist_tracker.clone();
+    cx.subscribe(&tracker, |_, ev, cx| {
+        if *ev == PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID) {
+            reload_liked_ids(cx);
+        }
+    })
+    .detach();
 
     let position: Entity<u64> = cx.new(|_| 0);
     let duration: Entity<u64> = cx.new(|_| 0);
@@ -513,4 +533,48 @@ pub(crate) fn subscribe_liked_updates<E>(
         }
     })
     .detach();
+}
+
+/// (Re)loads the liked-songs track-id set into `Models.liked_ids` on the
+/// async runtime. Called once at startup and on every liked-playlist change,
+/// so track rows can test like state against the cached set instead of one
+/// DB query per row. Best-effort: a failed load leaves the set unchanged.
+pub(crate) fn reload_liked_ids(cx: &mut App) {
+    let pool = cx.global::<Pool>().0.clone();
+    let liked_ids = cx.global::<Models>().liked_ids.clone();
+    cx.spawn(async move |cx| {
+        let ids = crate::RUNTIME
+            .spawn(async move {
+                const QUERY: &str = "SELECT track_id FROM playlist_item WHERE playlist_id = ?";
+                sqlx::query_as::<_, (i64,)>(QUERY)
+                    .bind(LIKED_SONGS_PLAYLIST_ID)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id,)| id)
+                    .collect::<HashSet<i64>>()
+            })
+            .await
+            .unwrap_or_default();
+        liked_ids.update(cx, |set, cx| {
+            *set = Some(Arc::new(ids));
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Like-state of `track_id` against the cached set, falling back to a DB
+/// lookup only until the first reload lands. Mirrors `playlist_has_track`'s
+/// `Option<i64>` shape so it can replace row-construction queries directly.
+pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
+    let cached = cx.global::<Models>().liked_ids.read(cx).clone();
+    cached
+        .and_then(|set| set.contains(&track_id).then_some(track_id))
+        .or_else(|| {
+            cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track_id)
+                .ok()
+                .flatten()
+        })
 }

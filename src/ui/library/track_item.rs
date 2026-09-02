@@ -11,11 +11,11 @@ use crate::ui::components::icons::{STAR, STAR_FILLED, icon};
 use crate::ui::library::context_menus::play_track_next;
 use crate::ui::library::context_menus::track::TrackContextMenu;
 use crate::ui::models::{
-    HasLikedState, LIKED_SONGS_PLAYLIST_ID, subscribe_liked_updates, toggle_like,
+    HasLikedState, subscribe_liked_updates, toggle_like,
 };
 use crate::ui::util::format_duration;
 
-use crate::library::{db::LibraryAccess, types::{DBString, Track}};
+use crate::library::types::{DBString, Track};
 use crate::ui::{
     availability::is_track_available,
     components::context::context,
@@ -116,9 +116,7 @@ impl TrackItem {
                 drag_title,
                 track_number_label,
                 duration_text,
-                is_liked: cx
-                    .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
-                    .unwrap_or_default(),
+                is_liked: crate::ui::models::is_song_liked(&**cx, track.id),
                 album_art: Some(match track.album_id {
                     Some(album_id) => format!("!db://album/{album_id}/thumb").into(),
                     None => format!("!db://track/{}/thumb", track.id).into(),
