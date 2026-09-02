@@ -225,14 +225,10 @@ fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSect
 
     let Some(item) = item else { return };
 
-    if this
-        .current_track_path
-        .as_ref()
-        .is_none_or(|path| path != item.get_path())
-    {
-        return;
-    }
-
+    // The queue position is the single source of truth for "what is playing";
+    // keying off `current_track_path` here breaks cover art whenever the path
+    // lags the queue (e.g. an online URL refreshed after a session restore),
+    // leaving the info-section thumbnail blank while the queue item shows art.
     let data = item.get_data(cx);
     this.queue_item_data = Some(data.clone());
 
@@ -443,10 +439,9 @@ impl Render for InfoSection {
             .as_ref()
             .map(|track| ManagedImageKey::Track(track.id))
             .or_else(|| {
-                // online (KuGou) tracks have no library track; reuse the
-                // current queue item's stored cover_url, exactly as the queue
-                // thumbnails do
-                #[cfg(feature = "kugou")]
+                // Online tracks have no library track; reuse the current queue
+                // item's stored cover_url, exactly as the queue thumbnails do.
+                #[cfg(feature = "online_sources")]
                 {
                     self.queue_item_data
                         .as_ref()
@@ -457,7 +452,7 @@ impl Render for InfoSection {
                                 .map(ManagedImageKey::HttpCover)
                         })
                 }
-                #[cfg(not(feature = "kugou"))]
+                #[cfg(not(feature = "online_sources"))]
                 {
                     None
                 }

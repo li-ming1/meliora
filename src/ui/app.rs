@@ -669,6 +669,13 @@ fn refresh_restored_online_urls(
                 .get(idx)
                 .and_then(|item| item.persisted_display());
 
+            // The KuGou registry only fills on `play_track`, so every refreshed
+            // URL must be re-registered or lyrics / like / download fail to
+            // resolve that stream when it comes up in rotation. NetEase's
+            // registry is already updated inside `refresh_restored_url`.
+            #[cfg(feature = "kugou")]
+            let mut remember_kugou: Option<crate::ui::kugou::KugouTrackInfo> = None;
+
             let url = match &identity {
                 #[cfg(feature = "kugou")]
                 OnlineIdentity::Kugou { hash, mix_song_id, album_id } => {
@@ -677,6 +684,28 @@ fn refresh_restored_online_urls(
                     let mix_song_id = *mix_song_id;
                     let album_id = *album_id;
                     let kugou_quality = kugou_quality.clone();
+                    remember_kugou = Some(crate::ui::kugou::KugouTrackInfo {
+                        title: display
+                            .as_ref()
+                            .and_then(|d| d.0.clone())
+                            .unwrap_or_default()
+                            .into(),
+                        artist: display
+                            .as_ref()
+                            .and_then(|d| d.1.clone())
+                            .unwrap_or_default()
+                            .into(),
+                        album: SharedString::default(),
+                        duration: display.as_ref().and_then(|d| d.2).unwrap_or(0),
+                        hash: hash.clone(),
+                        mix_song_id,
+                        album_id,
+                        cover_url: display
+                            .as_ref()
+                            .and_then(|d| d.3.clone())
+                            .unwrap_or_default()
+                            .into(),
+                    });
                     crate::RUNTIME
                         .spawn(async move {
                             crate::ui::kugou::fetch_stream_url(
@@ -734,6 +763,11 @@ fn refresh_restored_online_urls(
                 item.replace_path(PathBuf::from(url.clone()));
                 was_current
             };
+
+            #[cfg(feature = "kugou")]
+            if let Some(track) = remember_kugou {
+                crate::ui::kugou::remember_online_track(url.clone(), track);
+            }
 
             if was_current {
                 current_track.update(cx, |track, cx| {

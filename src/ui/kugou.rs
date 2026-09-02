@@ -96,18 +96,26 @@ pub struct KugouRank {
     pub previews: Vec<SharedString>,
 }
 
-/// Remembers the most recently played online track keyed by its stream URL.
-/// The queue only carries the play URL, so this lets the lyrics view map a
-/// running HTTP stream back to the track it came from in order to fetch lyrics.
-static LAST_ONLINE_TRACK: OnceLock<RwLock<Option<(String, KugouTrackInfo)>>> = OnceLock::new();
+/// Remembers online tracks keyed by their stream URLs (LRU, capped). The
+/// queue only carries the play URL, so this lets the lyrics view map a running
+/// HTTP stream back to the track it came from in order to fetch lyrics. Plural:
+/// a queue of online tracks keeps every one resolvable — across session-restore
+/// URL refreshes and auto-advance — not just the most recently clicked.
+const MAX_REMEMBERED: usize = 32;
 
-fn online_track_store() -> &'static RwLock<Option<(String, KugouTrackInfo)>> {
-    LAST_ONLINE_TRACK.get_or_init(|| RwLock::new(None))
+static ONLINE_TRACK_MAP: OnceLock<RwLock<Vec<(String, KugouTrackInfo)>>> = OnceLock::new();
+
+fn online_track_store() -> &'static RwLock<Vec<(String, KugouTrackInfo)>> {
+    ONLINE_TRACK_MAP.get_or_init(|| RwLock::new(Vec::new()))
 }
 
-/// Records that `url` (a KuGou stream) belongs to `track`.
+/// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
+/// entry for a given track on top and evicting older URLs for the same track.
 pub fn remember_online_track(url: String, track: KugouTrackInfo) {
-    *online_track_store().write().unwrap() = Some((url, track));
+    let mut guard = online_track_store().write().unwrap();
+    guard.retain(|(u, t)| u != &url && t.mix_song_id != track.mix_song_id);
+    guard.insert(0, (url, track));
+    guard.truncate(MAX_REMEMBERED);
 }
 
 /// If `path` is a stream reached through this app, returns the remembered
@@ -118,11 +126,13 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();
     let guard = online_track_store().read().unwrap();
-    let (url, track) = guard.as_ref()?;
-    let url_matches = url.as_str() == path_str.as_ref();
-    let mix_matches =
-        mixsongid_in_url(&path_str).is_some_and(|id| id == track.mix_song_id);
-    (url_matches || mix_matches).then(|| track.clone())
+    guard
+        .iter()
+        .find(|(url, track)| {
+            url.as_str() == path_str.as_ref()
+                || mixsongid_in_url(&path_str).is_some_and(|id| id == track.mix_song_id)
+        })
+        .map(|(_, track)| track.clone())
 }
 
 /// Fetches the eligible lyric for an online track via `search_lyric` →

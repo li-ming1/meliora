@@ -283,7 +283,7 @@
   },
   "APP_NAME": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:559",
+    "definedIn": "src/ui/controls.rs:554",
     "plural": false,
     "description": "Use the english name everywhere unless this is strictly disagreeable.\n                                "
   },
@@ -883,31 +883,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:835",
+    "definedIn": "src/ui/kugou.rs:845",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:847",
+    "definedIn": "src/ui/kugou.rs:857",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:986",
+    "definedIn": "src/ui/kugou.rs:996",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:991",
+    "definedIn": "src/ui/kugou.rs:1001",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:861",
+    "definedIn": "src/ui/kugou.rs:871",
     "plural": false,
     "description": null
   },
@@ -979,7 +979,7 @@
   },
   "KUGOU_NO_URL": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:716",
+    "definedIn": "src/ui/kugou.rs:726",
     "plural": false,
     "description": null
   },
@@ -1099,7 +1099,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:996",
+    "definedIn": "src/ui/kugou.rs:1006",
     "plural": false,
     "description": null
   },
@@ -1159,7 +1159,7 @@
   },
   "LIKE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:646",
+    "definedIn": "src/ui/controls.rs:641",
     "plural": false,
     "description": null
   },
@@ -1183,13 +1183,13 @@
   },
   "LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1417",
+    "definedIn": "src/ui/controls.rs:1412",
     "plural": false,
     "description": null
   },
   "MUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1352",
+    "definedIn": "src/ui/controls.rs:1347",
     "plural": false,
     "description": null
   },
@@ -1495,7 +1495,7 @@
   },
   "NEXT_TRACK": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:979",
+    "definedIn": "src/ui/controls.rs:974",
     "plural": false,
     "description": null
   },
@@ -1699,7 +1699,7 @@
   },
   "PREVIOUS_TRACK": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:894",
+    "definedIn": "src/ui/controls.rs:889",
     "plural": false,
     "description": null
   },
@@ -1777,19 +1777,19 @@
   },
   "REPEAT": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1058",
+    "definedIn": "src/ui/controls.rs:1053",
     "plural": false,
     "description": null
   },
   "REPEAT_OFF": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1048",
+    "definedIn": "src/ui/controls.rs:1043",
     "plural": false,
     "description": null
   },
   "REPEAT_ONE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1067",
+    "definedIn": "src/ui/controls.rs:1062",
     "plural": false,
     "description": null
   },
@@ -2185,19 +2185,19 @@
   },
   "STOP_AFTER_CURRENT_TOOLTIP": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:940",
+    "definedIn": "src/ui/controls.rs:935",
     "plural": false,
     "description": null
   },
   "STOP_REPEATING": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1026",
+    "definedIn": "src/ui/controls.rs:1021",
     "plural": false,
     "description": null
   },
   "STOP_SHUFFLING": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:864",
+    "definedIn": "src/ui/controls.rs:859",
     "plural": false,
     "description": null
   },
@@ -2293,19 +2293,19 @@
   },
   "UNKNOWN_ARTIST": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:614",
+    "definedIn": "src/ui/controls.rs:609",
     "plural": false,
     "description": null
   },
   "UNKNOWN_TRACK": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:600",
+    "definedIn": "src/ui/controls.rs:595",
     "plural": false,
     "description": null
   },
   "UNLIKE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:643",
+    "definedIn": "src/ui/controls.rs:638",
     "plural": false,
     "description": null
   },
@@ -2317,7 +2317,7 @@
   },
   "UNMUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1345",
+    "definedIn": "src/ui/controls.rs:1340",
     "plural": false,
     "description": null
   },
