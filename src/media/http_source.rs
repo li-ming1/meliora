@@ -160,6 +160,16 @@ fn record_cache_write() {
     });
 }
 
+/// Fire-and-forget full prune on startup (cheap when the cache is small).
+/// The periodic sweep only runs after cache writes, so a long gap without
+/// cover fetches would otherwise leave stale entries until the 256MB cap is
+/// hit; one sweep at boot keeps them bounded by the 30-day age window.
+pub fn prune_image_cache_background() {
+    crate::RUNTIME.spawn(async {
+        let _ = crate::RUNTIME.spawn_blocking(prune_image_cache).await;
+    });
+}
+
 /// 全量清扫（阻塞，跑在 spawn_blocking）：
 /// 1. 删除超过寿命的文件；2. 总大小超限时按最旧删除到低水位。
 fn prune_image_cache() {
@@ -176,6 +186,12 @@ fn prune_image_cache() {
             continue;
         };
         if meta.is_dir() {
+            continue;
+        }
+        // interrupted `write_cached_cover` rename can leave `.tmp` behind;
+        // they have no hash naming and are never read back, so drop them
+        if path.extension() == Some(OsStr::new("tmp")) {
+            let _ = std::fs::remove_file(&path);
             continue;
         }
         let modified = meta.modified().unwrap_or(UNIX_EPOCH);

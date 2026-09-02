@@ -84,5 +84,10 @@ fn main() -> anyhow::Result<()> {
         Box::new(SymphoniaProvider),
     ]);
 
+    // Bound the online image-cache to its 30-day age window even when no
+    // cover has been written yet this session.
+    #[cfg(feature = "online_sources")]
+    crate::media::http_source::prune_image_cache_background();
+
     crate::ui::app::run()
 }
