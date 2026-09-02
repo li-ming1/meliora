@@ -1179,10 +1179,14 @@ impl QueueManager {
         });
     }
 
+    /// Whether shuffle mode is currently enabled.
+    pub fn shuffled(&self) -> bool {
+        self.shuffle
+    }
+
     /// Toggle shuffle mode.
     pub fn toggle_shuffle(&mut self) -> ShuffleResult {
         let previous_queue_next = self.queue_next;
-
         let result = {
             let mut queue = self.queue.write().expect("poisoned queue lock");
 

@@ -16,6 +16,7 @@ use crate::{
     },
     playback::interface::PlaybackInterface,
     settings::SettingsGlobal,
+    toasts::{Toast, emit_toast},
     ui::{
         app::Pool,
         components::{
@@ -573,9 +574,18 @@ impl Render for PlaylistList {
                                             tr!("EXPORT_PLAYLIST", "Export to M3U"),
                                             {
                                                 move |_, _, cx| {
-                                                    // TODO: when toasts are added show this error
-                                                    let _ =
-                                                        export_playlist(cx, pl_id, &playlist_label);
+                                                    if let Err(err) =
+                                                        export_playlist(cx, pl_id, &playlist_label)
+                                                    {
+                                                        emit_toast(Toast::error(tr!(
+                                                            "EXPORT_PLAYLIST_FAILED",
+                                                            "Failed to export playlist"
+                                                        )));
+                                                        tracing::error!(
+                                                            ?err,
+                                                            "playlist export failed"
+                                                        );
+                                                    }
                                                 }
                                             },
                                         ))

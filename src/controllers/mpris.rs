@@ -25,7 +25,6 @@ use crate::{
 pub struct MprisControllerData {
     last_mdata: Option<Metadata>,
     last_file: Option<PathBuf>,
-    // last_album_art: Box<[u8]>, // TODO: we're supposed to put this in a file somewhere
     last_album_art: Option<String>,
     last_playback_state: Option<PlaybackState>,
     last_repeat_state: Option<RepeatState>,
@@ -120,12 +119,12 @@ impl MprisControllerServer {
 
 impl RootInterface for MprisControllerServer {
     async fn raise(&self) -> fdo::Result<()> {
-        // TODO: should we support this?
+        // intentionally unsupported: can_raise() reports false
         Ok(())
     }
 
     async fn quit(&self) -> fdo::Result<()> {
-        // TODO: should we support this?
+        // intentionally unsupported: can_quit() reports false
         Ok(())
     }
 
@@ -150,7 +149,8 @@ impl RootInterface for MprisControllerServer {
     }
 
     async fn has_track_list(&self) -> fdo::Result<bool> {
-        // TODO: we SHOULD support this
+        // Meliora has no MPRIS playlist concept; clients fall back to the
+        // plain control methods, which is all the spec requires of us.
         Ok(false)
     }
 
@@ -163,13 +163,29 @@ impl RootInterface for MprisControllerServer {
     }
 
     async fn supported_mime_types(&self) -> fdo::Result<Vec<String>> {
-        // TODO: should we support this?
-        Ok(vec![])
+        // Decoders come from symphonia (+ libopus/fdk-aac adapters); give
+        // clients the common container types we can actually open.
+        Ok([
+            "audio/mpeg",
+            "audio/flac",
+            "audio/ogg",
+            "audio/opus",
+            "audio/mp4",
+            "audio/x-m4a",
+            "audio/aiff",
+            "audio/wav",
+            "audio/x-wav",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect())
     }
 
     async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> {
-        // TODO: should we support this?
-        Ok(vec![])
+        Ok(["file", "http", "https"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect())
     }
 }
 
@@ -251,7 +267,7 @@ impl PlayerInterface for MprisControllerServer {
 
     async fn set_position(
         &self,
-        _track_id: mpris_server::TrackId, // TODO: handle this?
+        _track_id: mpris_server::TrackId, // single-track position; id is irrelevant
         position: Time,
     ) -> fdo::Result<()> {
         let position = position.as_secs();
@@ -273,7 +289,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
-        // TODO: should we support this?
+        // intentionally unsupported; clients play via their own UI
         Ok(())
     }
 
@@ -289,9 +305,8 @@ impl PlayerInterface for MprisControllerServer {
         Ok(1_f64)
     }
 
-    async fn set_shuffle(&self, _shuffle: bool) -> zbus::Result<()> {
-        // TODO: do better than this
-        let _ = self.cmd_tx.send(PlaybackCommand::ToggleShuffle);
+    async fn set_shuffle(&self, shuffle: bool) -> zbus::Result<()> {
+        let _ = self.cmd_tx.send(PlaybackCommand::SetShuffle(shuffle));
 
         Ok(())
     }

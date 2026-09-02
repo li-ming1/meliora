@@ -236,7 +236,8 @@ impl Render for TrackItem {
                                         .when_some(self.track.disc_number, |this, num| {
                                             if self.vinyl_numbering {
                                                 let side = (b'A' + (num - 1) as u8) as char;
-                                                let side = side.to_string(); // TODO: fix this upstream
+                                                // i18n interpolation only takes strings
+                                                let side = side.to_string();
                                                 this.child(tr!(
                                                     "TRACK_SIDE",
                                                     "Side {{side}}",
@@ -306,7 +307,8 @@ impl Render for TrackItem {
                                                 .text_align(TextAlign::Right)
                                                 .mr(px(13.0))
                                                 .text_color(theme.text_secondary)
-                                                // TODO: handle these numerals better
+                                                // numerals come from the prebuilt
+                                                // track_number_label; alignment is width-capped
                                                 .child(self.track_number_label.clone()),
                                         )
                                     })

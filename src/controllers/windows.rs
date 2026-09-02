@@ -93,9 +93,9 @@ impl WindowsController {
             .ShuffleEnabledChangeRequested(&TypedEventHandler::<
                 SystemMediaTransportControls,
                 ShuffleEnabledChangeRequestedEventArgs,
-            >::new(move |_, _| {
-                // TODO: do better than this
-                let _ = cmd_tx.send(PlaybackCommand::ToggleShuffle);
+            >::new(move |_, args| {
+                let shuffle = args.as_ref().unwrap().RequestedShuffleEnabled().unwrap();
+                let _ = cmd_tx.send(PlaybackCommand::SetShuffle(shuffle));
 
                 Ok(())
             }))?;

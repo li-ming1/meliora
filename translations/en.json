@@ -105,6 +105,7 @@
   "EQ_VOLUME_COMPENSATION_TOOLTIP": "Automatically lowers the output level to offset band boosts and prevent clipping.",
   "EXPAND_SIDEBAR": "Expand Sidebar",
   "EXPORT_PLAYLIST": "Export to M3U",
+  "EXPORT_PLAYLIST_FAILED": "Failed to export playlist",
   "EXPORT_PLAYLIST_TO_M3U": "Export Playlist to M3U",
   "FILES": "Files",
   "FILES_COLLAPSE_ALL": "Collapse all",

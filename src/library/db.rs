@@ -824,7 +824,8 @@ pub async fn lyrics_for_track(pool: &SqlitePool, track_id: i64) -> sqlx::Result<
 
 pub trait LibraryAccess {
     fn list_albums(&self, sort_method: AlbumSortMethod) -> sqlx::Result<Vec<(u32, String)>>;
-    // TODO: handle this better
+    // The tuple doubles as `TrackTable::Identifier` (id, title, album_id,
+    // artist_names), so a struct here would ripple through the table API.
     #[allow(clippy::type_complexity)]
     fn list_tracks(
         &self,

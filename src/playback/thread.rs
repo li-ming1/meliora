@@ -231,6 +231,7 @@ impl PlaybackThread {
                 #[cfg(any(target_os = "linux", target_os = "windows"))]
                 PlaybackCommand::Stop => self.stop(),
                 PlaybackCommand::ToggleShuffle => self.toggle_shuffle(),
+                PlaybackCommand::SetShuffle(v) => self.set_shuffle(v),
                 PlaybackCommand::SetRepeat(v) => self.set_repeat(v),
                 PlaybackCommand::RemoveItem(idx) => self.remove(idx),
                 PlaybackCommand::RemoveItems(indices) => self.remove_many(&indices),
@@ -987,6 +988,15 @@ impl PlaybackThread {
                 self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
             }
         }
+    }
+
+    /// Forces shuffle mode to a specific value. SMTC / MPRIS deliver an
+    /// explicit on/off request, so toggling there would flip the wrong way.
+    fn set_shuffle(&mut self, shuffle: bool) {
+        if self.queue.shuffled() == shuffle {
+            return;
+        }
+        self.toggle_shuffle();
     }
 
     /// Sets the volume of the playback stream.

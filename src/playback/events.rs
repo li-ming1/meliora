@@ -73,6 +73,8 @@ pub enum PlaybackCommand {
     /// Requests that the playback thread shuffle (or stop shuffling) the next tracks in the
     /// queue. Note that this currently results in duplication of the *entire* queue.
     ToggleShuffle,
+    /// Requests that the playback thread set shuffle mode to the specified value.
+    SetShuffle(bool),
     /// Requests that the repeating setting should be set to the specified RepeatState.
     SetRepeat(RepeatState),
     /// Requests that the item at the index provided be removed from the queue.

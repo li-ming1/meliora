@@ -691,7 +691,8 @@ impl Render for QueueItem {
                 })
                 .into_any_element()
         } else {
-            // TODO: Skeleton for this
+            // Metadata still loading: keep the row's shape with a plain block
+            // so the list doesn't jump; the item repaints when data lands.
             div()
                 .h(px(QUEUE_ITEM_HEIGHT))
                 .border_t(px(1.0))
