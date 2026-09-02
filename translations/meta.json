@@ -883,31 +883,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:845",
+    "definedIn": "src/ui/kugou.rs:916",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:857",
+    "definedIn": "src/ui/kugou.rs:928",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:996",
+    "definedIn": "src/ui/kugou.rs:1067",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1001",
+    "definedIn": "src/ui/kugou.rs:1072",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:871",
+    "definedIn": "src/ui/kugou.rs:942",
     "plural": false,
     "description": null
   },
@@ -979,7 +979,7 @@
   },
   "KUGOU_NO_URL": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:726",
+    "definedIn": "src/ui/kugou.rs:797",
     "plural": false,
     "description": null
   },
@@ -1099,7 +1099,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1006",
+    "definedIn": "src/ui/kugou.rs:1077",
     "plural": false,
     "description": null
   },
@@ -1171,7 +1171,7 @@
   },
   "LIKE_ALBUM": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:383",
+    "definedIn": "src/ui/library/release_view.rs:393",
     "plural": false,
     "description": null
   },
@@ -1729,13 +1729,13 @@
   },
   "RELEASED_DATE": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:482",
+    "definedIn": "src/ui/library/release_view.rs:492",
     "plural": false,
     "description": null
   },
   "RELEASED_YEAR": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:498",
+    "definedIn": "src/ui/library/release_view.rs:508",
     "plural": false,
     "description": null
   },
@@ -2311,7 +2311,7 @@
   },
   "UNLIKE_ALBUM": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:381",
+    "definedIn": "src/ui/library/release_view.rs:391",
     "plural": false,
     "description": null
   },

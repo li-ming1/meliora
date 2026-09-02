@@ -143,13 +143,23 @@ pub struct ReleaseView {
 impl ReleaseView {
     pub(super) fn new(cx: &mut App, album_id: i64, target_track_id: Option<i64>) -> Entity<Self> {
         cx.new(|cx| {
-            // TODO: error handling
-            let album = cx
-                .get_album_by_id(album_id)
-                .expect("Failed to retrieve album");
-            let tracks = cx
-                .list_tracks_in_album(album_id)
-                .expect("Failed to retrieve tracks");
+            // Album deleted under us (e.g. cleanup scan): render an empty
+            // release page instead of panicking in the UI thread.
+            let album = match cx.get_album_by_id(album_id) {
+                Ok(album) => album,
+                Err(_) => Arc::new(Album {
+                    id: album_id,
+                    title: DBString::from(""),
+                    artist_display_override: None,
+                    release_date: None,
+                    date_precision: None,
+                    label: None,
+                    catalog_number: None,
+                    isrc: None,
+                    vinyl_numbering: false,
+                }),
+            };
+            let tracks = cx.list_tracks_in_album(album_id).unwrap_or_default();
             let artist_name = album.artist_display_override.clone();
             let track_ids: std::rc::Rc<[i64]> = tracks.iter().map(|t| t.id).collect();
             let release_date_utc = album.release_date.as_ref().and_then(|date| {

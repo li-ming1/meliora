@@ -96,26 +96,97 @@ pub struct KugouRank {
     pub previews: Vec<SharedString>,
 }
 
-/// Remembers online tracks keyed by their stream URLs (LRU, capped). The
-/// queue only carries the play URL, so this lets the lyrics view map a running
-/// HTTP stream back to the track it came from in order to fetch lyrics. Plural:
-/// a queue of online tracks keeps every one resolvable — across session-restore
-/// URL refreshes and auto-advance — not just the most recently clicked.
-const MAX_REMEMBERED: usize = 32;
+// ---------------------------------------------------------------------------
+// Stream URL → track registry
+//
+// KuGou play URLs are opaque signed CDN links; the queue (which only carries
+// the URL) cannot resolve lyrics / the like state / the download action on
+// its own. Every resolved play URL is recorded here in memory AND on disk, so
+// a restored queue still matches after a restart — even when the
+// session-restore URL refresh hits a network failure. Mirrors NetEase's
+// stream-map.
+// ---------------------------------------------------------------------------
 
-static ONLINE_TRACK_MAP: OnceLock<RwLock<Vec<(String, KugouTrackInfo)>>> = OnceLock::new();
+/// On-disk mirror of a registry entry (plain strings, JSON friendly).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct StreamMapEntry {
+    url: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    artist: String,
+    #[serde(default)]
+    album: String,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    mix_song_id: i64,
+    #[serde(default)]
+    album_id: i64,
+    #[serde(default)]
+    cover_url: String,
+}
 
-fn online_track_store() -> &'static RwLock<Vec<(String, KugouTrackInfo)>> {
-    ONLINE_TRACK_MAP.get_or_init(|| RwLock::new(Vec::new()))
+impl From<(String, KugouTrackInfo)> for StreamMapEntry {
+    fn from((url, track): (String, KugouTrackInfo)) -> Self {
+        Self {
+            url,
+            title: track.title.to_string(),
+            artist: track.artist.to_string(),
+            album: track.album.to_string(),
+            duration: track.duration,
+            hash: track.hash,
+            mix_song_id: track.mix_song_id,
+            album_id: track.album_id,
+            cover_url: track.cover_url.to_string(),
+        }
+    }
+}
+
+impl StreamMapEntry {
+    fn to_track(&self) -> KugouTrackInfo {
+        KugouTrackInfo {
+            title: SharedString::from(self.title.clone()),
+            artist: SharedString::from(self.artist.clone()),
+            album: SharedString::from(self.album.clone()),
+            duration: self.duration,
+            hash: self.hash.clone(),
+            mix_song_id: self.mix_song_id,
+            album_id: self.album_id,
+            cover_url: SharedString::from(self.cover_url.clone()),
+        }
+    }
+}
+
+const STREAM_MAP_CAP: usize = 200;
+
+fn stream_map_path() -> PathBuf {
+    crate::paths::data_dir().join("kugou_stream_map.json")
+}
+
+fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
+    static STREAM_MAP: OnceLock<RwLock<Vec<StreamMapEntry>>> = OnceLock::new();
+    STREAM_MAP.get_or_init(|| {
+        let entries = std::fs::read_to_string(stream_map_path())
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .unwrap_or_default();
+        RwLock::new(entries)
+    })
 }
 
 /// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
-/// entry for a given track on top and evicting older URLs for the same track.
+/// entry for a track on top and evicting older URLs for the same track.
 pub fn remember_online_track(url: String, track: KugouTrackInfo) {
-    let mut guard = online_track_store().write().unwrap();
-    guard.retain(|(u, t)| u != &url && t.mix_song_id != track.mix_song_id);
-    guard.insert(0, (url, track));
-    guard.truncate(MAX_REMEMBERED);
+    let mut guard = stream_map().write().unwrap();
+    guard.retain(|e| e.url != url && e.mix_song_id != track.mix_song_id);
+    guard.insert(0, StreamMapEntry::from((url, track)));
+    guard.truncate(STREAM_MAP_CAP);
+    if let Ok(json) = serde_json::to_string(&*guard) {
+        let _ = std::fs::write(stream_map_path(), json);
+    }
 }
 
 /// If `path` is a stream reached through this app, returns the remembered
@@ -125,14 +196,14 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 /// differs from the URL that produced it.
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();
-    let guard = online_track_store().read().unwrap();
+    let guard = stream_map().read().unwrap();
     guard
         .iter()
-        .find(|(url, track)| {
-            url.as_str() == path_str.as_ref()
-                || mixsongid_in_url(&path_str).is_some_and(|id| id == track.mix_song_id)
+        .find(|entry| {
+            entry.url == path_str.as_ref()
+                || mixsongid_in_url(&path_str).is_some_and(|id| id == entry.mix_song_id)
         })
-        .map(|(_, track)| track.clone())
+        .map(StreamMapEntry::to_track)
 }
 
 /// Fetches the eligible lyric for an online track via `search_lyric` →
