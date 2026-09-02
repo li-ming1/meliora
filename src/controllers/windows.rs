@@ -32,6 +32,14 @@ pub struct WindowsController {
     display: SystemMediaTransportControlsDisplayUpdater,
     timeline: SystemMediaTransportControlsTimelineProperties,
     cmd_tx: UnboundedSender<PlaybackCommand>,
+    /// Persistent backing stream for the SMTC thumbnail, overwritten in
+    /// place on every update. Building a fresh
+    /// InMemoryRandomAccessStream + DataWriter per track left the replaced
+    /// thumbnail chains to delayed COM reclamation, which over long
+    /// background sessions leaked a few MB per track (matches the [mem]
+    /// probe's per-track climb). One long-lived stream keeps the shell's
+    /// reference stable and the artwork byte count bounded.
+    album_art_stream: Option<(InMemoryRandomAccessStream, DataWriter)>,
 }
 
 impl WindowsController {
@@ -149,6 +157,7 @@ impl WindowsController {
             display,
             timeline,
             cmd_tx,
+            album_art_stream: None,
         };
 
         controller.connect_events()?;
@@ -223,18 +232,29 @@ impl PlaybackController for WindowsController {
     }
 
     async fn album_art_changed(&mut self, album_art: &[u8]) -> anyhow::Result<()> {
-        let stream = InMemoryRandomAccessStream::new().expect("could not create RAS");
-        let writer = DataWriter::CreateDataWriter(&stream).unwrap();
+        if album_art.is_empty() {
+            return Ok(());
+        }
+        // Overwrite the persistent thumbnail stream in place instead of
+        // building a fresh InMemoryRandomAccessStream + DataWriter per track.
+        // The old chain stored two copies of the artwork per track and left
+        // the replaced stream to delayed COM reclamation, leaking a few MB
+        // per track during long background sessions.
+        if self.album_art_stream.is_none() {
+            let stream = InMemoryRandomAccessStream::new()
+                .map_err(|_| anyhow::anyhow!("could not create RAS"))?;
+            let writer = DataWriter::CreateDataWriter(&stream)?;
+            self.album_art_stream = Some((stream, writer));
+        }
+        let Some((stream, writer)) = self.album_art_stream.as_ref() else {
+            anyhow::bail!("thumbnail stream unavailable");
+        };
 
+        stream.SetSize(0)?;
+        stream.Seek(0)?;
         writer.WriteBytes(album_art)?;
-
-        writer
-            .StoreAsync()
-            .expect("could not start store operation")
-            .await?;
-
-        writer.DetachStream()?;
-        let reference = RandomAccessStreamReference::CreateFromStream(&stream)?;
+        writer.StoreAsync()?.await?;
+        let reference = RandomAccessStreamReference::CreateFromStream(stream)?;
 
         self.display.SetThumbnail(&reference)?;
         self.display.Update()?;

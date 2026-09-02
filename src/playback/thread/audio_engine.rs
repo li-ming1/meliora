@@ -773,13 +773,16 @@ impl AudioEngine {
                     }
                 } else {
                     let duration = self.media.frame_duration().unwrap_or(1024);
+                    // Deliberately NOT keyed on `duration`: the decoder chunk
+                    // size differs per file even at identical rate/channels,
+                    // and keying on it rebuilt the whole resampler (FFT plan +
+                    // channel buffers) on nearly every track change. The fixed
+                    // chunk size this resampler was built with stays valid; the
+                    // handoff buffers below are sized dynamically per track.
                     let needs_new_resampler = match &self.resampler {
-                        Some(resampler) => !resampler.matches_params(
-                            rate,
-                            p.target_rate,
-                            duration,
-                            p.source_channel_count,
-                        ),
+                        Some(resampler) => {
+                            !resampler.matches_params(rate, p.target_rate, p.source_channel_count)
+                        }
                         None => true,
                     };
 

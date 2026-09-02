@@ -522,6 +522,7 @@ impl Render for InfoSection {
                                                         ),
                                                         key.clone(),
                                                     )
+                                                    .thumb_max(256)
                                                     .w(px(256.0))
                                                     .h(px(256.0))
                                                     .rounded(px(theme.radius_lg))

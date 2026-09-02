@@ -50,6 +50,65 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .unwrap()
 });
 
+/// Current process memory, in MiB: (private, virtual/working-set).
+/// Used by the `[mem]` probe to watch for long-run growth / unreclaimed
+/// high-water marks while playback stays up.
+pub(crate) fn process_memory_mb() -> (u64, u64) {
+    use sysinfo::ProcessesToUpdate;
+
+    let pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut sys = sysinfo::System::new_with_specifics(sysinfo::RefreshKind::default());
+    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
+    match sys.process(pid) {
+        Some(process) => (
+            process.memory() / (1024 * 1024),
+            process.virtual_memory() / (1024 * 1024),
+        ),
+        None => (0, 0),
+    }
+}
+
+/// Background memory probe: samples process memory every 30 seconds so a long
+/// playback session leaves a curve in the log (private vs working set) that
+/// separates a real leak from allocator/GPU pool retention.
+fn spawn_memory_probe() {
+    crate::RUNTIME.spawn(async {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let (private, working) = process_memory_mb();
+            tracing::info!(
+                private_mb = private,
+                working_mb = working,
+                covers_mb = disk_cover_cache_mb(),
+                "[mem] periodic"
+            );
+        }
+    });
+}
+
+/// Total bytes of the on-disk online-cover cache, in MiB. Tracks how many
+/// distinct covers the session has touched, independent of process memory.
+#[cfg(feature = "online_sources")]
+fn disk_cover_cache_mb() -> u64 {
+    let dir = crate::paths::data_dir().join("image-cache");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .sum::<u64>()
+        / (1024 * 1024)
+}
+
+#[cfg(not(feature = "online_sources"))]
+fn disk_cover_cache_mb() -> u64 {
+    0
+}
+
 #[cfg(target_os = "windows")]
 fn init_windows_restart() -> anyhow::Result<()> {
     use windows::{
@@ -78,6 +137,9 @@ fn main() -> anyhow::Result<()> {
     crate::logging::init()?;
 
     tracing::info!("version {VERSION_STRING}");
+
+    #[cfg(not(test))]
+    spawn_memory_probe();
 
     register_providers(vec![
         Box::new(LoftyProvider),

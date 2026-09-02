@@ -211,16 +211,18 @@ impl Resampler {
         self.source_rate != self.target_rate
     }
 
-    pub fn matches_params(
-        &self,
-        source_rate: u32,
-        target_rate: u32,
-        duration: u64,
-        channels: usize,
-    ) -> bool {
+    /// Whether this resampler can serve a stream with these parameters
+    /// without being rebuilt.
+    ///
+    /// `duration` (the decoder's chunk size) is deliberately not compared: it
+    /// varies per file even at identical rate/channels, and including it
+    /// caused a full rebuild (FFT plan + channel buffers) on nearly every
+    /// track change. Chunk-size differences are harmless: `process_into`
+    /// always feeds the chunk size this resampler was built with, and callers
+    /// size their handoff buffers dynamically.
+    pub fn matches_params(&self, source_rate: u32, target_rate: u32, channels: usize) -> bool {
         self.source_rate == source_rate
             && self.target_rate == target_rate
-            && self.duration == duration
             && self.channels == channels
     }
 

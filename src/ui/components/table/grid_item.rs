@@ -151,6 +151,7 @@ where
         if let Some(image) = self.image_key.clone() {
             img_container = img_container.child(
                 managed_image((self.id.clone(), "grid_image"), image)
+                    .thumb_max(256)
                     .w_full()
                     .h_full()
                     .aspect_square()

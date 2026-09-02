@@ -51,9 +51,20 @@ fn decode_rgba_to_render_image(mut image: image::RgbaImage) -> anyhow::Result<Ar
     Ok(Arc::new(RenderImage::new(frames)))
 }
 
-fn decode_to_render_image(data: &[u8]) -> anyhow::Result<Arc<RenderImage>> {
-    let image = image::load_from_memory(data)?.to_rgba8();
-    decode_rgba_to_render_image(image)
+/// Decode `data`, downscaling to a square of at most `bound` pixels before
+/// converting to RGBA. Scaling at decode time keeps the transient RGBA buffer
+/// (and anything that retains it) bounded by what the UI actually paints.
+fn decode_to_render_image_scaled(
+    data: &[u8],
+    bound: u32,
+) -> anyhow::Result<Arc<RenderImage>> {
+    let image = image::load_from_memory(data)?;
+    let image = if bound > 0 {
+        image.thumbnail(bound, bound)
+    } else {
+        image
+    };
+    decode_rgba_to_render_image(image.to_rgba8())
 }
 
 #[derive(Clone)]
@@ -70,7 +81,8 @@ impl ManagedImageKey {
     async fn retrieve(
         &self,
         pool: SqlitePool,
-        thumb: bool,
+        // Square thumbnail bound in pixels; `0` keeps full size.
+        thumb_size: u32,
     ) -> anyhow::Result<Option<Arc<RenderImage>>> {
         match self {
             ManagedImageKey::TrackFile(path) => {
@@ -87,7 +99,12 @@ impl ManagedImageKey {
                         else {
                             return Ok(None);
                         };
-                        stream.start_playback()?;
+                        // The embedded artwork is captured during the probe,
+                        // so reading it does not need the playback decoder.
+                        // start_playback() built a full codec registry plus a
+                        // decoder instance per track just to fetch
+                        // `last_image`, churning the heap on every track
+                        // change for nothing.
 
                         let mut image = if let Ok(Some(data)) = stream.read_image() {
                             image::load_from_memory(&data)?.to_rgba8()
@@ -98,8 +115,8 @@ impl ManagedImageKey {
                             return Ok(None);
                         };
 
-                        if thumb {
-                            image = imageops::thumbnail(&image, 72, 72);
+                        if thumb_size > 0 {
+                            image = imageops::thumbnail(&image, thumb_size, thumb_size);
                         }
 
                         Ok(Some(decode_rgba_to_render_image(image)?))
@@ -112,11 +129,14 @@ impl ManagedImageKey {
                 let bytes = crate::media::http_source::http_cover_bytes_cached(&url).await?;
                 let Some(bytes) = bytes else { return Ok(None) };
                 let image = crate::RUNTIME
-                    .spawn_blocking(move || decode_to_render_image(&bytes).map(Some))
+                    .spawn_blocking(move || {
+                        decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
+                    })
                     .await??;
                 Ok(image)
             }
             ManagedImageKey::Album(id) | ManagedImageKey::Track(id) => {
+                let thumb = thumb_size > 0;
                 let query = match (self, thumb) {
                     (ManagedImageKey::Album(_), true) => {
                         include_str!("../../../queries/assets/find_album_thumb.sql")
@@ -148,7 +168,9 @@ impl ManagedImageKey {
                 }
 
                 let image = crate::RUNTIME
-                    .spawn_blocking(move || decode_to_render_image(&image_encoded).map(Some))
+                    .spawn_blocking(move || {
+                        decode_to_render_image_scaled(&image_encoded, thumb_size).map(Some)
+                    })
                     .await??;
 
                 Ok(image)
@@ -175,7 +197,10 @@ pub struct ManagedImage {
     id: ElementId,
     style: StyleRefinement,
     object_fit: ObjectFit,
-    thumb: bool,
+    /// Square thumbnail bound in pixels; `0` keeps the source at full size.
+    /// Decodes cheaply so grid/list art never holds a full-resolution RGBA
+    /// buffer just to paint a small tile (was: GB-scale working set).
+    thumb_size: u32,
 }
 
 impl ManagedImage {
@@ -184,8 +209,15 @@ impl ManagedImage {
         self
     }
 
+    /// Downscale to a 72×72 square (small list/playback-bar art).
     pub fn thumb(mut self) -> Self {
-        self.thumb = true;
+        self.thumb_size = 72;
+        self
+    }
+
+    /// Downscale to a square of at most `size` pixels (grid tiles).
+    pub fn thumb_max(mut self, size: u32) -> Self {
+        self.thumb_size = size;
         self
     }
 }
@@ -224,14 +256,14 @@ impl Element for ManagedImage {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let key = self.key.clone();
-        let thumb = self.thumb;
+        let thumb_size = self.thumb_size;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
             let bridge_clone = bridge.clone();
 
             let handle = crate::RUNTIME.spawn(async move {
-                let result = key.retrieve(pool, thumb).await;
+                let result = key.retrieve(pool, thumb_size).await;
                 let image = match &result {
                     Ok(img) => img.clone(),
                     Err(_) => None,
@@ -352,6 +384,6 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         id: id.into(),
         style: StyleRefinement::default(),
         object_fit: ObjectFit::Cover,
-        thumb: false,
+        thumb_size: 0,
     }
 }

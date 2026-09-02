@@ -54,11 +54,41 @@ pub fn load(pool: &SqlitePool, url: Url) -> gpui::Result<Option<Cow<'static, [u8
                 crate::RUNTIME.block_on(sqlx::query_as(query).bind(id).fetch_optional(pool))?;
 
             match row {
-                Some((Some(image),)) if !image.is_empty() => Ok(Some(Cow::Owned(image))),
+                Some((Some(image),)) if !image.is_empty() => {
+                    if image_type == "thumb" {
+                        // Thumbnails are rendered at list/grid sizes (≤ ~200px)
+                        // yet stored full-ish, so decoding them at full size
+                        // leaves multi-hundred-KB RGBA buffers stuck in every
+                        // bounded image cache slot (tables cache 200 items,
+                        // the global cache 12). Shrink before returning so the
+                        // caches stay small.
+                        if let Some(shrunken) = shrink_thumb(&image) {
+                            return Ok(Some(Cow::Owned(shrunken)));
+                        }
+                    }
+                    Ok(Some(Cow::Owned(image)))
+                }
                 // no artwork stored → transparent placeholder, not `None`
                 _ => Ok(Some(placeholder_png())),
             }
         }
         _ => Ok(None),
     }
+}
+
+/// Upper bound for thumb assets after shrinking. The UI never paints thumb
+/// tiles larger than this, so anything bigger is wasted working set.
+const THUMB_MAX_PX: u32 = 128;
+
+/// Best-effort downscale of a thumb asset down to at most 128×128. Returns
+/// `None` on any (unexpected) encode failure so the caller keeps the raw
+/// bytes rather than breaking art rendering.
+fn shrink_thumb(data: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(data).ok()?;
+    let thumb = image.thumbnail(THUMB_MAX_PX, THUMB_MAX_PX);
+    let mut out = Vec::new();
+    thumb
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .ok()?;
+    Some(out)
 }

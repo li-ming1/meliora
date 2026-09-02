@@ -320,6 +320,12 @@ impl PlaybackThread {
 
         let duration = self.engine.open(path, preserve_resampler)?;
 
+        // [mem] probe: sample on every track change so a long session's log
+        // shows whether memory keeps climbing song by song or returns to a
+        // stable working-set plateau (allocator retention, not a leak).
+        let (private, working) = crate::process_memory_mb();
+        tracing::info!(path = %path.display(), private_mb = private, working_mb = working, "[mem] track open");
+
         // Enable loop-point-aware decoding if repeat-one is active
         self.engine
             .set_looping(self.queue.repeat_state() == RepeatState::RepeatingOne);

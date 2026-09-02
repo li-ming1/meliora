@@ -47,13 +47,15 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
 /// treats that as "no artwork". Uses a fresh request with a short timeout so
 /// cover fetches never block on the long-lived streaming client above.
 pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    let client = zed_reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_else(|_| zed_reqwest::Client::new());
+    // Reuse the shared pooled client (TLS config + connection pool) with a
+    // per-request timeout. A fresh Client per cover built a new rustls
+    // config and pool per track and left idle-connection teardown work on
+    // the runtime after every fetch.
+    let request = HTTP_CLIENT
+        .get(url)
+        .timeout(Duration::from_secs(15));
 
-    let response = match client.get(url).send().await {
+    let response = match request.send().await {
         Ok(response) => response,
         Err(_) => return Ok(None),
     };
