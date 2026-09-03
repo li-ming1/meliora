@@ -443,6 +443,53 @@ impl QueueManager {
         (position < self.len()).then_some(position)
     }
 
+    /// Online-provider identity of the currently playing item, if it is an
+    /// HTTP stream (used to re-fetch a fresh URL when a persisted link 403s).
+    #[cfg(feature = "online_sources")]
+    pub fn current_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
+        let position = self.current_position()?;
+        let queue = self.queue.read().ok()?;
+        queue.get(position)?.online_identity().cloned()
+    }
+
+    /// Persisted display metadata `(name, artist, duration, cover)` of the
+    /// currently playing item, for stream-registry re-registration.
+    #[cfg(feature = "online_sources")]
+    pub fn current_display(
+        &self,
+    ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
+        let position = self.current_position()?;
+        let queue = self.queue.read().ok()?;
+        queue.get(position)?.persisted_display()
+    }
+
+    /// Path of the currently playing item, if any.
+    pub fn current_path(&self) -> Option<PathBuf> {
+        let position = self.current_position()?;
+        let queue = self.queue.read().ok()?;
+        Some(queue.get(position)?.get_path().clone())
+    }
+
+    /// Swaps the stored path of the currently playing item (used when its
+    /// expired stream URL is replaced by a freshly fetched one).
+    pub fn replace_current_path(&self, path: PathBuf) -> bool {
+        // Resolve the position before taking the write lock: computing it
+        // reads the queue, and a read inside a held write lock self-deadlocks.
+        let Some(position) = self.current_position() else {
+            return false;
+        };
+        let Ok(mut guard) = self.queue.write() else {
+            return false;
+        };
+        match guard.get_mut(position) {
+            Some(item) => {
+                item.replace_path(path);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Get the current repeat state.
     pub fn repeat_state(&self) -> RepeatState {
         self.repeat

@@ -4,7 +4,7 @@ mod media_controller;
 mod queue_manager;
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
     thread::sleep,
 };
@@ -308,6 +308,58 @@ impl PlaybackThread {
         self.open_with_resampler(path, false)
     }
 
+    /// One-shot retry for expired online stream URLs: a persisted
+    /// KuGou/NetEase direct link eventually 403s (signed URL), so before
+    /// skipping the track this re-fetches a fresh URL from the current item's
+    /// provider identity, updates the queue item, and returns the new path.
+    #[cfg(feature = "online_sources")]
+    fn refresh_expired_online_url(&mut self) -> Option<PathBuf> {
+        use crate::playback::queue::OnlineIdentity;
+
+        let identity = self.queue.current_online_identity().or_else(|| {
+            // Playlist items persist only the plain stream URL, without the
+            // provider identity. KuGou URLs embed a `mx{mixsongid}` token, so
+            // the persisted stream map can still recover the full track and
+            // give us a fresh URL; NetEase playlist links carry no id at all.
+            #[cfg(feature = "kugou")]
+            {
+                let path = self.queue.current_path()?;
+                crate::ui::online::online_track_matching_path(&path).map(|track| {
+                    OnlineIdentity::Kugou {
+                        hash: track.hash.clone(),
+                        mix_song_id: track.mix_song_id,
+                        album_id: track.album_id,
+                    }
+                })
+            }
+            #[cfg(not(feature = "kugou"))]
+            {
+                None
+            }
+        })?;
+        let display = self.queue.current_display().unwrap_or((None, None, None, None));
+        #[cfg(feature = "kugou")]
+        let kugou_quality = self.playback_settings.online_quality.as_str();
+        #[cfg(feature = "netease")]
+        let netease_quality = self.playback_settings.netease_quality.as_str();
+
+        let url = crate::RUNTIME.block_on(crate::ui::online::refresh_online_url(
+            &identity,
+            #[cfg(feature = "kugou")]
+            kugou_quality,
+            #[cfg(feature = "netease")]
+            netease_quality,
+            display,
+        ))?;
+        self.queue.replace_current_path(PathBuf::from(&url));
+        Some(PathBuf::from(url))
+    }
+
+    #[cfg(not(feature = "online_sources"))]
+    fn refresh_expired_online_url(&mut self) -> Option<PathBuf> {
+        None
+    }
+
     fn open_with_resampler(
         &mut self,
         path: &Path,
@@ -318,19 +370,37 @@ impl PlaybackThread {
         self.last_track_gain = None;
         self.last_album_gain = None;
 
-        let duration = self.engine.open(path, preserve_resampler)?;
+        let (duration, open_path) = match self.engine.open(path, preserve_resampler) {
+            Ok(duration) => (duration, path.to_path_buf()),
+            Err(first_error) => {
+                // A persisted online direct link is signed and expires (403).
+                // Before skipping, re-fetch a fresh URL from the item's
+                // provider identity and retry the open once.
+                let Some(fresh_path) = self.refresh_expired_online_url() else {
+                    return Err(first_error);
+                };
+                info!(
+                    "persisted stream URL expired; retrying with refreshed URL"
+                );
+                let fresh_path = PathBuf::from(fresh_path);
+                let duration = self
+                    .engine
+                    .open(Path::new(&fresh_path), preserve_resampler)?;
+                (duration, fresh_path)
+            }
+        };
 
         // [mem] probe: sample on every track change so a long session's log
         // shows whether committed private bytes keep climbing song by song or
         // return to a stable base (genuine live growth, not working-set noise).
         let (private, working) = crate::process_memory_mb();
-        tracing::info!(path = %path.display(), private_mb = private, working_mb = working, "[mem] track open");
+        tracing::info!(path = %open_path.display(), private_mb = private, working_mb = working, "[mem] track open");
 
         // Enable loop-point-aware decoding if repeat-one is active
         self.engine
             .set_looping(self.queue.repeat_state() == RepeatState::RepeatingOne);
 
-        self.send_event(PlaybackEvent::SongChanged(path.to_owned()));
+        self.send_event(PlaybackEvent::SongChanged(open_path));
 
         self.send_event(PlaybackEvent::DurationChanged(duration.unwrap_or(0)));
 

@@ -667,85 +667,22 @@ fn refresh_restored_online_urls(
                 .read()
                 .expect("poisoned queue")
                 .get(idx)
-                .and_then(|item| item.persisted_display());
+                .and_then(|item| item.persisted_display())
+                .unwrap_or((None, None, None, None));
 
-            // The KuGou registry only fills on `play_track`, so every refreshed
-            // URL must be re-registered or lyrics / like / download fail to
-            // resolve that stream when it comes up in rotation. NetEase's
-            // registry is already updated inside `refresh_restored_url`.
-            #[cfg(feature = "kugou")]
-            let mut remember_kugou: Option<crate::ui::kugou::KugouTrackInfo> = None;
-
-            let url = match &identity {
+            // Shared refresh: fetches a fresh URL and re-registers it in the
+            // provider's stream registry (lyrics / like / download resolve by
+            // that registry, so a refreshed URL must be re-registered or those
+            // break once the refreshed stream comes up in rotation).
+            let url = crate::ui::online::refresh_online_url(
+                &identity,
                 #[cfg(feature = "kugou")]
-                OnlineIdentity::Kugou { hash, mix_song_id, album_id } => {
-                    let client = crate::kugou::shared_client();
-                    let hash = hash.clone();
-                    let mix_song_id = *mix_song_id;
-                    let album_id = *album_id;
-                    let kugou_quality = kugou_quality.clone();
-                    remember_kugou = Some(crate::ui::kugou::KugouTrackInfo {
-                        title: display
-                            .as_ref()
-                            .and_then(|d| d.0.clone())
-                            .unwrap_or_default()
-                            .into(),
-                        artist: display
-                            .as_ref()
-                            .and_then(|d| d.1.clone())
-                            .unwrap_or_default()
-                            .into(),
-                        album: SharedString::default(),
-                        duration: display.as_ref().and_then(|d| d.2).unwrap_or(0),
-                        hash: hash.clone(),
-                        mix_song_id,
-                        album_id,
-                        cover_url: display
-                            .as_ref()
-                            .and_then(|d| d.3.clone())
-                            .unwrap_or_default()
-                            .into(),
-                    });
-                    crate::RUNTIME
-                        .spawn(async move {
-                            crate::ui::kugou::fetch_stream_url(
-                                &client,
-                                &hash,
-                                mix_song_id,
-                                album_id,
-                                &kugou_quality,
-                            )
-                            .await
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                }
+                kugou_quality.as_str(),
                 #[cfg(feature = "netease")]
-                OnlineIdentity::Netease { id } => {
-                    let (name, artist, duration, cover) =
-                        display.unwrap_or((None, None, None, None));
-                    let id = *id;
-                    let netease_quality = netease_quality.clone();
-                    crate::RUNTIME
-                        .spawn(async move {
-                            crate::ui::netease::refresh_restored_url(
-                                id,
-                                &netease_quality,
-                                name,
-                                artist,
-                                duration,
-                                cover,
-                            )
-                            .await
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                }
-                #[allow(unreachable_patterns)]
-                _ => None,
-            };
+                netease_quality.as_str(),
+                display,
+            )
+            .await;
 
             let Some(url) = url else { continue };
 
@@ -763,11 +700,6 @@ fn refresh_restored_online_urls(
                 item.replace_path(PathBuf::from(url.clone()));
                 was_current
             };
-
-            #[cfg(feature = "kugou")]
-            if let Some(track) = remember_kugou {
-                crate::ui::kugou::remember_online_track(url.clone(), track);
-            }
 
             if was_current {
                 current_track.update(cx, |track, cx| {

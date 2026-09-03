@@ -30,7 +30,7 @@ mod settings;
 #[cfg(test)]
 mod test_support;
 mod toasts;
-mod ui;
+pub mod ui;
 
 const VERSION_STRING: &str = env!("MELIORA_VERSION_STRING");
 
