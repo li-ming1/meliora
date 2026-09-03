@@ -1,12 +1,20 @@
+<div align="center">
+
+<img src="assets/images/logo.png" width="110" alt="Meliora">
+
 # Meliora
 
-[简体中文](README.md) · **English**
+A fast, fluid desktop music player — for your local library and online streaming.
+
+&nbsp;&nbsp;[**Download**](https://github.com/li-ming1/meliora/releases)&nbsp;&nbsp;·&nbsp;&nbsp;[简体中文](README.md)&nbsp;&nbsp;
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4a90d9)]()
 
-A lightweight third-party desktop music player written in Rust, built on GPUI — shipped as a single file, with low memory usage and fast startup.
+</div>
+
+---
 
 Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummingbird-player/hummingbird). It keeps the local music library and playback capabilities, and adds online services for NetEase Cloud Music and KuGou Music (online catalog, charts, playlists, QR-code login, online streaming and downloading).
 
@@ -41,7 +49,7 @@ Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummin
 ### Online Services (features)
 
 - NetEase Cloud Music (`netease`): QR-code login, search, playlists, charts, online streaming and downloading
-- KuGou Music (`kugou`): QR-code login, search, playlists, charts, online streaming and downloading
+- KuGou Music (`kugou`): VIP privileges granted on QR-code login; search, playlists, charts, online streaming and downloading
 
 ### UI & System
 
@@ -57,40 +65,63 @@ Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummin
 
 ![Settings](screenshots/settings.png)
 
-## Tech Stack
-
-- Rust 2024 edition
-- [GPUI](https://github.com/gpui-ce/gpui-ce) (gpui-ce / gpui-unofficial fork)
-- SQLx + SQLite (local database)
-- Symphonia / lofty / cpal / rubato / realfft
-
 ## Building
 
 ### Prerequisites
 
-- Rust toolchain `stable-x86_64-pc-windows-msvc` (see `rust-toolchain.toml`)
-- VS2022 MSVC, Windows SDK and CMake (required by `opusic-sys`)
+- Rust toolchain `stable` (pinned to `stable-x86_64-pc-windows-msvc` on Windows, see `rust-toolchain.toml`)
+- **Windows**: VS2026 MSVC C++ toolchain, Windows SDK and CMake (`opusic-sys` links native audio-processing libs; icon embedding also needs `rc.exe` from the SDK)
+- **Linux / macOS**: GPUI platform dependencies (X11/Wayland or AppKit, system font libraries, etc.) — see [gpui-ce](https://github.com/gpui-ce/gpui-ce)
 
-A standard toolchain installation builds out of the box. If your toolchain has a non-standard layout, follow [.cargo/config.toml.example](.cargo/config.toml.example) and [build-release.cmd.example](build-release.cmd.example) (contains real paths — do not commit).
+A standard toolchain installation builds out of the box. If yours has a non-standard layout (e.g. VS2022 not registered with vswhere, SDK/CMake outside default locations), write your real paths into a local copy of [.cargo/config.toml.example](.cargo/config.toml.example) and [build-release.cmd.example](build-release.cmd.example) (these hold private paths and are not committed).
 
-### Windows
+### Base build (local playback)
 
-```powershell
-cargo build --release --features kugou,netease
-```
-
-### Custom Features
+The default build enables no online features — suitable for a pure local library:
 
 ```bash
-cargo build --release --features kugou,netease
+cargo build --release
 ```
 
-Available features: `kugou`, `netease`, `online`, `console`, `runtime_shaders`.
+### Enabling online services
 
-### Data & Logs
+Online services are opt-in via features; append them to your build command:
 
-- Data directory: `%APPDATA%\meliora\data\`
+```bash
+# KuGou + NetEase (recommended)
+cargo build --release --features kugou,netease
+
+# only one provider
+cargo build --release --features kugou
+cargo build --release --features netease
+```
+
+### Feature reference
+
+| feature | purpose |
+|---|---|
+| `kugou` | KuGou Music online service (QR-code login, search, playlists, charts, streaming and downloading); pulls in `online` + `online_sources` |
+| `netease` | NetEase Cloud Music online service, same aggregation |
+| `online` | Base dependency for online services (HTTP client) |
+| `online_sources` | Shared online-track plumbing: HTTP-range streaming, cover cache, online queue items; auto-enabled by the provider features above |
+| `console` | [tokio-console](https://github.com/tokio-rs/console) runtime diagnostics |
+| `runtime_shaders` | Compile GPUI shaders at runtime (for shader debugging) |
+
+Note: `default = []` — a plain build includes none of the features above.
+
+### One-shot Windows build
+
+On Windows, prefer the in-repo `build-release.cmd`: it prepends your local MSVC / Windows SDK / CMake paths to PATH and builds a release (defaults to `--features kugou,netease`):
+
+```powershell
+.\build-release.cmd
+```
+
+### Run & data
+
+- Data directory: `%APPDATA%\meliora\data\` (settings.json, library.db, playback session, ...)
 - Log file: `%LOCALAPPDATA%\meliora\data\meliora.log`
+- Full reset: quit the app, then delete both `meliora` folders above
 
 ## Acknowledgments
 
@@ -103,6 +134,16 @@ This project references the following open-source projects:
 | [hummingbird-player/hummingbird](https://github.com/hummingbird-player/hummingbird) | The predecessor of this project; Meliora is a continuation and rewrite of its codebase |
 
 In addition, the UI icons come from [Tabler Icons](https://tabler.io/icons) (MIT License, see `assets/icons/LICENSE`).
+
+## ⭐ Support the project
+
+If you find this project helpful, give us a Star! Your support keeps us improving.
+
+[![GitHub stars](https://img.shields.io/github/stars/li-ming1/meliora?style=social)](https://github.com/li-ming1/meliora)
+
+## ✅ Feedback
+
+For any questions or suggestions, feel free to open an [issue](https://github.com/li-ming1/meliora/issues) or [pull request](https://github.com/li-ming1/meliora/pulls).
 
 ## License
 
