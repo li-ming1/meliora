@@ -1,6 +1,7 @@
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use gpui::{
@@ -12,6 +13,7 @@ use gpui::{
 use gpui::SharedString;
 use globwalk::GlobWalkerBuilder;
 use image::{Frame, Pixel, imageops};
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use sqlx::SqlitePool;
 use tracing::error;
@@ -67,7 +69,7 @@ fn decode_to_render_image_scaled(
     decode_rgba_to_render_image(image.to_rgba8())
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ManagedImageKey {
     Album(i64),
     Track(i64),
@@ -77,8 +79,134 @@ pub enum ManagedImageKey {
     HttpCover(SharedString),
 }
 
+/// Upper bound on decoded `RenderImage`s kept alive across elements.
+///
+/// Scrolling an online list re-creates `ManagedImage` rows; without this cache
+/// each one re-decodes the same URL into a fresh `RenderImage` and re-uploads a
+/// new atlas texture. Capping the retained set keeps that churn from adding up
+/// (128 × 256px thumbs ≈ 32 MB worst case), and re-painting a recently seen
+/// cover reuses the exact same `RenderImage`/atlas slot instead.
+const RENDER_CACHE_MAX: usize = 128;
+
+/// Bounded set of decoded covers shared by all `ManagedImage` elements.
+/// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
+/// are different decodes. Evicted entries simply drop the `Arc`; the owning
+/// element's `on_release` still runs `drop_image_from_app` when it unmounts,
+/// so stray atlas textures are reclaimed by that path, never here.
+static RENDER_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct RenderCacheKey {
+    key: ManagedImageKey,
+    thumb: u32,
+}
+
+struct RenderCache {
+    cache: FxHashMap<RenderCacheKey, (Arc<RenderImage>, u64)>,
+    usage: VecDeque<RenderCacheKey>,
+    /// Approximate live pixel bytes, tracked so the [mem] probe can report the
+    /// exact footprint of this cache instead of hand-waving at peak numbers.
+    bytes: u64,
+}
+
+/// Estimated RGBA footprint in bytes of a decoded cover.
+fn image_bytes(image: &RenderImage) -> u64 {
+    let size = image.size(0);
+    (size.width.0 as u64) * (size.height.0 as u64) * 4
+}
+
+/// Live foot print of the decoded-cover LRU, in MiB. Reported by the [mem]
+/// periodic probe.
+pub fn render_cache_mb() -> u64 {
+    let Some(cache) = RENDER_CACHE.get() else {
+        return 0;
+    };
+    let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.bytes / (1024 * 1024)
+}
+
+fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderImage>> {
+    let cache_key = RenderCacheKey {
+        key: key.clone(),
+        thumb,
+    };
+
+    let cache = RENDER_CACHE.get_or_init(|| {
+        Mutex::new(RenderCache {
+            cache: FxHashMap::default(),
+            usage: VecDeque::new(),
+            bytes: 0,
+        })
+    });
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let hit = cache.cache.get(&cache_key).map(|(image, _)| image.clone())?;
+    // Refresh recency without allocating: reinserting the key would push a
+    // duplicate, so rotate the existing position to the back instead.
+    if let Some(pos) = cache.usage.iter().position(|k| *k == cache_key) {
+        cache.usage.remove(pos);
+        cache.usage.push_back(cache_key);
+    }
+    Some(hit)
+}
+
+fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>) {
+    let cache_key = RenderCacheKey { key, thumb };
+    let new_bytes = image_bytes(&image);
+
+    let cache = RENDER_CACHE.get_or_init(|| {
+        Mutex::new(RenderCache {
+            cache: FxHashMap::default(),
+            usage: VecDeque::new(),
+            bytes: 0,
+        })
+    });
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Replace an existing entry (possibly decoded by a concurrent element) or
+    // evict the least-recently-used slot once the budget is full.
+    if let Some((_, old_bytes)) = cache.cache.insert(cache_key.clone(), (image, new_bytes)) {
+        cache.bytes = cache.bytes.saturating_sub(old_bytes) + new_bytes;
+    } else {
+        cache.bytes += new_bytes;
+        cache.usage.push_back(cache_key);
+        if cache.usage.len() > RENDER_CACHE_MAX {
+            if let Some(oldest) = cache.usage.pop_front()
+                && let Some((_, bytes)) = cache.cache.remove(&oldest)
+            {
+                cache.bytes = cache.bytes.saturating_sub(bytes);
+            }
+        }
+    }
+}
+
 impl ManagedImageKey {
+    /// Fetches and decodes the artwork, memoized in `RENDER_CACHE` so a cover
+    /// that scrolls back into view reuses the same `RenderImage` instead of
+    /// paying for a fresh decode + atlas upload per element instance. Only
+    /// thumbnails are cached: full-resolution (thumb 0) art is a one-off gallery
+    /// decode that would blow the pixel budget at `RENDER_CACHE_MAX`.
     async fn retrieve(
+        &self,
+        pool: SqlitePool,
+        thumb_size: u32,
+    ) -> anyhow::Result<Option<Arc<RenderImage>>> {
+        if thumb_size > 0
+            && let Some(image) = render_cache_lookup(self, thumb_size)
+        {
+            return Ok(Some(image));
+        }
+
+        let decoded = self.retrieve_uncached(pool, thumb_size).await?;
+        if thumb_size > 0
+            && let Some(image) = &decoded
+        {
+            render_cache_insert(self.clone(), thumb_size, image.clone());
+        }
+        Ok(decoded)
+    }
+
+    async fn retrieve_uncached(
         &self,
         pool: SqlitePool,
         // Square thumbnail bound in pixels; `0` keeps full size.

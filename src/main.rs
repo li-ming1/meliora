@@ -50,27 +50,91 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .unwrap()
 });
 
-/// Current process memory, in MiB: (private, virtual/working-set).
-/// Used by the `[mem]` probe to watch for long-run growth / unreclaimed
-/// high-water marks while playback stays up.
+/// Current process memory, in MiB: `(private_committed, working_set)`.
+/// `private_committed` is the *commit charge* (what task manager shows / what
+/// the OS actually reserves), not the resident set; resident pages are far more
+/// volatile and under-reported the long-run curve in past logs.
 pub(crate) fn process_memory_mb() -> (u64, u64) {
-    use sysinfo::ProcessesToUpdate;
+    #[cfg(target_os = "windows")]
+    {
+        use core::ffi::c_void;
 
-    let pid = sysinfo::Pid::from_u32(std::process::id());
-    let mut sys = sysinfo::System::new_with_specifics(sysinfo::RefreshKind::default());
-    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
-    match sys.process(pid) {
-        Some(process) => (
-            process.memory() / (1024 * 1024),
-            process.virtual_memory() / (1024 * 1024),
-        ),
-        None => (0, 0),
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_nonpaged_pool_usage: usize,
+            quota_nonpaged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+            private_usage: usize,
+        }
+
+        #[link(name = "psapi")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut c_void;
+            fn GetProcessMemoryInfo(
+                process: *mut c_void,
+                counters: *mut ProcessMemoryCounters,
+                size: u32,
+            ) -> i32;
+        }
+
+        let mut counters = ProcessMemoryCounters {
+            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota_peak_paged_pool_usage: 0,
+            quota_paged_pool_usage: 0,
+            quota_peak_nonpaged_pool_usage: 0,
+            quota_nonpaged_pool_usage: 0,
+            pagefile_usage: 0,
+            peak_pagefile_usage: 0,
+            private_usage: 0,
+        };
+        // SAFETY: buffer is the correct size and type; the pseudo-handle is
+        // always valid for querying the current process.
+        let ok = unsafe {
+            GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut counters,
+                std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            )
+        };
+        if ok != 0 {
+            let committed = (counters.private_usage / (1024 * 1024)) as u64;
+            let working = (counters.working_set_size / (1024 * 1024)) as u64;
+            (committed, working)
+        } else {
+            (0, 0)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use sysinfo::ProcessesToUpdate;
+
+        let pid = sysinfo::Pid::from_u32(std::process::id());
+        let mut sys = sysinfo::System::new_with_specifics(sysinfo::RefreshKind::default());
+        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
+        match sys.process(pid) {
+            Some(process) => (
+                process.memory() / (1024 * 1024),
+                process.virtual_memory() / (1024 * 1024),
+            ),
+            None => (0, 0),
+        }
     }
 }
 
 /// Background memory probe: samples process memory every 30 seconds so a long
-/// playback session leaves a curve in the log (private vs working set) that
-/// separates a real leak from allocator/GPU pool retention.
+/// playback session leaves a curve in the log (committed private bytes vs
+/// working set) that separates a real leak from cache/cache-size growth.
 fn spawn_memory_probe() {
     crate::RUNTIME.spawn(async {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -82,6 +146,7 @@ fn spawn_memory_probe() {
                 private_mb = private,
                 working_mb = working,
                 covers_mb = disk_cover_cache_mb(),
+                render_cache_mb = crate::ui::components::managed_image::render_cache_mb(),
                 "[mem] periodic"
             );
         }
