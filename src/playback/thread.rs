@@ -48,6 +48,11 @@ const BACKGROUND_POSITION_BROADCAST_INTERVAL_MS: u64 = 250;
 /// Consecutive no-progress cycles while playing before the current track is skipped.
 const MAX_NO_PROGRESS_CYCLES: u32 = 50;
 
+/// Cap on the online-URL refresh inside the playback loop: the provider
+/// clients carry no per-request timeout, and this retry runs synchronously on
+/// the playback thread, so an unresponsive API must not stall the audio loop.
+const STREAM_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// Sleep after a no-progress cycle, growing exponentially from 2 ms to 50 ms so a persistent error
 /// doesn't pin a core.
 fn no_progress_backoff(cycles: u32) -> std::time::Duration {
@@ -343,14 +348,27 @@ impl PlaybackThread {
         #[cfg(feature = "netease")]
         let netease_quality = self.playback_settings.netease_quality.as_str();
 
-        let url = crate::RUNTIME.block_on(crate::ui::online::refresh_online_url(
-            &identity,
-            #[cfg(feature = "kugou")]
-            kugou_quality,
-            #[cfg(feature = "netease")]
-            netease_quality,
-            display,
-        ))?;
+        let url = crate::RUNTIME
+            .block_on(async {
+                tokio::time::timeout(
+                    STREAM_REFRESH_TIMEOUT,
+                    crate::ui::online::refresh_online_url(
+                        &identity,
+                        #[cfg(feature = "kugou")]
+                        kugou_quality,
+                        #[cfg(feature = "netease")]
+                        netease_quality,
+                        display,
+                    ),
+                )
+                .await
+                .ok()
+                .flatten()
+            })
+            .or_else(|| {
+                warn!("failed to refresh expired stream URL; skipping track");
+                None
+            })?;
         self.queue.replace_current_path(PathBuf::from(&url));
         Some(PathBuf::from(url))
     }
@@ -376,7 +394,10 @@ impl PlaybackThread {
                 // A persisted online direct link is signed and expires (403).
                 // Before skipping, re-fetch a fresh URL from the item's
                 // provider identity and retry the open once.
-                let Some(fresh_path) = self.refresh_expired_online_url() else {
+                let Some(fresh_path) = crate::media::is_http_path(path)
+                    .then(|| self.refresh_expired_online_url())
+                    .flatten()
+                else {
                     return Err(first_error);
                 };
                 info!(
