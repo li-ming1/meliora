@@ -401,6 +401,7 @@ impl Render for NeteaseSettings {
                                             "netease-settings-avatar",
                                             ManagedImageKey::HttpCover(url),
                                         )
+                                        .thumb()
                                         .size_full(),
                                     ),
                             )

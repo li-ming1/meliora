@@ -325,6 +325,7 @@ impl KugouRanksView {
                             ("kugou-rank-cover", index),
                             ManagedImageKey::HttpCover(rank.cover_url.clone()),
                         )
+                        .thumb_max(256)
                         .w(px(148.0))
                         .h(px(148.0))
                         .rounded(px(theme.radius_md)),

@@ -553,6 +553,7 @@ impl Render for Sidebar {
                             ("netease-sidebar-avatar", 0usize),
                             ManagedImageKey::HttpCover(url),
                         )
+                        .thumb()
                         .size_full(),
                     )
                 })

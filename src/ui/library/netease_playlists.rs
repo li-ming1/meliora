@@ -281,6 +281,7 @@ impl NeteasePlaylistsView {
                     ("netease-playlist-cover", index),
                     ManagedImageKey::HttpCover(playlist.cover_url.clone()),
                 )
+                .thumb()
                 .w(px(40.0))
                 .h(px(40.0))
                 .rounded(px(theme.radius_md))
