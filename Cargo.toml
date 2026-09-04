@@ -54,14 +54,12 @@ gpui = { package = "gpui-unofficial", git = "https://git.mailliw.org/hummingbird
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", features = ["wayland", "x11", "font-kit"] }
 image = "0.25"
 indexmap = { version = "2", features = ["serde"] }
-infer = "0.22"
 intx = "0.1"
 itertools = "0.15"
 lofty = "0.25"
 md-5 = { version = "0.10", optional = true }
 rsa = { version = "0.9", optional = true, default-features = false, features = ["std", "pem"] }
 qrcode = { version = "0.14", optional = true, default-features = false, features = ["image"] }
-moka = { version = "0.12", features = ["sync"] }
 notify = "8"
 nucleo = "0.5"
 open = "5"

@@ -93,6 +93,11 @@ pub struct PbcHandle(
     /// of an album; without this, each emission rebuilt the WinRT thumbnail
     /// (transient MB-scale allocations) over the whole background session.
     Option<std::sync::Weak<[u8]>>,
+    /// Last position (seconds) sent to the controller. Position events fire
+    /// at 30 Hz while a window is focused, but the value only changes once a
+    /// second; forwarding each one makes the Windows controller perform two
+    /// WinRT calls per event for nothing.
+    u64,
 );
 
 impl Global for PbcHandle {}
@@ -144,7 +149,7 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
         if let Some(track) = e.read(cx)
             && let path = track.get_path().clone()
         {
-            let PbcHandle(tx, _, last_art) = cx.global_mut::<PbcHandle>();
+            let PbcHandle(tx, _, last_art, _) = cx.global_mut::<PbcHandle>();
             // new_file clears the SMTC thumbnail, so the next artwork event
             // must re-send even if identical to what we sent before.
             *last_art = None;
@@ -165,7 +170,7 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
     .detach();
 
     cx.subscribe(&albumart, |_, ImageEvent(img), cx| {
-        let PbcHandle(tx, _, last_art) = cx.global_mut::<PbcHandle>();
+        let PbcHandle(tx, _, last_art, _) = cx.global_mut::<PbcHandle>();
         // Deduplicate identical artwork: rebuilding the SMTC thumbnail for a
         // repeated emission is pure churn over a long background session.
         let already_sent = last_art
@@ -184,8 +189,16 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
 
     cx.observe(&position, |e, cx| {
         let &pos = e.read(cx);
-        let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::PositionChanged(pos / 1_000)) {
+        let secs = pos / 1_000;
+        let PbcHandle(tx, _, _, last_secs) = cx.global_mut::<PbcHandle>();
+        // Position broadcasts arrive every 33-250 ms, but the second value
+        // only changes once per second. Skip the hundreds of duplicate
+        // forwards so the SMTC timeline isn't rebuilt at 4-30 Hz.
+        if *last_secs == secs {
+            return;
+        }
+        *last_secs = secs;
+        if let Err(err) = tx.send(PbcEvent::PositionChanged(secs)) {
             error!(msg = ?err.0, "failed to send pbc event: {err}");
         }
     })
@@ -303,5 +316,5 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
         tracing::info!("channel closed, ending task");
     });
 
-    cx.set_global(PbcHandle(pbc_tx, task, None));
+    cx.set_global(PbcHandle(pbc_tx, task, None, 0));
 }

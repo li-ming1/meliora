@@ -9,7 +9,7 @@ use tracing::debug;
 use crate::{
     library::{db::LibraryAccess, scan::ScanEvent},
     ui::{
-        availability::album_has_available_tracks,
+        availability::available_album_ids,
         components::palette::Palette,
         library::ViewSwitchMessage,
         models::Models,
@@ -24,7 +24,6 @@ type OnAccept = Box<dyn Fn(&Arc<SearchPaletteItem>, &mut App) + 'static>;
 pub struct SearchModel {
     palette: Entity<Palette<SearchPaletteItem, MatcherFunc, OnAccept>>,
     /// Local (library) items, kept around so online results can be merged in.
-    #[cfg(feature = "online_sources")]
     local_items: Vec<Arc<SearchPaletteItem>>,
     #[cfg(feature = "kugou")]
     kugou_items: Vec<Arc<SearchPaletteItem>>,
@@ -39,6 +38,8 @@ pub struct SearchModel {
 }
 
 fn load_search_items(cx: &mut App) -> Vec<Arc<SearchPaletteItem>> {
+    let available_albums = available_album_ids(cx);
+
     let albums = match cx.list_albums_search() {
         Ok(album_data) => album_data
             .into_iter()
@@ -48,7 +49,7 @@ fn load_search_items(cx: &mut App) -> Vec<Arc<SearchPaletteItem>> {
                     title,
                     artist_override,
                     artists,
-                    album_has_available_tracks(cx, id),
+                    available_albums.contains(&id),
                 )
             })
             .collect(),
@@ -80,7 +81,12 @@ fn load_search_items(cx: &mut App) -> Vec<Arc<SearchPaletteItem>> {
 impl SearchModel {
     pub fn new(cx: &mut App, show: &Entity<bool>) -> Entity<SearchModel> {
         cx.new(|cx| {
-            let items = load_search_items(cx);
+            // Do not build the whole-library index here: SearchView is created
+            // with the main window, and three full-table queries plus an
+            // availability pass would block the first frame for a large
+            // library. The first palette open (observer below) loads it, and
+            // scan completions refresh it.
+            let items = Vec::new();
 
             let weak_self = cx.weak_entity();
 
@@ -137,14 +143,12 @@ impl SearchModel {
                 }
             });
 
-            #[cfg(feature = "online_sources")]
             let local_items = items.clone();
 
             let palette = Palette::new(cx, items, matcher, on_accept, show);
 
             let search_model = SearchModel {
                 palette,
-                #[cfg(feature = "online_sources")]
                 local_items,
                 #[cfg(feature = "kugou")]
                 kugou_items: Vec::new(),
@@ -176,22 +180,10 @@ impl SearchModel {
             // 首次打开搜索面板时加载本地索引并推给调色板（按需构建，避免启动即常驻）
             let palette_for_load = search_model.palette.clone();
             let show_for_load = show.clone();
-            cx.observe(&show_for_load, move |_this, show, cx| {
-                // online 分支需要读写本地索引，无在线源时该参数保持未用
-                #[cfg(feature = "online_sources")]
-                let this = _this;
-                if *show.read(cx) {
-                    #[cfg(feature = "online_sources")]
-                    if !this.local_items.is_empty() {
-                        return;
-                    }
-
+            cx.observe(&show_for_load, move |this, show, cx| {
+                if *show.read(cx) && this.local_items.is_empty() {
                     let new_items = load_search_items(cx);
-
-                    #[cfg(feature = "online_sources")]
-                    {
-                        this.local_items = new_items.clone();
-                    }
+                    this.local_items = new_items.clone();
 
                     palette_for_load.update(cx, |_, cx| {
                         cx.emit(new_items);
@@ -202,12 +194,10 @@ impl SearchModel {
 
             let scan_status = cx.global::<Models>().scan_state.clone();
             let palette_weak = search_model.palette.downgrade();
+            let show_for_scan = show.clone();
 
-            cx.observe(&scan_status, move |_this, scan_event, cx| {
+            cx.observe(&scan_status, move |this, scan_event, cx| {
                 let state = scan_event.read(cx);
-
-                #[cfg(feature = "online_sources")]
-                let this = _this;
 
                 if *state == ScanEvent::ScanCompleteIdle
                     || *state == ScanEvent::ScanCompleteWatching
@@ -215,20 +205,23 @@ impl SearchModel {
                 {
                     debug!("Scan complete, refreshing search items");
 
+                    // File-watcher rescans fire even while the palette is
+                    // closed: rebuilding the whole index then would do three
+                    // + queries synchronously on the UI thread for results
+                    // nobody is looking at. Invalidate instead and only
+                    // reload now if the panel is actually open.
+                    this.local_items.clear();
+                    if !*show_for_scan.read(cx) {
+                        return;
+                    }
+
                     let new_items = load_search_items(cx);
+                    this.local_items = new_items.clone();
+                    let emitted = this.merged_items();
 
                     if let Some(palette) = palette_weak.upgrade() {
-                        #[cfg(feature = "online_sources")]
-                        let emitted = {
-                            this.local_items = new_items.clone();
-                            this.merged_items()
-                        };
-
                         palette.update(cx, |_, cx| {
-                            #[cfg(feature = "online_sources")]
                             cx.emit(emitted);
-                            #[cfg(not(feature = "online_sources"))]
-                            cx.emit(new_items);
                         });
                     }
                 }
@@ -240,7 +233,6 @@ impl SearchModel {
     }
 
     /// Local items followed by online (KuGou, then NetEase) items.
-    #[cfg(feature = "online_sources")]
     fn merged_items(&self) -> Vec<Arc<SearchPaletteItem>> {
         self.local_items
             .iter()

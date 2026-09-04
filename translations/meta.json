@@ -1201,7 +1201,7 @@
   },
   "NETEASE_DAILY_LOGIN_REQUIRED": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:461",
+    "definedIn": "src/ui/library/netease_ranks.rs:462",
     "plural": false,
     "description": null
   },
@@ -1225,13 +1225,13 @@
   },
   "NETEASE_DOWNLOAD_DIR": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:515",
+    "definedIn": "src/ui/settings/netease.rs:516",
     "plural": false,
     "description": null
   },
   "NETEASE_DOWNLOAD_DIR_SUBTEXT": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:518",
+    "definedIn": "src/ui/settings/netease.rs:519",
     "plural": false,
     "description": null
   },
@@ -1279,7 +1279,7 @@
   },
   "NETEASE_LOADING": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:412",
+    "definedIn": "src/ui/library/netease_ranks.rs:413",
     "plural": false,
     "description": null
   },
@@ -1291,19 +1291,19 @@
   },
   "NETEASE_LOAD_MORE": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:559",
+    "definedIn": "src/ui/library/netease_ranks.rs:560",
     "plural": false,
     "description": null
   },
   "NETEASE_LOGIN": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:442",
+    "definedIn": "src/ui/settings/netease.rs:443",
     "plural": false,
     "description": null
   },
   "NETEASE_LOGIN_REQUIRED": {
     "context": "netease_playlists.rs",
-    "definedIn": "src/ui/library/netease_playlists.rs:463",
+    "definedIn": "src/ui/library/netease_playlists.rs:464",
     "plural": false,
     "description": null
   },
@@ -1315,19 +1315,19 @@
   },
   "NETEASE_LOGOUT": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:425",
+    "definedIn": "src/ui/settings/netease.rs:426",
     "plural": false,
     "description": null
   },
   "NETEASE_NICKNAME_UNAVAILABLE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:413",
+    "definedIn": "src/ui/settings/netease.rs:414",
     "plural": false,
     "description": null
   },
   "NETEASE_NO_PLAYLISTS": {
     "context": "netease_playlists.rs",
-    "definedIn": "src/ui/library/netease_playlists.rs:515",
+    "definedIn": "src/ui/library/netease_playlists.rs:516",
     "plural": false,
     "description": null
   },
@@ -1357,7 +1357,7 @@
   },
   "NETEASE_OPEN_SETTINGS": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:469",
+    "definedIn": "src/ui/library/netease_ranks.rs:470",
     "plural": false,
     "description": null
   },
@@ -1369,13 +1369,13 @@
   },
   "NETEASE_PLAYLIST_EMPTY": {
     "context": "netease_playlists.rs",
-    "definedIn": "src/ui/library/netease_playlists.rs:419",
+    "definedIn": "src/ui/library/netease_playlists.rs:420",
     "plural": false,
     "description": null
   },
   "NETEASE_QR_CANCEL": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:617",
+    "definedIn": "src/ui/settings/netease.rs:618",
     "plural": false,
     "description": null
   },
@@ -1399,7 +1399,7 @@
   },
   "NETEASE_QR_REGENERATE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:606",
+    "definedIn": "src/ui/settings/netease.rs:607",
     "plural": false,
     "description": null
   },
@@ -1411,7 +1411,7 @@
   },
   "NETEASE_QR_TITLE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:568",
+    "definedIn": "src/ui/settings/netease.rs:569",
     "plural": false,
     "description": null
   },
@@ -1423,31 +1423,31 @@
   },
   "NETEASE_QUALITY_EXHIGH": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:478",
+    "definedIn": "src/ui/settings/netease.rs:479",
     "plural": false,
     "description": null
   },
   "NETEASE_QUALITY_HIGHER": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:473",
+    "definedIn": "src/ui/settings/netease.rs:474",
     "plural": false,
     "description": null
   },
   "NETEASE_QUALITY_HIRES": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:488",
+    "definedIn": "src/ui/settings/netease.rs:489",
     "plural": false,
     "description": null
   },
   "NETEASE_QUALITY_LOSSLESS": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:483",
+    "definedIn": "src/ui/settings/netease.rs:484",
     "plural": false,
     "description": null
   },
   "NETEASE_QUALITY_STANDARD": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:468",
+    "definedIn": "src/ui/settings/netease.rs:469",
     "plural": false,
     "description": null
   },
@@ -1459,7 +1459,7 @@
   },
   "NETEASE_RETRY": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:432",
+    "definedIn": "src/ui/library/netease_ranks.rs:433",
     "plural": false,
     "description": null
   },
@@ -1477,13 +1477,13 @@
   },
   "NETEASE_SETTINGS_INTRO": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:434",
+    "definedIn": "src/ui/settings/netease.rs:435",
     "plural": false,
     "description": null
   },
   "NETEASE_TRACK_COUNT": {
     "context": "netease_playlists.rs",
-    "definedIn": "src/ui/library/netease_playlists.rs:369",
+    "definedIn": "src/ui/library/netease_playlists.rs:370",
     "plural": true,
     "description": null
   },
@@ -1621,13 +1621,13 @@
   },
   "PLAYBACK_NETEASE_QUALITY": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:456",
+    "definedIn": "src/ui/settings/netease.rs:457",
     "plural": false,
     "description": null
   },
   "PLAYBACK_NETEASE_QUALITY_SUBTEXT": {
     "context": "netease.rs",
-    "definedIn": "src/ui/settings/netease.rs:459",
+    "definedIn": "src/ui/settings/netease.rs:460",
     "plural": false,
     "description": null
   },

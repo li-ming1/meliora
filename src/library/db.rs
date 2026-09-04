@@ -467,6 +467,19 @@ pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, St
     Ok(artists)
 }
 
+/// Every (album id, track location) pair, used to compute album availability
+/// (any track still on disk) in a single query instead of one full
+/// `list_tracks_in_album` fetch per album.
+pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
+    let query = include_str!("../../queries/library/find_album_availability.sql");
+
+    let rows = sqlx::query_as::<_, (i64, String)>(query)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows)
+}
+
 pub async fn add_playlist_item(
     pool: &SqlitePool,
     playlist_id: i64,
@@ -841,6 +854,9 @@ pub trait LibraryAccess {
     #[allow(clippy::type_complexity)]
     fn list_tracks_search(&self) -> sqlx::Result<Vec<(i64, String, String, Option<i64>)>>;
     fn list_artists_search(&self) -> sqlx::Result<Vec<(i64, String)>>;
+    /// Every (album id, track location) pair; availability is derived from
+    /// this in one pass instead of per-album queries.
+    fn list_album_availability(&self) -> sqlx::Result<Vec<(i64, String)>>;
     fn create_playlist(&self, name: &str) -> sqlx::Result<i64>;
     fn delete_playlist(&self, playlist_id: i64) -> sqlx::Result<()>;
     fn rename_playlist(&self, playlist_id: i64, name: &str) -> sqlx::Result<()>;
@@ -936,6 +952,11 @@ impl LibraryAccess for App {
     fn list_artists_search(&self) -> sqlx::Result<Vec<(i64, String)>> {
         let pool: &Pool = self.global();
         crate::RUNTIME.block_on(list_artists_search(&pool.0))
+    }
+
+    fn list_album_availability(&self) -> sqlx::Result<Vec<(i64, String)>> {
+        let pool: &Pool = self.global();
+        crate::RUNTIME.block_on(list_album_availability(&pool.0))
     }
 
     fn create_playlist(&self, name: &str) -> sqlx::Result<i64> {
