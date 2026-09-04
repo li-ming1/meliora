@@ -134,21 +134,58 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
 
 /// Background memory probe: samples process memory every 30 seconds so a long
 /// playback session leaves a curve in the log (committed private bytes vs
-/// working set) that separates a real leak from cache/cache-size growth.
+/// working set) that separates a real leak from cache/cache-size growth. A
+/// "step" (net growth over a rolling window) is logged explicitly so every
+/// activity-driven bump in long-run memory is attributable instead of silent.
 fn spawn_memory_probe() {
+    // Net committed growth over the last 10 minutes considered a "step".
+    const STEP_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+    const STEP_MIN_MB: i64 = 20;
+
     crate::RUNTIME.spawn(async {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut baseline: Option<(std::time::Instant, u64)> = None;
         loop {
             tick.tick().await;
             let (private, working) = process_memory_mb();
-            tracing::info!(
-                private_mb = private,
-                working_mb = working,
-                covers_mb = disk_cover_cache_mb(),
-                render_cache_mb = crate::ui::components::managed_image::render_cache_mb(),
-                "[mem] periodic"
-            );
+            let covers = disk_cover_cache_mb();
+            let render_cache =
+                crate::ui::components::managed_image::render_cache_mb();
+
+            let step_alert = match baseline {
+                Some((at, from_mb)) if at.elapsed() >= STEP_WINDOW => {
+                    let delta = private as i64 - from_mb as i64;
+                    // Slide the window forward to the current sample so a
+                    // sustained ramp keeps being measured against the same
+                    // reference instead of resetting to zero.
+                    baseline = Some((std::time::Instant::now(), private));
+                    (delta >= STEP_MIN_MB).then_some(delta)
+                }
+                Some(_) => None,
+                None => {
+                    baseline = Some((std::time::Instant::now(), private));
+                    None
+                }
+            };
+
+            if let Some(delta) = step_alert {
+                tracing::warn!(
+                    step_mb = delta,
+                    private_mb = private,
+                    render_cache_mb = render_cache,
+                    covers_mb = covers,
+                    "mem step: committed grew in last 10 min"
+                );
+            } else {
+                tracing::info!(
+                    private_mb = private,
+                    working_mb = working,
+                    covers_mb = covers,
+                    render_cache_mb = render_cache,
+                    "[mem] periodic"
+                );
+            }
         }
     });
 }
