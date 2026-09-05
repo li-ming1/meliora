@@ -12,11 +12,15 @@ use file_rotate::{
 };
 use tracing_subscriber::{
     Layer,
-    fmt::{self, MakeWriter, format::FmtSpan},
+    fmt::{self, MakeWriter},
     layer::SubscriberExt,
     util::SubscriberInitExt,
 };
 
+// Span lifecycle events (NEW/CLOSE) are deliberately not emitted: on
+// tracing-subscriber 0.3 they bypass the per-layer EnvFilter entirely, so
+// gpui's hot `#[instrument]` spans (sum_tree cursor seek, ~1 pair per list
+// scroll tick) flood the rotating log even with `sum_tree=warn` in place.
 const DEFAULT_LOG_FILTER: &str = "info,symphonia=warn,zbus=warn,sum_tree=warn";
 const LOG_FILE_NAME: &str = "meliora.log";
 const MAX_LOG_FILE_SIZE: usize = 1024 * 1024;
@@ -43,7 +47,6 @@ pub fn init() -> anyhow::Result<()> {
         .with_writer(StderrMakeWriter)
         .with_ansi(io::stderr().is_terminal())
         .with_thread_names(true) // nice to have until we replace with tasks
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // async can be noisy
         .with_timer(fmt::time::uptime()) // date's useless
         .with_filter(env.clone());
     let file_layer = file_writer.map(|writer| {
@@ -51,7 +54,6 @@ pub fn init() -> anyhow::Result<()> {
             .with_writer(writer)
             .with_ansi(false)
             .with_thread_names(true)
-            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
             .with_timer(fmt::time::uptime())
             .with_filter(env)
     });
@@ -140,14 +142,22 @@ fn filter_value() -> String {
 
 fn open_file_make_writer(log_path: &Path) -> Option<FileMakeWriter> {
     fs::create_dir_all(log_path.parent()?).ok()?;
+    Some(FileMakeWriter::new(
+        new_log_rotate(log_path)?,
+        log_path.to_path_buf(),
+    ))
+}
 
-    Some(FileMakeWriter::new(FileRotate::new(
+/// Builds a fresh rotating sink. Opened in append mode by file-rotate, so a
+/// rebuild never truncates what is already on disk.
+fn new_log_rotate(log_path: &Path) -> Option<RotatingLogFile> {
+    Some(FileRotate::new(
         log_path,
         AppendTimestamp::default(FileLimit::MaxFiles(MAX_LOG_FILES)),
         ContentLimit::BytesSurpassed(MAX_LOG_FILE_SIZE),
         Compression::None,
         None,
-    )))
+    ))
 }
 
 /// Creates stderr writers for the tracing stderr layer.
@@ -207,12 +217,15 @@ fn write_stderr(buffer: &[u8]) -> io::Result<()> {
 #[derive(Clone)]
 struct FileMakeWriter {
     file: SharedLogFile,
+    /// Path of the active log, kept so a failed write can rebuild the sink.
+    path: PathBuf,
 }
 
 impl FileMakeWriter {
-    fn new(file: RotatingLogFile) -> Self {
+    fn new(file: RotatingLogFile, path: PathBuf) -> Self {
         Self {
             file: Arc::new(Mutex::new(Some(file))),
+            path,
         }
     }
 }
@@ -223,6 +236,7 @@ impl<'a> MakeWriter<'a> for FileMakeWriter {
     fn make_writer(&'a self) -> Self::Writer {
         FileWriter {
             file: self.file.clone(),
+            path: self.path.clone(),
             buffer: Vec::with_capacity(256),
         }
     }
@@ -231,6 +245,7 @@ impl<'a> MakeWriter<'a> for FileMakeWriter {
 /// Buffers a single formatted log record before writing it to the shared file.
 struct FileWriter {
     file: SharedLogFile,
+    path: PathBuf,
     buffer: Vec<u8>,
 }
 
@@ -251,7 +266,11 @@ impl FileWriter {
         };
 
         if failed {
-            *state = None;
+            // A transient error (AV lock, brief FS hiccup) used to kill file
+            // logging for the rest of the session with no trace of why. Reopen
+            // the sink so a hiccup only costs the one in-flight record; only
+            // give up entirely if the path can no longer be opened.
+            *state = new_log_rotate(&self.path);
         }
     }
 }
