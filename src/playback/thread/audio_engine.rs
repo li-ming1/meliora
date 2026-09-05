@@ -106,6 +106,11 @@ pub struct AudioEngine {
     drain: DrainState,
     /// Consecutive rebuilds without a decode producing audio; see [`MAX_REBUILD_ATTEMPTS`].
     rebuild_attempts: u32,
+    /// Largest device-input capacity any track has needed so far. The pipeline is rebuilt per
+    /// track and its ring/staging/handoff buffers scale with the source rate; sizing them all to
+    /// this floor keeps the per-track allocation size constant so the heap reuses the same
+    /// blocks instead of climbing (the [mem] probe's per-track committed-growth curve).
+    pipeline_capacity_floor: usize,
 }
 
 impl AudioEngine {
@@ -124,6 +129,7 @@ impl AudioEngine {
             state: EngineState::Idle,
             drain: DrainState::Inactive,
             rebuild_attempts: 0,
+            pipeline_capacity_floor: 0,
         }
     }
 
@@ -676,7 +682,15 @@ impl AudioEngine {
             source_rate,
             device_format.sample_rate,
             DEFAULT_BUFFER_FRAMES,
+            self.pipeline_capacity_floor,
         );
+        // Raise the floor to what this track actually needs, so later tracks
+        // allocate at the largest size seen so far instead of a fresh size.
+        self.pipeline_capacity_floor = self.pipeline_capacity_floor.max(output_frame_bound(
+            source_rate,
+            device_format.sample_rate,
+            DEFAULT_BUFFER_FRAMES,
+        ));
 
         if channels_match {
             self.mixer = None;
@@ -1044,7 +1058,7 @@ mod tests {
 
     #[test]
     fn route_passthrough_applies_eq() {
-        let mut p = AudioPipeline::new(2, 2, 48_000, 48_000, 64);
+        let mut p = AudioPipeline::new(2, 2, 48_000, 48_000, 64, 0);
         let mut eq = EqualizerProcessor::new(48_000.0, 2);
         eq.set_config(&config(EqBandKind::Bell, 1_000.0, 24.0, true));
 
@@ -1067,7 +1081,7 @@ mod tests {
 
     #[test]
     fn route_passthrough_bypassed_eq_is_bit_exact() {
-        let mut p = AudioPipeline::new(2, 2, 48_000, 48_000, 64);
+        let mut p = AudioPipeline::new(2, 2, 48_000, 48_000, 64, 0);
         let mut eq = EqualizerProcessor::new(48_000.0, 2);
         eq.set_config(&config(EqBandKind::Bell, 1_000.0, 24.0, false));
 
@@ -1082,7 +1096,7 @@ mod tests {
 
     #[test]
     fn route_mixer_path_applies_eq_after_mixing() {
-        let mut p = AudioPipeline::new(1, 2, 48_000, 48_000, 64);
+        let mut p = AudioPipeline::new(1, 2, 48_000, 48_000, 64, 0);
         let mut mixer = Some(ChannelMixer::new(
             ChannelLayout::Positioned(ChannelPosition::FRONT_CENTER),
             ChannelLayout::Positioned(ChannelPosition::FRONT_LEFT | ChannelPosition::FRONT_RIGHT),

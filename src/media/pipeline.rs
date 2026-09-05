@@ -239,14 +239,19 @@ impl AudioPipeline {
         source_rate: u32,
         target_rate: u32,
         buffer_frames: usize,
+        min_device_input_capacity: usize,
     ) -> Self {
         let (decoder_output, resampler_input) =
             ChannelBuffers::new(source_channel_count, buffer_frames).split();
 
         // The device-input ring must be able to absorb one full cycle's resampler output (the
         // resampler reads up to `buffer_frames` and can upsample), so a single write never blocks
-        // on a same-thread consumer.
-        let device_input_capacity = output_frame_bound(source_rate, target_rate, buffer_frames);
+        // on a same-thread consumer. Honoring `min_device_input_capacity` keeps the ring sized to
+        // the largest capacity a previous track needed: when the per-track bound varies (it scales
+        // with the source rate), a constant allocation size lets the heap reuse the same blocks
+        // instead of growing a fresh segment on every track change.
+        let device_input_capacity = output_frame_bound(source_rate, target_rate, buffer_frames)
+            .max(min_device_input_capacity);
         let (device_input_producers, device_input) =
             ChannelBuffers::new(device_channel_count, device_input_capacity).split();
 
@@ -364,7 +369,7 @@ mod tests {
 
     #[test]
     fn flush_buffers_clears_pipeline() {
-        let mut pipeline = AudioPipeline::new(2, 2, 44_100, 44_100, 64);
+        let mut pipeline = AudioPipeline::new(2, 2, 44_100, 44_100, 64, 0);
 
         pipeline
             .device_input_producers
