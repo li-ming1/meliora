@@ -13,8 +13,8 @@ use std::{
 use async_trait::async_trait;
 use gpui::{App, Global, Window};
 use raw_window_handle::HasWindowHandle;
-use tokio::sync::mpsc::UnboundedSender;
-use tracing::{Instrument as _, debug_span, error, trace_span, warn};
+use tokio::sync::mpsc::Sender;
+use tracing::{Instrument as _, debug, debug_span, error, trace_span, warn};
 
 use crate::{
     media::metadata::Metadata,
@@ -86,7 +86,7 @@ type ControllerList = Option<Box<dyn PlaybackController>>;
 // has to be held in memory
 #[allow(dead_code)]
 pub struct PbcHandle(
-    UnboundedSender<PbcEvent>,
+    Sender<PbcEvent>,
     tokio::task::JoinHandle<()>,
     /// `Arc` identity of the artwork last handed to the playback controller.
     /// The playback thread re-emits the same embedded cover for every track
@@ -131,6 +131,30 @@ impl PbcEvent {
     }
 }
 
+/// Capacity of the playback-controller event queue. Large enough to absorb a
+/// burst of track-change events, small enough that a stalled consumer (WinRT
+/// calls occasionally block on the shell) cannot pile up cover-sized payloads
+/// (`AlbumArtChanged` carries the full embedded artwork) for the length of a
+/// long session.
+const PBC_CHANNEL_CAP: usize = 64;
+
+/// Sends a playback-controller event, shedding load when the consumer has
+/// fallen behind. Dropping the newest event is safe for every variant: SMTC
+/// state is refreshed by the next track anyway, and a stalled shell only
+/// delays the update momentarily.
+fn send_pbc_event(tx: &Sender<PbcEvent>, event: PbcEvent) {
+    use tokio::sync::mpsc::error::TrySendError;
+    match tx.try_send(event) {
+        Ok(()) => {}
+        Err(TrySendError::Full(event)) => {
+            debug!(?event, "pbc queue full; dropping event");
+        }
+        Err(TrySendError::Closed(event)) => {
+            error!(?event, "pbc channel closed; event dropped");
+        }
+    }
+}
+
 pub fn register_pbc_event_handlers(cx: &mut App) {
     let models = cx.global::<Models>();
     let metadata = models.metadata.clone();
@@ -153,9 +177,7 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
             // new_file clears the SMTC thumbnail, so the next artwork event
             // must re-send even if identical to what we sent before.
             *last_art = None;
-            if let Err(err) = tx.send(PbcEvent::NewFile(path)) {
-                error!(msg = ?err.0, "failed to send pbc event: {err}");
-            }
+            send_pbc_event(tx, PbcEvent::NewFile(path));
         }
     })
     .detach();
@@ -163,9 +185,7 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
     cx.observe(&metadata, |e, cx| {
         let meta = e.read(cx).clone();
         let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::MetadataChanged(Box::new(meta))) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::MetadataChanged(Box::new(meta)));
     })
     .detach();
 
@@ -181,9 +201,7 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
             return;
         }
         *last_art = Some(std::sync::Arc::downgrade(&img));
-        if let Err(err) = tx.send(PbcEvent::AlbumArtChanged(img.clone())) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::AlbumArtChanged(img.clone()));
     })
     .detach();
 
@@ -198,54 +216,42 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
             return;
         }
         *last_secs = secs;
-        if let Err(err) = tx.send(PbcEvent::PositionChanged(secs)) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::PositionChanged(secs));
     })
     .detach();
 
     cx.observe(&duration, |e, cx| {
         let &dur = e.read(cx);
         let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::DurationChanged(dur / 1_000)) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::DurationChanged(dur / 1_000));
     })
     .detach();
 
     cx.observe(&volume, |e, cx| {
         let &vol = e.read(cx);
         let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::VolumeChanged(vol)) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::VolumeChanged(vol));
     })
     .detach();
 
     cx.observe(&repeat, |e, cx| {
         let &repeat = e.read(cx);
         let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::RepeatStateChanged(repeat)) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::RepeatStateChanged(repeat));
     })
     .detach();
 
     cx.observe(&state, |e, cx| {
         let &state = e.read(cx);
         let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::PlaybackStateChanged(state)) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::PlaybackStateChanged(state));
     })
     .detach();
 
     cx.observe(&shuffle, |e, cx| {
         let &shuffle = e.read(cx);
         let PbcHandle(tx, ..) = cx.global();
-        if let Err(err) = tx.send(PbcEvent::ShuffleStateChanged(shuffle)) {
-            error!(msg = ?err.0, "failed to send pbc event: {err}");
-        }
+        send_pbc_event(tx, PbcEvent::ShuffleStateChanged(shuffle));
     })
     .detach();
 }
@@ -297,7 +303,7 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
         }
     }
 
-    let (pbc_tx, mut pbc_rx) = tokio::sync::mpsc::unbounded_channel::<PbcEvent>();
+    let (pbc_tx, mut pbc_rx) = tokio::sync::mpsc::channel::<PbcEvent>(PBC_CHANNEL_CAP);
     let task = crate::RUNTIME.spawn(async move {
         let span = debug_span!("pbc_task");
 
