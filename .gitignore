@@ -12,6 +12,10 @@ build-release.cmd
 # 本机代理工作约定（仅本机适用，勿提交）
 AGENTS.md
 
+# 本机性能准则与诊断工具（仅本地使用，勿提交）
+GPUI_HARDCORE_PERFORMANCE.md
+tools/
+
 # IDE / 编辑器
 .idea/
 .vscode/
@@ -23,5 +27,4 @@ AGENTS.md
 Thumbs.db
 desktop.ini
 
-SKILL.md
-Role.md
+
