@@ -1,7 +1,7 @@
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use camino::Utf8PathBuf;
@@ -71,6 +71,9 @@ pub(super) struct ScanExecution<'a> {
     pending_relocations: Vec<Relocation>,
     scan_checkpoint: Arc<Mutex<FxHashMap<Utf8PathBuf, SystemTime>>>,
     checkpoint_handle: Option<JoinHandle<()>>,
+    /// Last time a ScanProgress event was emitted; progress is throttled so a
+    /// 100k-file scan doesn't flood the header with notify-per-5-files.
+    last_progress_report: std::cell::Cell<Option<Instant>>,
 }
 
 impl<'a> ScanExecution<'a> {
@@ -100,6 +103,7 @@ impl<'a> ScanExecution<'a> {
             pending_relocations: Vec::new(),
             scan_checkpoint: Arc::new(Mutex::new(FxHashMap::default())),
             checkpoint_handle: None,
+            last_progress_report: std::cell::Cell::new(None),
         }
     }
 
@@ -357,6 +361,16 @@ impl<'a> ScanExecution<'a> {
         if !self.processed.is_multiple_of(5) {
             return;
         }
+        // The header repaints per event; 250 ms is well past what a progress
+        // bar needs, so shed the rest at the source instead of per-notify.
+        const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+        let now = Instant::now();
+        if let Some(last) = self.last_progress_report.get()
+            && now.duration_since(last) < PROGRESS_INTERVAL
+        {
+            return;
+        }
+        self.last_progress_report.set(Some(now));
         let total = if self.discovery_complete {
             self.discovered_total
         } else {
