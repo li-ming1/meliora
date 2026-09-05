@@ -243,11 +243,15 @@ impl EqualizerView {
         }
 
         // the model always tracks the latest edit so a mid-debounce save or reload stays
-        // current, the equality guard in the observer keeps this notify from looping back
+        // current, the equality guard in the observer keeps this notify from looping back.
+        // Deliberately NOT notifying here: the DSP got the config above and this view
+        // notifies itself below, and a notify on the settings model cascades into the
+        // app-wide refresh_windows observer - a full repaint of every window per mouse
+        // move while dragging. The trailing-edge save reads the model directly, and when
+        // settings.json lands the file watcher produces one real notification.
         let config = self.config.clone();
-        self.settings.update(cx, |settings, cx| {
+        self.settings.update(cx, |settings, _| {
             settings.playback.equalizer = config;
-            cx.notify();
         });
 
         // persist on the trailing edge so rapid edits collapse into one write, the closure saves
