@@ -209,9 +209,9 @@ fn update_track_metadata(this: &mut InfoSection, metadata: &crate::media::metada
 }
 
 fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSection>) {
-    if let Some(subscription) = this.queue_item_subscription.take() {
-        subscription.detach();
-    }
+    // Dropping cancels the subscription; detaching kept a live observer on the
+    // old queue-item entity for the rest of the session (and let it fire).
+    drop(this.queue_item_subscription.take());
     this.queue_item_data = None;
 
     let queue = cx.global::<Models>().queue.read(cx);
