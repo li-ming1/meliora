@@ -307,6 +307,14 @@ impl PlaybackInterface {
                         }
                     }
                     }
+
+                    // Reclaim evicted cover atlas tiles. This loop runs on the
+                    // UI thread regardless of window visibility - a minimized
+                    // window still receives playback events, while frames (and
+                    // therefore the request_layout drain) stop being produced.
+                    // Without this, idle playback leaked one atlas page per
+                    // song change.
+                    cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
                 }
         })
         .detach();

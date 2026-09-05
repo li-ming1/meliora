@@ -144,9 +144,12 @@ fn queue_tile_drop(image: Arc<RenderImage>) {
         .push(image);
 }
 
-/// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread via
-/// `request_layout`, which any playing session hits continuously.
-fn drain_pending_tile_drops(cx: &mut App) {
+/// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread;
+/// called from `request_layout` while frames are being painted *and* from the
+/// playback event loop, which keeps delivering while a window is minimized -
+/// without the latter, idle playback would leak one atlas page per song
+/// because the per-frame drain never runs.
+pub fn drain_pending_tile_drops(cx: &mut App) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return;
     };
