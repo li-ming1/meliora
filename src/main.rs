@@ -67,7 +67,9 @@ fn tune_mimalloc_purge_delay() {
     }
 
     const MI_OPTION_PURGE_DELAY: c_int = 15;
-    const PURGE_DELAY_FACTORY_DEFAULT: c_long = 10;
+    // The header comment claims a 10 ms default, but v3's options.c table
+    // actually ships 1000 ms.
+    const PURGE_DELAY_FACTORY_DEFAULT: c_long = 1000;
     unsafe {
         if mi_option_get(MI_OPTION_PURGE_DELAY) != PURGE_DELAY_FACTORY_DEFAULT {
             return;
