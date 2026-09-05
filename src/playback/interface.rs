@@ -180,6 +180,19 @@ impl PlaybackInterface {
             // `recv()` returning None means the playback thread dropped its
             // senders; the loop must end there or it would spin on None.
             while let Some(event) = events_rx.recv().await {
+                    // Coalesce the backlog: after a busy frame the channel can
+                    // hold dozens of stale position ticks, and replaying them
+                    // just redoes the same entity writes. Every variant is
+                    // value-replacement semantics (the newest wins; QueueUpdated
+                    // is a bare signal), so keeping only the last occurrence of
+                    // each variant preserves correctness while shedding the rest.
+                    let mut latest = vec![event];
+                    while let Ok(next) = events_rx.try_recv() {
+                        let disc = std::mem::discriminant(&next);
+                        latest.retain(|e| std::mem::discriminant(e) != disc);
+                        latest.push(next);
+                    }
+                    for event in latest {
                     match event {
                         PlaybackEvent::MetadataUpdate(v) => {
                             metadata_model.update(cx, |m, cx| {
@@ -292,6 +305,7 @@ impl PlaybackInterface {
                                 }
                             })
                         }
+                    }
                     }
                 }
         })
