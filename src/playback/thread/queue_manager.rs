@@ -115,9 +115,12 @@ pub enum JumpResult {
 /// Type storing the inverse of various queue mutations, for undoing queue changes.
 pub enum UndoAction {
     /// The queue was replaced with a new set of items. Contains the old queue state.
+    /// Snapshots are `Arc`-shared: cloning into the undo stack must not deep-copy a
+    /// 100k-item queue 30 times over, and undo may still need to hand out a fresh
+    /// `Vec` if the snapshot is shared elsewhere.
     Replaced {
-        old_queue: Vec<QueueItemData>,
-        old_original_queue: Vec<QueueItemData>,
+        old_queue: Arc<Vec<QueueItemData>>,
+        old_original_queue: Arc<Vec<QueueItemData>>,
         previous_queue_next: usize,
         previous_shuffle: bool,
     },
@@ -127,7 +130,7 @@ pub enum UndoAction {
     /// The queue was unshuffled (shuffle toggled off). Stores the pre-unshuffle (shuffled)
     /// queue; the pre-unshuffle `original_queue` is recoverable from the queue at undo time.
     Unshuffled {
-        shuffled_queue: Vec<QueueItemData>,
+        shuffled_queue: Arc<Vec<QueueItemData>>,
         previous_queue_next: usize,
     },
     /// Items were removed from the queue. Contains a list of removed items and their indices.
@@ -270,8 +273,9 @@ impl QueueManager {
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().expect("poisoned queue lock");
-                *queue = old_queue;
-                self.original_queue = old_original_queue;
+                *queue = Arc::try_unwrap(old_queue).unwrap_or_else(|shared| (*shared).clone());
+                self.original_queue =
+                    Arc::try_unwrap(old_original_queue).unwrap_or_else(|shared| (*shared).clone());
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
 
@@ -380,7 +384,9 @@ impl QueueManager {
                 previous_queue_next,
             }) => {
                 let mut queue = self.queue.write().expect("poisoned queue lock");
-                self.original_queue = std::mem::replace(&mut *queue, shuffled_queue);
+                let restored =
+                    Arc::try_unwrap(shuffled_queue).unwrap_or_else(|shared| (*shared).clone());
+                self.original_queue = std::mem::replace(&mut *queue, restored);
                 self.queue_next = previous_queue_next;
                 self.shuffle = true;
 
@@ -1145,18 +1151,20 @@ impl QueueManager {
 
         let mut queue = self.queue.write().expect("poisoned queue lock");
 
-        let old_queue = queue.clone();
-        let old_original_queue = self.original_queue.clone();
+        let old_queue = Arc::new(queue.clone());
+        let old_original_queue = Arc::new(self.original_queue.clone());
 
         if self.shuffle {
+            // Consume `items` by value: cloning it twice per replace put three
+            // full-queue copies inside the write lock on large libraries.
             let mut shuffled = items.clone();
             shuffled.shuffle(&mut rng());
 
-            self.original_queue = items.clone();
+            self.original_queue = items;
             *queue = shuffled;
         } else {
             self.original_queue.clear();
-            *queue = items.clone();
+            *queue = items;
         }
 
         let first_item = Self::first_playable_index(&queue).map(|idx| queue[idx].clone());
@@ -1191,8 +1199,8 @@ impl QueueManager {
 
         let mut queue = self.queue.write().expect("poisoned queue lock");
 
-        let queue_clone = queue.clone();
-        let old_original_queue = self.original_queue.clone();
+        let queue_clone = Arc::new(queue.clone());
+        let old_original_queue = Arc::new(self.original_queue.clone());
 
         let current_item = keep_current
             .then(|| {
@@ -1267,7 +1275,7 @@ impl QueueManager {
                     })
                     .unwrap_or(0);
 
-                let shuffled_queue = queue.clone();
+                let shuffled_queue = Arc::new(queue.clone());
 
                 *queue = take(&mut self.original_queue);
                 self.queue_next = new_position + 1;
