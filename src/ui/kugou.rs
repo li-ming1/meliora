@@ -180,12 +180,22 @@ fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
 /// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
 /// entry for a track on top and evicting older URLs for the same track.
 pub fn remember_online_track(url: String, track: KugouTrackInfo) {
-    let mut guard = stream_map().write().unwrap();
-    guard.retain(|e| e.url != url && e.mix_song_id != track.mix_song_id);
-    guard.insert(0, StreamMapEntry::from((url, track)));
-    guard.truncate(STREAM_MAP_CAP);
-    if let Ok(json) = serde_json::to_string(&*guard) {
-        let _ = std::fs::write(stream_map_path(), json);
+    let json = {
+        let mut guard = stream_map().write().unwrap();
+        guard.retain(|e| e.url != url && e.mix_song_id != track.mix_song_id);
+        guard.insert(0, StreamMapEntry::from((url, track)));
+        guard.truncate(STREAM_MAP_CAP);
+        serde_json::to_vec(&*guard).ok()
+    };
+    // Write off-thread and outside the lock: the map is read on both the UI
+    // thread and the playback thread, so holding the write guard across disk
+    // IO lets a slow FS stall song changes. Two racing writers may persist in
+    // either order; a stale file only costs a URL refresh on next launch.
+    if let Some(json) = json {
+        let path = stream_map_path();
+        crate::RUNTIME.spawn(async move {
+            let _ = tokio::fs::write(path, json).await;
+        });
     }
 }
 

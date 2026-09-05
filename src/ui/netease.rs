@@ -172,12 +172,19 @@ pub fn remember_online_track(url: String, track: NeteaseTrackInfo) {
         duration: track.duration,
         cover_url: track.cover_url.to_string(),
     };
-    let mut guard = stream_map().lock().unwrap_or_else(|e| e.into_inner());
-    guard.retain(|existing| existing.url != entry.url);
-    guard.insert(0, entry);
-    guard.truncate(STREAM_MAP_CAP);
-    if let Ok(json) = serde_json::to_string_pretty(&*guard) {
-        let _ = std::fs::write(stream_map_path(), json);
+    let json = {
+        let mut guard = stream_map().lock().unwrap_or_else(|e| e.into_inner());
+        guard.retain(|existing| existing.url != entry.url);
+        guard.insert(0, entry);
+        guard.truncate(STREAM_MAP_CAP);
+        serde_json::to_vec_pretty(&*guard).ok()
+    };
+    // Off-thread and lock-free disk write; see the kugou twin for rationale.
+    if let Some(json) = json {
+        let path = stream_map_path();
+        crate::RUNTIME.spawn(async move {
+            let _ = tokio::fs::write(path, json).await;
+        });
     }
 }
 
