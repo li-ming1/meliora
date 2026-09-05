@@ -190,8 +190,10 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
                 }
             }
 
+            // settings.json is hand-edited; a 250 ms poll reacts well within
+            // perception without waking the main thread 100x/second.
             app.background_executor()
-                .timer(Duration::from_millis(10))
+                .timer(Duration::from_millis(250))
                 .await;
         }
     })

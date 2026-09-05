@@ -1244,8 +1244,11 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
                         }
                     }
 
+                    // Theme/settings files are hand-edited JSON; a 250 ms poll
+                    // reacts well within perception while keeping this loop
+                    // from waking the main thread a hundred times a second.
                     cx.background_executor()
-                        .timer(Duration::from_millis(10))
+                        .timer(Duration::from_millis(250))
                         .await;
                 }
             }

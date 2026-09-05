@@ -144,6 +144,13 @@ where
             let weak_self = cx.weak_entity();
             cx.spawn(async move |_, cx| {
                 loop {
+                    // Exit as soon as the palette entity is gone; previously this
+                    // check sat inside `needs_update`, so a closed palette kept
+                    // its poll loop spinning forever.
+                    let Some(entity) = weak_self.upgrade() else {
+                        return;
+                    };
+
                     // get all the update notifications
                     // incase we got multiple
                     let mut needs_update = false;
@@ -152,24 +159,20 @@ where
                     }
 
                     if needs_update {
-                        if let Some(entity) = weak_self.upgrade() {
-                            entity.update(cx, |this: &mut Self, cx| {
-                                this.tick(10);
+                        entity.update(cx, |this: &mut Self, cx| {
+                            this.tick(10);
 
-                                let matches: Vec<Arc<T>> = this.get_matches();
-                                if matches != this.last_match {
-                                    this.last_match = matches;
-                                    this.regenerate_list_state(cx);
-                                    cx.notify();
-                                }
-                            });
-                        } else {
-                            return;
-                        }
+                            let matches: Vec<Arc<T>> = this.get_matches();
+                            if matches != this.last_match {
+                                this.last_match = matches;
+                                this.regenerate_list_state(cx);
+                                cx.notify();
+                            }
+                        });
                     }
 
                     cx.background_executor()
-                        .timer(Duration::from_millis(10))
+                        .timer(Duration::from_millis(25))
                         .await;
                 }
             })
