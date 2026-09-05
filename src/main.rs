@@ -41,6 +41,14 @@ const VERSION_STRING: &str = env!("MELIORA_VERSION_STRING");
 static ALLOC_GUARD: test_support::alloc_guard::CountingAllocator =
     test_support::alloc_guard::CountingAllocator;
 
+// mimalloc for non-test builds: the NT heap never returns mid-size free
+// segments to the OS, so interactive churn ratchets private bytes up even
+// with no leak; mimalloc decommits idle pages so committed memory falls back
+// after activity stops. Tests keep the counting allocator above.
+#[cfg(not(test))]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
