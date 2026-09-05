@@ -46,6 +46,9 @@ pub struct Lyrics {
     content: Option<String>,
     parsed: Option<Vec<LrcLine>>,
     last_active_line: Option<usize>,
+    /// Bumped per track change; a background load only lands if its generation
+    /// still matches, so fast switches never apply stale lyrics.
+    load_generation: usize,
     /// Latest playback position snapshot (ms), refreshed by the position
     /// observer; drives per-word karaoke progress.
     position_ms: u64,
@@ -97,22 +100,51 @@ impl Lyrics {
                     }
                 }
 
-                let (content, parsed) = Self::load_lyrics(track.as_ref(), cx);
-                let line_count = parsed.as_ref().map_or(0, Vec::len);
-                this.content = content;
-                this.parsed = parsed;
-                this.last_active_line = None;
-                this.follow_pending = false;
-                this.scroll_follow.cancel();
+                // Clear synchronously so a fast switch never shows the previous
+                // track's lines, then resolve the sidecar/DB off the main
+                // thread - the sync path did a file read plus two DB queries
+                // on the UI thread per track change.
+                this.reset_track_state();
                 this.last_user_interaction_at = None;
-                this.line_emphasis_started_at = None;
-                this.line_emphasis_start_values = vec![0.0; line_count];
-                this.line_emphasis_target_values = vec![0.0; line_count];
-                this.scroll_handle.set_offset(gpui::Point {
-                    x: px(0.0),
-                    y: px(0.0),
-                });
-                cx.notify();
+                this.load_generation += 1;
+                let generation = this.load_generation;
+                let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+                let track_path = track.as_ref().map(|t| t.get_path().clone());
+
+                cx.spawn(async move |this, cx| {
+                    let loaded = crate::RUNTIME
+                        .spawn(async move {
+                            match track_path {
+                                Some(path) => {
+                                    Self::load_lyrics_off_thread(&pool, path).await
+                                }
+                                None => (None, None),
+                            }
+                        })
+                        .await
+                        .unwrap_or((None, None));
+
+                    this.update(cx, |this, cx| {
+                        if this.load_generation != generation {
+                            return;
+                        }
+                        this.content = loaded.0;
+                        this.parsed = loaded.1;
+                        let line_count = this.parsed.as_ref().map_or(0, Vec::len);
+                        this.last_active_line = None;
+                        this.follow_pending = false;
+                        this.scroll_follow.cancel();
+                        this.line_emphasis_start_values = vec![0.0; line_count];
+                        this.line_emphasis_target_values = vec![0.0; line_count];
+                        this.scroll_handle.set_offset(gpui::Point {
+                            x: px(0.0),
+                            y: px(0.0),
+                        });
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
             })
             .detach();
 
@@ -165,6 +197,7 @@ impl Lyrics {
             Self {
                 content,
                 parsed,
+                load_generation: 0,
                 last_active_line: None,
                 position_ms: *position.read(cx),
                 scroll_handle: ScrollHandle::new(),
@@ -207,6 +240,40 @@ impl Lyrics {
         let content = track
             .and_then(|t| cx.get_track_by_path(t.get_path()).ok().flatten())
             .and_then(|t| cx.lyrics_for_track(t.id).ok().flatten());
+        let parsed = content.as_ref().and_then(|c| parse_lyrics(c));
+        (content, parsed)
+    }
+
+    /// Async twin of [`Self::load_lyrics`] for the background track-switch
+    /// path: sidecar read via tokio fs, DB via the pool directly, no
+    /// `block_on` on the main thread.
+    async fn load_lyrics_off_thread(
+        pool: &sqlx::SqlitePool,
+        path: std::path::PathBuf,
+    ) -> (Option<String>, Option<Vec<LrcLine>>) {
+        if let Some(stem) = path.file_stem() {
+            let sidecar = path.with_file_name(format!("{}.krc", stem.to_string_lossy()));
+            if let Ok(krc) = tokio::fs::read_to_string(&sidecar).await
+                && let Some(parsed) = krc::parse_krc(&krc)
+            {
+                return (Some(krc), Some(parsed));
+            }
+            let sidecar = path.with_file_name(format!("{}.yrc", stem.to_string_lossy()));
+            if let Ok(yrc) = tokio::fs::read_to_string(&sidecar).await
+                && let Some(parsed) = yrc::parse_yrc(&yrc)
+            {
+                return (Some(yrc), Some(parsed));
+            }
+        }
+
+        let content =
+            match crate::library::db::get_track_by_path(pool, &path).await.ok().flatten() {
+                Some(track) => crate::library::db::lyrics_for_track(pool, track.id)
+                    .await
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
         let parsed = content.as_ref().and_then(|c| parse_lyrics(c));
         (content, parsed)
     }

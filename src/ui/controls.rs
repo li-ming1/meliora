@@ -182,6 +182,9 @@ pub struct InfoSection {
     can_navigate_to_artist: bool,
     image_element_key: u64,
     is_liked: Option<i64>,
+    /// Bumped per track change; a background library resolve only lands if its
+    /// generation still matches, so fast switches never apply stale results.
+    library_resolve_generation: usize,
     #[cfg(any(feature = "kugou", feature = "netease"))]
     online_track: Option<OnlinePlayingTrack>,
     #[cfg(any(feature = "kugou", feature = "netease"))]
@@ -339,6 +342,9 @@ impl InfoSection {
                 can_navigate_to_artist,
                 image_element_key: 0,
                 is_liked,
+                // The initial resolve above runs synchronously once at startup;
+                // later track changes bump this and resolve off-thread.
+                library_resolve_generation: 0,
                 #[cfg(any(feature = "kugou", feature = "netease"))]
                 online_track: None,
                 #[cfg(any(feature = "kugou", feature = "netease"))]
@@ -739,31 +745,82 @@ impl Render for InfoSection {
 fn update_current_track_state(
     this: &mut InfoSection,
     current_track: Option<&CurrentTrack>,
-    cx: &App,
+    cx: &mut Context<InfoSection>,
 ) {
     this.current_track_path = current_track.map(|track| track.get_path().clone());
+    // Name/artist come from the metadata model or the queue item; DB-derived
+    // state below lands when the background resolve completes.
     this.track_name = None;
     this.artist_name = None;
-    this.current_library_track =
-        current_track.and_then(|track| resolve_library_track_by_path(cx, track.get_path()));
-    this.can_navigate_to_album = this
-        .current_library_track
-        .as_ref()
-        .is_some_and(|track| track.album_id.is_some());
-    this.can_navigate_to_artist = this
-        .current_library_track
-        .as_ref()
-        .and_then(|track| track.album_id)
-        .is_some_and(|album_id| {
-            cx.artist_ids_for_album(album_id)
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-        });
-    this.is_liked = this.current_library_track.as_ref().and_then(|track| {
-        cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
-            .unwrap_or_default()
-    });
+    this.current_library_track = None;
+    this.can_navigate_to_album = false;
+    this.can_navigate_to_artist = false;
+    this.is_liked = None;
     this.image_element_key = this.image_element_key.wrapping_add(1);
+
+    let Some(track_path) = this.current_track_path.clone() else {
+        return;
+    };
+    this.library_resolve_generation += 1;
+    let generation = this.library_resolve_generation;
+    let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+
+    // The sync path blocked the main thread on 3-5 DB queries per song change
+    // (library track + artist lookup + liked state). Resolve on the runtime and
+    // re-validate the generation before landing the result.
+    cx.spawn(async move |this, cx| {
+        let resolved = crate::RUNTIME
+            .spawn(async move {
+                let track = crate::library::db::get_track_by_path(&pool, &track_path)
+                    .await
+                    .ok()
+                    .flatten();
+                let Some(track) = track else {
+                    return None;
+                };
+                let can_navigate_to_artist = match track.album_id {
+                    Some(album_id) => {
+                        crate::library::db::artist_ids_for_album(&pool, album_id)
+                            .await
+                            .map(|v| !v.is_empty())
+                            .unwrap_or(false)
+                    }
+                    None => false,
+                };
+                let is_liked = crate::library::db::playlist_has_track(
+                    &pool,
+                    LIKED_SONGS_PLAYLIST_ID,
+                    track.id,
+                )
+                .await
+                .ok()
+                .flatten();
+
+                Some(((*track).clone(), can_navigate_to_artist, is_liked))
+            })
+            .await;
+
+        this.update(cx, |this, cx| {
+            if this.library_resolve_generation != generation {
+                return;
+            }
+            match resolved {
+                Ok(Some((track, can_navigate_to_artist, is_liked))) => {
+                    this.current_library_track = Some(Rc::new(track));
+                    this.can_navigate_to_album =
+                        this.current_library_track.as_ref().is_some_and(|t| t.album_id.is_some());
+                    this.can_navigate_to_artist = can_navigate_to_artist;
+                    this.is_liked = is_liked;
+                    cx.notify();
+                }
+                // A query error or a non-library (online) path just leaves the
+                // cleared state in place - same as the sync path's None result.
+                _ => {}
+            }
+        })
+        .ok();
+    })
+    .detach();
 }
 
 pub struct PlaybackSection {
