@@ -398,7 +398,6 @@ impl QueueItemData {
     /// Replaces the stored path. Used by the kugou online flow to refresh the
     /// (expiring) stream URL of an already-queued track instead of queueing a
     /// duplicate entry.
-    #[cfg(feature = "online_sources")]
     pub fn replace_path(&mut self, path: PathBuf) {
         self.path = path;
     }
