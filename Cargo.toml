@@ -176,7 +176,9 @@ lto = "none"
 opt-level = "s"
 
 [profile.release]
-opt-level = "s"
+# Speed over size: the decode/resample/image paths are realtime-adjacent and
+# measurably slower under "s" (opt for size). Binary stays stripped below.
+opt-level = 3
 lto = "thin"
 strip = "symbols"
 
