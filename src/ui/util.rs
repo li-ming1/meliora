@@ -88,6 +88,26 @@ pub fn drop_image_from_app(cx: &mut App, image: Arc<RenderImage>) {
     });
 }
 
+/// Drops the atlas tiles for a batch of images whose owning elements are gone.
+/// Unlike [`drop_image_from_app`] this tolerates windows disappearing
+/// mid-reclaim (skips instead of panicking), which matters when draining the
+/// render cache's eviction queue: the cache outlives any single window.
+pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
+    if images.is_empty() {
+        return;
+    }
+    cx.defer(move |cx| {
+        for image in images {
+            for window in cx.windows() {
+                let image = image.clone();
+                let _ = window.update(cx, move |_, window, _| {
+                    let _ = window.drop_image(image);
+                });
+            }
+        }
+    });
+}
+
 pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
     #[cfg(windows)]
     {

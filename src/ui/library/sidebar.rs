@@ -486,6 +486,9 @@ impl Render for Sidebar {
                             ("kugou-sidebar-avatar", 0usize),
                             ManagedImageKey::HttpCover(url),
                         )
+                        // Painted at 28 px; without a bound the raw avatar (often
+                        // 500 px+) would claim a whole 4 MB atlas page on its own.
+                        .thumb_max(64)
                         .size_full(),
                     )
                 })

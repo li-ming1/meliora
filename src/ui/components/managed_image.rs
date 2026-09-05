@@ -82,11 +82,15 @@ pub enum ManagedImageKey {
 /// Upper bound on decoded `RenderImage`s kept alive across elements.
 ///
 /// Scrolling an online list re-creates `ManagedImage` rows; without this cache
-/// each one re-decodes the same URL into a fresh `RenderImage` and re-uploads a
-/// new atlas texture. Capping the retained set keeps that churn from adding up
-/// (128 × 256px thumbs ≈ 32 MB worst case), and re-painting a recently seen
-/// cover reuses the exact same `RenderImage`/atlas slot instead.
-const RENDER_CACHE_MAX: usize = 128;
+/// each one re-decodes the same URL into a fresh `RenderImage` and re-uploads
+/// a new atlas texture. Capping the retained set keeps that churn from adding
+/// up, and re-painting a recently seen cover reuses the exact same
+/// `RenderImage`/atlas slot instead. 64 covers ≈ 16 MB of pixels; each atlas
+/// page holds a handful of 256 px tiles, so this keeps the live page count (the
+/// largest single contributor to steady-state private bytes) bounded well
+/// below what 128 entries allowed. Evictions queue their atlas tiles for
+/// reclamation, and evicted covers re-decode from the disk cache on return.
+const RENDER_CACHE_MAX: usize = 64;
 
 /// Bounded set of decoded covers shared by all `ManagedImage` elements.
 /// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
@@ -123,6 +127,37 @@ pub fn render_cache_mb() -> u64 {
     };
     let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.bytes / (1024 * 1024)
+}
+
+/// Images evicted from `RENDER_CACHE` whose atlas tiles still need dropping.
+/// Eviction runs on the RUNTIME where no `App` exists, so the tiles are queued
+/// here and the next `ManagedImage` layout pass (UI thread) hands them to
+/// `drop_image`. Without this, an evicted cover's atlas page stays pinned
+/// forever once its owning elements have unmounted.
+static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<Arc<RenderImage>>>> = OnceLock::new();
+
+fn queue_tile_drop(image: Arc<RenderImage>) {
+    PENDING_TILE_DROPS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(image);
+}
+
+/// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread via
+/// `request_layout`, which any playing session hits continuously.
+fn drain_pending_tile_drops(cx: &mut App) {
+    let Some(queue) = PENDING_TILE_DROPS.get() else {
+        return;
+    };
+    let drained: Vec<Arc<RenderImage>> = queue
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .drain(..)
+        .collect();
+    if !drained.is_empty() {
+        crate::ui::util::reclaim_images_from_app(cx, drained);
+    }
 }
 
 fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderImage>> {
@@ -164,17 +199,23 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
     let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // Replace an existing entry (possibly decoded by a concurrent element) or
-    // evict the least-recently-used slot once the budget is full.
-    if let Some((_, old_bytes)) = cache.cache.insert(cache_key.clone(), (image, new_bytes)) {
+    // evict the least-recently-used slot once the budget is full. Both paths
+    // queue the dropped image for atlas-tile reclamation: the element that
+    // painted it may have unmounted long ago, so nothing else will.
+    if let Some((old_image, old_bytes)) =
+        cache.cache.insert(cache_key.clone(), (image, new_bytes))
+    {
         cache.bytes = cache.bytes.saturating_sub(old_bytes) + new_bytes;
+        queue_tile_drop(old_image);
     } else {
         cache.bytes += new_bytes;
         cache.usage.push_back(cache_key);
         if cache.usage.len() > RENDER_CACHE_MAX {
             if let Some(oldest) = cache.usage.pop_front()
-                && let Some((_, bytes)) = cache.cache.remove(&oldest)
+                && let Some((image, bytes)) = cache.cache.remove(&oldest)
             {
                 cache.bytes = cache.bytes.saturating_sub(bytes);
+                queue_tile_drop(image);
             }
         }
     }
@@ -383,6 +424,8 @@ impl Element for ManagedImage {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        drain_pending_tile_drops(cx);
+
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
