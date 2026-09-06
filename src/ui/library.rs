@@ -931,6 +931,7 @@ pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table
     state: &Entity<ScanEvent>,
     table: Entity<crate::ui::components::table::Table<T, C>>,
 ) {
+    let table_for_availability = table.clone();
     cx.observe(state, move |_, e, cx| {
         // completion only: TableEvent::NewRows re-queries the whole table on
         // the UI thread and wipes every row view, so refreshing on progress
@@ -944,6 +945,21 @@ pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table
         );
         if should_refresh {
             table.update(cx, |_, cx| cx.emit(crate::ui::components::table::TableEvent::NewRows));
+        }
+    })
+    .detach();
+
+    // Rows built before the availability snapshot lands (startup) report
+    // "unavailable"; refresh exactly once when it first arrives. Later
+    // landings coincide with the scan-completion refresh above.
+    let availability = cx.global::<crate::ui::models::Models>().available_albums.clone();
+    let mut announced = false;
+    cx.observe(&availability, move |_, set, cx| {
+        if !announced && set.read(cx).is_some() {
+            announced = true;
+            table_for_availability.update(cx, |_, cx| {
+                cx.emit(crate::ui::components::table::TableEvent::NewRows)
+            });
         }
     })
     .detach();

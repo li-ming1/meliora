@@ -8,6 +8,7 @@ use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Pixels, Point, RenderImage,
     SharedString, Size,
 };
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -15,6 +16,7 @@ use crate::{
     library::{
         db::{self, LibraryAccess, LikedTrackSortMethod, PlaylistTrackSortMethod},
         scan::ScanEvent,
+        types::Album,
     },
     media::metadata::Metadata,
     playback::{
@@ -30,10 +32,7 @@ use crate::{
             TableSettings,
         },
     },
-    ui::{
-        app::Pool,
-        library::{NavigationHistory, ViewSwitchMessage},
-    },
+    ui::{app::Pool, availability::compute_available_albums, library::{NavigationHistory, ViewSwitchMessage}},
 };
 
 // yes this looks a little silly
@@ -67,6 +66,16 @@ pub struct Models {
     /// and re-loaded whenever that playlist changes. Lets track rows check
     /// like state without one DB query per row.
     pub liked_ids: Entity<Option<Arc<HashSet<i64>>>>,
+    /// Cached set of album ids that still have at least one track on disk,
+    /// reloaded at startup and on scan completion. Lets album rows, grid
+    /// tiles and album context menus test availability without a per-row
+    /// `block_on` query plus a stat per track.
+    pub available_albums: Entity<Option<Arc<FxHashSet<i64>>>>,
+    /// Album metadata for row construction: rebuilding a track row needed up
+    /// to three `get_album_by_id` block_on queries (vinyl numbering, album
+    /// title, artist override). A scan is the only writer of album metadata,
+    /// so the cache is cleared there and on process-wide startup.
+    pub album_cache: Entity<FxHashMap<i64, Arc<Album>>>,
     pub queue: Entity<Queue>,
     pub scan_state: Entity<ScanEvent>,
     pub settings_health: Entity<SettingsHealth>,
@@ -196,6 +205,8 @@ pub fn build_models(
     let playlist_tracker: Entity<PlaylistInfoTransfer> = cx.new(|_| PlaylistInfoTransfer);
 
     let liked_ids: Entity<Option<Arc<HashSet<i64>>>> = cx.new(|_| None);
+    let available_albums: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
+    let album_cache: Entity<FxHashMap<i64, Arc<Album>>> = cx.new(|_| FxHashMap::default());
 
     let startup_view = resolve_startup_view(
         cx,
@@ -277,6 +288,8 @@ pub fn build_models(
         albumart,
         albumart_original,
         liked_ids,
+        available_albums,
+        album_cache,
         queue,
         scan_state,
         settings_health,
@@ -308,6 +321,25 @@ pub fn build_models(
     cx.subscribe(&tracker, |_, ev, cx| {
         if *ev == PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID) {
             reload_liked_ids(cx);
+        }
+    })
+    .detach();
+
+    // Album availability snapshot: loaded at startup and refreshed whenever
+    // a scan completes. A scan is also the only writer of album metadata, so
+    // the row-construction album cache is dropped at the same point.
+    reload_available_albums(cx);
+    let scan_state = cx.global::<Models>().scan_state.clone();
+    cx.observe(&scan_state, |scan_event, cx| {
+        if matches!(
+            scan_event.read(cx),
+            ScanEvent::ScanCompleteIdle
+                | ScanEvent::ScanCompleteWatching
+                | ScanEvent::TargetedRescanComplete
+        ) {
+            let album_cache = cx.global::<Models>().album_cache.clone();
+            album_cache.update(cx, |cache, _| cache.clear());
+            reload_available_albums(cx);
         }
     })
     .detach();
@@ -573,4 +605,44 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
 pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     let cached = cx.global::<Models>().liked_ids.read(cx).clone();
     cached.and_then(|set| set.contains(&track_id).then_some(track_id))
+}
+
+/// (Re)loads the album-availability set on the async runtime: one query for
+/// all `(album, location)` pairs, then one `exists()` stat per distinct path
+/// on a blocking thread. Startup and scan completion only.
+pub(crate) fn reload_available_albums(cx: &mut App) {
+    let pool = cx.global::<Pool>().0.clone();
+    let available = cx.global::<Models>().available_albums.clone();
+    cx.spawn(async move |cx| {
+        let rows = crate::RUNTIME
+            .spawn(async move { db::list_album_availability(&pool).await })
+            .await
+            .map(|result| result.unwrap_or_default())
+            .unwrap_or(vec![]);
+        let set = crate::RUNTIME
+            .spawn_blocking(move || compute_available_albums(rows))
+            .await
+            .unwrap_or_default();
+        available.update(cx, |slot, cx| {
+            *slot = Some(Arc::new(set));
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Album metadata for row construction, from the cache when warm (cleared
+/// only when a scan, its sole writer, completes) and one blocking query on a
+/// cold miss — so a row rebuild costs zero DB round trips after the first
+/// time each album is seen.
+pub(crate) fn cached_album(cx: &mut App, album_id: i64) -> Option<Arc<Album>> {
+    let cache = cx.global::<Models>().album_cache.clone();
+    if let Some(album) = cache.read(cx).get(&album_id).cloned() {
+        return Some(album);
+    }
+    let album = cx.get_album_by_id(album_id).ok()?;
+    cache.update(cx, |cache, _| {
+        cache.insert(album_id, album.clone());
+    });
+    Some(album)
 }

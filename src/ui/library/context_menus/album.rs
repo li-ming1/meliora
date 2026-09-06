@@ -6,11 +6,11 @@ use gpui::{Entity, IntoElement, RenderOnce, Window};
 use crate::{
     library::types::Album,
     ui::{
-        availability::album_has_available_tracks,
         components::{
             icons::{PLAY, PLAYLIST_ADD, PLUS, SHUFFLE, USERS},
             menu::{menu, menu_item, menu_separator},
         },
+        models::Models,
     },
 };
 
@@ -50,7 +50,14 @@ impl RenderOnce for AlbumContextMenu {
         let album_for_rescan = self.album.clone();
         let show_add_to = self.show_add_to;
         let show_go_to_artist = self.context.show_go_to_artist;
-        let is_available = album_has_available_tracks(cx, album.id);
+        // cached availability snapshot: this render runs while the menu opens,
+        // and the old check issued a block_on query plus a stat per track
+        let is_available = cx
+            .global::<Models>()
+            .available_albums
+            .read(cx)
+            .as_ref()
+            .is_some_and(|set| set.contains(&album.id));
         let menu = menu()
             .item(
                 menu_item("album_play", Some(PLAY), tr!("PLAY"), move |_, _, cx| {

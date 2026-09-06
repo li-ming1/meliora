@@ -7,6 +7,12 @@ use gpui::{App, Entity, Render, RenderImage};
 use rustc_hash::FxHashMap;
 use tracing::debug;
 
+/// Rows this far outside the visible window stay cached. Scrolling back
+/// within the band reuses the existing row entities instead of re-running
+/// their DB/stat construction pipeline on the UI thread; the band must stay
+/// wider than any viewport so visible rows are never pruned.
+const VIEW_KEEP_AROUND: usize = 128;
+
 pub fn prune_views<T>(
     views_model: &Entity<FxHashMap<usize, Entity<T>>>,
     render_counter: &Entity<usize>,
@@ -22,11 +28,14 @@ where
 
     // determine whether or not we are at the start of a new render cycle
     if current < last {
-        // we are at the start of a new render cycle
-        // prune views that are no longer in the bounds (current..last)
-        // don't prune the first view so this still works with uniform_list
+        // we are at the start of a new render cycle (scrolled up): prune
+        // views outside the previous window plus the keep-around band, so a
+        // small scroll or a scroll-back reuses cached rows. Don't prune the
+        // first view so this still works with uniform_list.
+        let lower = current.saturating_sub(VIEW_KEEP_AROUND);
+        let upper = last + 1 + VIEW_KEEP_AROUND;
         for idx in views_model.read(cx).keys() {
-            if (*idx < current || *idx >= (last + 1)) && *idx != 0_usize {
+            if (*idx < lower || *idx >= upper) && *idx != 0_usize {
                 to_remove.push(*idx);
             }
         }

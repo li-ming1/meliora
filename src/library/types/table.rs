@@ -13,9 +13,7 @@ use super::{
 use crate::{
     library::db::{AlbumSortMethod, ArtistSortMethod, LibraryAccess, TrackSortMethod},
     ui::{
-        availability::{
-            album_has_available_tracks, artist_has_available_tracks, is_track_available,
-        },
+        availability::{artist_has_available_tracks, is_track_available},
         components::{
             drag_drop::{AlbumDragData, TrackDragData},
             managed_image::ManagedImageKey,
@@ -25,6 +23,7 @@ use crate::{
             AlbumContextMenuContext, TrackContextMenuContext, album_menu_for_table,
             play_album_next, play_track_next, track_menu_for_table,
         },
+        models::{Models, cached_album},
         util::format_duration,
     },
 };
@@ -277,7 +276,14 @@ impl TableData<AlbumColumn> for Album {
     }
 
     fn is_available(&self, cx: &mut App) -> bool {
-        album_has_available_tracks(cx, self.id)
+        // cached availability snapshot (reloaded at startup and on scan
+        // completion): the per-row `block_on` query plus a stat per track
+        // stalled row construction on every scroll
+        cx.global::<Models>()
+            .available_albums
+            .read(cx)
+            .as_ref()
+            .is_some_and(|set| set.contains(&self.id))
     }
 }
 
@@ -382,9 +388,11 @@ impl TableData<TrackColumn> for Track {
     fn get_column(&self, cx: &mut App, column: TrackColumn) -> Option<SharedString> {
         match column {
             TrackColumn::TrackNumber => {
+                // cached album metadata: rebuilding a row used to issue one
+                // `get_album_by_id` block_on per rendered column
                 let vinyl_numbering = self
                     .album_id
-                    .and_then(|id| cx.get_album_by_id(id).ok())
+                    .and_then(|id| cached_album(cx, id))
                     .map(|album| album.vinyl_numbering)
                     .unwrap_or(false);
 
@@ -404,9 +412,7 @@ impl TableData<TrackColumn> for Track {
             TrackColumn::Title => Some(self.title.0.clone()),
             TrackColumn::Album => {
                 if let Some(album_id) = self.album_id {
-                    cx.get_album_by_id(album_id)
-                        .ok()
-                        .map(|v| v.title.0.clone())
+                    cached_album(cx, album_id).map(|v| v.title.0.clone())
                 } else {
                     None
                 }
@@ -415,8 +421,7 @@ impl TableData<TrackColumn> for Track {
                 if let Some(artist) = &self.artist_names {
                     Some(artist.0.clone())
                 } else if let Some(album_id) = self.album_id {
-                    cx.get_album_by_id(album_id)
-                        .ok()
+                    cached_album(cx, album_id)
                         .and_then(|album| {
                             album.artist_display_override.as_ref().map(|v| v.0.clone())
                         })
