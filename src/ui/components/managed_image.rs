@@ -37,6 +37,14 @@ fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
     glob.next().map(|e| Arc::from(e.path()))
 }
 
+/// Caps concurrent cover decodes across all `ManagedImage` elements: each
+/// in-flight decode transiently holds a full-size RGBA buffer (a 3000px cover
+/// is ~36MB), and one fast grid scroll can miss the render cache for dozens
+/// of tiles at once. Mirrors the scanner's artwork decode cap; the render
+/// cache above bounds what is *retained*, this bounds what is *in flight*.
+static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
+
 /// Swaps R and B channels in place so `image` crate buffers match GPUI's
 /// expected BGRA ordering.
 pub(crate) fn rgb_to_bgr(image: &mut image::RgbaImage) {
@@ -52,6 +60,11 @@ fn decode_rgba_to_render_image(mut image: image::RgbaImage) -> anyhow::Result<Ar
     frames.push(Frame::new(image));
     Ok(Arc::new(RenderImage::new(frames)))
 }
+
+/// Longest side of the BMP thumbnail the scanner stores in the `thumb`
+/// column (70×70, see scan decode). Decodes bounded at or below this can use
+/// that cheap pre-scaled source; anything larger decodes the full art.
+const STORED_THUMB_PX: u32 = 72;
 
 /// Decode `data`, downscaling to a square of at most `bound` pixels before
 /// converting to RGBA. Scaling at decode time keeps the transient RGBA buffer
@@ -300,26 +313,36 @@ impl ManagedImageKey {
                 let url = url.to_string();
                 let bytes = crate::media::http_source::http_cover_bytes_cached(&url).await?;
                 let Some(bytes) = bytes else { return Ok(None) };
-                let image = crate::RUNTIME
-                    .spawn_blocking(move || {
-                        decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
-                    })
-                    .await??;
+                let image = {
+                    let _permit =
+                        DECODE_PERMITS.acquire().await.expect("semaphore is never closed");
+                    crate::RUNTIME
+                        .spawn_blocking(move || {
+                            decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
+                        })
+                        .await??
+                };
                 Ok(image)
             }
             ManagedImageKey::Album(id) | ManagedImageKey::Track(id) => {
                 let thumb = thumb_size > 0;
+                // The `thumb` column holds the scanner's 70×70 BMP, sized for
+                // 72px list rows. A larger bound (256px grid tiles, now
+                // playing art) must decode the full art and scale down here —
+                // `image::thumbnail` never upscales, so a 70px source painted
+                // into a 192px+ tile renders visibly mushy.
+                let stored_thumb_fits = thumb_size <= STORED_THUMB_PX;
                 let query = match (self, thumb) {
-                    (ManagedImageKey::Album(_), true) => {
+                    (ManagedImageKey::Album(_), true) if stored_thumb_fits => {
                         include_str!("../../../queries/assets/find_album_thumb.sql")
                     }
-                    (ManagedImageKey::Album(_), false) => {
+                    (ManagedImageKey::Album(_), _) => {
                         include_str!("../../../queries/assets/find_album_art.sql")
                     }
-                    (ManagedImageKey::Track(_), true) => {
+                    (ManagedImageKey::Track(_), true) if stored_thumb_fits => {
                         include_str!("../../../queries/assets/find_track_thumb.sql")
                     }
-                    (ManagedImageKey::Track(_), false) => {
+                    (ManagedImageKey::Track(_), _) => {
                         include_str!("../../../queries/assets/find_track_art.sql")
                     }
                     (ManagedImageKey::TrackFile(_), _) => unreachable!(),
@@ -339,11 +362,14 @@ impl ManagedImageKey {
                     return Ok(None);
                 }
 
-                let image = crate::RUNTIME
-                    .spawn_blocking(move || {
-                        decode_to_render_image_scaled(&image_encoded, thumb_size).map(Some)
-                    })
-                    .await??;
+                let image = {
+                    let _permit = DECODE_PERMITS.acquire().await.expect("semaphore is never closed");
+                    crate::RUNTIME
+                        .spawn_blocking(move || {
+                            decode_to_render_image_scaled(&image_encoded, thumb_size).map(Some)
+                        })
+                        .await??
+                };
 
                 Ok(image)
             }
