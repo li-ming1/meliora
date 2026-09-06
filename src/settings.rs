@@ -9,7 +9,10 @@ use std::{
     fs,
     fs::File,
     path::{Path, PathBuf},
-    sync::mpsc::channel,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::channel,
+    },
     time::Duration,
 };
 
@@ -101,6 +104,12 @@ pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
     SettingsLoadOutcome::Loaded(settings)
 }
 
+/// Trailing-edge debounce for the disk write, and each write also runs off the
+/// UI thread: settings sliders call `save_settings` on every drag increment,
+/// and the file watcher applies each write back with a full-window refresh.
+const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+static SETTINGS_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 pub fn save_settings(cx: &mut App, settings: &Settings) {
     let playback = cx.global::<PlaybackInterface>();
     playback.update_settings(settings.playback.clone());
@@ -109,12 +118,27 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
     scan.update_settings(settings.scanning.clone());
 
     let path = cx.global::<SettingsGlobal>().path.clone();
+    let snapshot = settings.clone();
 
-    let result = File::create(path)
-        .and_then(|file| serde_json::to_writer_pretty(file, settings).map_err(|e| e.into()));
-    if let Err(e) = result {
-        warn!("Failed to save settings file: {e:?}");
-    }
+    // The globals above must take effect live; only the disk write collapses
+    // into one trailing-edge write (same pattern as the equalizer's save).
+    let generation = SETTINGS_SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    crate::RUNTIME.spawn(async move {
+        tokio::time::sleep(SETTINGS_SAVE_DEBOUNCE).await;
+        if SETTINGS_SAVE_GENERATION.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        let result = tokio::task::spawn_blocking(move || {
+            File::create(path)
+                .and_then(|file| serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into()))
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!("Failed to save settings file: {e:?}"),
+            Err(e) => warn!("settings save task failed: {e}"),
+        }
+    });
 }
 
 pub struct SettingsGlobal {
