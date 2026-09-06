@@ -1,8 +1,4 @@
-use std::{
-    cell::RefCell,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use gpui::{prelude::FluentBuilder, *};
 
@@ -10,7 +6,6 @@ use crate::{
     library::types::{Track, table::TrackColumn},
     playback::{interface::PlaybackInterface, queue::QueueItemData},
     ui::{
-        availability::is_track_path_available,
         components::table::{Table, table_data::TABLE_MAX_WIDTH},
         library::{
             context_menus::{TrackContextMenuContext, play_from_track},
@@ -44,9 +39,14 @@ impl TrackView {
                     if let Some(table) = table_ref_clone.borrow().as_ref() {
                         let items = table.read(cx).get_items();
                         if let Some(items) = items {
+                            // no per-track `Path::exists` probe here: filtering
+                            // the whole table stat'd one file per track (10k
+                            // syscalls per double-click on a large library)
+                            // before anything could start. Missing files are
+                            // skipped by the playback engine instead, and row
+                            // availability is already greyed from the row data.
                             let queue_items: Vec<QueueItemData> = items
                                 .iter()
-                                .filter(|(_, _, _, path)| is_track_path_available(Path::new(path)))
                                 .map(|(id, _, album_id, path)| {
                                     QueueItemData::new(
                                         cx,
@@ -88,9 +88,11 @@ impl TrackView {
                             return;
                         };
 
+                        // no per-track exists() probe (same reason as the
+                        // double-click handler above); playback skips files
+                        // that went missing
                         let queue_items = items
                             .iter()
-                            .filter(|(_, _, _, path)| is_track_path_available(Path::new(path)))
                             .map(|(id, _, album_id, path)| {
                                 QueueItemData::new(cx, PathBuf::from(path), Some(*id), *album_id)
                             })

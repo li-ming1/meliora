@@ -14,6 +14,7 @@ use crate::{
         scan::ScanInterface,
         types::{Album, Track},
     },
+    ui::app::Pool,
     playback::{
         interface::{PlaybackInterface, replace_queue},
         queue::QueueItemData,
@@ -37,12 +38,13 @@ pub struct PlaylistMenuInfo {
 
 type TrackPlayFromHereHandler = Rc<dyn Fn(&mut App, &Track) + 'static>;
 
-/// Library tracks -> queue items, skipping unavailable files. The track length
-/// rides along so the queue summary never needs the metadata entities.
+/// Library tracks -> queue items. No per-track `Path::exists` probe: the
+/// callers hand over whole tables/playlists (10k stats per click on a large
+/// library) and the playback engine skips files that went missing. Row
+/// availability is already visible to the user from the row data.
 pub fn queue_items_from_tracks(cx: &mut App, tracks: &[Track]) -> Vec<QueueItemData> {
     tracks
         .iter()
-        .filter(|track| is_track_available(track))
         .map(|track| {
             let item =
                 QueueItemData::new(cx, track.location.clone(), Some(track.id), track.album_id);
@@ -99,7 +101,10 @@ pub(crate) fn add_to_playlist_state(
 }
 
 /// Creates or retrieves the `AddToPlaylist` keyed state for the given album,
-/// returning the show toggle and the playlist entity.
+/// returning the show toggle and the playlist entity. The album's track ids
+/// load in the background the first time the submenu opens instead of here —
+/// this initializer runs per newly-seen album row while the grid scrolls,
+/// where a `block_on` query per album stalled the scroll.
 pub(crate) fn add_album_to_playlist_state(
     key: &'static str,
     album_id: i64,
@@ -108,13 +113,32 @@ pub(crate) fn add_album_to_playlist_state(
 ) -> (Entity<bool>, Entity<AddToPlaylist>) {
     let menu_state = window.use_keyed_state((key, album_id as usize), cx, |_, cx| {
         let show = cx.new(|_| false);
-        let tracks = cx
-            .list_tracks_in_album(album_id)
-            .unwrap_or_default()
-            .iter()
-            .map(|track| track.id)
-            .collect::<Vec<i64>>();
-        let add_to = AddToPlaylist::new(cx, show.clone(), tracks);
+        let add_to = AddToPlaylist::new(cx, show.clone(), Vec::new());
+
+        let loaded = Rc::new(std::cell::Cell::new(false));
+        let loaded_for_load = loaded.clone();
+        let add_to_for_load = add_to.clone();
+        cx.observe(&show, move |_, show, cx| {
+            if !*show.read(cx) || loaded_for_load.get() {
+                return;
+            }
+            loaded_for_load.set(true);
+            let pool = cx.global::<Pool>().0.clone();
+            let add_to_for_task = add_to_for_load.clone();
+            cx.spawn(async move |_this, cx| {
+                let tracks = crate::RUNTIME
+                    .spawn(async move { db::list_tracks_in_album(&pool, album_id).await })
+                    .await
+                    .ok()
+                    .and_then(|result| result.ok())
+                    .map(|tracks| tracks.iter().map(|track| track.id).collect::<Vec<i64>>())
+                    .unwrap_or_default();
+                add_to_for_task.update(cx, |add_to, _| add_to.set_track_ids(tracks));
+            })
+            .detach();
+        })
+        .detach();
+
         AddToPlaylistState { show, add_to }
     });
     let state = menu_state.read(cx);
@@ -189,10 +213,11 @@ pub fn play_from_track_listing(
     let queue_items = if let Some(tracks) = queue_context {
         queue_items_from_tracks(cx, &tracks)
     } else if let Some(playlist_id) = playlist_id {
+        // no per-row exists() probe: playlists can be thousands of rows and
+        // the playback engine skips missing files
         cx.get_playlist_tracks(playlist_id)
             .unwrap_or_default()
             .iter()
-            .filter(|row| Path::new(&row.location).exists())
             .map(|row| {
                 QueueItemData::new(
                     cx,
