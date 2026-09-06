@@ -194,6 +194,23 @@ impl QueueItemData {
         }
     }
 
+    /// Creates a queue item with no metadata entity yet; `get_data` creates
+    /// it on first use, mirroring the deserialization path. Bulk queue builds
+    /// (Shuffle All) use this off the UI thread where `cx.new` is unavailable
+    /// and one GPUI entity per track would be pure startup cost.
+    pub fn lazy(path: PathBuf, db_id: Option<i64>, db_album_id: Option<i64>) -> Self {
+        QueueItemData {
+            path,
+            db_id,
+            db_album_id,
+            data: Arc::new(RwLock::new(None)),
+            persisted_ui: None,
+            duration: Arc::new(AtomicI64::new(UNKNOWN_DURATION)),
+            #[cfg(feature = "online_sources")]
+            online_identity: None,
+        }
+    }
+
     /// Creates a queue item whose UI metadata is already known (e.g. online
     /// tracks fetched from a remote service), so no database or disk lookup
     /// is scheduled later.

@@ -5,10 +5,11 @@ use gpui::{Action, App, AppContext, Menu, MenuItem, SharedString, actions};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    library::{db::LibraryAccess, scan::ScanInterface},
+    library::{db, scan::ScanInterface},
     playback::{interface::PlaybackInterface, queue::QueueItemData, thread::PlaybackState},
     toasts::{Toast, emit_toast},
     ui::{
+        app::Pool,
         settings::{
             SettingsSectionKind, open_settings_window, open_settings_window_with_section,
         },
@@ -239,19 +240,34 @@ fn issues(_: &Issues, cx: &mut App) {
 }
 
 fn shuffle_all(_: &ShuffleAll, cx: &mut App) {
-    if let Ok(tracks) = cx.get_all_tracks() {
-        let tracks = tracks
+    // the whole-library query and the per-track item construction used to run
+    // on the UI thread; on a 100k library that froze the main thread for
+    // hundreds of ms. Items are built with no metadata entity — `get_data`
+    // creates one lazily on first use — so nothing GPUI-owned is constructed
+    // off the main thread.
+    let pool = cx.global::<Pool>().0.clone();
+    cx.spawn(async move |cx| {
+        let tracks = crate::RUNTIME
+            .spawn(async move { db::get_all_tracks(&pool).await })
+            .await
+            .map(|result| result.unwrap_or_default())
+            .unwrap_or_default();
+
+        let items: Vec<QueueItemData> = tracks
             .into_iter()
-            .map(|v| QueueItemData::new(cx, v.0.into(), Some(v.1), Some(v.2)))
+            .map(|(path, id, album_id)| QueueItemData::lazy(path.into(), Some(id), Some(album_id)))
             .collect();
 
-        let interface = cx.global::<PlaybackInterface>();
+        cx.update(|cx| {
+            let interface = cx.global::<PlaybackInterface>();
 
-        if !(*cx.global::<PlaybackInfo>().shuffling.read(cx)) {
-            interface.toggle_shuffle();
-        }
-        interface.replace_queue(tracks);
-    }
+            if !(*cx.global::<PlaybackInfo>().shuffling.read(cx)) {
+                interface.toggle_shuffle();
+            }
+            interface.replace_queue(items);
+        });
+    })
+    .detach();
 }
 
 fn undo(_: &Undo, cx: &mut App) {
