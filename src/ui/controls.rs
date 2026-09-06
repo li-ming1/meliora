@@ -1419,6 +1419,10 @@ impl Render for SecondaryControls {
                                 .mt(px(11.0))
                                 .rounded(px(theme.radius_sm))
                                 .id("volume")
+                                // match the scrubber: without this every mouse
+                                // move sends a SetVolume command down the
+                                // playback channel during a drag
+                                .change_interval(Duration::from_millis(33))
                                 .value((volume) as f32)
                                 .on_double_click(|_, cx| {
                                     cx.global::<PlaybackInterface>().set_volume(1.0_f64);
