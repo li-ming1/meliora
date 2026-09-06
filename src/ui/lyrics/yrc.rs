@@ -13,17 +13,22 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
     let mut lines = Vec::new();
     for raw in content.lines() {
         let line = raw.trim();
-        if !line.starts_with('[') {
+        // Timed lines start with `[...`; credits/metadata lines are bare JSON
+        // objects in real payloads (older writers wrapped them in `[...]`).
+        if !(line.starts_with('[') || line.starts_with('{')) {
             continue;
         }
-        let Some(rest) = line.strip_prefix('[') else {
-            continue;
-        };
 
-        if rest.starts_with('{') {
+        if line.starts_with('{')
+            || line.strip_prefix('[').is_some_and(|rest| rest.starts_with('{'))
+        {
             parse_metadata_line(line, &mut lines);
             continue;
         }
+
+        let Some(rest) = line.strip_prefix('[') else {
+            continue;
+        };
 
         let Some((times, body)) = rest.split_once(']') else {
             continue;
@@ -84,13 +89,18 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
     (!lines.is_empty()).then_some(lines)
 }
 
-/// Metadata line: `[{"t":0,"c":[{"tx":"作词: ..."},{"tx":"作曲: ..."}]}]`.
-/// Multiple tx fragments are concatenated into one plain line.
+/// Metadata line: `[{"t":0,"c":[{"tx":"作词: ..."},{"tx":"作曲: ..."}]}]` from
+/// older writers, or bare `{"t":0,...}` as real payloads ship it. Multiple tx
+/// fragments are concatenated into one plain line. The JSON object is located
+/// by its braces so both wrappers parse.
 fn parse_metadata_line(line: &str, lines: &mut Vec<LrcLine>) {
-    let Some(end) = line.rfind(']') else {
+    let (Some(json_start), Some(json_end)) = (line.find('{'), line.rfind('}')) else {
         return;
     };
-    let Ok(value) = serde_json::from_str::<Value>(&line[1..end]) else {
+    if json_start >= json_end {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&line[json_start..=json_end]) else {
         return;
     };
     let time_ms = value
