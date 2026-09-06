@@ -182,6 +182,7 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
 /// working set) that separates a real leak from cache/cache-size growth. A
 /// "step" (net growth over a rolling window) is logged explicitly so every
 /// activity-driven bump in long-run memory is attributable instead of silent.
+#[cfg(not(test))]
 fn spawn_memory_probe() {
     // Net committed growth over the last 10 minutes considered a "step".
     const STEP_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
@@ -249,7 +250,7 @@ fn spawn_memory_probe() {
 
 /// Total bytes of the on-disk online-cover cache, in MiB. Tracks how many
 /// distinct covers the session has touched, independent of process memory.
-#[cfg(feature = "online_sources")]
+#[cfg(all(not(test), feature = "online_sources"))]
 fn disk_cover_cache_mb() -> u64 {
     let dir = crate::paths::data_dir().join("image-cache");
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -263,7 +264,7 @@ fn disk_cover_cache_mb() -> u64 {
         / (1024 * 1024)
 }
 
-#[cfg(not(feature = "online_sources"))]
+#[cfg(all(not(test), not(feature = "online_sources")))]
 fn disk_cover_cache_mb() -> u64 {
     0
 }
@@ -287,6 +288,7 @@ fn main() -> anyhow::Result<()> {
     // disable the GPUI mini profiler immediately to avoid unnecessary allocations
     set_trace_enabled(false);
 
+    #[cfg(not(test))]
     tune_mimalloc_purge_delay();
 
     // move any data/log dirs left under the legacy `li-ming1/meliora` and
