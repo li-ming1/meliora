@@ -42,6 +42,16 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
         .unwrap_or_else(|_| zed_reqwest::Client::new())
 });
 
+/// Upper bound on waiting for any single network event while feeding the
+/// decoder (response headers, one body chunk). The client deliberately has no
+/// total request timeout — a range body stays open for the whole track — but
+/// the reads below run on the playback thread: without this bound a server
+/// that stalls mid-body blocks the playback main loop forever, commands stop
+/// being consumed, the no-progress skip never fires and playback sits silent
+/// on a "playing" UI. Surfacing it as an IO error lets the engine skip the
+/// track like any other decode failure.
+const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Downloads the bytes of a small remote resource (e.g. a KuGou album-cover
 /// image). On any non-success status or empty body returns `None`; the caller
 /// treats that as "no artwork". Uses a fresh request with a short timeout so
@@ -296,12 +306,16 @@ impl HttpRangeSource {
     fn connect(url: Url) -> Result<Self, String> {
         let response = crate::RUNTIME
             .block_on(async {
-                HTTP_CLIENT
-                    .get(url.clone())
-                    .header(RANGE, "bytes=0-")
-                    .send()
-                    .await
+                tokio::time::timeout(
+                    STREAM_IO_TIMEOUT,
+                    HTTP_CLIENT
+                        .get(url.clone())
+                        .header(RANGE, "bytes=0-")
+                        .send(),
+                )
+                .await
             })
+            .map_err(|_| format!("request timed out after {STREAM_IO_TIMEOUT:?}"))?
             .and_then(|response| response.error_for_status())
             .map_err(|e| format!("request failed: {e}"))?;
 
@@ -354,7 +368,10 @@ impl HttpRangeSource {
         }
 
         let response = crate::RUNTIME
-            .block_on(request.send())
+            .block_on(async {
+                tokio::time::timeout(STREAM_IO_TIMEOUT, request.send()).await
+            })
+            .map_err(|_| io::Error::other("HTTP request timed out"))?
             .and_then(|response| response.error_for_status())
             .map_err(|e| io::Error::other(format!("HTTP request failed: {e}")))?;
 
@@ -402,29 +419,39 @@ impl Read for HttpRangeSource {
             }
 
             // fetch the next chunk in its own scope so the body lock is
-            // released before `self` is touched below
+            // released before `self` is touched below; the timeout bounds how
+            // long the playback thread can be parked on one read (see
+            // STREAM_IO_TIMEOUT)
             let chunk = {
                 let Some(body) = self.body.as_ref() else {
                     return Ok(0);
                 };
                 let mut body = body.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                crate::RUNTIME.block_on(body.chunk())
+                crate::RUNTIME.block_on(async {
+                    tokio::time::timeout(STREAM_IO_TIMEOUT, body.chunk()).await
+                })
             };
 
             match chunk {
-                Ok(Some(chunk)) if !chunk.is_empty() => {
+                Ok(Ok(Some(chunk))) if !chunk.is_empty() => {
                     self.pending = chunk.to_vec();
                     self.pending_offset = 0;
                     return Ok(self.take_pending(buf));
                 }
-                Ok(Some(_)) => continue,
-                Ok(None) => {
+                Ok(Ok(Some(_))) => continue,
+                Ok(Ok(None)) => {
                     self.body = None;
                     return Ok(0);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     self.body = None;
                     return Err(io::Error::other(format!("HTTP stream failed: {e}")));
+                }
+                Err(_) => {
+                    self.body = None;
+                    return Err(io::Error::other(format!(
+                        "remote stream stalled: no data for {STREAM_IO_TIMEOUT:?}"
+                    )));
                 }
             }
         }
