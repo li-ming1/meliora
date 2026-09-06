@@ -283,8 +283,12 @@ impl SearchModel {
 
         let query = query.trim().to_string();
         if query.chars().count() < 2 {
-            self.kugou_items.clear();
-            self.emit_merged_items(cx);
+            // only re-merge when something actually went away, or every
+            // keystroke below two chars re-emits the whole library to the finder
+            if !self.kugou_items.is_empty() {
+                self.kugou_items.clear();
+                self.emit_merged_items(cx);
+            }
             return;
         }
 
@@ -292,6 +296,15 @@ impl SearchModel {
             cx.background_executor()
                 .timer(Duration::from_millis(350))
                 .await;
+
+            // a newer keystroke superseded this one; bail before hitting the
+            // network so fast typing doesn't fire one request per character
+            if this
+                .update(cx, |this, _| this.kugou_query_generation != generation)
+                .unwrap_or(true)
+            {
+                return;
+            }
 
             let client = crate::kugou::shared_client();
             let request =
@@ -340,8 +353,12 @@ impl SearchModel {
 
         let query = query.trim().to_string();
         if query.chars().count() < 2 {
-            self.netease_items.clear();
-            self.emit_merged_items(cx);
+            // only re-merge when something actually went away, or every
+            // keystroke below two chars re-emits the whole library to the finder
+            if !self.netease_items.is_empty() {
+                self.netease_items.clear();
+                self.emit_merged_items(cx);
+            }
             return;
         }
 
@@ -349,6 +366,15 @@ impl SearchModel {
             cx.background_executor()
                 .timer(Duration::from_millis(350))
                 .await;
+
+            // a newer keystroke superseded this one; bail before hitting the
+            // network so fast typing doesn't fire one request per character
+            if this
+                .update(cx, |this, _| this.netease_query_generation != generation)
+                .unwrap_or(true)
+            {
+                return;
+            }
 
             let client = crate::netease::shared_client();
             let request = crate::RUNTIME
