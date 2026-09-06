@@ -47,6 +47,15 @@ const MAX_DRAIN_CYCLES: u32 = 1024;
 /// Number of allowable rebuild attempts before giving up and skipping to the next track.
 const MAX_REBUILD_ATTEMPTS: u32 = 8;
 
+/// First defer window before a device stream is recreated again after a failed
+/// consume. A device whose WriteTimeout recurs every cycle used to be recreated
+/// every cycle (observed 95 times in 77 s); the window doubles per consecutive
+/// failed cycle up to [`DEVICE_RECREATE_BACKOFF_MAX`] and a successful consume
+/// clears it. The consume attempt itself still runs every cycle - its timeout
+/// naturally paces the loop - only the recreate churn is deferred.
+const DEVICE_RECREATE_BACKOFF_INITIAL: std::time::Duration = std::time::Duration::from_secs(2);
+const DEVICE_RECREATE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Overrides the default behavior of the audio pipeline if the advertised format was wrong.
 #[derive(Debug, Clone, Default)]
 struct PipelineOverrides {
@@ -111,6 +120,9 @@ pub struct AudioEngine {
     /// this floor keeps the per-track allocation size constant so the heap reuses the same
     /// blocks instead of climbing (the [mem] probe's per-track committed-growth curve).
     pipeline_capacity_floor: usize,
+    /// `(next recreate allowed at, consecutive failed consume cycles)` pacing
+    /// device recreation; see [`DEVICE_RECREATE_BACKOFF_INITIAL`].
+    device_recreate_defer: Option<(std::time::Instant, u32)>,
 }
 
 impl AudioEngine {
@@ -130,6 +142,7 @@ impl AudioEngine {
             drain: DrainState::Inactive,
             rebuild_attempts: 0,
             pipeline_capacity_floor: 0,
+            device_recreate_defer: None,
         }
     }
 
@@ -616,7 +629,27 @@ impl AudioEngine {
 
         if let Err(err) = consume_result {
             warn!(parent: &s, ?err, "Failed to consume from pipeline: {err}");
-            warn!(parent: &s, "Recreating device and retrying...");
+
+            // A device whose WriteTimeout recurs every cycle never converges
+            // through recreation; pace the recreate with a growing defer
+            // window instead of churning the stream every cycle. The consume
+            // attempt above still runs each cycle, so its timeout keeps the
+            // loop paced, and a successful consume clears the backoff.
+            let now = std::time::Instant::now();
+            if let Some((next_recreate, _)) = self.device_recreate_defer
+                && now < next_recreate
+            {
+                return EngineCycleResult::NothingToDo;
+            }
+            let failures = self
+                .device_recreate_defer
+                .map(|(_, failures)| failures + 1)
+                .unwrap_or(0);
+            let defer = DEVICE_RECREATE_BACKOFF_INITIAL
+                .saturating_mul(1_u32 << failures.min(4))
+                .min(DEVICE_RECREATE_BACKOFF_MAX);
+            self.device_recreate_defer = Some((now + defer, failures));
+            warn!(parent: &s, failures, ?defer, "Recreating device and retrying...");
 
             let channels = self.device.current_format().map(|f| f.channels.clone());
             if let Err(e) = self.device.create_stream(channels) {
@@ -643,6 +676,10 @@ impl AudioEngine {
                     "audio device unusable after recreation: {err}"
                 ));
             }
+        } else {
+            // Clean consume: the device recovered, recreate immediately if it
+            // ever fails again.
+            self.device_recreate_defer = None;
         }
 
         EngineCycleResult::Continue
