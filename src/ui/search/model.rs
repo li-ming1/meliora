@@ -7,9 +7,10 @@ use nucleo::Utf32String;
 use tracing::debug;
 
 use crate::{
-    library::{db::LibraryAccess, scan::ScanEvent},
+    library::{db, scan::ScanEvent},
     ui::{
-        availability::available_album_ids,
+        app::Pool,
+        availability::compute_available_albums,
         components::palette::Palette,
         library::ViewSwitchMessage,
         models::Models,
@@ -25,6 +26,13 @@ pub struct SearchModel {
     palette: Entity<Palette<SearchPaletteItem, MatcherFunc, OnAccept>>,
     /// Local (library) items, kept around so online results can be merged in.
     local_items: Vec<Arc<SearchPaletteItem>>,
+    /// Bumped when the local index is invalidated; an in-flight background
+    /// load compares against it so a stale load can't overwrite a newer one.
+    load_generation: u64,
+    /// Whether a (completed) local index exists. Distinct from
+    /// `local_items.is_empty()` so the palette-open observer doesn't stack a
+    /// new load on every open while one is still in flight.
+    local_items_loaded: bool,
     #[cfg(feature = "kugou")]
     kugou_items: Vec<Arc<SearchPaletteItem>>,
     /// Bumped on every query change; in-flight online searches compare
@@ -37,10 +45,19 @@ pub struct SearchModel {
     netease_query_generation: u64,
 }
 
-fn load_search_items(cx: &mut App) -> Vec<Arc<SearchPaletteItem>> {
-    let available_albums = available_album_ids(cx);
+/// Loads the whole-library search index on the background runtime: three
+/// full-table queries plus one `exists()` stat per distinct track path take
+/// seconds on a 100k library, and this used to run synchronously inside the
+/// first palette-open frame.
+async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchPaletteItem>> {
+    let availability_rows = db::list_album_availability(&pool).await.unwrap_or_default();
+    let available_albums = tokio::task::spawn_blocking(move || {
+        compute_available_albums(availability_rows)
+    })
+    .await
+    .unwrap_or_default();
 
-    let albums = match cx.list_albums_search() {
+    let albums = match db::list_albums_search(&pool).await {
         Ok(album_data) => album_data
             .into_iter()
             .map(|(id, title, artist_override, artists)| {
@@ -59,7 +76,7 @@ fn load_search_items(cx: &mut App) -> Vec<Arc<SearchPaletteItem>> {
         }
     };
 
-    let artists = match cx.list_artists_search() {
+    let artists = match db::list_artists_search(&pool).await {
         Ok(data) => data,
         Err(e) => {
             debug!("Failed to load artists for search: {:?}", e);
@@ -67,7 +84,7 @@ fn load_search_items(cx: &mut App) -> Vec<Arc<SearchPaletteItem>> {
         }
     };
 
-    let tracks = match cx.list_tracks_search() {
+    let tracks = match db::list_tracks_search(&pool).await {
         Ok(data) => data,
         Err(e) => {
             debug!("Failed to load tracks for search: {:?}", e);
@@ -150,6 +167,8 @@ impl SearchModel {
             let search_model = SearchModel {
                 palette,
                 local_items,
+                load_generation: 0,
+                local_items_loaded: false,
                 #[cfg(feature = "kugou")]
                 kugou_items: Vec::new(),
                 #[cfg(feature = "kugou")]
@@ -177,23 +196,17 @@ impl SearchModel {
                 .detach();
             }
 
-            // 首次打开搜索面板时加载本地索引并推给调色板（按需构建，避免启动即常驻）
-            let palette_for_load = search_model.palette.clone();
+            // 首次打开搜索面板时在后台构建本地索引并推给调色板（按需构建，避免
+            // 启动即常驻，也避免打开面板那一帧被三个全表查询 + 逐路径 stat 卡死）
             let show_for_load = show.clone();
             cx.observe(&show_for_load, move |this, show, cx| {
-                if *show.read(cx) && this.local_items.is_empty() {
-                    let new_items = load_search_items(cx);
-                    this.local_items = new_items.clone();
-
-                    palette_for_load.update(cx, |_, cx| {
-                        cx.emit(new_items);
-                    });
+                if *show.read(cx) && !this.local_items_loaded {
+                    this.load_local_items_async(cx);
                 }
             })
             .detach();
 
             let scan_status = cx.global::<Models>().scan_state.clone();
-            let palette_weak = search_model.palette.downgrade();
             let show_for_scan = show.clone();
 
             cx.observe(&scan_status, move |this, scan_event, cx| {
@@ -206,24 +219,18 @@ impl SearchModel {
                     debug!("Scan complete, refreshing search items");
 
                     // File-watcher rescans fire even while the palette is
-                    // closed: rebuilding the whole index then would do three
-                    // + queries synchronously on the UI thread for results
-                    // nobody is looking at. Invalidate instead and only
-                    // reload now if the panel is actually open.
+                    // closed: rebuilding the whole index then would query the
+                    // whole library for results nobody is looking at.
+                    // Invalidate (dropping any in-flight background load) and
+                    // only reload now if the panel is actually open.
                     this.local_items.clear();
+                    this.local_items_loaded = false;
+                    this.load_generation += 1;
                     if !*show_for_scan.read(cx) {
                         return;
                     }
 
-                    let new_items = load_search_items(cx);
-                    this.local_items = new_items.clone();
-                    let emitted = this.merged_items();
-
-                    if let Some(palette) = palette_weak.upgrade() {
-                        palette.update(cx, |_, cx| {
-                            cx.emit(emitted);
-                        });
-                    }
+                    this.load_local_items_async(cx);
                 }
             })
             .detach();
@@ -240,6 +247,38 @@ impl SearchModel {
             .chain(self.netease_iter())
             .cloned()
             .collect()
+    }
+
+    /// Loads the local index on the background runtime and pushes the merged
+    /// item set to the palette when it lands. Online results may have arrived
+    /// while the load was in flight (the palette can be queried immediately),
+    /// so the apply emits the full merge — emitting local-only would drop
+    /// them. A newer load generation discards this one's result.
+    fn load_local_items_async(&mut self, cx: &mut Context<Self>) {
+        self.load_generation += 1;
+        let generation = self.load_generation;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let new_items = crate::RUNTIME
+                .spawn(async move { load_search_items_off_thread(pool).await })
+                .await
+                .unwrap_or_default();
+
+            this.update(cx, |this, cx| {
+                if this.load_generation != generation {
+                    return;
+                }
+                this.local_items = new_items;
+                this.local_items_loaded = true;
+                let emitted = this.merged_items();
+                this.palette.update(cx, |_, cx| {
+                    cx.emit(emitted);
+                });
+            })
+            .ok();
+        })
+        .detach();
     }
 
     #[cfg(feature = "kugou")]

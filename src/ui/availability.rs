@@ -31,21 +31,12 @@ pub fn is_track_available(track: &Track) -> bool {
     is_track_path_available(&track.location)
 }
 
-pub fn album_has_available_tracks(cx: &mut App, album_id: i64) -> bool {
-    cx.list_tracks_in_album(album_id)
-        .map(|tracks| tracks.iter().any(is_track_available))
-        .unwrap_or_default()
-}
-
-/// Ids of albums that still have at least one track on disk. Replaces the
-/// per-album `list_tracks_in_album` N+1 with one query plus one `exists()`
-/// stat per distinct path, so loading a full-library search index stops
-/// issuing one query per album.
-pub fn available_album_ids(cx: &mut App) -> FxHashSet<i64> {
-    let Ok(rows) = cx.list_album_availability() else {
-        return FxHashSet::default();
-    };
-
+/// Ids of albums that still have at least one track on disk, from a
+/// `(album_id, track location)` row set. Replaces the per-album
+/// `list_tracks_in_album` N+1 with one query plus one `exists()` stat per
+/// distinct path. Pure so the search index loader can run it on a blocking
+/// thread; `Path::exists` is a syscall and must stay off the UI thread.
+pub fn compute_available_albums(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
     let mut by_album: FxHashMap<i64, Vec<String>> = FxHashMap::default();
     for (album_id, location) in rows {
         by_album.entry(album_id).or_default().push(location);
