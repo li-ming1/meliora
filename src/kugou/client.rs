@@ -5,6 +5,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -214,7 +215,14 @@ impl KugouClient {
         let session_path = data_dir.join("kugou_session.json");
         let session = KugouSession::load(&session_path).unwrap_or_else(KugouSession::generate);
         Self {
-            http: Client::new(),
+            // a hung gateway request must not pin `pending_fetches` forever:
+            // without a timeout a track that fails to resolve can never be
+            // retried (the merge guard drops every later click)
+            http: Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             session: Mutex::new(session),
             session_path,
         }

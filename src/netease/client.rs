@@ -8,6 +8,7 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -164,7 +165,13 @@ impl NeteaseClient {
             .map(|d| d.as_millis())
             .unwrap_or(0);
         Self {
-            http: Client::new(),
+            // same as the KuGou client: bound every request so a stalled
+            // connection can't wedge pending fetches or login polling
+            http: Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             session: Mutex::new(session),
             session_path,
             wnm_cid: format!("{letters}.{now_ms}.01.0"),

@@ -3,7 +3,7 @@
 //! playlist. Purely HTTP + JSON; no KuGou signing is involved here.
 //! Mirrors `KuGou.Net/ExternalPlaylists/*` in spirit and endpoint.
 
-use std::sync::OnceLock;
+use std::{sync::OnceLock, time::Duration};
 
 use serde_json::Value;
 use zed_reqwest::{
@@ -24,7 +24,13 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 static IMPORT_HTTP: OnceLock<Client> = OnceLock::new();
 fn http() -> &'static Client {
-    IMPORT_HTTP.get_or_init(Client::new)
+    IMPORT_HTTP.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
 }
 
 fn browser_headers(referer: &str) -> HeaderMap {
