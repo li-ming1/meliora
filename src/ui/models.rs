@@ -518,15 +518,15 @@ pub(crate) fn subscribe_liked_updates<E>(
 ) where
     E: HasLikedState + 'static,
 {
-    let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-    cx.subscribe(&playlist_tracker, move |this, _, ev, cx| {
-        if *ev != PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID) {
-            return;
-        }
-        let new_liked = get_track_id(this).and_then(|id| {
-            cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, id)
-                .unwrap_or_default()
-        });
+    // Observe the cached liked-ids set instead of the playlist tracker: the
+    // tracker fires while the reload that reflects the change is still in
+    // flight, so a cache read there would be stale. The set entity notifies
+    // exactly when fresh data lands (startup, like, unlike, batch like), and
+    // the notification costs no IO — the old tracker subscription ran one
+    // synchronous DB query per live row on every liked-playlist change.
+    let liked_ids = cx.global::<Models>().liked_ids.clone();
+    cx.observe(&liked_ids, move |this, _, cx| {
+        let new_liked = get_track_id(this).and_then(|id| is_song_liked(cx, id));
         if new_liked != this.is_liked() {
             this.set_liked(new_liked);
             cx.notify();
@@ -565,16 +565,12 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
     .detach();
 }
 
-/// Like-state of `track_id` against the cached set, falling back to a DB
-/// lookup only until the first reload lands. Mirrors `playlist_has_track`'s
-/// `Option<i64>` shape so it can replace row-construction queries directly.
+/// Like-state of `track_id` against the cached set. Mirrors
+/// `playlist_has_track`'s `Option<i64>` shape so it can replace
+/// row-construction queries directly. Returns `None` (unknown) until the
+/// first reload lands — callers observe `Models.liked_ids`, so the answer
+/// self-corrects on the next notification without any DB access.
 pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     let cached = cx.global::<Models>().liked_ids.read(cx).clone();
-    cached
-        .and_then(|set| set.contains(&track_id).then_some(track_id))
-        .or_else(|| {
-            cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track_id)
-                .ok()
-                .flatten()
-        })
+    cached.and_then(|set| set.contains(&track_id).then_some(track_id))
 }

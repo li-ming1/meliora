@@ -25,7 +25,7 @@ use crate::{
             add_to_playlist::AddToPlaylist,
             context_menus::{album::AlbumContextMenu, track::TrackContextMenu},
         },
-        models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent},
+        models::{Models, PlaybackInfo, PlaylistEvent, is_song_liked},
     },
 };
 
@@ -129,9 +129,9 @@ pub fn track_menu_for_table(
     cx: &mut App,
 ) -> (AnyElement, Option<AnyElement>) {
     let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track.id, window, cx);
-    let is_liked = cx
-        .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
-        .unwrap_or_default();
+    // cached liked set: render runs this per visible row per frame, a DB query
+    // here would block the UI thread on every repaint (see is_song_liked docs)
+    let is_liked = is_song_liked(cx, track.id);
 
     let menu = TrackContextMenu::new(
         Rc::new(track.clone()),
