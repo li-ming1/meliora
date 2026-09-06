@@ -932,13 +932,16 @@ pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table
     table: Entity<crate::ui::components::table::Table<T, C>>,
 ) {
     cx.observe(state, move |_, e, cx| {
-        let should_refresh = match e.read(cx) {
+        // completion only: TableEvent::NewRows re-queries the whole table on
+        // the UI thread and wipes every row view, so refreshing on progress
+        // froze the UI every 100 files for the duration of a large scan.
+        // ScanProgress still feeds the progress UI through its own subscriber.
+        let should_refresh = matches!(
+            e.read(cx),
             ScanEvent::ScanCompleteIdle
-            | ScanEvent::ScanCompleteWatching
-            | ScanEvent::TargetedRescanComplete => true,
-            ScanEvent::ScanProgress { current, .. } => current % 100 == 0,
-            _ => false,
-        };
+                | ScanEvent::ScanCompleteWatching
+                | ScanEvent::TargetedRescanComplete
+        );
         if should_refresh {
             table.update(cx, |_, cx| cx.emit(crate::ui::components::table::TableEvent::NewRows));
         }
