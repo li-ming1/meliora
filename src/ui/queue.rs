@@ -901,7 +901,14 @@ impl Render for Queue {
                     .child(
                         nav_button("close", CROSS)
                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                this.show_queue.update(cx, |v, _| *v = !(*v))
+                                this.show_queue.update(cx, |v, _| {
+                                    *v = !(*v);
+                                    crate::log_mem_event(if *v {
+                                        "sidebar: queue show"
+                                    } else {
+                                        "sidebar: queue hide"
+                                    });
+                                })
                             }))
                             .tooltip(build_tooltip(tr!("CLOSE", "Close"))),
                     ),

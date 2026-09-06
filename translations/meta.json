@@ -97,7 +97,7 @@
   },
   "ACTION_CLOSE_DETAIL_VIEW": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:635",
+    "definedIn": "src/ui/library.rs:640",
     "plural": false,
     "description": null
   },
@@ -121,13 +121,13 @@
   },
   "ACTION_GO_BACK": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:615",
+    "definedIn": "src/ui/library.rs:620",
     "plural": false,
     "description": null
   },
   "ACTION_GO_FORWARD": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:625",
+    "definedIn": "src/ui/library.rs:630",
     "plural": false,
     "description": null
   },
@@ -169,7 +169,7 @@
   },
   "ACTION_IMPORT_PLAYLIST": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:605",
+    "definedIn": "src/ui/library.rs:610",
     "plural": false,
     "description": null
   },
@@ -319,7 +319,7 @@
   },
   "CLOSE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:906",
+    "definedIn": "src/ui/queue.rs:913",
     "plural": false,
     "description": null
   },
@@ -1189,7 +1189,7 @@
   },
   "LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:1474",
+    "definedIn": "src/ui/controls.rs:1484",
     "plural": false,
     "description": null
   },

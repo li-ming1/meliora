@@ -395,6 +395,11 @@ fn make_view(
     model: &Entity<NavigationHistory>,
     scroll_state: &ScrollStateStorage,
 ) -> LibraryView {
+    // Every page instance (new navigation, back/forward/refresh, startup)
+    // flows through here at user-navigation frequency; sampling memory here
+    // attributes the browse-driven steps the periodic probe can't explain.
+    crate::log_mem_event(&format!("library view: {message:?}"));
+
     match message {
         ViewSwitchMessage::Albums => LibraryView::Album(AlbumView::new(
             cx,

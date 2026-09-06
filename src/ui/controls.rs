@@ -1458,6 +1458,11 @@ impl Render for SecondaryControls {
                         .on_click(move |_, _, cx| {
                             show_queue.update(cx, |m, cx| {
                                 *m = !*m;
+                                crate::log_mem_event(if *m {
+                                    "sidebar: queue show"
+                                } else {
+                                    "sidebar: queue hide"
+                                });
                                 cx.notify();
                             })
                         })
@@ -1468,6 +1473,11 @@ impl Render for SecondaryControls {
                         .on_click(move |_, _, cx| {
                             show_lyrics.update(cx, |m, cx| {
                                 *m = !*m;
+                                crate::log_mem_event(if *m {
+                                    "sidebar: lyrics show"
+                                } else {
+                                    "sidebar: lyrics hide"
+                                });
                                 cx.notify();
                             })
                         })

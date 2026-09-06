@@ -782,7 +782,15 @@ impl Render for ArtistDetailView {
                                         .w_full()
                                         .border_t_1()
                                         .border_color(theme.border_color)
-                                        .image_cache(retain_all("artist_liked_tracks_cache"))
+                                        // bounded LRU instead of retain-all: the
+                                        // liked list can hold hundreds of row
+                                        // covers, and 128×72px thumbs (~3 MB)
+                                        // still covers the viewport plus the
+                                        // scroll neighborhood without re-decode
+                                        .image_cache(meliora_cache(
+                                            "artist_liked_tracks_cache",
+                                            128,
+                                        ))
                                         .child(
                                             uniform_list(
                                                 "artist-liked-tracks",
@@ -811,7 +819,10 @@ impl Render for ArtistDetailView {
                                         .w_full()
                                         .border_t_1()
                                         .border_color(theme.border_color)
-                                        .image_cache(retain_all("artist_standalone_tracks_cache"))
+                                        .image_cache(meliora_cache(
+                                            "artist_standalone_tracks_cache",
+                                            128,
+                                        ))
                                         .child(
                                             uniform_list(
                                                 "artist-standalone-tracks",

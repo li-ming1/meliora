@@ -177,6 +177,21 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
     }
 }
 
+/// Samples and logs process memory at a named low-frequency UI event so a
+/// later `[mem]` step can be attributed to the user action that preceded it:
+/// the 30-second probe alone cannot tell browsing from playback, and the
+/// 2026-09 logs show unattributable +35..155 MB steps during browsing.
+pub fn log_mem_event(event: &str) {
+    let (private, working) = process_memory_mb();
+    tracing::info!(
+        event,
+        private_mb = private,
+        working_mb = working,
+        render_cache_mb = crate::ui::components::managed_image::render_cache_mb(),
+        "[mem] ui event"
+    );
+}
+
 /// Background memory probe: samples process memory every 30 seconds so a long
 /// playback session leaves a curve in the log (committed private bytes vs
 /// working set) that separates a real leak from cache/cache-size growth. A
