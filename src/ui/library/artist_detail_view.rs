@@ -48,6 +48,15 @@ fn availability_map(tracks: &[Track]) -> Arc<Vec<bool>> {
     Arc::new(tracks.iter().map(|track| is_track_available(track)).collect())
 }
 
+/// uniform_list needs one fixed row height; 40px is what the non-virtualized
+/// wrappers (`div().h(px(40.0))`) already pinned every TrackItem to.
+const TRACK_ROW_HEIGHT: f32 = 40.0;
+
+/// uniform_list only culls rows while its own viewport is smaller than its
+/// content, so a list keeps its natural height up to this many rows and
+/// scrolls internally beyond that instead of stretching the page scroll.
+const MAX_VISIBLE_TRACK_ROWS: usize = 12;
+
 pub struct ArtistDetailView {
     artist_id: i64,
     artist_name: Option<DBString>,
@@ -61,6 +70,10 @@ pub struct ArtistDetailView {
     standalone_tracks: Arc<Vec<Track>>,
     standalone_tracks_available: Arc<Vec<bool>>,
     scroll_handle: ScrollHandle,
+    /// Scroll state of the two virtualized track lists; kept for the view's
+    /// lifetime so a re-sort keeps the reader's position, like PlaylistView.
+    liked_scroll_handle: UniformListScrollHandle,
+    standalone_scroll_handle: UniformListScrollHandle,
     grid_views: Entity<FxHashMap<usize, Entity<GridItem<Album, AlbumColumn>>>>,
     grid_render_counter: Entity<usize>,
     nav_model: Entity<super::NavigationHistory>,
@@ -166,6 +179,8 @@ impl ArtistDetailView {
                 standalone_tracks: standalone_tracks.clone(),
                 standalone_tracks_available,
                 scroll_handle: ScrollHandle::new(),
+                liked_scroll_handle: UniformListScrollHandle::new(),
+                standalone_scroll_handle: UniformListScrollHandle::new(),
                 grid_views,
                 grid_render_counter,
                 nav_model: nav_model.clone(),
@@ -365,6 +380,8 @@ impl Render for ArtistDetailView {
         let theme = cx.global::<Theme>();
         let entity = cx.entity();
         let standalone_entity = entity.clone();
+        let liked_list_entity = entity.clone();
+        let standalone_list_entity = entity.clone();
 
         let scroll_handle = self.scroll_handle.clone();
         let settings = cx
@@ -618,6 +635,20 @@ impl Render for ArtistDetailView {
             None
         };
 
+        // Virtualized track lists: heights are capped so a long list scrolls
+        // internally instead of inflating the page scroll, and rows are read
+        // through the entity inside the uniform_list closure (which outlives
+        // the render borrow).
+        let liked_row_count = self.liked_track_items.len();
+        let liked_list_height =
+            px(TRACK_ROW_HEIGHT * liked_row_count.min(MAX_VISIBLE_TRACK_ROWS) as f32);
+        let liked_scroll_handle = self.liked_scroll_handle.clone();
+
+        let standalone_row_count = self.standalone_track_items.len();
+        let standalone_list_height =
+            px(TRACK_ROW_HEIGHT * standalone_row_count.min(MAX_VISIBLE_TRACK_ROWS) as f32);
+        let standalone_scroll_handle = self.standalone_scroll_handle.clone();
+
         div()
             .flex()
             .flex_col()
@@ -745,31 +776,61 @@ impl Render for ArtistDetailView {
                                     ),
                                 )
                             })
-                            .when_some(liked_track_header, |this, header| {
+                            .when_some(liked_track_header, move |this, header| {
                                 this.child(header).child(
                                     div()
                                         .w_full()
                                         .border_t_1()
                                         .border_color(theme.border_color)
                                         .image_cache(retain_all("artist_liked_tracks_cache"))
-                                        .children(
-                                            self.liked_track_items
-                                                .iter()
-                                                .map(|item| div().h(px(40.0)).child(item.clone())),
+                                        .child(
+                                            uniform_list(
+                                                "artist-liked-tracks",
+                                                liked_row_count,
+                                                move |range, _, cx| {
+                                                    let view = liked_list_entity.read(cx);
+                                                    view.liked_track_items[range]
+                                                        .iter()
+                                                        .map(|item| {
+                                                            div()
+                                                                .h(px(TRACK_ROW_HEIGHT))
+                                                                .child(item.clone())
+                                                        })
+                                                        .collect()
+                                                },
+                                            )
+                                            .h(liked_list_height)
+                                            .w_full()
+                                            .track_scroll(&liked_scroll_handle),
                                         ),
                                 )
                             })
-                            .when_some(standalone_track_header, |this, header| {
+                            .when_some(standalone_track_header, move |this, header| {
                                 this.child(header).child(
                                     div()
                                         .w_full()
                                         .border_t_1()
                                         .border_color(theme.border_color)
                                         .image_cache(retain_all("artist_standalone_tracks_cache"))
-                                        .children(
-                                            self.standalone_track_items
-                                                .iter()
-                                                .map(|item| div().h(px(40.0)).child(item.clone())),
+                                        .child(
+                                            uniform_list(
+                                                "artist-standalone-tracks",
+                                                standalone_row_count,
+                                                move |range, _, cx| {
+                                                    let view = standalone_list_entity.read(cx);
+                                                    view.standalone_track_items[range]
+                                                        .iter()
+                                                        .map(|item| {
+                                                            div()
+                                                                .h(px(TRACK_ROW_HEIGHT))
+                                                                .child(item.clone())
+                                                        })
+                                                        .collect()
+                                                },
+                                            )
+                                            .h(standalone_list_height)
+                                            .w_full()
+                                            .track_scroll(&standalone_scroll_handle),
                                         ),
                                 )
                             }),

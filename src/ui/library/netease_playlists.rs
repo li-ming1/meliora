@@ -7,8 +7,10 @@
 use cntp_i18n::{tr, trn};
 use gpui::{
     App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
+use gpui::prelude::FluentBuilder;
 
 use crate::{
     netease,
@@ -32,6 +34,12 @@ const PLAYLISTS_PER_PAGE: i64 = 30;
 
 /// How many tracks to fetch per page.
 const TRACKS_PER_PAGE: i64 = 50;
+
+/// uniform_list strides rows by one fixed height measured from the first
+/// row, so track rows are pinned to their natural height: 8px vertical
+/// padding × 2 + title line (text_sm) + 1px gap + subtitle line (text_xs)
+/// + 1px bottom border.
+const TRACK_ROW_HEIGHT: f32 = 60.0;
 
 enum PlaylistsState {
     LoggedOut,
@@ -69,6 +77,9 @@ pub struct NeteasePlaylistsView {
     /// whether the playlist has more tracks than currently loaded
     has_more_tracks: bool,
     scroll_handle: ScrollHandle,
+    /// Scroll position of the virtualized track list; reset per playlist so
+    /// a newly opened playlist starts at the top.
+    tracks_scroll_handle: UniformListScrollHandle,
 }
 
 impl NeteasePlaylistsView {
@@ -86,6 +97,7 @@ impl NeteasePlaylistsView {
                 track_page: 0,
                 has_more_tracks: false,
                 scroll_handle: ScrollHandle::new(),
+                tracks_scroll_handle: UniformListScrollHandle::new(),
             };
 
             if logged_in {
@@ -165,6 +177,7 @@ impl NeteasePlaylistsView {
         self.track_page = 0;
         self.has_more_tracks = false;
         self.scroll_handle = ScrollHandle::new();
+        self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
         self.load_tracks_page(1, cx);
     }
@@ -319,11 +332,15 @@ impl NeteasePlaylistsView {
             }))
     }
 
+    /// Rows are built from inside the uniform_list render closure where only
+    /// `&App` is available, so there is no `cx.listener` here; the like/play
+    /// semantics live entirely in the shared NetEase helpers and need no view
+    /// state.
     fn render_track_row(
         &self,
         track: &NeteaseTrackInfo,
         index: usize,
-        cx: &mut Context<Self>,
+        cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let liked = crate::ui::netease::liked_set_contains(track.id);
@@ -339,19 +356,19 @@ impl NeteasePlaylistsView {
             true,
             false,
             liked,
-            cx.listener(move |_, _, _, cx| {
+            move |_, _, cx| {
                 crate::ui::netease::play_track_now(cx, &play);
-            }),
-            cx.listener(move |_, _, _, cx| {
+            },
+            move |_, _, cx| {
                 if crate::ui::netease::liked_set_contains(like.id) {
                     crate::ui::netease::unlike_track(cx, &like);
                 } else {
                     crate::ui::netease::like_track(cx, &like);
                 }
-            }),
-            cx.listener(move |_, _, _, cx| {
+            },
+            move |_, _, cx| {
                 crate::ui::netease::download_track_ui(cx, download.clone());
-            }),
+            },
         )
     }
 }
@@ -378,6 +395,11 @@ impl Render for NeteasePlaylistsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let scroll_handle = self.scroll_handle.clone();
+
+        // Once a playlist's tracks are loaded the list itself becomes the
+        // scroll container (uniform_list); the page-level scroller only
+        // serves the overview and the small loading/error/empty states.
+        let tracks_ready = self.selected.is_some() && !self.tracks.is_empty();
 
         let mut content = div().flex().flex_col().pb(px(24.0));
 
@@ -420,28 +442,9 @@ impl Render for NeteasePlaylistsView {
                             .child(tr!("NETEASE_PLAYLIST_EMPTY", "This playlist is empty")),
                     );
                 }
-                _ => {
-                    for (index, track) in self.tracks.iter().enumerate() {
-                        content = content.child(self.render_track_row(track, index, cx));
-                    }
-
-                    if self.has_more_tracks {
-                        content = content.child(
-                            div()
-                                .flex()
-                                .justify_center()
-                                .pt(px(12.0))
-                                .child(
-                                    button()
-                                        .id("netease-load-more-tracks")
-                                        .child(tr!("NETEASE_LOAD_MORE"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.load_more_tracks(cx);
-                                        })),
-                                ),
-                        );
-                    }
-                }
+                // loaded tracks are rendered by the virtualized uniform_list
+                // in the scroll branch below, not by page-flow content
+                _ => {}
             }
         } else {
             // playlist overview
@@ -541,7 +544,7 @@ impl Render for NeteasePlaylistsView {
             }
         }
 
-        div()
+        let mut root = div()
             .id("netease-playlists-view")
             .key_context("NeteasePlaylists")
             .on_action(cx.listener(|this, _: &EscapeBack, _, cx| {
@@ -555,10 +558,20 @@ impl Render for NeteasePlaylistsView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(self.render_header(cx))
-            .child(
+            .child(self.render_header(cx));
+
+        if tracks_ready {
+            // the uniform_list is its own scroll container, so the page-level
+            // scroller is replaced wholesale while tracks are on screen
+            let track_count = self.tracks.len();
+            let has_more_tracks = self.has_more_tracks;
+            let list_entity = cx.entity();
+            let tracks_scroll_handle = self.tracks_scroll_handle.clone();
+
+            root = root.child(
                 div()
-                    .id("netease-playlists-scroll")
+                    .id("netease-playlists-track-container")
+                    .relative()
                     .w_full()
                     .max_w(px(900.0))
                     .mr_auto()
@@ -569,13 +582,86 @@ impl Render for NeteasePlaylistsView {
                     .min_h(px(0.0))
                     .px(px(16.0))
                     .pt(px(4.0))
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll_handle)
-                    .child(content),
-            )
-            .child(floating_scrollbar(
-                "netease-playlists-scrollbar",
-                scroll_handle,
-            ))
+                    .pb(px(24.0))
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .flex_grow(1.0)
+                            .min_h(px(0.0))
+                            .child(
+                                uniform_list(
+                                    "netease-playlist-tracks",
+                                    track_count,
+                                    move |range, _, cx| {
+                                        let start = range.start;
+                                        let view = list_entity.read(cx);
+                                        view.tracks[range]
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, track)| {
+                                                div()
+                                                    .h(px(TRACK_ROW_HEIGHT))
+                                                    .child(view.render_track_row(
+                                                        track,
+                                                        start + i,
+                                                        cx,
+                                                    ))
+                                            })
+                                            .collect()
+                                    },
+                                )
+                                .w_full()
+                                .h_full()
+                                .track_scroll(&tracks_scroll_handle),
+                            ),
+                    )
+                    .when(has_more_tracks, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .justify_center()
+                                .pt(px(12.0))
+                                .child(
+                                    button()
+                                        .id("netease-load-more-tracks")
+                                        .child(tr!("NETEASE_LOAD_MORE"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.load_more_tracks(cx);
+                                        })),
+                                ),
+                        )
+                    })
+                    .child(floating_scrollbar(
+                        "netease-playlist-tracks-scrollbar",
+                        tracks_scroll_handle,
+                    )),
+            );
+        } else {
+            root = root
+                .child(
+                    div()
+                        .id("netease-playlists-scroll")
+                        .w_full()
+                        .max_w(px(900.0))
+                        .mr_auto()
+                        .ml_auto()
+                        .flex()
+                        .flex_col()
+                        .flex_grow(1.0)
+                        .min_h(px(0.0))
+                        .px(px(16.0))
+                        .pt(px(4.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&scroll_handle)
+                        .child(content),
+                )
+                .child(floating_scrollbar(
+                    "netease-playlists-scrollbar",
+                    scroll_handle,
+                ));
+        }
+
+        root
     }
 }
