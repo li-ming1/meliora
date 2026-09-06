@@ -579,11 +579,16 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_removes_deleted_windows_style_tree() {
-        // Windows locations use backslashes - match those too
+        // Windows locations use backslashes. Production stores canonicalized
+        // (`\\?\`-prefixed) paths because the scanner canonicalizes every
+        // root, while a caller may pass the plain spelling:
+        // canonicalize_or_keep walks up to the existing `C:\` ancestor and
+        // rejoins the tail under its verbatim prefix, so the two forms must
+        // still match in the folder and prefix queries.
         let (_dir, pool) = create_test_pool("reconcile-test").await;
-        let artist_dir = Utf8PathBuf::from(r"C:\Music\artist");
-        let path1 = Utf8PathBuf::from(r"C:\Music\artist\track1.flac");
-        let path2 = Utf8PathBuf::from(r"C:\Music\artist\album\track2.flac");
+        let stored_root = Utf8PathBuf::from(r"\\?\C:\Music\artist");
+        let path1 = Utf8PathBuf::from(r"\\?\C:\Music\artist\track1.flac");
+        let path2 = Utf8PathBuf::from(r"\\?\C:\Music\artist\album\track2.flac");
         insert_track_row(
             &pool,
             &path1,
@@ -599,7 +604,13 @@ mod tests {
 
         let mut scan_record = record_of(&[&path1, &path2]);
 
-        let updated = reconcile_rescan_paths(&pool, &mut scan_record, &[artist_dir], &[]).await;
+        let updated = reconcile_rescan_paths(
+            &pool,
+            &mut scan_record,
+            &[Utf8PathBuf::from(r"C:\Music\artist")],
+            &[],
+        )
+        .await;
         assert!(updated.is_empty());
         assert!(scan_record.records.is_empty());
         assert_eq!(count_rows(&pool, "track").await, 0);
