@@ -697,6 +697,10 @@ impl Render for PlaylistView {
                                       event: &DragMoveEvent<TrackDragData>,
                                       window,
                                       cx| {
+                                    let before = {
+                                        let manager = this.drag_drop_manager.read(cx);
+                                        (manager.state.is_dragging, manager.state.drop_target)
+                                    };
                                     let scroll_handle: ScrollableHandle =
                                         this.scroll_handle.clone().into();
 
@@ -735,7 +739,19 @@ impl Render for PlaylistView {
                                         });
                                     }
 
-                                    cx.notify();
+                                    // repaint only when something visible moved:
+                                    // drag move fires at mouse report rate and an
+                                    // unconditional notify re-rendered the whole
+                                    // view on every move
+                                    let changed = {
+                                        let manager = this.drag_drop_manager.read(cx);
+                                        scrolled
+                                            || (manager.state.is_dragging, manager.state.drop_target)
+                                                != before
+                                    };
+                                    if changed {
+                                        cx.notify();
+                                    }
                                 },
                             ))
                             .on_drag_move::<AlbumDragData>(cx.listener(
@@ -743,6 +759,10 @@ impl Render for PlaylistView {
                                       event: &DragMoveEvent<AlbumDragData>,
                                       window,
                                       cx| {
+                                    let before = {
+                                        let manager = this.drag_drop_manager.read(cx);
+                                        (manager.state.is_dragging, manager.state.drop_target)
+                                    };
                                     let scroll_handle: ScrollableHandle =
                                         this.scroll_handle.clone().into();
                                     let mouse_pos = event.event.position;
@@ -784,7 +804,16 @@ impl Render for PlaylistView {
                                         });
                                     }
 
-                                    cx.notify();
+                                    // same gating as the track handler above
+                                    let changed = {
+                                        let manager = this.drag_drop_manager.read(cx);
+                                        scrolled
+                                            || (manager.state.is_dragging, manager.state.drop_target)
+                                                != before
+                                    };
+                                    if changed {
+                                        cx.notify();
+                                    }
                                 },
                             ))
                             .on_drop(cx.listener(

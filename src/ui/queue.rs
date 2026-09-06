@@ -934,6 +934,10 @@ impl Render for Queue {
                               event: &DragMoveEvent<TrackDragData>,
                               window,
                               cx| {
+                            let before = {
+                                let manager = this.drag_drop_manager.read(cx);
+                                (manager.state.is_dragging, manager.state.drop_target)
+                            };
                             let scroll_handle: ScrollableHandle = this.scroll_handle.clone().into();
 
                             let reduced_motion = cx
@@ -971,7 +975,17 @@ impl Render for Queue {
                                 });
                             }
 
-                            cx.notify();
+                            // repaint only when something visible moved (same
+                            // gating as the playlist view handlers)
+                            let changed = {
+                                let manager = this.drag_drop_manager.read(cx);
+                                scrolled
+                                    || (manager.state.is_dragging, manager.state.drop_target)
+                                        != before
+                            };
+                            if changed {
+                                cx.notify();
+                            }
                         },
                     ))
                     .on_drag_move::<AlbumDragData>(cx.listener(
@@ -979,6 +993,10 @@ impl Render for Queue {
                               event: &DragMoveEvent<AlbumDragData>,
                               window,
                               cx| {
+                            let before = {
+                                let manager = this.drag_drop_manager.read(cx);
+                                (manager.state.is_dragging, manager.state.drop_target)
+                            };
                             let scroll_handle: ScrollableHandle = this.scroll_handle.clone().into();
                             let mouse_pos = event.event.position;
                             let container_bounds = event.bounds;
@@ -1019,7 +1037,16 @@ impl Render for Queue {
                                 });
                             }
 
-                            cx.notify();
+                            // same gating as the track handler above
+                            let changed = {
+                                let manager = this.drag_drop_manager.read(cx);
+                                scrolled
+                                    || (manager.state.is_dragging, manager.state.drop_target)
+                                        != before
+                            };
+                            if changed {
+                                cx.notify();
+                            }
                         },
                     ))
                     .on_drop(cx.listener(
