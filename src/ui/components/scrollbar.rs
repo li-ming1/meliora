@@ -554,9 +554,16 @@ impl Element for Scrollbar {
                     let mut state = state_for_hover.borrow_mut();
 
                     if is_now_hovered {
+                        // keep the fade-away deferred while the pointer stays
+                        // on the scrollbar, but only repaint on the transition:
+                        // refreshing here runs on every mouse move while
+                        // hovered (pointer report rate), repainting the whole
+                        // window with nothing visually changed
                         state.last_interaction_time = Some(Instant::now());
-                        state.is_hovered = true;
-                        window.refresh();
+                        if !state.is_hovered {
+                            state.is_hovered = true;
+                            window.refresh();
+                        }
                     } else if state.is_hovered {
                         state.is_hovered = false;
                         state.last_interaction_time = Some(Instant::now());
