@@ -112,7 +112,7 @@ impl RenderOnce for WindowChrome {
             .size_full()
             .child(
                 div()
-                    .font_family("Inter")
+                    .font_family("MiSans")
                     .text_color(theme.text)
                     .cursor(CursorStyle::Arrow)
                     .map(|div| match decorations {

@@ -41,6 +41,8 @@ const LYRICS_BASE_VERTICAL_PADDING: f32 = 7.0;
 const LYRICS_ACTIVE_VERTICAL_PADDING: f32 = 9.0;
 const LYRICS_BASE_LINE_HEIGHT: f32 = 1.5;
 const LYRICS_ACTIVE_LINE_HEIGHT: f32 = 1.65;
+/// 上下渐隐遮罩高度：掩盖滚动边缘的硬裁切，越靠面板边缘越透明。
+const LYRICS_FADE_MASK_HEIGHT: f32 = 56.0;
 
 pub struct Lyrics {
     content: Option<String>,
@@ -398,6 +400,39 @@ impl Render for Lyrics {
         let muted = theme.text_secondary;
         let normal = theme.text;
 
+        // 遮罩必须与面板底色（window_chrome 根背景）一致才能无缝渐隐。
+        let panel_bg = theme.background_primary;
+        let panel_bg_transparent = Rgba {
+            alpha: 0.0,
+            ..panel_bg
+        };
+        let fade_masks = || {
+            (
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(LYRICS_FADE_MASK_HEIGHT))
+                    .bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(panel_bg, 0.0),
+                        linear_color_stop(panel_bg_transparent, 1.0),
+                    )),
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(LYRICS_FADE_MASK_HEIGHT))
+                    .bg(linear_gradient(
+                        0.0,
+                        linear_color_stop(panel_bg, 0.0),
+                        linear_color_stop(panel_bg_transparent, 1.0),
+                    )),
+            )
+        };
+
         if reduced_motion {
             if self.follow_pending || self.scroll_follow.is_active() || self.needs_animation_frame()
             {
@@ -429,6 +464,7 @@ impl Render for Lyrics {
             let active_line = self.last_active_line;
             let scroll_handle = self.scroll_handle.clone();
             let lyrics = cx.entity().downgrade();
+            let (fade_top, fade_bottom) = fade_masks();
 
             let items = parsed.iter().enumerate().map(|(idx, line)| {
                 let time_ms = line.time_ms;
@@ -477,7 +513,7 @@ impl Render for Lyrics {
                         .font_weight(if is_active {
                             FontWeight::EXTRA_BOLD
                         } else {
-                            FontWeight::BOLD
+                            FontWeight::MEDIUM
                         })
                         .text_color(text_color)
                         .child(
@@ -509,7 +545,7 @@ impl Render for Lyrics {
                                         div()
                                             .mt(px(2.0))
                                             .text_sm()
-                                            .font_weight(FontWeight::BOLD)
+                                            .font_weight(FontWeight::MEDIUM)
                                             .text_color(muted)
                                             .child(translation.clone()),
                                     )
@@ -551,6 +587,8 @@ impl Render for Lyrics {
                         .track_scroll(&scroll_handle)
                         .children(items),
                 )
+                .child(fade_top)
+                .child(fade_bottom)
                 .child(
                     floating_scrollbar(
                         "lyrics-scrollbar",
@@ -570,6 +608,7 @@ impl Render for Lyrics {
         } else {
             let text = self.content.clone().unwrap();
             let scroll_handle = self.scroll_handle.clone();
+            let (fade_top, fade_bottom) = fade_masks();
 
             div()
                 .h_full()
@@ -586,10 +625,12 @@ impl Render for Lyrics {
                         .py(px(14.0))
                         .text_size(px(20.0))
                         .line_height(rems(1.6))
-                        .font_weight(FontWeight::BOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(normal)
                         .child(SharedString::from(text)),
                 )
+                .child(fade_top)
+                .child(fade_bottom)
                 .child(
                     floating_scrollbar(
                         "lyrics-plain-scrollbar",

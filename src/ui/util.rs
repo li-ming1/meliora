@@ -141,14 +141,10 @@ fn split_duration(secs: i64) -> (i64, i64, i64) {
     (secs / 3_600, (secs % 3_600) / 60, secs % 60)
 }
 
+/// 紧凑时长格式：不足 1 小时为 "m:ss"（如 "2:22"、"0:45"），达到 1 小时为 "h:mm:ss"（如 "1:02:03"）。
+/// 直接复用 [`format_duration`]，保证全 app（播放队列等）时长显示一致。
 pub fn format_duration_compact(secs: i64) -> String {
-    let (hours, minutes, seconds) = split_duration(secs);
-
-    if hours > 0 {
-        format!("{hours}h {minutes}m {seconds}s")
-    } else {
-        format!("{minutes}m {seconds}s")
-    }
+    format_duration(secs, false)
 }
 
 pub fn format_duration(secs: i64, pad_minutes: bool) -> String {
