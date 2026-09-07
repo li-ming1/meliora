@@ -277,7 +277,7 @@
   },
   "ALBUMS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:186",
+    "definedIn": "src/ui/library/sidebar.rs:259",
     "plural": false,
     "description": null
   },
@@ -289,7 +289,7 @@
   },
   "ARTISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:206",
+    "definedIn": "src/ui/library/sidebar.rs:279",
     "plural": false,
     "description": null
   },
@@ -343,7 +343,7 @@
   },
   "COLLAPSE_SIDEBAR": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:396",
+    "definedIn": "src/ui/library/sidebar.rs:479",
     "plural": false,
     "description": null
   },
@@ -589,7 +589,7 @@
   },
   "EXPAND_SIDEBAR": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:394",
+    "definedIn": "src/ui/library/sidebar.rs:477",
     "plural": false,
     "description": null
   },
@@ -613,7 +613,7 @@
   },
   "FILES": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:242",
+    "definedIn": "src/ui/library/sidebar.rs:315",
     "plural": false,
     "description": null
   },
@@ -1003,7 +1003,7 @@
   },
   "KUGOU_PLAYLISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:275",
+    "definedIn": "src/ui/library/sidebar.rs:353",
     "plural": false,
     "description": null
   },
@@ -1075,7 +1075,7 @@
   },
   "KUGOU_RANKS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:294",
+    "definedIn": "src/ui/library/sidebar.rs:372",
     "plural": false,
     "description": null
   },
@@ -2125,13 +2125,19 @@
   },
   "SIDEBAR_LIBRARY": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:181",
+    "definedIn": "src/ui/library/sidebar.rs:254",
+    "plural": false,
+    "description": null
+  },
+  "SIDEBAR_LOGIN": {
+    "context": "sidebar.rs",
+    "definedIn": "src/ui/library/sidebar.rs:66",
     "plural": false,
     "description": null
   },
   "SIDEBAR_PLAYLISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:259",
+    "definedIn": "src/ui/library/sidebar.rs:332",
     "plural": false,
     "description": null
   },
@@ -2269,7 +2275,7 @@
   },
   "TRACKS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:226",
+    "definedIn": "src/ui/library/sidebar.rs:299",
     "plural": false,
     "description": null
   },

@@ -91,6 +91,7 @@ pub const GRID_INACTIVE: &str = "!bundled:icons/layout-grid-inactive.svg";
 pub const LIST: &str = "!bundled:icons/layout-list.svg";
 pub const LIST_INACTIVE: &str = "!bundled:icons/layout-list-inactive.svg";
 pub const USERS: &str = "!bundled:icons/users.svg";
+pub const RANKING: &str = "!bundled:icons/ranking.svg";
 pub const SORT_DESCENDING: &str = "!bundled:icons/sort-descending.svg";
 pub const SORT_ASCENDING: &str = "!bundled:icons/sort-ascending.svg";
 pub const FOLDER_X: &str = "!bundled:icons/folder-x.svg";

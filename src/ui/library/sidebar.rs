@@ -17,7 +17,11 @@ use crate::ui::theme::LIGHT_THEME_ID;
 
 use crate::ui::components::icons::{FOLDER, MOON, MUSIC, SETTINGS, SIDEBAR, SIDEBAR_INACTIVE, SUN};
 #[cfg(any(feature = "kugou", feature = "netease"))]
+use crate::ui::components::icons::RANKING;
+#[cfg(any(feature = "kugou", feature = "netease"))]
 use crate::ui::components::icons::icon;
+#[cfg(any(feature = "kugou", feature = "netease"))]
+use gpui::{ClickEvent, Div, FontWeight, Stateful};
 #[cfg(feature = "kugou")]
 use crate::ui::components::icons::KUGOU;
 #[cfg(feature = "netease")]
@@ -40,8 +44,6 @@ use crate::{
         theme::Theme,
     },
 };
-#[cfg(any(feature = "kugou", feature = "netease"))]
-use crate::ui::components::managed_image::{ManagedImageKey, managed_image};
 
 mod playlists;
 
@@ -56,6 +58,77 @@ fn section_label(label: impl Into<SharedString>, theme: &Theme) -> impl IntoElem
         .text_xs()
         .text_color(theme.text_secondary)
         .child(label.into())
+}
+
+/// SIDEBAR_LOGIN 的唯一定义点：酷狗/网易云两个账号药丸共用，避免 i18n 重复定义。
+#[cfg(any(feature = "kugou", feature = "netease"))]
+fn login_label() -> SharedString {
+    tr!("SIDEBAR_LOGIN", "Log In").into()
+}
+
+/// 在线音源账号入口。展开时是「品牌图标 + 昵称/登录」药丸——恒用品牌图标而
+/// 不是头像照片：导航语境里品牌可识别性优先，照片只会变成一张突兀的随机图；
+/// 折叠时退化为 28px 图标圆钮，与折叠态其他条目的形态一致。
+#[cfg(any(feature = "kugou", feature = "netease"))]
+fn account_pill(
+    id: &'static str,
+    brand_icon: &'static str,
+    label: SharedString,
+    tooltip_text: SharedString,
+    logged_in: bool,
+    collapsed: bool,
+    theme: &Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    // 登录态用主文字色，未登录退到次要色，一眼可辨。
+    let tint = if logged_in {
+        theme.text
+    } else {
+        theme.text_secondary
+    };
+
+    let pill = div()
+        .id(id)
+        .h(px(28.0))
+        .rounded_full()
+        .border_1()
+        // load-bearing color，同 sidebar_item：不设边框色 hover 就不生效
+        .border_color(theme.background_primary)
+        .bg(theme.background_primary)
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .hover(|this| this.bg(theme.nav_button_hover))
+        .active(|this| this.bg(theme.nav_button_active))
+        .tooltip(build_tooltip(tooltip_text))
+        .on_click(on_click);
+
+    if collapsed {
+        pill.w(px(28.0))
+            .justify_center()
+            .child(icon(brand_icon).size(px(14.0)).text_color(tint))
+    } else {
+        pill.w_full()
+            .px(px(9.0))
+            .gap(px(6.0))
+            .child(
+                icon(brand_icon)
+                    .size(px(14.0))
+                    .flex_shrink_0()
+                    .text_color(tint),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(tint)
+                    .child(label),
+            )
+    }
 }
 
 /// Width animation driven on the sidebar view: collapses/expands `animated_sidebar_width`.
@@ -264,97 +337,107 @@ impl Render for Sidebar {
 
         // 分组三：酷狗音乐（顺序在播放列表之后）
         #[cfg(feature = "kugou")]
-        let sidebar_content = sidebar_content.child(sidebar_separator()).child(
-            div()
-                .flex()
-                .flex_col()
-                .child(
-                    sidebar_item("kugou-playlists")
-                        .icon(KUGOU)
-                        .when(!collapsed, |this| {
-                            this.child(tr!("KUGOU_PLAYLISTS", "KuGou Playlists"))
-                        })
-                        .when(collapsed, |this| {
-                            this.collapsed().collapsed_label(tr!("KUGOU_PLAYLISTS"))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.nav_model.update(cx, |_, cx| {
-                                cx.emit(ViewSwitchMessage::KugouPlaylists);
-                            });
-                        }))
-                        .when(
-                            matches!(sidebar_view, ViewSwitchMessage::KugouPlaylists),
-                            |this| this.active(),
-                        ),
-                )
-                .child(
-                    sidebar_item("kugou-ranks")
-                        .icon(MUSIC)
-                        .when(!collapsed, |this| {
-                            this.child(tr!("KUGOU_RANKS", "Rankings"))
-                        })
-                        .when(collapsed, |this| {
-                            this.collapsed().collapsed_label(tr!("KUGOU_RANKS"))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.nav_model.update(cx, |_, cx| {
-                                cx.emit(ViewSwitchMessage::KugouRanks);
-                            });
-                        }))
-                        .when(
-                            matches!(sidebar_view, ViewSwitchMessage::KugouRanks),
-                            |this| this.active(),
-                        ),
-                ),
-        );
+        let sidebar_content = sidebar_content
+            .child(sidebar_separator())
+            .when(!collapsed, |this| {
+                this.child(section_label(tr!("KUGOU_SECTION"), &theme))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        sidebar_item("kugou-playlists")
+                            .icon(KUGOU)
+                            .when(!collapsed, |this| {
+                                this.child(tr!("KUGOU_PLAYLISTS", "KuGou Playlists"))
+                            })
+                            .when(collapsed, |this| {
+                                this.collapsed().collapsed_label(tr!("KUGOU_PLAYLISTS"))
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.nav_model.update(cx, |_, cx| {
+                                    cx.emit(ViewSwitchMessage::KugouPlaylists);
+                                });
+                            }))
+                            .when(
+                                matches!(sidebar_view, ViewSwitchMessage::KugouPlaylists),
+                                |this| this.active(),
+                            ),
+                    )
+                    .child(
+                        sidebar_item("kugou-ranks")
+                            .icon(RANKING)
+                            .when(!collapsed, |this| {
+                                this.child(tr!("KUGOU_RANKS", "Rankings"))
+                            })
+                            .when(collapsed, |this| {
+                                this.collapsed().collapsed_label(tr!("KUGOU_RANKS"))
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.nav_model.update(cx, |_, cx| {
+                                    cx.emit(ViewSwitchMessage::KugouRanks);
+                                });
+                            }))
+                            .when(
+                                matches!(sidebar_view, ViewSwitchMessage::KugouRanks),
+                                |this| this.active(),
+                            ),
+                    ),
+            );
 
         // 分组四：网易云音乐（顺序在酷狗之后）
         #[cfg(feature = "netease")]
-        let sidebar_content = sidebar_content.child(sidebar_separator()).child(
-            div()
-                .flex()
-                .flex_col()
-                .child(
-                    sidebar_item("netease-playlists")
-                        .icon(NETEASE)
-                        // fallback for NETEASE_PLAYLISTS is defined by the
-                        // playlists page (single definition point)
-                        .when(!collapsed, |this| {
-                            this.child(tr!("NETEASE_PLAYLISTS"))
-                        })
-                        .when(collapsed, |this| {
-                            this.collapsed().collapsed_label(tr!("NETEASE_PLAYLISTS"))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.nav_model.update(cx, |_, cx| {
-                                cx.emit(ViewSwitchMessage::NeteasePlaylists);
-                            });
-                        }))
-                        .when(
-                            matches!(sidebar_view, ViewSwitchMessage::NeteasePlaylists),
-                            |this| this.active(),
-                        ),
-                )
-                .child(
-                    sidebar_item("netease-ranks")
-                        .icon(MUSIC)
-                        .when(!collapsed, |this| {
-                            this.child(tr!("NETEASE_RANKS"))
-                        })
-                        .when(collapsed, |this| {
-                            this.collapsed().collapsed_label(tr!("NETEASE_RANKS"))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.nav_model.update(cx, |_, cx| {
-                                cx.emit(ViewSwitchMessage::NeteaseRanks);
-                            });
-                        }))
-                        .when(
-                            matches!(sidebar_view, ViewSwitchMessage::NeteaseRanks),
-                            |this| this.active(),
-                        ),
-                ),
-        );
+        let sidebar_content = sidebar_content
+            .child(sidebar_separator())
+            .when(!collapsed, |this| {
+                this.child(section_label(tr!("NETEASE_SECTION"), &theme))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        sidebar_item("netease-playlists")
+                            .icon(NETEASE)
+                            // fallback for NETEASE_PLAYLISTS is defined by the
+                            // playlists page (single definition point)
+                            .when(!collapsed, |this| {
+                                this.child(tr!("NETEASE_PLAYLISTS"))
+                            })
+                            .when(collapsed, |this| {
+                                this.collapsed().collapsed_label(tr!("NETEASE_PLAYLISTS"))
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.nav_model.update(cx, |_, cx| {
+                                    cx.emit(ViewSwitchMessage::NeteasePlaylists);
+                                });
+                            }))
+                            .when(
+                                matches!(sidebar_view, ViewSwitchMessage::NeteasePlaylists),
+                                |this| this.active(),
+                            ),
+                    )
+                    .child(
+                        sidebar_item("netease-ranks")
+                            .icon(RANKING)
+                            .when(!collapsed, |this| {
+                                this.child(tr!("NETEASE_RANKS"))
+                            })
+                            .when(collapsed, |this| {
+                                this.collapsed().collapsed_label(tr!("NETEASE_RANKS"))
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.nav_model.update(cx, |_, cx| {
+                                    cx.emit(ViewSwitchMessage::NeteaseRanks);
+                                });
+                            }))
+                            .when(
+                                matches!(sidebar_view, ViewSwitchMessage::NeteaseRanks),
+                                |this| this.active(),
+                            ),
+                    ),
+            );
 
         // 底部固定：酷狗账号卡片 + 设置 / 主题 / 折叠
         let settings_button = nav_button("open-settings", SETTINGS)
@@ -424,7 +507,7 @@ impl Render for Sidebar {
             })
         };
 
-        // 展开时三个按钮平分侧边栏宽度；折叠时竖排居中
+        // 展开时设置/主题靠左，折叠键（侧边栏自身操作）靠右；折叠时竖排居中
         let utility_row = if collapsed {
             div()
                 .w_full()
@@ -440,9 +523,12 @@ impl Render for Sidebar {
                 .w_full()
                 .flex()
                 .items_center()
-                .child(div().flex_1().flex().justify_center().child(settings_button))
-                .child(div().flex_1().flex().justify_center().child(theme_button))
-                .child(div().flex_1().flex().justify_center().child(collapse_button))
+                .px(px(5.0))
+                .gap(px(2.0))
+                .child(settings_button)
+                .child(theme_button)
+                .child(div().flex_1())
+                .child(collapse_button)
         };
 
         let bottom = div()
@@ -452,14 +538,21 @@ impl Render for Sidebar {
             .flex_col()
             .pt(px(6.0))
             .child(sidebar_separator())
-            .child(div().h(px(4.0)))
-            .child(utility_row);
+            .child(div().h(px(4.0)));
 
-        // 酷狗账号头像：圆形圆环框，放侧边栏最底部；点击进入酷狗歌单 / 未登录打开设置
+        // 酷狗账号药丸：登录后点击进酷狗歌单，未登录打开设置
         #[cfg(feature = "kugou")]
-        let avatar_button = {
+        let kugou_pill = {
             let profile = shared_client().cached_user_profile();
             let logged_in = profile.as_ref().is_some_and(|p| !p.nickname.is_empty());
+            let label: SharedString = logged_in
+                .then(|| {
+                    profile
+                        .as_ref()
+                        .map(|p| SharedString::from(p.nickname.clone()))
+                })
+                .flatten()
+                .unwrap_or_else(login_label);
             let tooltip_text = logged_in
                 .then(|| {
                     profile
@@ -469,47 +562,19 @@ impl Render for Sidebar {
                 .flatten()
                 .unwrap_or_else(|| tr!("KUGOU_LOGIN").into());
 
-            let avatar_url: Option<SharedString> = profile
-                .as_ref()
-                .filter(|p| !p.avatar_url.is_empty())
-                .map(|p| p.avatar_url.clone().into());
-            let avatar_inner = div()
-                .size_full()
-                .rounded_full()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when_some(avatar_url.clone(), |this, url| {
-                    this.child(
-                        managed_image(
-                            ("kugou-sidebar-avatar", 0usize),
-                            ManagedImageKey::HttpCover(url),
-                        )
-                        // Painted at 28 px; without a bound the raw avatar (often
-                        // 500 px+) would claim a whole 4 MB atlas page on its own.
-                        .thumb_max(64)
-                        .size_full(),
-                    )
-                })
-                .when(avatar_url.is_none(), |this| {
-                    this.child(
-                        icon(if logged_in { USERS } else { KUGOU })
-                            .size(px(14.0))
-                            .text_color(theme.text_secondary),
-                    )
-                });
-
-            div()
-                .id("kugou-avatar")
-                .when(collapsed, |this| this.mx_auto())
-                .w(px(28.0))
-                .h(px(28.0))
-                .rounded_full()
-                .bg(theme.album_art_background)
-                .cursor_pointer()
-                .hover(|this| this.bg(theme.nav_button_hover))
-                .on_click(cx.listener(move |this, _, _, cx| {
+            account_pill(
+                "kugou-account",
+                KUGOU,
+                label,
+                tooltip_text,
+                logged_in,
+                collapsed,
+                &theme,
+                cx.listener(|this, _, _, cx| {
+                    // 点击时重新读登录态：渲染后登录状态可能已变化
+                    let logged_in = shared_client()
+                        .cached_user_profile()
+                        .is_some_and(|p| !p.nickname.is_empty());
                     if logged_in {
                         this.nav_model.update(cx, |_, cx| {
                             cx.emit(ViewSwitchMessage::KugouPlaylists);
@@ -517,19 +582,23 @@ impl Render for Sidebar {
                     } else {
                         crate::ui::settings::open_settings_window(cx);
                     }
-                }))
-                .tooltip(build_tooltip(tooltip_text))
-                .child(avatar_inner)
+                }),
+            )
         };
 
-        #[cfg(feature = "kugou")]
-        let bottom = bottom.child(avatar_button);
-
-        // 网易云账号头像：与酷狗头像并排；点击进入网易云歌单 / 未登录打开设置
+        // 网易云账号药丸：与酷狗药丸并排；行为同上
         #[cfg(feature = "netease")]
-        let netease_avatar_button = {
+        let netease_pill = {
             let profile = netease_shared_client().cached_user_profile();
             let logged_in = profile.as_ref().is_some_and(|p| !p.nickname.is_empty());
+            let label: SharedString = logged_in
+                .then(|| {
+                    profile
+                        .as_ref()
+                        .map(|p| SharedString::from(p.nickname.clone()))
+                })
+                .flatten()
+                .unwrap_or_else(login_label);
             let tooltip_text = logged_in
                 .then(|| {
                     profile
@@ -539,45 +608,18 @@ impl Render for Sidebar {
                 .flatten()
                 .unwrap_or_else(|| tr!("NETEASE_LOGIN").into());
 
-            let avatar_url: Option<SharedString> = profile
-                .as_ref()
-                .filter(|p| !p.avatar_url.is_empty())
-                .map(|p| p.avatar_url.clone().into());
-            let avatar_inner = div()
-                .size_full()
-                .rounded_full()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when_some(avatar_url.clone(), |this, url| {
-                    this.child(
-                        managed_image(
-                            ("netease-sidebar-avatar", 0usize),
-                            ManagedImageKey::HttpCover(url),
-                        )
-                        .thumb()
-                        .size_full(),
-                    )
-                })
-                .when(avatar_url.is_none(), |this| {
-                    this.child(
-                        icon(if logged_in { USERS } else { NETEASE })
-                            .size(px(14.0))
-                            .text_color(theme.text_secondary),
-                    )
-                });
-
-            div()
-                .id("netease-avatar")
-                .when(collapsed, |this| this.mx_auto())
-                .w(px(28.0))
-                .h(px(28.0))
-                .rounded_full()
-                .bg(theme.album_art_background)
-                .cursor_pointer()
-                .hover(|this| this.bg(theme.nav_button_hover))
-                .on_click(cx.listener(move |this, _, _, cx| {
+            account_pill(
+                "netease-account",
+                NETEASE,
+                label,
+                tooltip_text,
+                logged_in,
+                collapsed,
+                &theme,
+                cx.listener(|this, _, _, cx| {
+                    let logged_in = netease_shared_client()
+                        .cached_user_profile()
+                        .is_some_and(|p| !p.nickname.is_empty());
                     if logged_in {
                         this.nav_model.update(cx, |_, cx| {
                             cx.emit(ViewSwitchMessage::NeteasePlaylists);
@@ -585,13 +627,37 @@ impl Render for Sidebar {
                     } else {
                         crate::ui::settings::open_settings_window(cx);
                     }
-                }))
-                .tooltip(build_tooltip(tooltip_text))
-                .child(avatar_inner)
+                }),
+            )
         };
 
-        #[cfg(feature = "netease")]
-        let bottom = bottom.child(netease_avatar_button);
+        // 账号行：展开时两个药丸平分一行（内缩与导航条目对齐）；折叠时竖排圆钮
+        #[cfg(any(feature = "kugou", feature = "netease"))]
+        let bottom = {
+            let account_row = if collapsed {
+                let col = div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(4.0));
+                #[cfg(feature = "kugou")]
+                let col = col.child(kugou_pill);
+                #[cfg(feature = "netease")]
+                let col = col.child(netease_pill);
+                col
+            } else {
+                let row = div().w_full().flex().gap(px(6.0)).px(px(9.0));
+                #[cfg(feature = "kugou")]
+                let row = row.child(kugou_pill);
+                #[cfg(feature = "netease")]
+                let row = row.child(netease_pill);
+                row
+            };
+            bottom.child(account_row).child(div().h(px(4.0)))
+        };
+
+        let bottom = bottom.child(utility_row);
 
         let sidebar_content = sidebar_content.child(bottom);
 

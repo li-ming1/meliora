@@ -120,6 +120,7 @@
   "LIBRARY_SHUFFLE_ALL": "随机播放全部",
   "LIBRARY_SHUFFLE_ALL_SUBTEXT": "以随机顺序播放音频库中的所有曲目。",
   "SIDEBAR_LIBRARY": "音乐库",
+  "SIDEBAR_LOGIN": "登录",
   "SIDEBAR_PLAYLISTS": "播放列表",
   "LIKE": "收藏",
   "LIKED_SONGS": "喜欢的歌曲",
