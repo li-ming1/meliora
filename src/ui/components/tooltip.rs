@@ -10,6 +10,7 @@ pub fn tooltip_container(theme: &Theme) -> Div {
         .text_sm()
         .rounded(px(theme.radius_md))
         .border_1()
+        .font_family("Inter")
         .border_color(theme.elevated_border_color)
         .bg(theme.elevated_background)
         .text_color(theme.text_secondary)
