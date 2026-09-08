@@ -81,18 +81,18 @@ async fn resolve_local_meta(pool: &SqlitePool, track_key: &str) -> Option<TrackM
     Some(TrackMeta { title, artist, album })
 }
 
-pub async fn daily_sums(pool: &SqlitePool) -> sqlx::Result<Vec<(String, i64)>> {
+pub async fn daily_sums(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, i64)>> {
     let sql = include_str!("../../queries/stats/daily_sums.sql");
-    let rows = sqlx::query(sql).fetch_all(pool).await?;
+    let rows = sqlx::query(sql).bind(since).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
         .map(|r| (r.get::<String, _>("day"), r.get::<i64, _>("total")))
         .collect())
 }
 
-pub async fn hour_histogram(pool: &SqlitePool) -> sqlx::Result<[i64; 24]> {
+pub async fn hour_histogram(pool: &SqlitePool, since: i64) -> sqlx::Result<[i64; 24]> {
     let sql = include_str!("../../queries/stats/hour_histogram.sql");
-    let rows = sqlx::query(sql).fetch_all(pool).await?;
+    let rows = sqlx::query(sql).bind(since).fetch_all(pool).await?;
     let mut hours = [0i64; 24];
     for r in rows {
         let hour: i64 = r.get("hour");
@@ -188,10 +188,10 @@ mod tests {
         )
         .await;
 
-        let daily = daily_sums(&pool).await.unwrap();
+        let daily = daily_sums(&pool, 0).await.unwrap();
         assert_eq!(daily.len(), 2); // 1_700_000_000 and +86400 fall on distinct local days
 
-        let hours = hour_histogram(&pool).await.unwrap();
+        let hours = hour_histogram(&pool, 0).await.unwrap();
         assert_eq!(hours.iter().sum::<i64>(), 210);
 
         let tracks = top_tracks(&pool, 0).await.unwrap();

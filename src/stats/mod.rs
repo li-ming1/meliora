@@ -12,6 +12,22 @@ use crate::ui::models::Queue;
 pub use recorder::ListenRow;
 use recorder::StatsRecorder;
 
+/// First day listening stats are tracked. Everything before it is ignored by
+/// every query and by the heat-map window (the feature shipped 2026-08).
+pub fn epoch_date() -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("valid epoch date")
+}
+
+/// Unix seconds of local midnight on [`epoch_date`].
+pub fn epoch_ts() -> i64 {
+    use chrono::TimeZone;
+    chrono::Local
+        .with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
+        .earliest()
+        .map(|t| t.timestamp())
+        .unwrap_or(0)
+}
+
 /// Display metadata attached to listen rows: captured from the online
 /// provider registry at song-change time, or resolved from the library at
 /// write time for local tracks.

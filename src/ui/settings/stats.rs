@@ -18,9 +18,9 @@ use crate::{
     },
 };
 
-/// Heat-map geometry: 53 week columns, Monday..Sunday rows, 9 px cells with a
-/// 2 px gap (~600 px wide, fits the settings window without scrolling).
-const HEAT_COLS: i64 = 53;
+/// Heat-map geometry: Monday..Sunday rows, 9 px cells with a 2 px gap. The
+/// column count is dynamic: at most a full year (53 weeks), clipped to start
+/// no earlier than the stats epoch (2026-08).
 const HEAT_ROWS: usize = 7;
 const HEAT_CELL_PX: f32 = 9.0;
 const HEAT_GAP_PX: f32 = 2.0;
@@ -178,6 +178,24 @@ fn lerp_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
     )
 }
 
+/// Localized month label for the heat-map axis ("1月".."12月" / "Jan".."Dec").
+fn month_label(month: u32) -> SharedString {
+    match month {
+        1 => tr!("STATS_MONTH_1", "Jan").into(),
+        2 => tr!("STATS_MONTH_2", "Feb").into(),
+        3 => tr!("STATS_MONTH_3", "Mar").into(),
+        4 => tr!("STATS_MONTH_4", "Apr").into(),
+        5 => tr!("STATS_MONTH_5", "May").into(),
+        6 => tr!("STATS_MONTH_6", "Jun").into(),
+        7 => tr!("STATS_MONTH_7", "Jul").into(),
+        8 => tr!("STATS_MONTH_8", "Aug").into(),
+        9 => tr!("STATS_MONTH_9", "Sep").into(),
+        10 => tr!("STATS_MONTH_10", "Oct").into(),
+        11 => tr!("STATS_MONTH_11", "Nov").into(),
+        _ => tr!("STATS_MONTH_12", "Dec").into(),
+    }
+}
+
 pub struct StatsSettings {
     loaded: bool,
     has_data: bool,
@@ -194,10 +212,10 @@ pub struct StatsSettings {
     heat_weeks: Vec<HeatWeek>,
     /// First day of the heat-map window; day dates derive from it at render.
     heat_window_start: NaiveDate,
-    /// Month labels: (spacer px before the label, month number). Precomputed
-    /// as run-length spacers so two-digit months render at natural width
-    /// instead of being clipped to one digit by a 9 px slot.
-    month_items: Vec<(f32, SharedString)>,
+    /// Month labels: (spacer px, slot px, label). The slot spans to the next
+    /// labeled column; text renders at natural width inside it, so two-digit
+    /// months are never clipped and never shove later labels.
+    month_items: Vec<(f32, f32, SharedString)>,
     heat_window_label: SharedString,
     heat_weeks_back: i64,
     total_label: SharedString,
@@ -243,13 +261,13 @@ impl StatsSettings {
     fn load_base(&mut self, cx: &mut Context<Self>) {
         let pool = cx.global::<Pool>().0.clone();
         cx.spawn(async move |this, cx| {
-            let base = crate::RUNTIME
-                .spawn(async move {
-                    let daily = queries::daily_sums(&pool).await.unwrap_or_default();
-                    let hours = queries::hour_histogram(&pool).await.unwrap_or_default();
-                    (daily, hours)
-                })
-                .await;
+            let base = crate::RUNTIME.spawn(async move {
+                let since = crate::stats::epoch_ts();
+                let daily = queries::daily_sums(&pool, since).await.unwrap_or_default();
+                let hours = queries::hour_histogram(&pool, since).await.unwrap_or_default();
+                (daily, hours)
+            })
+            .await;
             if let Ok((daily, hours)) = base {
                 let _ = this.update(cx, |this, cx| {
                     this.apply_base(daily, hours, cx);
@@ -309,7 +327,11 @@ impl StatsSettings {
 
     fn load_top(&mut self, cx: &mut Context<Self>) {
         let pool = cx.global::<Pool>().0.clone();
-        let (tab, since) = (self.top_tab, self.top_range.since());
+        // The epoch is a hard floor: "all time" never reaches before it.
+        let (tab, since) = (
+            self.top_tab,
+            self.top_range.since().max(crate::stats::epoch_ts()),
+        );
         cx.spawn(async move |this, cx| {
             let rows = crate::RUNTIME
                 .spawn(async move {
@@ -373,11 +395,21 @@ impl StatsSettings {
     fn rebuild_heat(&mut self) {
         let today = Local::now().date_naive();
         // Columns are whole weeks (Mon..Sun); the last column ends with the
-        // current week. `heat_weeks_back` pages 53-week windows into the past.
+        // current week, the first never reaches before the stats epoch
+        // (2026-08) — pre-epoch weeks would be permanently empty filler.
+        // `heat_weeks_back` pages 53-week windows into the past.
         let days_into_week = i64::from(today.weekday().num_days_from_monday());
+        let full_start =
+            today + ChronoDuration::days(6 - days_into_week) - ChronoDuration::weeks(53);
         let window_end = today + ChronoDuration::days(6 - days_into_week)
             - ChronoDuration::weeks(7 * self.heat_weeks_back);
-        let window_start = window_end - ChronoDuration::days(HEAT_COLS * 7 - 1);
+        let epoch_week_start = crate::stats::epoch_date()
+            - ChronoDuration::days(i64::from(
+                crate::stats::epoch_date().weekday().num_days_from_monday(),
+            ));
+        let window_start = window_end.max(epoch_week_start).max(full_start);
+        let cols = i64::from((window_end - window_start).num_days()) / 7 + 1;
+        let cols = cols.max(1);
 
         self.heat_window_label = format!(
             "{} - {}",
@@ -386,34 +418,39 @@ impl StatsSettings {
         )
         .into();
 
-        // Month labels as run-length spacers: the label renders at natural
-        // width (so "10"/"11"/"12" are never clipped by a 9 px slot) and the
-        // spacer keeps it aligned to its column. A month boundary landing in
-        // the window's first weeks is skipped when it would crowd the previous
-        // label into single-digit/teens mush ("910").
-        let mut month_items: Vec<(f32, SharedString)> = Vec::new();
+        // Month labels as run-length spacers: the label renders inside a
+        // fixed-width slot spanning to the next labeled column (natural text
+        // width overflows the slot, so "10月" is never clipped or shoving
+        // later labels around). Crowded boundaries (<3 columns apart) are
+        // skipped.
+        let mut labeled: Vec<(i64, SharedString)> = Vec::new();
         let mut prev_month = 0u32;
         let mut last_labeled_col = 0i64;
-        for col in 0..HEAT_COLS {
+        for col in 0..cols {
             let monday = window_start + ChronoDuration::days(col * 7);
             if monday.month() != prev_month {
                 prev_month = monday.month();
                 if col > 0 && col - last_labeled_col < 3 {
                     continue;
                 }
-                month_items.push((
-                    (col - last_labeled_col) as f32 * (HEAT_CELL_PX + HEAT_GAP_PX),
-                    format!("{}月", monday.month()).into(),
-                ));
+                labeled.push((col, month_label(monday.month())));
                 last_labeled_col = col;
             }
         }
+        let step = HEAT_CELL_PX + HEAT_GAP_PX;
+        let mut month_items: Vec<(f32, f32, SharedString)> = Vec::with_capacity(labeled.len());
+        for (i, (col, label)) in labeled.iter().enumerate() {
+            let prev = if i == 0 { 0 } else { labeled[i - 1].0 };
+            let next = labeled.get(i + 1).map_or(cols, |(c, _)| *c);
+            month_items.push((
+                (*col - prev) as f32 * step,
+                (next - col) as f32 * step,
+                label.clone(),
+            ));
+        }
 
-        // Per-week day seconds (`None` = future date). Day tooltips are
-        // derived in `render_heatmap` from `heat_window_start`; colors come
-        // from the live theme.
-        let mut heat_weeks: Vec<HeatWeek> = Vec::with_capacity(HEAT_COLS as usize);
-        for col in 0..HEAT_COLS {
+        let mut heat_weeks: Vec<HeatWeek> = Vec::with_capacity(cols as usize);
+        for col in 0..cols {
             let mut days = [None; HEAT_ROWS];
             for row in 0..HEAT_ROWS as i64 {
                 let date = window_start + ChronoDuration::days(col * 7 + row);
@@ -496,20 +533,24 @@ impl StatsSettings {
         // light palette into the dark theme after a live theme switch.
         let (empty, levels) = heat_color_scale(theme);
 
-        // Spacer + natural-width label runs: two-digit months stay intact.
+        // Spacer + fixed-width slot runs: cumulative widths land each label
+        // exactly on its column; the label text renders at natural width
+        // inside the slot, so two-digit months stay intact.
         let mut month_row = div().flex().flex_row().pl(px(26.0)).h(px(12.0));
-        for (spacer, label) in &self.month_items {
-            let mut item = div().flex_shrink_0();
+        for (spacer, width, label) in &self.month_items {
             if *spacer > 0.0 {
-                item = item.w(px(*spacer));
+                month_row = month_row.child(div().w(px(*spacer)).flex_shrink_0());
             }
             month_row = month_row.child(
-                item.child(
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(theme.text_secondary)
-                        .child(label.clone()),
-                ),
+                div()
+                    .w(px(*width))
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(theme.text_secondary)
+                            .child(label.clone()),
+                    ),
             );
         }
 
