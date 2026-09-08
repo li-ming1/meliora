@@ -545,6 +545,10 @@ pub fn run() -> anyhow::Result<()> {
 
         let last_volume = *cx.global::<PlaybackInfo>().volume.read(cx);
 
+        // Listening-stats recorder, fed by the playback event loop and flushed
+        // to SQLite on quit.
+        cx.set_global(crate::stats::StatsHandle::new());
+
         let mut playback_interface: PlaybackInterface = PlaybackThread::start(
             queue.clone(),
             playback_settings,
@@ -587,8 +591,23 @@ pub fn run() -> anyhow::Result<()> {
                 let data = StorageData::new(cx);
                 let storage = storage.clone();
 
+                // Flush the partially-listened segment so the final seconds of
+                // a session are not lost. `write_rows` is tokio-backed, so it
+                // runs through RUNTIME's context on the background thread.
+                let pending_rows = {
+                    let stats = cx.global::<crate::stats::StatsHandle>();
+                    let mut recorder = stats.0.lock().unwrap_or_else(|e| e.into_inner());
+                    recorder.on_state(crate::playback::thread::PlaybackState::Stopped);
+                    recorder.take_pending()
+                };
+                let stats_pool = cx.global::<Pool>().0.clone();
+
                 cx.background_executor().spawn(async move {
                     storage.save(&data);
+                    if !pending_rows.is_empty() {
+                        crate::RUNTIME
+                            .block_on(crate::stats::queries::write_rows(&stats_pool, pending_rows));
+                    }
                     crate::logging::flush();
                 })
             }

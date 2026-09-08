@@ -27,6 +27,7 @@ mod paths;
 mod playback;
 mod power;
 mod settings;
+mod stats;
 #[cfg(test)]
 mod test_support;
 mod toasts;

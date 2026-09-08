@@ -61,7 +61,7 @@
   },
   "ABOUT_SECTION": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:178",
+    "definedIn": "src/ui/settings.rs:183",
     "plural": false,
     "description": null
   },
@@ -457,7 +457,7 @@
   },
   "EQUALIZER": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:173",
+    "definedIn": "src/ui/settings.rs:177",
     "plural": false,
     "description": null
   },
@@ -661,7 +661,7 @@
   },
   "INTERFACE": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:170",
+    "definedIn": "src/ui/settings.rs:174",
     "plural": false,
     "description": null
   },
@@ -1087,7 +1087,7 @@
   },
   "KUGOU_SECTION": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:175",
+    "definedIn": "src/ui/settings.rs:180",
     "plural": false,
     "description": null
   },
@@ -1129,7 +1129,7 @@
   },
   "LIBRARY": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:171",
+    "definedIn": "src/ui/settings.rs:175",
     "plural": false,
     "description": null
   },
@@ -1465,7 +1465,7 @@
   },
   "NETEASE_SECTION": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:177",
+    "definedIn": "src/ui/settings.rs:182",
     "plural": false,
     "description": null
   },
@@ -1567,7 +1567,7 @@
   },
   "PLAYBACK": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:172",
+    "definedIn": "src/ui/settings.rs:176",
     "plural": false,
     "description": null
   },
@@ -2053,7 +2053,7 @@
   },
   "SETTINGS": {
     "context": "settings.rs",
-    "definedIn": "src/ui/settings.rs:89",
+    "definedIn": "src/ui/settings.rs:90",
     "plural": false,
     "description": null
   },
@@ -2192,6 +2192,150 @@
   "SORT_TITLE": {
     "context": "artist_detail_view.rs",
     "definedIn": "src/ui/library/artist_detail_view.rs:520",
+    "plural": false,
+    "description": null
+  },
+  "STATS_EMPTY": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:1012",
+    "plural": false,
+    "description": null
+  },
+  "STATS_HEATMAP_TITLE": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:654",
+    "plural": false,
+    "description": null
+  },
+  "STATS_HOURS_TITLE": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:844",
+    "plural": false,
+    "description": null
+  },
+  "STATS_LEGEND_LESS": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:619",
+    "plural": false,
+    "description": null
+  },
+  "STATS_LEGEND_MORE": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:636",
+    "plural": false,
+    "description": null
+  },
+  "STATS_OVERVIEW_STREAK": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:483",
+    "plural": false,
+    "description": null
+  },
+  "STATS_OVERVIEW_TODAY": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:481",
+    "plural": false,
+    "description": null
+  },
+  "STATS_OVERVIEW_TOTAL": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:480",
+    "plural": false,
+    "description": null
+  },
+  "STATS_OVERVIEW_WEEK": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:482",
+    "plural": false,
+    "description": null
+  },
+  "STATS_RANGE_ALL": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:76",
+    "plural": false,
+    "description": null
+  },
+  "STATS_RANGE_MONTH": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:75",
+    "plural": false,
+    "description": null
+  },
+  "STATS_RANGE_WEEK": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:74",
+    "plural": false,
+    "description": null
+  },
+  "STATS_SECTION": {
+    "context": "settings.rs",
+    "definedIn": "src/ui/settings.rs:178",
+    "plural": false,
+    "description": null
+  },
+  "STATS_TAB_ALBUMS": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:51",
+    "plural": false,
+    "description": null
+  },
+  "STATS_TAB_ARTISTS": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:50",
+    "plural": false,
+    "description": null
+  },
+  "STATS_TAB_TRACKS": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:49",
+    "plural": false,
+    "description": null
+  },
+  "STATS_TOP_TITLE": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:957",
+    "plural": false,
+    "description": null
+  },
+  "STATS_UNIT_DAY": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:307",
+    "plural": false,
+    "description": null
+  },
+  "STATS_UNIT_HOUR": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:114",
+    "plural": false,
+    "description": null
+  },
+  "STATS_UNIT_MIN": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:116",
+    "plural": false,
+    "description": null
+  },
+  "STATS_UNIT_SEC": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:118",
+    "plural": false,
+    "description": null
+  },
+  "STATS_WD_FRI": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:541",
+    "plural": false,
+    "description": null
+  },
+  "STATS_WD_MON": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:537",
+    "plural": false,
+    "description": null
+  },
+  "STATS_WD_WED": {
+    "context": "stats.rs",
+    "definedIn": "src/ui/settings/stats.rs:539",
     "plural": false,
     "description": null
   },

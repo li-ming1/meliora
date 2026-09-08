@@ -5,7 +5,7 @@ use crate::{
     playback::{dsp::spectrum::SpectrumTapConsumer, events::RepeatState},
     power::PowerManager,
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
-    ui::models::{CurrentTrack, ImageEvent, Models, PlaybackInfo},
+    ui::{app::Pool, models::{CurrentTrack, ImageEvent, Models, PlaybackInfo}},
 };
 
 use super::{
@@ -171,6 +171,8 @@ impl PlaybackInterface {
 
         let playback_info = app.global::<PlaybackInfo>().clone();
         let power_manager = app.global::<PowerManager>().clone();
+        let stats = app.global::<crate::stats::StatsHandle>().0.clone();
+        let stats_pool = app.global::<Pool>().0.clone();
 
         let Some(mut events_rx) = events_rx else {
             panic!("broadcast thread already started");
@@ -234,12 +236,26 @@ impl PlaybackInterface {
                             }
 
                             power_manager.set_state(cx, v);
+
+                            let rows = {
+                                let mut recorder = stats.lock().unwrap_or_else(|e| e.into_inner());
+                                recorder.on_state(v);
+                                recorder.take_pending()
+                            };
+                            crate::stats::flush_rows_async(stats_pool.clone(), rows);
                         }
                         PlaybackEvent::PositionChanged(v) => {
                             playback_info.position.update(cx, |m, cx| {
                                 *m = v;
                                 cx.notify()
                             });
+
+                            let rows = {
+                                let mut recorder = stats.lock().unwrap_or_else(|e| e.into_inner());
+                                recorder.on_position(v);
+                                recorder.take_pending()
+                            };
+                            crate::stats::flush_rows_async(stats_pool.clone(), rows);
                         }
                         PlaybackEvent::DurationChanged(v) => {
                             playback_info.duration.update(cx, |m, cx| {
@@ -248,6 +264,15 @@ impl PlaybackInterface {
                             });
                         }
                         PlaybackEvent::SongChanged(path) => {
+                            let (track_key, meta) =
+                                crate::stats::song_info(&path, &queue_model, cx);
+                            let rows = {
+                                let mut recorder = stats.lock().unwrap_or_else(|e| e.into_inner());
+                                recorder.on_song_changed(track_key, meta);
+                                recorder.take_pending()
+                            };
+                            crate::stats::flush_rows_async(stats_pool.clone(), rows);
+
                             playback_info.current_track.update(cx, |m, cx| {
                                 *m = Some(CurrentTrack::new(path.clone()));
                                 cx.notify()

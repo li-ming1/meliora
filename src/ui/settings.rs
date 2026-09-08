@@ -12,6 +12,7 @@ use crate::ui::components::icons::KUGOU;
 use crate::ui::components::icons::NETEASE;
 mod library;
 mod playback;
+mod stats;
 
 use cntp_i18n::tr;
 use gpui::{
@@ -25,7 +26,7 @@ use crate::{
     settings::{Settings, SettingsGlobal, save_settings, storage::DEFAULT_SIDEBAR_WIDTH},
     ui::{
         components::{
-            icons::{ADJUSTMENTS, ALERT_CIRCLE, BOOKS, PLAY, WORLD},
+            icons::{ADJUSTMENTS, ALERT_CIRCLE, BOOKS, PLAY, RANKING, WORLD},
             scrollbar::{ScrollableHandle, floating_scrollbar},
             sidebar::{sidebar, sidebar_item},
             window_chrome::window_chrome,
@@ -33,7 +34,7 @@ use crate::{
         },
         settings::{
             about::AboutSettings, equalizer::EqualizerSettings, interface::InterfaceSettings,
-            library::LibrarySettings, playback::PlaybackSettings,
+            library::LibrarySettings, playback::PlaybackSettings, stats::StatsSettings,
         },
         theme::Theme,
     },
@@ -129,6 +130,7 @@ pub enum SettingsSectionKind {
     Library,
     Playback,
     Equalizer,
+    Stats,
     #[cfg(feature = "kugou")]
     Kugou,
     #[cfg(feature = "netease")]
@@ -143,6 +145,7 @@ impl SettingsSectionKind {
             Self::Library => "library",
             Self::Playback => "playback",
             Self::Equalizer => "equalizer",
+            Self::Stats => "stats",
             #[cfg(feature = "kugou")]
             Self::Kugou => "kugou",
             #[cfg(feature = "netease")]
@@ -157,6 +160,7 @@ impl SettingsSectionKind {
             Self::Library => BOOKS,
             Self::Playback => PLAY,
             Self::Equalizer => ADJUSTMENTS,
+            Self::Stats => RANKING,
             #[cfg(feature = "kugou")]
             Self::Kugou => KUGOU,
             #[cfg(feature = "netease")]
@@ -171,6 +175,7 @@ impl SettingsSectionKind {
             Self::Library => tr!("LIBRARY", "Library").into(),
             Self::Playback => tr!("PLAYBACK", "Playback").into(),
             Self::Equalizer => tr!("EQUALIZER", "Equalizer").into(),
+            Self::Stats => tr!("STATS_SECTION", "Listening Stats").into(),
             #[cfg(feature = "kugou")]
             Self::Kugou => tr!("KUGOU_SECTION", "KuGou Music").into(),
             #[cfg(feature = "netease")]
@@ -191,6 +196,7 @@ enum SettingsSection {
     Library(Entity<LibrarySettings>),
     Playback(Entity<PlaybackSettings>),
     Equalizer(Entity<EqualizerSettings>),
+    Stats(Entity<StatsSettings>),
     #[cfg(feature = "kugou")]
     Kugou(Entity<KugouSettings>),
     #[cfg(feature = "netease")]
@@ -205,6 +211,7 @@ impl SettingsSection {
             SettingsSectionKind::Library => Self::Library(LibrarySettings::new(cx)),
             SettingsSectionKind::Playback => Self::Playback(PlaybackSettings::new(cx)),
             SettingsSectionKind::Equalizer => Self::Equalizer(EqualizerSettings::new(cx)),
+            SettingsSectionKind::Stats => Self::Stats(StatsSettings::new(cx)),
             #[cfg(feature = "kugou")]
             SettingsSectionKind::Kugou => Self::Kugou(KugouSettings::new(cx)),
             #[cfg(feature = "netease")]
@@ -219,6 +226,7 @@ impl SettingsSection {
             Self::Library(_) => SettingsSectionKind::Library,
             Self::Playback(_) => SettingsSectionKind::Playback,
             Self::Equalizer(_) => SettingsSectionKind::Equalizer,
+            Self::Stats(_) => SettingsSectionKind::Stats,
             #[cfg(feature = "kugou")]
             Self::Kugou(_) => SettingsSectionKind::Kugou,
             #[cfg(feature = "netease")]
@@ -233,6 +241,7 @@ impl SettingsSection {
             Self::Library(library) => library.clone().into_any_element(),
             Self::Playback(playback) => playback.clone().into_any_element(),
             Self::Equalizer(equalizer) => equalizer.clone().into_any_element(),
+            Self::Stats(stats) => stats.clone().into_any_element(),
             #[cfg(feature = "kugou")]
             Self::Kugou(kugou) => kugou.clone().into_any_element(),
             #[cfg(feature = "netease")]
@@ -362,7 +371,8 @@ impl Render for SettingsWindow {
             .child(self.render_section_item(SettingsSectionKind::Interface, cx))
             .child(self.render_section_item(SettingsSectionKind::Library, cx))
             .child(self.render_section_item(SettingsSectionKind::Playback, cx))
-            .child(self.render_section_item(SettingsSectionKind::Equalizer, cx));
+            .child(self.render_section_item(SettingsSectionKind::Equalizer, cx))
+            .child(self.render_section_item(SettingsSectionKind::Stats, cx));
 
         #[cfg(feature = "kugou")]
         let sidebar = sidebar.child(self.render_section_item(SettingsSectionKind::Kugou, cx));
