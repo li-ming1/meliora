@@ -181,24 +181,7 @@ impl PlaybackInterface {
         app.spawn(async move |cx| {
             // `recv()` returning None means the playback thread dropped its
             // senders; the loop must end there or it would spin on None.
-            // The 30 s idle timeout keeps atlas tile reclamation running while
-            // playback is paused/idle: the drain must only ever run between
-            // frames (never mid-paint, see managed_image.rs), and this loop is
-            // the only drain driver left.
-            loop {
-                let event = match tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    events_rx.recv(),
-                )
-                .await
-                {
-                    Ok(Some(event)) => event,
-                    Ok(None) => break,
-                    Err(_) => {
-                        cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
-                        continue;
-                    }
-                };
+            while let Some(event) = events_rx.recv().await {
                     // Coalesce the backlog: after a busy frame the channel can
                     // hold dozens of stale position ticks, and replaying them
                     // just redoes the same entity writes. Every variant is
@@ -355,9 +338,24 @@ impl PlaybackInterface {
                     // window still receives playback events, while frames (and
                     // therefore the request_layout drain) stop being produced.
                     // Without this, idle playback leaked one atlas page per
-                    // song change.
+                    // song change. The drain must only run between frames
+                    // (never mid-paint, see managed_image.rs).
                     cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
                 }
+        })
+        .detach();
+
+        // Idle atlas tile reclamation: the event loop above only drains while
+        // events arrive; this timer keeps it running when playback is paused.
+        // Deliberately a gpui timer, NOT tokio::time — the gpui executor has
+        // no tokio reactor on this thread (startup panic, 2026-09-08).
+        app.spawn(async move |cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+                cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
+            }
         })
         .detach();
     }
