@@ -246,8 +246,9 @@ impl StatsSettings {
         cx.spawn(async move |this, cx| {
             let base = crate::RUNTIME
                 .spawn(async move {
-                    let daily = queries::daily_sums(&pool).await.unwrap_or_default();
-                    let hours = queries::hour_histogram(&pool).await.unwrap_or_default();
+                    let since = crate::stats::epoch_ts();
+                    let daily = queries::daily_sums(&pool, since).await.unwrap_or_default();
+                    let hours = queries::hour_histogram(&pool, since).await.unwrap_or_default();
                     (daily, hours)
                 })
                 .await;
