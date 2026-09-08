@@ -192,9 +192,8 @@ pub struct StatsSettings {
     hover_hour: Option<usize>,
     /// 7 rows (Mon..Sun) × 53 week columns; per-day seconds, `None` = future.
     heat_weeks: Vec<HeatWeek>,
-    /// Week-column tooltips ("X 小时 · MM-DD - MM-DD"), `None` = empty week.
-    week_tooltips: Vec<Option<SharedString>>,
-    week_ids: Vec<SharedString>,
+    /// First day of the heat-map window; day dates derive from it at render.
+    heat_window_start: NaiveDate,
     /// Month labels: (spacer px before the label, month number). Precomputed
     /// as run-length spacers so two-digit months render at natural width
     /// instead of being clipped to one digit by a 9 px slot.
@@ -223,10 +222,7 @@ impl StatsSettings {
             hours_ids: std::array::from_fn(|h| SharedString::from(format!("hb-{h}"))),
             hover_hour: None,
             heat_weeks: Vec::new(),
-            week_tooltips: Vec::new(),
-            week_ids: (0..HEAT_COLS)
-                .map(|c| SharedString::from(format!("hw-{c}")))
-                .collect(),
+            heat_window_start: Local::now().date_naive(),
             month_items: Vec::new(),
             heat_window_label: "".into(),
             heat_weeks_back: 0,
@@ -407,46 +403,30 @@ impl StatsSettings {
                 }
                 month_items.push((
                     (col - last_labeled_col) as f32 * (HEAT_CELL_PX + HEAT_GAP_PX),
-                    monday.month().to_string().into(),
+                    format!("{}月", monday.month()).into(),
                 ));
                 last_labeled_col = col;
             }
         }
 
-        // Per-week day seconds; the tooltip aggregates the week. Colors are
-        // resolved per frame in `render_heatmap` from the live theme.
+        // Per-week day seconds (`None` = future date). Day tooltips are
+        // derived in `render_heatmap` from `heat_window_start`; colors come
+        // from the live theme.
         let mut heat_weeks: Vec<HeatWeek> = Vec::with_capacity(HEAT_COLS as usize);
-        let mut week_tooltips: Vec<Option<SharedString>> = Vec::with_capacity(HEAT_COLS as usize);
         for col in 0..HEAT_COLS {
             let mut days = [None; HEAT_ROWS];
-            let mut week_secs = 0i64;
-            let mut first = None;
-            let mut last = None;
             for row in 0..HEAT_ROWS as i64 {
                 let date = window_start + ChronoDuration::days(col * 7 + row);
                 if date > today {
                     continue;
                 }
-                let secs = self.daily.get(&date).copied().unwrap_or(0);
-                days[row as usize] = Some(secs);
-                week_secs += secs;
-                first.get_or_insert(date);
-                last = Some(date);
+                days[row as usize] = Some(self.daily.get(&date).copied().unwrap_or(0));
             }
-            let tooltip = (week_secs > 0).then(|| {
-                SharedString::from(format!(
-                    "{} · {} - {}",
-                    fmt_duration(week_secs),
-                    first.map(|d| d.format("%m-%d").to_string()).unwrap_or_default(),
-                    last.map(|d| d.format("%m-%d").to_string()).unwrap_or_default(),
-                ))
-            });
             heat_weeks.push(HeatWeek { days });
-            week_tooltips.push(tooltip);
         }
+        self.heat_window_start = window_start;
         self.month_items = month_items;
         self.heat_weeks = heat_weeks;
-        self.week_tooltips = week_tooltips;
     }
 
     fn shift_heat(&mut self, delta: i64, cx: &mut Context<Self>) {
@@ -563,12 +543,12 @@ impl StatsSettings {
             wd_col = wd_col.child(slot);
         }
 
-        // Columns carry the (single) week tooltip; cells are plain painted
-        // divs. 53 hover sources instead of 371 keeps mouse movement smooth.
+        // Cells are stateful (day tooltip, 150 ms rest before it pops — fast
+        // mouse travel never builds one); columns are plain layout.
         let mut grid = div().flex().flex_row().gap(px(HEAT_GAP_PX));
         for (col, week) in self.heat_weeks.iter().enumerate() {
             let mut col_div = div().flex().flex_col().gap(px(HEAT_GAP_PX));
-            for day in &week.days {
+            for (row, day) in week.days.iter().enumerate() {
                 let color = match day {
                     None => Rgba::new(0.0, 0.0, 0.0, 0.0), // future date
                     Some(0) => empty,
@@ -586,24 +566,29 @@ impl StatsSettings {
                         }]
                     }
                 };
-                col_div = col_div.child(
-                    div()
-                        .w(px(HEAT_CELL_PX))
-                        .h(px(HEAT_CELL_PX))
-                        .rounded(px(2.0))
-                        .flex_shrink_0()
-                        .bg(color),
-                );
+                let date = self.heat_window_start
+                    + ChronoDuration::days(col as i64 * 7 + row as i64);
+                let base = div()
+                    .w(px(HEAT_CELL_PX))
+                    .h(px(HEAT_CELL_PX))
+                    .rounded(px(2.0))
+                    .flex_shrink_0()
+                    .bg(color);
+                let cell = if *day > Some(0) {
+                    base.id(SharedString::from(format!("hm-{}", date.format("%Y%m%d"))))
+                        .tooltip_show_delay(Duration::from_millis(150))
+                        .tooltip(build_tooltip(SharedString::from(format!(
+                            "{} · {}",
+                            fmt_duration(day.unwrap_or(0)),
+                            date.format("%m-%d")
+                        ))))
+                        .into_any_element()
+                } else {
+                    base.into_any_element()
+                };
+                col_div = col_div.child(cell);
             }
-            let col_el = match &self.week_tooltips[col] {
-                Some(text) => col_div
-                    .id(self.week_ids[col].clone())
-                    .tooltip_show_delay(Duration::from_millis(150))
-                    .tooltip(build_tooltip(text.clone()))
-                    .into_any_element(),
-                None => col_div.into_any_element(),
-            };
-            grid = grid.child(col_el);
+            grid = grid.child(col_div);
         }
 
         let legend = div()
