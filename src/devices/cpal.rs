@@ -38,8 +38,12 @@ const PAUSE_FADE_WAIT: Duration = Duration::from_millis(50);
 /// Target callback buffer size.
 const DEVICE_BUFFER_TARGET: Duration = Duration::from_millis(20);
 /// Internal ring buffer target. This stays larger than the device buffer so the
-/// decoder can absorb scheduling jitter without underrunning the stream.
-const RING_BUFFER_TARGET: Duration = Duration::from_millis(100);
+/// decoder can absorb scheduling jitter without underrunning the stream. 100 ms
+/// underran whenever the producer stalled past one buffer (track opens,
+/// online-stream fetches, cover-decode bursts); 250 ms absorbs those while
+/// staying cheap (~1 MB) — seek/pause paths rebuild the stream via `reset()`,
+/// so stale audio is never played from the slack.
+const RING_BUFFER_TARGET: Duration = Duration::from_millis(250);
 
 pub struct CpalProvider {
     host: Host,
