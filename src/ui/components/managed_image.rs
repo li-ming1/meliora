@@ -157,11 +157,13 @@ fn queue_tile_drop(image: Arc<RenderImage>) {
         .push(image);
 }
 
-/// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread;
-/// called from `request_layout` while frames are being painted *and* from the
-/// playback event loop, which keeps delivering while a window is minimized -
-/// without the latter, idle playback would leak one atlas page per song
-/// because the per-frame drain never runs.
+/// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread,
+/// exclusively from the playback event loop — never from the paint pass.
+/// Removing atlas pages mid-paint frees a texture page whose sprites may
+/// already be recorded in the same frame, and `DirectXAtlas::texture()`
+/// panics on the dangling slot (crash seen on cover-heavy pages, 2026-09-08).
+/// The event loop only iterates while events arrive, so its loop uses a
+/// timeout to keep draining when playback is idle.
 pub fn drain_pending_tile_drops(cx: &mut App) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return;
@@ -453,8 +455,6 @@ impl Element for ManagedImage {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        drain_pending_tile_drops(cx);
-
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {

@@ -181,7 +181,24 @@ impl PlaybackInterface {
         app.spawn(async move |cx| {
             // `recv()` returning None means the playback thread dropped its
             // senders; the loop must end there or it would spin on None.
-            while let Some(event) = events_rx.recv().await {
+            // The 30 s idle timeout keeps atlas tile reclamation running while
+            // playback is paused/idle: the drain must only ever run between
+            // frames (never mid-paint, see managed_image.rs), and this loop is
+            // the only drain driver left.
+            loop {
+                let event = match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    events_rx.recv(),
+                )
+                .await
+                {
+                    Ok(Some(event)) => event,
+                    Ok(None) => break,
+                    Err(_) => {
+                        cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
+                        continue;
+                    }
+                };
                     // Coalesce the backlog: after a busy frame the channel can
                     // hold dozens of stale position ticks, and replaying them
                     // just redoes the same entity writes. Every variant is
