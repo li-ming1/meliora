@@ -14,6 +14,11 @@ use crate::playback::queue::OnlineIdentity;
 #[cfg(feature = "kugou")]
 pub use crate::ui::kugou::online_track_matching_path;
 
+/// NetEase counterpart of the KuGou re-export above, aliased so both provider
+/// features can be enabled at once without an ambiguous name.
+#[cfg(feature = "netease")]
+pub use crate::ui::netease::online_track_matching_path as netease_online_track_matching_path;
+
 /// Display metadata shape shared by both providers:
 /// `(name, artist, duration, cover_url)`.
 pub type OnlineDisplay = (
@@ -27,12 +32,15 @@ pub type OnlineDisplay = (
 /// the provider's stream registry (lyrics / like / download resolve by that
 /// registry, so a refreshed URL must be re-registered or those break).
 ///
+/// Quality arguments are feature-gated to match the call sites, which only
+/// pass the settings of the providers compiled in.
+///
 /// Returns `None` when the provider can no longer produce a playable URL.
 #[allow(unused_variables)]
 pub async fn refresh_online_url(
     identity: &OnlineIdentity,
-    kugou_quality: &str,
-    netease_quality: &str,
+    #[cfg(feature = "kugou")] kugou_quality: &str,
+    #[cfg(feature = "netease")] netease_quality: &str,
     display: OnlineDisplay,
 ) -> Option<String> {
     match identity {
