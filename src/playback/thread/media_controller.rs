@@ -24,6 +24,14 @@ pub struct CompleteMetadata {
     pub album_art: Option<Arc<[u8]>>,
 }
 
+/// A media stream opened off the playback thread, ready to be attached
+/// instantly at a track transition (gapless advance).
+pub struct PreparedMedia {
+    pub(crate) path: PathBuf,
+    pub(crate) stream: Box<dyn MediaStream>,
+    pub(crate) duration_ms: Option<u64>,
+}
+
 /// Controller for media stream management.
 ///
 /// This component handles all interactions with media providers and streams,
@@ -46,16 +54,12 @@ impl MediaController {
         self.media_stream.is_some()
     }
 
-    /// Open a media file and prepare it for playback.
-    ///
-    /// Returns the track duration in milliseconds if known, used to configure
-    /// the audio pipeline and device.
-    pub fn open(&mut self, path: &Path) -> Result<Option<u64>, PlaybackStartError> {
-        info!("Opening track '{}'", path.display());
-
-        // Close any existing stream
-        self.close();
-
+    /// Open a media file into a standalone stream without touching controller
+    /// state; shared by [`Self::open`] (playback thread) and gapless prepare
+    /// (background thread).
+    pub(super) fn open_stream(
+        path: &Path,
+    ) -> Result<(Box<dyn MediaStream>, Option<u64>), PlaybackStartError> {
         // remote HTTP(S) streams bypass the file-based provider lookup
         #[cfg(feature = "online_sources")]
         let src = if crate::media::is_http_path(path) {
@@ -66,39 +70,67 @@ impl MediaController {
         #[cfg(not(feature = "online_sources"))]
         let src = try_open_media(path, MediaProviderFeatures::PROVIDES_DECODER);
 
-        if let Err(e) = src {
-            return Err(PlaybackStartError::MediaError(format!(
-                "Unable to open media: {}",
-                e
-            )));
-        }
+        let src =
+            src.map_err(|e| PlaybackStartError::MediaError(format!("Unable to open media: {e}")))?;
 
-        let Some(mut media_stream) = src.unwrap() else {
+        let Some(mut media_stream) = src else {
             return Err(PlaybackStartError::MediaError(
                 "No media provider found".to_string(),
             ));
         };
 
-        media_stream.start_playback().map_err(|e| {
-            PlaybackStartError::MediaError(format!("Unable to start playback: {}", e))
-        })?;
+        media_stream
+            .start_playback()
+            .map_err(|e| PlaybackStartError::MediaError(format!("Unable to start playback: {e}")))?;
 
-        let channels = media_stream.channels().map_err(|e| {
-            PlaybackStartError::MediaError(format!("Unable to get channels: {}", e))
-        })?;
+        media_stream
+            .channels()
+            .map_err(|e| PlaybackStartError::MediaError(format!("Unable to get channels: {e}")))?;
 
         let duration_ms = media_stream.duration_ms().ok();
+        Ok((media_stream, duration_ms))
+    }
+
+    /// Open a media file and prepare it for playback.
+    ///
+    /// Returns the track duration in milliseconds if known, used to configure
+    /// the audio pipeline and device.
+    pub fn open(&mut self, path: &Path) -> Result<Option<u64>, PlaybackStartError> {
+        info!("Opening track '{}'", path.display());
+
+        // Close any existing stream
+        self.close();
+
+        let (media_stream, duration_ms) = Self::open_stream(path)?;
 
         self.media_stream = Some(media_stream);
         self.current_path = Some(path.to_path_buf());
 
         info!(
             path = %path.display(),
-            ?channels,
             ?duration_ms,
             "media prepared for playback"
         );
 
+        Ok(duration_ms)
+    }
+
+    /// Install a stream pre-opened by [`AudioEngine::prepare_next`]. The
+    /// stream was fully validated (start + channels) at prepare time, so this
+    /// cannot block on the network.
+    pub fn attach_prepared(
+        &mut self,
+        prepared: PreparedMedia,
+    ) -> Result<Option<u64>, PlaybackStartError> {
+        info!(
+            path = %prepared.path.display(),
+            "attaching pre-opened media stream"
+        );
+        self.close();
+
+        let duration_ms = prepared.duration_ms;
+        self.media_stream = Some(prepared.stream);
+        self.current_path = Some(prepared.path);
         Ok(duration_ms)
     }
 

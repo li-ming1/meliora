@@ -1,5 +1,5 @@
-use std::path::Path;
-
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, TryRecvError};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, trace_span, warn};
 
@@ -12,6 +12,7 @@ use crate::{
     media::{
         errors::{PlaybackStartError, SeekError},
         pipeline::{AudioPipeline, DEFAULT_BUFFER_FRAMES, DecodeResult, output_frame_bound},
+        traits::MediaStream,
     },
     playback::{
         dsp::{
@@ -19,7 +20,7 @@ use crate::{
             spectrum::SpectrumTap,
         },
         events::PlaybackEvent,
-        thread::media_controller::CompleteMetadata,
+        thread::media_controller::{CompleteMetadata, PreparedMedia},
     },
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
 };
@@ -123,6 +124,17 @@ pub struct AudioEngine {
     /// `(next recreate allowed at, consecutive failed consume cycles)` pacing
     /// device recreation; see [`DEVICE_RECREATE_BACKOFF_INITIAL`].
     device_recreate_defer: Option<(std::time::Instant, u32)>,
+    /// Pre-opened next track for gapless advance, filled by
+    /// [`AudioEngine::prepare_next`] on a background thread.
+    prepared: Option<PreparedMedia>,
+    /// Receiver of the in-flight background prepare, if any.
+    prepare_rx: Option<mpsc::Receiver<PrepareOutcome>>,
+}
+
+/// Background prepare result sent back to the playback thread.
+struct PrepareOutcome {
+    path: PathBuf,
+    result: Result<(Box<dyn MediaStream>, Option<u64>), String>,
 }
 
 impl AudioEngine {
@@ -143,6 +155,8 @@ impl AudioEngine {
             rebuild_attempts: 0,
             pipeline_capacity_floor: 0,
             device_recreate_defer: None,
+            prepared: None,
+            prepare_rx: None,
         }
     }
 
@@ -167,6 +181,73 @@ impl AudioEngine {
 
     pub fn state(&self) -> EngineState {
         self.state
+    }
+
+    /// Pre-open `path`'s media stream on a background thread so the track
+    /// swap at end-of-track doesn't wait on connect+probe (online sources).
+    /// Ignored when that track is already prepared or being prepared.
+    pub fn prepare_next(&mut self, path: &Path) {
+        if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
+            return;
+        }
+        // A prepared stream for a different track is stale by definition.
+        self.prepared = None;
+
+        let (tx, rx) = mpsc::channel();
+        self.prepare_rx = Some(rx);
+        let path = path.to_path_buf();
+        let spawned = std::thread::Builder::new()
+            .name("media-prepare".into())
+            .spawn(move || {
+                let result = MediaController::open_stream(&path)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(PrepareOutcome { path, result });
+            });
+        if spawned.is_err() {
+            // No prepare thread; the transition falls back to a normal open.
+            self.prepare_rx = None;
+        }
+    }
+
+    /// Collect a finished background prepare. Call once per playback cycle.
+    pub fn poll_prepared(&mut self) {
+        let Some(rx) = &self.prepare_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.prepare_rx = None;
+                match outcome.result {
+                    Ok((stream, duration_ms)) => {
+                        info!(
+                            path = %outcome.path.display(),
+                            "next track pre-opened for gapless advance"
+                        );
+                        self.prepared = Some(PreparedMedia {
+                            path: outcome.path,
+                            stream,
+                            duration_ms,
+                        });
+                    }
+                    Err(e) => {
+                        // The transition re-runs the normal open path (with
+                        // its URL-refresh retry) and logs there.
+                        warn!("pre-opening next track failed: {e}");
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.prepare_rx = None;
+            }
+        }
+    }
+
+    /// Drop any pre-opened media; called when the queue changes (the next
+    /// track may no longer be the prepared one) or playback stops.
+    pub fn drop_prepared(&mut self) {
+        self.prepared = None;
+        self.prepare_rx = None;
     }
 
     pub fn open(
@@ -204,7 +285,19 @@ impl AudioEngine {
         self.pipeline = None;
         self.mixer = None;
 
-        let duration_ms = self.media.open(path)?;
+        // Gapless fast path: the next track was pre-opened in the background
+        // (connect + probe + start already done off-thread).
+        let duration_ms = match self.prepared.take() {
+            Some(prepared) if prepared.path == path => self.media.attach_prepared(prepared)?,
+            Some(stale) => {
+                // Only a queue mutation could have redirected the target; its
+                // QueueUpdated already dropped the prepared stream, so a stale
+                // matchless stream here is rare — just drop it.
+                drop(stale);
+                self.media.open(path)?
+            }
+            None => self.media.open(path)?,
+        };
 
         if recreation_required {
             if let Err(e) = self.device.create_stream(None) {

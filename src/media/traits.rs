@@ -56,7 +56,10 @@ pub trait MediaProvider: Send + Sync {
 /// Note that if your Provider supports metadata retrieval, it will be asked to open, start, and
 /// read metadata many times in rapid succession during library indexing. This is normal and
 /// expected behavior, and your plugin must be able to handle this.
-pub trait MediaStream {
+///
+/// `Send` so a stream can be opened on a background thread and handed to the
+/// playback thread (gapless pre-open).
+pub trait MediaStream: Send {
     /// Informs the Provider that the currently opened file is no longer needed. This function is
     /// not guaranteed to be called before open if a file is already opened.
     fn close(&mut self);

@@ -61,6 +61,11 @@ fn no_progress_backoff(cycles: u32) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+/// Lead time before the current track ends at which the next track's media
+/// stream is pre-opened in the background (gapless advance). Covers the
+/// worst online open (signed-URL refresh + connect + probe).
+const PREPARE_LEAD_MS: u64 = 15_000;
+
 /// Whether a queue item's path points at something playable: a local file that still exists, or
 /// (with the kugou feature) an HTTP(S) stream URL.
 fn path_playable(path: &Path) -> bool {
@@ -116,6 +121,8 @@ pub struct PlaybackThread {
     /// Cached track/album sample peaks, used for clipping-safe gain capping.
     last_track_peak: Option<f64>,
     last_album_peak: Option<f64>,
+    /// Duration of the current track in ms, when known; drives gapless prepare.
+    duration_ms: Option<u64>,
     stop_after_current: bool,
     /// Consecutive no-progress cycles while playing; drives the backoff and skip.
     no_progress_cycles: u32,
@@ -156,6 +163,7 @@ impl PlaybackThread {
                     last_album_gain: None,
                     last_track_peak: None,
                     last_album_peak: None,
+                    duration_ms: None,
                     stop_after_current: false,
                     no_progress_cycles: 0,
                 };
@@ -192,9 +200,13 @@ impl PlaybackThread {
         // Finish any deferred device work (e.g. an async pause fade) without blocking intake.
         self.engine.poll();
 
+        // Collect a finished gapless pre-open, if any.
+        self.engine.poll_prepared();
+
         if self.engine.state() == EngineState::Playing {
             if self.play_audio() {
                 self.no_progress_cycles = 0;
+                self.maybe_prepare_next();
             } else {
                 self.no_progress_cycles = self.no_progress_cycles.saturating_add(1);
                 if self.no_progress_cycles >= MAX_NO_PROGRESS_CYCLES {
@@ -430,6 +442,7 @@ impl PlaybackThread {
 
         self.send_event(PlaybackEvent::SongChanged(open_path));
 
+        self.duration_ms = duration;
         self.send_event(PlaybackEvent::DurationChanged(duration.unwrap_or(0)));
 
         self.process_metadata_update();
@@ -439,6 +452,26 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::StateChanged(PlaybackState::Playing));
 
         Ok(())
+    }
+
+    /// Pre-open the next track's media stream when the current one is about
+    /// to end, so the EOF transition attaches a ready stream instead of
+    /// blocking on connect+probe (the audible part of track gaps on online
+    /// sources). Queue mutations invalidate the prepared stream.
+    fn maybe_prepare_next(&mut self) {
+        if self.stop_after_current || self.playback_settings.consume {
+            return;
+        }
+        let Some(duration) = self.duration_ms else {
+            return;
+        };
+        if duration.saturating_sub(self.last_timestamp as u64) > PREPARE_LEAD_MS {
+            return;
+        }
+        let Some(next_path) = self.queue.peek_next_path() else {
+            return;
+        };
+        self.engine.prepare_next(&next_path);
     }
 
     fn process_metadata_update(&mut self) {
@@ -1049,10 +1082,12 @@ impl PlaybackThread {
     fn stop(&mut self) {
         self.set_stop_after_current(false);
         self.engine.stop();
+        self.engine.drop_prepared();
         self.last_track_gain = None;
         self.last_album_gain = None;
         self.last_track_peak = None;
         self.last_album_peak = None;
+        self.duration_ms = None;
 
         self.send_event(PlaybackEvent::StateChanged(PlaybackState::Stopped));
     }
@@ -1191,6 +1226,11 @@ impl PlaybackThread {
     }
 
     fn send_event(&mut self, event: PlaybackEvent) {
+        // A queue mutation can change which track plays next: the gapless
+        // pre-open (if any) is stale from this point on.
+        if matches!(event, PlaybackEvent::QueueUpdated) {
+            self.engine.drop_prepared();
+        }
         // an Err just means the UI (and its receiver) is already gone
         let _ = self.events_tx.send(event);
     }

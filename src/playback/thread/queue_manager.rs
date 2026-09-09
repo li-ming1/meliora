@@ -620,6 +620,22 @@ impl QueueManager {
         result
     }
 
+    /// The path `next(false)` would open, without advancing any state (used
+    /// by gapless pre-open). Returns `None` when the advance is not
+    /// predictable (queue end, repeat-wrap with shuffle reshuffles).
+    pub fn peek_next_path(&self) -> Option<PathBuf> {
+        let queue = self.queue.read().expect("poisoned queue lock");
+
+        if self.repeat == RepeatState::RepeatingOne
+            && let Some(path) = queue.get(self.queue_next.saturating_sub(1))
+            && Self::item_is_playable(path)
+        {
+            return Some(path.get_path().clone());
+        }
+
+        Self::next_playable_from(&queue, self.queue_next).map(|index| queue[index].get_path().clone())
+    }
+
     /// Go to the previous track in the queue.
     pub fn previous(&mut self) -> QueueNavigationResult {
         let result = {
