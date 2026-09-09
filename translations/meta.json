@@ -2197,55 +2197,55 @@
   },
   "STATS_EMPTY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1013",
+    "definedIn": "src/ui/settings/stats.rs:1039",
     "plural": false,
     "description": null
   },
   "STATS_HEATMAP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:651",
+    "definedIn": "src/ui/settings/stats.rs:677",
     "plural": false,
     "description": null
   },
   "STATS_HOURS_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:842",
+    "definedIn": "src/ui/settings/stats.rs:868",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_LESS": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:616",
+    "definedIn": "src/ui/settings/stats.rs:642",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_MORE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:633",
+    "definedIn": "src/ui/settings/stats.rs:659",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_STREAK": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:467",
+    "definedIn": "src/ui/settings/stats.rs:493",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_TODAY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:465",
+    "definedIn": "src/ui/settings/stats.rs:491",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_TOTAL": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:464",
+    "definedIn": "src/ui/settings/stats.rs:490",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_WEEK": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:466",
+    "definedIn": "src/ui/settings/stats.rs:492",
     "plural": false,
     "description": null
   },
@@ -2293,13 +2293,13 @@
   },
   "STATS_TOP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:958",
+    "definedIn": "src/ui/settings/stats.rs:984",
     "plural": false,
     "description": null
   },
   "STATS_UNIT_DAY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:309",
+    "definedIn": "src/ui/settings/stats.rs:335",
     "plural": false,
     "description": null
   },
@@ -2323,19 +2323,19 @@
   },
   "STATS_WD_FRI": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:524",
+    "definedIn": "src/ui/settings/stats.rs:550",
     "plural": false,
     "description": null
   },
   "STATS_WD_MON": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:520",
+    "definedIn": "src/ui/settings/stats.rs:546",
     "plural": false,
     "description": null
   },
   "STATS_WD_WED": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:522",
+    "definedIn": "src/ui/settings/stats.rs:548",
     "plural": false,
     "description": null
   },

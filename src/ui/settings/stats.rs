@@ -239,8 +239,34 @@ impl StatsSettings {
             top_range: TopRange::Week,
             top_items: Vec::new(),
         });
-        entity.update(cx, |this, cx| this.load_base(cx));
+        entity.update(cx, |this, cx| {
+            this.load_base(cx);
+            this.spawn_refresh(cx);
+        });
         entity
+    }
+
+    /// Live refresh while the page is open: listening time lands in the DB in
+    /// 60 s quanta while playing, so a 30 s reload keeps every view within one
+    /// batch of the truth (and rolls "today"/streak over at midnight). The
+    /// stats section entity only lives while this section is active —
+    /// switching away drops it and ends this loop.
+    fn spawn_refresh(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+                // Err = entity released; stop ticking.
+                if this
+                    .update(cx, |this, cx| this.load_base(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// One async batch for the daily map and the hour histogram; the Top list
