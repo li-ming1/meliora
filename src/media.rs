@@ -6,6 +6,9 @@ pub mod lofty;
 pub mod lookup_table;
 pub mod metadata;
 pub mod pipeline;
+// Background prefetch between remote sources and the decoder.
+#[cfg(feature = "online_sources")]
+pub mod prefetch;
 pub mod symphonia;
 pub mod traits;
 

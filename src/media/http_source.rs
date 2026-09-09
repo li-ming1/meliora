@@ -258,6 +258,10 @@ pub fn open_http_media(path: &Path) -> anyhow::Result<Box<dyn MediaStream>> {
     let source = HttpRangeSource::connect(url)
         .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
 
+    // Background fill + reconnect so network jitter never parks the
+    // playback main loop on a synchronous read (see prefetch.rs).
+    let source = crate::media::prefetch::PrefetchSource::new(source);
+
     SymphoniaProvider
         .open_source(Box::new(source), ext.as_deref().map(OsStr::new))
         .map_err(|e| anyhow::anyhow!("failed to probe remote media: {e}"))
