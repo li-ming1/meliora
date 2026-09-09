@@ -113,6 +113,9 @@ pub struct PlaybackThread {
     last_track_gain: Option<f64>,
     /// Cached album gain from last metadata update.
     last_album_gain: Option<f64>,
+    /// Cached track/album sample peaks, used for clipping-safe gain capping.
+    last_track_peak: Option<f64>,
+    last_album_peak: Option<f64>,
     stop_after_current: bool,
     /// Consecutive no-progress cycles while playing; drives the backoff and skip.
     no_progress_cycles: u32,
@@ -151,6 +154,8 @@ impl PlaybackThread {
                     rg_auto_hint: ReplayGainAutoHint::PreferTrack,
                     last_track_gain: None,
                     last_album_gain: None,
+                    last_track_peak: None,
+                    last_album_peak: None,
                     stop_after_current: false,
                     no_progress_cycles: 0,
                 };
@@ -387,6 +392,8 @@ impl PlaybackThread {
 
         self.last_track_gain = None;
         self.last_album_gain = None;
+        self.last_track_peak = None;
+        self.last_album_peak = None;
 
         let (duration, open_path) = match self.engine.open(path, preserve_resampler) {
             Ok(duration) => (duration, path.to_path_buf()),
@@ -438,6 +445,8 @@ impl PlaybackThread {
         if let Some(metadata) = self.engine.check_metadata_update() {
             self.last_track_gain = metadata.metadata.replaygain_track_gain;
             self.last_album_gain = metadata.metadata.replaygain_album_gain;
+            self.last_track_peak = metadata.metadata.replaygain_track_peak;
+            self.last_album_peak = metadata.metadata.replaygain_album_peak;
 
             self.reapply_replaygain();
 
@@ -452,6 +461,8 @@ impl PlaybackThread {
             self.rg_auto_hint,
             self.last_track_gain,
             self.last_album_gain,
+            self.last_track_peak,
+            self.last_album_peak,
         );
         if let Err(e) = self.engine.set_replaygain(gain) {
             warn!("Failed to set ReplayGain: {:?}", e);
@@ -1040,6 +1051,8 @@ impl PlaybackThread {
         self.engine.stop();
         self.last_track_gain = None;
         self.last_album_gain = None;
+        self.last_track_peak = None;
+        self.last_album_peak = None;
 
         self.send_event(PlaybackEvent::StateChanged(PlaybackState::Stopped));
     }

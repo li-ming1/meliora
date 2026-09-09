@@ -84,6 +84,67 @@ where
     }
 }
 
+/// Input level where the soft limiter starts to engage (≈ -0.45 dBFS).
+/// Below it the function is bit-exact passthrough, so ordinary material is
+/// untouched and only gain-boosted peaks are curved into full scale.
+const LIMITER_KNEE: f64 = 0.95;
+
+/// Smooth saturation into ±1.0: transparent below the knee, C1-continuous at
+/// it, monotonic and asymptotic to ±1.0 above. The last full-precision stage
+/// before quantization — replaces hard clamping so boosted peaks curve
+/// instead of shattering into odd harmonics.
+#[inline]
+pub fn soft_limit(x: f64) -> f64 {
+    let magnitude = x.abs();
+    if magnitude <= LIMITER_KNEE {
+        return x;
+    }
+    let knee_span = 1.0 - LIMITER_KNEE;
+    let limited = LIMITER_KNEE + knee_span * ((magnitude - LIMITER_KNEE) / knee_span).tanh();
+    x.signum() * limited
+}
+
+/// Quantization step (as a fraction of full scale) for integer targets
+/// shallow enough that dither is audible; `None` for float and ≥24-bit
+/// targets where quantization is inaudible and dither would only add noise.
+pub trait DitherLsb: Sized {
+    const DITHER_LSB: Option<f64>;
+}
+
+macro_rules! impl_dither_shallow {
+    ($($t:ty => $lsb:expr),* $(,)?) => {
+        $(impl DitherLsb for $t {
+            const DITHER_LSB: Option<f64> = Some($lsb);
+        })*
+    };
+}
+
+macro_rules! impl_dither_none {
+    ($($t:ty),* $(,)?) => {
+        $(impl DitherLsb for $t {
+            const DITHER_LSB: Option<f64> = None;
+        })*
+    };
+}
+
+impl_dither_shallow!(i8 => 1.0 / 128.0, i16 => 1.0 / 32_768.0, u8 => 1.0 / 128.0, u16 => 1.0 / 32_768.0);
+impl_dither_none!(i32, u32, f32, f64);
+
+/// Next TPDF dither offset in units of the target LSB: sum of two uniforms
+/// minus 1.0, giving a triangular density in [-1, 1). Draws from a per-device
+/// xorshift state; interleaved consumption decorrelates channels for free.
+#[inline]
+pub fn tpdf(state: &mut u64) -> f64 {
+    // xorshift64*: one multiply-xor step per sample.
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    let bits = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+    let a = (bits >> 40) as f64 / 16_777_216.0; // top 24 bits
+    let b = ((bits >> 16) & 0xFF_FFFF) as f64 / 16_777_216.0;
+    a + b - 1.0
+}
+
 pub struct AtomicF64 {
     inner: AtomicU64,
 }
@@ -185,7 +246,7 @@ impl GainRamp {
 
 #[cfg(test)]
 mod tests {
-    use super::GainRamp;
+    use super::{GainRamp, LIMITER_KNEE, soft_limit, tpdf};
 
     fn assert_approx_eq(lhs: f32, rhs: f32) {
         assert!((lhs - rhs).abs() < 1e-6, "left={lhs}, right={rhs}");
@@ -226,5 +287,43 @@ mod tests {
 
         assert_approx_eq(faded[0], 14.0 / 15.0);
         assert_eq!(ramp.frame_pos, 1);
+    }
+
+    #[test]
+    fn soft_limit_is_transparent_below_the_knee() {
+        for x in [0.0, 0.5, LIMITER_KNEE, -LIMITER_KNEE, -0.25] {
+            assert_eq!(soft_limit(x), x, "must be bit-exact at {x}");
+        }
+    }
+
+    #[test]
+    fn soft_limit_curves_into_full_scale_without_clipping() {
+        let mut previous = LIMITER_KNEE;
+        // monotonic, capped at 1.0, and continuous at the knee
+        for step in [1.0, 1.05, 1.2, 2.0, 8.0] {
+            let x = LIMITER_KNEE + step * 0.1;
+            let limited = soft_limit(x);
+            assert!(limited > previous && limited < 1.0, "at {x} -> {limited}");
+            previous = limited;
+        }
+        assert_approx_eq(soft_limit(LIMITER_KNEE + 1e-9) as f32, LIMITER_KNEE as f32);
+        // symmetric
+        assert_eq!(soft_limit(1.3), -soft_limit(-1.3));
+    }
+
+    #[test]
+    fn tpdf_stays_within_one_lsb_and_averages_to_zero() {
+        let mut state = 0x9E37_79B9_7F4A_7C15;
+        let (mut sum, mut min, mut max) = (0.0f64, f64::INFINITY, f64::NEG_INFINITY);
+        for _ in 0..100_000 {
+            let d = tpdf(&mut state);
+            assert!((-1.0..1.0).contains(&d), "offset out of range: {d}");
+            sum += d;
+            min = min.min(d);
+            max = max.max(d);
+        }
+        assert!(min < -0.9, "should reach both tails, min={min}");
+        assert!(max > 0.9, "should reach both tails, max={max}");
+        assert!((sum / 100_000.0).abs() < 0.01, "mean must be ~0");
     }
 }

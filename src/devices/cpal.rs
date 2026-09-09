@@ -7,7 +7,10 @@ use crate::{
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         resample::SampleFrom,
         traits::{Device, DeviceProvider, OutputStream},
-        util::{AtomicF64, GainRamp, Scale, read_available, write_bounded_planar},
+        util::{
+            AtomicF64, DitherLsb, GainRamp, Scale, read_available, soft_limit, tpdf,
+            write_bounded_planar,
+        },
     },
     media::pipeline::{ChannelConsumers, DEFAULT_BUFFER_FRAMES},
 };
@@ -165,7 +168,7 @@ fn create_stream_internal<T: CpalSample>(
 impl CpalDevice {
     fn create_stream<T>(&mut self, format: FormatInfo) -> Result<Box<dyn OutputStream>, OpenError>
     where
-        T: CpalSample + SampleFrom<f64>,
+        T: CpalSample + SampleFrom<f64> + DitherLsb,
     {
         let config =
             cpal_config_from_info(&format).map_err(|_| OpenError::InvalidConfigProvider)?;
@@ -196,6 +199,7 @@ impl CpalDevice {
             target_gain,
             last_user_volume: 1.0,
             replaygain: 1.0,
+            dither: 0x9E37_79B9_7F4A_7C15,
             // worst case: a full pipeline staging buffer, interleaved
             interleave_buffer: Vec::with_capacity(DEFAULT_BUFFER_FRAMES * channels as usize),
             underruns,
@@ -264,6 +268,8 @@ where
     /// shared atomic with 0.0. `play()` restores from this field.
     pub last_user_volume: f64,
     pub replaygain: f64,
+    /// xorshift state feeding per-sample TPDF dither (nonzero).
+    pub dither: u64,
     pub interleave_buffer: Vec<T>,
     pub underruns: Arc<AtomicU64>,
     /// keep track of the last log, so we don't log the same underrun multiple times
@@ -297,7 +303,7 @@ where
 
 impl<T> OutputStream for CpalStream<T>
 where
-    T: CpalSample + SampleFrom<f64>,
+    T: CpalSample + SampleFrom<f64> + DitherLsb,
 {
     fn close_stream(&mut self) -> Result<(), CloseError> {
         Ok(())
@@ -387,6 +393,7 @@ where
 
         let channel_count = staging.len();
         let rg = self.replaygain;
+        let mut dither = self.dither;
 
         self.interleave_buffer.clear();
         debug_assert!(
@@ -396,10 +403,19 @@ where
 
         for i in 0..read {
             for ch in 0..channel_count {
-                let sample_f64 = staging[ch][i] * rg;
-                self.interleave_buffer.push(T::sample_from(sample_f64));
+                // Soft limiting before quantization: gain (ReplayGain / EQ
+                // boost) curves into full scale instead of hard clipping.
+                let sample = soft_limit(staging[ch][i] * rg);
+                // TPDF dither decorrelates quantization error for shallow
+                // integer targets; floats and ≥24-bit convert untouched.
+                let sample = match T::DITHER_LSB {
+                    Some(lsb) => sample + tpdf(&mut dither) * lsb,
+                    None => sample,
+                };
+                self.interleave_buffer.push(T::sample_from(sample));
             }
         }
+        self.dither = dither;
 
         write_bounded_planar(std::slice::from_mut(&mut self.ring_buf), &[&self.interleave_buffer], self.interleave_buffer.len())
             .map_err(|_| SubmissionError::WriteTimeout)?;
