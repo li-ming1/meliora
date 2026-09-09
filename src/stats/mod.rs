@@ -12,13 +12,18 @@ use crate::ui::models::Queue;
 pub use recorder::ListenRow;
 use recorder::StatsRecorder;
 
-/// Unix seconds of local midnight on 2026-08-01, the first day listening
-/// stats are tracked. Everything before it is ignored by every query and by
-/// the heat-map window (the feature shipped 2026-08).
+/// Year listening stats started; the heat-map year pager stops here.
+pub fn epoch_year() -> i32 {
+    2026
+}
+
+/// Unix seconds of local midnight on August 1st of [`epoch_year`], the first
+/// day listening stats are tracked. Everything before it is ignored by every
+/// query and by the heat-map window (the feature shipped 2026-08).
 pub fn epoch_ts() -> i64 {
     use chrono::TimeZone;
     chrono::Local
-        .with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
+        .with_ymd_and_hms(epoch_year(), 8, 1, 0, 0, 0)
         .earliest()
         .map(|t| t.timestamp())
         .unwrap_or(0)

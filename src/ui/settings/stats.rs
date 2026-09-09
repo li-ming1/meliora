@@ -24,6 +24,8 @@ use crate::{
 const HEAT_ROWS: usize = 7;
 const HEAT_CELL_PX: f32 = 9.0;
 const HEAT_GAP_PX: f32 = 2.0;
+/// Width of the heat-map weekday label column.
+const HEAT_WD_W_PX: f32 = 24.0;
 
 const RANKS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
 const HOUR_LABELS: [&str; 4] = ["0", "6", "12", "18"];
@@ -194,9 +196,10 @@ pub struct StatsSettings {
     heat_weeks: Vec<HeatWeek>,
     /// First day of the heat-map window; day dates derive from it at render.
     heat_window_start: NaiveDate,
-    /// Month labels: (spacer px before the label, month number). Precomputed
-    /// as run-length spacers so two-digit months render at natural width
-    /// instead of being clipped to one digit by a 9 px slot.
+    /// Shown year; render clips the window's week padding (previous December /
+    /// next January) to it.
+    heat_year: i32,
+    /// Month labels: (absolute x px from the grid origin, month number).
     month_items: Vec<(f32, SharedString)>,
     heat_window_label: SharedString,
     /// Year pager: 0 = current year, 1 = last year, …
@@ -224,6 +227,7 @@ impl StatsSettings {
             hover_hour: None,
             heat_weeks: Vec::new(),
             heat_window_start: Local::now().date_naive(),
+            heat_year: Local::now().year(),
             month_items: Vec::new(),
             heat_window_label: "".into(),
             heat_year_offset: 0,
@@ -375,16 +379,13 @@ impl StatsSettings {
     fn rebuild_heat(&mut self) {
         let today = Local::now().date_naive();
         // GitHub-style natural-year window: columns are whole weeks (Mon..Sun)
-        // covering Jan 1 through Dec 31 of the selected year (the current year
-        // truncates at today). `heat_year_offset` pages back one year at a
-        // time — data before the shown year is simply not part of the grid.
+        // covering Jan 1 through Dec 31 of the selected year — the current
+        // year included; its future days just render as empty cells.
+        // `heat_year_offset` pages back one year at a time, stopping at the
+        // stats epoch year, before which there is no data at all.
         let year = today.year() - self.heat_year_offset as i32;
         let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-        let last_day = if self.heat_year_offset == 0 {
-            today
-        } else {
-            NaiveDate::from_ymd_opt(year, 12, 31).unwrap()
-        };
+        let last_day = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
         let window_start =
             year_start - ChronoDuration::days(i64::from(year_start.weekday().num_days_from_monday()));
         let window_end_sunday = last_day
@@ -392,28 +393,24 @@ impl StatsSettings {
         let cols = ((window_end_sunday - window_start).num_days() / 7 + 1).max(1);
 
         self.heat_window_label = year.to_string().into();
+        self.heat_year = year;
 
-        // Month labels as run-length spacers: the label renders at natural
-        // width and the spacer keeps it aligned to the month's first week.
-        // In a natural-year window month boundaries are 4-5 columns apart, so
-        // labels sit evenly; the 3-column guard only guards odd edges.
-        let mut month_items: Vec<(f32, SharedString)> = Vec::new();
-        let mut prev_month = 0u32;
-        let mut last_labeled_col = 0i64;
-        for col in 0..cols {
-            let monday = window_start + ChronoDuration::days(col * 7);
-            if monday.month() != prev_month {
-                prev_month = monday.month();
-                if col > 0 && col - last_labeled_col < 3 {
-                    continue;
-                }
-                month_items.push((
-                    (col - last_labeled_col) as f32 * (HEAT_CELL_PX + HEAT_GAP_PX),
-                    monday.month().to_string().into(),
-                ));
-                last_labeled_col = col;
-            }
-        }
+        // Month labels sit exactly above the column holding each month's
+        // first day. Consecutive month starts are always 4-5 columns apart
+        // (a month is >= 28 days), so absolute x positions keep every label
+        // clear of its neighbours — run-length spacers ignored the
+        // accumulated label widths and crowded each label next to the
+        // previous one.
+        self.month_items = (1..=12)
+            .map(|month| {
+                let month_start = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+                let col = (month_start - window_start).num_days() / 7;
+                (
+                    col as f32 * (HEAT_CELL_PX + HEAT_GAP_PX),
+                    month.to_string().into(),
+                )
+            })
+            .collect();
 
         // Per-week day seconds (`None` = future date). Day tooltips are
         // derived in `render_heatmap` from `heat_window_start`; colors come
@@ -431,12 +428,13 @@ impl StatsSettings {
             heat_weeks.push(HeatWeek { days });
         }
         self.heat_window_start = window_start;
-        self.month_items = month_items;
         self.heat_weeks = heat_weeks;
     }
 
     fn shift_heat(&mut self, delta: i64, cx: &mut Context<Self>) {
-        let next = (self.heat_year_offset + delta).clamp(0, 10);
+        // The pager stops at the stats epoch year: earlier years hold no data.
+        let max_offset = (i64::from(Local::now().year()) - i64::from(crate::stats::epoch_year())).max(0);
+        let next = (self.heat_year_offset + delta).clamp(0, max_offset);
         if next == self.heat_year_offset {
             return;
         }
@@ -502,20 +500,19 @@ impl StatsSettings {
         // light palette into the dark theme after a live theme switch.
         let (empty, levels) = heat_color_scale(theme);
 
-        // Spacer + natural-width label runs: two-digit months stay intact.
-        let mut month_row = div().flex().flex_row().pl(px(26.0)).h(px(12.0));
-        for (spacer, label) in &self.month_items {
-            let mut item = div().flex_shrink_0();
-            if *spacer > 0.0 {
-                item = item.w(px(*spacer));
-            }
+        // Labels are absolutely positioned above their month's first week
+        // column (flex spacers can't measure text width and drift a label per
+        // month). x offset = weekday label column + its margin.
+        let mut month_row = div().relative().h(px(12.0));
+        for (x, label) in &self.month_items {
             month_row = month_row.child(
-                item.child(
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(theme.text_secondary)
-                        .child(label.clone()),
-                ),
+                div()
+                    .absolute()
+                    .left(px(HEAT_WD_W_PX + HEAT_GAP_PX + *x))
+                    .top(px(0.0))
+                    .text_size(px(9.0))
+                    .text_color(theme.text_secondary)
+                    .child(label.clone()),
             );
         }
 
@@ -537,7 +534,7 @@ impl StatsSettings {
             .flex_shrink_0()
             .mr(px(HEAT_GAP_PX));
         for label in &weekday_labels {
-            let mut slot = div().w(px(24.0)).h(px(HEAT_CELL_PX)).flex().items_center();
+            let mut slot = div().w(px(HEAT_WD_W_PX)).h(px(HEAT_CELL_PX)).flex().items_center();
             if let Some(l) = label {
                 slot = slot.child(
                     div()
@@ -549,37 +546,46 @@ impl StatsSettings {
             wd_col = wd_col.child(slot);
         }
 
+        // The window pads to whole Mon..Sun weeks: days outside the shown
+        // year (previous December / next January) keep their grid slot for
+        // column alignment but render invisibly.
+        let year_start = NaiveDate::from_ymd_opt(self.heat_year, 1, 1).unwrap();
+        let year_end = NaiveDate::from_ymd_opt(self.heat_year, 12, 31).unwrap();
+
         // Cells are stateful (day tooltip, 150 ms rest before it pops — fast
         // mouse travel never builds one); columns are plain layout.
         let mut grid = div().flex().flex_row().gap(px(HEAT_GAP_PX));
         for (col, week) in self.heat_weeks.iter().enumerate() {
             let mut col_div = div().flex().flex_col().gap(px(HEAT_GAP_PX));
             for (row, day) in week.days.iter().enumerate() {
-                let color = match day {
-                    None => Rgba::new(0.0, 0.0, 0.0, 0.0), // future date
-                    Some(0) => empty,
-                    Some(secs) => {
-                        let ratio = if self.max_day_secs > 0 {
-                            *secs as f32 / self.max_day_secs as f32
-                        } else {
-                            1.0
-                        };
-                        levels[match ratio {
-                            r if r > 0.75 => 3,
-                            r if r > 0.5 => 2,
-                            r if r > 0.25 => 1,
-                            _ => 0,
-                        }]
-                    }
-                };
                 let date = self.heat_window_start
                     + ChronoDuration::days(col as i64 * 7 + row as i64);
                 let base = div()
                     .w(px(HEAT_CELL_PX))
                     .h(px(HEAT_CELL_PX))
                     .rounded(px(2.0))
-                    .flex_shrink_0()
-                    .bg(color);
+                    .flex_shrink_0();
+                let base = if date >= year_start && date <= year_end {
+                    let color = match day {
+                        None | Some(0) => empty, // future days share the empty cell color
+                        Some(secs) => {
+                            let ratio = if self.max_day_secs > 0 {
+                                *secs as f32 / self.max_day_secs as f32
+                            } else {
+                                1.0
+                            };
+                            levels[match ratio {
+                                r if r > 0.75 => 3,
+                                r if r > 0.5 => 2,
+                                r if r > 0.25 => 1,
+                                _ => 0,
+                            }]
+                        }
+                    };
+                    base.bg(color)
+                } else {
+                    base
+                };
                 let cell = if *day > Some(0) {
                     base.id(SharedString::from(format!("hm-{}", date.format("%Y%m%d"))))
                         .tooltip_show_delay(Duration::from_millis(150))
