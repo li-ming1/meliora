@@ -870,7 +870,10 @@ impl StatsSettings {
         // invisible on this page's background in light mode.
         let row_hover = lerp_rgba(theme.background_secondary, theme.text, 0.045);
         for (i, item) in self.top_items.iter().enumerate() {
+            // Stateful rows: hover styles only repaint on elements carrying an
+            // id (element state drives the enter/leave notify).
             let mut row = div()
+                .id(SharedString::from(format!("top-row-{}", i)))
                 .flex()
                 .flex_row()
                 .items_center()

@@ -2197,7 +2197,7 @@
   },
   "STATS_EMPTY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1010",
+    "definedIn": "src/ui/settings/stats.rs:1013",
     "plural": false,
     "description": null
   },
@@ -2293,7 +2293,7 @@
   },
   "STATS_TOP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:955",
+    "definedIn": "src/ui/settings/stats.rs:958",
     "plural": false,
     "description": null
   },
