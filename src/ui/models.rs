@@ -34,7 +34,7 @@ use crate::{
     },
     ui::{
         app::Pool,
-        availability::{compute_available_albums, compute_available_artists},
+        availability::compute_availability,
         library::{NavigationHistory, ViewSwitchMessage},
     },
 };
@@ -336,11 +336,11 @@ pub fn build_models(
     })
     .detach();
 
-    // Album availability snapshot: loaded at startup and refreshed whenever
-    // a scan completes. A scan is also the only writer of album metadata, so
-    // the row-construction album cache is dropped at the same point.
-    reload_available_albums(cx);
-    reload_available_artists(cx);
+    // Album/artist availability snapshots: loaded at startup and refreshed
+    // whenever a scan completes. A scan is also the only writer of album
+    // metadata, so the row-construction album cache is dropped at the same
+    // point.
+    reload_availability(cx);
     let scan_state = cx.global::<Models>().scan_state.clone();
     cx.observe(&scan_state, |scan_event, cx| {
         if matches!(
@@ -351,8 +351,7 @@ pub fn build_models(
         ) {
             let album_cache = cx.global::<Models>().album_cache.clone();
             album_cache.update(cx, |cache, _| cache.clear());
-            reload_available_albums(cx);
-            reload_available_artists(cx);
+            reload_availability(cx);
         }
     })
     .detach();
@@ -620,48 +619,38 @@ pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     cached.and_then(|set| set.contains(&track_id).then_some(track_id))
 }
 
-/// (Re)loads the album-availability set on the async runtime: one query for
-/// all `(album, location)` pairs, then one `exists()` stat per distinct path
-/// on a blocking thread. Startup and scan completion only.
-pub(crate) fn reload_available_albums(cx: &mut App) {
+/// (Re)loads the album- and artist-availability snapshots on the async runtime:
+/// two queries for the `(id, location)` pairs, then a single blocking pass that
+/// stats each distinct track path once for both sets. Startup and scan
+/// completion only.
+pub(crate) fn reload_availability(cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
-    let available = cx.global::<Models>().available_albums.clone();
+    let albums = cx.global::<Models>().available_albums.clone();
+    let artists = cx.global::<Models>().available_artists.clone();
     cx.spawn(async move |cx| {
-        let rows = crate::RUNTIME
-            .spawn(async move { db::list_album_availability(&pool).await })
+        let album_rows = crate::RUNTIME
+            .spawn({
+                let pool = pool.clone();
+                async move { db::list_album_availability(&pool).await }
+            })
             .await
             .map(|result| result.unwrap_or_default())
             .unwrap_or(vec![]);
-        let set = crate::RUNTIME
-            .spawn_blocking(move || compute_available_albums(rows))
-            .await
-            .unwrap_or_default();
-        available.update(cx, |slot, cx| {
-            *slot = Some(Arc::new(set));
-            cx.notify();
-        });
-    })
-    .detach();
-}
-
-/// (Re)loads the artist-availability set on the async runtime: one query for
-/// all `(artist, location)` pairs, then one `exists()` stat per distinct path
-/// on a blocking thread. Startup and scan completion only.
-pub(crate) fn reload_available_artists(cx: &mut App) {
-    let pool = cx.global::<Pool>().0.clone();
-    let available = cx.global::<Models>().available_artists.clone();
-    cx.spawn(async move |cx| {
-        let rows = crate::RUNTIME
+        let artist_rows = crate::RUNTIME
             .spawn(async move { db::list_artist_availability(&pool).await })
             .await
             .map(|result| result.unwrap_or_default())
             .unwrap_or(vec![]);
-        let set = crate::RUNTIME
-            .spawn_blocking(move || compute_available_artists(rows))
+        let (album_set, artist_set) = crate::RUNTIME
+            .spawn_blocking(move || compute_availability(album_rows, artist_rows))
             .await
             .unwrap_or_default();
-        available.update(cx, |slot, cx| {
-            *slot = Some(Arc::new(set));
+        albums.update(cx, |slot, cx| {
+            *slot = Some(Arc::new(album_set));
+            cx.notify();
+        });
+        artists.update(cx, |slot, cx| {
+            *slot = Some(Arc::new(artist_set));
             cx.notify();
         });
     })

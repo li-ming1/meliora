@@ -30,70 +30,70 @@ pub fn is_track_available(track: &Track) -> bool {
     is_track_path_available(&track.location)
 }
 
+/// Path -> "does it still exist" memo. Every availability set is grouped from
+/// the same track paths, so sharing one cache across sets means one `exists()`
+/// syscall per distinct path instead of one per set.
+#[derive(Default)]
+struct PathExistence {
+    known: FxHashMap<String, bool>,
+}
+
+impl PathExistence {
+    fn exists(&mut self, location: &str) -> bool {
+        if let Some(&exists) = self.known.get(location) {
+            return exists;
+        }
+        let exists = Path::new(location).exists();
+        self.known.insert(location.to_owned(), exists);
+        exists
+    }
+}
+
+/// Ids from `(id, location)` rows that still have at least one file on disk.
+/// `any` stops at the first hit, so an id whose first track is present costs one
+/// lookup and no further stats.
+fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashSet<i64> {
+    let mut locations_by_id: FxHashMap<i64, Vec<String>> = FxHashMap::default();
+    for (id, location) in rows {
+        locations_by_id.entry(id).or_default().push(location);
+    }
+
+    let mut available: FxHashSet<i64> = FxHashSet::default();
+    for (id, locations) in locations_by_id {
+        if locations.iter().any(|location| paths.exists(location)) {
+            available.insert(id);
+        }
+    }
+
+    available
+}
+
 /// Ids of albums that still have at least one track on disk, from a
 /// `(album_id, track location)` row set. Replaces the per-album
 /// `list_tracks_in_album` N+1 with one query plus one `exists()` stat per
 /// distinct path. Pure so the search index loader can run it on a blocking
 /// thread; `Path::exists` is a syscall and must stay off the UI thread.
 pub fn compute_available_albums(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
-    let mut by_album: FxHashMap<i64, Vec<String>> = FxHashMap::default();
-    for (album_id, location) in rows {
-        by_album.entry(album_id).or_default().push(location);
-    }
-
-    // One stat per distinct path, shared across albums (multi-artist
-    // compilations put the same file under several albums).
-    let mut visited: FxHashSet<String> = FxHashSet::default();
-    let mut available: FxHashSet<i64> = FxHashSet::default();
-    for (album_id, locations) in by_album {
-        for location in locations {
-            if !visited.insert(location.clone()) {
-                continue;
-            }
-            if Path::new(&location).exists() {
-                available.insert(album_id);
-                break;
-            }
-        }
-    }
-
-    available
+    available_ids(rows, &mut PathExistence::default())
 }
 
-/// Ids of artists that still have at least one credited track on disk, from an
-/// `(artist id, track location)` row set. Replaces the per-artist
-/// `get_all_tracks_by_artist` N+1 (a DB round trip per rendered artist row)
-/// with one query plus one `exists()` stat per distinct path. Pure so the
-/// loader can run it on a blocking thread; `Path::exists` is a syscall and
-/// must stay off the UI thread.
-pub fn compute_available_artists(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
-    let mut by_artist: FxHashMap<i64, Vec<String>> = FxHashMap::default();
-    for (artist_id, location) in rows {
-        by_artist.entry(artist_id).or_default().push(location);
-    }
-
-    // One stat per distinct path, shared across artists (a track with several
-    // credited artists puts the same file under each of them).
-    let mut known: FxHashMap<String, bool> = FxHashMap::default();
-    let mut available: FxHashSet<i64> = FxHashSet::default();
-    for (artist_id, locations) in by_artist {
-        for location in locations {
-            let exists = *known
-                .entry(location.clone())
-                .or_insert_with(|| Path::new(&location).exists());
-            if exists {
-                available.insert(artist_id);
-                break;
-            }
-        }
-    }
-
-    available
+/// Album and artist availability from the same rows in one pass, sharing a
+/// single stat cache. Album rows and artist rows describe the same track paths,
+/// so computing the two sets separately statted every path twice — and on a
+/// large library that pass is the expensive part of startup.
+pub fn compute_availability(
+    album_rows: Vec<(i64, String)>,
+    artist_rows: Vec<(i64, String)>,
+) -> (FxHashSet<i64>, FxHashSet<i64>) {
+    let mut paths = PathExistence::default();
+    let albums = available_ids(album_rows, &mut paths);
+    let artists = available_ids(artist_rows, &mut paths);
+    (albums, artists)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_available_albums, compute_available_artists};
+    use super::{compute_available_albums, compute_availability};
     use crate::test_support::TestDir;
 
     /// `(album id, location)` rows: an album counts as available when at least
@@ -138,7 +138,7 @@ mod tests {
             (12_i64, present),
         ];
 
-        let available = compute_available_artists(rows);
+        let (_, available) = compute_availability(Vec::new(), rows);
 
         assert!(available.contains(&10), "artist with a file that exists");
         assert!(!available.contains(&11), "artist with only missing files");
@@ -183,7 +183,7 @@ mod tests {
             .unwrap();
 
         let rows = db::list_artist_availability(&pool).await.unwrap();
-        let available = compute_available_artists(rows);
+        let (_, available) = compute_availability(Vec::new(), rows);
 
         assert!(
             available.contains(&artist_id),
