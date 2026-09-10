@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use cntp_i18n::{Date, I18N_MANAGER, StringModifier, tr};
+use futures::future::BoxFuture;
 use gpui::{App, SharedString};
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
@@ -11,9 +12,9 @@ use super::{
     DATE_PRECISION_YEAR_MONTH, DBString, Track,
 };
 use crate::{
-    library::db::{AlbumSortMethod, ArtistSortMethod, LibraryAccess, TrackSortMethod},
+    library::db::{self, AlbumSortMethod, ArtistSortMethod, LibraryAccess, TrackSortMethod},
     ui::{
-        availability::{artist_has_available_tracks, is_track_available},
+        availability::is_track_available,
         components::{
             drag_drop::{AlbumDragData, TrackDragData},
             managed_image::ManagedImageKey,
@@ -110,9 +111,9 @@ impl TableData<AlbumColumn> for Album {
     }
 
     fn get_rows(
-        cx: &mut gpui::App,
+        pool: sqlx::SqlitePool,
         sort: Option<TableSort<AlbumColumn>>,
-    ) -> anyhow::Result<Vec<Self::Identifier>> {
+    ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>> {
         let sort_method = match sort {
             Some(TableSort {
                 column: AlbumColumn::Title,
@@ -157,7 +158,7 @@ impl TableData<AlbumColumn> for Album {
             _ => AlbumSortMethod::ArtistAsc,
         };
 
-        Ok(cx.list_albums(sort_method)?)
+        Box::pin(async move { Ok(db::list_albums(&pool, sort_method).await?) })
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
@@ -225,6 +226,7 @@ impl TableData<AlbumColumn> for Album {
         cx: &mut App,
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
+        _is_available: bool,
     ) -> Option<(gpui::AnyElement, Option<gpui::AnyElement>)> {
         Some(album_menu_for_table(self, context, window, cx))
     }
@@ -331,9 +333,9 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn get_rows(
-        cx: &mut gpui::App,
+        pool: sqlx::SqlitePool,
         sort: Option<TableSort<TrackColumn>>,
-    ) -> anyhow::Result<Vec<Self::Identifier>> {
+    ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>> {
         let sort_method = match sort {
             Some(TableSort {
                 column: TrackColumn::Title,
@@ -378,7 +380,7 @@ impl TableData<TrackColumn> for Track {
             _ => TrackSortMethod::ArtistAsc,
         };
 
-        Ok(cx.list_tracks(sort_method)?)
+        Box::pin(async move { Ok(db::list_tracks(&pool, sort_method).await?) })
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
@@ -493,10 +495,14 @@ impl TableData<TrackColumn> for Track {
         cx: &mut App,
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
+        is_available: bool,
     ) -> Option<(gpui::AnyElement, Option<gpui::AnyElement>)> {
+        // `is_available` is resolved once at row construction: this runs per
+        // visible row per frame, so re-statting the file here would syscall on
+        // every repaint (and could disagree with the row's own dimming).
         Some(track_menu_for_table(
             self,
-            is_track_available(self),
+            is_available,
             context,
             window,
             cx,
@@ -551,9 +557,9 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
     }
 
     fn get_rows(
-        cx: &mut gpui::App,
+        pool: sqlx::SqlitePool,
         sort: Option<TableSort<ArtistColumn>>,
-    ) -> anyhow::Result<Vec<Self::Identifier>> {
+    ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>> {
         let sort_method = match sort {
             Some(TableSort {
                 column: ArtistColumn::Name,
@@ -582,7 +588,7 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
             _ => ArtistSortMethod::NameAsc,
         };
 
-        Ok(cx.list_artists(sort_method)?)
+        Box::pin(async move { Ok(db::list_artists(&pool, sort_method).await?) })
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
@@ -622,7 +628,14 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
     }
 
     fn is_available(&self, cx: &mut App) -> bool {
-        artist_has_available_tracks(cx, self.id)
+        // cached availability snapshot (reloaded at startup and on scan
+        // completion): the per-row `get_all_tracks_by_artist` query plus a
+        // stat per track stalled row construction on every scroll
+        cx.global::<Models>()
+            .available_artists
+            .read(cx)
+            .as_ref()
+            .is_some_and(|set| set.contains(&self.id))
     }
 
     fn default_columns() -> IndexMap<ArtistColumn, f32, FxBuildHasher> {

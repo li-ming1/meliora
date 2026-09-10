@@ -74,9 +74,13 @@ where
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let row_data = self.row.clone();
         let is_available = self.is_available;
-        let context_menu =
-            self.row
-                .get_context_menu(window, cx, &self.context_menu_context, self.grid_context);
+        let context_menu = self.row.get_context_menu(
+            window,
+            cx,
+            &self.context_menu_context,
+            self.grid_context,
+            is_available,
+        );
         let theme = cx.global::<Theme>();
 
         let drag_data = if is_available {

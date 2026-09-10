@@ -1,5 +1,6 @@
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 
+use futures::future::BoxFuture;
 use gpui::{AnyElement, App, ElementId, SharedString, Window};
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
@@ -35,7 +36,7 @@ pub const COLUMN_MIN_WIDTH: f32 = 50.0;
 pub const COLUMN_RESIZE_HANDLE_WIDTH: f32 = 6.0;
 pub const TABLE_HEADER_GROUP: &str = "table-header-group";
 
-pub trait Column: Clone + Copy + Debug + Hash + PartialEq + Eq {
+pub trait Column: Clone + Copy + Debug + Hash + PartialEq + Eq + Send {
     /// Retrieves the friendly name text of the column.
     fn get_column_name(&self) -> SharedString;
 
@@ -81,7 +82,7 @@ pub trait TableData<C>: Sized
 where
     C: Column,
 {
-    type Identifier: Clone + Debug;
+    type Identifier: Clone + Debug + Send + 'static;
     type ContextMenuContext: Clone;
 
     /// Retrieves the name of the table.
@@ -90,7 +91,16 @@ where
     /// Retrieves the rows of the table. The rows are returned as a vector of identifiers, which
     /// can be used to retrieve the full row data. The sort parameter can be used to specify the
     /// sorting order of the rows.
-    fn get_rows(cx: &mut App, sort: Option<TableSort<C>>) -> anyhow::Result<Vec<Self::Identifier>>;
+    ///
+    /// This runs off the UI thread: implementations must go through the async
+    /// `db` helpers (which the caller drives on the Tokio runtime) rather than
+    /// the synchronous `LibraryAccess` wrappers — their `block_on` parked the
+    /// UI thread on a full-library query every time a view opened, the sort
+    /// changed, or a scan completed (doctrine §2.3 / §14).
+    fn get_rows(
+        pool: sqlx::SqlitePool,
+        sort: Option<TableSort<C>>,
+    ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>>;
 
     /// Retrieves a specific row of the table. The row is returned as an Arc to the table data,
     /// which can be used to retrieve the row data as SharedStrings. The id parameter is used to
@@ -141,12 +151,18 @@ where
     /// The first element is the menu content (rendered inside the context popup).
     /// The second element is an optional overlay (e.g. a modal) rendered outside
     /// the context popup so it is not nested inside `deferred`.
+    ///
+    /// `is_available` is the availability the row view already resolved once at
+    /// construction. `render` calls this per visible row per frame, so an impl
+    /// must use this value instead of re-running `is_available` (which would
+    /// stat the filesystem or hit the database on every repaint).
     fn get_context_menu(
         &self,
         _window: &mut Window,
         _cx: &mut App,
         _context: &Self::ContextMenuContext,
         _grid_context: GridContext,
+        _is_available: bool,
     ) -> Option<(AnyElement, Option<AnyElement>)> {
         None
     }

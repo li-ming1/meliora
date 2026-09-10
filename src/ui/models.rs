@@ -32,7 +32,11 @@ use crate::{
             TableSettings,
         },
     },
-    ui::{app::Pool, availability::compute_available_albums, library::{NavigationHistory, ViewSwitchMessage}},
+    ui::{
+        app::Pool,
+        availability::{compute_available_albums, compute_available_artists},
+        library::{NavigationHistory, ViewSwitchMessage},
+    },
 };
 
 // yes this looks a little silly
@@ -71,6 +75,11 @@ pub struct Models {
     /// tiles and album context menus test availability without a per-row
     /// `block_on` query plus a stat per track.
     pub available_albums: Entity<Option<Arc<FxHashSet<i64>>>>,
+    /// Cached set of artist ids that still have at least one credited track on
+    /// disk, reloaded at startup and on scan completion. Lets artist rows test
+    /// availability without a per-row `get_all_tracks_by_artist` query plus a
+    /// stat per track.
+    pub available_artists: Entity<Option<Arc<FxHashSet<i64>>>>,
     /// Album metadata for row construction: rebuilding a track row needed up
     /// to three `get_album_by_id` block_on queries (vinyl numbering, album
     /// title, artist override). A scan is the only writer of album metadata,
@@ -206,6 +215,7 @@ pub fn build_models(
 
     let liked_ids: Entity<Option<Arc<HashSet<i64>>>> = cx.new(|_| None);
     let available_albums: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
+    let available_artists: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
     let album_cache: Entity<FxHashMap<i64, Arc<Album>>> = cx.new(|_| FxHashMap::default());
 
     let startup_view = resolve_startup_view(
@@ -289,6 +299,7 @@ pub fn build_models(
         albumart_original,
         liked_ids,
         available_albums,
+        available_artists,
         album_cache,
         queue,
         scan_state,
@@ -329,6 +340,7 @@ pub fn build_models(
     // a scan completes. A scan is also the only writer of album metadata, so
     // the row-construction album cache is dropped at the same point.
     reload_available_albums(cx);
+    reload_available_artists(cx);
     let scan_state = cx.global::<Models>().scan_state.clone();
     cx.observe(&scan_state, |scan_event, cx| {
         if matches!(
@@ -340,6 +352,7 @@ pub fn build_models(
             let album_cache = cx.global::<Models>().album_cache.clone();
             album_cache.update(cx, |cache, _| cache.clear());
             reload_available_albums(cx);
+            reload_available_artists(cx);
         }
     })
     .detach();
@@ -621,6 +634,30 @@ pub(crate) fn reload_available_albums(cx: &mut App) {
             .unwrap_or(vec![]);
         let set = crate::RUNTIME
             .spawn_blocking(move || compute_available_albums(rows))
+            .await
+            .unwrap_or_default();
+        available.update(cx, |slot, cx| {
+            *slot = Some(Arc::new(set));
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// (Re)loads the artist-availability set on the async runtime: one query for
+/// all `(artist, location)` pairs, then one `exists()` stat per distinct path
+/// on a blocking thread. Startup and scan completion only.
+pub(crate) fn reload_available_artists(cx: &mut App) {
+    let pool = cx.global::<Pool>().0.clone();
+    let available = cx.global::<Models>().available_artists.clone();
+    cx.spawn(async move |cx| {
+        let rows = crate::RUNTIME
+            .spawn(async move { db::list_artist_availability(&pool).await })
+            .await
+            .map(|result| result.unwrap_or_default())
+            .unwrap_or(vec![]);
+        let set = crate::RUNTIME
+            .spawn_blocking(move || compute_available_artists(rows))
             .await
             .unwrap_or_default();
         available.update(cx, |slot, cx| {

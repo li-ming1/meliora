@@ -954,18 +954,32 @@ pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table
     })
     .detach();
 
-    // Rows built before the availability snapshot lands (startup) report
-    // "unavailable"; refresh exactly once when it first arrives. Later
-    // landings coincide with the scan-completion refresh above.
-    let availability = cx.global::<crate::ui::models::Models>().available_albums.clone();
-    let mut announced = false;
-    cx.observe(&availability, move |_, set, cx| {
-        if !announced && set.read(cx).is_some() {
-            announced = true;
-            table_for_availability.update(cx, |_, cx| {
+    // Rows built before the availability snapshots land (startup) report
+    // "unavailable"; refresh exactly once, when the last of them arrives.
+    // Later landings coincide with the scan-completion refresh above.
+    let album_snapshot = cx.global::<crate::ui::models::Models>().available_albums.clone();
+    let artist_snapshot = cx
+        .global::<crate::ui::models::Models>()
+        .available_artists
+        .clone();
+    let announced = std::rc::Rc::new(std::cell::Cell::new(false));
+    for slot in [album_snapshot.clone(), artist_snapshot.clone()] {
+        let announced = announced.clone();
+        let album_snapshot = album_snapshot.clone();
+        let artist_snapshot = artist_snapshot.clone();
+        let table = table_for_availability.clone();
+        cx.observe(&slot, move |_, _, cx| {
+            if announced.get()
+                || album_snapshot.read(cx).is_none()
+                || artist_snapshot.read(cx).is_none()
+            {
+                return;
+            }
+            announced.set(true);
+            table.update(cx, |_, cx| {
                 cx.emit(crate::ui::components::table::TableEvent::NewRows)
             });
-        }
-    })
-    .detach();
+        })
+        .detach();
+    }
 }

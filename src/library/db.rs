@@ -480,6 +480,24 @@ pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64
     Ok(rows)
 }
 
+/// Every (artist id, track location) pair, used to compute artist availability
+/// (any credited track still on disk) in a single query instead of one
+/// full `get_all_tracks_by_artist` fetch per artist row.
+///
+/// The query must mirror `find_all_tracks_by_artist`: an artist is credited
+/// through BOTH `album_artist` (album-level) and `track_artist` (track-level).
+/// Querying only one of the two greys out every artist credited the other way,
+/// which is how most libraries credit theirs.
+pub async fn list_artist_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
+    let query = include_str!("../../queries/library/find_artist_availability.sql");
+
+    let rows = sqlx::query_as::<_, (i64, String)>(query)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows)
+}
+
 pub async fn add_playlist_item(
     pool: &SqlitePool,
     playlist_id: i64,
@@ -845,14 +863,6 @@ pub async fn lyrics_for_track(pool: &SqlitePool, track_id: i64) -> sqlx::Result<
 }
 
 pub trait LibraryAccess {
-    fn list_albums(&self, sort_method: AlbumSortMethod) -> sqlx::Result<Vec<(u32, String)>>;
-    // The tuple doubles as `TrackTable::Identifier` (id, title, album_id,
-    // artist_names), so a struct here would ripple through the table API.
-    #[allow(clippy::type_complexity)]
-    fn list_tracks(
-        &self,
-        sort_method: TrackSortMethod,
-    ) -> sqlx::Result<Vec<(i64, String, Option<i64>, String)>>;
     fn list_tracks_in_album(&self, album_id: i64) -> sqlx::Result<Arc<Vec<Track>>>;
     fn get_album_by_id(&self, album_id: i64) -> sqlx::Result<Arc<Album>>;
     fn get_artist_by_id(&self, artist_id: i64) -> sqlx::Result<Arc<Artist>>;
@@ -878,7 +888,6 @@ pub trait LibraryAccess {
         playlist_id: i64,
         track_ids: &[i64],
     ) -> sqlx::Result<bool>;
-    fn list_artists(&self, sort_method: ArtistSortMethod) -> sqlx::Result<Vec<i64>>;
     fn list_albums_by_artist(&self, artist_id: i64) -> sqlx::Result<Vec<(u32, String)>>;
     fn get_artist_with_counts(&self, artist_id: i64) -> sqlx::Result<Arc<ArtistWithCounts>>;
     fn get_liked_tracks_by_artist(
@@ -899,19 +908,6 @@ pub trait LibraryAccess {
 }
 
 impl LibraryAccess for App {
-    fn list_albums(&self, sort_method: AlbumSortMethod) -> sqlx::Result<Vec<(u32, String)>> {
-        let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(list_albums(&pool.0, sort_method))
-    }
-
-    fn list_tracks(
-        &self,
-        sort_method: TrackSortMethod,
-    ) -> sqlx::Result<Vec<(i64, String, Option<i64>, String)>> {
-        let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(list_tracks(&pool.0, sort_method))
-    }
-
     fn list_tracks_in_album(&self, album_id: i64) -> sqlx::Result<Arc<Vec<Track>>> {
         let pool: &Pool = self.global();
         crate::RUNTIME.block_on(list_tracks_in_album(&pool.0, album_id))
@@ -1011,11 +1007,6 @@ impl LibraryAccess for App {
             playlist_id,
             track_ids,
         ))
-    }
-
-    fn list_artists(&self, sort_method: ArtistSortMethod) -> sqlx::Result<Vec<i64>> {
-        let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(list_artists(&pool.0, sort_method))
     }
 
     fn list_albums_by_artist(&self, artist_id: i64) -> sqlx::Result<Vec<(u32, String)>> {

@@ -13,6 +13,7 @@ use crate::{
         storage::{TableSettings, TableViewModeSetting},
     },
     ui::{
+        app::Pool,
         caching::meliora_cache,
         components::{
             context::context,
@@ -74,6 +75,9 @@ where
     grid_scroll_handle: UniformListScrollHandle,
 
     items: Option<Arc<Vec<T::Identifier>>>,
+    /// Bumped on every reload so a slow load that finishes after a newer one
+    /// cannot overwrite the newer rows.
+    rows_generation: u64,
     sort_method: Entity<Option<TableSort<C>>>,
     on_select: Option<OnSelectHandler<T, C>>,
     list_vertical_scroll_handle: UniformListScrollHandle,
@@ -96,6 +100,67 @@ where
     T: TableData<C> + 'static,
     C: Column + 'static,
 {
+    /// Reloads the row identifiers on a background task, so opening a view,
+    /// changing the sort or completing a scan never runs the (full-library)
+    /// query on the UI thread. The table keeps showing its previous rows until
+    /// the new ones land, then rebuilds the row views. A generation guard drops
+    /// a result a newer reload has already superseded, and the load time is
+    /// logged so the cost stays measurable.
+    fn reload_rows(&mut self, cx: &mut Context<Self>) {
+        let pool = cx.global::<Pool>().0.clone();
+        let sort = *self.sort_method.read(cx);
+        self.rows_generation = self.rows_generation.wrapping_add(1);
+        let generation = self.rows_generation;
+
+        cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            let rows = crate::RUNTIME
+                .spawn(async move { T::get_rows(pool, sort).await })
+                .await;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            let _ = this.update(cx, |this, cx| {
+                // A newer reload landed first: this result is stale.
+                if this.rows_generation != generation {
+                    return;
+                }
+
+                match rows {
+                    Ok(Ok(items)) => {
+                        tracing::info!(
+                            table = %T::get_table_name(),
+                            rows = items.len(),
+                            elapsed_ms,
+                            "table rows loaded"
+                        );
+                        this.items = Some(Arc::new(items));
+                        this.views = cx.new(|_| FxHashMap::default());
+                        this.render_counter = cx.new(|_| 0);
+                        this.grid_views = cx.new(|_| FxHashMap::default());
+                        this.grid_render_counter = cx.new(|_| 0);
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            table = %T::get_table_name(),
+                            error = %err,
+                            "table rows query failed"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            table = %T::get_table_name(),
+                            error = %err,
+                            "table rows task failed"
+                        );
+                    }
+                }
+
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn new(
         cx: &mut App,
         on_select: Option<OnSelectHandler<T, C>>,
@@ -146,19 +211,8 @@ where
                     });
             }
 
-            let items = T::get_rows(cx, None).ok().map(Arc::new);
-
-            cx.observe(&sort_method, |this: &mut Table<T, C>, sort, cx| {
-                let sort_method = *sort.read(cx);
-                let items = T::get_rows(cx, sort_method).ok().map(Arc::new);
-
-                this.views = cx.new(|_| FxHashMap::default());
-                this.render_counter = cx.new(|_| 0);
-                this.grid_views = cx.new(|_| FxHashMap::default());
-                this.grid_render_counter = cx.new(|_| 0);
-                this.items = items;
-
-                cx.notify();
+            cx.observe(&sort_method, |this: &mut Table<T, C>, _, cx| {
+                this.reload_rows(cx);
             })
             .detach();
 
@@ -190,22 +244,11 @@ where
             .detach();
 
             cx.subscribe(&cx.entity(), |this, _, event, cx| match event {
-                TableEvent::NewRows => {
-                    let sort_method = *this.sort_method.read(cx);
-                    let items = T::get_rows(cx, sort_method).ok().map(Arc::new);
-
-                    this.views = cx.new(|_| FxHashMap::default());
-                    this.render_counter = cx.new(|_| 0);
-                    this.grid_views = cx.new(|_| FxHashMap::default());
-                    this.grid_render_counter = cx.new(|_| 0);
-                    this.items = items;
-
-                    cx.notify();
-                }
+                TableEvent::NewRows => this.reload_rows(cx),
             })
             .detach();
 
-            Self {
+            let mut this = Self {
                 context_menu_context,
                 default_columns,
                 columns,
@@ -216,12 +259,16 @@ where
                 grid_render_counter,
                 view_mode,
                 grid_scroll_handle,
-                items,
+                items: None,
+                rows_generation: 0,
                 sort_method,
                 on_select,
                 list_vertical_scroll_handle,
                 list_horizontal_scroll_handle,
-            }
+            };
+
+            this.reload_rows(cx);
+            this
         })
     }
 
