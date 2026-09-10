@@ -6,6 +6,8 @@ mod interface;
 mod kugou;
 #[cfg(feature = "netease")]
 mod netease;
+#[cfg(any(feature = "kugou", feature = "netease"))]
+mod online_common;
 #[cfg(feature = "kugou")]
 use crate::ui::components::icons::KUGOU;
 #[cfg(feature = "netease")]

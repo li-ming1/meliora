@@ -181,7 +181,6 @@
   "KUGOU_QR_LOADING": "Generating QR code...",
   "KUGOU_QR_REGENERATE": "New QR Code",
   "KUGOU_QR_SCANNED": "Scanned. Confirm on your phone...",
-  "KUGOU_QR_TASK_FAILED": "Login request failed: {{err}}",
   "KUGOU_QR_TITLE": "KuGou Login",
   "KUGOU_QR_WAITING": "Waiting for scan...",
   "KUGOU_RANKS": "Rankings",

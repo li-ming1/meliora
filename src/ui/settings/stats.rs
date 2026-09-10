@@ -103,12 +103,19 @@ struct TopItem {
     pct: f32,
 }
 
-/// One heat-map week column: per-day seconds (`None` = future date). Colors
-/// are derived per frame from the live theme so theme switches apply instantly
-/// (caching them made light cells leak into the dark theme after a switch);
-/// the week tooltip lives in `week_tooltips`.
+/// One heat-map day: listening seconds plus the precomputed element id and
+/// tooltip for active days, so render never formats. Colors stay per-frame
+/// from the live theme (caching them made light cells leak into the dark
+/// theme after a switch).
+struct HeatDay {
+    secs: i64,
+    /// (element id, tooltip) once the day has listening time.
+    active: Option<(SharedString, SharedString)>,
+}
+
+/// One heat-map week column; `secs == 0` renders as an empty cell.
 struct HeatWeek {
-    days: [Option<i64>; HEAT_ROWS],
+    days: [HeatDay; HEAT_ROWS],
 }
 
 fn fmt_duration(secs: i64) -> String {
@@ -438,18 +445,30 @@ impl StatsSettings {
             })
             .collect();
 
-        // Per-week day seconds (`None` = future date). Day tooltips are
-        // derived in `render_heatmap` from `heat_window_start`; colors come
-        // from the live theme.
+        // Per-week day cells with the active day's id + tooltip precomputed
+        // when the data arrives (render never formats); colors come from the
+        // live theme.
         let mut heat_weeks: Vec<HeatWeek> = Vec::with_capacity(cols as usize);
         for col in 0..cols {
-            let mut days = [None; HEAT_ROWS];
+            let mut days: [HeatDay; HEAT_ROWS] =
+                std::array::from_fn(|_| HeatDay { secs: 0, active: None });
             for row in 0..HEAT_ROWS as i64 {
                 let date = window_start + ChronoDuration::days(col * 7 + row);
                 if date > today {
                     continue;
                 }
-                days[row as usize] = Some(self.daily.get(&date).copied().unwrap_or(0));
+                let secs = self.daily.get(&date).copied().unwrap_or(0);
+                let active = (secs > 0).then(|| {
+                    (
+                        SharedString::from(format!("hm-{}", date.format("%Y%m%d"))),
+                        SharedString::from(format!(
+                            "{} · {}",
+                            fmt_duration(secs),
+                            date.format("%m-%d")
+                        )),
+                    )
+                });
+                days[row as usize] = HeatDay { secs, active };
             }
             heat_weeks.push(HeatWeek { days });
         }
@@ -592,34 +611,31 @@ impl StatsSettings {
                     .rounded(px(2.0))
                     .flex_shrink_0();
                 let base = if date >= year_start && date <= year_end {
-                    let color = match day {
-                        None | Some(0) => empty, // future days share the empty cell color
-                        Some(secs) => {
-                            let ratio = if self.max_day_secs > 0 {
-                                *secs as f32 / self.max_day_secs as f32
-                            } else {
-                                1.0
-                            };
-                            levels[match ratio {
-                                r if r > 0.75 => 3,
-                                r if r > 0.5 => 2,
-                                r if r > 0.25 => 1,
-                                _ => 0,
-                            }]
-                        }
+                    // future days share the empty cell color
+                    let color = if day.secs == 0 {
+                        empty
+                    } else {
+                        let ratio = if self.max_day_secs > 0 {
+                            day.secs as f32 / self.max_day_secs as f32
+                        } else {
+                            1.0
+                        };
+                        levels[match ratio {
+                            r if r > 0.75 => 3,
+                            r if r > 0.5 => 2,
+                            r if r > 0.25 => 1,
+                            _ => 0,
+                        }]
                     };
                     base.bg(color)
                 } else {
                     base
                 };
-                let cell = if *day > Some(0) {
-                    base.id(SharedString::from(format!("hm-{}", date.format("%Y%m%d"))))
+                // The active day's id + tooltip were precomputed on data arrival.
+                let cell = if let Some((id, tooltip)) = &day.active {
+                    base.id(id.clone())
                         .tooltip_show_delay(Duration::from_millis(150))
-                        .tooltip(build_tooltip(SharedString::from(format!(
-                            "{} · {}",
-                            fmt_duration(day.unwrap_or(0)),
-                            date.format("%m-%d")
-                        ))))
+                        .tooltip(build_tooltip(tooltip.clone()))
                         .into_any_element()
                 } else {
                     base.into_any_element()

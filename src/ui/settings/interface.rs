@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock};
 
 use cntp_i18n::tr;
 use gpui::{
@@ -34,53 +34,59 @@ pub struct LanguageOption {
     pub display_name: SharedString,
 }
 
-fn get_available_languages() -> Vec<LanguageOption> {
-    vec![
-        LanguageOption {
-            code: "",
-            display_name: tr!("LANGUAGE_SYSTEM_DEFAULT", "System Default").into(),
-        },
-        LanguageOption {
-            code: "cs",
-            display_name: "Čeština".into(),
-        },
-        LanguageOption {
-            code: "de",
-            display_name: "Deutsch".into(),
-        },
-        LanguageOption {
-            code: "el",
-            display_name: "Ελληνικά".into(),
-        },
-        LanguageOption {
-            code: "es",
-            display_name: "Español".into(),
-        },
-        LanguageOption {
-            code: "en",
-            display_name: "English".into(),
-        },
-        LanguageOption {
-            code: "ja",
-            display_name: "日本語".into(),
-        },
-        LanguageOption {
-            code: "zh-CN",
-            display_name: "简体中文".into(),
-        },
-        LanguageOption {
-            code: "sk",
-            display_name: "Slovenčina".into(),
-        },
-        LanguageOption {
-            code: "fi",
-            display_name: "Suomi".into(),
-        },
-        LanguageOption {
-            code: "vi",
-            display_name: "Tiếng Việt".into(),
-        },
-    ]
+/// Static language list, built once. The system-default label resolves at
+/// first use; language changes require an app restart anyway, so caching it
+/// is safe.
+fn available_languages() -> &'static [LanguageOption] {
+    static LANGUAGES: OnceLock<Vec<LanguageOption>> = OnceLock::new();
+    LANGUAGES.get_or_init(|| {
+        vec![
+            LanguageOption {
+                code: "",
+                display_name: tr!("LANGUAGE_SYSTEM_DEFAULT", "System Default").into(),
+            },
+            LanguageOption {
+                code: "cs",
+                display_name: "Čeština".into(),
+            },
+            LanguageOption {
+                code: "de",
+                display_name: "Deutsch".into(),
+            },
+            LanguageOption {
+                code: "el",
+                display_name: "Ελληνικά".into(),
+            },
+            LanguageOption {
+                code: "es",
+                display_name: "Español".into(),
+            },
+            LanguageOption {
+                code: "en",
+                display_name: "English".into(),
+            },
+            LanguageOption {
+                code: "ja",
+                display_name: "日本語".into(),
+            },
+            LanguageOption {
+                code: "zh-CN",
+                display_name: "简体中文".into(),
+            },
+            LanguageOption {
+                code: "sk",
+                display_name: "Slovenčina".into(),
+            },
+            LanguageOption {
+                code: "fi",
+                display_name: "Suomi".into(),
+            },
+            LanguageOption {
+                code: "vi",
+                display_name: "Tiếng Việt".into(),
+            },
+        ]
+    })
 }
 
 pub struct InterfaceSettings {
@@ -145,8 +151,8 @@ impl Render for InterfaceSettings {
                         cx.notify();
                     });
                 });
-            for lang in get_available_languages() {
-                dd = dd.option(lang.code.to_string(), lang.display_name);
+            for lang in available_languages() {
+                dd = dd.option(lang.code.to_string(), lang.display_name.clone());
             }
             dd
         };
