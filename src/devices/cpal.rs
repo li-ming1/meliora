@@ -47,6 +47,10 @@ const DEVICE_BUFFER_TARGET: Duration = Duration::from_millis(20);
 /// staying cheap (~1 MB) — seek/pause paths rebuild the stream via `reset()`,
 /// so stale audio is never played from the slack.
 const RING_BUFFER_TARGET: Duration = Duration::from_millis(250);
+/// A producer stall at least this long is logged. The device ring is 250 ms, so
+/// a stall near that length is what starves the realtime callback; measuring it
+/// beats guessing at the cause of a bare `underran` line.
+const PRODUCER_STALL_REPORT_MS: u64 = 100;
 
 pub struct CpalProvider {
     host: Host,
@@ -205,6 +209,9 @@ impl CpalDevice {
             underruns,
             underruns_reported: 0,
             last_underrun_log: Instant::now(),
+            stream_started_at: Instant::now(),
+            idle_since: None,
+            logged_first_submit: false,
             device_errored,
             pause_at: None,
         }))
@@ -275,6 +282,13 @@ where
     /// keep track of the last log, so we don't log the same underrun multiple times
     underruns_reported: u64,
     last_underrun_log: Instant,
+    /// When this stream began consuming, used to time the open -> first-audio gap.
+    stream_started_at: Instant,
+    /// When the producer last had nothing to submit, cleared on the first
+    /// successful submit. Producer-side only, so the realtime callback stays
+    /// untouched.
+    idle_since: Option<Instant>,
+    logged_first_submit: bool,
     device_errored: Arc<AtomicBool>,
     /// Indicates that the stream is currently fading out and needs to be paused by the specified
     /// time.
@@ -346,6 +360,9 @@ where
         self.ring_buf = prod;
         self.device_errored = device_errored;
         self.interleave_buffer.clear();
+        self.stream_started_at = Instant::now();
+        self.idle_since = None;
+        self.logged_first_submit = false;
 
         if pause_pending && let Err(e) = self.stream.pause() {
             return Err(ResetError::Unknown(e.to_string()));
@@ -381,12 +398,36 @@ where
         let capacity_frames = self.interleave_buffer.capacity() / input.channel_count().max(1);
         let available = input.potentially_available().min(capacity_frames);
         if available == 0 {
+            self.idle_since.get_or_insert_with(Instant::now);
             return Ok(0);
         }
 
         let read = input.try_read_to_staging(available);
         if read == 0 {
+            self.idle_since.get_or_insert_with(Instant::now);
             return Ok(0);
+        }
+
+        // How long the producer had nothing to hand the device ring is what
+        // actually starves the realtime callback, and it is the one number a
+        // bare `underran` line does not give. Logged on the idle -> fed
+        // transition only, so steady playback stays quiet in the log.
+        if let Some(since) = self.idle_since.take() {
+            let idle_ms = since.elapsed().as_millis() as u64;
+            if idle_ms >= PRODUCER_STALL_REPORT_MS {
+                info!(
+                    idle_ms,
+                    underruns = self.underruns.load(Ordering::Relaxed),
+                    "[audio] producer had nothing to submit"
+                );
+            }
+        }
+        if !self.logged_first_submit {
+            self.logged_first_submit = true;
+            info!(
+                elapsed_ms = self.stream_started_at.elapsed().as_millis() as u64,
+                "[audio] first samples submitted after stream start"
+            );
         }
 
         let staging = input.staging();
