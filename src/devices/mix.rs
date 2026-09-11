@@ -802,7 +802,7 @@ mod tests {
 
         let written = mixer.mix(&input);
         assert_eq!(written, frames);
-        producers.write_vecs(mixer.output_planes()).unwrap();
+        producers.write_vecs_nonblocking(mixer.output_planes()).unwrap();
 
         let read = consumers.try_read_to_staging(frames);
         assert_eq!(read, frames);

@@ -3,6 +3,7 @@ use std::{
     mem::take,
     path::PathBuf,
     sync::{Arc, RwLock},
+    time::{Duration, Instant},
 };
 
 use rand::{rng, seq::SliceRandom};
@@ -14,6 +15,11 @@ use crate::{
 };
 
 const UNDO_STACK_CAPACITY: usize = 30;
+
+/// Minimum interval between queue-snapshot sends to the session storage worker.
+/// A send deep-copies the whole queue (see `send_session_with_queue`), so burst
+/// mutations (batch drops, rapid skips) coalesce into one snapshot per window.
+const SESSION_PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reshuffled {
@@ -197,6 +203,10 @@ pub struct QueueManager {
     repeat: RepeatState,
     storage_tx: tokio::sync::watch::Sender<PlaybackSessionData>,
     undo_stack: VecDeque<UndoAction>,
+    /// Queue content changed since the last session snapshot was sent.
+    session_dirty: bool,
+    /// Instant of the last session snapshot send (debounce anchor).
+    last_session_send: Option<Instant>,
 }
 
 impl QueueManager {
@@ -439,6 +449,8 @@ impl QueueManager {
             queue_next: queue_position.map_or(0, |position| position + 1),
             storage_tx,
             undo_stack: VecDeque::with_capacity(UNDO_STACK_CAPACITY),
+            session_dirty: false,
+            last_session_send: None,
         }
     }
 
@@ -737,7 +749,7 @@ impl QueueManager {
             self.original_queue.push(item.clone());
         }
 
-        queue.push(item.clone());
+        queue.push(item);
 
         let index = queue.len() - 1;
 
@@ -768,25 +780,26 @@ impl QueueManager {
 
         let mut queue = self.queue.write().expect("poisoned queue lock");
         let first_index = queue.len();
+        let items_len = items.len();
         let mut original_queue_indices = SmallVec::new();
 
         if self.shuffle {
             let original_start = self.original_queue.len();
             self.original_queue.extend(items.clone());
-            original_queue_indices.extend(original_start..original_start + items.len());
+            original_queue_indices.extend(original_start..original_start + items_len);
 
-            let mut shuffled = items.clone();
+            let mut shuffled = items;
             shuffled.shuffle(&mut rng());
             queue.extend(shuffled);
         } else {
-            queue.extend(items.clone());
+            queue.extend(items);
         }
 
         drop(queue);
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Inserted {
-            queue_indices: (first_index..first_index + items.len()).collect(),
+            queue_indices: (first_index..first_index + items_len).collect(),
             original_queue_indices,
             previous_queue_next,
             previous_shuffle,
@@ -810,7 +823,7 @@ impl QueueManager {
             self.original_queue.push(item.clone());
         }
 
-        queue.insert(insert_pos, item.clone());
+        queue.insert(insert_pos, item);
 
         drop(queue);
 
@@ -859,7 +872,7 @@ impl QueueManager {
             original_queue_indices.extend(original_start..original_start + items_len);
         }
 
-        queue.splice(insert_pos..insert_pos, items.clone());
+        queue.splice(insert_pos..insert_pos, items);
 
         drop(queue);
 
@@ -1167,8 +1180,11 @@ impl QueueManager {
 
         let mut queue = self.queue.write().expect("poisoned queue lock");
 
-        let old_queue = Arc::new(queue.clone());
-        let old_original_queue = Arc::new(self.original_queue.clone());
+        // Snapshot by taking the live Vecs out instead of cloning: the write lock is held for the
+        // whole swap so readers never observe the empty intermediate state, and the undo stack
+        // gets sole ownership (so `Arc::try_unwrap` at undo time never deep-copies either).
+        let old_queue = Arc::new(take(&mut *queue));
+        let old_original_queue = Arc::new(take(&mut self.original_queue));
 
         if self.shuffle {
             // Consume `items` by value: cloning it twice per replace put three
@@ -1215,8 +1231,9 @@ impl QueueManager {
 
         let mut queue = self.queue.write().expect("poisoned queue lock");
 
-        let queue_clone = Arc::new(queue.clone());
-        let old_original_queue = Arc::new(self.original_queue.clone());
+        // take-based snapshots, same rationale as replace_queue: no full-queue copy
+        let queue_clone = Arc::new(take(&mut *queue));
+        let old_original_queue = Arc::new(take(&mut self.original_queue));
 
         let current_item = keep_current
             .then(|| {
@@ -1291,8 +1308,9 @@ impl QueueManager {
                     })
                     .unwrap_or(0);
 
-                let shuffled_queue = Arc::new(queue.clone());
-
+                // take the shuffled Vec as the undo snapshot instead of cloning it:
+                // its contents move into the Arc either way, this just skips the copy
+                let shuffled_queue = Arc::new(take(&mut *queue));
                 *queue = take(&mut self.original_queue);
                 self.queue_next = new_position + 1;
 
@@ -1314,8 +1332,15 @@ impl QueueManager {
     /// Persist the queue session when only playback state changed.
     ///
     /// This reuses the stored queue snapshot and updates fields like
-    /// the current position, shuffle mode, and repeat mode.
-    fn persist_session_state(&self) {
+    /// the current position, shuffle mode, and repeat mode. A pending
+    /// debounced queue snapshot is upgraded to a full send so the stored
+    /// position never references stale queue contents.
+    fn persist_session_state(&mut self) {
+        if self.session_dirty {
+            self.send_session_with_queue();
+            return;
+        }
+
         let queue_position = self.current_position();
         let shuffle = self.shuffle;
         let repeat = self.repeat;
@@ -1329,9 +1354,36 @@ impl QueueManager {
 
     /// Persist the queue session when queue contents or ordering changed.
     ///
-    /// This refreshes the stored queue alongside the current position,
-    /// shuffle mode, and repeat mode.
-    fn persist_session_with_queue(&self) {
+    /// Sends are debounced: the first mutation after an idle window sends
+    /// immediately (leading edge), further mutations within the window only
+    /// mark the session dirty and are flushed by `flush_pending_session` from
+    /// the playback main loop. Sending snapshots the whole queue, so this keeps
+    /// batch mutations at one snapshot per window instead of one per item.
+    fn persist_session_with_queue(&mut self) {
+        let due = self
+            .last_session_send
+            .is_none_or(|sent| sent.elapsed() >= SESSION_PERSIST_DEBOUNCE);
+        if due {
+            self.send_session_with_queue();
+        } else {
+            self.session_dirty = true;
+        }
+    }
+
+    /// Flush a debounced queue-session snapshot if one is pending. Cheap no-op
+    /// otherwise; called every playback main-loop iteration.
+    pub fn flush_pending_session(&mut self) {
+        if self.session_dirty {
+            self.send_session_with_queue();
+        }
+    }
+
+    /// Take and send a consistent queue snapshot to the session storage worker.
+    ///
+    /// This deep-copies the queue (and original queue) under the read lock —
+    /// the price of handing the worker a consistent snapshot of a live `Vec`.
+    /// Call sites debounce to keep it off burst paths.
+    fn send_session_with_queue(&mut self) {
         let queue = self.queue.read().expect("poisoned queue lock");
         let queue_snapshot = queue.clone();
         let queue_position = self
@@ -1351,6 +1403,9 @@ impl QueueManager {
             session.shuffle = shuffle;
             session.repeat = repeat;
         });
+
+        self.session_dirty = false;
+        self.last_session_send = Some(Instant::now());
     }
 }
 

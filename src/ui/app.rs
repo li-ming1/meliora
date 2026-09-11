@@ -339,17 +339,10 @@ fn build_main_window(
         })
         .detach();
 
-        // 底部播放栏左侧占位需要跟随侧边栏宽度/折叠状态变化
-        let sidebar_width = cx.global::<Models>().sidebar_width.clone();
-        cx.observe(&sidebar_width, |_, _, cx| cx.notify()).detach();
+        // 侧边栏宽度/折叠状态不在这里观察：真正的消费者（Sidebar、Header）各自
+        // observe 这些实体，MainWindow 级观察只会在折叠动画期间引发整窗逐帧重建。
 
-        let animated_sidebar_width = cx.global::<Models>().animated_sidebar_width.clone();
-        cx.observe(&animated_sidebar_width, |_, _, cx| cx.notify()).detach();
-
-        let sidebar_collapsed = cx.global::<Models>().sidebar_collapsed.clone();
-        cx.observe(&sidebar_collapsed, |_, _, cx| cx.notify()).detach();
-
-        // 右侧栏布局跟随分栏宽度/歌词高度变化
+        // 右侧栏是内联渲染（非实体），布局跟随分栏宽度/歌词高度变化，必须在此观察
         let queue_width = cx.global::<Models>().queue_width.clone();
         cx.observe(&queue_width, |_, _, cx| cx.notify()).detach();
         let lyrics_height = cx.global::<Models>().lyrics_height.clone();

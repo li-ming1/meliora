@@ -15,15 +15,12 @@ pub struct RingWriteTimeout {
     pub written: usize,
 }
 
-/// Write the first `total` samples of equal-length planes to their producers in lockstep, so the
-/// channels never desync
-pub fn write_bounded_planar<T: Copy>(
-    producers: &mut [Producer<T>],
-    planes: &[&[T]],
-    total: usize,
-) -> Result<(), RingWriteTimeout> {
+/// Write as many samples of equal-length planes as currently fit, never
+/// blocking or parking. Returns the total samples written (may be less than
+/// `total`). Use this when the consumer drains on the *same* thread — a
+/// blocking retry loop there can never make progress.
+pub fn try_write_planar<T: Copy>(producers: &mut [Producer<T>], planes: &[&[T]], total: usize) -> usize {
     let mut written = 0;
-    let deadline = Instant::now() + RING_WRITE_DEADLINE;
 
     while written < total {
         let writable = producers
@@ -34,11 +31,7 @@ pub fn write_bounded_planar<T: Copy>(
             .min(total - written);
 
         if writable == 0 {
-            if Instant::now() >= deadline {
-                return Err(RingWriteTimeout { written });
-            }
-            std::thread::sleep(RING_WRITE_PARK);
-            continue;
+            break;
         }
 
         for (producer, plane) in producers.iter_mut().zip(planes) {
@@ -47,6 +40,32 @@ pub fn write_bounded_planar<T: Copy>(
             }
         }
         written += writable;
+    }
+
+    written
+}
+
+/// Write the first `total` samples of equal-length planes to their producers in lockstep, so the
+/// channels never desync
+pub fn write_bounded_planar<T: Copy>(
+    producers: &mut [Producer<T>],
+    planes: &[&[T]],
+    total: usize,
+) -> Result<(), RingWriteTimeout> {
+    let mut written = try_write_planar(producers, planes, total);
+    let deadline = Instant::now() + RING_WRITE_DEADLINE;
+
+    while written < total {
+        if Instant::now() >= deadline {
+            return Err(RingWriteTimeout { written });
+        }
+        std::thread::sleep(RING_WRITE_PARK);
+        // retry from where the previous attempt stopped: `try_write_planar`
+        // counts from the front of the planes it is given, so hand it the
+        // remaining subslices — passing the full planes again would re-copy
+        // the packet's prefix into the ring (audible as static garbage)
+        let remaining: Vec<&[T]> = planes.iter().map(|plane| &plane[written..]).collect();
+        written += try_write_planar(producers, &remaining, total - written);
     }
 
     Ok(())
@@ -246,7 +265,38 @@ impl GainRamp {
 
 #[cfg(test)]
 mod tests {
-    use super::{GainRamp, LIMITER_KNEE, soft_limit, tpdf};
+    use super::{GainRamp, LIMITER_KNEE, read_available, soft_limit, tpdf, write_bounded_planar};
+    use rtrb::RingBuffer;
+    use std::time::Duration;
+
+    /// Ring smaller than the payload forces the blocking write to park and
+    /// retry; the continuations must append the plane's REMAINDER, not re-copy
+    /// its prefix (regression: duplicated prefixes were audible as static).
+    #[test]
+    fn write_bounded_planar_retries_continue_at_the_write_offset() {
+        const TOTAL: usize = 10;
+        let (mut producer, mut consumer) = RingBuffer::<u32>::new(8);
+
+        let drainer = std::thread::spawn(move || {
+            let mut out = Vec::with_capacity(TOTAL);
+            let mut staging = [0u32; 4];
+            while out.len() < TOTAL {
+                let n = read_available(&mut consumer, &mut staging);
+                out.extend_from_slice(&staging[..n]);
+                if n == 0 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            out
+        });
+
+        let plane: Vec<u32> = (0..TOTAL as u32).collect();
+        write_bounded_planar(std::slice::from_mut(&mut producer), &[&plane], TOTAL)
+            .expect("consumer drains concurrently, write must complete");
+
+        let out = drainer.join().unwrap();
+        assert_eq!(out, plane, "retry continuations must preserve sample order");
+    }
 
     fn assert_approx_eq(lhs: f32, rhs: f32) {
         assert!((lhs - rhs).abs() < 1e-6, "left={lhs}, right={rhs}");

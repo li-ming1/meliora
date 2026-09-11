@@ -226,6 +226,10 @@ impl PlaybackThread {
             sleep(std::time::Duration::from_millis(10));
         }
 
+        // Flush debounced queue-session snapshots: batch mutations coalesce to
+        // one full-queue snapshot per debounce window.
+        self.queue.flush_pending_session();
+
         self.process_metadata_update();
     }
 

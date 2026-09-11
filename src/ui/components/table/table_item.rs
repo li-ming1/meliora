@@ -222,10 +222,16 @@ where
             }
         }
 
-        if let Some((menu, overlay)) = context_menu {
+        if let Some((menu_builder, overlay)) = context_menu {
             let ctx = context(self.id.clone().unwrap_or("bad-context".into()))
                 .with(row)
-                .child(div().bg(theme.elevated_background).child(menu));
+                // menu tree is built only when the menu opens
+                .menu_on_open(move |window, cx| {
+                    div()
+                        .bg(cx.global::<Theme>().elevated_background)
+                        .child(menu_builder(window, cx))
+                        .into_any_element()
+                });
             match overlay {
                 Some(overlay) => div().w_full().child(ctx).child(overlay).into_any_element(),
                 None => ctx.into_any_element(),

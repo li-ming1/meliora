@@ -21,6 +21,7 @@ use crate::{
     },
     ui::{
         availability::is_track_available,
+        components::context::ContextMenuBuilder,
         library::{
             ViewSwitchMessage,
             add_to_playlist::AddToPlaylist,
@@ -151,23 +152,29 @@ pub fn track_menu_for_table(
     context: &TrackContextMenuContext,
     window: &mut Window,
     cx: &mut App,
-) -> (AnyElement, Option<AnyElement>) {
+) -> (ContextMenuBuilder, Option<AnyElement>) {
     let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track.id, window, cx);
-    // cached liked set: render runs this per visible row per frame, a DB query
-    // here would block the UI thread on every repaint (see is_song_liked docs)
-    let is_liked = is_song_liked(cx, track.id);
 
-    let menu = TrackContextMenu::new(
-        Rc::new(track.clone()),
-        is_available,
-        is_liked,
-        context.clone(),
-        None,
-        show_add_to,
-    )
-    .into_any_element();
+    let track = Rc::new(track.clone());
+    let context = context.clone();
+    // the menu tree — including everything TrackContextMenu::render touches
+    // (artist lookup query, path stat, translations) — is built only when the
+    // menu opens, keeping it off the per-row repaint path
+    let builder: ContextMenuBuilder = Rc::new(move |_, cx| {
+        // cached liked set: a DB query here would block the UI thread (see is_song_liked docs)
+        let is_liked = is_song_liked(cx, track.id);
+        TrackContextMenu::new(
+            track.clone(),
+            is_available,
+            is_liked,
+            context.clone(),
+            None,
+            show_add_to.clone(),
+        )
+        .into_any_element()
+    });
 
-    (menu, Some(add_to.into_any_element()))
+    (builder, Some(add_to.into_any_element()))
 }
 
 pub fn album_menu_for_table(
@@ -175,13 +182,17 @@ pub fn album_menu_for_table(
     context: &AlbumContextMenuContext,
     window: &mut Window,
     cx: &mut App,
-) -> (AnyElement, Option<AnyElement>) {
+) -> (ContextMenuBuilder, Option<AnyElement>) {
     let (show_add_to, add_to) =
         add_album_to_playlist_state("album-menu-state", album.id, window, cx);
-    let menu =
-        AlbumContextMenu::new(Rc::new(album.clone()), show_add_to, *context).into_any_element();
 
-    (menu, Some(add_to.into_any_element()))
+    let album = Rc::new(album.clone());
+    let context = *context;
+    let builder: ContextMenuBuilder = Rc::new(move |_, _| {
+        AlbumContextMenu::new(album.clone(), show_add_to.clone(), context).into_any_element()
+    });
+
+    (builder, Some(add_to.into_any_element()))
 }
 
 pub fn play_from_track(cx: &mut App, track: &Track, queue_items: Vec<QueueItemData>) {

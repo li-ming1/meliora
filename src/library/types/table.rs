@@ -18,7 +18,9 @@ use crate::{
         components::{
             drag_drop::{AlbumDragData, TrackDragData},
             managed_image::ManagedImageKey,
-            table::table_data::{Column, GridContext, TableData, TableDragData, TableSort},
+            table::table_data::{
+                Column, ContextMenuBuilder, GridContext, TableData, TableDragData, TableSort,
+            },
         },
         library::context_menus::{
             AlbumContextMenuContext, TrackContextMenuContext, album_menu_for_table,
@@ -227,7 +229,7 @@ impl TableData<AlbumColumn> for Album {
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         _is_available: bool,
-    ) -> Option<(gpui::AnyElement, Option<gpui::AnyElement>)> {
+    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
         Some(album_menu_for_table(self, context, window, cx))
     }
 
@@ -496,10 +498,10 @@ impl TableData<TrackColumn> for Track {
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         is_available: bool,
-    ) -> Option<(gpui::AnyElement, Option<gpui::AnyElement>)> {
-        // `is_available` is resolved once at row construction: this runs per
-        // visible row per frame, so re-statting the file here would syscall on
-        // every repaint (and could disagree with the row's own dimming).
+    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
+        // `is_available` is resolved once at row construction and captured by
+        // the builder: the menu tree itself is only built when the menu opens,
+        // so re-statting the file per repaint is both unnecessary and wrong.
         Some(track_menu_for_table(
             self,
             is_available,

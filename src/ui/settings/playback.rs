@@ -143,11 +143,18 @@ impl Render for PlaybackSettings {
                         .default_value(0.0)
                         .format_value(|v| -> SharedString { format!("{:+.1} dB", v).into() })
                         .on_change(move |v, _, cx| {
-                            settings.update(cx, |settings, cx| {
+                            // live value lands in the model WITHOUT notify: a per-tick
+                            // model notify cascades into the app-wide refresh_windows
+                            // observer — a full repaint of every window per mouse move
+                            // while dragging (same pattern as equalizer view).
+                            // save_settings' trailing-edge debounce collapses the disk
+                            // writes, and the settings file watcher produces one real
+                            // refresh when settings.json lands.
+                            settings.update(cx, |settings, _| {
                                 settings.playback.replaygain.fallback_preamp_db = v as f64;
-                                save_settings(cx, settings);
-                                cx.notify();
                             });
+                            let snapshot = settings.read(cx).clone();
+                            save_settings(cx, &snapshot);
                         }),
                 )
             })

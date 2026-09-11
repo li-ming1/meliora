@@ -1,12 +1,13 @@
 use std::{rc::Rc, sync::Arc};
 
 use cntp_i18n::{I18nString, tr};
-use gpui::{App, IntoElement, SharedString, Window};
+use gpui::{App, IntoElement, SharedString, Window, div};
 
 use crate::{
     library::db::LibraryAccess,
     ui::{
         components::{
+            context::ContextMenuBuilder,
             icons::{DISC, USERS},
             palette::{FinderItemLeft, PaletteItem},
         },
@@ -196,18 +197,19 @@ impl PaletteItem for SearchPaletteItem {
         }
     }
 
-    fn context_menu(&self, window: &mut Window, cx: &mut App) -> Option<impl IntoElement> {
+    fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<ContextMenuBuilder> {
         match self {
             SearchPaletteItem::Album { id, .. } => {
-                let (show_add_to, _) =
-                    add_album_to_playlist_state("pi_context_album_add_to", *id, window, cx);
-                let album =
-                    window.use_keyed_state(("pi_context_album", *id as usize), cx, |_, cx| {
-                        cx.get_album_by_id(*id)
-                    });
+                let id = *id;
+                Some(Rc::new(move |window, cx| {
+                    let (show_add_to, _) =
+                        add_album_to_playlist_state("pi_context_album_add_to", id, window, cx);
+                    let album =
+                        window.use_keyed_state(("pi_context_album", id as usize), cx, |_, cx| {
+                            cx.get_album_by_id(id)
+                        });
 
-                if let Ok(album) = album.read(cx) {
-                    Some(
+                    if let Ok(album) = album.read(cx) {
                         AlbumContextMenu::new(
                             Rc::new((**album).clone()),
                             show_add_to,
@@ -215,24 +217,26 @@ impl PaletteItem for SearchPaletteItem {
                                 show_go_to_artist: true,
                             },
                         )
-                        .into_any_element(),
-                    )
-                } else {
-                    None
-                }
+                        .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    }
+                }))
             }
             SearchPaletteItem::Track { id, .. } => {
-                let (show_add_to, _) = add_to_playlist_state("pi_context_add_to", *id, window, cx);
-                let track =
-                    window.use_keyed_state(("pi_context_track", *id as usize), cx, |_, cx| {
-                        cx.get_track_by_id(*id)
-                    });
+                let id = *id;
+                Some(Rc::new(move |window, cx| {
+                    let (show_add_to, _) =
+                        add_to_playlist_state("pi_context_add_to", id, window, cx);
+                    let track =
+                        window.use_keyed_state(("pi_context_track", id as usize), cx, |_, cx| {
+                            cx.get_track_by_id(id)
+                        });
 
-                if let Ok(track) = track.read(cx) {
-                    let is_liked = cx
-                        .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
-                        .unwrap_or_default();
-                    Some(
+                    if let Ok(track) = track.read(cx) {
+                        let is_liked = cx
+                            .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
+                            .unwrap_or_default();
                         TrackContextMenu::new(
                             Rc::new((**track).clone()),
                             true,
@@ -245,11 +249,11 @@ impl PaletteItem for SearchPaletteItem {
                             None,
                             show_add_to,
                         )
-                        .into_any_element(),
-                    )
-                } else {
-                    None
-                }
+                        .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    }
+                }))
             }
             _ => None,
         }

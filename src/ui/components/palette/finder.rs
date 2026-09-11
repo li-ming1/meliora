@@ -16,7 +16,7 @@ use tokio::sync::mpsc::channel;
 use tracing::{debug, trace};
 
 use crate::ui::{
-    components::{context::context, input::EnrichedInputAction},
+    components::{context::context, context::ContextMenuBuilder, input::EnrichedInputAction},
     theme::Theme,
 };
 
@@ -33,8 +33,10 @@ pub trait PaletteItem {
         None
     }
     fn on_middle_click(&self, _cx: &mut App) {}
-    fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<impl IntoElement> {
-        None::<Div>
+    /// Lazy context-menu builder: invoked only when the menu opens, so menu
+    /// construction (and anything it queries) stays off the repaint path.
+    fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<ContextMenuBuilder> {
+        None
     }
     /// Provides an element to be rendered next to the context menu, used for the Add to Playlist
     /// item in the track context menu.
@@ -940,21 +942,18 @@ where
                 )
             });
 
-        let context_menu = self
-            .item_data
-            .as_ref()
-            .and_then(|v| v.context_menu(window, cx))
-            .map(|v| v.into_any_element());
+        let context_menu = self.item_data.as_ref().and_then(|v| v.context_menu(window, cx));
         let overlay = self
             .item_data
             .as_ref()
             .and_then(|v| v.context_menu_overlay(window, cx))
             .map(|v| v.into_any_element());
 
-        let base = if let Some(context_menu) = context_menu {
+        let base = if let Some(menu_builder) = context_menu {
             context((self.id.clone(), "context_menu"))
                 .with(item)
-                .child(context_menu)
+                // menu tree is built only when the menu opens
+                .menu_on_open(move |window, cx| menu_builder(window, cx))
                 .into_any_element()
         } else {
             item.into_any_element()

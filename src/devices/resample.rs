@@ -442,7 +442,7 @@ mod tests {
         while remaining > 0 {
             let piece = remaining.min(4096);
             let planes = vec![vec![value; piece], vec![value; piece]];
-            producers.write_vecs(&planes).unwrap();
+            producers.write_vecs_nonblocking(&planes).unwrap();
             resampler.process_into(&mut consumers, out, 8192);
             remaining -= piece;
         }

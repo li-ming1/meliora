@@ -401,18 +401,30 @@ impl Render for TrackItem {
                                     ),
                             ),
                     )
-                    .child(
-                        div()
-                            .bg(theme.elevated_background)
-                            .child(TrackContextMenu::new(
-                                self.track.clone(),
-                                is_available,
-                                self.is_liked,
-                                track_menu_context,
-                                self.pl_info,
-                                show_add_to,
-                            )),
-                    ),
+                    .menu_on_open({
+                        // menu tree (TrackContextMenu's artist DB lookup, path stat,
+                        // translations) builds only when the menu opens, off the
+                        // per-row repaint path
+                        let track = self.track.clone();
+                        let track_menu_context = track_menu_context;
+                        let pl_info = self.pl_info;
+                        let show_add_to = show_add_to.clone();
+                        let is_available = is_available;
+                        let is_liked = self.is_liked;
+                        move |_, cx| {
+                            div()
+                                .bg(cx.global::<Theme>().elevated_background)
+                                .child(TrackContextMenu::new(
+                                    track.clone(),
+                                    is_available,
+                                    is_liked,
+                                    track_menu_context.clone(),
+                                    pl_info,
+                                    show_add_to.clone(),
+                                ))
+                                .into_any_element()
+                        }
+                    }),
             )
             .child(add_to)
     }

@@ -742,7 +742,10 @@ impl MediaStream for SymphoniaStream {
                                     })
                                 })
                                 .collect();
-                            if let Err(e) = output.write_slices(&counts) {
+                            // non-blocking: the consumer (resampler) drains on the same
+                            // playback thread, so a blocking retry write would spin
+                            // against a consumer that cannot run until we return
+                            if let Err(e) = output.write_slices_nonblocking(&counts) {
                                 return Err(map_write_error(e));
                             }
                             if needs_loop_seek {
@@ -755,7 +758,9 @@ impl MediaStream for SymphoniaStream {
                         }
                     }
 
-                    if let Err(e) = output.write_vecs(&self.conversion_buffer[..channel_count]) {
+                    if let Err(e) =
+                        output.write_vecs_nonblocking(&self.conversion_buffer[..channel_count])
+                    {
                         return Err(map_write_error(e));
                     }
 

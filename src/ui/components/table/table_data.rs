@@ -5,6 +5,8 @@ use gpui::{AnyElement, App, ElementId, SharedString, Window};
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 
+pub use crate::ui::components::context::ContextMenuBuilder;
+
 use crate::ui::components::{
     drag_drop::{AlbumDragData, TrackDragData},
     managed_image::ManagedImageKey,
@@ -147,15 +149,16 @@ where
         None
     }
 
-    /// Returns the context menu for this row in the current display context.
-    /// The first element is the menu content (rendered inside the context popup).
-    /// The second element is an optional overlay (e.g. a modal) rendered outside
-    /// the context popup so it is not nested inside `deferred`.
+    /// Returns a lazy builder for this row's context menu, plus an optional
+    /// overlay (e.g. a modal) rendered outside the context popup so it is not
+    /// nested inside `deferred`.
     ///
-    /// `is_available` is the availability the row view already resolved once at
-    /// construction. `render` calls this per visible row per frame, so an impl
-    /// must use this value instead of re-running `is_available` (which would
-    /// stat the filesystem or hit the database on every repaint).
+    /// The builder is invoked only when the user actually opens the menu, so
+    /// the menu tree (and anything its render touches — DB queries, filesystem
+    /// stats, translations) stays off the per-row repaint path. `is_available`
+    /// is the availability the row view already resolved once at construction;
+    /// impls must capture it instead of re-running `is_available` (which would
+    /// stat the filesystem or hit the database).
     fn get_context_menu(
         &self,
         _window: &mut Window,
@@ -163,7 +166,7 @@ where
         _context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         _is_available: bool,
-    ) -> Option<(AnyElement, Option<AnyElement>)> {
+    ) -> Option<(ContextMenuBuilder, Option<AnyElement>)> {
         None
     }
 

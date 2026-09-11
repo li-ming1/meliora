@@ -317,12 +317,19 @@ impl Render for InterfaceSettings {
                         .value(interface.normalized_grid_min_item_width())
                         .format_value(|v| format!("{v:.0} px").into())
                         .on_change(move |value, _, cx| {
-                            settings.update(cx, |settings, cx| {
+                            // live value lands in the model WITHOUT notify: a per-tick
+                            // model notify cascades into the app-wide refresh_windows
+                            // observer — a full repaint of every window per mouse move
+                            // while dragging (same pattern as equalizer view).
+                            // save_settings' trailing-edge debounce collapses the disk
+                            // writes, and the settings file watcher produces one real
+                            // refresh when settings.json lands.
+                            settings.update(cx, |settings, _| {
                                 settings.interface.grid_min_item_width =
                                     clamp_grid_min_item_width(value);
-                                save_settings(cx, settings);
-                                cx.notify();
                             });
+                            let snapshot = settings.read(cx).clone();
+                            save_settings(cx, &snapshot);
                         }),
                 ),
             )

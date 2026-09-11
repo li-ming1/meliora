@@ -288,9 +288,13 @@ impl PlaybackInterface {
                             });
                         }
                         PlaybackEvent::VolumeChanged(v) => {
+                            // equality guard: during a slider drag the echo-back
+                            // notify would re-render the source slider per tick
                             playback_info.volume.update(cx, |m, cx| {
-                                *m = v;
-                                cx.notify()
+                                if *m != v {
+                                    *m = v;
+                                    cx.notify();
+                                }
                             });
 
                             // Note: `prev_volume` should not be to small.
@@ -299,27 +303,35 @@ impl PlaybackInterface {
                             // an user used a slider to move volume to `0`
                             if v > 0.05 {
                                 playback_info.prev_volume.update(cx, |m, cx| {
-                                    *m = v;
-                                    cx.notify()
+                                    if *m != v {
+                                        *m = v;
+                                        cx.notify();
+                                    }
                                 });
                             }
                         }
                         PlaybackEvent::QueuePositionChanged(v) => {
                             queue_model.update(cx, |m, cx| {
-                                m.position = v;
-                                cx.notify();
+                                if m.position != v {
+                                    m.position = v;
+                                    cx.notify();
+                                }
                             })
                         }
                         PlaybackEvent::RepeatChanged(v) => {
                             playback_info.repeating.update(cx, |m, cx| {
-                                *m = v;
-                                cx.notify();
+                                if *m != v {
+                                    *m = v;
+                                    cx.notify();
+                                }
                             })
                         }
                         PlaybackEvent::StopAfterCurrentChanged(v) => {
                             playback_info.stop_after_current.update(cx, |m, cx| {
-                                *m = v;
-                                cx.notify();
+                                if *m != v {
+                                    *m = v;
+                                    cx.notify();
+                                }
                             })
                         }
                         PlaybackEvent::SampleRateChanged(rate) => {

@@ -9,6 +9,11 @@ actions!(context, [CloseContextMenu]);
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
+/// Shared lazy context-menu builder: invoked only when the user opens the
+/// menu, so menu construction (items, translations, DB queries, stats) never
+/// runs on the per-row repaint path.
+pub type ContextMenuBuilder = MenuBuilder;
+
 #[derive(IntoElement)]
 pub struct ContextMenu {
     pub(self) id: ElementId,

@@ -103,10 +103,11 @@ impl FileRowItem {
     }
 
     fn render_batch_menu(
-        &self,
         audio_items: &Rc<Vec<(Arc<Path>, Option<TrackRef>)>>,
         track_ids: &Rc<Vec<i64>>,
-        cx: &mut Context<Self>,
+        entity_for_add: Entity<Self>,
+        show_add_to: Entity<bool>,
+        cx: &mut App,
     ) -> AnyElement {
         let liked_ids: SmallVec<[i64; 32]> = track_ids
             .iter()
@@ -171,8 +172,6 @@ impl FileRowItem {
                 },
             ))
             .when(!track_ids.is_empty(), |m| {
-                let entity_for_add = cx.entity();
-                let show_add_to = self.show_add_to.clone();
                 let track_ids = Rc::clone(track_ids);
                 let like_ids = track_ids.clone();
                 m.item(menu_separator())
@@ -314,52 +313,27 @@ impl Render for FileRowItem {
             }
         };
 
-        let (context_element, add_to_element): (AnyElement, Option<AnyElement>) =
-            if let Some((audio_items, track_ids)) =
-                batch_items.filter(|(items, _)| !items.is_empty())
-            {
-                let menu = self.render_batch_menu(&audio_items, &track_ids, cx);
-                (menu, self.add_to.clone().map(|a| a.into_any_element()))
+        // The AddToPlaylist overlay entities are cheap to create eagerly (their
+        // track ids load on first open via keyed state); the menu trees move
+        // into menu_on_open so their per-item DB queries and stats only run
+        // when the user actually opens a menu.
+        let add_to_element: Option<AnyElement> =
+            if batch_items.as_ref().is_some_and(|(items, _)| !items.is_empty()) {
+                self.add_to.clone().map(|a| a.into_any_element())
             } else if let Some(track) = &self.full_track {
-                let (show_add_to, add_to) =
-                    add_to_playlist_state("files-track-menu", track.id, window, cx);
-                let is_liked = self.is_liked;
-                let is_available = self.is_file_available;
-
-                let path = path.clone();
-                let files_view = files_view.clone();
-                let play_from_here = Rc::new(move |cx: &mut App, _: &Track| {
-                    files_view.update(cx, |view, cx| {
-                        view.play_folder(path.to_path_buf(), cx);
-                    });
-                });
-
-                let menu = TrackContextMenu::new(
-                    track.clone(),
-                    is_available,
-                    is_liked,
-                    TrackContextMenuContext {
-                        show_go_to_album: track.album_id.is_some(),
-                        show_go_to_artist: true,
-                        play_from_here: Some(play_from_here),
-                    },
-                    None,
-                    show_add_to,
-                )
-                .into_any_element();
-
-                (menu, Some(add_to.into_any_element()))
+                let (_, add_to) = add_to_playlist_state("files-track-menu", track.id, window, cx);
+                Some(add_to.into_any_element())
             } else {
-                let menu = FileContextMenu::new(
-                    path.clone(),
-                    is_dir,
-                    is_audio,
-                    self.is_file_available,
-                    files_view.clone(),
-                )
-                .into_any_element();
-                (menu, None)
+                None
             };
+
+        let batch_menu_state = (batch_items, self.show_add_to.clone());
+        let entity_for_menu = cx.entity();
+        let full_track = self.full_track.clone();
+        let is_liked = self.is_liked;
+        let is_file_available = self.is_file_available;
+        let path_for_menu = path.clone();
+        let files_view_for_menu = files_view.clone();
 
         let click_path = path.clone();
         let click_files_view = files_view.clone();
@@ -501,7 +475,63 @@ impl Render for FileRowItem {
         let ctx = context(context_id)
             .w_full()
             .with(row_content)
-            .child(context_element);
+            .menu_on_open(move |window, cx| {
+                let menu = if let Some((audio_items, track_ids)) =
+                    batch_menu_state
+                        .0
+                        .clone()
+                        .filter(|(items, _)| !items.is_empty())
+                {
+                    Self::render_batch_menu(
+                        &audio_items,
+                        &track_ids,
+                        entity_for_menu.clone(),
+                        batch_menu_state.1.clone(),
+                        cx,
+                    )
+                } else if let Some(track) = full_track.clone() {
+                    let (show_add_to, _) =
+                        add_to_playlist_state("files-track-menu", track.id, window, cx);
+
+                    let play_from_here = Rc::new({
+                        let files_view = files_view_for_menu.clone();
+                        let path = path_for_menu.clone();
+                        move |cx: &mut App, _: &Track| {
+                            files_view.update(cx, |view, cx| {
+                                view.play_folder(path.to_path_buf(), cx);
+                            });
+                        }
+                    });
+
+                    TrackContextMenu::new(
+                        track.clone(),
+                        is_file_available,
+                        is_liked,
+                        TrackContextMenuContext {
+                            show_go_to_album: track.album_id.is_some(),
+                            show_go_to_artist: true,
+                            play_from_here: Some(play_from_here),
+                        },
+                        None,
+                        show_add_to,
+                    )
+                    .into_any_element()
+                } else {
+                    FileContextMenu::new(
+                        path_for_menu.clone(),
+                        is_dir,
+                        is_audio,
+                        is_file_available,
+                        files_view_for_menu.clone(),
+                    )
+                    .into_any_element()
+                };
+
+                div()
+                    .bg(cx.global::<Theme>().elevated_background)
+                    .child(menu)
+                    .into_any_element()
+            });
 
         div().w_full().child(if let Some(add_to) = add_to_element {
             ctx.child(add_to).into_any_element()

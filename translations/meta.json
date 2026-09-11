@@ -253,7 +253,7 @@
   },
   "ADD_N_TO_QUEUE": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:160",
+    "definedIn": "src/ui/library/files_view/file_row.rs:161",
     "plural": true,
     "description": null
   },
@@ -355,73 +355,73 @@
   },
   "COLUMN_ALBUM": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:306",
+    "definedIn": "src/library/types/table.rs:308",
     "plural": false,
     "description": null
   },
   "COLUMN_ALBUMS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:533",
+    "definedIn": "src/library/types/table.rs:535",
     "plural": false,
     "description": null
   },
   "COLUMN_ARTIST": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:83",
+    "definedIn": "src/library/types/table.rs:85",
     "plural": false,
     "description": null
   },
   "COLUMN_CATALOG_NUMBER": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:86",
+    "definedIn": "src/library/types/table.rs:88",
     "plural": false,
     "description": null
   },
   "COLUMN_DATE": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:84",
+    "definedIn": "src/library/types/table.rs:86",
     "plural": false,
     "description": null
   },
   "COLUMN_LABEL": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:85",
+    "definedIn": "src/library/types/table.rs:87",
     "plural": false,
     "description": null
   },
   "COLUMN_LENGTH": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:308",
+    "definedIn": "src/library/types/table.rs:310",
     "plural": false,
     "description": null
   },
   "COLUMN_NAME": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:532",
+    "definedIn": "src/library/types/table.rs:534",
     "plural": false,
     "description": null
   },
   "COLUMN_TITLE": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:82",
+    "definedIn": "src/library/types/table.rs:84",
     "plural": false,
     "description": null
   },
   "COLUMN_TRACKS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:534",
+    "definedIn": "src/library/types/table.rs:536",
     "plural": false,
     "description": null
   },
   "COMMAND_PALETTE": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:418",
+    "definedIn": "src/ui/settings/interface.rs:425",
     "plural": false,
     "description": null
   },
   "COMMAND_PALETTE_OPEN": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:432",
+    "definedIn": "src/ui/settings/interface.rs:439",
     "plural": false,
     "description": null
   },
@@ -667,19 +667,19 @@
   },
   "INTERFACE_ALWAYS_SHOW_SCROLLBARS": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:353",
+    "definedIn": "src/ui/settings/interface.rs:360",
     "plural": false,
     "description": null
   },
   "INTERFACE_ALWAYS_SHOW_SCROLLBARS_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:356",
+    "definedIn": "src/ui/settings/interface.rs:363",
     "plural": false,
     "description": null
   },
   "INTERFACE_COMMAND_PALETTE_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:421",
+    "definedIn": "src/ui/settings/interface.rs:428",
     "plural": false,
     "description": null
   },
@@ -709,37 +709,37 @@
   },
   "INTERFACE_QUEUE_SELECT_ON_CLICK": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:395",
+    "definedIn": "src/ui/settings/interface.rs:402",
     "plural": false,
     "description": null
   },
   "INTERFACE_QUEUE_SELECT_ON_CLICK_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:398",
+    "definedIn": "src/ui/settings/interface.rs:405",
     "plural": false,
     "description": null
   },
   "INTERFACE_REDUCED_MOTION": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:332",
+    "definedIn": "src/ui/settings/interface.rs:339",
     "plural": false,
     "description": null
   },
   "INTERFACE_REDUCED_MOTION_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:335",
+    "definedIn": "src/ui/settings/interface.rs:342",
     "plural": false,
     "description": null
   },
   "INTERFACE_SLIM_SCROLLBARS": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:374",
+    "definedIn": "src/ui/settings/interface.rs:381",
     "plural": false,
     "description": null
   },
   "INTERFACE_SLIM_SCROLLBARS_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:377",
+    "definedIn": "src/ui/settings/interface.rs:384",
     "plural": false,
     "description": null
   },
@@ -991,7 +991,7 @@
   },
   "KUGOU_ONLINE_RESULTS": {
     "context": "search_item.rs",
-    "definedIn": "src/ui/search/search_item.rs:165",
+    "definedIn": "src/ui/search/search_item.rs:166",
     "plural": false,
     "description": null
   },
@@ -1345,7 +1345,7 @@
   },
   "NETEASE_ONLINE_RESULTS": {
     "context": "search_item.rs",
-    "definedIn": "src/ui/search/search_item.rs:167",
+    "definedIn": "src/ui/search/search_item.rs:168",
     "plural": false,
     "description": null
   },
@@ -1543,7 +1543,7 @@
   },
   "PALETTE_SHOW_MORE": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:717",
+    "definedIn": "src/ui/components/palette/finder.rs:719",
     "plural": true,
     "description": null
   },
@@ -1639,13 +1639,13 @@
   },
   "PLAYBACK_PREVENT_IDLE": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:157",
+    "definedIn": "src/ui/settings/playback.rs:164",
     "plural": false,
     "description": null
   },
   "PLAYBACK_PREVENT_IDLE_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:160",
+    "definedIn": "src/ui/settings/playback.rs:167",
     "plural": false,
     "description": null
   },
@@ -1693,7 +1693,7 @@
   },
   "PLAY_N_NOW": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:131",
+    "definedIn": "src/ui/library/files_view/file_row.rs:132",
     "plural": true,
     "description": null
   },
@@ -2095,19 +2095,19 @@
   },
   "SHOW_IN_FILE_EXPLORER": {
     "context": "context_menus.rs",
-    "definedIn": "src/ui/library/context_menus.rs:244",
+    "definedIn": "src/ui/library/context_menus.rs:255",
     "plural": false,
     "description": null
   },
   "SHOW_IN_FILE_MANAGER": {
     "context": "context_menus.rs",
-    "definedIn": "src/ui/library/context_menus.rs:246",
+    "definedIn": "src/ui/library/context_menus.rs:257",
     "plural": false,
     "description": null
   },
   "SHOW_IN_FINDER": {
     "context": "context_menus.rs",
-    "definedIn": "src/ui/library/context_menus.rs:242",
+    "definedIn": "src/ui/library/context_menus.rs:253",
     "plural": false,
     "description": null
   },
@@ -2353,19 +2353,19 @@
   },
   "TABLE_ALBUMS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:110",
+    "definedIn": "src/library/types/table.rs:112",
     "plural": false,
     "description": null
   },
   "TABLE_ARTISTS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:556",
+    "definedIn": "src/library/types/table.rs:558",
     "plural": false,
     "description": null
   },
   "TABLE_TRACKS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:332",
+    "definedIn": "src/library/types/table.rs:334",
     "plural": false,
     "description": null
   },
@@ -2431,7 +2431,7 @@
   },
   "TRACK_NUMBER": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:304",
+    "definedIn": "src/library/types/table.rs:306",
     "plural": false,
     "description": null
   },

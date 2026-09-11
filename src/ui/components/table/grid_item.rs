@@ -189,12 +189,18 @@ where
                 )
             });
 
-        if let Some((menu, overlay)) = context_menu {
+        if let Some((menu_builder, overlay)) = context_menu {
             let ctx = context(self.id.clone())
                 .w_full()
                 .h_full()
                 .with(content)
-                .child(div().bg(theme.elevated_background).child(menu));
+                // menu tree is built only when the menu opens
+                .menu_on_open(move |window, cx| {
+                    div()
+                        .bg(cx.global::<Theme>().elevated_background)
+                        .child(menu_builder(window, cx))
+                        .into_any_element()
+                });
             match overlay {
                 Some(overlay) => div()
                     .size_full()

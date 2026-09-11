@@ -1,6 +1,6 @@
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::devices::util::write_bounded_planar;
+use crate::devices::util::{try_write_planar, write_bounded_planar};
 
 pub const DEFAULT_BUFFER_FRAMES: usize = 8192;
 
@@ -94,7 +94,34 @@ impl ChannelProducers {
         })
     }
 
-    pub fn write_vecs(&mut self, samples: &[Vec<f64>]) -> Result<(), WriteError> {
+    /// Non-blocking variant of [`write_slices`]: writes whatever fits and reports the rest as
+    /// dropped. Required when the consumer drains on the same thread (decoder → resampler), where
+    /// the blocking version would spin against a consumer that can never run until we return.
+    pub fn write_slices_nonblocking(&mut self, samples: &[&[f64]]) -> Result<(), WriteError> {
+        if samples.len() != self.channel_count {
+            return Err(WriteError::ChannelMismatch(ChannelMismatch {
+                expected: self.channel_count,
+                got: samples.len(),
+            }));
+        }
+
+        let min = samples.iter().map(|s| s.len()).min().unwrap_or(0);
+        let max = samples.iter().map(|s| s.len()).max().unwrap_or(0);
+        if min != max {
+            return Err(WriteError::UnequalPlanes { min, max });
+        }
+
+        let written = try_write_planar(&mut self.producers, samples, min);
+        if written < min {
+            return Err(WriteError::Timeout { dropped: min - written });
+        }
+        Ok(())
+    }
+
+    /// Non-blocking variant of [`write_slices`]: writes whatever fits and reports the rest as
+    /// dropped. Required when the consumer drains on the same thread (decoder → resampler), where
+    /// the blocking version would spin against a consumer that can never run until we return.
+    pub fn write_vecs_nonblocking(&mut self, samples: &[Vec<f64>]) -> Result<(), WriteError> {
         if samples.len() != self.channel_count {
             return Err(WriteError::ChannelMismatch(ChannelMismatch {
                 expected: self.channel_count,
@@ -103,7 +130,7 @@ impl ChannelProducers {
         }
 
         let slices: smallvec::SmallVec<[&[f64]; 8]> = samples.iter().map(Vec::as_slice).collect();
-        self.write_slices(&slices)
+        self.write_slices_nonblocking(&slices)
     }
 
     /// Frames that can be written to every channel right now without blocking (the minimum free
@@ -356,10 +383,31 @@ mod tests {
     }
 
     #[test]
+    fn write_slices_nonblocking_never_parks_and_reports_dropped() {
+        let (mut producers, mut consumers) = ChannelBuffers::new(1, 8).split();
+
+        // fits: full write, Ok
+        let planes: [&[f64]; 1] = [&[0.0; 8]];
+        assert!(producers.write_slices_nonblocking(&planes).is_ok());
+
+        // ring full, same-thread consumer cannot drain: must return immediately with the
+        // remainder reported instead of sleeping to the deadline
+        let overflow: [&[f64]; 1] = [&[1.0; 4]];
+        assert_eq!(
+            producers.write_slices_nonblocking(&overflow),
+            Err(WriteError::Timeout { dropped: 4 })
+        );
+
+        // after the consumer drains, the leftover fits again
+        assert_eq!(consumers.try_read_to_staging(8), 8);
+        assert!(producers.write_slices_nonblocking(&overflow).is_ok());
+    }
+
+    #[test]
     fn drain_empties_the_ring() {
         let (mut producers, mut consumers) = ChannelBuffers::new(2, 64).split();
         producers
-            .write_vecs(&[vec![1.0; 16], vec![1.0; 16]])
+            .write_vecs_nonblocking(&[vec![1.0; 16], vec![1.0; 16]])
             .unwrap();
         assert!(consumers.potentially_available() > 0);
 
@@ -373,7 +421,7 @@ mod tests {
 
         pipeline
             .device_input_producers
-            .write_vecs(&[vec![1.0; 16], vec![1.0; 16]])
+            .write_vecs_nonblocking(&[vec![1.0; 16], vec![1.0; 16]])
             .unwrap();
         assert!(pipeline.device_input.potentially_available() > 0);
 
