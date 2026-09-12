@@ -695,6 +695,7 @@ pub async fn move_playlist_item(
             .bind(new_position)
             .bind(original_item.position)
             .bind(item_id)
+            .bind(original_item.playlist_id)
             .execute(pool)
             .await?;
     } else if original_item.position > new_position {
@@ -704,6 +705,7 @@ pub async fn move_playlist_item(
             .bind(new_position)
             .bind(original_item.position)
             .bind(item_id)
+            .bind(original_item.playlist_id)
             .execute(pool)
             .await?;
     }
@@ -915,7 +917,6 @@ pub trait LibraryAccess {
     fn delete_playlist(&self, playlist_id: i64) -> sqlx::Result<()>;
     fn rename_playlist(&self, playlist_id: i64, name: &str) -> sqlx::Result<()>;
     fn get_all_playlists(&self) -> sqlx::Result<Arc<Vec<Playlist>>>;
-    fn get_playlist(&self, playlist_id: i64) -> sqlx::Result<Arc<Playlist>>;
     fn get_playlist_tracks(&self, playlist_id: i64) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>>;
     fn get_playlist_tracks_sorted(
         &self,
@@ -947,7 +948,6 @@ pub trait LibraryAccess {
     fn artist_ids_for_album(&self, album_id: i64) -> sqlx::Result<Vec<(i64, String)>>;
     fn artist_ids_for_track(&self, track_id: i64) -> sqlx::Result<Vec<(i64, String)>>;
     fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>>;
-    fn lyrics_for_track(&self, track_id: i64) -> sqlx::Result<Option<String>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,11 +1044,6 @@ impl LibraryAccess for App {
     fn get_all_playlists(&self) -> sqlx::Result<Arc<Vec<Playlist>>> {
         let pool: &Pool = self.global();
         blocking_query("get_all_playlists", get_all_playlists(&pool.0))
-    }
-
-    fn get_playlist(&self, playlist_id: i64) -> sqlx::Result<Arc<Playlist>> {
-        let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_playlist(&pool.0, playlist_id))
     }
 
     fn get_playlist_tracks(&self, playlist_id: i64) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
@@ -1152,10 +1147,5 @@ impl LibraryAccess for App {
     fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>> {
         let pool: &Pool = self.global();
         crate::RUNTIME.block_on(list_album_paths(&pool.0, album_id))
-    }
-
-    fn lyrics_for_track(&self, track_id: i64) -> sqlx::Result<Option<String>> {
-        let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(lyrics_for_track(&pool.0, track_id))
     }
 }
