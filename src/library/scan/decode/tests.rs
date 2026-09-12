@@ -64,7 +64,7 @@ fn missing_or_zero_metadata_duration_uses_the_decoder_fallback() {
 
 #[test]
 fn process_album_art_creates_thumbnail() {
-    let image = fs::read("assets/tests/audio-fixtures/cover.jpg").unwrap();
+    let image = crate::test_support::audio_fixtures::fixture("cover.jpg");
     let (full, thumb) = process_album_art(&image).unwrap();
     assert!(!full.is_empty());
     assert!(thumb.starts_with(b"BM"));
@@ -77,11 +77,13 @@ fn owned_small_art_reuses_its_original_buffer() {
     DynamicImage::ImageRgb8(image)
         .write_to(&mut encoded, image::ImageFormat::Png)
         .unwrap();
-    let encoded = encoded.into_inner();
-    let original_ptr = encoded.as_ptr();
+    let boxed = encoded.into_inner().into_boxed_slice();
+    // capture the pointer after boxing: `into_boxed_slice` shrinks spare
+    // capacity and may move the allocation, while the reuse branch below must
+    // hand back exactly this buffer
+    let original_ptr = boxed.as_ptr();
 
-    let (processed, _) =
-        process_owned_album_art(RawArt::Owned(encoded.into_boxed_slice())).unwrap();
+    let (processed, _) = process_owned_album_art(RawArt::Owned(boxed)).unwrap();
     let ProcessedImage::Owned(processed) = processed else {
         panic!("owned artwork should remain owned");
     };
@@ -111,9 +113,8 @@ fn shared_small_art_reuses_its_original_buffer() {
 fn read_metadata_for_path_prefers_sidecar_lyrics() {
     register_test_media_providers();
     let dir = TestDir::new("decode-meta-test");
-    let src = std::path::Path::new("assets/tests/audio-fixtures/fixture.flac");
     let track = dir.utf8_join("track.flac");
-    fs::copy(src, &track).unwrap();
+    fs::write(&track, crate::test_support::audio_fixtures::fixture("fixture.flac")).unwrap();
     fs::write(dir.join("track.lrc"), "[00:00.00] override lyrics").unwrap();
 
     let info = read_metadata_for_path(&track).unwrap();
@@ -162,10 +163,9 @@ fn read_metadata_for_garbage_file_is_corrupt() {
 fn read_metadata_for_truncated_file_is_corrupt() {
     register_test_media_providers();
     let dir = TestDir::new("decode-truncated-test");
-    let src = std::path::Path::new("assets/tests/audio-fixtures/fixture.flac");
     let track = dir.utf8_join("truncated.flac");
     // a truncated stream is corrupt, not temporary
-    let bytes = fs::read(src).unwrap();
+    let bytes = crate::test_support::audio_fixtures::fixture("fixture.flac");
     fs::write(&track, &bytes[..bytes.len() / 4]).unwrap();
 
     let err = read_metadata_for_path(&track).unwrap_err();
@@ -178,9 +178,8 @@ fn read_metadata_for_unreadable_file_is_transient() {
     use std::os::unix::fs::PermissionsExt;
     register_test_media_providers();
     let dir = TestDir::new("decode-transient-test");
-    let src = std::path::Path::new("assets/tests/audio-fixtures/fixture.flac");
     let track = dir.utf8_join("locked.flac");
-    fs::copy(src, &track).unwrap();
+    fs::write(&track, crate::test_support::audio_fixtures::fixture("fixture.flac")).unwrap();
     fs::set_permissions(&track, fs::Permissions::from_mode(0o000)).unwrap();
 
     // skip if we can still open it (e.g. running as root)

@@ -1254,11 +1254,10 @@ where
         )
         .when(show_cover, |this| {
             this.child(
-                managed_image(
-                    SharedString::from(format!("{id_prefix}-thumb-{index}")),
-                    ManagedImageKey::HttpCover(track.cover_url.clone()),
-                )
-                .thumb(),
+                // composite (name, index) id: zero per-frame allocation; the
+                // image is scoped under this row's `.id((id_prefix, index))`
+                managed_image(("thumb", index), ManagedImageKey::HttpCover(track.cover_url.clone()))
+                    .thumb(),
             )
         })
         .child(
@@ -1295,7 +1294,8 @@ where
         )
         .child(
             button()
-                .id(SharedString::from(format!("{id_prefix}-like-{index}")))
+                // composite ids scoped under the row's `.id((id_prefix, index))`
+                .id(("like", index))
                 .child(icon(if liked { STAR_FILLED } else { STAR }).size(px(14.0)))
                 .text_color(if liked {
                     theme.liked_song
@@ -1309,7 +1309,7 @@ where
         )
         .child(
             button()
-                .id(SharedString::from(format!("{id_prefix}-download-{index}")))
+                .id(("download", index))
                 .child(icon(DOWNLOAD).size(px(14.0)))
                 .text_color(theme.text_secondary)
                 .tooltip(build_tooltip(download_label()))

@@ -79,14 +79,19 @@ impl ImageCache for MelioraImageCache {
         let hash = hash(resource);
 
         if let Some(item) = self.cache.get_mut(&hash) {
-            let current_idx = self
-                .usage_list
-                .iter()
-                .position(|item| *item == hash)
-                .expect("cache has an item usage_list doesn't");
+            // Fast path: the LRU-hot item is already at the front of
+            // usage_list, which covers the vast majority of hits; only cold
+            // hits pay for the O(n) scan + reorder.
+            if self.usage_list.front() != Some(&hash) {
+                let current_idx = self
+                    .usage_list
+                    .iter()
+                    .position(|item| *item == hash)
+                    .expect("cache has an item usage_list doesn't");
 
-            self.usage_list.remove(current_idx);
-            self.usage_list.push_front(hash);
+                self.usage_list.remove(current_idx);
+                self.usage_list.push_front(hash);
+            }
 
             return item.0.get();
         }

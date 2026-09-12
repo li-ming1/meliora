@@ -428,8 +428,14 @@ impl Render for QueueItem {
                                 drag_data = drag_data.with_additional_indices(others);
                             }
 
-                            div.on_drag(drag_data, move |_, _, _, cx| {
-                                DragPreview::new(cx, track_name.clone())
+                            div.on_drag(drag_data, {
+                                // capture a clone: the move closure below must
+                                // not consume the `track_name` reused later in
+                                // this render
+                                let track_name = track_name.clone();
+                                move |_, _, _, cx| {
+                                    DragPreview::new(cx, track_name.clone())
+                                }
                             })
                             .drag_over::<TrackDragData>(
                                 move |style, _, _, _| style.bg(gpui::rgba(0x88888822)),
@@ -480,11 +486,10 @@ impl Render for QueueItem {
                                         .w_full()
                                         .text_ellipsis()
                                         .font_weight(FontWeight::EXTRA_BOLD)
-                                        .child(
-                                            item.name
-                                                .clone()
-                                                .unwrap_or_else(|| tr!("UNKNOWN_TRACK").into()),
-                                        ),
+                                        // reuse the per-frame `track_name`
+                                        // computed above instead of calling
+                                        // tr! again on every frame
+                                        .child(track_name.clone()),
                                 )
                                 .child(
                                     div()

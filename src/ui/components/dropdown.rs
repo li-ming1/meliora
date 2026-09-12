@@ -71,8 +71,13 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
 
         let theme = cx.global::<Theme>();
 
+        // Share the options behind an Rc: the open-popup path clones it into
+        // several closures every frame, which would otherwise deep-clone the
+        // whole SmallVec each time.
+        let options = Rc::new(self.options);
+
         let display_text = if let Some(option) = &self.selected {
-            self.options
+            options
                 .iter()
                 .find(|(v, _)| v == option)
                 .map(|(_, l)| l.clone())
@@ -121,7 +126,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                 let selected_index = self
                     .selected
                     .as_ref()
-                    .and_then(|v| self.options.iter().position(|(x, _)| x == v));
+                    .and_then(|v| options.iter().position(|(x, _)| x == v));
 
                 move |_, window, cx| {
                     cx.stop_propagation();
@@ -136,10 +141,9 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
             });
 
         let popup = if *is_open.read(cx) {
-            let options = self.options.clone();
             let selected_index = self
                 .selected
-                .and_then(|i| self.options.iter().position(|(v, _)| v == &i));
+                .and_then(|i| options.iter().position(|(v, _)| v == &i));
             let highlighted = *highlighted_index.read(cx);
 
             let popup_content = div()
@@ -165,7 +169,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                 })
                 .on_action({
                     let highlighted = highlighted_index.clone();
-                    let options = self.options.clone();
+                    let options = options.clone();
                     move |_: &SelectNext, _, cx| {
                         highlighted.update(cx, |v, cx| {
                             if let Some(v) = v {
@@ -184,7 +188,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                 })
                 .on_action({
                     let highlighted = highlighted_index.clone();
-                    let options = self.options.clone();
+                    let options = options.clone();
                     move |_: &SelectPrev, _, cx| {
                         highlighted.update(cx, |v, cx| {
                             if let Some(v) = v {
@@ -209,7 +213,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                 })
                 .on_action({
                     let highlighted = highlighted_index.clone();
-                    let options = self.options.clone();
+                    let options = options.clone();
                     move |_: &SelectLast, _, cx| {
                         highlighted.write(cx, Some(options.len().saturating_sub(1)));
                     }
@@ -217,7 +221,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                 .on_action({
                     let is_open = is_open.clone();
                     let highlighted = highlighted_index.clone();
-                    let options = self.options.clone();
+                    let options = options.clone();
                     let on_change = self.on_change.clone();
                     move |_: &Confirm, window, cx| {
                         if let Some(option) = highlighted.read(cx).and_then(|i| options.get(i))
@@ -234,7 +238,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                         is_open.write(cx, false);
                     }
                 })
-                .children(options.iter().cloned().enumerate().map(|(idx, option)| {
+                .children(options.iter().enumerate().map(|(idx, option)| {
                     let is_selected = selected_index.is_some_and(|v| v == idx);
                     let is_highlighted = highlighted.is_some_and(|v| v == idx);
                     let label = option.1.clone();
@@ -281,11 +285,12 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                             let highlighted = highlighted_index.clone();
                             let on_change = self.on_change.clone();
                             let is_open = is_open.clone();
+                            let value = option.0.clone();
 
                             move |_, window, cx| {
                                 highlighted.write(cx, Some(idx));
                                 if let Some(on_change) = &on_change {
-                                    (on_change)(&option.0, window, cx);
+                                    (on_change)(&value, window, cx);
                                 }
                                 is_open.write(cx, false);
                             }

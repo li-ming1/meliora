@@ -95,7 +95,10 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
             let is_selected = self.selected.as_ref() == Some(value);
             let on_change = self.on_change.clone();
             let value = value.clone();
-            let segment_id: ElementId = format!("{}-seg-{}", self.id, i).into();
+            // Composite (name, index) id: zero per-frame allocation. Segments
+            // are scoped under this control's own `.id(self.id)` (line below),
+            // so `seg` + index is unique per control.
+            let segment_id = ElementId::named_usize("seg", i);
 
             let segment = div()
                 .id(segment_id)

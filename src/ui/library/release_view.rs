@@ -110,12 +110,13 @@ impl TrackListing {
         &self.original_tracks
     }
 
-    fn track_elements(&self) -> Vec<AnyElement> {
+    /// Returns track rows as a lazy iterator: the caller's `.children(...)`
+    /// consumes it directly, avoiding a per-frame `Vec<AnyElement>` allocation.
+    fn track_elements(&self) -> impl Iterator<Item = AnyElement> + '_ {
         self.tracks
             .iter()
             .cloned()
             .map(|track| track.into_any_element())
-            .collect()
     }
 }
 
