@@ -33,8 +33,8 @@ use std::time::Duration;
 use super::{
     components::button::{ButtonSize, ButtonStyle, button},
     models::{
-        HasLikedState, LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, subscribe_liked_updates,
-        toggle_like, toggle_like_by_id,
+        HasLikedState, LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, is_song_liked,
+        subscribe_liked_updates, toggle_like, toggle_like_by_id,
     },
     scroll_follow::SmoothScrollFollow,
     theme::Theme,
@@ -221,21 +221,10 @@ impl QueueItem {
             })
             .detach();
 
-            // Negative fast path through the cached liked-id set: the set is
-            // reloaded on every liked-playlist change, so "absent" is exact
-            // and skips a block_on DB query per newly-visible row. A hit (or
-            // a cache that has not loaded yet) still queries, because the
-            // stored value must be the playlist_item row id that unlike needs
-            // — is_song_liked only knows the track id.
-            let is_liked = track_id.and_then(|id| {
-                let liked_cache = cx.global::<Models>().liked_ids.read(cx).clone();
-                match liked_cache {
-                    Some(set) if !set.contains(&id) => None,
-                    _ => cx
-                        .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, id)
-                        .unwrap_or_default(),
-                }
-            });
+            // Pure cache read, zero IO: the liked-id set is reloaded on every
+            // liked-playlist change, and is_song_liked yields the track id
+            // convention every row stores (see HasLikedState / is_song_liked).
+            let is_liked = track_id.and_then(|id| is_song_liked(&**cx, id));
 
             subscribe_liked_updates(cx, |this: &QueueItem| this.track_id);
 

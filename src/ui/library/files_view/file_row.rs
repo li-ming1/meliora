@@ -73,7 +73,12 @@ impl FileRowItem {
             // resolved lazily when the menu actually opens, like the rest of
             // the menu tree. Construction used to block_on one DB query plus
             // one stat per row.
-            let is_liked = flat_row.track.as_ref().and_then(|t| t.liked);
+            // TrackRef.liked is the playlist_item row id; rows store the track
+            // id convention (see HasLikedState), so reduce it to a liked flag.
+            let is_liked = flat_row
+                .track
+                .as_ref()
+                .and_then(|t| t.liked.is_some().then_some(t.id));
             subscribe_liked_updates(cx, |this: &FileRowItem| {
                 this.flat_row.track.as_ref().map(|t| t.id)
             });

@@ -412,6 +412,11 @@ pub fn build_models(
 
 pub(crate) const LIKED_SONGS_PLAYLIST_ID: i64 = 1;
 
+/// Like state carried by UI rows. The stored id is always the *track id*:
+/// `Some(track_id)` means the track is in the Liked Songs playlist. It is
+/// display state only — the unlike actions resolve the playlist_item row from
+/// the track id (see `unlike_track` / `toggle_like_by_id`), so nothing may
+/// interpret this value as a playlist_item row id.
 pub(crate) trait HasLikedState {
     fn is_liked(&self) -> Option<i64>;
     fn set_liked(&mut self, item_id: Option<i64>);
@@ -428,8 +433,8 @@ pub(crate) async fn like_track<E: HasLikedState + 'static>(
         db::add_playlist_item(&pool, LIKED_SONGS_PLAYLIST_ID, track_id).await
     });
 
-    let new_id = match task.await {
-        Ok(Ok(id)) => id,
+    match task.await {
+        Ok(Ok(_)) => {}
         Ok(Err(err)) => {
             tracing::error!("could not like song: {err:?}");
             return;
@@ -441,7 +446,7 @@ pub(crate) async fn like_track<E: HasLikedState + 'static>(
     };
 
     entity.update(cx, |this, cx| {
-        this.set_liked(Some(new_id));
+        this.set_liked(Some(track_id));
         cx.notify();
     });
 
@@ -450,21 +455,28 @@ pub(crate) async fn like_track<E: HasLikedState + 'static>(
     });
 }
 
+/// Removes `track_id` from the Liked Songs playlist. The playlist item row is
+/// resolved from the track id (`remove_tracks_from_playlist` does the
+/// lookup-and-delete in one transaction), so this never depends on which id
+/// the calling row happened to store.
 pub(crate) async fn unlike_track<E: HasLikedState + 'static>(
-    item_id: i64,
+    track_id: i64,
     entity: Entity<E>,
     playlist_tracker: Entity<PlaylistInfoTransfer>,
     pool: sqlx::SqlitePool,
     cx: &mut AsyncApp,
 ) {
-    let task = crate::RUNTIME.spawn(async move { db::remove_playlist_item(&pool, item_id).await });
+    let task = crate::RUNTIME.spawn(async move {
+        let track_ids = [track_id];
+        db::remove_tracks_from_playlist(&pool, LIKED_SONGS_PLAYLIST_ID, &track_ids).await
+    });
 
     match task.await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
             tracing::error!("could not unlike song: {err:?}");
             entity.update(cx, |this, cx| {
-                this.set_liked(Some(item_id));
+                this.set_liked(Some(track_id));
                 cx.notify();
             });
             return;
@@ -491,14 +503,16 @@ pub(crate) fn toggle_like<E: HasLikedState + 'static>(
     // Defer so this is safe to call from inside a listener, where the entity
     // is already leased and synchronous read/update would re-enter and panic.
     cx.defer(move |cx| {
-        let is_liked = entity.read(cx).is_liked();
-        if let Some(item_id) = is_liked {
+        // The stored id is display state only (see HasLikedState); the unlike
+        // always targets this function's `track_id`, never the stored value.
+        let is_liked = entity.read(cx).is_liked().is_some();
+        if is_liked {
             entity.update(cx, |this, cx| {
                 this.set_liked(None);
                 cx.notify();
             });
             cx.spawn(async move |cx| {
-                unlike_track(item_id, entity, playlist_tracker, pool, cx).await;
+                unlike_track(track_id, entity, playlist_tracker, pool, cx).await;
             })
             .detach();
         } else {
@@ -510,6 +524,10 @@ pub(crate) fn toggle_like<E: HasLikedState + 'static>(
     });
 }
 
+/// Like/unlike without a row entity. `is_liked` only carries the liked flag —
+/// `Some(_)` removes `track_id` from the Liked Songs playlist, `None` adds it.
+/// The id inside `Some` is deliberately ignored: callers historically passed
+/// either the track id or the playlist_item row id, and both mean "liked".
 pub(crate) fn toggle_like_by_id(track_id: i64, is_liked: Option<i64>, cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
     let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
@@ -517,7 +535,11 @@ pub(crate) fn toggle_like_by_id(track_id: i64, is_liked: Option<i64>, cx: &mut A
     cx.spawn(async move |cx| {
         let task = crate::RUNTIME.spawn(async move {
             match is_liked {
-                Some(item_id) => db::remove_playlist_item(&pool, item_id).await,
+                Some(_) => {
+                    let track_ids = [track_id];
+                    db::remove_tracks_from_playlist(&pool, LIKED_SONGS_PLAYLIST_ID, &track_ids)
+                        .await
+                }
                 None => db::add_playlist_item(&pool, LIKED_SONGS_PLAYLIST_ID, track_id)
                     .await
                     .map(|_| ()),
@@ -633,11 +655,12 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
     .detach();
 }
 
-/// Like-state of `track_id` against the cached set. Mirrors
-/// `playlist_has_track`'s `Option<i64>` shape so it can replace
-/// row-construction queries directly. Returns `None` (unknown) until the
-/// first reload lands — callers observe `Models.liked_ids`, so the answer
-/// self-corrects on the next notification without any DB access.
+/// Like-state of `track_id` against the cached set: `Some(track_id)` when the
+/// track is in the Liked Songs playlist, `None` otherwise — the exact value a
+/// row stores in its `is_liked` field (see `HasLikedState`). Returns `None`
+/// (unknown) until the first reload lands — callers observe
+/// `Models.liked_ids`, so the answer self-corrects on the next notification
+/// without any DB access.
 pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     let cached = cx.global::<Models>().liked_ids.read(cx).clone();
     cached.and_then(|set| set.contains(&track_id).then_some(track_id))
