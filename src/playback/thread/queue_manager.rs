@@ -924,10 +924,20 @@ impl QueueManager {
         let current = self.queue_next.saturating_sub(1);
 
         let res = if index == current {
-            let new_path = Self::next_playable_from(&queue, current)
-                .and_then(|idx| queue.get(idx))
-                .map(|v| v.get_path().clone());
-            DequeueResult::RemovedCurrent { new_path }
+            // The next track shifts into the removed slot. Skip any unplayable
+            // items and keep the cursor on the track that will actually play:
+            // `current_position()` is what the thread reports via
+            // QueuePositionChanged, so it must match the opened path or the UI
+            // resolves the wrong (or no) queue item for the new track.
+            match Self::next_playable_from(&queue, current) {
+                Some(new_index) => {
+                    self.queue_next = new_index + 1;
+                    DequeueResult::RemovedCurrent {
+                        new_path: Some(queue[new_index].get_path().clone()),
+                    }
+                }
+                None => DequeueResult::RemovedCurrent { new_path: None },
+            }
         } else if index < current {
             self.queue_next -= 1;
             DequeueResult::Removed {
@@ -994,10 +1004,21 @@ impl QueueManager {
 
         let res = if removed_current {
             let current = current.expect("removed_current implies current is Some");
-            let new_path = Self::next_playable_from(&queue, current - items_before_current)
-                .and_then(|idx| queue.get(idx))
-                .map(|v| v.get_path().clone());
-            DequeueManyResult::RemovedCurrent { new_path }
+            // Removing items before the current track shifts its slot left, so
+            // the cursor must follow (current - items_before_current) and then
+            // skip unplayable items. Leaving `queue_next` stale made
+            // `current_position()` report the removed slot (or None), so no
+            // QueuePositionChanged reached the UI and the info section kept
+            // the cleared metadata of the removed track ("Unknown Track").
+            match Self::next_playable_from(&queue, current - items_before_current) {
+                Some(new_index) => {
+                    self.queue_next = new_index + 1;
+                    DequeueManyResult::RemovedCurrent {
+                        new_path: Some(queue[new_index].get_path().clone()),
+                    }
+                }
+                None => DequeueManyResult::RemovedCurrent { new_path: None },
+            }
         } else if self.queue_next > 0 {
             self.queue_next -= items_before_current;
             DequeueManyResult::Removed {
@@ -1416,10 +1437,11 @@ mod tests {
     use serde_json::json;
     use tokio::sync::watch;
 
-    use super::{DequeueManyResult, MoveItemsResult, QueueManager, UndoResult};
+    use super::{DequeueManyResult, DequeueResult, MoveItemsResult, QueueManager, UndoResult};
     use crate::{
         playback::{queue::QueueItemData, session_storage::PlaybackSessionData},
         settings::playback::PlaybackSettings,
+        test_support::TestDir,
     };
 
     #[derive(Debug, Clone, PartialEq)]
@@ -1892,5 +1914,110 @@ mod tests {
 
         assert!(!matches!(manager.undo_last_action(), UndoResult::None));
         assert_eq!(snapshot(&manager), before);
+    }
+
+    /// Queue items whose paths exist on disk, so `item_is_playable` (a
+    /// `path.exists()` check for local files) accepts them and
+    /// `next_playable_from` can advance onto them.
+    fn playable_items(dir: &TestDir, ids: &[i64]) -> Vec<QueueItemData> {
+        ids.iter()
+            .map(|&id| {
+                let name = format!("meliora-dequeue-{id}.flac");
+                let path = dir.join(&name);
+                std::fs::write(&path, b"").expect("write playable temp file");
+                serde_json::from_value(json!({
+                    "db_id": id,
+                    "db_album_id": id / 10,
+                    "path": path.to_string_lossy(),
+                }))
+                .expect("valid queue item")
+            })
+            .collect()
+    }
+
+    /// Regression: removing the current track together with items before it
+    /// must move the cursor onto the track playback resumes on. A stale
+    /// `queue_next` made `current_position()` return None (or the removed
+    /// slot), so no QueuePositionChanged reached the UI and the info section
+    /// kept the removed track's cleared metadata ("Unknown Track") while the
+    /// audio already played the next item.
+    #[test]
+    fn dequeue_many_removing_current_with_earlier_items_keeps_cursor_on_played_track() {
+        let dir = TestDir::new("meliora-queue-dequeue-many-current");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3, 4]));
+        manager.set_position(2); // current = index 2 (item 3)
+
+        let res = manager.dequeue_many(vec![0, 2]); // one before current + current
+
+        match res {
+            DequeueManyResult::RemovedCurrent { new_path } => {
+                // the track after the removed current shifted into its slot
+                let expected = {
+                    let queue = manager.queue.read().expect("poisoned queue lock");
+                    queue[1].get_path().clone()
+                };
+                assert_eq!(new_path.as_ref(), Some(&expected));
+            }
+            other => panic!("expected RemovedCurrent, got {other:?}"),
+        }
+        assert_eq!(manager.current_position(), Some(1));
+    }
+
+    /// Removing the current track must report the position of the track that
+    /// was actually opened, so the UI resolves the right queue item.
+    #[test]
+    fn dequeue_removing_current_reports_position_of_the_opened_track() {
+        let dir = TestDir::new("meliora-queue-dequeue-current");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
+        manager.set_position(1); // current = index 1 (item 2)
+
+        let res = manager.dequeue(1);
+
+        match res {
+            DequeueResult::RemovedCurrent { new_path } => {
+                let expected = {
+                    let queue = manager.queue.read().expect("poisoned queue lock");
+                    queue[1].get_path().clone()
+                };
+                assert_eq!(new_path.as_ref(), Some(&expected));
+            }
+            other => panic!("expected RemovedCurrent, got {other:?}"),
+        }
+        assert_eq!(manager.current_position(), Some(1));
+    }
+
+    /// When the item that shifts into the removed slot is unplayable, the
+    /// advance skips it; the cursor must follow onto the played item instead
+    /// of parking on the unplayable slot.
+    #[test]
+    fn dequeue_removing_current_skips_unplayable_items_and_follows_the_played_track() {
+        let dir = TestDir::new("meliora-queue-dequeue-unplayable");
+        let mut items = playable_items(&dir, &[1, 2, 3]);
+        // point the middle item at a file that does not exist
+        let missing = dir.join("meliora-dequeue-missing.flac");
+        items[1] = serde_json::from_value(json!({
+            "db_id": 2,
+            "db_album_id": 0,
+            "path": missing.to_string_lossy(),
+        }))
+        .expect("valid queue item");
+
+        let mut manager = manager_with_queue(items);
+        manager.set_position(0); // current = index 0 (item 1)
+
+        let res = manager.dequeue(0);
+
+        match res {
+            DequeueResult::RemovedCurrent { new_path } => {
+                // item 2 is unplayable, so playback resumes on item 3 (index 1)
+                let expected = {
+                    let queue = manager.queue.read().expect("poisoned queue lock");
+                    queue[1].get_path().clone()
+                };
+                assert_eq!(new_path.as_ref(), Some(&expected));
+            }
+            other => panic!("expected RemovedCurrent, got {other:?}"),
+        }
+        assert_eq!(manager.current_position(), Some(1));
     }
 }

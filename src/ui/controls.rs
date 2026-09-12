@@ -201,12 +201,16 @@ impl HasLikedState for InfoSection {
 }
 
 fn update_track_metadata(this: &mut InfoSection, metadata: &crate::media::metadata::Metadata) {
-    this.track_name = metadata.name.clone().map(SharedString::from);
-    this.artist_name = metadata
-        .artist
-        .clone()
-        .or(metadata.album_artist.clone())
-        .map(SharedString::from);
+    // Only overwrite with values the stream actually provides: an online file
+    // can carry tags (or just cover art / ReplayGain frames) without a usable
+    // title/artist, and wiping the queue-item-derived names for those left
+    // the play bar on "Unknown Track" until the next track change.
+    if let Some(name) = metadata.name.clone() {
+        this.track_name = Some(SharedString::from(name));
+    }
+    if let Some(artist) = metadata.artist.clone().or(metadata.album_artist.clone()) {
+        this.artist_name = Some(SharedString::from(artist));
+    }
 }
 
 fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSection>) {
@@ -233,22 +237,42 @@ fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSect
     let data = item.get_data(cx);
     this.queue_item_data = Some(data.clone());
 
-    let subscription = cx.observe(&data, |this: &mut InfoSection, data, cx| {
+    // SongChanged is broadcast before QueuePositionChanged, so this can run
+    // while the UI position still points at the previous track. Only fill the
+    // names from a slot that actually holds the track that just started -
+    // filling from a stale slot latches the wrong track's names (the
+    // fill-if-none policy then blocks the position-change resolve from
+    // correcting them).
+    let slot_is_current = this
+        .current_track_path
+        .as_ref()
+        .is_some_and(|path| path == item.get_path());
+
+    let item_path = item.get_path().clone();
+    let subscription = cx.observe(&data, move |this: &mut InfoSection, data, cx| {
         let data = data.read(cx).clone();
         if let Some(data) = data {
-            if this.track_name.is_none() {
-                this.track_name = data.name;
+            if this
+                .current_track_path
+                .as_ref()
+                .is_some_and(|path| *path == item_path)
+            {
+                if this.track_name.is_none() {
+                    this.track_name = data.name;
+                }
+                if this.artist_name.is_none() {
+                    this.artist_name = data.artist_name;
+                }
+                cx.notify();
             }
-            if this.artist_name.is_none() {
-                this.artist_name = data.artist_name;
-            }
-            cx.notify();
         }
     });
     this.queue_item_subscription = Some(subscription);
 
     let data = data.read(cx).clone();
-    if let Some(data) = data {
+    if slot_is_current
+        && let Some(data) = data
+    {
         if this.track_name.is_none() {
             this.track_name = data.name;
         }
