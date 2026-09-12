@@ -107,9 +107,11 @@ const RENDER_CACHE_MAX: usize = 64;
 
 /// Bounded set of decoded covers shared by all `ManagedImage` elements.
 /// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
-/// are different decodes. Evicted entries simply drop the `Arc`; the owning
-/// element's `on_release` still runs `drop_image_from_app` when it unmounts,
-/// so stray atlas textures are reclaimed by that path, never here.
+/// are different decodes. The cache is the SINGLE owner of a cached cover's
+/// atlas tile: replacements and evictions are the only places that queue a
+/// tile for reclamation (via `queue_tile_drop`), exactly once per image.
+/// Element `on_release` must not drop cached tiles — that double-frees the
+/// tile once the entry is later evicted (etagere assertion, 2026-09-12).
 static RENDER_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -218,8 +220,9 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
 
     // Replace an existing entry (possibly decoded by a concurrent element) or
     // evict the least-recently-used slot once the budget is full. Both paths
-    // queue the dropped image for atlas-tile reclamation: the element that
-    // painted it may have unmounted long ago, so nothing else will.
+    // queue the dropped image for atlas-tile reclamation — this is the ONLY
+    // reclamation path for cached tiles (single owner), so each image's tile
+    // is dropped exactly once.
     if let Some((old_image, old_bytes)) =
         cache.cache.insert(cache_key.clone(), (image, new_bytes))
     {
@@ -389,6 +392,12 @@ struct ManagedImageState {
     /// （§33 Cancellation），中止后任务停在下一个 await 点，不会再把
     /// 结果写回 bridge 或 RENDER_CACHE。
     task: Option<tokio::task::AbortHandle>,
+    /// 瓦片归 RENDER_CACHE 单独所有（缩略图，thumb > 0）。on_release 不再
+    /// 直接 drop_image：缓存淘汰时经 PENDING_TILE_DROPS 恰好回收一次，
+    /// 这里再 drop 就是同一瓦片的二次释放（etagere 断言，2026-09-12
+    /// 每日推荐滚动闪退）。全尺寸图（thumb = 0）不入缓存，唯一所有者是
+    /// 本状态，on_release 仍负责回收。
+    cached_by_render_cache: bool,
 }
 
 pub enum ImageReady {
@@ -507,11 +516,15 @@ impl Element for ManagedImage {
             .detach();
 
             cx.on_release(|this: &mut ManagedImageState, cx| {
-                // 先中止未完成的取回任务，再回收已解码图像的 atlas 资源。
+                // 先中止未完成的取回任务。瓦片回收按所有权分流：缩略图的
+                // atlas 瓦片归 RENDER_CACHE，淘汰时恰好释放一次；这里再
+                // drop 就是二次释放。只有不入缓存的全尺寸图才由本状态回收。
                 if let Some(task) = this.task.take() {
                     task.abort();
                 }
-                if let Some(image) = this.image.clone() {
+                if !this.cached_by_render_cache
+                    && let Some(image) = this.image.clone()
+                {
                     drop_image_from_app(cx, image);
                 }
             })
@@ -521,6 +534,7 @@ impl Element for ManagedImage {
                 image: None,
                 bridge: Some(bridge),
                 task: Some(abort),
+                cached_by_render_cache: thumb_size > 0,
             }
         });
 
