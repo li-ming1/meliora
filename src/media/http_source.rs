@@ -10,19 +10,20 @@
 //! string, so queue/session serialization needs no changes.
 
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashMap, hash_map::DefaultHasher},
     ffi::OsStr,
     hash::{Hash, Hasher},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
-        LazyLock, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use symphonia::core::io::MediaSource;
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use url::Url;
 use zed_reqwest::{
     StatusCode,
@@ -231,17 +232,85 @@ fn prune_image_cache() {
     }
 }
 
+/// 封面下载的全局并发上限。快速滚动在线列表时一次可能同时挂载几十个
+/// 封面元素，无上限时就是 N 个元素打 N 个并发 HTTP 请求；这里把真正
+/// 在途的下载限制在 4 个。许可只在 RUNTIME 的 async 上下文里 await，
+/// 不阻塞线程。
+static COVER_FETCH_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(4));
+
+/// 正在下载中的封面 URL → per-URL 闸门。同一 URL 的并发调用合并为一次
+/// 下载：第一个拿到闸门的调用者负责下载并写盘，其余调用者等待闸门
+/// 释放后重读磁盘缓存命中，不再发重复请求。调用方都在 RUNTIME 上
+/// （async），闸门用 tokio 的 `AsyncMutex` 才能跨 await 持有；查表的
+/// std Mutex 只在无 await 的同步临界区里短暂持有。
+static INFLIGHT_COVERS: LazyLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 取出（或新建）`url` 的闸门；查表临界区不含任何 await。
+fn inflight_cover_gate(url: &str) -> Arc<AsyncMutex<()>> {
+    let mut inflight = INFLIGHT_COVERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    inflight
+        .entry(url.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+/// 下载结束后回收闸门条目，防止 in-flight 表无限增长。只有表中仍是
+/// 自己这一代闸门时才移除（避免误删后来者新建的）；等待方拿到闸门后
+/// 也会走到这里，保证条目最终一定被清掉。
+fn release_inflight_cover_gate(url: &str, gate: &Arc<AsyncMutex<()>>) {
+    let mut inflight = INFLIGHT_COVERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if inflight
+        .get(url)
+        .is_some_and(|current| Arc::ptr_eq(current, gate))
+    {
+        inflight.remove(url);
+    }
+}
+
 /// 带磁盘缓存的封面/头像加载：先读盘，未命中才下载并写盘。
 /// 语义与 `http_cover_bytes` 一致（`Ok(None)` 表示无图或下载失败）。
+///
+/// 并发控制：同 URL 的并发调用经 per-URL 闸门合并为一次下载，等待方
+/// 复用磁盘缓存结果；不同 URL 的在途下载受 `COVER_FETCH_PERMITS`
+/// 限制。下载失败仍返回 `Ok(None)`，调用方走无图占位回退。
 pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     if let Some(bytes) = read_cached_cover(url).await {
         return Ok(Some(bytes));
     }
 
-    let bytes = http_cover_bytes(url).await?;
+    let gate = inflight_cover_gate(url);
+    let _gate = gate.lock().await;
+
+    // 拿到闸门后再查一次盘：前一个持有者可能已经把这张图下载写盘了。
+    if let Some(bytes) = read_cached_cover(url).await {
+        release_inflight_cover_gate(url, &gate);
+        return Ok(Some(bytes));
+    }
+
+    // 真正的 HTTP 下载限制在 4 个并发（写盘不占许可）。
+    let bytes = {
+        let _permit = COVER_FETCH_PERMITS
+            .acquire()
+            .await
+            .expect("semaphore is never closed");
+        match http_cover_bytes(url).await {
+            Ok(bytes) => bytes,
+            // 失败路径也要回收闸门条目，再原样传出错误。
+            Err(e) => {
+                release_inflight_cover_gate(url, &gate);
+                return Err(e);
+            }
+        }
+    };
     if let Some(bytes) = &bytes {
         write_cached_cover(url, bytes).await;
     }
+    release_inflight_cover_gate(url, &gate);
     Ok(bytes)
 }
 

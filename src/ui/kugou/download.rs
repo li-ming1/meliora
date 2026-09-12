@@ -2,7 +2,9 @@
 //! an LRC lyrics sidecar, and the cover + tags embedded into the audio file.
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
+    sync::{LazyLock, OnceLock, RwLock},
     time::Duration,
 };
 
@@ -24,6 +26,18 @@ use crate::{
 use zed_reqwest::header::{USER_AGENT, HeaderValue};
 
 use super::extract_song_url;
+
+/// 同时进行的曲目下载数上限（每个下载几十 MB 音频 + 写盘 + 标签嵌入）。
+static DOWNLOAD_PERMITS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(3));
+
+/// 正在下载中的曲目 hash。进行中的曲目忽略重复点击；无论成败，下载
+/// 结束后都会移除，失败后允许重下。
+static PENDING_DOWNLOADS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+fn pending_downloads() -> &'static RwLock<HashSet<String>> {
+    PENDING_DOWNLOADS.get_or_init(|| RwLock::new(HashSet::new()))
+}
 
 /// Same Android user agent the signed client uses; the CDN returns a 403 for
 /// the default reqwest UA.
@@ -230,7 +244,23 @@ pub async fn download_track(
 /// Fire-and-forget entry point used by the UI: downloads on the Tokio runtime
 /// and reports the outcome with a toast. Cheap, so it is safe to call from a
 /// click handler.
+///
+/// 去重 + 并发上限：同一曲目在下载进行中时的再次点击直接忽略；全局
+/// 同时只允许 `DOWNLOAD_PERMITS` 个下载在跑，其余在 RUNTIME 上排队
+/// await（不阻塞线程）。PENDING 条目在下载结束后移除，失败也允许重下。
 pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
+    // 去重检查是同步临界区，不跨 await 持锁（对齐 kugou.rs 的
+    // PENDING_FETCHES 模式）。
+    let key = track.hash.clone();
+    if !pending_downloads()
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone())
+    {
+        tracing::info!(hash = %track.hash, "kugou download already in flight; ignoring click");
+        return;
+    }
+
     let dir = cx
         .global::<crate::settings::SettingsGlobal>()
         .model
@@ -240,11 +270,25 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
     cx.spawn(async move |cx| {
         let client = crate::kugou::shared_client();
         let result = crate::RUNTIME
-            .spawn(async move { download_track(&client, &track, &dir).await })
+            .spawn(async move {
+                // 排队等待许可也在 RUNTIME 上，不占下载线程。
+                let _permit = DOWNLOAD_PERMITS
+                    .acquire()
+                    .await
+                    .expect("semaphore is never closed");
+                download_track(&client, &track, &dir).await
+            })
             .await
             .ok()
             .and_then(Result::ok)
             .ok_or_else(|| "download task panicked".to_string());
+
+        // 无论成败都移除进行中标记（防失败后永远无法重下），再发提示。
+        pending_downloads()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
         cx.update(|_cx| match result {
             Ok(path) => emit_toast(Toast::success(tr!(
                 "KUGOU_DOWNLOADED",

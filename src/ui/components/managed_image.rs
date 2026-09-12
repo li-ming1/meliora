@@ -384,6 +384,11 @@ type ImageBridge = Arc<OnceLock<Option<Arc<RenderImage>>>>;
 struct ManagedImageState {
     image: Option<Arc<RenderImage>>,
     bridge: Option<ImageBridge>,
+    /// 取回任务的取消句柄。元素 unmount（`on_release`）时中止任务：
+    /// 为已经看不见的元素继续做 DB 查询 / HTTP 下载 / 解码是纯浪费
+    /// （§33 Cancellation），中止后任务停在下一个 await 点，不会再把
+    /// 结果写回 bridge 或 RENDER_CACHE。
+    task: Option<tokio::task::AbortHandle>,
 }
 
 pub enum ImageReady {
@@ -471,9 +476,19 @@ impl Element for ManagedImage {
                 bridge_clone.set(image).ok();
                 result
             });
+            let abort = handle.abort_handle();
 
             cx.spawn(async move |this, cx| {
-                let result = handle.await.unwrap();
+                // on_release 中止任务后 handle 返回 JoinError：元素已经
+                // 不在了，不写回任何状态，也不再触发 notify。
+                let result = match handle.await {
+                    Ok(result) => result,
+                    Err(e) if e.is_cancelled() => return,
+                    Err(e) => {
+                        error!("Image retrieve task failed: {:?}", e);
+                        return;
+                    }
+                };
                 match result {
                     Ok(Some(image)) => {
                         this.update(cx, |this: &mut ManagedImageState, cx| {
@@ -492,6 +507,10 @@ impl Element for ManagedImage {
             .detach();
 
             cx.on_release(|this: &mut ManagedImageState, cx| {
+                // 先中止未完成的取回任务，再回收已解码图像的 atlas 资源。
+                if let Some(task) = this.task.take() {
+                    task.abort();
+                }
                 if let Some(image) = this.image.clone() {
                     drop_image_from_app(cx, image);
                 }
@@ -501,6 +520,7 @@ impl Element for ManagedImage {
             ManagedImageState {
                 image: None,
                 bridge: Some(bridge),
+                task: Some(abort),
             }
         });
 
