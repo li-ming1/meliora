@@ -14,7 +14,7 @@ use crate::{
     library::{
         db::{self, LibraryAccess, PlaylistTrackRow, PlaylistTrackSortMethod},
         playlist::export_playlist,
-        types::{Playlist, PlaylistType},
+        types::{DBString, Playlist, PlaylistType},
     },
     playback::queue::QueueItemData,
     ui::{
@@ -38,7 +38,7 @@ use crate::{
         },
         library::collection_summary::format_collection_summary,
         library::track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
-        models::{Models, PlaylistEvent},
+        models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaylistEvent},
         theme::Theme,
         util::{create_or_retrieve_view, prune_views},
     },
@@ -175,6 +175,9 @@ impl Render for PlaylistTrackItem {
 pub struct PlaylistView {
     playlist: Arc<Playlist>,
     playlist_track_ids: Arc<Vec<PlaylistTrackRow>>,
+    /// Bumped on every load so a slow load that finishes after a newer one
+    /// cannot overwrite it (same guard as `Table::reload_rows`).
+    load_generation: u64,
     views: Entity<FxHashMap<usize, Entity<PlaylistTrackItem>>>,
     render_counter: Entity<usize>,
     focus_handle: FocusHandle,
@@ -183,6 +186,27 @@ pub struct PlaylistView {
     drag_drop_manager: Entity<DragDropListManager>,
     list_id: gpui::ElementId,
     sort_method: PlaylistTrackSortMethod,
+}
+
+/// Placeholder shown until the background load lands: the id is already
+/// known, and the Liked Songs playlist is a fixed system playlist (models::
+/// LIKED_SONGS_PLAYLIST_ID), so its header can render correctly right away.
+/// Everything else fills in when `reload` completes.
+fn placeholder_playlist(playlist_id: i64) -> Playlist {
+    let is_liked_songs = playlist_id == LIKED_SONGS_PLAYLIST_ID;
+    Playlist {
+        id: playlist_id,
+        name: DBString::from(if is_liked_songs { "Liked Songs" } else { "" }),
+        created_at: chrono::Utc::now(),
+        playlist_type: if is_liked_songs {
+            PlaylistType::System
+        } else {
+            PlaylistType::User
+        },
+        position: 0,
+        track_count: 0,
+        total_duration: 0,
+    }
 }
 
 impl PlaylistView {
@@ -194,7 +218,6 @@ impl PlaylistView {
             let config = DragDropListConfig::new(list_id.clone(), px(PLAYLIST_ITEM_HEIGHT));
             let drag_drop_manager = DragDropListManager::new(cx, config);
 
-            let playlist = cx.get_playlist(playlist_id).unwrap();
             let sort_method = cx
                 .global::<Models>()
                 .playlist_sort_methods
@@ -202,9 +225,6 @@ impl PlaylistView {
                 .get(&playlist_id)
                 .copied()
                 .unwrap_or(PlaylistTrackSortMethod::Custom);
-            let playlist_track_ids = cx
-                .get_playlist_tracks_sorted(playlist_id, sort_method)
-                .unwrap();
 
             cx.subscribe(
                 &playlist_tracker,
@@ -212,13 +232,7 @@ impl PlaylistView {
                     if let PlaylistEvent::PlaylistUpdated(id) = ev
                         && *id == this.playlist.id
                     {
-                        this.playlist = cx.get_playlist(this.playlist.id).unwrap();
-                        this.playlist_track_ids = cx
-                            .get_playlist_tracks_sorted(this.playlist.id, this.sort_method)
-                            .unwrap();
-
-                        this.views = cx.new(|_| FxHashMap::default());
-                        this.render_counter = cx.new(|_| 0);
+                        this.reload(cx);
                     }
                 },
             )
@@ -250,9 +264,10 @@ impl PlaylistView {
             let render_counter = cx.new(|_| 0);
             let scroll_handle = UniformListScrollHandle::new();
 
-            Self {
-                playlist,
-                playlist_track_ids,
+            let mut this = Self {
+                playlist: Arc::new(placeholder_playlist(playlist_id)),
+                playlist_track_ids: Arc::new(Vec::new()),
+                load_generation: 0,
                 views,
                 render_counter,
                 focus_handle,
@@ -261,8 +276,58 @@ impl PlaylistView {
                 drag_drop_manager,
                 list_id,
                 sort_method,
-            }
+            };
+            // Opening the view loads the playlist header + its sorted track
+            // list on the runtime (see reload); until it lands the view shows
+            // the placeholder header and an empty list.
+            this.reload(cx);
+            this
         })
+    }
+
+    /// Loads the playlist header and its sorted track list on the background
+    /// runtime: opening the view (and every PlaylistUpdated reload / sort
+    /// change) used to block the UI thread on the playlist aggregate plus a
+    /// full-table JOIN. The view keeps showing its previous data until the
+    /// new rows land; a generation guard drops results superseded by a newer
+    /// load.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        let generation = self.load_generation;
+        let playlist_id = self.playlist.id;
+        let sort_method = self.sort_method;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let loaded = crate::RUNTIME
+                .spawn(async move {
+                    let playlist = db::get_playlist(&pool, playlist_id).await.ok();
+                    let tracks = db::get_playlist_tracks_sorted(&pool, playlist_id, sort_method)
+                        .await
+                        .ok();
+                    (playlist, tracks)
+                })
+                .await
+                .unwrap_or((None, None));
+
+            let _ = this.update(cx, |this, cx| {
+                // A newer load superseded this one: this result is stale.
+                if this.load_generation != generation {
+                    return;
+                }
+
+                if let Some(playlist) = loaded.0 {
+                    this.playlist = playlist;
+                }
+                if let Some(tracks) = loaded.1 {
+                    this.playlist_track_ids = tracks;
+                }
+                this.views = cx.new(|_| FxHashMap::default());
+                this.render_counter = cx.new(|_| 0);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn update_sort_method(&mut self, sort_method: PlaylistTrackSortMethod, cx: &mut Context<Self>) {
@@ -285,11 +350,9 @@ impl PlaylistView {
             return;
         }
         self.sort_method = method;
-        self.playlist_track_ids = cx
-            .get_playlist_tracks_sorted(self.playlist.id, method)
-            .unwrap();
-        self.views = cx.new(|_| FxHashMap::default());
-        self.render_counter = cx.new(|_| 0);
+        // The re-sorted rows load on the runtime (see reload); the view keeps
+        // the previous order until they land.
+        self.reload(cx);
 
         let playlist_sort_methods = cx.global::<Models>().playlist_sort_methods.clone();
         playlist_sort_methods.update(cx, |map, _| {

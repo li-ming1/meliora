@@ -146,8 +146,12 @@ pub(crate) fn add_album_to_playlist_state(
     (state.show.clone(), state.add_to.clone())
 }
 
-pub fn track_menu_for_table(
-    track: &Track,
+/// Builds the track context menu for a table row. The row enters the builder
+/// as an `Arc` refcount; the full `Track` (PathBuf included) is deep-cloned
+/// only when the menu actually opens, not once per row per frame while the
+/// table renders.
+pub(crate) fn track_menu_for_table_shared(
+    track: Arc<Track>,
     is_available: bool,
     context: &TrackContextMenuContext,
     window: &mut Window,
@@ -155,7 +159,6 @@ pub fn track_menu_for_table(
 ) -> (ContextMenuBuilder, Option<AnyElement>) {
     let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track.id, window, cx);
 
-    let track = Rc::new(track.clone());
     let context = context.clone();
     // the menu tree — including everything TrackContextMenu::render touches
     // (artist lookup query, path stat, translations) — is built only when the
@@ -163,8 +166,10 @@ pub fn track_menu_for_table(
     let builder: ContextMenuBuilder = Rc::new(move |_, cx| {
         // cached liked set: a DB query here would block the UI thread (see is_song_liked docs)
         let is_liked = is_song_liked(cx, track.id);
+        // deep clone deferred to menu-open; per-frame cost is the Arc refcount
+        let track = Rc::new((*track).clone());
         TrackContextMenu::new(
-            track.clone(),
+            track,
             is_available,
             is_liked,
             context.clone(),
@@ -177,8 +182,10 @@ pub fn track_menu_for_table(
     (builder, Some(add_to.into_any_element()))
 }
 
-pub fn album_menu_for_table(
-    album: &Album,
+/// Builds the album context menu for a table row; see
+/// [`track_menu_for_table_shared`] for the refcount-vs-deep-clone tradeoff.
+pub(crate) fn album_menu_for_table_shared(
+    album: Arc<Album>,
     context: &AlbumContextMenuContext,
     window: &mut Window,
     cx: &mut App,
@@ -186,10 +193,10 @@ pub fn album_menu_for_table(
     let (show_add_to, add_to) =
         add_album_to_playlist_state("album-menu-state", album.id, window, cx);
 
-    let album = Rc::new(album.clone());
     let context = *context;
     let builder: ContextMenuBuilder = Rc::new(move |_, _| {
-        AlbumContextMenu::new(album.clone(), show_add_to.clone(), context).into_any_element()
+        let album = Rc::new((*album).clone());
+        AlbumContextMenu::new(album, show_add_to.clone(), context).into_any_element()
     });
 
     (builder, Some(add_to.into_any_element()))

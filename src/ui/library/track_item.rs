@@ -43,10 +43,14 @@ pub struct TrackItem {
     /// Measured once (font metrics don't change per frame); `None` until the
     /// first render with a window available.
     max_track_num_width: Option<Pixels>,
-    drag_title: SharedString,
     track_number_label: SharedString,
     /// Precomputed at construction; `format_duration` ran per frame otherwise.
     duration_text: SharedString,
+    /// Drag payload prebuilt once; `on_drag` takes it by value every frame, so
+    /// render clones this small struct instead of re-running `from_track`
+    /// (a per-frame `PathBuf` allocation). `Some` only when this row has no
+    /// playlist of its own — playlists install their own drag handler.
+    drag_data: Option<TrackDragData>,
     left_field: TrackItemLeftField,
     album_art: Option<SharedString>,
     pl_info: Option<TrackPlaylistInfo>,
@@ -105,17 +109,30 @@ impl TrackItem {
 
             subscribe_liked_updates(cx, move |_| Some(track_id));
 
-            let drag_title: SharedString = track.title.clone().0;
             let track_number_label: SharedString =
                 track.track_number.unwrap_or_default().to_string().into();
             let duration_text: SharedString = format_duration(track.duration, false).into();
 
+            // drag payload prebuilt once: `on_drag` takes it by value every
+            // frame, so render clones this small struct instead of re-running
+            // `from_track` (a per-frame `PathBuf` allocation)
+            let drag_data = if pl_info.is_none() {
+                Some(TrackDragData::from_track(
+                    track.id,
+                    track.album_id,
+                    track.location.clone(),
+                    track.title.clone().0,
+                ))
+            } else {
+                None
+            };
+
             Self {
                 hover_group: format!("track-{}", track.id).into(),
                 max_track_num_width: None,
-                drag_title,
                 track_number_label,
                 duration_text,
+                drag_data,
                 is_liked: crate::ui::models::is_song_liked(&**cx, track.id),
                 album_art: Some(match track.album_id {
                     Some(album_id) => format!("!db://album/{album_id}/thumb").into(),
@@ -163,10 +180,6 @@ impl Render for TrackItem {
             .as_ref()
             .is_some_and(|current| *current == self.track.location);
         let is_available = self.is_available;
-
-        let track_location_for_drag = self.track.location.clone();
-        let album_id = self.track.album_id;
-        let track_title_for_drag = self.drag_title.clone();
 
         let show_artist_name = match &self.artist_name_visibility {
             ArtistNameVisibility::Always => true,
@@ -281,18 +294,17 @@ impl Render for TrackItem {
                                     })
                                     // only handle drag when we're not in a playlist
                                     // playlists have their own drag handler
-                                    .when(self.pl_info.is_none() && is_available, |this| {
-                                        this.on_drag(
-                                            TrackDragData::from_track(
-                                                track_id,
-                                                album_id,
-                                                track_location_for_drag,
-                                                track_title_for_drag.clone(),
-                                            ),
-                                            move |_, _, _, cx| {
-                                                DragPreview::new(cx, track_title_for_drag.clone())
-                                            },
-                                        )
+                                    .when(is_available, |this| {
+                                        match self.drag_data.clone() {
+                                            Some(drag) => {
+                                                let display_name = drag.display_name.clone();
+                                                this.on_drag(drag, move |_, _, _, cx| {
+                                                    DragPreview::new(cx, display_name.clone())
+                                                })
+                                            }
+                                            // playlist rows have no drag payload of their own
+                                            None => this,
+                                        }
                                     })
                                     .when(is_current, |this| this.bg(theme.queue_item_current))
                                     .when(!is_current, |this| this.bg(theme.background_primary))

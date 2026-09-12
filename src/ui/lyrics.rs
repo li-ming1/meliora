@@ -10,7 +10,6 @@ use crate::ui::kugou::{OnlineLyric, fetch_online_lyric};
 use crate::ui::netease::fetch_online_lyric as fetch_netease_lyric;
 
 use crate::{
-    library::db::LibraryAccess,
     playback::{interface::PlaybackInterface, thread::PlaybackState},
     settings::SettingsGlobal,
     ui::{
@@ -18,7 +17,7 @@ use crate::{
             icons::{MICROPHONE, icon},
             scrollbar::{ScrollableHandle, floating_scrollbar},
         },
-        models::{CurrentTrack, Models, PlaybackInfo},
+        models::{Models, PlaybackInfo},
         scroll_follow::{SmoothScrollFollow, ease_out_cubic},
         theme::Theme,
     },
@@ -73,8 +72,40 @@ impl Lyrics {
             let position = playback_info.position.clone();
 
             let initial_track = current_track.read(cx).clone();
-            let (content, parsed) = Self::load_lyrics(initial_track.as_ref(), cx);
-            let initial_line_count = parsed.as_ref().map_or(0, Vec::len);
+            let initial_track_path = initial_track.as_ref().map(|t| t.get_path().clone());
+            let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+
+            // Startup lyrics load mirrors the track-change path below: the
+            // sidecar file read plus the two DB queries must not run on the
+            // main thread while the window is being constructed. The view
+            // starts in the empty state and the result lands via notify, with
+            // the same generation guard so a fast track switch discards a
+            // stale startup load.
+            cx.spawn(async move |this, cx| {
+                let loaded = crate::RUNTIME
+                    .spawn(async move {
+                        match initial_track_path {
+                            Some(path) => Self::load_lyrics_off_thread(&pool, path).await,
+                            None => (None, None),
+                        }
+                    })
+                    .await
+                    .unwrap_or((None, None));
+
+                this.update(cx, |this: &mut Self, cx| {
+                    if this.load_generation != 0 {
+                        return;
+                    }
+                    this.content = loaded.0;
+                    this.parsed = loaded.1;
+                    let line_count = this.parsed.as_ref().map_or(0, Vec::len);
+                    this.line_emphasis_start_values = vec![0.0; line_count];
+                    this.line_emphasis_target_values = vec![0.0; line_count];
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
 
             cx.observe(&current_track, |this: &mut Lyrics, ct, cx| {
                 let track = ct.read(cx).clone();
@@ -196,9 +227,11 @@ impl Lyrics {
             })
             .detach();
 
+            // Content starts in the empty state (same rendering as the
+            // track-switch in-flight state); lyrics land off-thread above.
             Self {
-                content,
-                parsed,
+                content: None,
+                parsed: None,
                 load_generation: 0,
                 last_active_line: None,
                 position_ms: *position.read(cx),
@@ -207,47 +240,16 @@ impl Lyrics {
                 follow_frame_scheduled: false,
                 scroll_follow: SmoothScrollFollow::new(LYRICS_FOLLOW_ANIMATION_DURATION),
                 last_user_interaction_at: None,
-                line_emphasis_start_values: vec![0.0; initial_line_count],
-                line_emphasis_target_values: vec![0.0; initial_line_count],
+                line_emphasis_start_values: Vec::new(),
+                line_emphasis_target_values: Vec::new(),
                 line_emphasis_started_at: None,
                 playback_state,
             }
         })
     }
 
-    fn load_lyrics(
-        track: Option<&CurrentTrack>,
-        cx: &App,
-    ) -> (Option<String>, Option<Vec<LrcLine>>) {
-        // a decrypted KRC sidecar next to the audio (e.g. from downloads)
-        // wins: it carries word-level timings for the karaoke view
-        if let Some(path) = track.map(|t| t.get_path()) {
-            if let Some(stem) = path.file_stem() {
-                let sidecar = path.with_file_name(format!("{}.krc", stem.to_string_lossy()));
-                if let Ok(krc) = std::fs::read_to_string(&sidecar) {
-                    if let Some(parsed) = krc::parse_krc(&krc) {
-                        return (Some(krc), Some(parsed));
-                    }
-                }
-                // NetEase word-level YRC sidecar (e.g. from downloads)
-                let sidecar = path.with_file_name(format!("{}.yrc", stem.to_string_lossy()));
-                if let Ok(yrc) = std::fs::read_to_string(&sidecar) {
-                    if let Some(parsed) = yrc::parse_yrc(&yrc) {
-                        return (Some(yrc), Some(parsed));
-                    }
-                }
-            }
-        }
-
-        let content = track
-            .and_then(|t| cx.get_track_by_path(t.get_path()).ok().flatten())
-            .and_then(|t| cx.lyrics_for_track(t.id).ok().flatten());
-        let parsed = content.as_ref().and_then(|c| parse_lyrics(c));
-        (content, parsed)
-    }
-
-    /// Async twin of [`Self::load_lyrics`] for the background track-switch
-    /// path: sidecar read via tokio fs, DB via the pool directly, no
+    /// Loads lyrics for `path` off the main thread (startup and track-switch
+    /// path): sidecar read via tokio fs, DB via the pool directly, no
     /// `block_on` on the main thread.
     async fn load_lyrics_off_thread(
         pool: &sqlx::SqlitePool,

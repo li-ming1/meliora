@@ -30,6 +30,9 @@ where
     secondary_text: Option<SharedString>,
     on_select: Option<OnSelectHandler<T, C>>,
     is_available: bool,
+    /// Prebuilt once; `on_drag` takes the payload by value every frame, so
+    /// render clones this instead of re-running `get_drag_data`.
+    drag_data: Option<TableDragData>,
 }
 
 impl<T, C> GridItem<T, C>
@@ -49,6 +52,7 @@ where
         let element_id = row.get_element_id().into();
         let image_key = row.get_full_image_key();
         let is_available = row.is_available(cx);
+        let drag_data = row.get_drag_data();
         let grid_content = row.get_grid_content_for(cx, context);
         let (primary_text, secondary_text) = grid_content.unwrap_or(("".into(), None));
 
@@ -62,6 +66,7 @@ where
             secondary_text,
             on_select,
             is_available,
+            drag_data,
         }))
     }
 }
@@ -74,7 +79,10 @@ where
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let row_data = self.row.clone();
         let is_available = self.is_available;
-        let context_menu = self.row.get_context_menu(
+        // shared-row variant: the menu builder holds an `Arc` refcount and
+        // deep-clones the row only when the menu opens, not every frame
+        let context_menu = T::get_context_menu_shared(
+            &self.row,
             window,
             cx,
             &self.context_menu_context,
@@ -84,7 +92,7 @@ where
         let theme = cx.global::<Theme>();
 
         let drag_data = if is_available {
-            self.row.get_drag_data()
+            self.drag_data.clone()
         } else {
             None
         };

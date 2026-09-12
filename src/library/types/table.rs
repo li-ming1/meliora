@@ -1,11 +1,12 @@
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use cntp_i18n::{Date, I18N_MANAGER, StringModifier, tr};
 use futures::future::BoxFuture;
 use gpui::{App, SharedString};
 use indexmap::IndexMap;
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use super::{
     Album, ArtistWithCounts, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR,
@@ -23,8 +24,8 @@ use crate::{
             },
         },
         library::context_menus::{
-            AlbumContextMenuContext, TrackContextMenuContext, album_menu_for_table,
-            play_album_next, play_track_next, track_menu_for_table,
+            AlbumContextMenuContext, TrackContextMenuContext, album_menu_for_table_shared,
+            play_album_next, play_track_next, track_menu_for_table_shared,
         },
         models::{Models, cached_album},
         util::format_duration,
@@ -67,6 +68,70 @@ fn format_album_release_date(
 ) -> Option<SharedString> {
     let (format, length) = album_release_date_format(date_precision?)?;
     format_album_release_date_with(release_date, format, length)
+}
+
+/// Upper bound of the track row prefetch cache (simple FIFO, no LRU
+/// dependency): two full ±256-row prefetch windows plus slack.
+const TRACK_ROW_CACHE_CAPACITY: usize = 1024;
+
+/// Track row prefetch cache: past the keep-around band every newly built row
+/// resolves itself through `TableData::get_row`, which is one UI-thread
+/// `RUNTIME.block_on` DB hit per row (`cx.get_track_by_id`). The table
+/// component batch-prefetches the visible window ± 256 rows on the async
+/// runtime into this cache whenever the window moves; `get_row` reads it
+/// first and only falls back to the blocking path on a miss.
+///
+/// `generation` invalidates in-flight prefetch tasks: `clear_row_cache` runs
+/// on every table reload (sort change, scan completion) and bumps it, so a
+/// task started before the reload can never write pre-rescan rows back.
+struct TrackRowCache {
+    generation: u64,
+    order: VecDeque<i64>,
+    rows: FxHashMap<i64, Arc<Track>>,
+}
+
+static TRACK_ROW_CACHE: OnceLock<Mutex<TrackRowCache>> = OnceLock::new();
+
+fn track_row_cache() -> &'static Mutex<TrackRowCache> {
+    TRACK_ROW_CACHE.get_or_init(|| {
+        Mutex::new(TrackRowCache {
+            generation: 0,
+            order: VecDeque::new(),
+            rows: FxHashMap::default(),
+        })
+    })
+}
+
+/// Cached row lookup; a short `Mutex` critical section, per doctrine §18.
+fn cached_track(track_id: i64) -> Option<Arc<Track>> {
+    track_row_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .rows
+        .get(&track_id)
+        .cloned()
+}
+
+/// FIFO-bounded insert; returns false when the cache was cleared mid-prefetch
+/// (stale generation), which tells the prefetch task to stop early.
+fn insert_cached_track(track: Arc<Track>, generation: u64) -> bool {
+    let mut cache = track_row_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.generation != generation {
+        return false;
+    }
+
+    if cache.rows.contains_key(&track.id) {
+        return true;
+    }
+
+    if cache.order.len() >= TRACK_ROW_CACHE_CAPACITY
+        && let Some(oldest) = cache.order.pop_front()
+    {
+        cache.rows.remove(&oldest);
+    }
+    cache.order.push_back(track.id);
+    cache.rows.insert(track.id, track);
+    true
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -230,7 +295,30 @@ impl TableData<AlbumColumn> for Album {
         _grid_context: GridContext,
         _is_available: bool,
     ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
-        Some(album_menu_for_table(self, context, window, cx))
+        Some(album_menu_for_table_shared(
+            Arc::new(self.clone()),
+            context,
+            window,
+            cx,
+        ))
+    }
+
+    fn get_context_menu_shared(
+        row: &Arc<Self>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+        context: &Self::ContextMenuContext,
+        _grid_context: GridContext,
+        _is_available: bool,
+    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
+        // the row enters the builder as a refcount; the deep clone happens
+        // only when the menu actually opens
+        Some(album_menu_for_table_shared(
+            row.clone(),
+            context,
+            window,
+            cx,
+        ))
     }
 
     fn handle_middle_mouse(
@@ -386,6 +474,12 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
+        // prefetch cache first: a hit avoids the UI-thread `block_on` below
+        // (one per newly built row after scrolling past the keep-around band)
+        if let Some(track) = cached_track(id.0) {
+            return Ok(Some(track));
+        }
+
         Ok(cx.get_track_by_id(id.0).ok())
     }
 
@@ -502,13 +596,73 @@ impl TableData<TrackColumn> for Track {
         // `is_available` is resolved once at row construction and captured by
         // the builder: the menu tree itself is only built when the menu opens,
         // so re-statting the file per repaint is both unnecessary and wrong.
-        Some(track_menu_for_table(
-            self,
+        Some(track_menu_for_table_shared(
+            Arc::new(self.clone()),
             is_available,
             context,
             window,
             cx,
         ))
+    }
+
+    fn get_context_menu_shared(
+        row: &Arc<Self>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+        context: &Self::ContextMenuContext,
+        _grid_context: GridContext,
+        is_available: bool,
+    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
+        // the row enters the builder as a refcount; the deep clone happens
+        // only when the menu actually opens
+        Some(track_menu_for_table_shared(
+            row.clone(),
+            is_available,
+            context,
+            window,
+            cx,
+        ))
+    }
+
+    fn prefetch_rows(
+        pool: sqlx::SqlitePool,
+        ids: &[Self::Identifier],
+    ) -> Option<BoxFuture<'static, ()>> {
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        if ids.is_empty() {
+            return None;
+        }
+
+        Some(Box::pin(async move {
+            let generation = track_row_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .generation;
+            for track_id in ids {
+                // skip rows the cache already holds: overlapping windows stay cheap
+                if cached_track(track_id).is_some() {
+                    continue;
+                }
+                match db::get_track_by_id(&pool, track_id).await {
+                    Ok(track) => {
+                        if !insert_cached_track(track, generation) {
+                            // cache was cleared (reload): stop writing stale rows
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(track_id, error = %err, "track row prefetch missed");
+                    }
+                }
+            }
+        }))
+    }
+
+    fn clear_row_cache() {
+        let mut cache = track_row_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.rows.clear();
+        cache.order.clear();
+        cache.generation = cache.generation.wrapping_add(1);
     }
 
     fn handle_middle_mouse(

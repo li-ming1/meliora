@@ -1,14 +1,12 @@
 mod replaygain;
 
 use crate::{
-    library::db::LibraryAccess,
     playback::{
         events::RepeatState, interface::PlaybackInterface, queue::QueueItemUIData,
         thread::PlaybackState,
     },
     settings::SettingsGlobal,
     ui::{
-        caching::meliora_cache,
         components::{
             context::context,
             icons::{
@@ -22,7 +20,7 @@ use crate::{
         },
         library::context_menus::{
             info_section::InfoSectionContextMenu, navigate_to_track_album_and_reveal,
-            navigate_to_track_artist, resolve_library_track_by_path,
+            navigate_to_track_artist,
         },
         models::{
             CurrentTrack, HasLikedState, LIKED_SONGS_PLAYLIST_ID, subscribe_liked_updates,
@@ -306,25 +304,6 @@ impl InfoSection {
             let current_track_path = initial_current_track
                 .as_ref()
                 .map(|track| track.get_path().clone());
-            let current_library_track = initial_current_track
-                .as_ref()
-                .and_then(|track| resolve_library_track_by_path(cx, track.get_path()));
-            let can_navigate_to_album = current_library_track
-                .as_ref()
-                .is_some_and(|track| track.album_id.is_some());
-            let can_navigate_to_artist = current_library_track
-                .as_ref()
-                .and_then(|track| track.album_id)
-                .is_some_and(|album_id| {
-                    cx.artist_ids_for_album(album_id)
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(false)
-                });
-
-            let is_liked = current_library_track.as_ref().and_then(|track| {
-                cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
-                    .unwrap_or_default()
-            });
             let initial_metadata = metadata_model.read(cx).clone();
 
             subscribe_liked_updates(cx, |this: &Self| {
@@ -337,13 +316,14 @@ impl InfoSection {
                 playback_info,
                 is_hovering_art: false,
                 current_track_path,
-                current_library_track,
-                can_navigate_to_album,
-                can_navigate_to_artist,
+                // Library-derived state (track row, artist navigability,
+                // liked state) resolves off-thread below; the section starts
+                // with the already-known data only.
+                current_library_track: None,
+                can_navigate_to_album: false,
+                can_navigate_to_artist: false,
                 image_element_key: 0,
-                is_liked,
-                // The initial resolve above runs synchronously once at startup;
-                // later track changes bump this and resolve off-thread.
+                is_liked: None,
                 library_resolve_generation: 0,
                 #[cfg(any(feature = "kugou", feature = "netease"))]
                 online_track: None,
@@ -358,6 +338,7 @@ impl InfoSection {
             #[cfg(any(feature = "kugou", feature = "netease"))]
             info_section.schedule_online_liked_query(cx);
             resolve_queue_item_metadata(&mut info_section, cx);
+            spawn_library_resolve(&mut info_section, cx);
 
             info_section
         })
@@ -497,7 +478,6 @@ impl Render for InfoSection {
                     .overflow_x_hidden()
                     .child(
                         div()
-                            .image_cache(meliora_cache("infosection_cache", 1))
                             .id("album-art")
                             .rounded(px(theme.radius_sm))
                             .bg(theme.album_art_background)
@@ -758,6 +738,15 @@ fn update_current_track_state(
     this.is_liked = None;
     this.image_element_key = this.image_element_key.wrapping_add(1);
 
+    spawn_library_resolve(this, cx);
+}
+
+/// Resolves the current track's library row, artist navigability and liked
+/// state on the runtime — three DB queries per resolve that used to park the
+/// UI thread. The generation guard drops results from a track that has
+/// already been switched away from; until it lands the section keeps showing
+/// the already-known metadata (name/artist/cover) without library actions.
+fn spawn_library_resolve(this: &mut InfoSection, cx: &mut Context<InfoSection>) {
     let Some(track_path) = this.current_track_path.clone() else {
         return;
     };
@@ -765,9 +754,6 @@ fn update_current_track_state(
     let generation = this.library_resolve_generation;
     let pool = cx.global::<crate::ui::app::Pool>().0.clone();
 
-    // The sync path blocked the main thread on 3-5 DB queries per song change
-    // (library track + artist lookup + liked state). Resolve on the runtime and
-    // re-validate the generation before landing the result.
     cx.spawn(async move |this, cx| {
         let resolved = crate::RUNTIME
             .spawn(async move {

@@ -51,6 +51,10 @@ const QUEUE_FOLLOW_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 /// Shared selection state for the queue.
 pub struct QueueSelection {
     selected: FxHashSet<usize>,
+    /// Sorted snapshot of `selected`, maintained on every mutation so the
+    /// render path can borrow it instead of allocating and sorting per row
+    /// per frame.
+    sorted: Vec<usize>,
     anchor: Option<usize>,
 }
 
@@ -58,6 +62,7 @@ impl QueueSelection {
     pub fn new(cx: &mut App) -> Entity<Self> {
         cx.new(|_| Self {
             selected: FxHashSet::default(),
+            sorted: Vec::new(),
             anchor: None,
         })
     }
@@ -71,13 +76,26 @@ impl QueueSelection {
     }
 
     pub fn indices(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self.selected.iter().copied().collect();
-        v.sort_unstable();
-        v
+        self.sorted.clone()
+    }
+
+    /// Borrowed sorted snapshot; render-path consumers use this to skip the
+    /// per-frame allocation entirely.
+    pub fn sorted(&self) -> &[usize] {
+        &self.sorted
+    }
+
+    /// Rebuilds the sorted snapshot after a mutation. Selection changes are
+    /// user-action frequency, so the cost here is irrelevant.
+    fn resync_sorted(&mut self) {
+        self.sorted.clear();
+        self.sorted.extend(self.selected.iter().copied());
+        self.sorted.sort_unstable();
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.selected.clear();
+        self.resync_sorted();
         self.anchor = None;
         cx.notify();
     }
@@ -86,6 +104,7 @@ impl QueueSelection {
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected.clear();
         self.selected.insert(index);
+        self.resync_sorted();
         self.anchor = Some(index);
         cx.notify();
     }
@@ -101,6 +120,7 @@ impl QueueSelection {
             self.selected.insert(index);
             self.anchor = Some(index);
         }
+        self.resync_sorted();
         cx.notify();
     }
 
@@ -121,6 +141,7 @@ impl QueueSelection {
         for i in start..=end {
             self.selected.insert(i);
         }
+        self.resync_sorted();
         cx.notify();
     }
 }
@@ -142,6 +163,10 @@ pub struct QueueItem {
     /// Formatted duration text, rebuilt only when the item's duration changes.
     duration_text: Option<SharedString>,
     cached_duration: Option<i64>,
+    /// Cached drag payload base, rebuilt only when the row's display name
+    /// changes (metadata load). Each frame just clones it and re-stamps the
+    /// live index and selection instead of reallocating the path and name.
+    drag_base: Option<(SharedString, TrackDragData)>,
 }
 
 impl HasLikedState for QueueItem {
@@ -196,9 +221,20 @@ impl QueueItem {
             })
             .detach();
 
+            // Negative fast path through the cached liked-id set: the set is
+            // reloaded on every liked-playlist change, so "absent" is exact
+            // and skips a block_on DB query per newly-visible row. A hit (or
+            // a cache that has not loaded yet) still queries, because the
+            // stored value must be the playlist_item row id that unlike needs
+            // — is_song_liked only knows the track id.
             let is_liked = track_id.and_then(|id| {
-                cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, id)
-                    .unwrap_or_default()
+                let liked_cache = cx.global::<Models>().liked_ids.read(cx).clone();
+                match liked_cache {
+                    Some(set) if !set.contains(&id) => None,
+                    _ => cx
+                        .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, id)
+                        .unwrap_or_default(),
+                }
             });
 
             subscribe_liked_updates(cx, |this: &QueueItem| this.track_id);
@@ -219,6 +255,7 @@ impl QueueItem {
                 is_available,
                 duration_text: None,
                 cached_duration: None,
+                drag_base: None,
             }
         })
     }
@@ -273,30 +310,15 @@ impl Render for QueueItem {
             let selection = self.selection.clone();
             let selection_for_drag = selection.clone();
             let selection_for_aux = selection.clone();
+            let selection_for_menu = selection.clone();
             let selection_read = selection.read(cx);
             let is_multi_selected = selection_read.is_multi() && selection_read.contains(idx);
-            let selected_indices = if is_multi_selected {
-                selection_read.indices()
-            } else {
-                Vec::new()
-            };
             let single_track_id = self.track_id;
             let queue_item_entity = cx.entity().clone();
             // add_to is created lazily on first menu use; its presence no
             // longer distinguishes library tracks from online ones
             let has_add_to = self.track_id.is_some();
             let is_liked = self.is_liked.is_some();
-
-            let selected_track_ids: Vec<i64> = if is_multi_selected {
-                let queue = cx.global::<Models>().queue.read(cx);
-                let queue_data = queue.data.read().expect("could not read queue");
-                selected_indices
-                    .iter()
-                    .filter_map(|&i| queue_data.get(i).and_then(|item| item.get_db_id()))
-                    .collect()
-            } else {
-                self.track_id.into_iter().collect()
-            };
 
             let item_state =
                 DragDropItemState::for_index(self.drag_drop_manager.read(cx), self.idx);
@@ -377,27 +399,43 @@ impl Render for QueueItem {
                             },
                         )
                         .when(is_available, |div| {
-                            let path_for_drag = self.item.get_path().to_path_buf();
-                            let mut drag_data = if let Some(tid) = self.track_id {
-                                TrackDragData::from_track(
-                                    tid,
-                                    album_id,
-                                    path_for_drag,
-                                    track_name.clone(),
-                                )
-                            } else {
-                                TrackDragData::new(path_for_drag, track_name.clone())
+                            // The drag payload base is rebuilt only when the
+                            // display name changed (metadata load); each frame
+                            // just clones it and re-stamps the live index and
+                            // selection instead of reallocating path and name.
+                            if self
+                                .drag_base
+                                .as_ref()
+                                .is_none_or(|(name, _)| *name != track_name)
+                            {
+                                let base = if let Some(tid) = self.track_id {
+                                    TrackDragData::from_track(
+                                        tid,
+                                        album_id,
+                                        self.item.get_path().to_path_buf(),
+                                        track_name.clone(),
+                                    )
+                                } else {
+                                    TrackDragData::new(
+                                        self.item.get_path().to_path_buf(),
+                                        track_name.clone(),
+                                    )
+                                };
+                                self.drag_base = Some((track_name.clone(), base));
                             }
-                            .with_reorder_info(QUEUE_LIST_ID, idx);
+                            let mut drag_data = self.drag_base.as_ref().unwrap().1.clone();
+                            drag_data = drag_data.with_reorder_info(QUEUE_LIST_ID, idx);
 
                             if is_selected {
-                                let all = selection_for_drag.read(cx).indices();
-                                let primary = all
+                                // borrowed sorted snapshot; only the per-drag
+                                // `others` Vec is still allocated
+                                let others: Vec<usize> = selection_for_drag
+                                    .read(cx)
+                                    .sorted()
                                     .iter()
-                                    .position(|&i| i == idx)
-                                    .expect("is_selected implies idx is in selection");
-                                let mut others: Vec<usize> = all;
-                                others.remove(primary);
+                                    .filter(|&&i| i != idx)
+                                    .copied()
+                                    .collect();
                                 drag_data = drag_data.with_additional_indices(others);
                             }
 
@@ -490,8 +528,18 @@ impl Render for QueueItem {
                 )
                 .menu_on_open(move |_, cx| {
                     if is_multi_selected {
-                        let remove_indices = selected_indices.clone();
-                        let remove_count = selected_indices.len();
+                        // The selection and queue snapshots are taken here, at
+                        // menu-open time, instead of on every render frame.
+                        let remove_indices = selection_for_menu.read(cx).indices();
+                        let remove_count = remove_indices.len();
+                        let selected_track_ids: Vec<i64> = {
+                            let queue = cx.global::<Models>().queue.read(cx);
+                            let queue_data = queue.data.read().expect("could not read queue");
+                            remove_indices
+                                .iter()
+                                .filter_map(|&i| queue_data.get(i).and_then(|item| item.get_db_id()))
+                                .collect()
+                        };
                         let add_to_ids = selected_track_ids.clone();
                         let entity_for_add = queue_item_entity.clone();
 
@@ -716,10 +764,22 @@ pub struct Queue {
     follow_frame_scheduled: bool,
     scroll_follow: SmoothScrollFollow,
     /// Formatted "(N songs) • (total)" summary, valid for the cached
-    /// `(queue_len, total_seconds)` key. The key is re-checked every render
-    /// (durations also change as per-item metadata finishes loading), so the
-    /// summary can only go stale by one frame — and is then rebuilt.
+    /// `(queue_len, total_seconds)` key. The total is maintained
+    /// incrementally (see `rescan_views_and_summary`), so the render path
+    /// only re-formats when the key actually moves.
     cached_summary: (usize, i64, SharedString),
+    /// Sum of the durations resolved so far; rebuilt by
+    /// `rescan_views_and_summary` on every queue change and extended during
+    /// render as pending metadata loads land.
+    summary_total: i64,
+    /// Indices whose duration is not resolved yet. Render reads exactly
+    /// these (keeping the reactive dependency on their metadata entities)
+    /// instead of re-scanning the whole queue every frame.
+    pending_durations: Vec<usize>,
+    /// Set when a queue notify arrived while the panel was hidden: the
+    /// row-view prune and summary rescan are deferred to the first render
+    /// after the panel is shown again.
+    needs_queue_rescan: bool,
 }
 
 impl Queue {
@@ -743,20 +803,14 @@ impl Queue {
                     this.scroll_follow.cancel();
                 }
 
-                let valid_keys: Vec<usize> = cx
-                    .global::<Models>()
-                    .queue
-                    .read(cx)
-                    .data
-                    .read()
-                    .expect("could not read queue")
-                    .iter()
-                    .filter_map(|item| item.existing_slot_key())
-                    .collect();
-                let key_set: FxHashSet<usize> = valid_keys.iter().copied().collect();
-                this.views_model.update(cx, |m, _| {
-                    m.retain(|k, _| key_set.contains(k));
-                });
+                // Pruning and the summary rescan only matter while the panel
+                // can be seen; while it is hidden the work is deferred to the
+                // first render after it is shown again.
+                if *this.show_queue.read(cx) {
+                    this.rescan_views_and_summary(cx);
+                } else {
+                    this.needs_queue_rescan = true;
+                }
 
                 this.selection.update(cx, |s, cx| s.clear(cx));
 
@@ -777,8 +831,42 @@ impl Queue {
                 scroll_follow: SmoothScrollFollow::new(QUEUE_FOLLOW_ANIMATION_DURATION),
                 // usize::MAX can never match a real queue length: forces one build
                 cached_summary: (usize::MAX, 0, SharedString::default()),
+                summary_total: 0,
+                pending_durations: Vec::new(),
+                // the first render builds the summary state from scratch
+                needs_queue_rescan: true,
             }
         })
+    }
+
+    /// One pass over the queue data, run on every queue notify while the
+    /// panel is visible: drops row views whose slot no longer exists and
+    /// rebuilds the incremental summary state (resolved total plus the
+    /// indices whose duration is still pending).
+    fn rescan_views_and_summary(&mut self, cx: &mut Context<Self>) {
+        let data = cx.global::<Models>().queue.read(cx).data.clone();
+        let queue = data.read().expect("could not read queue");
+
+        let mut valid_keys: Vec<usize> = Vec::with_capacity(queue.len());
+        let mut pending: Vec<usize> = Vec::new();
+        let mut total: i64 = 0;
+        for (i, item) in queue.iter().enumerate() {
+            if let Some(key) = item.existing_slot_key() {
+                valid_keys.push(key);
+            }
+            match item.known_duration() {
+                Some(secs) => total += secs,
+                None => pending.push(i),
+            }
+        }
+        let key_set: FxHashSet<usize> = valid_keys.iter().copied().collect();
+        drop(queue);
+
+        self.views_model.update(cx, |m, _| {
+            m.retain(|k, _| key_set.contains(k));
+        });
+        self.summary_total = total;
+        self.pending_durations = pending;
     }
 }
 
@@ -786,28 +874,41 @@ impl Render for Queue {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         check_drag_cancelled(self.drag_drop_manager.clone(), cx);
 
+        // A notify arrived while the panel was hidden: catch up now, before
+        // the summary and the list are built.
+        if self.needs_queue_rescan {
+            self.rescan_views_and_summary(cx);
+            self.needs_queue_rescan = false;
+        }
+
         let theme = cx.global::<Theme>().clone();
-        let (queue_len, queue_total_secs) = {
-            let queue = cx
-                .global::<Models>()
-                .queue
-                .clone()
-                .read(cx)
-                .data
-                .read()
-                .expect("could not read queue");
-            (
-                queue.len(),
-                queue
-                    .iter()
-                    .filter_map(|item| item.known_duration().or_else(|| item.loaded_duration(cx)))
-                    .sum::<i64>(),
-            )
+        let queue_len = {
+            let queue = cx.global::<Models>().queue.clone().read(cx);
+            queue.data.read().expect("could not read queue").len()
         };
+        // Resolve only the items whose duration is still pending: reading
+        // them here keeps the reactive dependency on their metadata entities,
+        // so the summary refreshes exactly when each load lands — without
+        // re-scanning the whole queue every frame.
+        if !self.pending_durations.is_empty() {
+            let data = cx.global::<Models>().queue.read(cx).data.clone();
+            let queue = data.read().expect("could not read queue");
+            let mut i = 0;
+            while i < self.pending_durations.len() {
+                let idx = self.pending_durations[i];
+                match queue.get(idx).and_then(|item| item.loaded_duration(cx)) {
+                    Some(secs) => {
+                        self.summary_total += secs;
+                        self.pending_durations.swap_remove(i);
+                    }
+                    None => i += 1,
+                }
+            }
+        }
         // Reuse the formatted summary while the (length, total seconds) key is
         // unchanged; only re-run the format!/trn! when either actually moves.
         let queue_summary = if self.cached_summary.0 == queue_len
-            && self.cached_summary.1 == queue_total_secs
+            && self.cached_summary.1 == self.summary_total
         {
             self.cached_summary.2.clone()
         } else {
@@ -819,9 +920,9 @@ impl Render for Queue {
                     "{{count}} songs",
                     count = queue_len as i64
                 ),
-                crate::ui::util::format_duration_compact(queue_total_secs)
+                crate::ui::util::format_duration_compact(self.summary_total)
             ));
-            self.cached_summary = (queue_len, queue_total_secs, summary.clone());
+            self.cached_summary = (queue_len, self.summary_total, summary.clone());
             summary
         };
         let views_model = self.views_model.clone();

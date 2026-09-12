@@ -7,11 +7,12 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     library::{
-        db::{LibraryAccess, LikedTrackSortMethod},
+        db::{self, LibraryAccess, LikedTrackSortMethod},
         types::{Album, DBString, Track, table::AlbumColumn},
     },
     playback::thread::PlaybackState,
     ui::{
+        app::Pool,
         availability::is_track_available,
         caching::meliora_cache,
         components::{
@@ -79,6 +80,9 @@ pub struct ArtistDetailView {
     nav_model: Entity<super::NavigationHistory>,
     liked_sort: LikedTrackSortMethod,
     standalone_sort: LikedTrackSortMethod,
+    /// Bumped on every liked-tracks reload so a slow load that finishes after
+    /// a newer one cannot overwrite it (same guard as `Table::reload_rows`).
+    liked_load_generation: u64,
 }
 
 impl ArtistDetailView {
@@ -154,11 +158,7 @@ impl ArtistDetailView {
 
             cx.subscribe(&playlist_tracker, move |this: &mut Self, _, ev, cx| {
                 if let PlaylistEvent::PlaylistUpdated(1) = ev {
-                    let liked_tracks = cx
-                        .get_liked_tracks_by_artist(artist_id, this.liked_sort)
-                        .unwrap_or_else(|_| Arc::new(Vec::new()));
-
-                    this.set_liked_tracks(liked_tracks, cx);
+                    this.reload_liked_tracks(cx);
                 }
             })
             .detach();
@@ -186,10 +186,45 @@ impl ArtistDetailView {
                 nav_model: nav_model.clone(),
                 liked_sort,
                 standalone_sort,
+                liked_load_generation: 0,
             }
         });
 
         view
+    }
+
+    /// Reloads the artist's liked-tracks list on the background runtime: every
+    /// like/unlike (`PlaylistUpdated`) and liked-sort change used to run the
+    /// query synchronously on the UI thread. The in-memory liked-ids cache is
+    /// not enough here — the liked ordering (release order, recently added)
+    /// lives in the SQL — so the query itself moves off-thread. A generation
+    /// guard drops results superseded by a newer reload.
+    fn reload_liked_tracks(&mut self, cx: &mut Context<Self>) {
+        self.liked_load_generation = self.liked_load_generation.wrapping_add(1);
+        let generation = self.liked_load_generation;
+        let artist_id = self.artist_id;
+        let sort = self.liked_sort;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let liked_tracks = crate::RUNTIME
+                .spawn(async move {
+                    db::get_liked_tracks_by_artist(&pool, artist_id, sort)
+                        .await
+                        .unwrap_or_else(|_| Arc::new(Vec::new()))
+                })
+                .await
+                .unwrap_or_else(|_| Arc::new(Vec::new()));
+
+            let _ = this.update(cx, |this, cx| {
+                // A newer reload superseded this one: this result is stale.
+                if this.liked_load_generation != generation {
+                    return;
+                }
+                this.set_liked_tracks(liked_tracks, cx);
+            });
+        })
+        .detach();
     }
 
     pub fn update_liked_sort(&mut self, sort_method: LikedTrackSortMethod, cx: &mut Context<Self>) {
@@ -202,12 +237,8 @@ impl ArtistDetailView {
 
         self.liked_sort = next_sort;
         self.sync_sort_with_model(cx);
-
-        let liked_tracks = cx
-            .get_liked_tracks_by_artist(self.artist_id, self.liked_sort)
-            .unwrap_or_else(|_| Arc::new(Vec::new()));
-
-        self.set_liked_tracks(liked_tracks, cx);
+        // The re-sorted list loads on the runtime (see reload_liked_tracks).
+        self.reload_liked_tracks(cx);
     }
 
     fn set_liked_tracks(&mut self, liked_tracks: Arc<Vec<Track>>, cx: &mut Context<Self>) {
@@ -240,10 +271,7 @@ impl ArtistDetailView {
     fn toggle_liked_sort_order(&mut self, cx: &mut Context<Self>) {
         self.liked_sort = Self::toggled_sort(self.liked_sort);
         self.sync_sort_with_model(cx);
-        let liked_tracks = cx
-            .get_liked_tracks_by_artist(self.artist_id, self.liked_sort)
-            .unwrap_or_else(|_| Arc::new(Vec::new()));
-        self.set_liked_tracks(liked_tracks, cx);
+        self.reload_liked_tracks(cx);
     }
 
     fn update_standalone_sort(
@@ -761,10 +789,6 @@ impl Render for ArtistDetailView {
                                                 );
 
                                                 div()
-                                                    .image_cache(meliora_cache(
-                                                        ("artist-album-grid", idx + 1),
-                                                        1,
-                                                    ))
                                                     .size_full()
                                                     .child(view)
                                                     .into_any_element()

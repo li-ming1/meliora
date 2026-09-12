@@ -49,9 +49,7 @@ const ART_SIZE: f32 = 20.0;
 pub struct FileRowItem {
     flat_row: FlatRow,
     files_view: Entity<FilesView>,
-    full_track: Option<Rc<Track>>,
     is_liked: Option<i64>,
-    is_file_available: bool,
     show_add_to: Entity<bool>,
     add_to: Option<Entity<AddToPlaylist>>,
     /// Stable element-id hash for the row context menu; the path never
@@ -70,18 +68,16 @@ impl FileRowItem {
         cx.new(|cx| {
             cx.observe(&files_view, |_, _, cx| cx.notify()).detach();
 
-            let full_track = flat_row.track.as_ref().and_then(|t| {
-                cx.get_track_by_id(t.id)
-                    .ok()
-                    .map(|arc| Rc::new((*arc).clone()))
-            });
-
+            // Row construction is pure in-memory state: the full track row
+            // (needed by the context menu) and the file-availability stat are
+            // resolved lazily when the menu actually opens, like the rest of
+            // the menu tree. Construction used to block_on one DB query plus
+            // one stat per row.
             let is_liked = flat_row.track.as_ref().and_then(|t| t.liked);
             subscribe_liked_updates(cx, |this: &FileRowItem| {
                 this.flat_row.track.as_ref().map(|t| t.id)
             });
 
-            let is_file_available = is_track_path_available(&flat_row.path);
             let path_hash = path_hash(&flat_row.path);
 
             if flat_row.is_audio {
@@ -92,9 +88,7 @@ impl FileRowItem {
             Self {
                 flat_row,
                 files_view,
-                full_track,
                 is_liked,
-                is_file_available,
                 show_add_to: cx.new(|_| false),
                 add_to: None,
                 path_hash,
@@ -320,7 +314,7 @@ impl Render for FileRowItem {
         let add_to_element: Option<AnyElement> =
             if batch_items.as_ref().is_some_and(|(items, _)| !items.is_empty()) {
                 self.add_to.clone().map(|a| a.into_any_element())
-            } else if let Some(track) = &self.full_track {
+            } else if let Some(track) = &track_ref {
                 let (_, add_to) = add_to_playlist_state("files-track-menu", track.id, window, cx);
                 Some(add_to.into_any_element())
             } else {
@@ -329,9 +323,9 @@ impl Render for FileRowItem {
 
         let batch_menu_state = (batch_items, self.show_add_to.clone());
         let entity_for_menu = cx.entity();
-        let full_track = self.full_track.clone();
         let is_liked = self.is_liked;
-        let is_file_available = self.is_file_available;
+        // Resolved when the menu opens (see menu_on_open below), not per row.
+        let menu_track_id = track_ref.as_ref().map(|track| track.id);
         let path_for_menu = path.clone();
         let files_view_for_menu = files_view.clone();
 
@@ -489,34 +483,52 @@ impl Render for FileRowItem {
                         batch_menu_state.1.clone(),
                         cx,
                     )
-                } else if let Some(track) = full_track.clone() {
-                    let (show_add_to, _) =
-                        add_to_playlist_state("files-track-menu", track.id, window, cx);
+                } else if let Some(track_id) = menu_track_id {
+                    // Full track row + availability stat load lazily here
+                    // (one DB query + one stat per menu open) instead of once
+                    // per row at construction.
+                    let is_file_available = is_track_path_available(&path_for_menu);
 
-                    let play_from_here = Rc::new({
-                        let files_view = files_view_for_menu.clone();
-                        let path = path_for_menu.clone();
-                        move |cx: &mut App, _: &Track| {
-                            files_view.update(cx, |view, cx| {
-                                view.play_folder(path.to_path_buf(), cx);
-                            });
-                        }
-                    });
+                    if let Ok(track) = cx.get_track_by_id(track_id) {
+                        let (show_add_to, _) =
+                            add_to_playlist_state("files-track-menu", track.id, window, cx);
 
-                    TrackContextMenu::new(
-                        track.clone(),
-                        is_file_available,
-                        is_liked,
-                        TrackContextMenuContext {
-                            show_go_to_album: track.album_id.is_some(),
-                            show_go_to_artist: true,
-                            play_from_here: Some(play_from_here),
-                        },
-                        None,
-                        show_add_to,
-                    )
-                    .into_any_element()
+                        let play_from_here = Rc::new({
+                            let files_view = files_view_for_menu.clone();
+                            let path = path_for_menu.clone();
+                            move |cx: &mut App, _: &Track| {
+                                files_view.update(cx, |view, cx| {
+                                    view.play_folder(path.to_path_buf(), cx);
+                                });
+                            }
+                        });
+
+                        TrackContextMenu::new(
+                            Rc::new((*track).clone()),
+                            is_file_available,
+                            is_liked,
+                            TrackContextMenuContext {
+                                show_go_to_album: track.album_id.is_some(),
+                                show_go_to_artist: true,
+                                play_from_here: Some(play_from_here),
+                            },
+                            None,
+                            show_add_to,
+                        )
+                        .into_any_element()
+                    } else {
+                        FileContextMenu::new(
+                            path_for_menu.clone(),
+                            is_dir,
+                            is_audio,
+                            is_file_available,
+                            files_view_for_menu.clone(),
+                        )
+                        .into_any_element()
+                    }
                 } else {
+                    let is_file_available = is_track_path_available(&path_for_menu);
+
                     FileContextMenu::new(
                         path_for_menu.clone(),
                         is_dir,

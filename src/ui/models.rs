@@ -162,31 +162,16 @@ pub enum PlaylistEvent {
 
 impl EventEmitter<PlaylistEvent> for PlaylistInfoTransfer {}
 
-fn resolve_startup_view(cx: &App, startup_view: StartupLibraryView) -> ViewSwitchMessage {
+fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
     match startup_view {
         StartupLibraryView::Albums => ViewSwitchMessage::Albums,
         StartupLibraryView::Artists => ViewSwitchMessage::Artists,
         StartupLibraryView::Tracks => ViewSwitchMessage::Tracks,
         StartupLibraryView::Files => ViewSwitchMessage::Files,
-        StartupLibraryView::LikedSongs => match cx.get_all_playlists() {
-            Ok(playlists) => playlists
-                .iter()
-                .find(|playlist| playlist.is_liked_songs())
-                .map(|playlist| ViewSwitchMessage::Playlist(playlist.id))
-                .unwrap_or_else(|| {
-                    warn!(
-                        "Liked Songs startup view selected but playlist was not found, defaulting to Albums"
-                    );
-                    ViewSwitchMessage::Albums
-                }),
-            Err(error) => {
-                warn!(
-                    ?error,
-                    "Liked Songs startup view selected but playlists could not be loaded, defaulting to Albums"
-                );
-                ViewSwitchMessage::Albums
-            }
-        },
+        // Liked Songs needs the get_all_playlists aggregate to resolve its
+        // playlist id; that query runs on the runtime now (see build_models),
+        // so start on the Albums fallback and navigate once it lands.
+        StartupLibraryView::LikedSongs => ViewSwitchMessage::Albums,
     }
 }
 
@@ -218,16 +203,18 @@ pub fn build_models(
     let available_artists: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
     let album_cache: Entity<FxHashMap<i64, Arc<Album>>> = cx.new(|_| FxHashMap::default());
 
-    let startup_view = resolve_startup_view(
-        cx,
-        cx.global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .startup_library_view,
-    );
+    let startup_setting = cx
+        .global::<SettingsGlobal>()
+        .model
+        .read(cx)
+        .interface
+        .startup_library_view;
+    let startup_view = resolve_startup_view(startup_setting);
 
     let switcher_model = cx.new(|_| NavigationHistory::new(startup_view));
+    // Kept for the Liked Songs startup-view resolution below (the entity is
+    // moved into the Models global).
+    let switcher_for_startup = switcher_model.clone();
     let artist_picker_model = cx.new(|_| None);
 
     let sidebar_width: Entity<Pixels> = cx.new(|_| {
@@ -323,6 +310,43 @@ pub fn build_models(
         controls_right_width,
         window_information,
     });
+
+    // Startup view = Liked Songs: resolving its playlist id needs the
+    // get_all_playlists aggregate, which used to block startup on the UI
+    // thread. Resolve it on the runtime and navigate once it lands; if the
+    // user has already navigated away by then, leave the current view alone.
+    if matches!(startup_setting, StartupLibraryView::LikedSongs) {
+        let switcher_model = switcher_for_startup;
+        let pool = cx.global::<Pool>().0.clone();
+        cx.spawn(async move |cx| {
+            let playlists = crate::RUNTIME
+                .spawn(async move { db::get_all_playlists(&pool).await })
+                .await
+                .ok()
+                .and_then(|result| result.ok());
+
+            let Some(liked_id) = playlists.and_then(|playlists| {
+                playlists
+                    .iter()
+                    .find(|playlist| playlist.is_liked_songs())
+                    .map(|playlist| playlist.id)
+            }) else {
+                warn!(
+                    "Liked Songs startup view selected but playlist could not be resolved, defaulting to Albums"
+                );
+                return;
+            };
+
+            let _ = cx.update(|cx| {
+                if switcher_model.read(cx).current() == ViewSwitchMessage::Albums {
+                    switcher_model.update(cx, |_, cx| {
+                        cx.emit(ViewSwitchMessage::Playlist(liked_id));
+                    });
+                }
+            });
+        })
+        .detach();
+    }
 
     // Populate the liked-songs id set once at startup (Models is registered
     // above), then again whenever the liked playlist changes — all like /

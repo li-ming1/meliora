@@ -4,7 +4,7 @@ pub mod table_data;
 
 mod table_item;
 
-use std::{rc::Rc, sync::Arc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use crate::{
     settings::{
@@ -49,6 +49,50 @@ where
     T: TableData<C>,
 = Rc<dyn Fn(&mut App, &T::Identifier) + 'static>;
 
+/// Prefetch band: when the visible-row center moves more than half this many
+/// rows, the table batch-prefetches full rows for center ± `ROW_PREFETCH_PAD`
+/// on the async runtime into the `TableData` row cache, so newly built rows
+/// hit the cache instead of one UI-thread `block_on` DB hit per row.
+const ROW_PREFETCH_PAD: usize = 256;
+
+/// Schedules a background row prefetch when the visible center has moved half
+/// a prefetch band since the last one. `state` tracks (rows generation,
+/// center) so a stationary table costs one `Cell` read per frame; on schedule
+/// the full rows for `center ± ROW_PREFETCH_PAD` are fetched on the async
+/// runtime into the `TableData` row cache (cleared on every reload), turning
+/// the per-row `get_row` UI-thread `block_on` into a cache hit for rows past
+/// the keep-around band.
+fn schedule_row_prefetch<T, C>(
+    state: &Rc<Cell<(u64, usize)>>,
+    generation: u64,
+    center: usize,
+    items: &[T::Identifier],
+    cx: &mut App,
+) where
+    T: TableData<C>,
+    C: Column,
+{
+    let (scheduled_generation, scheduled_center) = state.get();
+    if scheduled_generation == generation
+        && scheduled_center.abs_diff(center) <= ROW_PREFETCH_PAD / 2
+    {
+        return;
+    }
+    state.set((generation, center));
+
+    let start = center.saturating_sub(ROW_PREFETCH_PAD);
+    let end = (center + ROW_PREFETCH_PAD + 1).min(items.len());
+    if start >= end {
+        return;
+    }
+
+    let pool = cx.global::<Pool>().0.clone();
+    if let Some(prefetch) = T::prefetch_rows(pool, &items[start..end]) {
+        // dropping the JoinHandle detaches the task
+        let _ = crate::RUNTIME.spawn(prefetch);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TableViewMode {
     List,
@@ -78,10 +122,15 @@ where
     /// Bumped on every reload so a slow load that finishes after a newer one
     /// cannot overwrite the newer rows.
     rows_generation: u64,
+    /// Last scheduled row prefetch: (rows generation, visible center). See
+    /// `schedule_row_prefetch`.
+    prefetch_state: Rc<Cell<(u64, usize)>>,
     sort_method: Entity<Option<TableSort<C>>>,
     on_select: Option<OnSelectHandler<T, C>>,
     list_vertical_scroll_handle: UniformListScrollHandle,
     list_horizontal_scroll_handle: ScrollHandle,
+    /// Precomputed once instead of `format!`-ing the element id every frame.
+    horizontal_scroll_id: SharedString,
 }
 
 pub enum TableEvent {
@@ -111,6 +160,10 @@ where
         let sort = *self.sort_method.read(cx);
         self.rows_generation = self.rows_generation.wrapping_add(1);
         let generation = self.rows_generation;
+
+        // prefetched rows must never outlive a rescan; the generation bump
+        // inside also invalidates in-flight prefetch tasks
+        T::clear_row_cache();
 
         cx.spawn(async move |this, cx| {
             let started = std::time::Instant::now();
@@ -190,6 +243,9 @@ where
             let sort_method = cx.new(|_| None);
             let list_vertical_scroll_handle = UniformListScrollHandle::new();
             let list_horizontal_scroll_handle = ScrollHandle::new();
+            let prefetch_state = Rc::new(Cell::new((0_u64, 0_usize)));
+            let horizontal_scroll_id =
+                SharedString::from(format!("{}-horizontal-scroll", T::get_table_name()));
 
             if let Some(offset) = initial_scroll_offset {
                 list_vertical_scroll_handle
@@ -261,10 +317,12 @@ where
                 grid_scroll_handle,
                 items: None,
                 rows_generation: 0,
+                prefetch_state,
                 sort_method,
                 on_select,
                 list_vertical_scroll_handle,
                 list_horizontal_scroll_handle,
+                horizontal_scroll_id,
             };
 
             this.reload_rows(cx);
@@ -489,6 +547,9 @@ where
         let theme = cx.global::<Theme>();
         let sort_method = self.sort_method.read(cx);
         let items = self.items.clone();
+        // A separate handle for the grid branch: the list branch's render
+        // closure moves the original into the uniform_list item builder.
+        let grid_prefetch_state = self.prefetch_state.clone();
         let views_model = self.views.clone();
         let render_counter = self.render_counter.clone();
 
@@ -508,6 +569,8 @@ where
         let grid_handler = self.on_select.clone();
         let list_vertical_scroll_handle = self.list_vertical_scroll_handle.clone();
         let list_horizontal_scroll_handle = self.list_horizontal_scroll_handle.clone();
+        let rows_generation = self.rows_generation;
+        let prefetch_state = self.prefetch_state.clone();
 
         let columns_read = self.columns.read(cx);
         let column_count = columns_read.len();
@@ -677,6 +740,18 @@ where
                                     let start = range.start;
                                     let is_templ_render = range.start == 0 && range.end == 1;
 
+                                    // keep the row prefetch one band ahead of the
+                                    // visible window so new rows hit the row cache
+                                    if !is_templ_render {
+                                        schedule_row_prefetch::<T, C>(
+                                            &prefetch_state,
+                                            rows_generation,
+                                            (range.start + range.end) / 2,
+                                            items.as_slice(),
+                                            cx,
+                                        );
+                                    }
+
                                     items[range]
                                         .iter()
                                         .enumerate()
@@ -739,6 +814,16 @@ where
                             move |idx, _, cx| {
                                 prune_views(&grid_views_model, &grid_render_counter, idx, cx);
 
+                                // keep the row prefetch one band ahead of the
+                                // visible window so new rows hit the row cache
+                                schedule_row_prefetch::<T, C>(
+                                    &grid_prefetch_state,
+                                    rows_generation,
+                                    idx,
+                                    items.as_slice(),
+                                    cx,
+                                );
+
                                 let item_id = items[idx].clone();
 
                                 let view = create_or_retrieve_view(
@@ -757,14 +842,10 @@ where
                                     cx,
                                 );
 
-                                div()
-                                    .image_cache(meliora_cache(
-                                        (T::get_table_name(), idx + 1),
-                                        1,
-                                    ))
-                                    .size_full()
-                                    .child(view)
-                                    .into_any_element()
+                                // no per-item image_cache here: GridItem draws its
+                                // artwork through managed_image, which never touches
+                                // the gpui image cache the wrapper would feed
+                                div().size_full().child(view).into_any_element()
                             },
                         )
                         .min_item_width(px(grid_min_item_width))
@@ -785,7 +866,7 @@ where
             .child(match view_mode {
                 TableViewMode::List => {
                     let mut horizontal_viewport = div()
-                        .id(format!("{}-horizontal-scroll", T::get_table_name()))
+                        .id(self.horizontal_scroll_id.clone())
                         .overflow_x_scroll()
                         .overflow_y_hidden()
                         .track_scroll(&list_horizontal_scroll_handle)

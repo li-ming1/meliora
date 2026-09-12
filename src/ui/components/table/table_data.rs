@@ -109,6 +109,26 @@ where
     /// identify the row to retrieve.
     fn get_row(cx: &mut App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>>;
 
+    /// Internal extension: batch-prefetch full rows for the given identifiers
+    /// into an implementation-internal cache, so per-row `get_row` calls (one
+    /// UI-thread `block_on` DB hit per newly built row past the keep-around
+    /// band) hit the cache while scrolling instead. The table component calls
+    /// this when the visible window moves and spawns the returned future on
+    /// the async runtime — never await it on the UI thread. Returns `None`
+    /// when the type has no prefetch support (default).
+    fn prefetch_rows(
+        _pool: sqlx::SqlitePool,
+        _ids: &[Self::Identifier],
+    ) -> Option<BoxFuture<'static, ()>> {
+        None
+    }
+
+    /// Internal extension: drops the row-prefetch cache. The table calls this
+    /// on every reload (sort change, scan completion) so cached rows can never
+    /// outlive a rescan; implementations must also invalidate in-flight
+    /// prefetch futures (generation guard).
+    fn clear_row_cache() {}
+
     /// Retrieves a column from the row.
     fn get_column(&self, cx: &mut App, column: C) -> Option<SharedString>;
 
@@ -168,6 +188,21 @@ where
         _is_available: bool,
     ) -> Option<(ContextMenuBuilder, Option<AnyElement>)> {
         None
+    }
+
+    /// Internal extension: same contract as [`TableData::get_context_menu`],
+    /// but hands the row's shared `Arc` handle to the implementation so the
+    /// returned builder can hold a refcount instead of deep-cloning the whole
+    /// row on every frame. Default delegates to `get_context_menu`.
+    fn get_context_menu_shared(
+        row: &Arc<Self>,
+        window: &mut Window,
+        cx: &mut App,
+        context: &Self::ContextMenuContext,
+        grid_context: GridContext,
+        is_available: bool,
+    ) -> Option<(ContextMenuBuilder, Option<AnyElement>)> {
+        row.get_context_menu(window, cx, context, grid_context, is_available)
     }
 
     /// Optional middle mouse button handler for this row.

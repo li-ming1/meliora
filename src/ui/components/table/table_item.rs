@@ -30,6 +30,9 @@ where
     id: Option<ElementId>,
     image_path: Option<SharedString>,
     is_available: bool,
+    /// Prebuilt once; `on_drag` takes the payload by value every frame, so
+    /// render clones this instead of re-running `get_drag_data`.
+    drag_data: Option<TableDragData>,
 }
 
 impl<T, C> TableItem<T, C>
@@ -58,6 +61,7 @@ where
 
         let image_path = row.as_ref().and_then(|row| row.get_image_path());
         let is_available = row.as_ref().is_some_and(|row| row.is_available(cx));
+        let drag_data = row.as_ref().and_then(|row| row.get_drag_data());
         cx.new(|cx| {
             cx.observe(columns, |this: &mut TableItem<T, C>, m, cx| {
                 this.columns = m.read(cx).clone();
@@ -81,6 +85,7 @@ where
                 id,
                 row,
                 is_available,
+                drag_data,
             }
         })
     }
@@ -95,7 +100,10 @@ where
         let row_data = self.row.clone();
         let is_available = self.is_available;
         let context_menu = self.row.as_ref().and_then(|row| {
-            row.get_context_menu(
+            // shared-row variant: the menu builder holds an `Arc` refcount and
+            // deep-clones the row only when the menu opens, not every frame
+            T::get_context_menu_shared(
+                row,
                 window,
                 cx,
                 &self.context_menu_context,
@@ -105,7 +113,7 @@ where
         });
         let theme = cx.global::<Theme>();
         let drag_data = if is_available {
-            self.row.as_ref().and_then(|row| row.get_drag_data())
+            self.drag_data.clone()
         } else {
             None
         };

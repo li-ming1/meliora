@@ -45,6 +45,15 @@ const PLAYLIST_SIDEBAR_ITEM_HEIGHT: f32 = 55.0; // effective height is + 1 px be
 
 pub struct PlaylistList {
     playlists: Arc<Vec<Playlist>>,
+    /// Bumped on every reload so a load that finishes after a newer one
+    /// cannot overwrite it (same guard as `Table::reload_rows`).
+    playlists_generation: u64,
+    /// A reload is currently running on the runtime.
+    reload_in_flight: bool,
+    /// Set when a PlaylistEvent arrives while a reload is in flight: the
+    /// in-flight snapshot may predate that event's DB write, so exactly one
+    /// follow-up reload is queued instead of one query per event.
+    reload_queued: bool,
     nav_model: Entity<NavigationHistory>,
     scroll_handle: ScrollHandle,
     popover_open: bool,
@@ -57,8 +66,6 @@ pub struct PlaylistList {
 
 impl PlaylistList {
     pub fn new(cx: &mut App, nav_model: Entity<NavigationHistory>) -> Entity<Self> {
-        let playlists = cx.get_all_playlists().expect("could not get playlists");
-
         cx.new(|cx| {
             let sidebar_collapsed = cx.global::<Models>().sidebar_collapsed.clone();
             cx.observe(&sidebar_collapsed, |_, _, cx| cx.notify())
@@ -69,9 +76,7 @@ impl PlaylistList {
             cx.subscribe(
                 &playlist_tracker,
                 |this: &mut Self, _, _: &PlaylistEvent, cx| {
-                    this.playlists = cx.get_all_playlists().unwrap();
-
-                    cx.notify();
+                    this.reload_playlists(cx);
                 },
             )
             .detach();
@@ -104,8 +109,11 @@ impl PlaylistList {
             cx.observe(&drag_drop_manager, |_, _, cx| cx.notify())
                 .detach();
 
-            Self {
-                playlists: playlists.clone(),
+            let mut this = Self {
+                playlists: Arc::new(Vec::new()),
+                playlists_generation: 0,
+                reload_in_flight: false,
+                reload_queued: false,
                 nav_model,
                 scroll_handle: ScrollHandle::new(),
                 popover_open: false,
@@ -114,8 +122,57 @@ impl PlaylistList {
                 rename_playlist_input,
                 pending_delete_playlist: None,
                 drag_drop_manager,
-            }
+            };
+            // Initial list load happens off the UI thread (see reload_playlists).
+            this.reload_playlists(cx);
+            this
         })
+    }
+
+    /// Reloads the playlist list (one GROUP BY/SUM aggregate) on the
+    /// background runtime: construction and every like/unlike used to run it
+    /// synchronously on the UI thread. The sidebar keeps showing its previous
+    /// entries until the fresh list lands. A generation guard drops results
+    /// superseded by a newer reload; events arriving mid-flight coalesce into
+    /// one follow-up load instead of one query per event.
+    fn reload_playlists(&mut self, cx: &mut Context<Self>) {
+        if self.reload_in_flight {
+            self.reload_queued = true;
+            return;
+        }
+        self.reload_in_flight = true;
+        self.playlists_generation = self.playlists_generation.wrapping_add(1);
+        let generation = self.playlists_generation;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let playlists = crate::RUNTIME
+                .spawn(async move { db::get_all_playlists(&pool).await })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                this.reload_in_flight = false;
+                // A newer reload superseded this one: drop the stale result.
+                if this.playlists_generation != generation {
+                    return;
+                }
+
+                match playlists {
+                    Ok(Ok(playlists)) => {
+                        this.playlists = playlists;
+                        cx.notify();
+                    }
+                    Ok(Err(err)) => tracing::warn!(error = %err, "playlist list query failed"),
+                    Err(err) => tracing::warn!(error = ?err, "playlist list task failed"),
+                }
+
+                if this.reload_queued {
+                    this.reload_queued = false;
+                    this.reload_playlists(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn handle_submit(&mut self, cx: &mut Context<Self>) {
