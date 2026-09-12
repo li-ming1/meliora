@@ -30,6 +30,11 @@ use crate::{
 
 const TRACKS_PER_PAGE: i64 = 30;
 
+/// How long the like/unlike watcher waits for the shared helper to confirm
+/// the outcome through the global liked-set before rolling the optimistic
+/// update back.
+const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {
     Ranks,
@@ -66,6 +71,9 @@ pub struct KugouRanksView {
     recommend: RecommendState,
     /// hashes liked during this session (drives the star icon)
     liked: HashSet<String>,
+    /// hashes with a like/unlike request in flight; extra clicks on those
+    /// rows are ignored until the request settles
+    like_in_flight: HashSet<String>,
     scroll_handle: ScrollHandle,
 }
 
@@ -82,6 +90,7 @@ impl KugouRanksView {
                 has_more_tracks: false,
                 recommend: RecommendState::Idle,
                 liked: HashSet::new(),
+                like_in_flight: HashSet::new(),
                 scroll_handle: ScrollHandle::new(),
             };
             view.load_ranks(cx);
@@ -221,7 +230,9 @@ impl KugouRanksView {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.has_more_tracks {
+        // one page in flight at a time: tracks_state stays Loading from the
+        // click until the response lands, so extra clicks are ignored
+        if self.has_more_tracks && !matches!(self.tracks_state, TracksState::Loading) {
             self.load_tracks_page(self.track_page + 1, cx);
         }
     }
@@ -241,14 +252,69 @@ impl KugouRanksView {
 
     fn toggle_like(&mut self, track: &KugouTrackInfo, cx: &mut Context<Self>) {
         let hash = track.hash.clone();
-        if self.is_liked(&hash) {
-            self.liked.remove(&hash);
-            crate::ui::kugou::unlike_track(cx, track);
-        } else {
+        // one like/unlike request per track at a time; clicks while a request
+        // is in flight are ignored
+        if !self.like_in_flight.insert(hash.clone()) {
+            return;
+        }
+        let want_liked = !self.is_liked(&hash);
+        // snapshot for the rollback watcher
+        let was_liked = self.liked.contains(&hash);
+        // optimistic update
+        if want_liked {
             self.liked.insert(hash.clone());
             crate::ui::kugou::like_track(cx, track);
+        } else {
+            self.liked.remove(&hash);
+            crate::ui::kugou::unlike_track(cx, track);
         }
         cx.notify();
+        self.watch_like_outcome(hash, want_liked, was_liked, cx);
+    }
+
+    /// The shared like/unlike helpers flip the process-wide liked-set on
+    /// success and leave it untouched on failure, so the outcome is
+    /// observable via `crate::ui::kugou::liked_set_contains`. Watch it
+    /// (bounded) and roll the optimistic local update back when the request
+    /// did not land, so a failed like doesn't leave a wrong star.
+    fn watch_like_outcome(
+        &mut self,
+        hash: String,
+        want_liked: bool,
+        was_liked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let deadline = std::time::Instant::now() + LIKE_WATCH_TIMEOUT;
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                if crate::ui::kugou::liked_set_contains(&hash) == want_liked {
+                    // landed: release the dedup marker, nothing to roll back
+                    this.update(cx, |this, _| {
+                        this.like_in_flight.remove(&hash);
+                    })
+                    .ok();
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            // never confirmed: undo the optimistic update
+            this.update(cx, |this, cx| {
+                this.like_in_flight.remove(&hash);
+                if was_liked {
+                    this.liked.insert(hash);
+                } else {
+                    this.liked.remove(&hash);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {

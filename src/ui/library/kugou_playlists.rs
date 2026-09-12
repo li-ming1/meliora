@@ -42,6 +42,11 @@ const TRACKS_PER_PAGE: i64 = 100;
 /// + 1px bottom border.
 const TRACK_ROW_HEIGHT: f32 = 60.0;
 
+/// How long the like/unlike watcher waits for the shared helper to confirm
+/// the outcome through the global liked-set before rolling the optimistic
+/// update back.
+const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 enum PlaylistsState {
     LoggedOut,
     Loading,
@@ -62,6 +67,16 @@ enum TracksState {
     Idle,
     Loading,
     Failed(SharedString),
+}
+
+/// Outcome of the import pipeline, produced on the Tokio runtime and mapped
+/// to UI state on the main thread (locale-sensitive strings are built there).
+enum ImportOutcome {
+    Done { matched: i64, total: i64 },
+    ParseFailed(String),
+    CreateFailed(String),
+    NotFound,
+    NoMatch,
 }
 
 #[derive(Clone)]
@@ -87,6 +102,9 @@ pub struct KugouPlaylistsView {
     /// while viewing the "liked songs" playlist (listid 2), where every track
     /// is already liked by default.
     unliked: HashSet<String>,
+    /// hashes with a like/unlike request in flight; extra clicks on those
+    /// rows are ignored until the request settles
+    like_in_flight: HashSet<String>,
     scroll_handle: ScrollHandle,
     /// Scroll position of the virtualized track list; reset per playlist so
     /// a newly opened playlist starts at the top.
@@ -112,6 +130,7 @@ impl KugouPlaylistsView {
                 has_more_tracks: false,
                 liked: HashSet::new(),
                 unliked: HashSet::new(),
+                like_in_flight: HashSet::new(),
                 scroll_handle: ScrollHandle::new(),
                 tracks_scroll_handle: UniformListScrollHandle::new(),
                 import_open: false,
@@ -195,7 +214,9 @@ impl KugouPlaylistsView {
     }
 
     fn load_more_tracks(&mut self, cx: &mut Context<Self>) {
-        if self.track_page <= 1 {
+        // one page in flight at a time: tracks_state stays Loading from the
+        // click until the response lands, so extra clicks are ignored
+        if self.track_page <= 1 || matches!(self.tracks_state, TracksState::Loading) {
             return;
         }
         // pages count DOWN: the API returns newest-first, we display
@@ -358,6 +379,57 @@ impl KugouPlaylistsView {
         }
     }
 
+    /// The shared like/unlike helpers flip the process-wide liked-set on
+    /// success and leave it untouched on failure, so the outcome is
+    /// observable via `crate::ui::kugou::liked_set_contains`. Watch it
+    /// (bounded) and roll the optimistic update of `liked`/`unliked` back to
+    /// the pre-click snapshot when the request did not land.
+    fn watch_like_outcome(
+        &mut self,
+        hash: String,
+        want_liked: bool,
+        was_liked: bool,
+        was_unliked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let deadline = std::time::Instant::now() + LIKE_WATCH_TIMEOUT;
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                if crate::ui::kugou::liked_set_contains(&hash) == want_liked {
+                    // landed: release the dedup marker, nothing to roll back
+                    this.update(cx, |this, _| {
+                        this.like_in_flight.remove(&hash);
+                    })
+                    .ok();
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            // never confirmed: undo the optimistic update
+            this.update(cx, |this, cx| {
+                this.like_in_flight.remove(&hash);
+                if was_liked {
+                    this.liked.insert(hash.clone());
+                } else {
+                    this.liked.remove(&hash);
+                }
+                if was_unliked {
+                    this.unliked.insert(hash);
+                } else {
+                    this.unliked.remove(&hash);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     // ---- External playlist import (NetEase / QQ → KuGou) ----
 
     fn open_import(&mut self, cx: &mut Context<Self>) {
@@ -392,101 +464,81 @@ impl KugouPlaylistsView {
 
         self.import_busy = true;
         self.import_status = SharedString::from(tr!("KUGOU_IMPORT_PARSING", "Parsing link…").to_string());
+        // resolved here on the UI thread so the localized fallback name uses
+        // the right locale once the pipeline runs on the Tokio runtime
+        let default_name = tr!("KUGOU_IMPORT_DEFAULT_NAME", "Imported playlist").to_string();
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let client = kugou::shared_client();
-
-            let parsed = match kugou::import::parse_share_link(&text).await {
-                Ok(p) => p,
-                Err(err) => {
-                    let _ = this.update(cx, |this, cx| {
-                        this.import_busy = false;
-                        this.import_status = SharedString::from(tr!(
-                            "KUGOU_IMPORT_FAILED",
-                            "导入失败：{{err}}",
-                            err = err
-                        )
-                        .to_string());
-                        cx.notify();
-                    });
-                    return;
-                }
+            // every step below is a network call; they MUST all run on the
+            // Tokio runtime — reqwest's DNS resolver panics on the gpui
+            // executor (see `ui::kugou::fetch_online_lyric`)
+            let outcome = match crate::RUNTIME.spawn(run_import(text, default_name)).await {
+                Ok(outcome) => outcome,
+                // the runtime only shuts down with the app; nothing to update
+                Err(_) => return,
             };
 
-            let playlist_name = if parsed.name.trim().is_empty() {
-                tr!("KUGOU_IMPORT_DEFAULT_NAME", "Imported playlist").to_string()
-            } else {
-                parsed.name
-            };
-
-            if let Err(err) = client.create_playlist(&playlist_name).await {
-                let _ = this.update(cx, |this, cx| {
+            let done_toast = this
+                .update(cx, |this, cx| {
                     this.import_busy = false;
-                    this.import_status = SharedString::from(tr!(
-                        "KUGOU_IMPORT_CREATE_FAILED",
-                        "Could not create playlist: {{err}}",
-                        err = err.to_string()
-                    )
-                    .to_string());
+                    let done_toast = match outcome {
+                        ImportOutcome::Done { matched, total } => {
+                            let summary = tr!(
+                                "KUGOU_IMPORT_DONE",
+                                "Imported: matched {{matched}}/{{total}}",
+                                matched = matched,
+                                total = total
+                            );
+                            this.import_status = summary.clone().into();
+                            this.refresh_playlists(cx);
+                            Some(Toast::success(summary))
+                        }
+                        ImportOutcome::ParseFailed(err) => {
+                            this.import_status = SharedString::from(tr!(
+                                "KUGOU_IMPORT_FAILED",
+                                "导入失败：{{err}}",
+                                err = err
+                            )
+                            .to_string());
+                            None
+                        }
+                        ImportOutcome::CreateFailed(err) => {
+                            this.import_status = SharedString::from(tr!(
+                                "KUGOU_IMPORT_CREATE_FAILED",
+                                "Could not create playlist: {{err}}",
+                                err = err
+                            )
+                            .to_string());
+                            None
+                        }
+                        ImportOutcome::NotFound => {
+                            this.import_status = SharedString::from(tr!(
+                                "KUGOU_IMPORT_NOT_FOUND",
+                                "Created playlist not found"
+                            )
+                            .to_string());
+                            None
+                        }
+                        ImportOutcome::NoMatch => {
+                            this.import_status = SharedString::from(tr!(
+                                "KUGOU_IMPORT_NO_MATCH",
+                                "No tracks matched"
+                            )
+                            .to_string());
+                            this.refresh_playlists(cx);
+                            None
+                        }
+                    };
                     cx.notify();
-                });
-                return;
+                    done_toast
+                })
+                .ok()
+                .flatten();
+
+            if let Some(toast) = done_toast {
+                emit_toast(toast);
             }
-
-            let Some(listid) = find_playlist_id(&client, &playlist_name).await else {
-                let _ = this.update(cx, |this, cx| {
-                    this.import_busy = false;
-                    this.import_status = SharedString::from(tr!(
-                        "KUGOU_IMPORT_NOT_FOUND",
-                        "Created playlist not found"
-                    )
-                    .to_string());
-                    cx.notify();
-                });
-                return;
-            };
-
-            let total = parsed.songs.len() as i64;
-            let mut matched: Vec<(String, String, i64, i64)> = Vec::new();
-            for song in &parsed.songs {
-                if let Some(m) = kugou_match(&client, song).await {
-                    matched.push(m);
-                }
-            }
-
-            if matched.is_empty() {
-                let _ = this.update(cx, |this, cx| {
-                    this.import_busy = false;
-                    this.import_status = SharedString::from(tr!(
-                        "KUGOU_IMPORT_NO_MATCH",
-                        "No tracks matched"
-                    )
-                    .to_string());
-                    this.refresh_playlists(cx);
-                    cx.notify();
-                });
-                return;
-            }
-
-            for chunk in matched.chunks(100) {
-                let _ = client.playlist_add_songs(listid, chunk).await;
-            }
-
-            let matched_count = matched.len() as i64;
-            let summary = tr!(
-                "KUGOU_IMPORT_DONE",
-                "Imported: matched {{matched}}/{{total}}",
-                matched = matched_count,
-                total = total
-            );
-            let _ = this.update(cx, |this, cx| {
-                this.import_busy = false;
-                this.import_status = summary.clone().into();
-                this.refresh_playlists(cx);
-                cx.notify();
-            });
-            emit_toast(Toast::success(summary));
         })
         .detach();
     }
@@ -608,16 +660,26 @@ impl KugouPlaylistsView {
                 };
                 view.update(cx, |this, cx| {
                     let hash = like.hash.clone();
-                    if this.is_track_liked(&hash) {
-                        this.unliked.insert(hash.clone());
-                        this.liked.remove(&hash);
-                        crate::ui::kugou::unlike_track(cx, &like);
-                    } else {
+                    // one like/unlike request per track at a time; clicks
+                    // while a request is in flight are ignored
+                    if !this.like_in_flight.insert(hash.clone()) {
+                        return;
+                    }
+                    let want_liked = !this.is_track_liked(&hash);
+                    // snapshot for the rollback watcher
+                    let was_liked = this.liked.contains(&hash);
+                    let was_unliked = this.unliked.contains(&hash);
+                    if want_liked {
                         this.unliked.remove(&hash);
                         this.liked.insert(hash.clone());
                         crate::ui::kugou::like_track(cx, &like);
+                    } else {
+                        this.unliked.insert(hash.clone());
+                        this.liked.remove(&hash);
+                        crate::ui::kugou::unlike_track(cx, &like);
                     }
                     cx.notify();
+                    this.watch_like_outcome(hash, want_liked, was_liked, was_unliked, cx);
                 });
             },
             move |_, _, cx| {
@@ -969,7 +1031,8 @@ impl KugouPlaylistsView {
 }
 
 /// Searches KuGou for the first playable track matching `name`. Returns
-/// `(title, hash, album_id, mix_song_id)` for `playlist_add_songs`.
+/// `(title, hash, album_id, mix_song_id)` for `playlist_add_songs`. Must run
+/// on the Tokio runtime (network call).
 async fn kugou_match(
     client: &kugou::KugouClient,
     name: &str,
@@ -985,6 +1048,7 @@ async fn kugou_match(
 /// Resolves the just-created playlist's numeric listid from the user's list
 /// by name. The create response does not reliably carry it, and the list may
 /// not reflect the new playlist immediately, so retry with a short pause.
+/// Must run on the Tokio runtime (network calls + sleep).
 async fn find_playlist_id(client: &kugou::KugouClient, name: &str) -> Option<i64> {
     for attempt in 0..3 {
         if let Ok(resp) = client.user_playlists(1, 100).await
@@ -995,12 +1059,55 @@ async fn find_playlist_id(client: &kugou::KugouClient, name: &str) -> Option<i64
             return Some(pl.listid);
         }
         if attempt < 2 {
-            let _ = crate::RUNTIME
-                .spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                })
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         }
     }
     None
+}
+
+/// The whole import pipeline (resolve share link → create playlist → match
+/// every song → upload in chunks), run on the Tokio runtime so none of the
+/// network awaits touch the gpui executor.
+async fn run_import(text: String, default_name: String) -> ImportOutcome {
+    let client = kugou::shared_client();
+
+    let parsed = match kugou::import::parse_share_link(&text).await {
+        Ok(p) => p,
+        Err(err) => return ImportOutcome::ParseFailed(err),
+    };
+
+    let playlist_name = if parsed.name.trim().is_empty() {
+        default_name
+    } else {
+        parsed.name
+    };
+
+    if let Err(err) = client.create_playlist(&playlist_name).await {
+        return ImportOutcome::CreateFailed(err.to_string());
+    }
+
+    let Some(listid) = find_playlist_id(&client, &playlist_name).await else {
+        return ImportOutcome::NotFound;
+    };
+
+    let total = parsed.songs.len() as i64;
+    let mut matched: Vec<(String, String, i64, i64)> = Vec::new();
+    for song in &parsed.songs {
+        if let Some(m) = kugou_match(&client, song).await {
+            matched.push(m);
+        }
+    }
+
+    if matched.is_empty() {
+        return ImportOutcome::NoMatch;
+    }
+
+    for chunk in matched.chunks(100) {
+        let _ = client.playlist_add_songs(listid, chunk).await;
+    }
+
+    ImportOutcome::Done {
+        matched: matched.len() as i64,
+        total,
+    }
 }

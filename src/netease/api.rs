@@ -164,17 +164,13 @@ impl NeteaseClient {
         .await
     }
 
-    /// Songs of one playlist, paged. Mirrors `playlist_track_all.js`: fetch
-    /// `trackIds` from `playlist_detail`, slice `offset..offset+limit`, then
-    /// resolve them to full song objects via `/api/v3/song/detail`.
-    pub async fn playlist_track_all(
-        &self,
-        id: i64,
-        limit: i64,
-        offset: i64,
-    ) -> Result<NeteaseResponse, NeteaseError> {
+    /// Full `trackIds` list of a playlist (playlist order, newest-first),
+    /// straight from `playlist_detail`. Cache it in the caller and page over
+    /// it with `playlist_tracks_page`, so only the first page pays for the
+    /// detail fetch.
+    pub async fn playlist_track_ids(&self, id: i64) -> Result<Vec<i64>, NeteaseError> {
         let detail = self.playlist_detail(id).await?;
-        let track_ids: Vec<i64> = detail
+        Ok(detail
             .body
             .pointer("/playlist/trackIds")
             .and_then(Value::as_array)
@@ -184,18 +180,31 @@ impl NeteaseClient {
                     .filter_map(|item| item.get("id").and_then(Value::as_i64))
                     .collect()
             })
-            .unwrap_or_default();
-        if track_ids.is_empty() {
-            return Ok(NeteaseResponse {
-                body: json!({ "songs": [] }),
-                set_cookies: detail.set_cookies,
-            });
-        }
+            .unwrap_or_default())
+    }
+
+    /// Song objects for one page of an already-known `track_ids` list: slices
+    /// `offset..offset+limit` and resolves the ids via `/api/v3/song/detail`.
+    /// This is the second half of the old `playlist_track_all` without the
+    /// per-page `playlist_detail` re-fetch that made paging O(n²).
+    pub async fn playlist_tracks_page(
+        &self,
+        track_ids: &[i64],
+        limit: i64,
+        offset: i64,
+    ) -> Result<NeteaseResponse, NeteaseError> {
         let slice: Vec<i64> = track_ids
-            .into_iter()
+            .iter()
             .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
+            .copied()
             .collect();
+        if slice.is_empty() {
+            return Ok(NeteaseResponse {
+                body: json!({ "songs": [] }),
+                set_cookies: Vec::new(),
+            });
+        }
         self.song_detail(&slice).await
     }
 
@@ -316,7 +325,8 @@ impl NeteaseClient {
     }
 
     /// All charts (榜单). Mirrors `toplist.js` (`/api/toplist`, eapi); every
-    /// entry is itself a playlist id, so tracks come from `playlist_track_all`.
+    /// entry is itself a playlist id, so tracks come from
+    /// `playlist_track_ids` + `playlist_tracks_page`.
     pub async fn toplist(&self) -> Result<NeteaseResponse, NeteaseError> {
         self.request(Crypto::Eapi, "/api/toplist", json!({})).await
     }

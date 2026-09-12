@@ -2,7 +2,9 @@ use std::sync::Arc;
 #[cfg(feature = "online_sources")]
 use std::time::Duration;
 
-use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, Window};
+use gpui::{
+    App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Window,
+};
 use nucleo::Utf32String;
 use tracing::debug;
 
@@ -186,7 +188,7 @@ impl SearchModel {
                 let palette = search_model.palette.clone();
                 cx.subscribe(
                     &palette,
-                    |this: &mut SearchModel, _, query: &String, cx| {
+                    |this: &mut SearchModel, _, query: &SharedString, cx| {
                         #[cfg(feature = "kugou")]
                         this.on_kugou_query(query, cx);
                         #[cfg(feature = "netease")]
@@ -363,18 +365,19 @@ impl SearchModel {
                         .into_iter()
                         .map(|track| Arc::new(SearchPaletteItem::KugouTrack(track)))
                         .collect();
+                        this.emit_merged_items(cx);
                     }
+                    // a failed search keeps the previous results: wiping them
+                    // makes the palette flash empty on a transient network
+                    // error, and the stale items are dropped on the next
+                    // generation change / reset anyway
                     Ok(Err(err)) => {
                         warn!("kugou online search failed: {err}");
-                        this.kugou_items.clear();
                     }
                     Err(err) => {
                         warn!("kugou online search task failed: {err}");
-                        this.kugou_items.clear();
                     }
                 }
-
-                this.emit_merged_items(cx);
             })
             .ok();
         })
@@ -438,18 +441,19 @@ impl SearchModel {
                         .into_iter()
                         .map(|track| Arc::new(SearchPaletteItem::NeteaseTrack(track)))
                         .collect();
+                        this.emit_merged_items(cx);
                     }
+                    // a failed search keeps the previous results: wiping them
+                    // makes the palette flash empty on a transient network
+                    // error, and the stale items are dropped on the next
+                    // generation change / reset anyway
                     Ok(Err(err)) => {
                         warn!("netease online search failed: {err}");
-                        this.netease_items.clear();
                     }
                     Err(err) => {
                         warn!("netease online search task failed: {err}");
-                        this.netease_items.clear();
                     }
                 }
-
-                this.emit_merged_items(cx);
             })
             .ok();
         })

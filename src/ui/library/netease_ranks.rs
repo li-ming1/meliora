@@ -2,6 +2,7 @@
 //! Gated behind the `netease` cargo feature (via the parent module).
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use cntp_i18n::tr;
 use gpui::{
@@ -27,6 +28,11 @@ use crate::{
 };
 
 const TRACKS_PER_PAGE: i64 = 30;
+
+/// How long the like/unlike watcher waits for the shared helper to confirm
+/// the outcome through the global liked-set before rolling the optimistic
+/// update back.
+const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {
@@ -62,9 +68,19 @@ pub struct NeteaseRanksView {
     tracks_state: TracksState,
     track_page: i64,
     has_more_tracks: bool,
+    /// full trackIds of the open chart (it is a playlist under the hood),
+    /// fetched once together with the first page and sliced locally for
+    /// every page after; lives and dies with the view
+    track_ids: Option<Arc<[i64]>>,
+    /// bumped on every track request so a stale page can't append after a
+    /// newer one was issued for the same chart
+    track_generation: u64,
     recommend: RecommendState,
     /// ids liked during this session (drives the star icon)
     liked: HashSet<i64>,
+    /// ids with a like/unlike request in flight; extra clicks on those rows
+    /// are ignored until the request settles
+    like_in_flight: HashSet<i64>,
     scroll_handle: ScrollHandle,
 }
 
@@ -79,8 +95,11 @@ impl NeteaseRanksView {
                 tracks_state: TracksState::Idle,
                 track_page: 0,
                 has_more_tracks: false,
+                track_ids: None,
+                track_generation: 0,
                 recommend: RecommendState::Idle,
                 liked: HashSet::new(),
+                like_in_flight: HashSet::new(),
                 scroll_handle: ScrollHandle::new(),
             };
             view.load_ranks(cx);
@@ -179,17 +198,27 @@ impl NeteaseRanksView {
         self.tracks_state = TracksState::Loading;
         self.track_page = 0;
         self.has_more_tracks = false;
+        // the cached trackIds belong to the previously open chart
+        self.track_ids = None;
         self.scroll_handle = ScrollHandle::new();
         cx.notify();
         self.load_tracks_page(1, cx);
     }
 
+    /// Fetches one page of the open chart's tracks. The first page also
+    /// fetches (and caches) the full trackIds list; later pages slice that
+    /// cache locally and only pay for one song-detail request instead of
+    /// re-downloading the whole playlist detail every time.
     fn load_tracks_page(&mut self, page: i64, cx: &mut Context<Self>) {
         let Some(rank) = self.selected.clone() else {
             return;
         };
 
         self.tracks_state = TracksState::Loading;
+        self.track_generation += 1;
+        let generation = self.track_generation;
+        // Arc: handed to the request without copying the id list
+        let cached_ids = self.track_ids.clone();
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -198,17 +227,33 @@ impl NeteaseRanksView {
             let offset = (page - 1) * TRACKS_PER_PAGE;
             let request = crate::RUNTIME
                 .spawn(async move {
-                    client
-                        .playlist_track_all(rankid, TRACKS_PER_PAGE, offset)
-                        .await
+                    match cached_ids {
+                        Some(ids) => {
+                            let response = client
+                                .playlist_tracks_page(&ids, TRACKS_PER_PAGE, offset)
+                                .await?;
+                            Ok::<_, netease::client::NeteaseError>((ids, response))
+                        }
+                        None => {
+                            let ids = client.playlist_track_ids(rankid).await?;
+                            let response = client
+                                .playlist_tracks_page(&ids, TRACKS_PER_PAGE, offset)
+                                .await?;
+                            Ok((Arc::<[i64]>::from(ids), response))
+                        }
+                    }
                 })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                let still_current = this.selected.as_ref().is_some_and(|r| r.id == rank.id);
+                // the selection may have changed, or a newer page may have
+                // been requested, while this request was in flight
+                let still_current = this.selected.as_ref().is_some_and(|r| r.id == rank.id)
+                    && this.track_generation == generation;
 
                 match request {
-                    Ok(Ok(response)) if still_current => {
+                    Ok(Ok((ids, response))) if still_current => {
+                        this.track_ids = Some(ids);
                         let page_tracks = parse_tracks(&response.body, "/songs");
                         // the song-detail response carries no total, so a full
                         // page is the "maybe more" signal
@@ -235,7 +280,9 @@ impl NeteaseRanksView {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.has_more_tracks {
+        // one page in flight at a time: tracks_state stays Loading from the
+        // click until the response lands, so extra clicks are ignored
+        if self.has_more_tracks && !matches!(self.tracks_state, TracksState::Loading) {
             self.load_tracks_page(self.track_page + 1, cx);
         }
     }
@@ -246,6 +293,7 @@ impl NeteaseRanksView {
         self.tracks_state = TracksState::Idle;
         self.track_page = 0;
         self.has_more_tracks = false;
+        self.track_ids = None;
         cx.notify();
     }
 
@@ -255,14 +303,80 @@ impl NeteaseRanksView {
 
     fn toggle_like(&mut self, track: &NeteaseTrackInfo, cx: &mut Context<Self>) {
         let id = track.id;
-        if self.is_liked(id) {
-            self.liked.remove(&id);
-            crate::ui::netease::unlike_track(cx, track);
-        } else {
+        // one like/unlike request per track at a time; clicks while a request
+        // is in flight are ignored
+        if !self.like_in_flight.insert(id) {
+            return;
+        }
+        let want_liked = !self.is_liked(id);
+        if !netease::shared_client().logged_in() {
+            // the shared helper only toasts a login hint here; don't flip the
+            // star for a request that will never be sent
+            self.like_in_flight.remove(&id);
+            if want_liked {
+                crate::ui::netease::like_track(cx, track);
+            } else {
+                crate::ui::netease::unlike_track(cx, track);
+            }
+            return;
+        }
+        // snapshot for the rollback watcher
+        let was_liked = self.liked.contains(&id);
+        // optimistic update
+        if want_liked {
             self.liked.insert(id);
             crate::ui::netease::like_track(cx, track);
+        } else {
+            self.liked.remove(&id);
+            crate::ui::netease::unlike_track(cx, track);
         }
         cx.notify();
+        self.watch_like_outcome(id, want_liked, was_liked, cx);
+    }
+
+    /// The shared like/unlike helpers flip the process-wide liked-set on
+    /// success and leave it untouched on failure, so the outcome is
+    /// observable via `crate::ui::netease::liked_set_contains`. Watch it
+    /// (bounded) and roll the optimistic local update back when the request
+    /// did not land, so a failed like doesn't leave a wrong star.
+    fn watch_like_outcome(
+        &mut self,
+        id: i64,
+        want_liked: bool,
+        was_liked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let deadline = std::time::Instant::now() + LIKE_WATCH_TIMEOUT;
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                if crate::ui::netease::liked_set_contains(id) == want_liked {
+                    // landed: release the dedup marker, nothing to roll back
+                    this.update(cx, |this, _| {
+                        this.like_in_flight.remove(&id);
+                    })
+                    .ok();
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            // never confirmed: undo the optimistic update
+            this.update(cx, |this, cx| {
+                this.like_in_flight.remove(&id);
+                if was_liked {
+                    this.liked.insert(id);
+                } else {
+                    this.liked.remove(&id);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {

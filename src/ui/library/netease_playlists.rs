@@ -4,6 +4,8 @@
 //! fetched play URL. Gated behind the `netease` cargo feature (via the
 //! parent module).
 
+use std::sync::Arc;
+
 use cntp_i18n::{tr, trn};
 use gpui::{
     App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -69,6 +71,12 @@ pub struct NeteasePlaylistsView {
     playlist_page: i64,
     /// whether the account has more playlists than currently loaded
     has_more_playlists: bool,
+    /// set while a playlists request is in flight; only the newest request
+    /// (see `playlists_generation`) may clear it, so clicks can't stack pages
+    playlists_loading: bool,
+    /// bumped on every playlists request; an older response landing after a
+    /// newer one was issued must not touch the list
+    playlists_generation: u64,
     selected: Option<NeteasePlaylistInfo>,
     tracks: Vec<NeteaseTrackInfo>,
     tracks_state: TracksState,
@@ -76,6 +84,13 @@ pub struct NeteasePlaylistsView {
     track_page: i64,
     /// whether the playlist has more tracks than currently loaded
     has_more_tracks: bool,
+    /// full trackIds of the open playlist, fetched once together with the
+    /// first page and sliced locally for every page after; lives and dies
+    /// with the view (dropped when another playlist is opened or closed)
+    track_ids: Option<Arc<[i64]>>,
+    /// bumped on every track request so a stale page can't append after a
+    /// newer one was issued for the same playlist
+    track_generation: u64,
     scroll_handle: ScrollHandle,
     /// Scroll position of the virtualized track list; reset per playlist so
     /// a newly opened playlist starts at the top.
@@ -91,11 +106,15 @@ impl NeteasePlaylistsView {
                 playlists: PlaylistsState::Loading,
                 playlist_page: 0,
                 has_more_playlists: false,
+                playlists_loading: false,
+                playlists_generation: 0,
                 selected: None,
                 tracks: Vec::new(),
                 tracks_state: TracksState::Idle,
                 track_page: 0,
                 has_more_tracks: false,
+                track_ids: None,
+                track_generation: 0,
                 scroll_handle: ScrollHandle::new(),
                 tracks_scroll_handle: UniformListScrollHandle::new(),
             };
@@ -119,7 +138,9 @@ impl NeteasePlaylistsView {
     }
 
     fn load_more_playlists(&mut self, cx: &mut Context<Self>) {
-        if self.has_more_playlists {
+        // one request in flight at a time; `playlists_loading` stays set
+        // until the newest request's response lands
+        if self.has_more_playlists && !self.playlists_loading {
             self.load_playlists_page(self.playlist_page + 1, true, cx);
         }
     }
@@ -128,6 +149,10 @@ impl NeteasePlaylistsView {
     /// false) goes through `load_playlists`, which resets the state; an
     /// append extends the currently visible list in place.
     fn load_playlists_page(&mut self, page: i64, append: bool, cx: &mut Context<Self>) {
+        self.playlists_loading = true;
+        self.playlists_generation += 1;
+        let generation = self.playlists_generation;
+
         cx.spawn(async move |this, cx| {
             let client = netease::shared_client();
             let uid = client.user_id().unwrap_or(0);
@@ -137,8 +162,11 @@ impl NeteasePlaylistsView {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
+                // a newer request (another page or a full reload) supersedes
+                // this one
+                let current = this.playlists_generation == generation;
                 match request {
-                    Ok(Ok(response)) => {
+                    Ok(Ok(response)) if current => {
                         let page_playlists = parse_playlists(&response.body);
                         // the endpoint carries no total, so a full page is
                         // the "maybe more" signal
@@ -155,13 +183,17 @@ impl NeteasePlaylistsView {
                     }
                     // an in-flight "load more" keeps the visible list (and
                     // its still-present Load More button) as-is for a retry
-                    Ok(Err(err)) if !append => {
+                    Ok(Err(err)) if !append && current => {
                         this.playlists = PlaylistsState::Failed(load_failed_message(&err));
                     }
-                    Err(err) if !append => {
+                    Err(err) if !append && current => {
                         this.playlists = PlaylistsState::Failed(load_failed_message(&err));
                     }
                     _ => {}
+                }
+                // only the newest request may release the in-flight gate
+                if current {
+                    this.playlists_loading = false;
                 }
                 cx.notify();
             })
@@ -176,6 +208,8 @@ impl NeteasePlaylistsView {
         self.tracks_state = TracksState::Loading;
         self.track_page = 0;
         self.has_more_tracks = false;
+        // the cached trackIds belong to the previously open playlist
+        self.track_ids = None;
         self.scroll_handle = ScrollHandle::new();
         self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
@@ -183,19 +217,28 @@ impl NeteasePlaylistsView {
     }
 
     fn load_more_tracks(&mut self, cx: &mut Context<Self>) {
-        if self.has_more_tracks {
+        // one page in flight at a time: tracks_state stays Loading from the
+        // click until the response lands, so extra clicks are ignored
+        if self.has_more_tracks && !matches!(self.tracks_state, TracksState::Loading) {
             self.load_tracks_page(self.track_page + 1, cx);
         }
     }
 
     /// Fetches one page of the selected playlist's tracks and appends it to
-    /// the visible list.
+    /// the visible list. The first page also fetches (and caches) the full
+    /// trackIds list; later pages slice that cache locally and only pay for
+    /// one song-detail request instead of re-downloading the whole playlist
+    /// detail every time.
     fn load_tracks_page(&mut self, page: i64, cx: &mut Context<Self>) {
         let Some(selected) = self.selected.clone() else {
             return;
         };
 
         self.tracks_state = TracksState::Loading;
+        self.track_generation += 1;
+        let generation = self.track_generation;
+        // Arc: handed to the request without copying the id list
+        let cached_ids = self.track_ids.clone();
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -204,18 +247,33 @@ impl NeteasePlaylistsView {
             let offset = (page - 1) * TRACKS_PER_PAGE;
             let request = crate::RUNTIME
                 .spawn(async move {
-                    client
-                        .playlist_track_all(playlist_id, TRACKS_PER_PAGE, offset)
-                        .await
+                    match cached_ids {
+                        Some(ids) => {
+                            let response = client
+                                .playlist_tracks_page(&ids, TRACKS_PER_PAGE, offset)
+                                .await?;
+                            Ok::<_, netease::client::NeteaseError>((ids, response))
+                        }
+                        None => {
+                            let ids = client.playlist_track_ids(playlist_id).await?;
+                            let response = client
+                                .playlist_tracks_page(&ids, TRACKS_PER_PAGE, offset)
+                                .await?;
+                            Ok((Arc::<[i64]>::from(ids), response))
+                        }
+                    }
                 })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                // the selection may have changed while the request was in flight
-                let still_current = this.selected.as_ref().is_some_and(|p| p.id == selected.id);
+                // the selection may have changed, or a newer page may have
+                // been requested, while this request was in flight
+                let still_current = this.selected.as_ref().is_some_and(|p| p.id == selected.id)
+                    && this.track_generation == generation;
 
                 match request {
-                    Ok(Ok(response)) if still_current => {
+                    Ok(Ok((ids, response))) if still_current => {
+                        this.track_ids = Some(ids);
                         let page_tracks = parse_tracks(&response.body, "/songs");
                         // the song-detail response carries no total, so a full
                         // page is the "maybe more" signal
@@ -247,6 +305,7 @@ impl NeteasePlaylistsView {
         self.tracks_state = TracksState::Idle;
         self.track_page = 0;
         self.has_more_tracks = false;
+        self.track_ids = None;
         cx.notify();
     }
 
