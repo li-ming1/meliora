@@ -52,7 +52,7 @@ futures = "0.3"
 globwalk = "0.9"
 gpui = { package = "gpui-unofficial", git = "https://git.mailliw.org/hummingbird/gpui-unofficial-shim", rev = "74c47fc429f52fc3bf5277ad05e6dd2a58584ff8" }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", features = ["wayland", "x11", "font-kit"] }
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 indexmap = { version = "2", features = ["serde"] }
 intx = "0.1"
 itertools = "0.15"
