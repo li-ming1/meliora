@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
     },
 };
 
@@ -177,21 +177,46 @@ fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
     })
 }
 
+/// Bytes of the stream-map JSON last handed to the persistence task. Kept so
+/// re-recording an unchanged registry (e.g. replaying the same song) skips
+/// the disk write entirely instead of re-writing identical bytes.
+static LAST_PERSISTED_STREAM_MAP: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+
+/// Returns `json` back when it differs from the last persisted bytes (and
+/// records it as the new baseline), or `None` when it is unchanged and the
+/// write task can be skipped. The mutex is only ever held for a memcmp.
+fn persist_stream_map_if_changed(json: Vec<u8>) -> Option<Vec<u8>> {
+    let mut last = LAST_PERSISTED_STREAM_MAP
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if last.as_deref() == Some(json.as_slice()) {
+        return None;
+    }
+    *last = Some(json.clone());
+    Some(json)
+}
+
 /// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
 /// entry for a track on top and evicting older URLs for the same track.
 pub fn remember_online_track(url: String, track: KugouTrackInfo) {
-    let json = {
-        let mut guard = stream_map().write().unwrap();
+    // Only mutate + snapshot under the lock; serialization and the disk write
+    // both happen outside of it: the map is read on both the UI thread and
+    // the playback thread, so holding the write guard across either lets a
+    // slow FS stall song changes.
+    let snapshot = {
+        let mut guard = stream_map().write().unwrap_or_else(|e| e.into_inner());
         guard.retain(|e| e.url != url && e.mix_song_id != track.mix_song_id);
         guard.insert(0, StreamMapEntry::from((url, track)));
         guard.truncate(STREAM_MAP_CAP);
-        serde_json::to_vec(&*guard).ok()
+        guard.clone()
     };
-    // Write off-thread and outside the lock: the map is read on both the UI
-    // thread and the playback thread, so holding the write guard across disk
-    // IO lets a slow FS stall song changes. Two racing writers may persist in
-    // either order; a stale file only costs a URL refresh on next launch.
-    if let Some(json) = json {
+    let Some(json) = serde_json::to_vec(&snapshot).ok() else {
+        return;
+    };
+    // Write off-thread and outside the lock. Two racing writers may persist
+    // in either order; a stale file only costs a URL refresh on next launch.
+    if let Some(json) = persist_stream_map_if_changed(json) {
         let path = stream_map_path();
         crate::RUNTIME.spawn(async move {
             let _ = tokio::fs::write(path, json).await;
@@ -206,7 +231,7 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 /// differs from the URL that produced it.
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();
-    let guard = stream_map().read().unwrap();
+    let guard = stream_map().read().unwrap_or_else(|e| e.into_inner());
     guard
         .iter()
         .find(|entry| {
@@ -921,7 +946,10 @@ pub fn like_track(cx: &mut App, track: &KugouTrackInfo) {
                         .and_then(Value::as_i64)
                         .unwrap_or(0);
                     if error_code == 0 && status == 1 {
-                        liked_set().write().unwrap().insert(track.hash.clone());
+                        liked_set()
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(track.hash.clone());
                         emit_toast(Toast::success(tr!(
                             "KUGOU_LIKE_ADDED",
                             "Added to your KuGou liked songs"
@@ -966,10 +994,11 @@ pub fn queue_track(cx: &mut App, track: &KugouTrackInfo) {
 }
 
 /// Lists the `(hash, fileid)` pairs in the user's KuGou liked-songs list
-/// (`listid: 2`). Runs on the Tokio runtime; empty when not logged in or on
-/// any error (best-effort). `fileid` is the in-playlist key required by the
-/// `/v4/delete_songs` endpoint.
-async fn liked_entries_raw() -> Vec<(String, i64)> {
+/// (`listid: 2`). Runs on the Tokio runtime; `None` when not logged in or on
+/// any error (best-effort) — a `None` result says nothing about the list, so
+/// callers must not treat it as "the list is empty". `fileid` is the
+/// in-playlist key required by the `/v4/delete_songs` endpoint.
+async fn liked_entries_raw() -> Option<Vec<(String, i64)>> {
     let client = kugou::shared_client();
     let mut out = Vec::new();
     for page in 1..=10 {
@@ -989,19 +1018,24 @@ async fn liked_entries_raw() -> Vec<(String, i64)> {
                     break;
                 }
             }
-            Err(_) => break,
+            // A failed page leaves the list incomplete: report the failure so
+            // callers neither replace the liked cache with partial data nor
+            // treat a missing fileid as "already removed".
+            Err(_) => return None,
         }
     }
-    out
+    Some(out)
 }
 
 /// Wraps `liked_entries_raw` on the Tokio runtime (see `fetch_online_lyric`
-/// for why every kugou network call must be spawned onto it).
-async fn fetch_liked_entries() -> Vec<(String, i64)> {
+/// for why every kugou network call must be spawned onto it). `None` when the
+/// fetch failed or the task was cancelled.
+async fn fetch_liked_entries() -> Option<Vec<(String, i64)>> {
     crate::RUNTIME
         .spawn(liked_entries_raw())
         .await
-        .unwrap_or_default()
+        .ok()
+        .flatten()
 }
 
 /// In-memory set of hashes currently in the user's KuGou liked-songs list.
@@ -1018,14 +1052,30 @@ fn liked_set() -> &'static RwLock<HashSet<String>> {
 
 /// True when the cache holds `hash` as liked.
 pub fn liked_set_contains(hash: &str) -> bool {
-    liked_set().read().unwrap().contains(hash)
+    liked_set()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(hash)
 }
 
-/// Refreshes the in-memory liked-set from the service (best-effort).
+/// Serializes the initial liked-list load so concurrent `online_track_is_liked`
+/// queries (e.g. rapid track changes before the cache is primed) wait for the
+/// first full paged fetch to finish instead of each firing their own.
+fn liked_load_lock() -> &'static tokio::sync::Mutex<()> {
+    static LIKED_LOAD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LIKED_LOAD_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Refreshes the in-memory liked-set from the service (best-effort). A failed
+/// fetch leaves the previous cache and the init flag untouched, so the next
+/// query retries instead of trusting an empty list (which would silently
+/// unlike every track until restart).
 async fn refresh_liked_set_from_service() {
-    let entries = fetch_liked_entries().await;
+    let Some(entries) = fetch_liked_entries().await else {
+        return;
+    };
     let hashes = entries.into_iter().map(|(h, _)| h).collect();
-    *liked_set().write().unwrap() = hashes;
+    *liked_set().write().unwrap_or_else(|e| e.into_inner()) = hashes;
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
@@ -1033,16 +1083,29 @@ async fn refresh_liked_set_from_service() {
 /// the KuGou "liked songs" playlist so the play-bar star is immediately
 /// accurate for those tracks.
 pub fn prime_liked_cache() {
-    crate::RUNTIME.spawn(refresh_liked_set_from_service());
+    crate::RUNTIME.spawn(async {
+        // Same lock as the lazy load in `online_track_is_liked` so the two
+        // entry points cannot double-fetch the whole liked list.
+        let _guard = liked_load_lock().lock().await;
+        refresh_liked_set_from_service().await;
+    });
 }
 
 /// True when `hash` is already in the user's KuGou liked-songs list. Uses the
 /// cached set once it has been primed; only falls back to a network refresh
-/// the first time.
+/// the first time. Concurrent first queries coalesce into one fetch: the
+/// latecomers wait on `liked_load_lock` and then read whatever the first
+/// loader produced; a failed load leaves the init flag unset so a later
+/// query retries.
 pub async fn online_track_is_liked(hash: &str) -> bool {
     let hash = hash.to_string();
     if !LIKED_SET_INIT.load(Ordering::Relaxed) {
-        refresh_liked_set_from_service().await;
+        let _guard = liked_load_lock().lock().await;
+        // Re-check under the lock: the query that primed the cache may have
+        // finished while we waited.
+        if !LIKED_SET_INIT.load(Ordering::Relaxed) {
+            refresh_liked_set_from_service().await;
+        }
     }
     liked_set_contains(&hash)
 }
@@ -1057,6 +1120,7 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
         let hash = track.hash.clone();
         let fileid = fetch_liked_entries()
             .await
+            .unwrap_or_default()
             .into_iter()
             .find(|(h, _)| *h == hash)
             .map(|(_, f)| f);
@@ -1066,13 +1130,26 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
                 .spawn(async move { client.playlist_remove_songs(2, &[fid]).await })
                 .await
                 .map(|result| result.map(|_| true)),
-            // Already gone from the list; treat as a successful removal.
-            None => Ok(Ok(true)),
+            // Not found within the fetched pages (or the fetch itself failed
+            // and produced no candidate); treated as a successful removal.
+            // The server may still hold the like when the list exceeds the
+            // 10-page fetch window, so leave a trace in the log.
+            None => {
+                tracing::warn!(
+                    hash = %hash,
+                    "kugou unlike: fileid not found in fetched liked pages; \
+                     treating as already removed (cache may be incomplete)"
+                );
+                Ok(Ok(true))
+            }
         };
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
-                liked_set().write().unwrap().remove(&hash);
+                liked_set()
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&hash);
                 emit_toast(Toast::success(tr!(
                     "KUGOU_LIKE_REMOVED",
                     "Removed from your KuGou liked songs"

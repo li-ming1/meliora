@@ -158,6 +158,26 @@ fn entry_to_track(entry: &StreamMapEntry) -> NeteaseTrackInfo {
     }
 }
 
+/// Bytes of the stream-map JSON last handed to the persistence task. Kept so
+/// re-recording an unchanged registry (e.g. replaying the same song) skips
+/// the disk write entirely instead of re-writing identical bytes.
+static LAST_PERSISTED_STREAM_MAP: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+
+/// Returns `json` back when it differs from the last persisted bytes (and
+/// records it as the new baseline), or `None` when it is unchanged and the
+/// write task can be skipped. The mutex is only ever held for a memcmp.
+fn persist_stream_map_if_changed(json: Vec<u8>) -> Option<Vec<u8>> {
+    let mut last = LAST_PERSISTED_STREAM_MAP
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if last.as_deref() == Some(json.as_slice()) {
+        return None;
+    }
+    *last = Some(json.clone());
+    Some(json)
+}
+
 /// Records that `url` (a NetEase stream) belongs to `track` and persists the
 /// registry (LRU-capped).
 pub fn remember_online_track(url: String, track: NeteaseTrackInfo) {
@@ -172,15 +192,22 @@ pub fn remember_online_track(url: String, track: NeteaseTrackInfo) {
         duration: track.duration,
         cover_url: track.cover_url.to_string(),
     };
-    let json = {
+    // Only mutate + snapshot under the lock; serialization and the disk write
+    // both happen outside of it: the map is read on both the UI thread and
+    // the playback thread, so holding the mutex across either lets a slow FS
+    // stall song changes.
+    let snapshot = {
         let mut guard = stream_map().lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|existing| existing.url != entry.url);
         guard.insert(0, entry);
         guard.truncate(STREAM_MAP_CAP);
-        serde_json::to_vec_pretty(&*guard).ok()
+        guard.clone()
+    };
+    let Some(json) = serde_json::to_vec(&snapshot).ok() else {
+        return;
     };
     // Off-thread and lock-free disk write; see the kugou twin for rationale.
-    if let Some(json) = json {
+    if let Some(json) = persist_stream_map_if_changed(json) {
         let path = stream_map_path();
         crate::RUNTIME.spawn(async move {
             let _ = tokio::fs::write(path, json).await;
@@ -618,37 +645,66 @@ fn liked_ids() -> &'static RwLock<HashSet<i64>> {
 
 /// True when the cache holds `id` as liked.
 pub fn liked_set_contains(id: i64) -> bool {
-    liked_ids().read().unwrap().contains(&id)
+    liked_ids()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&id)
 }
 
-/// Refreshes the in-memory liked-set from the service (best-effort).
+/// Serializes the initial liked-list load so concurrent `online_track_is_liked`
+/// queries (e.g. rapid track changes before the cache is primed) wait for the
+/// first fetch to finish instead of each firing their own.
+fn liked_load_lock() -> &'static tokio::sync::Mutex<()> {
+    static LIKED_LOAD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LIKED_LOAD_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Refreshes the in-memory liked-set from the service (best-effort). A failed
+/// fetch leaves the previous cache and the init flag untouched, so the next
+/// query retries instead of trusting an empty list (which would silently
+/// unlike every track until restart).
 async fn refresh_liked_set_from_service() {
     let client = crate::netease::shared_client();
     let Some(uid) = client.user_id() else {
         return;
     };
-    let ids = crate::RUNTIME
+    let Some(ids) = crate::RUNTIME
         .spawn(async move { client.like_list(uid).await })
         .await
         .ok()
         .and_then(Result::ok)
-        .unwrap_or_default();
-    *liked_ids().write().unwrap() = ids.into_iter().collect();
+    else {
+        return;
+    };
+    *liked_ids().write().unwrap_or_else(|e| e.into_inner()) = ids.into_iter().collect();
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
 /// Fires a background refresh of the liked-set. Called at startup (when
 /// logged in) so the play-bar star is immediately accurate.
 pub fn prime_liked_cache() {
-    crate::RUNTIME.spawn(refresh_liked_set_from_service());
+    crate::RUNTIME.spawn(async {
+        // Same lock as the lazy load in `online_track_is_liked` so the two
+        // entry points cannot double-fetch the whole liked list.
+        let _guard = liked_load_lock().lock().await;
+        refresh_liked_set_from_service().await;
+    });
 }
 
 /// True when `id` is in the user's NetEase liked-songs list. Uses the cached
 /// set once it has been primed; only falls back to a network refresh the
-/// first time.
+/// first time. Concurrent first queries coalesce into one fetch: the
+/// latecomers wait on `liked_load_lock` and then read whatever the first
+/// loader produced; a failed load leaves the init flag unset so a later
+/// query retries.
 pub async fn online_track_is_liked(id: i64) -> bool {
     if !LIKED_SET_INIT.load(Ordering::Relaxed) {
-        refresh_liked_set_from_service().await;
+        let _guard = liked_load_lock().lock().await;
+        // Re-check under the lock: the query that primed the cache may have
+        // finished while we waited.
+        if !LIKED_SET_INIT.load(Ordering::Relaxed) {
+            refresh_liked_set_from_service().await;
+        }
     }
     liked_set_contains(id)
 }
@@ -675,7 +731,10 @@ pub fn like_track(cx: &mut App, track: &NeteaseTrackInfo) {
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
-                liked_ids().write().unwrap().insert(id);
+                liked_ids()
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(id);
                 emit_toast(Toast::success(tr!(
                     "NETEASE_LIKE_ADDED",
                     "Added to your NetEase liked songs"
@@ -714,7 +773,10 @@ pub fn unlike_track(cx: &mut App, track: &NeteaseTrackInfo) {
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
-                liked_ids().write().unwrap().remove(&id);
+                liked_ids()
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
                 emit_toast(Toast::success(tr!(
                     "NETEASE_LIKE_REMOVED",
                     "Removed from your NetEase liked songs"
