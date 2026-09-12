@@ -688,27 +688,26 @@ pub async fn move_playlist_item(
     // retrieve the current item's position
     let original_item = get_playlist_item(pool, item_id).await?;
 
-    if original_item.position < new_position {
-        let move_query = include_str!("../../queries/playlist/move_track_down.sql");
-
-        sqlx::query(move_query)
-            .bind(new_position)
-            .bind(original_item.position)
-            .bind(item_id)
-            .bind(original_item.playlist_id)
-            .execute(pool)
-            .await?;
+    let move_query = if original_item.position < new_position {
+        include_str!("../../queries/playlist/move_track_down.sql")
     } else if original_item.position > new_position {
-        let move_query = include_str!("../../queries/playlist/move_track_up.sql");
+        include_str!("../../queries/playlist/move_track_up.sql")
+    } else {
+        return Ok(());
+    };
 
-        sqlx::query(move_query)
-            .bind(new_position)
-            .bind(original_item.position)
-            .bind(item_id)
-            .bind(original_item.playlist_id)
-            .execute(pool)
-            .await?;
-    }
+    // the shift + reposition statements must apply together or not at all
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(move_query)
+        .bind(new_position)
+        .bind(original_item.position)
+        .bind(item_id)
+        .bind(original_item.playlist_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
 
     Ok(())
 }
@@ -717,12 +716,17 @@ pub async fn remove_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Resu
     let query = include_str!("../../queries/playlist/remove_track.sql");
     let item = get_playlist_item(pool, item_id).await?;
 
+    // the position compaction and the delete must apply together or not at all
+    let mut tx = pool.begin().await?;
+
     sqlx::query(query)
         .bind(item.playlist_id)
         .bind(item.position)
         .bind(item_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
 
     Ok(())
 }
