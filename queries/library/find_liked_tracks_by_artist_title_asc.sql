@@ -1,11 +1,17 @@
-SELECT t.* FROM track t
+SELECT t.id, t.title, t.album_id, t.track_number, t.disc_number, t.duration,
+       t.location, t.artist_names, t.disc_subtitle,
+       t.title_sortable AS track_sort_key
+FROM track t
 JOIN album al ON t.album_id = al.id
 JOIN album_artist aa ON aa.album_id = al.id
 JOIN playlist_item pi ON pi.track_id = t.id
 WHERE aa.artist_id = $1 AND pi.playlist_id = 1
 UNION ALL
-SELECT t.* FROM track t
+SELECT t.id, t.title, t.album_id, t.track_number, t.disc_number, t.duration,
+       t.location, t.artist_names, t.disc_subtitle,
+       t.title_sortable AS track_sort_key
+FROM track t
 JOIN track_artist ta ON ta.track_id = t.id
 JOIN playlist_item pi ON pi.track_id = t.id
 WHERE ta.artist_id = $1 AND pi.playlist_id = 1
-ORDER BY title_sortable ASC;
+ORDER BY track_sort_key ASC;
