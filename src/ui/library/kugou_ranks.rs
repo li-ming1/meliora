@@ -74,6 +74,10 @@ pub struct KugouRanksView {
     tracks_state: TracksState,
     track_page: i64,
     has_more_tracks: bool,
+    /// Bumped on every track-list (re)load; in-flight page responses whose
+    /// generation no longer matches are dropped, so quickly closing and
+    /// reopening the same rank cannot append a stale page twice.
+    track_generation: u64,
     recommend: RecommendState,
     /// hashes liked during this session (drives the star icon)
     liked: HashSet<String>,
@@ -98,6 +102,7 @@ impl KugouRanksView {
                 tracks_state: TracksState::Idle,
                 track_page: 0,
                 has_more_tracks: false,
+                track_generation: 0,
                 recommend: RecommendState::Idle,
                 liked: HashSet::new(),
                 like_in_flight: HashSet::new(),
@@ -199,6 +204,8 @@ impl KugouRanksView {
         };
 
         self.tracks_state = TracksState::Loading;
+        self.track_generation += 1;
+        let generation = self.track_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -209,8 +216,10 @@ impl KugouRanksView {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                let still_current =
-                    this.selected.as_ref().is_some_and(|r| r.rankid == rank.rankid);
+                // the rank may have been closed and reopened while this
+                // request was in flight; a stale page must not append twice
+                let still_current = this.selected.as_ref().is_some_and(|r| r.rankid == rank.rankid)
+                    && this.track_generation == generation;
 
                 match request {
                     Ok(Ok(response)) if still_current => {
@@ -256,6 +265,8 @@ impl KugouRanksView {
         self.tracks_state = TracksState::Idle;
         self.track_page = 0;
         self.has_more_tracks = false;
+        self.track_generation += 1;
+        self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
     }
 
