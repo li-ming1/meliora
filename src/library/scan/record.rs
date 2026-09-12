@@ -210,4 +210,119 @@ mod tests {
         write_checkpoint(guard, vec![Utf8PathBuf::from("/music")], &path).await;
         assert_loads_record(&path, &p1, t1).await;
     }
+
+    /// Checkpoint serialization cost benchmark, hand-run with:
+    /// `cargo test --release --features kugou -- bench_checkpoint --ignored --nocapture`
+    ///
+    /// Measures exactly what `write_checkpoint` does per invocation, minus disk
+    /// IO (which happens off-lock in `write_record_atomic`):
+    /// 1. `postcard::to_allocvec` of the full map - this is the portion where
+    ///    the checkpoint `Mutex` is held, so it also blocks `commit_batch`'s
+    ///    `merge_checkpoint_records` for that long;
+    /// 2. zlib compression through the same `async_compression` tokio
+    ///    `ZlibEncoder` pipeline used by `write_record_atomic`.
+    ///
+    /// Decision rule from the perf audit: <50 ms per checkpoint at 100k records
+    /// -> keep per-batch checkpointing and record the numbers here;
+    /// >=100 ms -> gate checkpoint writes on a >=2 s clock interval in
+    /// execution.rs. In between: keep unless further evidence appears.
+    ///
+    /// Measured 2026-09-12 (release, median of 20 rounds after 2 warmup;
+    /// two runs agreed within ~10%, second run quoted):
+    /// -  50k records: postcard 4.49 ms (lock held), postcard+zlib 140.26 ms;
+    ///   sizes 3.72 MiB -> 0.67 MiB zlib
+    /// - 100k records: postcard 8.81 ms (lock held), postcard+zlib 265.66 ms;
+    ///   sizes 7.44 MiB -> 1.40 MiB zlib
+    ///
+    /// Decision: 100k lands at ~266-294 ms (both runs >=100 ms), so per-batch
+    /// checkpointing was replaced with a 2 s clock gate in execution.rs
+    /// (CHECKPOINT_INTERVAL). The first checkpoint of a scan still fires on
+    /// the first batch commit, and cancellation/completion writes are
+    /// unconditional. Note zlib is ~97% of the cost; the lock-held postcard
+    /// pass is only ~9 ms, so the gate primarily removes wasted background
+    /// compression work, not lock contention.
+    #[test]
+    #[ignore = "benchmark: run with --ignored"]
+    fn bench_checkpoint_serialization() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            for count in [50_000usize, 100_000] {
+                let (records, directories) = synthetic_records(count);
+                let view = ScanRecordForWrite {
+                    version: SCAN_VERSION,
+                    records: &records,
+                    directories: &directories,
+                };
+
+                const WARMUP_ROUNDS: usize = 2;
+                const ROUNDS: usize = 20;
+                let mut serialize_samples = Vec::new();
+                let mut serialize_zlib_samples = Vec::new();
+                let mut raw_len = 0usize;
+                let mut zlib_len = 0usize;
+
+                for round in 0..WARMUP_ROUNDS + ROUNDS {
+                    let start = std::time::Instant::now();
+                    let raw = postcard::to_allocvec(&view).unwrap();
+                    let serialize_ms = start.elapsed().as_secs_f64() * 1e3;
+
+                    let start = std::time::Instant::now();
+                    let mut encoder = ZlibEncoder::new(Vec::with_capacity(raw.len() / 4));
+                    encoder.write_all(&raw).await.unwrap();
+                    encoder.shutdown().await.unwrap();
+                    let zlib_ms = start.elapsed().as_secs_f64() * 1e3;
+
+                    if round >= WARMUP_ROUNDS {
+                        serialize_samples.push(serialize_ms);
+                        serialize_zlib_samples.push(serialize_ms + zlib_ms);
+                        raw_len = raw.len();
+                        zlib_len = encoder.into_inner().len();
+                    }
+                }
+
+                let median = |mut v: Vec<f64>| {
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    v[v.len() / 2]
+                };
+                println!("{count} records:");
+                println!(
+                    "  postcard only (lock held) median: {:7.2} ms",
+                    median(serialize_samples)
+                );
+                println!(
+                    "  postcard + zlib (full checkpoint) median: {:7.2} ms",
+                    median(serialize_zlib_samples)
+                );
+                println!(
+                    "  sizes: postcard {:.2} MiB, zlib {:.2} MiB",
+                    raw_len as f64 / (1024.0 * 1024.0),
+                    zlib_len as f64 / (1024.0 * 1024.0)
+                );
+            }
+        });
+    }
+
+    /// Synthetic but structurally faithful record map: real-ish library paths
+    /// (artist/album nesting, ~70-100 byte keys) and spread mtimes, all
+    /// deterministic so every run measures identical input. `FxHashMap` has no
+    /// random seed, so postcard output (and thus size) is run-stable too.
+    fn synthetic_records(count: usize) -> (FxHashMap<Utf8PathBuf, SystemTime>, Vec<Utf8PathBuf>) {
+        let mut records = FxHashMap::default();
+        for i in 0..count {
+            let artist = i / 500;
+            let album = (i / 25) % 20;
+            let track = i % 25;
+            records.insert(
+                Utf8PathBuf::from(format!(
+                    "/music/Artist {artist:03}/Album {album:02} (Deluxe Edition)/{track:02} - Song Title {i:06}.flac"
+                )),
+                UNIX_EPOCH + Duration::from_secs(1_300_000_000 + (i as u64 * 7919) % 900_000_000),
+            );
+        }
+        (records, vec![Utf8PathBuf::from("/music")])
+    }
 }

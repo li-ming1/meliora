@@ -37,6 +37,17 @@ use crate::settings::scan::ScanSettings;
 
 const BATCH_SIZE: usize = 50;
 
+/// Intermediate checkpoints serialize the whole record map, which costs
+/// O(library size) per write (~0.3 s at 100k records, measured in
+/// record.rs::tests::bench_checkpoint_serialization; the lock-held postcard
+/// pass is only ~10 ms of that - zlib dominates). Writing one per 50-file
+/// batch would let that dominate fast scans, so spawned checkpoint writes are
+/// gated on this clock interval. The first checkpoint of a scan still goes out
+/// immediately, cancellation writes one unconditionally in finish_cancelled,
+/// and completion writes the full record in finish_completed - a crash loses
+/// at most this much scan progress.
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
+
 pub(super) struct ScanExecutionContext<'a> {
     pub(super) pool: &'a SqlitePool,
     pub(super) scan_settings: &'a mut ScanSettings,
@@ -74,6 +85,9 @@ pub(super) struct ScanExecution<'a> {
     /// Last time a ScanProgress event was emitted; progress is throttled so a
     /// 100k-file scan doesn't flood the header with notify-per-5-files.
     last_progress_report: std::cell::Cell<Option<Instant>>,
+    /// Last time a checkpoint write was spawned; clock-gated by
+    /// CHECKPOINT_INTERVAL because each write serializes the whole record map.
+    last_checkpoint_write: std::cell::Cell<Option<Instant>>,
 }
 
 impl<'a> ScanExecution<'a> {
@@ -104,6 +118,7 @@ impl<'a> ScanExecution<'a> {
             scan_checkpoint: Arc::new(Mutex::new(FxHashMap::default())),
             checkpoint_handle: None,
             last_progress_report: std::cell::Cell::new(None),
+            last_checkpoint_write: std::cell::Cell::new(None),
         }
     }
 
@@ -346,9 +361,15 @@ impl<'a> ScanExecution<'a> {
         {
             return;
         }
+        if let Some(last) = self.last_checkpoint_write.get()
+            && last.elapsed() < CHECKPOINT_INTERVAL
+        {
+            return;
+        }
         if let Some(handle) = self.checkpoint_handle.take() {
             let _ = handle.await;
         }
+        self.last_checkpoint_write.set(Some(Instant::now()));
         let checkpoint = Arc::clone(&self.scan_checkpoint);
         let directories = self.context.checkpoint_dirs.clone();
         let path = self.context.checkpoint_path.clone();

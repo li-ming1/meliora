@@ -610,3 +610,177 @@ pub(crate) mod audio_fixtures {
         out
     }
 }
+
+/// Hand-run micro-benchmarks that are not tied to a single module. Run with:
+/// `cargo test --release --features kugou -- bench_image_cache --ignored --nocapture`
+///
+/// Measured numbers are recorded in each test's doc comment after actual runs
+/// only (GPUI HARDCORE §1: no numbers, no conclusion - never pre-fill).
+mod benches {
+    use std::collections::VecDeque;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    use rustc_hash::{FxBuildHasher, FxHashMap};
+
+    /// Quantifies the LRU-front fast path of `MelioraImageCache::load`
+    /// (src/ui/caching.rs): a hit for the item already at the front of
+    /// `usage_list` skips the O(depth) `position` scan + `remove` +
+    /// `push_front` reorder; every other hit pays it. 200 entries matches the
+    /// artwork tables' `meliora_cache(..., 200)` call site (table.rs).
+    ///
+    /// The structure below mirrors the hit branch exactly. Excluded on purpose
+    /// (identical across hot/cold paths, so they cancel out): `gpui::hash`
+    /// of the resource and `ImageCacheItem::get()`.
+    ///
+    /// Measurement soundness notes (the naive approach silently measures
+    /// nothing here):
+    /// - the hit key is `black_box`ed per op, otherwise LLVM hoists the entire
+    ///   loop-invariant hot hit (map lookup + front check never mutate) out of
+    ///   the timing loop;
+    /// - mid/cold batches replay a "self-sustaining cycle": repeatedly hitting
+    ///   whatever entry currently sits at `depth` rotates the first depth+1
+    ///   entries back to their start, so *every* timed op is a genuine
+    ///   depth-`d` hit. Hitting the same key repeatedly would leave it at the
+    ///   front after the first op and measure the fast path instead.
+    struct LruMirror {
+        usage_list: VecDeque<u64>,
+        // 32-byte stand-in for `(ImageCacheItem, Resource)` map payloads
+        cache: FxHashMap<u64, [u64; 4]>,
+    }
+
+    const SPREAD: u64 = 0x9E37_79B9_7F4A_7C15;
+
+    impl LruMirror {
+        fn new(items: usize) -> Self {
+            let mut usage_list = VecDeque::with_capacity(items);
+            let mut cache = FxHashMap::with_capacity_and_hasher(items, FxBuildHasher);
+            for i in 0..items as u64 {
+                let hash = i.wrapping_mul(SPREAD);
+                usage_list.push_back(hash);
+                cache.insert(hash, [i; 4]);
+            }
+            Self { usage_list, cache }
+        }
+
+        /// Returns the depth the item was found at (0 = front / hot).
+        fn hit(&mut self, hash: u64) -> usize {
+            if let Some(_item) = self.cache.get_mut(&hash) {
+                if self.usage_list.front() != Some(&hash) {
+                    let idx = self
+                        .usage_list
+                        .iter()
+                        .position(|item| *item == hash)
+                        .expect("cache has an item usage_list doesn't");
+                    self.usage_list.remove(idx);
+                    self.usage_list.push_front(hash);
+                    return idx;
+                }
+                return 0;
+            }
+            panic!("hit on missing item");
+        }
+
+        /// The floor every hit path pays: map lookup without LRU bookkeeping.
+        fn lookup_only(&self, hash: u64) -> bool {
+            self.cache.contains_key(&hash)
+        }
+
+        /// Precomputes the op sequence whose every hit lands at exactly
+        /// `depth`, leaving the LRU in its starting state once the sequence
+        /// completes (asserted per op).
+        fn depth_cycle(&mut self, depth: usize) -> Vec<u64> {
+            let initial: Vec<u64> = self.usage_list.iter().copied().collect();
+            let mut cycle = Vec::new();
+            loop {
+                let target = self.usage_list[depth];
+                assert_eq!(
+                    self.hit(target),
+                    depth,
+                    "cycle construction hit at an unexpected depth"
+                );
+                cycle.push(target);
+                if self.usage_list.iter().copied().eq(initial.iter().copied()) {
+                    return cycle;
+                }
+            }
+        }
+    }
+
+    const ITEMS: usize = 200;
+    const OPS_PER_BATCH: usize = 200;
+    const WARMUP_BATCHES: usize = 2;
+    const BATCHES: usize = 20;
+
+    fn median(mut v: Vec<f64>) -> f64 {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    }
+
+    /// Measured 2026-09-12 (release, median of 20 batches x 200 ops,
+    /// 200 entries): bare map lookup 2.0 ns, hot/front hit 3.5 ns, depth-100
+    /// hit 64.0 ns (+60.5 ns), depth-199 hit 90.0 ns (+86.5 ns). The front
+    /// check keeps an LRU-hot hit within ~1.5 ns of the bare lookup floor,
+    /// while a back-of-list hit pays ~26x the hot cost - the fast path removes
+    /// ~96% of the hit cost for hot items, which covers the vast majority of
+    /// real hits (the visible grid), so the guard in caching.rs is justified.
+    #[test]
+    #[ignore = "benchmark: run with --ignored"]
+    fn bench_image_cache_lru_fast_path() {
+        // usage_list depth = item index (front = 0). Depths mirror the task
+        // spec: hot (front / fast path), mid-cache, and back-of-the-list cold.
+        let cases: [(&str, usize); 3] = [
+            ("hot  (front, fast path)", 0),
+            ("warm (depth 100)        ", 100),
+            ("cold (depth 199)        ", 199),
+        ];
+
+        let mut lru = LruMirror::new(ITEMS);
+        let mut results = Vec::new();
+
+        // lookup-only floor, measured with the same structure (opaque key)
+        let hash = 100u64.wrapping_mul(SPREAD);
+        let mut floor_samples = Vec::new();
+        for batch in 0..WARMUP_BATCHES + BATCHES {
+            let start = Instant::now();
+            for _ in 0..OPS_PER_BATCH {
+                black_box(lru.lookup_only(black_box(hash)));
+            }
+            if batch >= WARMUP_BATCHES {
+                floor_samples.push(start.elapsed().as_secs_f64() * 1e9 / OPS_PER_BATCH as f64);
+            }
+        }
+        results.push(("map lookup only (floor)  ", median(floor_samples)));
+
+        for (label, depth) in cases {
+            let cycle = lru.depth_cycle(depth);
+            let mut samples = Vec::new();
+            let mut op = 0usize; // cumulative across batches: the cycle must
+                                 // stay aligned with the LRU's rotation state
+            for batch in 0..WARMUP_BATCHES + BATCHES {
+                let start = Instant::now();
+                for _ in 0..OPS_PER_BATCH {
+                    black_box(lru.hit(black_box(cycle[op % cycle.len()])));
+                    op += 1;
+                }
+                if batch >= WARMUP_BATCHES {
+                    samples.push(start.elapsed().as_secs_f64() * 1e9 / OPS_PER_BATCH as f64);
+                }
+            }
+            results.push((label, median(samples)));
+        }
+
+        let hot = results[1].1;
+        println!(
+            "MelioraImageCache LRU hit path, {ITEMS} entries, ns/op (median of {BATCHES} batches x {OPS_PER_BATCH} ops):"
+        );
+        for (label, ns) in &results {
+            let delta = if label.starts_with("warm") || label.starts_with("cold") {
+                format!("  ({:+.1} ns vs hot)", ns - hot)
+            } else {
+                String::new()
+            };
+            println!("  {label} {ns:8.1} ns{delta}");
+        }
+    }
+}
