@@ -35,8 +35,7 @@ use crate::{
             files_view::{BatchItems, FilesView, FlatRow, TrackRef, file_context_menu::FileContextMenu},
         },
         models::{
-            HasLikedState, LIKED_SONGS_PLAYLIST_ID, PlaybackInfo, subscribe_liked_updates,
-            toggle_like_by_id,
+            HasLikedState, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_like_by_id,
         },
         theme::Theme,
     },
@@ -108,15 +107,14 @@ impl FileRowItem {
         show_add_to: Entity<bool>,
         cx: &mut App,
     ) -> AnyElement {
+        // Cached liked-ids set (see is_song_liked): the batch menu only needs
+        // the liked/unliked boolean for icon and label, and unlike deletes by
+        // track id — zero DB access here, so a shift-selected 500-row menu
+        // opens without touching the database.
         let liked_ids: SmallVec<[i64; 32]> = track_ids
             .iter()
             .copied()
-            .filter(|id| {
-                cx.playlist_has_track(LIKED_SONGS_PLAYLIST_ID, *id)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            })
+            .filter(|id| is_song_liked(cx, *id).is_some())
             .collect();
         let any_liked = !liked_ids.is_empty();
         let count = audio_items.len();
@@ -210,14 +208,11 @@ impl FileRowItem {
                         },
                         move |_, _, cx| {
                             if any_liked {
+                                // Unlike deletes by track id (see
+                                // toggle_like_by_id): the inner id is ignored,
+                                // so pass the track id.
                                 for &id in &liked_ids {
-                                    let is_liked = cx
-                                        .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, id)
-                                        .ok()
-                                        .flatten();
-                                    if is_liked.is_some() {
-                                        toggle_like_by_id(id, is_liked, cx);
-                                    }
+                                    toggle_like_by_id(id, Some(id), cx);
                                 }
                             } else {
                                 for &id in like_ids.iter() {

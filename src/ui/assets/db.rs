@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     sync::{Mutex, OnceLock},
 };
 
@@ -102,40 +103,73 @@ pub fn load(pool: &SqlitePool, url: Url) -> gpui::Result<Option<Cow<'static, [u8
 const THUMB_MAX_PX: u32 = 128;
 
 /// 缩略图资产缓存条目上限。256 条 ≤128px 的 PNG（thumb 列存的是扫描器
-/// 的 70×70 BMP，缩后每条约 20–60KB）总量在几 MB 量级；写满后不再新增，
-/// 绝不无界增长。
+/// 的 70×70 BMP，缩后每条约 20–60KB）总量在几 MB 量级；写满后按插入顺序
+/// FIFO 淘汰最旧条目，绝不无界增长。
 const SHRUNK_THUMB_CACHE_MAX: usize = 256;
 
-/// 已缩到 128px 的 thumb 资产内存缓存，键为（表, id）。`!db://` 资产在
-/// 滚动中会被 gpui 的资产加载器反复请求，无缓存时每次都要在后台线程上
-/// block_on 查库 + decode + shrink + PNG 编码。缓存命中后连数据库查询
-/// 都省掉。注意：条目不淘汰，同一 (表, id) 的 artwork 在重新扫描后被
-/// 更新时，缩略图会到下次启动才刷新——thumb 来源（70×70 BMP）在扫描后
-/// 不再变化，这个取舍可以接受。
-static SHRUNK_THUMBS: OnceLock<Mutex<FxHashMap<(&'static str, i64), Vec<u8>>>> = OnceLock::new();
-
-fn shrunk_thumbs() -> &'static Mutex<FxHashMap<(&'static str, i64), Vec<u8>>> {
-    SHRUNK_THUMBS.get_or_init(|| Mutex::new(FxHashMap::default()))
+/// 已缩到 128px 的 thumb 资产内存缓存，键为（表, id），按插入顺序 FIFO
+/// 淘汰。`!db://` 资产在滚动中会被 gpui 的资产加载器反复请求，无缓存时
+/// 每次都要在后台线程上 block_on 查库 + decode + shrink + PNG 编码；缓存
+/// 命中后连数据库查询都省掉。"写满即止"会让第 257 个起的资产永远走这条
+/// 慢路径（永久性能悬崖），所以满时必须淘汰。thumb 来源（扫描器的
+/// 70×70 BMP）在扫描后不再变化，且扫描完成时整体清空（见
+/// `clear_shrunk_thumb_cache`），不存在陈旧条目问题。
+struct ShrunkThumbCache {
+    entries: FxHashMap<(&'static str, i64), Vec<u8>>,
+    /// 插入顺序，供 FIFO 淘汰；键集合与 `entries` 保持一致。
+    order: VecDeque<(&'static str, i64)>,
 }
 
-/// 读缓存；临界区无 await（本函数是同步接口）。
+static SHRUNK_THUMBS: OnceLock<Mutex<ShrunkThumbCache>> = OnceLock::new();
+
+fn shrunk_thumbs() -> &'static Mutex<ShrunkThumbCache> {
+    SHRUNK_THUMBS.get_or_init(|| {
+        Mutex::new(ShrunkThumbCache {
+            entries: FxHashMap::default(),
+            order: VecDeque::new(),
+        })
+    })
+}
+
+/// 读缓存；临界区无 await（本函数是同步接口，运行在 gpui 后台线程）。
 fn thumb_cache_get(table: &'static str, id: i64) -> Option<Vec<u8>> {
     shrunk_thumbs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entries
         .get(&(table, id))
         .cloned()
 }
 
-/// 写缓存；写满即止，不淘汰既有条目。
+/// 写缓存；超出上限时按插入顺序淘汰最旧条目（纯内存操作，无 IO）。
 fn thumb_cache_put(table: &'static str, id: i64, bytes: Vec<u8>) {
     let mut cache = shrunk_thumbs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if cache.len() >= SHRUNK_THUMB_CACHE_MAX || cache.contains_key(&(table, id)) {
+    if cache.entries.contains_key(&(table, id)) {
         return;
     }
-    cache.insert((table, id), bytes);
+    cache.entries.insert((table, id), bytes);
+    cache.order.push_back((table, id));
+    while cache.entries.len() > SHRUNK_THUMB_CACHE_MAX {
+        match cache.order.pop_front() {
+            Some(oldest) => {
+                cache.entries.remove(&oldest);
+            }
+            None => break,
+        }
+    }
+}
+
+/// 清空缩略图缓存。库扫描是 thumb 资产唯一的写入者，扫描完成时整体丢弃
+/// （总量至多几 MB）是最便宜且最正确的失效方式；否则先期占满缓存的旧
+/// 资产会把后续新资产永久挡在 DB 慢路径上。
+pub(crate) fn clear_shrunk_thumb_cache() {
+    let mut cache = shrunk_thumbs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entries.clear();
+    cache.order.clear();
 }
 
 /// Best-effort downscale of a thumb asset down to at most 128×128, memoized

@@ -34,6 +34,7 @@ use crate::{
     },
     ui::{
         app::Pool,
+        assets::db::clear_shrunk_thumb_cache,
         availability::compute_availability,
         library::{NavigationHistory, ViewSwitchMessage},
     },
@@ -375,6 +376,11 @@ pub fn build_models(
         ) {
             let album_cache = cx.global::<Models>().album_cache.clone();
             album_cache.update(cx, |cache, _| cache.clear());
+            // A scan is also the only writer of thumb assets: drop the
+            // shrunk-thumb cache so new/re-scanned artwork re-enters the
+            // bounded FIFO cache instead of every later cache miss costing a
+            // DB load + decode + shrink forever.
+            clear_shrunk_thumb_cache();
             reload_availability(cx);
         }
     })
@@ -483,6 +489,13 @@ pub(crate) async fn unlike_track<E: HasLikedState + 'static>(
         }
         Err(err) => {
             tracing::error!("unlike task panicked: {err:?}");
+            // The unlike never ran (the transaction rolled back with the
+            // panic), but the caller already cleared the display state —
+            // restore it so the row still shows liked, matching the DB.
+            entity.update(cx, |this, cx| {
+                this.set_liked(Some(track_id));
+                cx.notify();
+            });
             return;
         }
     }
@@ -633,20 +646,28 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
     let liked_ids = cx.global::<Models>().liked_ids.clone();
     cx.spawn(async move |cx| {
-        let ids = crate::RUNTIME
+        let result = crate::RUNTIME
             .spawn(async move {
                 const QUERY: &str = "SELECT track_id FROM playlist_item WHERE playlist_id = ?";
                 sqlx::query_as::<_, (i64,)>(QUERY)
                     .bind(LIKED_SONGS_PLAYLIST_ID)
                     .fetch_all(&pool)
                     .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(id,)| id)
-                    .collect::<HashSet<i64>>()
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|(id,)| id)
+                            .collect::<HashSet<i64>>()
+                    })
             })
-            .await
-            .unwrap_or_default();
+            .await;
+        // Best-effort for real: a failed query (e.g. SQLITE_BUSY) or a
+        // panicked task must leave the previous set in place. Overwriting
+        // with an empty set would un-like every row in the UI and make the
+        // next like insert a duplicate playlist_item row.
+        let Ok(Ok(ids)) = result else {
+            warn!("could not reload liked songs track ids, keeping previous set");
+            return;
+        };
         liked_ids.update(cx, |set, cx| {
             *set = Some(Arc::new(ids));
             cx.notify();
