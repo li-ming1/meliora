@@ -1,7 +1,9 @@
+use std::time::Duration;
+
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, px,
+    Task, Window, div, px,
 };
 
 use crate::{
@@ -17,6 +19,9 @@ use crate::{
 
 pub struct PlaybackSettings {
     settings: Entity<Settings>,
+    /// Trailing-edge debounce task for slider edits; replacing it cancels the
+    /// pending save so a drag collapses into one `save_settings` call.
+    save_task: Option<Task<()>>,
 }
 
 impl PlaybackSettings {
@@ -25,8 +30,29 @@ impl PlaybackSettings {
             let settings = cx.global::<SettingsGlobal>().model.clone();
             cx.observe(&settings, |_, _, cx| cx.notify()).detach();
 
-            Self { settings }
+            Self {
+                settings,
+                save_task: None,
+            }
         })
+    }
+
+    /// Trailing-edge debounce for slider drags (equalizer-view pattern): every
+    /// tick reschedules a single save ~300ms out, so `save_settings` - and the
+    /// PlaybackInterface push it performs - runs once per drag instead of once
+    /// per mouse-move tick. The disk write keeps its own 500ms trailing-edge
+    /// debounce inside `save_settings`.
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings
+                    .update(cx, |settings, cx| save_settings(cx, settings));
+            })
+            .ok();
+        }));
     }
 
 }
@@ -142,19 +168,26 @@ impl Render for PlaybackSettings {
                         .value(playback.replaygain.fallback_preamp_db as f32)
                         .default_value(0.0)
                         .format_value(|v| -> SharedString { format!("{:+.1} dB", v).into() })
-                        .on_change(move |v, _, cx| {
-                            // live value lands in the model WITHOUT notify: a per-tick
-                            // model notify cascades into the app-wide refresh_windows
-                            // observer — a full repaint of every window per mouse move
-                            // while dragging (same pattern as equalizer view).
-                            // save_settings' trailing-edge debounce collapses the disk
-                            // writes, and the settings file watcher produces one real
-                            // refresh when settings.json lands.
-                            settings.update(cx, |settings, _| {
-                                settings.playback.replaygain.fallback_preamp_db = v as f64;
-                            });
-                            let snapshot = settings.read(cx).clone();
-                            save_settings(cx, &snapshot);
+                        .on_change({
+                            let weak_self = cx.weak_entity();
+                            move |v, _, cx| {
+                                // live value lands in the model WITHOUT notifying the settings
+                                // model: a per-tick model notify cascades into the app-wide
+                                // refresh_windows observer (app.rs) - a full repaint of every
+                                // window per mouse move while dragging. Only this page entity
+                                // is notified so the slider and its readout track the drag;
+                                // the debounced save applies the preamp to the playback
+                                // thread once the drag settles.
+                                settings.update(cx, |settings, _| {
+                                    settings.playback.replaygain.fallback_preamp_db = v as f64;
+                                });
+                                if let Some(this) = weak_self.upgrade() {
+                                    this.update(cx, |this, cx| {
+                                        cx.notify();
+                                        this.schedule_save(cx);
+                                    });
+                                }
+                            }
                         }),
                 )
             })

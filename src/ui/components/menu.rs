@@ -102,7 +102,18 @@ impl BaseMenuItem {
             })
             .when_some(self.tooltip, |this, text| this.tooltip(build_tooltip(text)))
             .when(has_tooltip, |this| {
-                this.on_hover(|_, window, _| window.refresh())
+                // Transition-gated repaint (scrollbar.rs pattern): entering does
+                // not need one - the tooltip machinery refreshes the window when
+                // the tooltip actually shows, and the built-in hover styles
+                // repaint on the flip themselves. Leaving still refreshes,
+                // because the pointer can exit the window without another
+                // MouseMove and this repaint is what lets the tooltip's
+                // prepaint check hide it.
+                this.on_hover(|hovered, window, _| {
+                    if !*hovered {
+                        window.refresh();
+                    }
+                })
             });
 
         if self.disabled || self.non_interactive {

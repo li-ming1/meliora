@@ -1,7 +1,7 @@
 use std::{rc::Rc, sync::Arc};
 
 use cntp_i18n::{I18nString, tr};
-use gpui::{App, IntoElement, SharedString, Window, div};
+use gpui::{AnyView, App, IntoElement, SharedString, Window, div};
 
 use crate::{
     library::db::LibraryAccess,
@@ -259,16 +259,18 @@ impl PaletteItem for SearchPaletteItem {
         }
     }
 
-    fn context_menu_overlay(&self, window: &mut Window, cx: &mut App) -> Option<impl IntoElement> {
+    /// Built only when the context menu opens (see `PaletteItem::context_menu_overlay`);
+    /// the entity is keyed window state, so repeated opens reuse it.
+    fn context_menu_overlay(&self, window: &mut Window, cx: &mut App) -> Option<AnyView> {
         match self {
             SearchPaletteItem::Track { id, .. } => {
                 let (_, add_to) = add_to_playlist_state("pi_context_add_to", *id, window, cx);
-                Some(add_to.into_any_element())
+                Some(add_to.into())
             }
             SearchPaletteItem::Album { id, .. } => {
                 let (_, add_to) =
                     add_album_to_playlist_state("pi_context_album_add_to", *id, window, cx);
-                Some(add_to.into_any_element())
+                Some(add_to.into())
             }
             _ => None,
         }

@@ -23,7 +23,7 @@ use tracing::{info, warn};
 
 use crate::{library::scan::ScanInterface, playback::interface::PlaybackInterface};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Settings {
     #[serde(default)]
     pub scanning: scan::ScanSettings,
@@ -256,8 +256,13 @@ fn apply_settings_outcome(
                 cx.global::<ScanInterface>()
                     .update_settings(settings.scanning.clone());
             }
+            // same-content reloads (our own save echo, notify storms) must not
+            // cascade into the app-wide refresh_windows observer
+            let changed = *current != settings;
             *current = settings;
-            cx.notify();
+            if changed {
+                cx.notify();
+            }
             SettingsHealth::Ok
         }
         SettingsLoadOutcome::Corrupt { path, .. } => SettingsHealth::Corrupt { path },

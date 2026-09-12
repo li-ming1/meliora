@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement,
-    Render, Styled, Window, div, prelude::FluentBuilder, px,
+    Render, SharedString, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use nucleo::Utf32String;
 
@@ -60,7 +60,7 @@ where
             let input = TextInput::new(cx, handle.clone(), None, None, Some(Box::new(handler)));
 
             // Connect input changes to finder
-            cx.subscribe(&input, move |this: &mut Self, _, ev: &String, cx| {
+            cx.subscribe(&input, move |this: &mut Self, _, ev: &SharedString, cx| {
                 // also surface the query to outside subscribers (used by the
                 // kugou search integration to fetch online results)
                 cx.emit(ev.clone());
@@ -206,7 +206,7 @@ where
 {
 }
 
-impl<T, MatcherFunc, OnAccept> EventEmitter<String> for Palette<T, MatcherFunc, OnAccept>
+impl<T, MatcherFunc, OnAccept> EventEmitter<SharedString> for Palette<T, MatcherFunc, OnAccept>
 where
     T: Send + Sync + PartialEq + PaletteItem + 'static,
     MatcherFunc: Fn(&Arc<T>, &mut App) -> Utf32String + 'static,

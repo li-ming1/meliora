@@ -1,9 +1,9 @@
-use std::{path::PathBuf, sync::OnceLock};
+use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, px,
+    Task, Window, div, px,
 };
 
 use crate::{
@@ -93,6 +93,9 @@ pub struct InterfaceSettings {
     settings: Entity<crate::settings::Settings>,
     data_dir: PathBuf,
     theme_options: Entity<Vec<ThemeOption>>,
+    /// Trailing-edge debounce task for slider edits; replacing it cancels the
+    /// pending save so a drag collapses into one `save_settings` call.
+    save_task: Option<Task<()>>,
 }
 
 impl InterfaceSettings {
@@ -114,6 +117,7 @@ impl InterfaceSettings {
                 settings,
                 data_dir,
                 theme_options,
+                save_task: None,
             }
         })
     }
@@ -131,6 +135,24 @@ impl InterfaceSettings {
             save_settings(cx, settings);
             cx.notify();
         });
+    }
+
+    /// Trailing-edge debounce for slider drags (equalizer-view pattern): every
+    /// tick reschedules a single save ~300ms out, so `save_settings` - and the
+    /// PlaybackInterface/ScanInterface pushes it performs - run once per drag
+    /// instead of once per mouse-move tick. The disk write keeps its own 500ms
+    /// trailing-edge debounce inside `save_settings`.
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings
+                    .update(cx, |settings, cx| save_settings(cx, settings));
+            })
+            .ok();
+        }));
     }
 }
 
@@ -316,20 +338,27 @@ impl Render for InterfaceSettings {
                         .default_value(DEFAULT_GRID_MIN_ITEM_WIDTH)
                         .value(interface.normalized_grid_min_item_width())
                         .format_value(|v| format!("{v:.0} px").into())
-                        .on_change(move |value, _, cx| {
-                            // live value lands in the model WITHOUT notify: a per-tick
-                            // model notify cascades into the app-wide refresh_windows
-                            // observer — a full repaint of every window per mouse move
-                            // while dragging (same pattern as equalizer view).
-                            // save_settings' trailing-edge debounce collapses the disk
-                            // writes, and the settings file watcher produces one real
-                            // refresh when settings.json lands.
-                            settings.update(cx, |settings, _| {
-                                settings.interface.grid_min_item_width =
-                                    clamp_grid_min_item_width(value);
-                            });
-                            let snapshot = settings.read(cx).clone();
-                            save_settings(cx, &snapshot);
+                        .on_change({
+                            let weak_self = cx.weak_entity();
+                            move |value, _, cx| {
+                                // live value lands in the model WITHOUT notifying the settings
+                                // model: a per-tick model notify cascades into the app-wide
+                                // refresh_windows observer (app.rs) - a full repaint of every
+                                // window per mouse move while dragging. Only this page entity
+                                // is notified so the slider and its readout track the drag;
+                                // the rest of the UI refreshes once the debounced save lands
+                                // (plus the settings file watcher's real refresh).
+                                settings.update(cx, |settings, _| {
+                                    settings.interface.grid_min_item_width =
+                                        clamp_grid_min_item_width(value);
+                                });
+                                if let Some(this) = weak_self.upgrade() {
+                                    this.update(cx, |this, cx| {
+                                        cx.notify();
+                                        this.schedule_save(cx);
+                                    });
+                                }
+                            }
                         }),
                 ),
             )

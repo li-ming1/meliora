@@ -131,7 +131,9 @@ pub struct TextInput {
     enriched_input_handler: Option<EnrichedInputHandler>,
 }
 
-impl EventEmitter<String> for TextInput {}
+// The change event carries a SharedString: cloning it is an Arc refcount bump,
+// so per-keystroke emits allocate nothing (vs. a fresh String per keypress).
+impl EventEmitter<SharedString> for TextInput {}
 
 impl TextInput {
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -589,7 +591,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
 
-        cx.emit(self.content.to_string());
+        cx.emit(self.content.clone());
         cx.notify();
     }
 

@@ -2,7 +2,7 @@ use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use cntp_i18n::{I18nString, trn};
 use gpui::{
-    AnyElement, App, AppContext, Context, Div, ElementId, Entity, EventEmitter, FontWeight,
+    AnyElement, AnyView, App, AppContext, Context, ElementId, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, WeakEntity, Window, div, img, list, prelude::FluentBuilder,
     px,
@@ -38,14 +38,12 @@ pub trait PaletteItem {
     fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<ContextMenuBuilder> {
         None
     }
-    /// Provides an element to be rendered next to the context menu, used for the Add to Playlist
-    /// item in the track context menu.
-    fn context_menu_overlay(
-        &self,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> Option<impl IntoElement> {
-        None::<Div>
+    /// Provides a view to be rendered next to the context menu, used for the Add to Playlist
+    /// item in the track context menu. Called only when the context menu opens
+    /// (from `FinderItem::render`'s `menu_on_open` builder), so its entities are
+    /// never created for rows whose context menu was never used.
+    fn context_menu_overlay(&self, _window: &mut Window, _cx: &mut App) -> Option<AnyView> {
+        None
     }
 }
 
@@ -181,8 +179,8 @@ where
             .detach();
 
             // update when the query updates
-            cx.subscribe(&cx.entity(), |this, _, ev: &String, cx| {
-                this.set_query(ev.clone(), cx);
+            cx.subscribe(&cx.entity(), |this, _, ev: &SharedString, cx| {
+                this.set_query(ev.to_string(), cx);
             })
             .detach();
 
@@ -477,7 +475,7 @@ where
     }
 }
 
-impl<T, MatcherFunc, OnAccept> EventEmitter<String> for Finder<T, MatcherFunc, OnAccept>
+impl<T, MatcherFunc, OnAccept> EventEmitter<SharedString> for Finder<T, MatcherFunc, OnAccept>
 where
     T: Send + Sync + PartialEq + PaletteItem + 'static,
     MatcherFunc: Fn(&Arc<T>, &mut App) -> Utf32String + 'static,
@@ -742,6 +740,10 @@ where
     weak_parent: WeakEntity<Finder<T, MatcherFunc, OnAccept>>,
     item_data: Option<Arc<T>>,
     on_accept_override: OnAcceptOverride,
+    /// Context-menu overlay view (e.g. AddToPlaylist). Built lazily the first
+    /// time the context menu opens and kept on the item so the modal survives
+    /// the menu closing.
+    context_overlay: Option<AnyView>,
 }
 
 #[derive(Clone)]
@@ -792,6 +794,7 @@ where
                 weak_parent,
                 item_data: Some(item_data),
                 on_accept_override: None,
+                context_overlay: None,
             }
         })
     }
@@ -825,6 +828,7 @@ where
                 weak_parent,
                 item_data: None,
                 on_accept_override: Some(extra.on_accept.clone()),
+                context_overlay: None,
             }
         })
     }
@@ -943,17 +947,33 @@ where
             });
 
         let context_menu = self.item_data.as_ref().and_then(|v| v.context_menu(window, cx));
-        let overlay = self
-            .item_data
-            .as_ref()
-            .and_then(|v| v.context_menu_overlay(window, cx))
-            .map(|v| v.into_any_element());
+        let overlay = self.context_overlay.clone();
 
         let base = if let Some(menu_builder) = context_menu {
+            let item_data = self.item_data.clone();
+            let weak_item = cx.weak_entity();
             context((self.id.clone(), "context_menu"))
                 .with(item)
-                // menu tree is built only when the menu opens
-                .menu_on_open(move |window, cx| menu_builder(window, cx))
+                // menu tree is built only when the menu opens; the overlay
+                // (e.g. AddToPlaylist) is built here too, on open, so it resolves
+                // to the same keyed state the menu's "Add to playlist" item
+                // writes to. It is kept on the item so the modal survives the
+                // menu closing (and nothing is created for untouched rows).
+                .menu_on_open(move |window, cx| {
+                    let menu = menu_builder(window, cx);
+                    let overlay = item_data
+                        .as_ref()
+                        .and_then(|data| data.context_menu_overlay(window, cx));
+                    if let Some(this) = weak_item.upgrade() {
+                        this.update(cx, |this, cx| {
+                            if this.context_overlay != overlay {
+                                this.context_overlay = overlay;
+                                cx.notify();
+                            }
+                        });
+                    }
+                    menu
+                })
                 .into_any_element()
         } else {
             item.into_any_element()
