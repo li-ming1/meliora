@@ -20,7 +20,7 @@ use tracing::error;
 
 use crate::{
     media::{lookup_table::try_open_media, traits::MediaProviderFeatures},
-    ui::{app::Pool, util::drop_image_from_app},
+    ui::app::Pool,
 };
 
 fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
@@ -107,11 +107,12 @@ const RENDER_CACHE_MAX: usize = 64;
 
 /// Bounded set of decoded covers shared by all `ManagedImage` elements.
 /// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
-/// are different decodes. The cache is the SINGLE owner of a cached cover's
-/// atlas tile: replacements and evictions are the only places that queue a
-/// tile for reclamation (via `queue_tile_drop`), exactly once per image.
-/// Element `on_release` must not drop cached tiles — that double-frees the
-/// tile once the entry is later evicted (etagere assertion, 2026-09-12).
+/// are different decodes. Cached tiles are reclaimed exactly once through
+/// `queue_tile_drop` + `drain_pending_tile_drops`; element `on_release`
+/// reclaims only when it holds the last reference (see `drop_image_if_last`
+/// there) — double-freeing a tile trips an etagere assertion (2026-09-12
+/// crash) and never freeing one leaks it once a surviving element re-paints
+/// it after eviction.
 static RENDER_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -170,10 +171,14 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return;
     };
+    // 只回收最后一个持有者：若某元素的 keyed state 还握着同一 Arc（图被
+    // 淘汰但元素仍存活），跳过并由该元素 on_release 时按引用计数回收。
+    // 持有者只减不增——缓存是唯一分发者，淘汰后不会再有新持有者出现。
     let drained: Vec<Arc<RenderImage>> = queue
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .drain(..)
+        .filter(|image| Arc::strong_count(image) == 1)
         .collect();
     if !drained.is_empty() {
         crate::ui::util::reclaim_images_from_app(cx, drained);
@@ -392,12 +397,6 @@ struct ManagedImageState {
     /// （§33 Cancellation），中止后任务停在下一个 await 点，不会再把
     /// 结果写回 bridge 或 RENDER_CACHE。
     task: Option<tokio::task::AbortHandle>,
-    /// 瓦片归 RENDER_CACHE 单独所有（缩略图，thumb > 0）。on_release 不再
-    /// 直接 drop_image：缓存淘汰时经 PENDING_TILE_DROPS 恰好回收一次，
-    /// 这里再 drop 就是同一瓦片的二次释放（etagere 断言，2026-09-12
-    /// 每日推荐滚动闪退）。全尺寸图（thumb = 0）不入缓存，唯一所有者是
-    /// 本状态，on_release 仍负责回收。
-    cached_by_render_cache: bool,
 }
 
 pub enum ImageReady {
@@ -516,16 +515,20 @@ impl Element for ManagedImage {
             .detach();
 
             cx.on_release(|this: &mut ManagedImageState, cx| {
-                // 先中止未完成的取回任务。瓦片回收按所有权分流：缩略图的
-                // atlas 瓦片归 RENDER_CACHE，淘汰时恰好释放一次；这里再
-                // drop 就是二次释放。只有不入缓存的全尺寸图才由本状态回收。
+                // 先中止未完成的取回任务。瓦片回收按引用计数：仅当本状态
+                // 是最后一份引用时才回收 atlas 瓦片。RENDER_CACHE、待释放
+                // 队列、其他元素的 keyed state 都可能还持有同一 Arc，持有
+                // 者只减不增（缓存是唯一分发者），最后放手的路径必然看到
+                // count == 1——每块瓦片恰好释放一次。直接 drop 会二次释放
+                // （etagere 断言，2026-09-12 闪退），无条件跳过则会泄漏
+                // 被淘汰后仍被存活元素 paint 复活的瓦片。
                 if let Some(task) = this.task.take() {
                     task.abort();
                 }
-                if !this.cached_by_render_cache
-                    && let Some(image) = this.image.clone()
+                if let Some(image) = this.image.take()
+                    && Arc::strong_count(&image) == 1
                 {
-                    drop_image_from_app(cx, image);
+                    crate::ui::util::reclaim_images_from_app(cx, vec![image]);
                 }
             })
             .detach();
@@ -534,7 +537,6 @@ impl Element for ManagedImage {
                 image: None,
                 bridge: Some(bridge),
                 task: Some(abort),
-                cached_by_render_cache: thumb_size > 0,
             }
         });
 

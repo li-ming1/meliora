@@ -781,7 +781,7 @@
   },
   "KUGOU_DAILY_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:335",
+    "definedIn": "src/ui/library/kugou_ranks.rs:346",
     "plural": false,
     "description": null
   },
@@ -889,31 +889,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:954",
+    "definedIn": "src/ui/kugou.rs:970",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:966",
+    "definedIn": "src/ui/kugou.rs:982",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1154",
+    "definedIn": "src/ui/kugou.rs:1170",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1159",
+    "definedIn": "src/ui/kugou.rs:1175",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:980",
+    "definedIn": "src/ui/kugou.rs:996",
     "plural": false,
     "description": null
   },
@@ -973,19 +973,19 @@
   },
   "KUGOU_NO_RANKS": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:125",
+    "definedIn": "src/ui/library/kugou_ranks.rs:130",
     "plural": false,
     "description": null
   },
   "KUGOU_NO_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:168",
+    "definedIn": "src/ui/library/kugou_ranks.rs:173",
     "plural": false,
     "description": null
   },
   "KUGOU_NO_URL": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:832",
+    "definedIn": "src/ui/kugou.rs:848",
     "plural": false,
     "description": null
   },
@@ -1099,7 +1099,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1164",
+    "definedIn": "src/ui/kugou.rs:1180",
     "plural": false,
     "description": null
   },
@@ -1195,7 +1195,7 @@
   },
   "NETEASE_DAILY_LOGIN_REQUIRED": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:616",
+    "definedIn": "src/ui/library/netease_ranks.rs:630",
     "plural": false,
     "description": null
   },
@@ -1243,37 +1243,37 @@
   },
   "NETEASE_LIKE_ADDED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:739",
+    "definedIn": "src/ui/netease.rs:763",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:745",
+    "definedIn": "src/ui/netease.rs:769",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:781",
+    "definedIn": "src/ui/netease.rs:805",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:787",
+    "definedIn": "src/ui/netease.rs:811",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:752",
+    "definedIn": "src/ui/netease.rs:776",
     "plural": false,
     "description": null
   },
   "NETEASE_LOADING": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:567",
+    "definedIn": "src/ui/library/netease_ranks.rs:581",
     "plural": false,
     "description": null
   },
@@ -1285,7 +1285,7 @@
   },
   "NETEASE_LOAD_MORE": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:551",
+    "definedIn": "src/ui/library/netease_ranks.rs:565",
     "plural": false,
     "description": null
   },
@@ -1303,7 +1303,7 @@
   },
   "NETEASE_LOGIN_REQUIRED_LIKE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:714",
+    "definedIn": "src/ui/netease.rs:738",
     "plural": false,
     "description": null
   },
@@ -1339,7 +1339,7 @@
   },
   "NETEASE_NO_URL": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:550",
+    "definedIn": "src/ui/netease.rs:561",
     "plural": false,
     "description": null
   },
@@ -1351,7 +1351,7 @@
   },
   "NETEASE_OPEN_SETTINGS": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:624",
+    "definedIn": "src/ui/library/netease_ranks.rs:638",
     "plural": false,
     "description": null
   },
@@ -1453,7 +1453,7 @@
   },
   "NETEASE_RETRY": {
     "context": "netease_ranks.rs",
-    "definedIn": "src/ui/library/netease_ranks.rs:587",
+    "definedIn": "src/ui/library/netease_ranks.rs:601",
     "plural": false,
     "description": null
   },
@@ -1483,7 +1483,7 @@
   },
   "NETEASE_UNLIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:794",
+    "definedIn": "src/ui/netease.rs:818",
     "plural": false,
     "description": null
   },
@@ -1501,7 +1501,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:461",
+    "definedIn": "src/ui/lyrics.rs:558",
     "plural": false,
     "description": null
   },

@@ -194,36 +194,31 @@ impl PlaybackController for WindowsController {
     }
 
     async fn metadata_changed(&mut self, metadata: &Metadata) -> anyhow::Result<()> {
+        // One MusicProperties() fetch for the whole update: each call builds
+        // a fresh WinRT object. Property write order is unchanged.
+        let music = self.display.MusicProperties().unwrap();
+
         if let Some(title) = metadata.name.clone() {
             let string = HSTRING::from(title);
-            self.display.MusicProperties().unwrap().SetTitle(&string)?;
+            music.SetTitle(&string)?;
         }
 
         if let Some(artist) = metadata.artist.clone() {
             let string = HSTRING::from(artist);
-            self.display.MusicProperties().unwrap().SetArtist(&string)?;
+            music.SetArtist(&string)?;
         }
 
         if let Some(album) = metadata.album.clone() {
             let string = HSTRING::from(album);
-            self.display
-                .MusicProperties()
-                .unwrap()
-                .SetAlbumTitle(&string)?;
+            music.SetAlbumTitle(&string)?;
         }
 
         if let Some(track_number) = metadata.track_current {
-            self.display
-                .MusicProperties()
-                .unwrap()
-                .SetTrackNumber(track_number as u32)?;
+            music.SetTrackNumber(track_number as u32)?;
         }
 
         if let Some(track_max) = metadata.track_max {
-            self.display
-                .MusicProperties()
-                .unwrap()
-                .SetAlbumTrackCount(track_max as u32)?;
+            music.SetAlbumTrackCount(track_max as u32)?;
         }
 
         self.display.Update()?;

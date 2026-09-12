@@ -10,6 +10,7 @@ use crate::ui::kugou::{OnlineLyric, fetch_online_lyric};
 use crate::ui::netease::fetch_online_lyric as fetch_netease_lyric;
 
 use crate::{
+    library::scan::ScanEvent,
     playback::{interface::PlaybackInterface, thread::PlaybackState},
     settings::SettingsGlobal,
     ui::{
@@ -25,9 +26,11 @@ use crate::{
 use cntp_i18n::tr;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
+use rustc_hash::FxHashMap;
 #[cfg(any(feature = "kugou", feature = "netease"))]
 use std::path::Path;
 use std::{
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -42,6 +45,8 @@ const LYRICS_BASE_LINE_HEIGHT: f32 = 1.5;
 const LYRICS_ACTIVE_LINE_HEIGHT: f32 = 1.65;
 /// 上下渐隐遮罩高度：掩盖滚动边缘的硬裁切，越靠面板边缘越透明。
 const LYRICS_FADE_MASK_HEIGHT: f32 = 56.0;
+/// 按曲目歌词缓存容量（FIFO 淘汰）：覆盖来回切歌重访的最近曲目。
+const LYRIC_CACHE_CAP: usize = 16;
 
 pub struct Lyrics {
     content: Option<String>,
@@ -50,6 +55,15 @@ pub struct Lyrics {
     /// Bumped per track change; a background load only lands if its generation
     /// still matches, so fast switches never apply stale lyrics.
     load_generation: usize,
+    /// Bounded FIFO cache of recently loaded lyrics keyed by track path: a
+    /// back-and-forth track switch re-serves the cached lyric instead of
+    /// re-reading the sidecar files + DB queries (or re-issuing the 1-3
+    /// online requests). Cleared when a library scan completes (the only
+    /// writer of DB lyrics). Online entries are keyed by stream URL, so a
+    /// refreshed URL for the same song fetches once more.
+    lyric_cache: FxHashMap<PathBuf, (Option<String>, Option<Vec<LrcLine>>)>,
+    /// Insertion order for `lyric_cache` FIFO eviction.
+    lyric_cache_order: Vec<PathBuf>,
     /// Latest playback position snapshot (ms), refreshed by the position
     /// observer; drives per-word karaoke progress.
     position_ms: u64,
@@ -112,6 +126,12 @@ impl Lyrics {
 
                 #[cfg(any(feature = "kugou", feature = "netease"))]
                 if track.as_ref().is_some_and(|t| crate::ui::availability::is_online_path(t.get_path())) {
+                    // Invalidate in-flight local (sidecar/DB) loads: the
+                    // online fetch below is guarded by the current-path
+                    // check, but the local loads are guarded by this
+                    // generation.
+                    this.load_generation += 1;
+
                     // online stream: dispatch to the source that owns it. With
                     // both sources compiled in, each registry is consulted in
                     // turn, so a NetEase stream is never swallowed by the
@@ -141,8 +161,21 @@ impl Lyrics {
                 this.last_user_interaction_at = None;
                 this.load_generation += 1;
                 let generation = this.load_generation;
+
+                // Bounded per-track cache: a back-and-forth switch to a
+                // recently played track re-serves the loaded lyric instead of
+                // re-reading the sidecar files + DB queries.
+                if let Some((content, parsed)) = track
+                    .as_ref()
+                    .and_then(|t| this.lyric_cache.get(t.get_path()).cloned())
+                {
+                    this.apply_loaded_lyrics(content, parsed, cx);
+                    return;
+                }
+
                 let pool = cx.global::<crate::ui::app::Pool>().0.clone();
                 let track_path = track.as_ref().map(|t| t.get_path().clone());
+                let cache_key = track_path.clone();
 
                 cx.spawn(async move |this, cx| {
                     let loaded = crate::RUNTIME
@@ -161,19 +194,10 @@ impl Lyrics {
                         if this.load_generation != generation {
                             return;
                         }
-                        this.content = loaded.0;
-                        this.parsed = loaded.1;
-                        let line_count = this.parsed.as_ref().map_or(0, Vec::len);
-                        this.last_active_line = None;
-                        this.follow_pending = false;
-                        this.scroll_follow.cancel();
-                        this.line_emphasis_start_values = vec![0.0; line_count];
-                        this.line_emphasis_target_values = vec![0.0; line_count];
-                        this.scroll_handle.set_offset(gpui::Point {
-                            x: px(0.0),
-                            y: px(0.0),
-                        });
-                        cx.notify();
+                        if let Some(path) = cache_key {
+                            this.cache_lyrics(path, loaded.clone());
+                        }
+                        this.apply_loaded_lyrics(loaded.0, loaded.1, cx);
                     })
                     .ok();
                 })
@@ -227,12 +251,32 @@ impl Lyrics {
             })
             .detach();
 
+            // A library scan is the only writer of DB lyrics: drop the
+            // per-track lyric cache when one completes so re-scanned lyrics
+            // are re-read instead of served stale from the cache (mirrors
+            // the album-cache reset in `build_models`).
+            let scan_state = cx.global::<Models>().scan_state.clone();
+            cx.observe(&scan_state, |this, scan_event, cx| {
+                if matches!(
+                    scan_event.read(cx),
+                    ScanEvent::ScanCompleteIdle
+                        | ScanEvent::ScanCompleteWatching
+                        | ScanEvent::TargetedRescanComplete
+                ) {
+                    this.lyric_cache.clear();
+                    this.lyric_cache_order.clear();
+                }
+            })
+            .detach();
+
             // Content starts in the empty state (same rendering as the
             // track-switch in-flight state); lyrics land off-thread above.
             Self {
                 content: None,
                 parsed: None,
                 load_generation: 0,
+                lyric_cache: FxHashMap::default(),
+                lyric_cache_order: Vec::new(),
                 last_active_line: None,
                 position_ms: *position.read(cx),
                 scroll_handle: ScrollHandle::new(),
@@ -299,11 +343,57 @@ impl Lyrics {
         });
     }
 
+    /// Applies a fully loaded lyric (cache hit or background load result) as
+    /// the current track's lyric state and notifies the view.
+    fn apply_loaded_lyrics(
+        &mut self,
+        content: Option<String>,
+        parsed: Option<Vec<LrcLine>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.content = content;
+        self.parsed = parsed;
+        let line_count = self.parsed.as_ref().map_or(0, Vec::len);
+        self.last_active_line = None;
+        self.follow_pending = false;
+        self.scroll_follow.cancel();
+        self.line_emphasis_start_values = vec![0.0; line_count];
+        self.line_emphasis_target_values = vec![0.0; line_count];
+        self.scroll_handle.set_offset(gpui::Point {
+            x: px(0.0),
+            y: px(0.0),
+        });
+        cx.notify();
+    }
+
+    /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
+    /// oldest entry past [`LYRIC_CACHE_CAP`].
+    fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Vec<LrcLine>>)) {
+        if self.lyric_cache.insert(path.clone(), loaded).is_none() {
+            self.lyric_cache_order.push(path);
+            if self.lyric_cache_order.len() > LYRIC_CACHE_CAP {
+                let oldest = self.lyric_cache_order.remove(0);
+                self.lyric_cache.remove(&oldest);
+            }
+        }
+    }
+
     /// Fetches lyrics for the online (KuGou) track currently playing at `path`
     /// and swaps them in. Guarded so a stale response for a previous track
     /// doesn't overwrite the current one.
     #[cfg(feature = "kugou")]
     fn fetch_online_lyrics(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        // Bounded per-track cache: a back-and-forth switch to a recently
+        // played track skips the search + fetch network round-trips (the
+        // stream-map lookup below only feeds that fetch).
+        if let Some((content, parsed)) = path
+            .map(Path::to_path_buf)
+            .and_then(|key| self.lyric_cache.get(&key).cloned())
+        {
+            self.apply_loaded_lyrics(content, parsed, cx);
+            return;
+        }
+
         let Some(track) = path.and_then(crate::ui::kugou::online_track_matching_path) else {
             return;
         };
@@ -330,15 +420,13 @@ impl Lyrics {
                     Some(OnlineLyric::Krc(krc)) => krc::parse_krc(krc),
                     None => None,
                 };
-
                 let content = lyric.as_ref().map(|lyric| lyric.describe());
+
                 this.reset_track_state();
-                this.content = content;
-                this.parsed = parsed.clone();
-                let line_count = parsed.as_ref().map_or(0, Vec::len);
-                this.line_emphasis_start_values = vec![0.0; line_count];
-                this.line_emphasis_target_values = vec![0.0; line_count];
-                cx.notify();
+                this.apply_loaded_lyrics(content.clone(), parsed.clone(), cx);
+                if let Some(key) = expected.clone().map(PathBuf::from) {
+                    this.cache_lyrics(key, (content, parsed));
+                }
             })
             .ok();
         })
@@ -350,6 +438,17 @@ impl Lyrics {
     /// track doesn't overwrite the current one.
     #[cfg(feature = "netease")]
     fn fetch_netease_online_lyrics(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        // Bounded per-track cache: a back-and-forth switch to a recently
+        // played track skips the network request (the stream-map lookup
+        // below only feeds that fetch).
+        if let Some((content, parsed)) = path
+            .map(Path::to_path_buf)
+            .and_then(|key| self.lyric_cache.get(&key).cloned())
+        {
+            self.apply_loaded_lyrics(content, parsed, cx);
+            return;
+        }
+
         let Some(track) = path.and_then(crate::ui::netease::online_track_matching_path) else {
             return;
         };
@@ -372,14 +471,12 @@ impl Lyrics {
                 }
 
                 let parsed = lyric.as_ref().map(|lyric| lyric.lines.clone());
-                let content = lyric.map(|lyric| lyric.content);
+                let content = lyric.as_ref().map(|lyric| lyric.content.clone());
                 this.reset_track_state();
-                this.content = content;
-                this.parsed = parsed;
-                let line_count = this.parsed.as_ref().map_or(0, Vec::len);
-                this.line_emphasis_start_values = vec![0.0; line_count];
-                this.line_emphasis_target_values = vec![0.0; line_count];
-                cx.notify();
+                this.apply_loaded_lyrics(content.clone(), parsed.clone(), cx);
+                if let Some(key) = expected.clone().map(PathBuf::from) {
+                    this.cache_lyrics(key, (content, parsed));
+                }
             })
             .ok();
         })
