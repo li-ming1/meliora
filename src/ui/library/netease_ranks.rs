@@ -7,8 +7,8 @@ use std::sync::Arc;
 use cntp_i18n::tr;
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, px,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use gpui::prelude::FluentBuilder;
 
@@ -28,6 +28,12 @@ use crate::{
 };
 
 const TRACKS_PER_PAGE: i64 = 30;
+
+/// uniform_list strides rows by one fixed height measured from the first
+/// row, so track rows are pinned to their natural height: 8px vertical
+/// padding × 2 + title line (text_sm) + 1px gap + subtitle line (text_xs)
+/// + 1px bottom border. Same value as netease_playlists / kugou_ranks.
+const TRACK_ROW_HEIGHT: f32 = 60.0;
 
 /// How long the like/unlike watcher waits for the shared helper to confirm
 /// the outcome through the global liked-set before rolling the optimistic
@@ -82,6 +88,10 @@ pub struct NeteaseRanksView {
     /// are ignored until the request settles
     like_in_flight: HashSet<i64>,
     scroll_handle: ScrollHandle,
+    /// Scroll position of the virtualized track list (open rank or daily
+    /// recommend); reset whenever the visible list changes so it starts at
+    /// the top.
+    tracks_scroll_handle: UniformListScrollHandle,
 }
 
 impl NeteaseRanksView {
@@ -101,6 +111,7 @@ impl NeteaseRanksView {
                 liked: HashSet::new(),
                 like_in_flight: HashSet::new(),
                 scroll_handle: ScrollHandle::new(),
+                tracks_scroll_handle: UniformListScrollHandle::new(),
             };
             view.load_ranks(cx);
             view
@@ -147,6 +158,7 @@ impl NeteaseRanksView {
         }
         self.tab = tab;
         self.scroll_handle = ScrollHandle::new();
+        self.tracks_scroll_handle = UniformListScrollHandle::new();
         if tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle) {
             self.load_recommend(cx);
         }
@@ -201,6 +213,7 @@ impl NeteaseRanksView {
         // the cached trackIds belong to the previously open chart
         self.track_ids = None;
         self.scroll_handle = ScrollHandle::new();
+        self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
         self.load_tracks_page(1, cx);
     }
@@ -294,6 +307,7 @@ impl NeteaseRanksView {
         self.track_page = 0;
         self.has_more_tracks = false;
         self.track_ids = None;
+        self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
     }
 
@@ -484,35 +498,61 @@ impl NeteaseRanksView {
             }))
     }
 
+    /// Rows are built from inside the uniform_list render closure where only
+    /// `&App` is available, so there is no `cx.listener` here: the like
+    /// handler reaches the view through a weak handle instead (same pattern
+    /// as kugou_ranks).
     fn render_track_row(
         &self,
         track: &NeteaseTrackInfo,
         index: usize,
-        id_prefix: &'static str,
-        cx: &mut Context<Self>,
+        entity: &Entity<Self>,
+        cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let liked = self.is_liked(track.id);
         let play = track.clone();
         let like = track.clone();
         let download = track.clone();
+        let weak = entity.downgrade();
 
         crate::ui::netease::netease_track_row(
             theme,
             track,
             index,
-            id_prefix,
+            "netease-rank-track",
             true,
             false,
             liked,
-            cx.listener(move |_, _, _, cx| {
+            move |_, _, cx| {
                 crate::ui::netease::play_track_now(cx, &play);
-            }),
-            cx.listener(move |this, _, _, cx| this.toggle_like(&like, cx)),
-            cx.listener(move |_, _, _, cx| {
+            },
+            move |_, _, cx| {
+                let Some(view) = weak.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| this.toggle_like(&like, cx));
+            },
+            move |_, _, cx| {
                 crate::ui::netease::download_track_ui(cx, download.clone());
-            }),
+            },
         )
+    }
+
+    /// The "Load More" pill below the virtualized track list.
+    fn render_load_more_button(cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .justify_center()
+            .pt(px(12.0))
+            .child(
+                button()
+                    .id("netease-rank-load-more")
+                    .child(tr!("NETEASE_LOAD_MORE", "Load More"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.load_more(cx);
+                    })),
+            )
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -612,19 +652,25 @@ impl NeteaseRanksView {
                             ),
                     )
                     .into_any_element(),
-                RecommendState::Ready(tracks) => div()
-                    .flex()
-                    .flex_col()
-                    .children(
-                        tracks
-                            .iter()
-                            .enumerate()
-                            .map(|(index, track)| {
-                                self.render_track_row(track, index, "netease-daily-track", cx)
-                                    .into_any_element()
-                            }),
-                    )
-                    .into_any_element(),
+                RecommendState::Ready(tracks) => {
+                    // unreachable in practice: Render::render routes a Ready
+                    // daily-recommend to the virtualized container below; this
+                    // arm only keeps the match exhaustive
+                    let entity = cx.entity();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .children(
+                            tracks
+                                .iter()
+                                .enumerate()
+                                .map(|(index, track)| {
+                                    self.render_track_row(track, index, &entity, cx)
+                                        .into_any_element()
+                                }),
+                        )
+                        .into_any_element()
+                }
             },
         }
     }
@@ -635,56 +681,20 @@ impl Render for NeteaseRanksView {
         let theme = cx.global::<Theme>().clone();
         let scroll_handle = self.scroll_handle.clone();
 
-        let content: AnyElement = if let Some(rank) = self.selected.as_ref() {
-            match &self.tracks_state {
-                TracksState::Loading if self.tracks.is_empty() => div()
-                    .text_sm()
-                    .text_color(theme.text_secondary)
-                    .py(px(24.0))
-                    .child(tr!("NETEASE_LOADING"))
-                    .into_any_element(),
-                TracksState::Failed(message) if self.tracks.is_empty() => div()
-                    .text_sm()
-                    .text_color(theme.status_error)
-                    .py(px(12.0))
-                    .child(message.clone())
-                    .into_any_element(),
-                _ => div()
-                    .flex()
-                    .flex_col()
-                    .child(div().text_lg().font_weight(FontWeight::BOLD).pb(px(8.0)).child(rank.name.clone()))
-                    .children(
-                        self.tracks
-                            .iter()
-                            .enumerate()
-                            .map(|(index, track)| {
-                                self.render_track_row(track, index, "netease-rank-track", cx)
-                                    .into_any_element()
-                            }),
-                    )
-                    .when(self.has_more_tracks, |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .justify_center()
-                                .pt(px(12.0))
-                                .child(
-                                    button()
-                                        .id("netease-rank-load-more")
-                                        .child(tr!("NETEASE_LOAD_MORE", "Load More"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.load_more(cx);
-                                        })),
-                                ),
-                        )
-                    })
-                    .into_any_element(),
-            }
+        // Mirror kugou_ranks: while a track list is on screen it is its own
+        // scroll container and replaces the page-level scroller wholesale, so
+        // the accumulated rows stay virtualized regardless of page count.
+        let tracks_ready = if self.selected.is_some() {
+            !(matches!(
+                &self.tracks_state,
+                TracksState::Loading | TracksState::Failed(_)
+            ) && self.tracks.is_empty())
         } else {
-            self.render_content(cx)
+            self.tab == Tab::DailyRecommend
+                && matches!(self.recommend, RecommendState::Ready(_))
         };
 
-        div()
+        let mut root = div()
             .id("netease-ranks-view")
             .key_context("NeteaseRanks")
             .on_action(cx.listener(|this, _: &EscapeBack, _, cx| {
@@ -698,10 +708,18 @@ impl Render for NeteaseRanksView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(self.render_header(cx))
-            .child(
+            .child(self.render_header(cx));
+
+        if tracks_ready {
+            let track_count = self.tracks.len();
+            let has_more_tracks = self.has_more_tracks;
+            let list_entity = cx.entity();
+            let tracks_scroll_handle = self.tracks_scroll_handle.clone();
+            let title = self.selected.as_ref().map(|rank| rank.name.clone());
+
+            root = root.child(
                 div()
-                    .id("netease-ranks-scroll")
+                    .id("netease-ranks-tracks-container")
                     .w_full()
                     .max_w(px(900.0))
                     .mr_auto()
@@ -712,13 +730,104 @@ impl Render for NeteaseRanksView {
                     .min_h(px(0.0))
                     .px(px(16.0))
                     .pt(px(4.0))
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll_handle)
-                    .child(content),
-            )
-            .child(floating_scrollbar(
-                "netease-ranks-scrollbar",
-                scroll_handle,
-            ))
+                    .when_some(title, |this, name| {
+                        this.child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::BOLD)
+                                .pb(px(8.0))
+                                .child(name),
+                        )
+                    })
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .flex_grow(1.0)
+                            .min_h(px(0.0))
+                            .child(
+                                uniform_list(
+                                    "netease-rank-tracks",
+                                    track_count,
+                                    move |range, _, cx| {
+                                        let start = range.start;
+                                        let view = list_entity.read(cx);
+                                        view.tracks[range]
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, track)| {
+                                                div()
+                                                    .h(px(TRACK_ROW_HEIGHT))
+                                                    .child(view.render_track_row(
+                                                        track,
+                                                        start + i,
+                                                        &list_entity,
+                                                        cx,
+                                                    ))
+                                            })
+                                            .collect()
+                                    },
+                                )
+                                .w_full()
+                                .h_full()
+                                .track_scroll(&tracks_scroll_handle),
+                            ),
+                    )
+                    .when(has_more_tracks, |this| {
+                        this.child(Self::render_load_more_button(cx))
+                    })
+                    .child(floating_scrollbar(
+                        "netease-ranks-tracks-scrollbar",
+                        tracks_scroll_handle,
+                    )),
+            );
+        } else {
+            let content: AnyElement = if self.selected.is_some() {
+                match &self.tracks_state {
+                    TracksState::Loading if self.tracks.is_empty() => div()
+                        .text_sm()
+                        .text_color(theme.text_secondary)
+                        .py(px(24.0))
+                        .child(tr!("NETEASE_LOADING"))
+                        .into_any_element(),
+                    TracksState::Failed(message) if self.tracks.is_empty() => div()
+                        .text_sm()
+                        .text_color(theme.status_error)
+                        .py(px(12.0))
+                        .child(message.clone())
+                        .into_any_element(),
+                    // unreachable while tracks_ready routes non-empty lists to
+                    // the virtualized container; kept exhaustive for the compiler
+                    _ => div().into_any_element(),
+                }
+            } else {
+                self.render_content(cx)
+            };
+
+            root = root
+                .child(
+                    div()
+                        .id("netease-ranks-scroll")
+                        .w_full()
+                        .max_w(px(900.0))
+                        .mr_auto()
+                        .ml_auto()
+                        .flex()
+                        .flex_col()
+                        .flex_grow(1.0)
+                        .min_h(px(0.0))
+                        .px(px(16.0))
+                        .pt(px(4.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&scroll_handle)
+                        .child(content),
+                )
+                .child(floating_scrollbar(
+                    "netease-ranks-scrollbar",
+                    scroll_handle,
+                ));
+        }
+
+        root
     }
 }

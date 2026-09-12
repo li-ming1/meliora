@@ -197,7 +197,7 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
 
 async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
     let mut out = Vec::new();
-    for chunk in ids.chunks(400) {
+    for (chunk_idx, chunk) in ids.chunks(400).enumerate() {
         let mut payload = String::from("[");
         for (i, id) in chunk.iter().enumerate() {
             if i > 0 {
@@ -207,17 +207,33 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
         }
         payload.push(']');
 
-        let Ok(resp) = http()
+        let resp = match http()
             .post("https://music.163.com/api/v3/song/detail")
             .headers(headers.clone())
             .body(payload)
             .send()
             .await
-        else {
-            continue;
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::warn!(chunk = chunk_idx, %err, "netease song detail request failed");
+                continue;
+            }
         };
-        let Ok(text) = resp.text().await else { continue };
-        let Ok(body) = serde_json::from_str::<Value>(&text) else { continue };
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!(chunk = chunk_idx, %err, "failed to read netease song detail body");
+                continue;
+            }
+        };
+        let body = match serde_json::from_str::<Value>(&text) {
+            Ok(body) => body,
+            Err(err) => {
+                tracing::warn!(chunk = chunk_idx, %err, "failed to parse netease song detail JSON");
+                continue;
+            }
+        };
         if let Some(songs) = body.get("songs").and_then(Value::as_array) {
             out.extend(songs.iter().filter_map(|s| {
                 s.get("name")
@@ -226,6 +242,8 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
                     .filter(|n| !n.is_empty())
                     .map(str::to_string)
             }));
+        } else {
+            tracing::warn!(chunk = chunk_idx, "netease song detail response missing songs array");
         }
     }
     out
@@ -291,7 +309,12 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
                 songs.extend(page.songs);
                 begin += 30;
             }
-            _ => break,
+            // empty page: legitimate end of the list, no log needed
+            Ok(_) => break,
+            Err(err) => {
+                tracing::warn!(id, begin, %err, "QQ playlist page fetch failed; stopping pagination");
+                break;
+            }
         }
     }
 
