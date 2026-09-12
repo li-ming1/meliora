@@ -167,7 +167,13 @@ fn create_stream_internal<T: CpalSample>(
         move |err| {
             // Realtime thread: record the message only. Logging (file IO)
             // happens on the producer side when it observes the flag.
-            if let Ok(mut slot) = device_error_message.lock() {
+            //
+            // `try_lock`, not `lock`: the producer drains this same mutex, and
+            // a realtime thread must never block on it. If the producer is
+            // draining concurrently this message's text is dropped — during an
+            // error storm dropping messages is acceptable, and the flag below
+            // still trips the producer-side error path either way.
+            if let Ok(mut slot) = device_error_message.try_lock() {
                 *slot = Some(err.to_string());
             }
             error_flag.store(true, Ordering::Relaxed);
@@ -406,10 +412,17 @@ where
         input: &mut ChannelConsumers,
     ) -> Result<usize, SubmissionError> {
         if self.device_errored.load(Ordering::Relaxed) {
-            if let Ok(mut slot) = self.device_error_message.lock() {
-                if let Some(msg) = slot.take() {
-                    warn!("cpal stream error: {msg}");
-                }
+            // Take the message under the lock, log outside of it: the realtime
+            // error callback shares this mutex and must never be kept waiting
+            // behind file IO. Recover from a poisoned lock so a panic in some
+            // other lock user can never make the message unrecoverable.
+            let message = self
+                .device_error_message
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(msg) = message {
+                warn!("cpal stream error: {msg}");
             }
             return Err(SubmissionError::DeviceError);
         }

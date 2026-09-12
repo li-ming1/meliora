@@ -294,7 +294,12 @@ impl PlaybackController for WindowsController {
     async fn new_file(&mut self, path: &Path) -> anyhow::Result<()> {
         self.display.ClearAll()?;
         self.display.SetType(MediaPlaybackType::Music)?;
-        let title_string = HSTRING::from(path.file_name().unwrap().to_str().unwrap());
+        // Paths ending in ".." have no file name and non-UTF-8 names fail
+        // `to_str()`; either unwrap would panic inside the pbc task, unwinding
+        // it and permanently disabling SMTC. Fall back to the full path and
+        // replace invalid UTF-8 instead.
+        let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
+        let title_string = HSTRING::from(file_name.to_string_lossy().as_ref());
         self.display
             .MusicProperties()
             .unwrap()

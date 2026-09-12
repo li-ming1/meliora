@@ -1,7 +1,7 @@
 use std::{io::BufReader, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tokio::{fs::OpenOptions, io::AsyncWriteExt, sync::watch};
+use tokio::{fs, io::AsyncWriteExt, sync::watch};
 use tracing::error;
 
 use crate::playback::{events::RepeatState, queue::QueueItemData};
@@ -53,23 +53,34 @@ impl PlaybackSessionStorageWorker {
             };
             json.push(b'\n');
 
-            let file = match OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&self.file_path)
-                .await
-            {
+            // Write to a temporary file and rename it into place (same pattern
+            // as `library/scan/record.rs`): an in-place truncate+rewrite can
+            // leave a truncated playback_session.json behind when the process
+            // dies mid-write. `fs::rename` replaces an existing target on
+            // Windows, so the swap is atomic on every supported platform.
+            let tmp_path = self.file_path.with_extension("json.tmp");
+
+            let mut file = match fs::File::create(&tmp_path).await {
                 Ok(file) => file,
                 Err(e) => {
-                    error!("Unable to open playback session file for writing: {}", e);
+                    error!("Unable to create playback session temp file: {}", e);
                     continue;
                 }
             };
 
-            let mut file = file;
             if let Err(e) = file.write_all(&json).await {
                 error!("Failed to write playback session file: {}", e);
+                let _ = fs::remove_file(&tmp_path).await;
+                continue;
+            }
+            if let Err(e) = file.shutdown().await {
+                error!("Failed to close playback session file: {}", e);
+                let _ = fs::remove_file(&tmp_path).await;
+                continue;
+            }
+            if let Err(e) = fs::rename(&tmp_path, &self.file_path).await {
+                error!("Failed to rename playback session file into place: {}", e);
+                let _ = fs::remove_file(&tmp_path).await;
             }
         }
     }

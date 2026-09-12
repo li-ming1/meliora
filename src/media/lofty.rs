@@ -1,4 +1,8 @@
-use std::{ffi::OsStr, fs::File, io::Seek};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    io::{Read, Seek},
+};
 
 use lofty::config::ParseOptions;
 use lofty::file::{AudioFile, FileType, TaggedFileExt};
@@ -124,12 +128,34 @@ struct TagsFromFile {
 }
 
 /// The ID3v2 version is needed because v2.3 tags packed several names into one value with `/`;
-/// the unified tag view drops it, so the file is re-read, skipping properties.
+/// the unified tag view drops it, so the version has to be recovered from the file. A tag at
+/// offset 0 (the common MPEG/AAC layout) is answered by sniffing the 10-byte header instead of
+/// re-parsing the whole file; everything else (ID3 chunk behind the RIFF/FORM magic of an
+/// AIFF/WAV, junk before the tag, an unsupported v2.2 header) falls back to the full lofty pass
+/// with properties disabled, so the returned value stays exactly what that parse would report.
 fn read_id3v2_version(file: &mut File, file_type: FileType) -> Option<Id3v2Version> {
     use lofty::aac::AacFile;
     use lofty::iff::{aiff::AiffFile, wav::WavFile};
     use lofty::mpeg::MpegFile;
 
+    // A container that does not start with its ID3 chunk can never hit the
+    // header sniff below, so it always takes the re-parse fallback; every other
+    // file type was never re-parsed at all and reports None directly.
+    if matches!(file_type, FileType::Mpeg | FileType::Aac) {
+        file.rewind().ok()?;
+        let mut header = [0u8; 10];
+        let header_len = file.read(&mut header).ok()?;
+        if header_len >= 4 && &header[..3] == b"ID3" {
+            match header[3] {
+                3 => return Some(Id3v2Version::V3),
+                4 => return Some(Id3v2Version::V4),
+                _ => {}
+            }
+        }
+    }
+
+    // No (or an unsupported-version) ID3v2 header at the front; the tag may
+    // still live elsewhere in the container. Re-parse exactly as before.
     file.rewind().ok()?;
     let options = ParseOptions::new().read_properties(false);
 
@@ -624,6 +650,56 @@ mod tests {
                 "version mismatch in {name}"
             );
         }
+    }
+
+    #[test]
+    fn sniffs_id3v2_version_from_synthetic_header_bytes() {
+        use crate::test_support::TestDir;
+
+        let dir = TestDir::new("lofty-id3v2-version-test");
+        // minimal 10-byte ID3v2 header: "ID3" + major + minor + flags + size
+        let header = |major: u8| [b'I', b'D', b'3', major, 0, 0, 0, 0, 0, 0];
+
+        let version_of = |name: &str, bytes: &[u8], file_type: FileType| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let mut file = File::open(&path).unwrap();
+            read_id3v2_version(&mut file, file_type)
+        };
+
+        // a front-loaded tag header is answered from the 10 header bytes alone
+        assert_eq!(
+            version_of("v23.bin", &header(3), FileType::Mpeg),
+            Some(Id3v2Version::V3)
+        );
+        assert_eq!(
+            version_of("v24.bin", &header(4), FileType::Mpeg),
+            Some(Id3v2Version::V4)
+        );
+        assert_eq!(
+            version_of("v23-aac.bin", &header(3), FileType::Aac),
+            Some(Id3v2Version::V3)
+        );
+
+        // other containers were never re-parsed; they still report None
+        assert_eq!(
+            version_of("flac-with-header.bin", &header(3), FileType::Flac),
+            None
+        );
+        // AIFF/WAV carry their ID3 chunk behind RIFF/FORM magic, so a front
+        // header falls through to the re-parse, which rejects the bare header
+        assert_eq!(
+            version_of("wav-with-header.bin", &header(3), FileType::Wav),
+            None
+        );
+
+        // no ID3v2 header: the lofty fallback runs and finds no tag
+        assert_eq!(
+            version_of("no-header.bin", b"just some bytes", FileType::Mpeg),
+            None
+        );
+        // a truncated header has no version byte and falls back as well
+        assert_eq!(version_of("truncated.bin", b"ID3", FileType::Mpeg), None);
     }
 
     fn tag_with_artists(tag_type: TagType, artists: &str) -> Tag {

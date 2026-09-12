@@ -36,17 +36,17 @@ impl MacMediaPlayerController {
         unsafe {
             debug!("New file: {:?}", path);
 
-            let file_name = path
-                .file_name()
-                .expect("files should have file names")
-                .to_str()
-                .expect("files should have UTF-8 names");
+            // Paths ending in ".." have no file name and non-UTF-8 names fail
+            // `to_str()`; either unwrap would panic inside the pbc task,
+            // unwinding it and permanently disabling now-playing integration.
+            // Fall back to the full path and replace invalid UTF-8 instead.
+            let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
 
             let media_center = MPNowPlayingInfoCenter::defaultCenter();
             let now_playing: Retained<NSMutableDictionary<NSString>> =
                 NSMutableDictionary::dictionary();
 
-            let ns_name = NSString::from_str(file_name);
+            let ns_name = NSString::from_str(&file_name.to_string_lossy());
             now_playing
                 .setObject_forKey(&ns_name, ProtocolObject::from_ref(MPMediaItemPropertyTitle));
 

@@ -133,10 +133,13 @@ impl PbcEvent {
 
 /// Capacity of the playback-controller event queue. Large enough to absorb a
 /// burst of track-change events, small enough that a stalled consumer (WinRT
-/// calls occasionally block on the shell) cannot pile up cover-sized payloads
-/// (`AlbumArtChanged` carries the full embedded artwork) for the length of a
-/// long session.
-const PBC_CHANNEL_CAP: usize = 64;
+/// calls occasionally block on the shell) cannot pile up cover-sized payloads:
+/// `AlbumArtChanged` carries the full embedded artwork, so 64 slots could pin
+/// ~64 covers (MB-scale each for hi-res art) of stale events, while 16 still
+/// absorbs a multi-track burst (~5 events per track). A full queue sheds the
+/// newest event via `try_send` semantics in `send_pbc_event`, and the next
+/// track refreshes SMTC state anyway.
+const PBC_CHANNEL_CAP: usize = 16;
 
 /// Sends a playback-controller event, shedding load when the consumer has
 /// fallen behind. Dropping the newest event is safe for every variant: SMTC
