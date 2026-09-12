@@ -502,6 +502,20 @@ impl NeteaseRanksView {
     /// `&App` is available, so there is no `cx.listener` here: the like
     /// handler reaches the view through a weak handle instead (same pattern
     /// as kugou_ranks).
+    /// The rows the virtualized container renders: the open rank's tracks, or
+    /// the daily-recommend list while that tab is showing. Both lists used to
+    /// render from their own state; the container reads a single slice, so
+    /// this picks the right one.
+    fn visible_tracks(&self) -> &[NeteaseTrackInfo] {
+        if self.selected.is_some() || self.tab != Tab::DailyRecommend {
+            &self.tracks
+        } else if let RecommendState::Ready(tracks) = &self.recommend {
+            tracks
+        } else {
+            &self.tracks
+        }
+    }
+
     fn render_track_row(
         &self,
         track: &NeteaseTrackInfo,
@@ -711,8 +725,8 @@ impl Render for NeteaseRanksView {
             .child(self.render_header(cx));
 
         if tracks_ready {
-            let track_count = self.tracks.len();
-            let has_more_tracks = self.has_more_tracks;
+            let track_count = self.visible_tracks().len();
+            let has_more_tracks = self.selected.is_some() && self.has_more_tracks;
             let list_entity = cx.entity();
             let tracks_scroll_handle = self.tracks_scroll_handle.clone();
             let title = self.selected.as_ref().map(|rank| rank.name.clone());
@@ -752,7 +766,7 @@ impl Render for NeteaseRanksView {
                                     move |range, _, cx| {
                                         let start = range.start;
                                         let view = list_entity.read(cx);
-                                        view.tracks[range]
+                                        view.visible_tracks()[range]
                                             .iter()
                                             .enumerate()
                                             .map(|(i, track)| {
