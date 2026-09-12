@@ -808,6 +808,7 @@ impl MediaStream for SymphoniaStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestDir;
 
     #[test]
     fn map_probe_error_treats_truncated_file_as_corrupt() {
@@ -830,10 +831,9 @@ mod tests {
         );
     }
 
-    fn open_fixture(name: &str) -> Box<dyn MediaStream> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("assets/tests/audio-fixtures")
-            .join(name);
+    fn open_fixture(dir: &TestDir, name: &str) -> Box<dyn MediaStream> {
+        let path = dir.join(name);
+        std::fs::write(&path, crate::test_support::audio_fixtures::fixture(name)).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         SymphoniaProvider.open(file, path.extension()).unwrap()
     }
@@ -843,7 +843,9 @@ mod tests {
         // Symphonia exposes no tags for WAV (its RIFF reader never attaches the metadata log),
         // so opening one must not flag an update: publishing the empty metadata would wipe the
         // better metadata the UI already has from the library or other providers
-        assert!(!open_fixture("fixture.wav").metadata_updated());
-        assert!(open_fixture("fixture.flac").metadata_updated());
+        let dir = TestDir::new("symphonia-fixture-test");
+        assert!(!open_fixture(&dir, "fixture.wav").metadata_updated());
+        assert!(open_fixture(&dir, "fixture.flac").metadata_updated());
     }
+
 }

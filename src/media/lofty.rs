@@ -500,20 +500,18 @@ impl MediaStream for LoftyStream {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, path::Path};
+    use std::fs::File;
 
     use chrono::{TimeZone, Utc};
 
     use super::*;
+    use crate::test_support::TestDir;
 
-    fn fixture_path(name: &str) -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("assets/tests/audio-fixtures")
-            .join(name)
-    }
-
-    fn read_fixture(name: &str) -> (Metadata, bool) {
-        let path = fixture_path(name);
+    /// Writes the synthesized fixture into a scratch directory and opens it
+    /// through the provider, exactly like a real file would be read.
+    fn read_fixture(dir: &TestDir, name: &str) -> (Metadata, bool) {
+        let path = dir.join(name);
+        std::fs::write(&path, crate::test_support::audio_fixtures::fixture(name)).unwrap();
         let file = File::open(&path).unwrap_or_else(|err| panic!("failed to open {name}: {err}"));
         let mut stream = LoftyProvider
             .open(file, path.extension())
@@ -525,6 +523,12 @@ mod tests {
         assert!(stream.read_image().unwrap().is_none());
 
         (metadata, has_image)
+    }
+
+    fn fixture_bytes(dir: &TestDir, name: &str) -> File {
+        let path = dir.join(name);
+        std::fs::write(&path, crate::test_support::audio_fixtures::fixture(name)).unwrap();
+        File::open(&path).unwrap()
     }
 
     const RICH_METADATA_FIXTURES: &[&str] = &[
@@ -552,25 +556,26 @@ mod tests {
     const LYRICS_FIXTURES: &[&str] =
         &["fixture.flac", "fixture.ogg", "fixture.m4a", "fixture.opus"];
 
-    fn assert_rich_metadata(metadata: &Metadata) {
-        assert_eq!(metadata.name.as_deref(), Some("Test Track"));
-        assert_eq!(metadata.artist.as_deref(), Some("Test Artist"));
-        assert_eq!(metadata.album_artist.as_deref(), Some("Test Album Artist"));
-        assert_eq!(metadata.album.as_deref(), Some("Test Album"));
-        assert_eq!(metadata.genre.as_deref(), Some("Test Genre"));
-        assert_eq!(metadata.track_current, Some(2));
-        assert_eq!(metadata.track_max, Some(9));
-        assert_eq!(metadata.disc_current, Some(1));
-        assert_eq!(metadata.disc_max, Some(3));
-        assert_eq!(metadata.isrc.as_deref(), Some("QZHB12400001"));
+    fn assert_rich_metadata(metadata: &Metadata, context: &str) {
+        assert_eq!(metadata.name.as_deref(), Some("Test Track"), "name in {context}");
+        assert_eq!(metadata.artist.as_deref(), Some("Test Artist"), "artist in {context}");
+        assert_eq!(metadata.album_artist.as_deref(), Some("Test Album Artist"), "album artist in {context}");
+        assert_eq!(metadata.album.as_deref(), Some("Test Album"), "album in {context}");
+        assert_eq!(metadata.genre.as_deref(), Some("Test Genre"), "genre in {context}");
+        assert_eq!(metadata.track_current, Some(2), "track in {context}");
+        assert_eq!(metadata.track_max, Some(9), "track total in {context}");
+        assert_eq!(metadata.disc_current, Some(1), "disc in {context}");
+        assert_eq!(metadata.disc_max, Some(3), "disc total in {context}");
+        assert_eq!(metadata.isrc.as_deref(), Some("QZHB12400001"), "isrc in {context}");
         assert_eq!(
             metadata.mbid_album.as_deref(),
-            Some("12345678-1234-4234-9234-123456789abc")
+            Some("12345678-1234-4234-9234-123456789abc"),
+            "mbid in {context}"
         );
-        assert_eq!(metadata.replaygain_track_gain, Some(-3.21));
-        assert_eq!(metadata.replaygain_track_peak, Some(0.987654));
-        assert_eq!(metadata.replaygain_album_gain, Some(-4.56));
-        assert_eq!(metadata.replaygain_album_peak, Some(0.876543));
+        assert_eq!(metadata.replaygain_track_gain, Some(-3.21), "rg track gain in {context}");
+        assert_eq!(metadata.replaygain_track_peak, Some(0.987654), "rg track peak in {context}");
+        assert_eq!(metadata.replaygain_album_gain, Some(-4.56), "rg album gain in {context}");
+        assert_eq!(metadata.replaygain_album_peak, Some(0.876543), "rg album peak in {context}");
     }
 
     #[test]
@@ -601,19 +606,21 @@ mod tests {
 
     #[test]
     fn reads_rich_metadata_from_tagged_fixtures() {
+        let dir = TestDir::new("lofty-fixture-test");
         for name in RICH_METADATA_FIXTURES {
-            let (metadata, has_image) = read_fixture(name);
-            assert_rich_metadata(&metadata);
+            let (metadata, has_image) = read_fixture(&dir, name);
+            assert_rich_metadata(&metadata, name);
             assert!(has_image, "expected embedded image in {name}");
         }
     }
 
     #[test]
     fn reads_dates_from_fixtures_that_expose_them() {
+        let dir = TestDir::new("lofty-fixture-test");
         let expected_date = Utc.with_ymd_and_hms(1995, 6, 24, 0, 0, 0).unwrap();
 
         for name in DATE_FIXTURES {
-            let (metadata, _) = read_fixture(name);
+            let (metadata, _) = read_fixture(&dir, name);
             assert_eq!(
                 metadata.date,
                 Some(expected_date),
@@ -624,8 +631,9 @@ mod tests {
 
     #[test]
     fn reads_lyrics_from_fixtures_that_expose_them() {
+        let dir = TestDir::new("lofty-fixture-test");
         for name in LYRICS_FIXTURES {
-            let (metadata, _) = read_fixture(name);
+            let (metadata, _) = read_fixture(&dir, name);
             assert_eq!(
                 metadata.lyrics.as_deref(),
                 Some("[00:00.00] Test lyrics"),
@@ -636,6 +644,7 @@ mod tests {
 
     #[test]
     fn detects_id3v2_version_from_concrete_files() {
+        let dir = TestDir::new("lofty-fixture-test");
         let cases = [
             ("fixture.mp3", FileType::Mpeg, Some(Id3v2Version::V3)),
             ("fixture.aac", FileType::Aac, Some(Id3v2Version::V3)),
@@ -643,7 +652,7 @@ mod tests {
             ("fixture.flac", FileType::Flac, None),
         ];
         for (name, file_type, expected) in cases {
-            let mut file = File::open(fixture_path(name)).unwrap();
+            let mut file = fixture_bytes(&dir, name);
             assert_eq!(
                 read_id3v2_version(&mut file, file_type),
                 expected,
@@ -654,8 +663,6 @@ mod tests {
 
     #[test]
     fn sniffs_id3v2_version_from_synthetic_header_bytes() {
-        use crate::test_support::TestDir;
-
         let dir = TestDir::new("lofty-id3v2-version-test");
         // minimal 10-byte ID3v2 header: "ID3" + major + minor + flags + size
         let header = |major: u8| [b'I', b'D', b'3', major, 0, 0, 0, 0, 0, 0];

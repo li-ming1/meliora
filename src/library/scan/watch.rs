@@ -431,7 +431,7 @@ mod tests {
     use tokio::sync::mpsc::channel;
 
     use super::*;
-    use crate::test_support::{TestDir, register_test_media_providers};
+    use crate::test_support::{TestDir, register_test_media_providers, strip_verbatim_prefix};
 
     fn handle_for_test(result: DebounceEventResult, tx: &tokio::sync::mpsc::Sender<ScanCommand>) {
         let weak_tx = tx.downgrade();
@@ -455,7 +455,12 @@ mod tests {
 
             let targets = affected_targets(std::slice::from_ref(&file));
             let mut expected = FxHashSet::default();
-            expected.insert(dir.utf8_path().canonicalize_utf8().unwrap());
+            // `affected_targets` maps events to the plain parent directory (no
+            // canonicalization), so compare against the non-verbatim spelling
+            // of the same directory on Windows
+            expected.insert(strip_verbatim_prefix(
+                dir.utf8_path().canonicalize_utf8().unwrap(),
+            ));
             assert_eq!(targets, expected);
         }
     }

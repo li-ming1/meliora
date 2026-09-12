@@ -588,6 +588,9 @@ async fn write_track_cached(
 }
 
 async fn examine_and_finalize(dir: &TestDir, pool: &SqlitePool) {
+    // read_scan_directory decodes track metadata through the media provider
+    // table, which only exists once the providers are registered.
+    crate::test_support::register_test_media_providers();
     let directory = dir.utf8_path();
     let read_directory = directory.clone();
     let snapshot = spawn_blocking(move || read_scan_directory(&read_directory))

@@ -586,7 +586,7 @@ mod tests {
         // rejoins the tail under its verbatim prefix, so the two forms must
         // still match in the folder and prefix queries.
         let (_dir, pool) = create_test_pool("reconcile-test").await;
-        let stored_root = Utf8PathBuf::from(r"\\?\C:\Music\artist");
+        let _stored_root = Utf8PathBuf::from(r"\\?\C:\Music\artist");
         let path1 = Utf8PathBuf::from(r"\\?\C:\Music\artist\track1.flac");
         let path2 = Utf8PathBuf::from(r"\\?\C:\Music\artist\album\track2.flac");
         insert_track_row(

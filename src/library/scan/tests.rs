@@ -45,15 +45,15 @@ struct TestPipeline {
 }
 
 fn create_pipeline_library(dir: &TestDir, track_count: usize) {
-    let fixture = std::path::Path::new("assets/tests/audio-fixtures/fixture.flac");
-    let cover = std::path::Path::new("assets/tests/audio-fixtures/cover.jpg");
+    let fixture = crate::test_support::audio_fixtures::fixture("fixture.flac");
+    let cover = crate::test_support::audio_fixtures::fixture("cover.jpg");
 
     for index in 0..track_count {
         let name = format!("track-{index}.flac");
-        std::fs::copy(fixture, dir.join(&name)).unwrap();
+        std::fs::write(dir.join(&name), &fixture).unwrap();
     }
 
-    std::fs::copy(cover, dir.join("cover.jpg")).unwrap();
+    std::fs::write(dir.join("cover.jpg"), cover).unwrap();
 }
 
 fn spawn_test_pipeline(root: Utf8PathBuf) -> TestPipeline {

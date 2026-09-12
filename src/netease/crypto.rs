@@ -2,6 +2,8 @@
 //! digests and raw (zero-padded) RSA with the hardcoded 1024-bit web key.
 //! Mirrors `NeteaseCloudMusicApi/util/crypto.js`.
 
+use std::sync::OnceLock;
+
 use aes::Aes128;
 use aes::cipher::{BlockEncryptMut, KeyInit, KeyIvInit};
 use cbc::cipher::block_padding::Pkcs7;
@@ -75,12 +77,19 @@ fn aes_ecb_encrypt_hex_upper(data: &[u8], key: &[u8; 16]) -> String {
 /// interpreted as a big-endian integer (so it is effectively left-padded with
 /// zeros to the key size), output is 256 lowercase hex chars.
 fn rsa_raw_encrypt(data: &[u8]) -> String {
-    let modulus = BigUint::parse_bytes(RSA_MODULUS_HEX.as_bytes(), 16).expect("hardcoded modulus");
-    let exponent = BigUint::from(0x010001u32);
+    // The modulus is a hardcoded constant; parse it once instead of on every
+    // weapi request.
+    static RSA_KEY: OnceLock<(BigUint, BigUint)> = OnceLock::new();
+    let (modulus, exponent) = RSA_KEY.get_or_init(|| {
+        (
+            BigUint::parse_bytes(RSA_MODULUS_HEX.as_bytes(), 16).expect("hardcoded modulus"),
+            BigUint::from(0x010001u32),
+        )
+    });
     let key_len = modulus.bits().div_ceil(8);
     let mut padded = vec![0u8; key_len];
     padded[key_len - data.len()..].copy_from_slice(data);
-    let encrypted = BigUint::from_bytes_be(&padded).modpow(&exponent, &modulus);
+    let encrypted = BigUint::from_bytes_be(&padded).modpow(exponent, modulus);
     format!("{:0>width$}", encrypted.to_str_radix(16), width = key_len * 2)
 }
 

@@ -326,9 +326,12 @@ mod tests {
 
         assert_eq!(count, 1);
         assert_eq!(discovered.path, track);
+        // the scanner canonicalizes every root, so the folder art candidate is
+        // reported in the canonical (`\\?\`-prefixed on Windows) form, exactly
+        // like the track paths above
         assert_eq!(
             discovered.folder_art.unwrap().path,
-            dir.utf8_join("cover.png")
+            dir.utf8_join("cover.png").canonicalize_utf8().unwrap()
         );
     }
 
