@@ -716,6 +716,7 @@ pub async fn remove_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Resu
     let item = get_playlist_item(pool, item_id).await?;
 
     sqlx::query(query)
+        .bind(item.playlist_id)
         .bind(item.position)
         .bind(item_id)
         .execute(pool)
@@ -782,7 +783,9 @@ pub async fn add_tracks_to_playlist_if_missing(
     // one whole-playlist SELECT replaces the per-track check-then-insert pair
     // (3000 round trips to like a 1000-track album); the unique
     // (playlist_id, track_id) index stays as the final guard, and each insert
-    // still goes through add_playlist_item so position semantics are unchanged
+    // runs the same add_track.sql position query so position semantics are
+    // unchanged. the whole batch shares a single transaction instead of one
+    // autocommit round trip per track (same shape as import_playlist)
     let query = include_str!("../../queries/playlist/playlist_track_ids.sql");
     let existing: HashSet<i64> = sqlx::query_scalar(query)
         .bind(playlist_id)
@@ -791,11 +794,20 @@ pub async fn add_tracks_to_playlist_if_missing(
         .into_iter()
         .collect();
 
+    let insert_query = include_str!("../../queries/playlist/add_track.sql");
+    let mut tx = pool.begin().await?;
+
     for &track_id in track_ids {
         if !existing.contains(&track_id) {
-            add_playlist_item(pool, playlist_id, track_id).await?;
+            sqlx::query(insert_query)
+                .bind(playlist_id)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await?;
         }
     }
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -804,11 +816,35 @@ pub async fn remove_tracks_from_playlist(
     playlist_id: i64,
     track_ids: &[i64],
 ) -> sqlx::Result<()> {
+    let has_track_query = include_str!("../../queries/playlist/playlist_has_track.sql");
+    let item_query = include_str!("../../queries/playlist/select_playlist_item.sql");
+    let remove_query = include_str!("../../queries/playlist/remove_track.sql");
+
+    let mut tx = pool.begin().await?;
+
     for &track_id in track_ids {
-        if let Some(item_id) = playlist_has_track(pool, playlist_id, track_id).await? {
-            remove_playlist_item(pool, item_id).await?;
+        let item_id: Option<i64> = sqlx::query_scalar(has_track_query)
+            .bind(playlist_id)
+            .bind(track_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+        if let Some(item_id) = item_id {
+            let item: PlaylistItem = sqlx::query_as(item_query)
+                .bind(item_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+            sqlx::query(remove_query)
+                .bind(item.playlist_id)
+                .bind(item.position)
+                .bind(item_id)
+                .execute(&mut *tx)
+                .await?;
         }
     }
+
+    tx.commit().await?;
     Ok(())
 }
 
