@@ -20,6 +20,7 @@ use cpal::{
 };
 use rtrb::{Producer, RingBuffer};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -140,6 +141,7 @@ fn create_stream_internal<T: CpalSample>(
     buffer_size: usize,
     target_gain: Arc<AtomicF64>,
     underruns: Arc<AtomicU64>,
+    device_error_message: Arc<Mutex<Option<String>>>,
 ) -> Result<(cpal::Stream, Producer<T>, Arc<AtomicBool>), OpenError> {
     let (prod, mut cons) = RingBuffer::<T>::new(buffer_size);
     let channels = config.channels as usize;
@@ -153,6 +155,9 @@ fn create_stream_internal<T: CpalSample>(
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             let read = read_available(&mut cons, data);
             if read < data.len() {
+                // Zero the tail so an underrun plays silence instead of
+                // whatever stale samples the device buffer still holds.
+                data[read..].fill(T::default());
                 underruns.fetch_add(1, Ordering::Relaxed);
             }
 
@@ -160,7 +165,11 @@ fn create_stream_internal<T: CpalSample>(
             ramp.apply(data, channels, target);
         },
         move |err| {
-            warn!("cpal stream error: {err}");
+            // Realtime thread: record the message only. Logging (file IO)
+            // happens on the producer side when it observes the flag.
+            if let Ok(mut slot) = device_error_message.lock() {
+                *slot = Some(err.to_string());
+            }
             error_flag.store(true, Ordering::Relaxed);
         },
         None,
@@ -186,12 +195,14 @@ impl CpalDevice {
         info!("Requesting buffer size: {buffer_size}");
         let target_gain = Arc::new(AtomicF64::new(1.0));
         let underruns = Arc::new(AtomicU64::new(0));
+        let device_error_message = Arc::new(Mutex::new(None::<String>));
         let (stream, prod, device_errored) = create_stream_internal::<T>(
             &self.device,
             config,
             buffer_size,
             target_gain.clone(),
             underruns.clone(),
+            device_error_message.clone(),
         )?;
 
         Ok(Box::new(CpalStream {
@@ -213,6 +224,7 @@ impl CpalDevice {
             idle_since: None,
             logged_first_submit: false,
             device_errored,
+            device_error_message,
             pause_at: None,
         }))
     }
@@ -290,6 +302,9 @@ where
     idle_since: Option<Instant>,
     logged_first_submit: bool,
     device_errored: Arc<AtomicBool>,
+    /// Latest cpal error message, written by the realtime error callback and
+    /// drained (logged) by the producer. Keeps logging off the audio thread.
+    device_error_message: Arc<Mutex<Option<String>>>,
     /// Indicates that the stream is currently fading out and needs to be paused by the specified
     /// time.
     pause_at: Option<Instant>,
@@ -354,6 +369,7 @@ where
             self.buffer_size,
             self.target_gain.clone(),
             self.underruns.clone(),
+            self.device_error_message.clone(),
         )?;
 
         self.stream = stream;
@@ -390,6 +406,11 @@ where
         input: &mut ChannelConsumers,
     ) -> Result<usize, SubmissionError> {
         if self.device_errored.load(Ordering::Relaxed) {
+            if let Ok(mut slot) = self.device_error_message.lock() {
+                if let Some(msg) = slot.take() {
+                    warn!("cpal stream error: {msg}");
+                }
+            }
             return Err(SubmissionError::DeviceError);
         }
 
