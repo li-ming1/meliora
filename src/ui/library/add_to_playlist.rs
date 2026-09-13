@@ -44,7 +44,11 @@ impl TrackList {
     fn first(&self) -> i64 {
         match self {
             TrackList::Single(id) => *id,
-            TrackList::Multi(ids) => ids[0],
+            // An empty multi list is the album flow's initial state: its track
+            // ids are loaded in the background after the dialog opens. Track
+            // id 0 can never exist in the database, so it degrades to the
+            // "not in playlist" branch instead of panicking on the index.
+            TrackList::Multi(ids) => ids.first().copied().unwrap_or(0),
         }
     }
 
@@ -69,33 +73,43 @@ fn read_track_list(shared: &SharedTrackList) -> TrackList {
     shared.borrow().clone()
 }
 
-impl PaletteItem for (TrackList, Playlist) {
+/// One palette row: the selection snapshot, the target playlist, and the
+/// existing playlist-item id when a single track is already in that playlist.
+/// The third slot is resolved once when the item list is built so that
+/// `middle_content` never queries the database — previously it ran a
+/// UI-thread `block_on` `playlist_has_track` query for every visible row on
+/// every palette rebuild (each keystroke; doctrine §2.3 / §14).
+type PlaylistEntry = (TrackList, Playlist, Option<i64>);
+
+fn existing_item_id(track_list: &TrackList, playlist: &Playlist, cx: &mut App) -> Option<i64> {
+    if track_list.is_multi() {
+        return None;
+    }
+    cx.playlist_has_track(playlist.id, track_list.first())
+        .ok()
+        .flatten()
+}
+
+impl PaletteItem for PlaylistEntry {
     fn left_content(&self, cx: &mut App) -> Option<FinderItemLeft> {
         self.1.left_content(cx)
     }
 
-    fn middle_content(&self, cx: &mut App) -> SharedString {
-        if self.0.is_multi() {
-            tr!("ADD_TO_SELECTED_PLAYLIST", name = self.1.name.0.as_str()).into()
+    fn middle_content(&self, _cx: &mut App) -> SharedString {
+        if self.0.is_multi() || self.2.is_none() {
+            tr!(
+                "ADD_TO_SELECTED_PLAYLIST",
+                "Add to {{name}}",
+                name = self.1.name.0.as_str()
+            )
+            .into()
         } else {
-            let track_id = self.0.first();
-            let has_track = cx.playlist_has_track(self.1.id, track_id).ok().flatten();
-
-            if has_track.is_none() {
-                tr!(
-                    "ADD_TO_SELECTED_PLAYLIST",
-                    "Add to {{name}}",
-                    name = self.1.name.0.as_str()
-                )
-                .into()
-            } else {
-                tr!(
-                    "REMOVE_FROM_SELECTED_PLAYLIST",
-                    "Remove from {{name}}",
-                    name = self.1.name.0.as_str()
-                )
-                .into()
-            }
+            tr!(
+                "REMOVE_FROM_SELECTED_PLAYLIST",
+                "Remove from {{name}}",
+                name = self.1.name.0.as_str()
+            )
+            .into()
         }
     }
 
@@ -104,12 +118,12 @@ impl PaletteItem for (TrackList, Playlist) {
     }
 }
 
-type MatcherFunc = Box<dyn Fn(&Arc<(TrackList, Playlist)>, &mut App) -> Utf32String + 'static>;
-type OnAccept = Box<dyn Fn(&Arc<(TrackList, Playlist)>, &mut App) + 'static>;
+type MatcherFunc = Box<dyn Fn(&Arc<PlaylistEntry>, &mut App) -> Utf32String + 'static>;
+type OnAccept = Box<dyn Fn(&Arc<PlaylistEntry>, &mut App) + 'static>;
 
 pub struct AddToPlaylist {
     show: Entity<bool>,
-    palette: Entity<Palette<(TrackList, Playlist), MatcherFunc, OnAccept>>,
+    palette: Entity<Palette<PlaylistEntry, MatcherFunc, OnAccept>>,
     track_list: SharedTrackList,
 }
 
@@ -131,7 +145,10 @@ impl AddToPlaylist {
                     let new_playlists = (*playlists)
                         .clone()
                         .into_iter()
-                        .map(|playlist| (current.clone(), playlist))
+                        .map(|playlist| {
+                            let has_track = existing_item_id(&current, &playlist, cx);
+                            (current.clone(), playlist, has_track)
+                        })
                         .map(Arc::new)
                         .collect::<Vec<_>>();
 
@@ -148,8 +165,15 @@ impl AddToPlaylist {
 
             let show_clone = show.clone();
 
+            // Accept reads the shared track list at click time, not the
+            // per-item snapshot: in the album flow the ids land in the shared
+            // list after the dialog has already opened, so the snapshot
+            // captured when the items were built is still empty and accepting
+            // it would silently add nothing on the first open.
+            let track_list_for_accept = track_list.clone();
+
             let on_accept: OnAccept = Box::new(move |playlist, cx| {
-                let track_ids = playlist.0.ids().to_vec();
+                let track_ids = track_list_for_accept.borrow().ids().to_vec();
                 let playlist_id = playlist.1.id;
 
                 if track_ids.len() == 1 {
@@ -231,7 +255,10 @@ impl AddToPlaylist {
                 }
             }
             .into_iter()
-            .map(|playlist| (initial_track_list.clone(), playlist))
+            .map(|playlist| {
+                let has_track = existing_item_id(&initial_track_list, &playlist, cx);
+                (initial_track_list.clone(), playlist, has_track)
+            })
             .map(Arc::new)
             .collect();
 

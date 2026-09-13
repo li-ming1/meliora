@@ -826,26 +826,39 @@ where
 
                                 let item_id = items[idx].clone();
 
-                                let view = create_or_retrieve_view(
-                                    &grid_views_model,
-                                    idx,
-                                    |cx| {
-                                        grid_item::GridItem::new(
+                                // Fallible equivalent of `create_or_retrieve_view`: a row can
+                                // vanish between get_rows and this frame (a rescan deleted it,
+                                // or its query failed), and the old `.expect` here panicked the
+                                // whole app off a stale items snapshot.
+                                let cached_view = grid_views_model.read(cx).get(&idx).cloned();
+                                let view = match cached_view {
+                                    Some(view) => div().size_full().child(view).into_any_element(),
+                                    None => {
+                                        match grid_item::GridItem::new(
                                             cx,
                                             item_id,
                                             grid_handler.clone(),
                                             grid_context_menu_context.clone(),
                                             GridContext::Table,
-                                        )
-                                        .expect("grid id came from get_rows this frame")
-                                    },
-                                    cx,
-                                );
+                                        ) {
+                                            Some(view) => {
+                                                grid_views_model.update(cx, |m, _| {
+                                                    m.insert(idx, view.clone());
+                                                });
+                                                div().size_full().child(view).into_any_element()
+                                            }
+                                            // Row is gone: render a blank cell for this frame;
+                                            // the reload already in flight replaces the stale
+                                            // snapshot.
+                                            None => div().into_any_element(),
+                                        }
+                                    }
+                                };
 
                                 // no per-item image_cache here: GridItem draws its
                                 // artwork through managed_image, which never touches
                                 // the gpui image cache the wrapper would feed
-                                div().size_full().child(view).into_any_element()
+                                view
                             },
                         )
                         .min_item_width(px(grid_min_item_width))
