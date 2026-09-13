@@ -304,6 +304,7 @@
     "other": "Play {{count}} tracks now"
   },
   "PREVIOUS_TRACK": "Previous Track",
+  "QUEUE_REMOVE_CANCELLED_STALE": "Queue changed — removal cancelled",
   "QUEUE_SUMMARY_TRACKS": {
     "one": "{{count}} song",
     "other": "{{count}} songs"

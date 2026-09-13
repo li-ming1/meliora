@@ -928,32 +928,39 @@ impl QueueManager {
             original_queue_items.push((pos, original_removed));
         }
 
-        let current = self.queue_next.saturating_sub(1);
+        let current = self.queue_next.checked_sub(1);
 
-        let res = if index == current {
-            // The next track shifts into the removed slot. Skip any unplayable
-            // items and keep the cursor on the track that will actually play:
-            // `current_position()` is what the thread reports via
-            // QueuePositionChanged, so it must match the opened path or the UI
-            // resolves the wrong (or no) queue item for the new track.
-            match Self::next_playable_from(&queue, current) {
-                Some(new_index) => {
-                    self.queue_next = new_index + 1;
-                    DequeueResult::RemovedCurrent {
-                        new_path: Some(queue[new_index].get_path().clone()),
+        let res = match current {
+            Some(current) if index == current => {
+                // The next track shifts into the removed slot. Skip any unplayable
+                // items and keep the cursor on the track that will actually play:
+                // `current_position()` is what the thread reports via
+                // QueuePositionChanged, so it must match the opened path or the UI
+                // resolves the wrong (or no) queue item for the new track.
+                match Self::next_playable_from(&queue, current) {
+                    Some(new_index) => {
+                        self.queue_next = new_index + 1;
+                        DequeueResult::RemovedCurrent {
+                            new_path: Some(queue[new_index].get_path().clone()),
+                        }
                     }
+                    None => DequeueResult::RemovedCurrent { new_path: None },
                 }
-                None => DequeueResult::RemovedCurrent { new_path: None },
             }
-        } else if index < current {
-            self.queue_next -= 1;
-            DequeueResult::Removed {
-                new_position: self.queue_next.saturating_sub(1),
+            Some(current) if index < current => {
+                self.queue_next -= 1;
+                DequeueResult::Removed {
+                    new_position: self.queue_next.saturating_sub(1),
+                }
             }
-        } else {
-            DequeueResult::Removed {
-                new_position: current,
-            }
+            other => DequeueResult::Removed {
+                // Nothing playing (queue_next == 0) or the removed index is
+                // after the current slot: report the resolved slot without
+                // fabricating a cursor. Mirrors `dequeue_many`'s `checked_sub`
+                // semantics (a632cef) — the single-item path must not claim a
+                // current track while stopped.
+                new_position: other.unwrap_or(0),
+            },
         };
 
         drop(queue);
@@ -1746,6 +1753,24 @@ mod tests {
         }
         assert_eq!(manager.queue_next, 0);
         assert_eq!(manager.len(), 1);
+    }
+
+    #[test]
+    fn dequeue_when_nothing_playing_does_not_start_playback() {
+        let dir = TestDir::new("meliora-queue-dequeue-nothing-playing");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
+        // queue_next stays 0 (nothing playing).
+        assert_eq!(manager.queue_next, 0);
+
+        let res = manager.dequeue(0);
+
+        match res {
+            DequeueResult::Removed { new_position } => assert_eq!(new_position, 0),
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(manager.queue_next, 0);
+        assert_eq!(manager.len(), 2);
+        assert_eq!(manager.current_position(), None);
     }
 
     #[test]

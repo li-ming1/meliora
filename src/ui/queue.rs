@@ -2,6 +2,7 @@ use crate::{
     library::db::LibraryAccess,
     playback::{interface::PlaybackInterface, queue::QueueItemData},
     settings::SettingsGlobal,
+    toasts::{Toast, emit_toast},
     ui::{
         availability::is_track_path_available,
         components::{
@@ -29,6 +30,7 @@ use gpui::*;
 use prelude::FluentBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{path::PathBuf, time::Duration};
+use tracing::error;
 
 use super::{
     components::button::{ButtonSize, ButtonStyle, button},
@@ -526,14 +528,29 @@ impl Render for QueueItem {
                         // menu-open time, instead of on every render frame.
                         let remove_indices = selection_for_menu.read(cx).indices();
                         let remove_count = remove_indices.len();
-                        let selected_track_ids: Vec<i64> = {
+                        // (index, track_id, path) per selected row, taken at
+                        // menu-open time. The menu stays open while the queue
+                        // can mutate concurrently (auto-insert on playback,
+                        // removal from another entry point), so the Remove-N
+                        // callback re-validates this snapshot before deleting:
+                        // stale indices alone would delete whatever rows now
+                        // occupy those positions.
+                        let remove_snapshot: Vec<(usize, Option<i64>, PathBuf)> = {
                             let queue = cx.global::<Models>().queue.read(cx);
                             let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
                             remove_indices
                                 .iter()
-                                .filter_map(|&i| queue_data.get(i).and_then(|item| item.get_db_id()))
+                                .filter_map(|&i| {
+                                    queue_data
+                                        .get(i)
+                                        .map(|item| (i, item.get_db_id(), item.get_path().clone()))
+                                })
                                 .collect()
                         };
+                        let selected_track_ids: Vec<i64> = remove_snapshot
+                            .iter()
+                            .filter_map(|&(_, id, _)| id)
+                            .collect();
                         let add_to_ids = selected_track_ids.clone();
                         let entity_for_add = queue_item_entity.clone();
 
@@ -617,12 +634,43 @@ impl Render for QueueItem {
                                     count = remove_count
                                 ),
                                 move |_, _, cx| {
-                                    cx.global::<PlaybackInterface>()
-                                        .remove_items(remove_indices.clone());
+                                    // Execute only if every menu-open snapshot
+                                    // slot still holds the same content; a
+                                    // queue mutated while the menu was open
+                                    // invalidates the captured indices (see
+                                    // `remove_snapshot` above).
+                                    if remove_snapshot
+                                        .iter()
+                                        .all(|&(i, id, ref path)| {
+                                            queue_slot_matches(cx, i, id, path)
+                                        })
+                                    {
+                                        cx.global::<PlaybackInterface>()
+                                            .remove_items(remove_indices.clone());
+                                    } else {
+                                        error!(
+                                            "queue remove cancelled: queue changed while the \
+                                             Remove-N menu was open ({} rows)",
+                                            remove_count
+                                        );
+                                        emit_stale_remove_toast();
+                                    }
                                 },
                             ))
                     } else {
                         let entity_for_add = queue_item_entity.clone();
+                        // Snapshot the row content at menu-open time (same
+                        // instant as the multi-select snapshot above): the
+                        // queue can mutate before the click lands, so the
+                        // remove callback re-validates instead of trusting
+                        // the captured `idx`.
+                        let remove_snapshot = {
+                            let queue = cx.global::<Models>().queue.read(cx);
+                            let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
+                            queue_data
+                                .get(idx)
+                                .map(|item| (item.get_db_id(), item.get_path().clone()))
+                        };
                         let artist_ids = single_track_id
                             .and_then(|id| cx.artist_ids_for_track(id).ok())
                             .unwrap_or_default();
@@ -717,8 +765,23 @@ impl Render for QueueItem {
                                 Some(CROSS),
                                 tr!("REMOVE_FROM_QUEUE", "Remove from queue"),
                                 move |_, _, cx| {
-                                    let playback = cx.global::<PlaybackInterface>();
-                                    playback.remove_item(idx);
+                                    // Same stale-index guard as remove_items
+                                    // above: only delete while the snapshotted
+                                    // row content still sits at this position.
+                                    let unchanged = remove_snapshot
+                                        .as_ref()
+                                        .is_some_and(|&(id, ref path)| {
+                                            queue_slot_matches(cx, idx, id, path)
+                                        });
+                                    if unchanged {
+                                        cx.global::<PlaybackInterface>().remove_item(idx);
+                                    } else {
+                                        error!(
+                                            "queue remove cancelled: queue changed while the \
+                                             remove menu was open (row {idx})"
+                                        );
+                                        emit_stale_remove_toast();
+                                    }
                                 },
                             ))
                     }
@@ -737,6 +800,33 @@ impl Render for QueueItem {
                 .into_any_element()
         }
     }
+}
+
+/// Warn the user that a queued remove action was dropped because the queue
+/// changed while its context menu was open (see `queue_slot_matches`).
+fn emit_stale_remove_toast() {
+    emit_toast(Toast::warning(tr!(
+        "QUEUE_REMOVE_CANCELLED_STALE",
+        "Queue changed — removal cancelled"
+    )));
+}
+
+/// True if the live queue still holds the content captured for `index` when
+/// the context menu was opened (same track id and path).
+///
+/// Guards the queue context-menu remove actions: the menu stays open while
+/// the queue can be mutated concurrently (auto-insert on playback, removal
+/// from another entry point), so indices captured at menu-open time may point
+/// at different rows by the time the click lands — deleting them anyway would
+/// remove the wrong rows. The playback-side `dequeue_many` clamps
+/// out-of-range indices but cannot know which rows were meant, so the content
+/// check has to happen here, on the UI side.
+fn queue_slot_matches(cx: &App, index: usize, track_id: Option<i64>, path: &PathBuf) -> bool {
+    let queue = cx.global::<Models>().queue.read(cx);
+    let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
+    queue_data
+        .get(index)
+        .is_some_and(|item| item.get_db_id() == track_id && item.get_path() == path)
 }
 
 pub struct Queue {
