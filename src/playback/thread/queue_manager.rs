@@ -600,7 +600,11 @@ impl QueueManager {
                 }
             } else if self.repeat == RepeatState::Repeating {
                 if self.shuffle {
+                    // The wrap reshuffles the whole queue, so every recorded
+                    // undo entry's indices refer to a stale ordering; applying
+                    // them later would remove or re-insert the wrong items.
                     queue.shuffle(&mut rng());
+                    self.undo_stack.clear();
                 }
                 if let Some(index) = Self::first_playable_index(&queue) {
                     self.queue_next = index + 1;
@@ -666,7 +670,10 @@ impl QueueManager {
                 && !queue.is_empty()
                 && let Some(index) = {
                     if self.shuffle {
+                        // Same stale-undo concern as the wrap in `next()`:
+                        // recorded indices refer to the pre-reshuffle ordering.
                         queue.shuffle(&mut rng());
+                        self.undo_stack.clear();
                     }
                     Self::last_playable_index(&queue)
                 }
@@ -1060,25 +1067,30 @@ impl QueueManager {
         let item = queue.remove(from);
         queue.insert(to, item);
 
-        let current = self.queue_next.saturating_sub(1);
-
-        let res = if from == current {
-            // Moved the current track
-            self.queue_next = to + 1;
-            MoveResult::MovedCurrent { new_position: to }
-        } else if from < current && to >= current {
-            // Moved from before to after current
-            self.queue_next -= 1;
-            MoveResult::MovedCurrent {
-                new_position: self.queue_next - 1,
-            }
-        } else if from > current && to <= current {
-            // Moved from after to before current
-            self.queue_next += 1;
-            MoveResult::MovedCurrent {
-                new_position: self.queue_next.saturating_sub(1),
+        let res = if let Some(current) = self.queue_next.checked_sub(1) {
+            if from == current {
+                // Moved the current track
+                self.queue_next = to + 1;
+                MoveResult::MovedCurrent { new_position: to }
+            } else if from < current && to >= current {
+                // Moved from before to after current
+                self.queue_next -= 1;
+                MoveResult::MovedCurrent {
+                    new_position: self.queue_next - 1,
+                }
+            } else if from > current && to <= current {
+                // Moved from after to before current
+                self.queue_next += 1;
+                MoveResult::MovedCurrent {
+                    new_position: self.queue_next.saturating_sub(1),
+                }
+            } else {
+                MoveResult::Moved
             }
         } else {
+            // Nothing is playing (queue_next == 0): moving items must not
+            // fabricate a current track. Mirrors the `move_items` batch path,
+            // which already used `checked_sub`.
             MoveResult::Moved
         };
 
@@ -1252,16 +1264,20 @@ impl QueueManager {
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
-        // take-based snapshots, same rationale as replace_queue: no full-queue copy
-        let queue_clone = Arc::new(take(&mut *queue));
-        let old_original_queue = Arc::new(take(&mut self.original_queue));
-
+        // Read the current item BEFORE the take-based snapshots below: `take`
+        // empties the Vec, so reading `queue.len()` afterwards always saw an
+        // empty queue and `clear(true)` silently dropped the playing track it
+        // was supposed to keep.
         let current_item = keep_current
             .then(|| {
                 (self.queue_next > 0 && self.queue_next <= queue.len())
                     .then(|| queue[self.queue_next - 1].clone())
             })
             .flatten();
+
+        // take-based snapshots, same rationale as replace_queue: no full-queue copy
+        let queue_clone = Arc::new(take(&mut *queue));
+        let old_original_queue = Arc::new(take(&mut self.original_queue));
 
         queue.clear();
         self.original_queue.clear();
@@ -1321,6 +1337,8 @@ impl QueueManager {
                     None
                 };
 
+                let had_current = current_item.is_some();
+
                 let new_position = current_item
                     .and_then(|target_item| {
                         self.original_queue
@@ -1333,7 +1351,14 @@ impl QueueManager {
                 // its contents move into the Arc either way, this just skips the copy
                 let shuffled_queue = Arc::new(take(&mut *queue));
                 *queue = take(&mut self.original_queue);
-                self.queue_next = new_position + 1;
+                // Only remap the cursor when there was a current track; with
+                // nothing playing (or a stale past-end cursor) keep queue_next
+                // so unshuffling never fabricates a current item.
+                self.queue_next = if had_current {
+                    new_position + 1
+                } else {
+                    self.queue_next
+                };
 
                 drop(queue);
 
@@ -1437,9 +1462,14 @@ mod tests {
     use serde_json::json;
     use tokio::sync::watch;
 
-    use super::{DequeueManyResult, DequeueResult, MoveItemsResult, QueueManager, UndoResult};
+    use super::{
+        DequeueManyResult, DequeueResult, JumpResult, MoveItemsResult, MoveResult, QueueManager,
+        QueueNavigationResult, Reshuffled, UndoResult,
+    };
     use crate::{
-        playback::{queue::QueueItemData, session_storage::PlaybackSessionData},
+        playback::{
+            events::RepeatState, queue::QueueItemData, session_storage::PlaybackSessionData,
+        },
         settings::playback::PlaybackSettings,
         test_support::TestDir,
     };
@@ -2019,5 +2049,139 @@ mod tests {
             other => panic!("expected RemovedCurrent, got {other:?}"),
         }
         assert_eq!(manager.current_position(), Some(1));
+    }
+
+    /// Regression: the take-based snapshot refactor emptied the queue Vec
+    /// *before* `current_item` was read, so `clear(true)` always saw an empty
+    /// queue and silently dropped the playing track it was supposed to keep.
+    #[test]
+    fn clear_keep_current_preserves_the_playing_track() {
+        let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4)]);
+        manager.set_position(2); // current = index 2 (item 3)
+
+        manager.clear(true);
+
+        assert_eq!(queue_ids(&manager), vec![3]);
+        assert_eq!(manager.queue_next, 1);
+        assert_eq!(manager.current_position(), Some(0));
+
+        // shuffle mode: the kept item must also be registered in
+        // original_queue so a later unshuffle can still find it
+        let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
+        manager.set_position(1);
+        manager.toggle_shuffle();
+        manager.undo_stack.clear();
+        let current_id = {
+            let queue = manager.queue.read().expect("poisoned queue lock");
+            queue[1].get_db_id().expect("test items have db ids")
+        };
+
+        manager.clear(true);
+
+        assert_eq!(queue_ids(&manager), vec![current_id]);
+        assert_eq!(manager.original_queue.len(), 1);
+    }
+
+    /// Regression: `move_item` derived the current slot with
+    /// `saturating_sub`, so moving items while nothing was playing fabricated
+    /// a current track (queue_next 0 -> to+1 / 1) and the thread reported a
+    /// bogus QueuePositionChanged. The `move_items` batch path already used
+    /// `checked_sub`; the single-item path must match.
+    #[test]
+    fn move_item_when_nothing_playing_does_not_start_playback() {
+        let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
+        assert_eq!(manager.queue_next, 0);
+
+        // moving the first item used to take the `from == current` branch
+        let res = manager.move_item(0, 2, true);
+        assert!(matches!(res, MoveResult::Moved));
+        assert_eq!(manager.queue_next, 0);
+        assert_eq!(queue_ids(&manager), vec![2, 3, 1]);
+
+        // moving any item to index 0 used to take the `to <= current` branch
+        let res = manager.move_item(2, 0, true);
+        assert!(matches!(res, MoveResult::Moved));
+        assert_eq!(manager.queue_next, 0);
+        assert_eq!(queue_ids(&manager), vec![1, 2, 3]);
+
+        // the single-index `move_items` delegation must behave the same
+        let res = manager.move_items(vec![1], 2);
+        assert!(matches!(res, MoveItemsResult::Moved));
+        assert_eq!(manager.queue_next, 0);
+        assert_eq!(queue_ids(&manager), vec![1, 3, 2]);
+    }
+
+    /// Regression: toggling shuffle off while nothing was playing fabricated a
+    /// current track (queue_next 0 -> 1): the manager then claimed item 0 was
+    /// playing and the session snapshot persisted a bogus queue_position.
+    #[test]
+    fn toggle_shuffle_off_when_nothing_playing_keeps_no_current() {
+        let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
+        assert_eq!(manager.queue_next, 0);
+
+        manager.toggle_shuffle(); // on: nothing playing, whole queue shuffled
+        assert_eq!(manager.queue_next, 0);
+        manager.undo_stack.clear();
+
+        manager.toggle_shuffle(); // off
+        assert_eq!(manager.queue_next, 0);
+        assert_eq!(manager.current_position(), None);
+    }
+
+    /// Regression: the repeat-all wrap reshuffles the whole (shuffled) queue,
+    /// which invalidates every recorded undo entry's indices; applying them
+    /// afterwards would remove or re-insert the wrong items. The wrap must
+    /// drop the stale history.
+    #[test]
+    fn repeat_wrap_reshuffle_drops_stale_undo_entries() {
+        let dir = TestDir::new("meliora-queue-wrap-undo");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3, 4]));
+        manager.set_repeat(RepeatState::Repeating);
+        manager.set_position(3); // on the last track
+        manager.toggle_shuffle();
+        manager.dequeue(0); // undo entry recorded in the pre-wrap ordering
+
+        // EOF on the last track with repeat-all + shuffle wraps and reshuffles
+        let res = manager.next(false);
+        assert!(matches!(
+            res,
+            QueueNavigationResult::Changed {
+                reshuffled: Reshuffled::Reshuffled,
+                ..
+            }
+        ));
+
+        // the reshuffled ordering invalidated the recorded inverse
+        assert!(matches!(manager.undo_last_action(), UndoResult::None));
+        // the cursor stays on a valid track after the wrap
+        assert!(manager.current_position().is_some());
+    }
+
+    /// The thread resolves the opened item's slot via `jump_unshuffled`
+    /// because a shuffle-on `queue_items` shuffles the appended batch, so the
+    /// opened item no longer sits at `first_index + relative_idx`.
+    #[test]
+    fn jump_unshuffled_resolves_items_appended_by_a_shuffled_batch() {
+        let dir = TestDir::new("meliora-queue-jump-unshuffled-batch");
+        let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
+        manager.set_position(0);
+        manager.toggle_shuffle();
+        manager.undo_stack.clear();
+
+        let first_index = manager.queue_items(playable_items(&dir, &[10, 11, 12]));
+
+        // item 10 is the first appended item in the user's (original) order
+        let res = manager.jump_unshuffled(first_index);
+        match res {
+            JumpResult::Jumped { .. } => {
+                let pos = manager.current_position().expect("jumped onto a valid slot");
+                assert_eq!(
+                    queue_ids(&manager)[pos],
+                    10,
+                    "jump_unshuffled(first_index) must land on the first appended item"
+                );
+            }
+            other => panic!("expected Jumped, got {other:?}"),
+        }
     }
 }

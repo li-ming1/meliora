@@ -680,7 +680,17 @@ impl PlaybackThread {
                 error!(path = %path.display(), ?err, "Unable to open file: {err}");
             }
             let position = first_index + relative_idx;
-            self.queue.set_position(position);
+            // With shuffle on, `queue_items` shuffled the appended batch, so
+            // the opened item no longer sits at `first_index + relative_idx`;
+            // resolve its actual slot through the original order so the cursor
+            // tracks the opened path (jump persists the state itself).
+            let position = match self.queue.jump_unshuffled(position) {
+                JumpResult::Jumped { .. } => self.queue.current_position().unwrap_or(position),
+                JumpResult::OutOfBounds => {
+                    self.queue.set_position(position);
+                    position
+                }
+            };
             self.send_event(PlaybackEvent::QueuePositionChanged(position));
         }
 
