@@ -415,13 +415,13 @@
   },
   "COMMAND_PALETTE": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:454",
+    "definedIn": "src/ui/settings/interface.rs:472",
     "plural": false,
     "description": null
   },
   "COMMAND_PALETTE_OPEN": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:468",
+    "definedIn": "src/ui/settings/interface.rs:486",
     "plural": false,
     "description": null
   },
@@ -667,115 +667,115 @@
   },
   "INTERFACE_ALWAYS_SHOW_SCROLLBARS": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:389",
+    "definedIn": "src/ui/settings/interface.rs:407",
     "plural": false,
     "description": null
   },
   "INTERFACE_ALWAYS_SHOW_SCROLLBARS_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:392",
+    "definedIn": "src/ui/settings/interface.rs:410",
     "plural": false,
     "description": null
   },
   "INTERFACE_COMMAND_PALETTE_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:457",
+    "definedIn": "src/ui/settings/interface.rs:475",
     "plural": false,
     "description": null
   },
   "INTERFACE_FULL_WIDTH_LIBRARY": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:278",
+    "definedIn": "src/ui/settings/interface.rs:296",
     "plural": false,
     "description": null
   },
   "INTERFACE_FULL_WIDTH_LIBRARY_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:281",
+    "definedIn": "src/ui/settings/interface.rs:299",
     "plural": false,
     "description": null
   },
   "INTERFACE_GRID_MIN_ITEM_WIDTH": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:325",
+    "definedIn": "src/ui/settings/interface.rs:343",
     "plural": false,
     "description": null
   },
   "INTERFACE_GRID_MIN_ITEM_WIDTH_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:328",
+    "definedIn": "src/ui/settings/interface.rs:346",
     "plural": false,
     "description": null
   },
   "INTERFACE_QUEUE_SELECT_ON_CLICK": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:431",
+    "definedIn": "src/ui/settings/interface.rs:449",
     "plural": false,
     "description": null
   },
   "INTERFACE_QUEUE_SELECT_ON_CLICK_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:434",
+    "definedIn": "src/ui/settings/interface.rs:452",
     "plural": false,
     "description": null
   },
   "INTERFACE_REDUCED_MOTION": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:368",
+    "definedIn": "src/ui/settings/interface.rs:386",
     "plural": false,
     "description": null
   },
   "INTERFACE_REDUCED_MOTION_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:371",
+    "definedIn": "src/ui/settings/interface.rs:389",
     "plural": false,
     "description": null
   },
   "INTERFACE_SLIM_SCROLLBARS": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:410",
+    "definedIn": "src/ui/settings/interface.rs:428",
     "plural": false,
     "description": null
   },
   "INTERFACE_SLIM_SCROLLBARS_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:413",
+    "definedIn": "src/ui/settings/interface.rs:431",
     "plural": false,
     "description": null
   },
   "INTERFACE_STARTUP_LIBRARY_VIEW": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:266",
+    "definedIn": "src/ui/settings/interface.rs:284",
     "plural": false,
     "description": null
   },
   "INTERFACE_STARTUP_LIBRARY_VIEW_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:269",
+    "definedIn": "src/ui/settings/interface.rs:287",
     "plural": false,
     "description": null
   },
   "INTERFACE_THEME": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:241",
+    "definedIn": "src/ui/settings/interface.rs:259",
     "plural": false,
     "description": null
   },
   "INTERFACE_THEME_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:243",
+    "definedIn": "src/ui/settings/interface.rs:261",
     "plural": false,
     "description": null
   },
   "INTERFACE_TWO_COLUMN_LIBRARY": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:304",
+    "definedIn": "src/ui/settings/interface.rs:322",
     "plural": false,
     "description": null
   },
   "INTERFACE_TWO_COLUMN_LIBRARY_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:307",
+    "definedIn": "src/ui/settings/interface.rs:325",
     "plural": false,
     "description": null
   },
@@ -1105,19 +1105,19 @@
   },
   "LANGUAGE": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:231",
+    "definedIn": "src/ui/settings/interface.rs:249",
     "plural": false,
     "description": null
   },
   "LANGUAGE_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:233",
+    "definedIn": "src/ui/settings/interface.rs:251",
     "plural": false,
     "description": null
   },
   "LANGUAGE_SYSTEM_DEFAULT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:46",
+    "definedIn": "src/ui/settings/interface.rs:50",
     "plural": false,
     "description": null
   },
@@ -1537,7 +1537,7 @@
   },
   "OPEN_THEMES_FOLDER": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:253",
+    "definedIn": "src/ui/settings/interface.rs:271",
     "plural": false,
     "description": null
   },
@@ -1567,25 +1567,25 @@
   },
   "PLAYBACK_ALWAYS_REPEAT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:72",
+    "definedIn": "src/ui/settings/playback.rs:88",
     "plural": false,
     "description": null
   },
   "PLAYBACK_ALWAYS_REPEAT_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:75",
+    "definedIn": "src/ui/settings/playback.rs:91",
     "plural": false,
     "description": null
   },
   "PLAYBACK_CONSUME": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:137",
+    "definedIn": "src/ui/settings/playback.rs:153",
     "plural": false,
     "description": null
   },
   "PLAYBACK_CONSUME_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:139",
+    "definedIn": "src/ui/settings/playback.rs:155",
     "plural": false,
     "description": null
   },
@@ -1603,13 +1603,13 @@
   },
   "PLAYBACK_KEEP_CURRENT_ON_CLEAR": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:115",
+    "definedIn": "src/ui/settings/playback.rs:131",
     "plural": false,
     "description": null
   },
   "PLAYBACK_KEEP_CURRENT_ON_CLEAR_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:120",
+    "definedIn": "src/ui/settings/playback.rs:136",
     "plural": false,
     "description": null
   },
@@ -1639,31 +1639,31 @@
   },
   "PLAYBACK_PREVENT_IDLE": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:197",
+    "definedIn": "src/ui/settings/playback.rs:213",
     "plural": false,
     "description": null
   },
   "PLAYBACK_PREVENT_IDLE_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:200",
+    "definedIn": "src/ui/settings/playback.rs:216",
     "plural": false,
     "description": null
   },
   "PLAYBACK_PREVIOUS_JUMPS": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:94",
+    "definedIn": "src/ui/settings/playback.rs:110",
     "plural": false,
     "description": null
   },
   "PLAYBACK_RG_FALLBACK_PREAMP": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:155",
+    "definedIn": "src/ui/settings/playback.rs:171",
     "plural": false,
     "description": null
   },
   "PLAYBACK_RG_FALLBACK_PREAMP_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:158",
+    "definedIn": "src/ui/settings/playback.rs:174",
     "plural": false,
     "description": null
   },
@@ -2407,7 +2407,7 @@
   },
   "THEME_DEFAULT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:197",
+    "definedIn": "src/ui/settings/interface.rs:215",
     "plural": false,
     "description": null
   },

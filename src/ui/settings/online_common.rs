@@ -108,6 +108,20 @@ impl QrLogin {
     }
 }
 
+impl Drop for QrLogin {
+    fn drop(&mut self) {
+        // begin()/close() 覆盖了模态内的所有替换点，但页面实体被丢弃时
+        // （侧栏切换分节、设置窗口关闭）没有任何 close() 回调：还挂在
+        // state 上的二维码瓦片会随实体静默消失。`ImageSource::Render`
+        // 的瓦片只有显式 drop_image 才回收，所以这里必须走同一漏斗。
+        if let Some(state) = self.state.take()
+            && let Some(image) = state.image
+        {
+            queue_orphan_tile_drop(image);
+        }
+    }
+}
+
 /// Provider hooks for the shared QR login flow, implemented by the online
 /// settings pages. The network calls run on the Tokio runtime; errors are
 /// flattened to strings because the runner only ever logs or toasts them.

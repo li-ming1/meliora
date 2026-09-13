@@ -1,9 +1,13 @@
-use std::{path::PathBuf, sync::OnceLock, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock, atomic::{AtomicU64, Ordering}},
+    time::Duration,
+};
 
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Task, Window, div, px,
+    Window, div, px,
 };
 
 use crate::{
@@ -93,9 +97,10 @@ pub struct InterfaceSettings {
     settings: Entity<crate::settings::Settings>,
     data_dir: PathBuf,
     theme_options: Entity<Vec<ThemeOption>>,
-    /// Trailing-edge debounce task for slider edits; replacing it cancels the
-    /// pending save so a drag collapses into one `save_settings` call.
-    save_task: Option<Task<()>>,
+    /// Generation counter for the trailing-edge save debounce (see
+    /// `schedule_save`): a detached task saves only when its generation is
+    /// still the newest, so a new tick supersedes the pending save.
+    save_generation: Arc<AtomicU64>,
 }
 
 impl InterfaceSettings {
@@ -117,7 +122,7 @@ impl InterfaceSettings {
                 settings,
                 data_dir,
                 theme_options,
-                save_task: None,
+                save_generation: Arc::new(AtomicU64::new(0)),
             }
         })
     }
@@ -138,21 +143,34 @@ impl InterfaceSettings {
     }
 
     /// Trailing-edge debounce for slider drags (equalizer-view pattern): every
-    /// tick reschedules a single save ~300ms out, so `save_settings` - and the
-    /// PlaybackInterface/ScanInterface pushes it performs - run once per drag
-    /// instead of once per mouse-move tick. The disk write keeps its own 500ms
-    /// trailing-edge debounce inside `save_settings`.
+    /// tick bumps the generation and schedules a single save ~300ms out, so
+    /// `save_settings` - and the PlaybackInterface/ScanInterface pushes it
+    /// performs - run once per drag instead of once per mouse-move tick. The
+    /// disk write keeps its own 500ms trailing-edge debounce inside
+    /// `save_settings`.
+    ///
+    /// The flush is detached and keyed on the generation counter instead of
+    /// being stored as a page-owned `Task`: dropping the page (section
+    /// switch / settings-window close) cancels a stored Task, which would
+    /// silently lose the trailing save - the live slider value sits in the
+    /// settings model but never reaches `save_settings`. The save is routed
+    /// through the app-lifetime settings entity so it survives the page.
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
-        self.save_task = Some(cx.spawn(async move |this, cx| {
+        let generation = self.save_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation_counter = Arc::clone(&self.save_generation);
+        let settings = self.settings.clone();
+        cx.spawn(async move |_this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(300))
                 .await;
-            this.update(cx, |this, cx| {
-                this.settings
-                    .update(cx, |settings, cx| save_settings(cx, settings));
-            })
-            .ok();
-        }));
+            // A newer edit superseded this tick; the newest task owns the save.
+            if generation_counter.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            settings
+                .update(cx, |settings, cx| save_settings(cx, settings));
+        })
+        .detach();
     }
 }
 

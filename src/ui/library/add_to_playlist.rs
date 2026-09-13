@@ -246,21 +246,19 @@ impl AddToPlaylist {
                 show_clone.write(cx, false);
             });
 
-            let initial_track_list = read_track_list(&track_list);
-            let items = match cx.get_all_playlists() {
-                Ok(playlists) => (*playlists).clone(),
-                Err(e) => {
-                    error!("Failed to load playlists for the add-to-playlist dialog: {}", e);
-                    Vec::new()
-                }
-            }
-            .into_iter()
-            .map(|playlist| {
-                let has_track = existing_item_id(&initial_track_list, &playlist, cx);
-                (initial_track_list.clone(), playlist, has_track)
-            })
-            .map(Arc::new)
-            .collect();
+            // MELIORA RELIABILITY AUDIT (2026-09-13): items are deliberately
+            // NOT resolved here. The palette is only ever visible while `show`
+            // is true, and every open path flips `show` after creation, which
+            // makes the observer above rebuild the full list — with a fresh
+            // per-playlist `has_track` — in the same effect flush, before the
+            // modal's first frame. Resolving here cost one `get_all_playlists`
+            // block_on plus one `playlist_has_track` block_on per playlist on
+            // every keyed-state creation; that state is dropped whenever the
+            // row scrolls out of the virtualized list (gpui `Frame::finish`
+            // keeps only element states accessed in the last frame), so the
+            // queries recurred on every scroll pass for rows the user never
+            // right-clicked (doctrine §2.3 / §14 / §34).
+            let items: Vec<Arc<PlaylistEntry>> = Vec::new();
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 
