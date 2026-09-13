@@ -185,6 +185,11 @@ opt-level = "s"
 [profile.release]
 # Speed over size: the decode/resample/image paths are realtime-adjacent and
 # measurably slower under "s" (opt for size). Binary stays stripped below.
+# codegen-units stays at the default 16: measured against this exact tree
+# (decode/checkpoint benches, 2026-09-13), codegen-units=1 regressed the
+# large-array paths by 54-106% (3000px cover downscale 149->307ms, 100k
+# checkpoint zlib 265->523ms) for a 10.5% smaller binary and 2.3x slower
+# builds. Do not enable it without re-running those benches.
 opt-level = 3
 lto = "thin"
 strip = "symbols"
