@@ -5,8 +5,8 @@ use std::{
 };
 
 use gpui::{
-    App, Bounds, Corners, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, ObjectFit, Pixels, Refineable, RenderImage, Style, StyleRefinement,
+    App, Bounds, Corners, Element, ElementId, GlobalElementId, ImageId, InspectorElementId,
+    IntoElement, LayoutId, ObjectFit, Pixels, Refineable, RenderImage, Style, StyleRefinement,
     Styled, Window,
 };
 #[cfg(feature = "online_sources")]
@@ -145,19 +145,35 @@ pub fn render_cache_mb() -> u64 {
     cache.bytes / (1024 * 1024)
 }
 
-/// Images evicted from `RENDER_CACHE` whose atlas tiles still need dropping.
-/// Eviction runs on the RUNTIME where no `App` exists, so the tiles are queued
-/// here and the next `ManagedImage` layout pass (UI thread) hands them to
-/// `drop_image`. Without this, an evicted cover's atlas page stays pinned
-/// forever once its owning elements have unmounted.
-static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<Arc<RenderImage>>>> = OnceLock::new();
+/// Covers whose atlas tiles still need dropping, tagged with their cache key.
+/// This queue is the SINGLE reclaim funnel: cache evictions/replacements and
+/// element `on_release` both push here, and `drain_pending_tile_drops` (event
+/// loop only, never mid-frame) is the only place that calls `drop_image`.
+/// Eviction runs on the RUNTIME where no `App` exists, which is why the drop
+/// itself has to be deferred. Without any of this, an evicted cover's atlas
+/// page stays pinned forever once its owning elements have unmounted.
+static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<(RenderCacheKey, Arc<RenderImage>)>>> =
+    OnceLock::new();
 
-fn queue_tile_drop(image: Arc<RenderImage>) {
+fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
     PENDING_TILE_DROPS
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(image);
+        .push((key, image));
+}
+
+/// Whether the cache still owns `image` under `key` (same allocation). Used
+/// by the drain to leave tiles alone that a live cache entry still serves.
+fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
+    let Some(cache) = RENDER_CACHE.get() else {
+        return false;
+    };
+    let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache
+        .cache
+        .get(key)
+        .is_some_and(|(current, _)| Arc::ptr_eq(current, image))
 }
 
 /// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread,
@@ -171,17 +187,41 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return;
     };
-    // 只回收最后一个持有者：若某元素的 keyed state 还握着同一 Arc（图被
-    // 淘汰但元素仍存活），跳过并由该元素 on_release 时按引用计数回收。
-    // 持有者只减不增——缓存是唯一分发者，淘汰后不会再有新持有者出现。
-    let drained: Vec<Arc<RenderImage>> = queue
+    let batch: Vec<(RenderCacheKey, Arc<RenderImage>)> = queue
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .drain(..)
-        .filter(|image| Arc::strong_count(image) == 1)
         .collect();
-    if !drained.is_empty() {
-        crate::ui::util::reclaim_images_from_app(cx, drained);
+    if batch.is_empty() {
+        return;
+    }
+
+    // 同一图可能被多条路径 push（共享它的多个元素各自 unmount、缓存淘汰）。
+    // 按图分组后只看"批外还剩几个持有者"：strong_count 减去批内份数为 0
+    // 且缓存不再持有时才回收——每块瓦片因此恰好释放一次。二次释放会触发
+    // etagere 的代际断言（2026-09-12/13 闪退），无条件跳过则会泄漏被存活
+    // 元素 paint 复活的瓦片。
+    let mut order: Vec<ImageId> = Vec::new();
+    let mut group: FxHashMap<ImageId, (RenderCacheKey, Arc<RenderImage>, usize)> =
+        FxHashMap::default();
+    for (key, image) in batch {
+        let entry = group.entry(image.id).or_insert_with(|| {
+            order.push(image.id);
+            (key, image.clone(), 0)
+        });
+        entry.2 += 1;
+    }
+
+    let mut reclaimed: Vec<Arc<RenderImage>> = Vec::new();
+    for id in order {
+        let (key, image, batch_copies) = &group[&id];
+        let holders = Arc::strong_count(image) - batch_copies;
+        if holders == 0 && !render_cache_holds(key, image) {
+            reclaimed.push(image.clone());
+        }
+    }
+    if !reclaimed.is_empty() {
+        crate::ui::util::reclaim_images_from_app(cx, reclaimed);
     }
 }
 
@@ -232,7 +272,7 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
         cache.cache.insert(cache_key.clone(), (image, new_bytes))
     {
         cache.bytes = cache.bytes.saturating_sub(old_bytes) + new_bytes;
-        queue_tile_drop(old_image);
+        queue_tile_drop(cache_key, old_image);
     } else {
         cache.bytes += new_bytes;
         cache.usage.push_back(cache_key);
@@ -241,7 +281,7 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
                 && let Some((image, bytes)) = cache.cache.remove(&oldest)
             {
                 cache.bytes = cache.bytes.saturating_sub(bytes);
-                queue_tile_drop(image);
+                queue_tile_drop(oldest, image);
             }
         }
     }
@@ -397,6 +437,9 @@ struct ManagedImageState {
     /// （§33 Cancellation），中止后任务停在下一个 await 点，不会再把
     /// 结果写回 bridge 或 RENDER_CACHE。
     task: Option<tokio::task::AbortHandle>,
+    /// 本元素的 (来源, 尺寸) 缓存键——on_release 把图推进回收漏斗时需要
+    /// 它来做"缓存是否仍持有"判定。
+    cache_key: RenderCacheKey,
 }
 
 pub enum ImageReady {
@@ -474,9 +517,10 @@ impl Element for ManagedImage {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
             let bridge_clone = bridge.clone();
+            let task_key = key.clone();
 
             let handle = crate::RUNTIME.spawn(async move {
-                let result = key.retrieve(pool, thumb_size).await;
+                let result = task_key.retrieve(pool, thumb_size).await;
                 let image = match &result {
                     Ok(img) => img.clone(),
                     Err(_) => None,
@@ -525,21 +569,20 @@ impl Element for ManagedImage {
             })
             .detach();
 
-            cx.on_release(|this: &mut ManagedImageState, cx| {
-                // 先中止未完成的取回任务。瓦片回收按引用计数：仅当本状态
-                // 是最后一份引用时才回收 atlas 瓦片。RENDER_CACHE、待释放
-                // 队列、其他元素的 keyed state 都可能还持有同一 Arc，持有
-                // 者只减不增（缓存是唯一分发者），最后放手的路径必然看到
-                // count == 1——每块瓦片恰好释放一次。直接 drop 会二次释放
-                // （etagere 断言，2026-09-12 闪退），无条件跳过则会泄漏
-                // 被淘汰后仍被存活元素 paint 复活的瓦片。
+            cx.on_release(|this: &mut ManagedImageState, _cx| {
+                // 先中止未完成的取回任务。瓦片回收统一走回收漏斗：on_release
+                // 只负责把本状态持有的两处引用（image 字段 + bridge 内的就绪
+                // 图）推进队列，由 drain 按"批外持有者 == 0"判定后恰好释放
+                // 一次。直接 drop 会与其他路径的释放交错出二次释放（etagere
+                // 代际断言，2026-09-12/13 闪退），无条件跳过则会泄漏被存活
+                // 元素 paint 复活的瓦片。
                 if let Some(task) = this.task.take() {
                     task.abort();
                 }
                 // image 字段与 bridge 里的就绪图是互斥的两个持有点（任务
                 // 完成时先 set bridge、continuation 再写回字段）。state 以
                 // 普通 Drop 消失时 bridge 里的 Arc 不会回收瓦片，所以两处
-                // 都要按"最后引用"判定后交给回收路径。
+                // 都要推进回收漏斗。
                 let bridged = this.bridge.take().and_then(|bridge| {
                     // state 是 bridge Arc 的最后持有者（任务闭包已完成或被
                     // 中止），try_unwrap 拿到所有权后才能 take 出内部的图。
@@ -548,11 +591,8 @@ impl Element for ManagedImage {
                         .and_then(|mut once| once.take())
                         .flatten()
                 });
-                let images = this.image.take().into_iter().chain(bridged);
-                for image in images {
-                    if Arc::strong_count(&image) == 1 {
-                        crate::ui::util::reclaim_images_from_app(cx, vec![image]);
-                    }
+                for image in this.image.take().into_iter().chain(bridged) {
+                    queue_tile_drop(this.cache_key.clone(), image);
                 }
             })
             .detach();
@@ -561,6 +601,10 @@ impl Element for ManagedImage {
                 image: None,
                 bridge: Some(bridge),
                 task: Some(abort),
+                cache_key: RenderCacheKey {
+                    key: key.clone(),
+                    thumb: thumb_size,
+                },
             }
         });
 
