@@ -369,6 +369,11 @@ impl Lyrics {
     /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
     /// oldest entry past [`LYRIC_CACHE_CAP`].
     fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Vec<LrcLine>>)) {
+        // 在线 URL 暂未进注册表时的未命中不缓存负结果：同 URL 稍后可能
+        // 进注册表并取到歌词，负缓存会一直给出过期的"无歌词"。
+        if loaded.0.is_none() && loaded.1.is_none() && crate::ui::availability::is_online_path(&path) {
+            return;
+        }
         if self.lyric_cache.insert(path.clone(), loaded).is_none() {
             self.lyric_cache_order.push(path);
             if self.lyric_cache_order.len() > LYRIC_CACHE_CAP {

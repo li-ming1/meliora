@@ -79,24 +79,6 @@ where
     }
 }
 
-pub fn drop_image_from_app(cx: &mut App, image: Arc<RenderImage>) {
-    cx.defer(move |cx| {
-        debug!("attempting image drop");
-
-        for window in cx.windows() {
-            let image = image.clone();
-
-            debug!("dropping an image from {:?}", window.window_id());
-
-            window
-                .update(cx, move |_, window, _| {
-                    window.drop_image(image).expect("couldn't drop image");
-                })
-                .expect("couldn't get window");
-        }
-    });
-}
-
 /// Drops the atlas tiles for a batch of images whose owning elements are gone.
 /// Unlike [`drop_image_from_app`] this tolerates windows disappearing
 /// mid-reclaim (skips instead of panicking), which matters when draining the

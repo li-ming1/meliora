@@ -499,12 +499,23 @@ impl Element for ManagedImage {
                 };
                 match result {
                     Ok(Some(image)) => {
-                        this.update(cx, |this: &mut ManagedImageState, cx| {
-                            this.image = Some(image);
-                            this.bridge = None;
-                            cx.notify();
-                        })
-                        .ok();
+                        if this
+                            .update(cx, |this: &mut ManagedImageState, cx| {
+                                this.image = Some(image.clone());
+                                this.bridge = None;
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            // 元素已被释放：state 与其 bridge 的引用随之消
+                            // 失，若这是最后一份引用，由这里回收 atlas 瓦
+                            // 片（普通 Drop 不回收瓦片）。
+                            if Arc::strong_count(&image) == 1 {
+                                let _ = cx.update(|cx| {
+                                    crate::ui::util::reclaim_images_from_app(cx, vec![image]);
+                                });
+                            }
+                        }
                     }
                     Ok(None) => {}
                     Err(e) => {
@@ -525,10 +536,23 @@ impl Element for ManagedImage {
                 if let Some(task) = this.task.take() {
                     task.abort();
                 }
-                if let Some(image) = this.image.take()
-                    && Arc::strong_count(&image) == 1
-                {
-                    crate::ui::util::reclaim_images_from_app(cx, vec![image]);
+                // image 字段与 bridge 里的就绪图是互斥的两个持有点（任务
+                // 完成时先 set bridge、continuation 再写回字段）。state 以
+                // 普通 Drop 消失时 bridge 里的 Arc 不会回收瓦片，所以两处
+                // 都要按"最后引用"判定后交给回收路径。
+                let bridged = this.bridge.take().and_then(|bridge| {
+                    // state 是 bridge Arc 的最后持有者（任务闭包已完成或被
+                    // 中止），try_unwrap 拿到所有权后才能 take 出内部的图。
+                    Arc::try_unwrap(bridge)
+                        .ok()
+                        .and_then(|mut once| once.take())
+                        .flatten()
+                });
+                let images = this.image.take().into_iter().chain(bridged);
+                for image in images {
+                    if Arc::strong_count(&image) == 1 {
+                        crate::ui::util::reclaim_images_from_app(cx, vec![image]);
+                    }
                 }
             })
             .detach();

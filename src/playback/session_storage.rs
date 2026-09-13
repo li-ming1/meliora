@@ -158,4 +158,53 @@ mod tests {
         assert_eq!(session.shuffle, expected.shuffle);
         assert_eq!(session.repeat, expected.repeat);
     }
+
+    /// Startup-path evidence for GPUI_HARDCORE §31: `load` runs on the main
+    /// thread before the first frame, so this quantifies what a huge restored
+    /// queue actually costs (parse of queue + original_queue, 10k items each,
+    /// plus the extra `queue.clone()` app.rs pays for the watch channel).
+    /// Run with: cargo test --release --features kugou -- bench_large_session --ignored --nocapture
+    #[test]
+    #[ignore = "benchmark: run with --ignored"]
+    fn bench_large_session_load() {
+        let dir = create_test_dir();
+        let path = dir.join("session-10k.json");
+
+        let item = |id: i64| {
+            serde_json::json!({
+                "db_id": id,
+                "db_album_id": id / 10,
+                "path": format!(r"C:\Music\artist\album\track-{id}.flac"),
+            })
+        };
+        let queue: Vec<_> = (1..=10_000).map(item).collect();
+        let session = serde_json::json!({
+            "queue": queue,
+            "original_queue": (1..=10_000).map(|id| item(id + 100_000)).collect::<Vec<_>>(),
+            "queue_position": 4999,
+            "shuffle": false,
+            "repeat": "NotRepeating",
+        });
+        fs::write(&path, serde_json::to_vec(&session).unwrap()).unwrap();
+        let file_bytes = fs::metadata(&path).unwrap().len();
+        println!("session file: {file_bytes} bytes (20k queue items)");
+
+        // warm-up + 10 measured rounds, report the median
+        let mut rounds: Vec<std::time::Duration> = Vec::with_capacity(11);
+        for _ in 0..11 {
+            let start = std::time::Instant::now();
+            let loaded = PlaybackSessionStorageWorker::load(&path);
+            let parse = start.elapsed();
+            let start = std::time::Instant::now();
+            let _queue_clone = loaded.queue.clone();
+            let clone = start.elapsed();
+            rounds.push(parse);
+            if rounds.len() == 1 {
+                println!("first round: parse {parse:?}, queue clone {clone:?}");
+            }
+            assert_eq!(loaded.queue.len(), 10_000);
+        }
+        rounds.sort();
+        println!("median parse (20k items): {:?}", rounds[rounds.len() / 2]);
+    }
 }

@@ -185,8 +185,9 @@ static LAST_PERSISTED_STREAM_MAP: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::n
 /// Serializes stream-map persistence. Two overlapping truncate+write on the
 /// same file can interleave into torn, unparseable JSON — which would drop
 /// the whole registry on next launch — so every write takes this gate first.
-/// tokio's mutex is fair (FIFO), so writers land in hand-off order and the
-/// latest snapshot wins.
+/// tokio's mutex is fair by poll order (not spawn order), so writers land
+/// roughly in hand-off order; a stale final write only costs a URL refresh
+/// on next launch (the registry is a cache).
 static STREAM_MAP_WRITE_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// Returns `json` back when it differs from the last persisted bytes (and
@@ -231,8 +232,13 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
             if let Err(err) = tokio::fs::write(&path, &json).await {
                 // Roll the baseline back so an identical later snapshot
                 // retries instead of silently leaving the old file in place.
+                // Only when the baseline is still our own bytes: a newer
+                // writer may have updated it meanwhile.
                 if let Some(last) = LAST_PERSISTED_STREAM_MAP.get() {
-                    last.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+                    if last.as_deref() == Some(json.as_slice()) {
+                        last.take();
+                    }
                 }
                 tracing::warn!(%err, "failed to persist kugou stream map");
             }

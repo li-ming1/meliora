@@ -195,8 +195,12 @@ impl PlaybackController for WindowsController {
 
     async fn metadata_changed(&mut self, metadata: &Metadata) -> anyhow::Result<()> {
         // One MusicProperties() fetch for the whole update: each call builds
-        // a fresh WinRT object. Property write order is unchanged.
-        let music = self.display.MusicProperties().unwrap();
+        // a fresh WinRT object. Property write order is unchanged; a failed
+        // getter skips this update entirely instead of panicking the
+        // controller task (the next playback event retries).
+        let Ok(music) = self.display.MusicProperties() else {
+            return Ok(());
+        };
 
         if let Some(title) = metadata.name.clone() {
             let string = HSTRING::from(title);

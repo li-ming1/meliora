@@ -61,7 +61,6 @@ use super::{
     search::SearchView,
     settings::close_orphaned_settings_windows,
     theme::setup_theme,
-    util::drop_image_from_app,
 };
 
 struct MainWindow {
@@ -224,10 +223,6 @@ pub fn find_fonts(cx: &mut App) -> gpui::Result<()> {
 pub struct Pool(pub SqlitePool);
 
 impl Global for Pool {}
-
-pub struct DropImageDummyModel;
-
-impl EventEmitter<Vec<Arc<RenderImage>>> for DropImageDummyModel {}
 
 fn find_main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
     cx.windows()
@@ -526,15 +521,6 @@ pub fn run() -> anyhow::Result<()> {
         cx.set_global(power_manager);
 
         register_actions(cx);
-
-        let drop_model = cx.new(|_| DropImageDummyModel);
-
-        cx.subscribe(&drop_model, |_, vec, cx| {
-            for image in vec.clone() {
-                drop_image_from_app(cx, image);
-            }
-        })
-        .detach();
 
         let last_volume = *cx.global::<PlaybackInfo>().volume.read(cx);
 
