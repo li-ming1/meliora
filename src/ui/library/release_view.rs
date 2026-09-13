@@ -505,8 +505,20 @@ impl ReleaseView {
                         }
                     }
                     DATE_PRECISION_YEAR => {
-                        let year = &self.album.release_date.as_ref().unwrap().0[..4];
-                        this.child(tr!("RELEASED_YEAR", "Released {{year}}", year = year))
+                        // release_date missing or shorter than a 4-char year
+                        // prefix (malformed metadata): skip the release-year
+                        // line instead of panicking the render pass
+                        let year = self
+                            .album
+                            .release_date
+                            .as_ref()
+                            .and_then(|date| date.0.get(..4));
+                        match year {
+                            Some(year) => {
+                                this.child(tr!("RELEASED_YEAR", "Released {{year}}", year = year))
+                            }
+                            None => this,
+                        }
                     }
                     _ => this,
                 },

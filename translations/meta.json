@@ -433,7 +433,7 @@
   },
   "CREATE_PLAYLIST": {
     "context": "update_playlist.rs",
-    "definedIn": "src/ui/library/update_playlist.rs:100",
+    "definedIn": "src/ui/library/update_playlist.rs:112",
     "plural": false,
     "description": null
   },
@@ -889,31 +889,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:976",
+    "definedIn": "src/ui/kugou.rs:986",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:988",
+    "definedIn": "src/ui/kugou.rs:998",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1176",
+    "definedIn": "src/ui/kugou.rs:1186",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1181",
+    "definedIn": "src/ui/kugou.rs:1191",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1002",
+    "definedIn": "src/ui/kugou.rs:1012",
     "plural": false,
     "description": null
   },
@@ -1099,7 +1099,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1186",
+    "definedIn": "src/ui/kugou.rs:1196",
     "plural": false,
     "description": null
   },
@@ -1243,31 +1243,31 @@
   },
   "NETEASE_LIKE_ADDED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:769",
+    "definedIn": "src/ui/netease.rs:779",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:775",
+    "definedIn": "src/ui/netease.rs:785",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:811",
+    "definedIn": "src/ui/netease.rs:821",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:817",
+    "definedIn": "src/ui/netease.rs:827",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:782",
+    "definedIn": "src/ui/netease.rs:792",
     "plural": false,
     "description": null
   },
@@ -1303,7 +1303,7 @@
   },
   "NETEASE_LOGIN_REQUIRED_LIKE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:744",
+    "definedIn": "src/ui/netease.rs:754",
     "plural": false,
     "description": null
   },
@@ -1483,7 +1483,7 @@
   },
   "NETEASE_UNLIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:824",
+    "definedIn": "src/ui/netease.rs:834",
     "plural": false,
     "description": null
   },
@@ -1735,7 +1735,7 @@
   },
   "RELEASED_YEAR": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:509",
+    "definedIn": "src/ui/library/release_view.rs:518",
     "plural": false,
     "description": null
   },
@@ -2191,55 +2191,55 @@
   },
   "STATS_EMPTY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1055",
+    "definedIn": "src/ui/settings/stats.rs:1068",
     "plural": false,
     "description": null
   },
   "STATS_HEATMAP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:693",
+    "definedIn": "src/ui/settings/stats.rs:706",
     "plural": false,
     "description": null
   },
   "STATS_HOURS_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:884",
+    "definedIn": "src/ui/settings/stats.rs:897",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_LESS": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:658",
+    "definedIn": "src/ui/settings/stats.rs:671",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_MORE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:675",
+    "definedIn": "src/ui/settings/stats.rs:688",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_STREAK": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:512",
+    "definedIn": "src/ui/settings/stats.rs:522",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_TODAY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:510",
+    "definedIn": "src/ui/settings/stats.rs:520",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_TOTAL": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:509",
+    "definedIn": "src/ui/settings/stats.rs:519",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_WEEK": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:511",
+    "definedIn": "src/ui/settings/stats.rs:521",
     "plural": false,
     "description": null
   },
@@ -2287,7 +2287,7 @@
   },
   "STATS_TOP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1000",
+    "definedIn": "src/ui/settings/stats.rs:1013",
     "plural": false,
     "description": null
   },
@@ -2317,19 +2317,19 @@
   },
   "STATS_WD_FRI": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:569",
+    "definedIn": "src/ui/settings/stats.rs:579",
     "plural": false,
     "description": null
   },
   "STATS_WD_MON": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:565",
+    "definedIn": "src/ui/settings/stats.rs:575",
     "plural": false,
     "description": null
   },
   "STATS_WD_WED": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:567",
+    "definedIn": "src/ui/settings/stats.rs:577",
     "plural": false,
     "description": null
   },
@@ -2473,7 +2473,7 @@
   },
   "UPDATE_PLAYLIST": {
     "context": "update_playlist.rs",
-    "definedIn": "src/ui/library/update_playlist.rs:33",
+    "definedIn": "src/ui/library/update_playlist.rs:34",
     "plural": false,
     "description": null
   },

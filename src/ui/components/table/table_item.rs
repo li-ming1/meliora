@@ -127,7 +127,10 @@ where
                 move |div, on_select| {
                     if is_available {
                         div.on_click(move |_, _, cx| {
-                            let id = row_data.as_ref().unwrap().get_table_id();
+                            let Some(row) = row_data.as_ref() else {
+                                return;
+                            };
+                            let id = row.get_table_id();
                             on_select(cx, &id)
                         })
                         .cursor_pointer()
@@ -202,13 +205,14 @@ where
             let column_count = self.columns.len();
 
             for (i, column_data) in data.iter().enumerate() {
-                let col = self
-                    .columns
-                    .get_index(i)
-                    .expect("data references column outside of viewed table");
+                // columns can shrink between the data snapshot and this
+                // render; skip the stale column instead of panicking the frame
+                let Some((column, width)) = self.columns.get_index(i) else {
+                    continue;
+                };
                 let _is_last = i == column_count - 1;
-                let base_width = *col.1;
-                let monospace = T::column_monospace(*col.0);
+                let base_width = *width;
+                let monospace = T::column_monospace(*column);
                 row = row.child(
                     div()
                         // fluid column, matching the header's grow weights

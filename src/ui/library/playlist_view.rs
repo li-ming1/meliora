@@ -14,7 +14,7 @@ use crate::{
     library::{
         db::{self, LibraryAccess, PlaylistTrackRow, PlaylistTrackSortMethod},
         playlist::export_playlist,
-        types::{DBString, Playlist, PlaylistType},
+        types::{DBString, Playlist, PlaylistType, Track},
     },
     playback::queue::QueueItemData,
     ui::{
@@ -900,14 +900,26 @@ impl Render for PlaylistView {
 
                                                 let new_position = if to_idx < playlist_track_ids.len() {
                                                     let target_item_id = playlist_track_ids[to_idx].playlist_item_id;
-                                                    let target_item =
-                                                        cx.get_playlist_item(target_item_id).unwrap();
+                                                    // a missing item (concurrent removal) skips
+                                                    // this move instead of panicking the handler
+                                                    let target_item = match cx.get_playlist_item(target_item_id) {
+                                                        Ok(item) => item,
+                                                        Err(e) => {
+                                                            error!("Failed to move playlist item {}: {}", item_id, e);
+                                                            return;
+                                                        }
+                                                    };
                                                     target_item.position
                                                 } else {
                                                     let last_item_id =
                                                         playlist_track_ids[playlist_track_ids.len() - 1].playlist_item_id;
-                                                    let last_item =
-                                                        cx.get_playlist_item(last_item_id).unwrap();
+                                                    let last_item = match cx.get_playlist_item(last_item_id) {
+                                                        Ok(item) => item,
+                                                        Err(e) => {
+                                                            error!("Failed to move playlist item {}: {}", item_id, e);
+                                                            return;
+                                                        }
+                                                    };
                                                     last_item.position + 1
                                                 };
 
@@ -976,7 +988,53 @@ impl Render for PlaylistView {
                                                     &views_model,
                                                     idx,
                                                     move |cx| {
-                                                        let track = cx.get_track_by_id(track_id).unwrap();
+                                                        // The track vanished from the library between
+                                                        // the playlist snapshot and this view's
+                                                        // creation: render an empty placeholder row
+                                                        // (same height) instead of panicking.
+                                                        let Some(track) =
+                                                            cx.get_track_by_id(track_id).ok()
+                                                        else {
+                                                            let track_item = TrackItem::new(
+                                                                cx,
+                                                                Track {
+                                                                    id: 0,
+                                                                    title: DBString::default(),
+                                                                    album_id: None,
+                                                                    track_number: None,
+                                                                    disc_number: None,
+                                                                    duration: 0,
+                                                                    location: std::path::PathBuf::new(),
+                                                                    artist_names: None,
+                                                                    disc_subtitle: None,
+                                                                },
+                                                                false,
+                                                                ArtistNameVisibility::Always,
+                                                                TrackItemLeftField::Art,
+                                                                Some(TrackPlaylistInfo {
+                                                                    id: pl_id,
+                                                                    item_id: playlist_item_id,
+                                                                }),
+                                                                false, // vinyl_numbering - not applicable for playlists
+                                                                None, // max_track_num - not needed for Art left field
+                                                                None, // queue_context - playlist uses pl_id instead
+                                                                true, // show_go_to_album
+                                                                true, // show_go_to_artist
+                                                            );
+                                                            return PlaylistTrackItem::new(
+                                                                cx,
+                                                                track_item,
+                                                                idx,
+                                                                playlist_item_id,
+                                                                SharedString::default(),
+                                                                drag_drop_manager,
+                                                                list_id,
+                                                                track_id,
+                                                                None,
+                                                                std::path::PathBuf::new(),
+                                                                is_custom_sort,
+                                                            );
+                                                        };
                                                         let track_title: SharedString =
                                                             track.title.clone().0;
                                                         let track_path = track.location.clone();

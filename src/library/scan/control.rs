@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 use gpui::{App, Global};
+use tracing::error;
 use tokio::sync::{
     mpsc::UnboundedReceiver,
     mpsc::UnboundedSender,
@@ -83,46 +84,46 @@ impl ScanInterface {
     }
 
     pub fn scan(&self) {
-        self.cmd_tx
-            .blocking_send(ScanCommand::Scan)
-            .expect("could not send scan start command");
+        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::Scan) {
+            error!("could not send scan start command: {err}");
+        }
     }
 
     pub fn force_scan(&self) {
-        self.cmd_tx
-            .blocking_send(ScanCommand::ForceScan)
-            .expect("could not send force re-scan start command");
+        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::ForceScan) {
+            error!("could not send force re-scan start command: {err}");
+        }
     }
 
     pub fn rescan_paths(&self, paths: Vec<Utf8PathBuf>) {
         if paths.is_empty() {
             return;
         }
-        self.cmd_tx
-            .blocking_send(ScanCommand::RescanPaths {
-                paths,
-                respect_record: false,
-                recursive: false,
-            })
-            .expect("could not send rescan-paths command");
+        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::RescanPaths {
+            paths,
+            respect_record: false,
+            recursive: false,
+        }) {
+            error!("could not send rescan-paths command: {err}");
+        }
     }
 
     pub fn stop(&self) {
-        self.cmd_tx
-            .blocking_send(ScanCommand::Stop)
-            .expect("could not send scan stop command");
+        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::Stop) {
+            error!("could not send scan stop command: {err}");
+        }
     }
 
     pub fn update_settings(&self, settings: ScanSettings) {
-        self.cmd_tx
-            .blocking_send(ScanCommand::UpdateSettings(settings))
-            .expect("could not send scan settings update command");
+        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::UpdateSettings(settings)) {
+            error!("could not send scan settings update command: {err}");
+        }
     }
 
     pub fn resolve_missing_folders(&self, decision: MissingFolderDecision) {
-        self.cmd_tx
-            .blocking_send(ScanCommand::ResolveMissingFolders(decision))
-            .expect("could not send missing folder resolution");
+        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::ResolveMissingFolders(decision)) {
+            error!("could not send missing folder resolution: {err}");
+        }
     }
 
     pub fn start_broadcast(&self, mut events_rx: UnboundedReceiver<ScanEvent>, cx: &mut App) {

@@ -1172,7 +1172,9 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
     cx.observe(&settings_model, move |_, cx| {
         let selected_theme = settings_model_for_observer.read(cx).interface.theme.clone();
         let should_update = {
-            let mut current_theme = selected_theme_state_for_settings.write().unwrap();
+            let mut current_theme = selected_theme_state_for_settings
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             if *current_theme == selected_theme {
                 false
             } else {
@@ -1221,8 +1223,10 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
                                         });
                                     }
 
-                                    let selected_theme =
-                                        selected_theme_state.read().unwrap().clone();
+                                    let selected_theme = selected_theme_state
+                                        .read()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .clone();
                                     if !event_affects_selected_theme(
                                         &data_dir,
                                         selected_theme.as_deref(),

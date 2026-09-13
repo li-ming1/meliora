@@ -224,7 +224,7 @@ fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSect
     let item = queue
         .data
         .read()
-        .expect("poisoned queue item data")
+        .unwrap_or_else(|e| e.into_inner())
         .get(position)
         .cloned();
 

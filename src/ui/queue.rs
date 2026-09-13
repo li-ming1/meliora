@@ -28,7 +28,7 @@ use cntp_i18n::{tr, trn};
 use gpui::*;
 use prelude::FluentBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use super::{
     components::button::{ButtonSize, ButtonStyle, button},
@@ -528,7 +528,7 @@ impl Render for QueueItem {
                         let remove_count = remove_indices.len();
                         let selected_track_ids: Vec<i64> = {
                             let queue = cx.global::<Models>().queue.read(cx);
-                            let queue_data = queue.data.read().expect("could not read queue");
+                            let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
                             remove_indices
                                 .iter()
                                 .filter_map(|&i| queue_data.get(i).and_then(|item| item.get_db_id()))
@@ -832,7 +832,7 @@ impl Queue {
     /// indices whose duration is still pending).
     fn rescan_views_and_summary(&mut self, cx: &mut Context<Self>) {
         let data = cx.global::<Models>().queue.read(cx).data.clone();
-        let queue = data.read().expect("could not read queue");
+        let queue = data.read().unwrap_or_else(|e| e.into_inner());
 
         let mut valid_keys: Vec<usize> = Vec::with_capacity(queue.len());
         let mut pending: Vec<usize> = Vec::new();
@@ -871,7 +871,7 @@ impl Render for Queue {
         let theme = cx.global::<Theme>().clone();
         let queue_len = {
             let queue = cx.global::<Models>().queue.clone().read(cx);
-            queue.data.read().expect("could not read queue").len()
+            queue.data.read().unwrap_or_else(|e| e.into_inner()).len()
         };
         // Resolve only the items whose duration is still pending: reading
         // them here keeps the reactive dependency on their metadata entities,
@@ -879,7 +879,7 @@ impl Render for Queue {
         // re-scanning the whole queue every frame.
         if !self.pending_durations.is_empty() {
             let data = cx.global::<Models>().queue.read(cx).data.clone();
-            let queue = data.read().expect("could not read queue");
+            let queue = data.read().unwrap_or_else(|e| e.into_inner());
             let mut i = 0;
             while i < self.pending_durations.len() {
                 let idx = self.pending_durations[i];
@@ -1255,7 +1255,7 @@ impl Render for Queue {
                                 .read(cx)
                                 .data
                                 .read()
-                                .expect("could not read queue");
+                                .unwrap_or_else(|e| e.into_inner());
 
                             if range.end <= queue.len() {
                                 // entity id if the metadata entity exists, None otherwise;
@@ -1267,27 +1267,32 @@ impl Render for Queue {
                                 drop(queue);
 
                                 keys.into_iter()
-                                    .map(|(idx, existing_key)| {
+                                    .filter_map(|(idx, existing_key)| {
                                         let drag_drop_manager = drag_drop_manager.clone();
                                         let scroll_handle = item_scroll_handle.clone();
                                         let item_selection = selection.clone();
 
-                                        let item_key = existing_key.unwrap_or_else(|| {
-                                            // never rendered before: the view cache
-                                            // can't hold it, so build the key now
-                                            let item = {
-                                                let queue = cx
-                                                    .global::<Models>()
-                                                    .queue
-                                                    .clone()
-                                                    .read(cx)
-                                                    .data
-                                                    .read()
-                                                    .expect("could not read queue");
-                                                queue[idx].clone()
-                                            };
-                                            item.slot_key(cx)
-                                        });
+                                        let item_key = match existing_key {
+                                            Some(key) => key,
+                                            None => {
+                                                // never rendered before: the view cache
+                                                // can't hold it, so build the key now
+                                                let item = {
+                                                    let queue = cx
+                                                        .global::<Models>()
+                                                        .queue
+                                                        .clone()
+                                                        .read(cx)
+                                                        .data
+                                                        .read()
+                                                        .unwrap_or_else(|e| e.into_inner());
+                                                    // the queue shrank since the list length
+                                                    // was snapshotted: skip this row
+                                                    queue.get(idx)?.clone()
+                                                };
+                                                item.slot_key(cx)
+                                            }
+                                        };
 
                                         let view = create_or_retrieve_view(
                                             &views_model,
@@ -1302,8 +1307,22 @@ impl Render for Queue {
                                                     .read(cx)
                                                     .data
                                                     .read()
-                                                    .expect("could not read queue")[idx]
-                                                    .clone();
+                                                    .unwrap_or_else(|e| e.into_inner())
+                                                    .get(idx)
+                                                    .cloned();
+                                                // the queue shrank between the row-key pass
+                                                // and this rebuild (never observed in
+                                                // practice): build a placeholder row instead
+                                                // of panicking the frame
+                                                let item = match item {
+                                                    Some(item) => item,
+                                                    None => QueueItemData::new(
+                                                        cx,
+                                                        PathBuf::new(),
+                                                        None,
+                                                        None,
+                                                    ),
+                                                };
                                                 QueueItem::new(
                                                     cx,
                                                     item,
@@ -1319,7 +1338,7 @@ impl Render for Queue {
                                             view.update(cx, |q, _| q.update_idx(idx));
                                         }
 
-                                        div().child(view)
+                                        Some(div().child(view))
                                     })
                                     .collect()
                             } else {
@@ -1415,7 +1434,7 @@ impl Queue {
     fn compute_follow_target(&self, cx: &App) -> FollowTarget {
         let queue = cx.global::<Models>().queue.read(cx);
         let position = queue.position;
-        let queue_len = queue.data.read().expect("could not read queue").len();
+        let queue_len = queue.data.read().unwrap_or_else(|e| e.into_inner()).len();
 
         if queue_len == 0 || position >= queue_len {
             return FollowTarget::NoScrollNeeded;

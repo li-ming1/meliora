@@ -122,7 +122,13 @@ impl AddToPlaylist {
             cx.observe(&show, move |this: &mut Self, _, cx| {
                 let current = read_track_list(&track_list_for_observe);
                 this.palette.update(cx, |palette, cx| {
-                    let new_playlists = (*cx.get_all_playlists().unwrap())
+                    // a failed query keeps the palette's current list instead
+                    // of panicking the observer
+                    let Ok(playlists) = cx.get_all_playlists() else {
+                        error!("Failed to load playlists for the add-to-playlist dialog");
+                        return;
+                    };
+                    let new_playlists = (*playlists)
                         .clone()
                         .into_iter()
                         .map(|playlist| (current.clone(), playlist))
@@ -217,12 +223,17 @@ impl AddToPlaylist {
             });
 
             let initial_track_list = read_track_list(&track_list);
-            let items = (*cx.get_all_playlists().unwrap())
-                .clone()
-                .into_iter()
-                .map(|playlist| (initial_track_list.clone(), playlist))
-                .map(Arc::new)
-                .collect();
+            let items = match cx.get_all_playlists() {
+                Ok(playlists) => (*playlists).clone(),
+                Err(e) => {
+                    error!("Failed to load playlists for the add-to-playlist dialog: {}", e);
+                    Vec::new()
+                }
+            }
+            .into_iter()
+            .map(|playlist| (initial_track_list.clone(), playlist))
+            .map(Arc::new)
+            .collect();
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 

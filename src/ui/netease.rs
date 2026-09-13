@@ -590,7 +590,7 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
             let map = stream_map().lock().unwrap_or_else(|e| e.into_inner());
             let existing = queue_data
                 .read()
-                .expect("poisoned queue")
+                .unwrap_or_else(|e| e.into_inner())
                 .iter()
                 .position(|item| {
                     let path = item.get_path();
@@ -603,11 +603,21 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
                 });
 
             if let Some(index) = existing {
-                queue_data
+                // Re-check under the write lock (the queue may have changed
+                // since the read above): skip the refresh if the item is gone
+                // instead of panicking.
+                let replaced = queue_data
                     .write()
-                    .expect("poisoned queue")
-                    [index]
-                    .replace_path(PathBuf::from(url));
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_mut(index)
+                    .map(|item| item.replace_path(PathBuf::from(url)))
+                    .is_some();
+                if !replaced {
+                    tracing::warn!(
+                        index,
+                        "netease play_track: queue item gone before URL refresh"
+                    );
+                }
 
                 if matches!(intent, PlayIntent::Now) {
                     cx.global::<crate::playback::interface::PlaybackInterface>().jump(index);

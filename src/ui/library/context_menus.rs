@@ -310,7 +310,7 @@ pub(crate) fn play_now(cx: &mut App, data: QueueItemData) {
         .read(cx)
         .data
         .read()
-        .expect("couldn't get queue")
+        .unwrap_or_else(|e| e.into_inner())
         .len();
     playback_interface.queue(data);
     playback_interface.jump(queue_length);
@@ -339,7 +339,7 @@ pub(crate) fn play_items_now(cx: &mut App, items: impl IntoIterator<Item = Queue
         .read(cx)
         .data
         .read()
-        .expect("couldn't get queue")
+        .unwrap_or_else(|e| e.into_inner())
         .len();
     for item in items {
         playback_interface.queue(item);

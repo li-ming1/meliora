@@ -282,7 +282,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 *queue = Arc::try_unwrap(old_queue).unwrap_or_else(|shared| (*shared).clone());
                 self.original_queue =
                     Arc::try_unwrap(old_original_queue).unwrap_or_else(|shared| (*shared).clone());
@@ -297,7 +297,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
                 let mut queue_items = queue_items.into_vec();
                 queue_items.sort_unstable_by_key(|(idx, _)| *idx);
@@ -322,7 +322,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
                 let mut queue_indices = queue_indices.into_vec();
                 queue_indices.sort_unstable_by(|a, b| b.cmp(a));
@@ -347,7 +347,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
                 let item = queue.remove(new);
                 queue.insert(original, item);
@@ -363,7 +363,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
                 for _ in 0..items.len() {
                     if destination < queue.len() {
@@ -383,7 +383,7 @@ impl QueueManager {
                 Self::undo_result_from_state(&queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::Shuffled) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 *queue = take(&mut self.original_queue);
                 self.shuffle = false;
 
@@ -393,7 +393,7 @@ impl QueueManager {
                 shuffled_queue,
                 previous_queue_next,
             }) => {
-                let mut queue = self.queue.write().expect("poisoned queue lock");
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 let restored =
                     Arc::try_unwrap(shuffled_queue).unwrap_or_else(|shared| (*shared).clone());
                 self.original_queue = std::mem::replace(&mut *queue, restored);
@@ -426,7 +426,7 @@ impl QueueManager {
             ..
         } = session;
         let (queue_len, original_queue) = {
-            let queue = queue.read().expect("poisoned queue lock");
+            let queue = queue.read().unwrap_or_else(|e| e.into_inner());
             let queue_len = queue.len();
             let original_queue = if shuffle && session_original_queue.len() == queue_len {
                 session_original_queue
@@ -515,7 +515,7 @@ impl QueueManager {
 
     /// Get the queue length.
     pub fn len(&self) -> usize {
-        self.queue.read().expect("poisoned queue lock").len()
+        self.queue.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Returns true when shuffle mode is enabled.
@@ -525,7 +525,7 @@ impl QueueManager {
 
     /// Returns true if every queued item belongs to the same known album.
     pub fn all_items_same_album(&self) -> bool {
-        let queue = self.queue.read().expect("poisoned queue lock");
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         let Some(first_album) = queue.first().and_then(QueueItemData::get_db_album_id) else {
             return false;
         };
@@ -539,7 +539,7 @@ impl QueueManager {
     pub fn first_with_index(&self) -> Option<(QueueItemData, usize)> {
         self.queue
             .read()
-            .expect("poisoned queue lock")
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .enumerate()
             .find(|(_, item)| Self::item_is_playable(item))
@@ -548,7 +548,7 @@ impl QueueManager {
 
     /// Get the last item in the queue along with its index, if the queue is non-empty.
     pub fn last_with_index(&self) -> Option<(QueueItemData, usize)> {
-        let queue = self.queue.read().expect("poisoned queue lock");
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         Self::last_playable_index(&queue).map(|index| (queue[index].clone(), index))
     }
 
@@ -579,7 +579,7 @@ impl QueueManager {
     /// Returns information about what track to play next, or if playback should stop.
     pub fn next(&mut self, user_initiated: bool) -> QueueNavigationResult {
         let result = {
-            let mut queue = self.queue.write().expect("poisoned queue lock");
+            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
             if self.repeat == RepeatState::RepeatingOne
                 && !user_initiated
@@ -636,7 +636,7 @@ impl QueueManager {
     /// by gapless pre-open). Returns `None` when the advance is not
     /// predictable (queue end, repeat-wrap with shuffle reshuffles).
     pub fn peek_next_path(&self) -> Option<PathBuf> {
-        let queue = self.queue.read().expect("poisoned queue lock");
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
 
         if self.repeat == RepeatState::RepeatingOne
             && let Some(path) = queue.get(self.queue_next.saturating_sub(1))
@@ -651,7 +651,7 @@ impl QueueManager {
     /// Go to the previous track in the queue.
     pub fn previous(&mut self) -> QueueNavigationResult {
         let result = {
-            let mut queue = self.queue.write().expect("poisoned queue lock");
+            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
             if self.queue_next > 1
                 && let Some(index) = Self::prev_playable_before(&queue, self.queue_next - 1)
@@ -699,7 +699,7 @@ impl QueueManager {
 
     /// Jump to a specific index in the queue.
     pub fn jump(&mut self, index: usize) -> JumpResult {
-        let queue = self.queue.read().expect("poisoned queue lock");
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
 
         if index < queue.len() && Self::item_is_playable(&queue[index]) {
             let path = queue[index].get_path().clone();
@@ -724,7 +724,7 @@ impl QueueManager {
             None => return JumpResult::OutOfBounds,
         };
 
-        let queue = self.queue.read().expect("poisoned queue lock");
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         let pos = queue.iter().position(|item| item == &original_item);
         drop(queue);
 
@@ -741,7 +741,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
         let mut original_queue_indices = SmallVec::new();
 
         if self.shuffle {
@@ -778,7 +778,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
         let first_index = queue.len();
         let items_len = items.len();
         let mut original_queue_indices = SmallVec::new();
@@ -813,7 +813,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
         let mut original_queue_indices = SmallVec::new();
 
         let insert_pos = position.min(queue.len());
@@ -860,7 +860,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         let insert_pos = position.min(queue.len());
         let items_len = items.len();
@@ -905,7 +905,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         if index >= queue.len() {
             return DequeueResult::Unchanged;
@@ -970,7 +970,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         indices.retain(|idx| *idx < queue.len());
         indices.sort_unstable();
@@ -1051,7 +1051,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         if from >= queue.len() || to >= queue.len() {
             return MoveResult::Unchanged;
@@ -1120,7 +1120,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         indices.retain(|idx| *idx < queue.len());
         indices.sort_unstable();
@@ -1199,7 +1199,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         // Snapshot by taking the live Vecs out instead of cloning: the write lock is held for the
         // whole swap so readers never observe the empty intermediate state, and the undo stack
@@ -1250,7 +1250,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().expect("poisoned queue lock");
+        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         // take-based snapshots, same rationale as replace_queue: no full-queue copy
         let queue_clone = Arc::new(take(&mut *queue));
@@ -1297,7 +1297,7 @@ impl QueueManager {
     pub fn toggle_shuffle(&mut self) -> ShuffleResult {
         let previous_queue_next = self.queue_next;
         let result = {
-            let mut queue = self.queue.write().expect("poisoned queue lock");
+            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
             self.shuffle = !self.shuffle;
 
@@ -1405,7 +1405,7 @@ impl QueueManager {
     /// the price of handing the worker a consistent snapshot of a live `Vec`.
     /// Call sites debounce to keep it off burst paths.
     fn send_session_with_queue(&mut self) {
-        let queue = self.queue.read().expect("poisoned queue lock");
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         let queue_snapshot = queue.clone();
         let queue_position = self
             .queue_next

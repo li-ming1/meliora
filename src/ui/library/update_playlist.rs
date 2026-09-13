@@ -6,6 +6,7 @@ use gpui::{
     Window, div, px,
 };
 use nucleo::Utf32String;
+use tracing::error;
 
 use crate::{
     library::{
@@ -55,7 +56,13 @@ impl UpdatePlaylist {
         cx.new(|cx| {
             cx.observe(&show, move |this: &mut Self, _, cx| {
                 this.palette.update(cx, |this, cx| {
-                    let new_playlists = (*cx.get_all_playlists().unwrap())
+                    // a failed query keeps the palette's current list instead
+                    // of panicking the observer
+                    let Ok(playlists) = cx.get_all_playlists() else {
+                        error!("Failed to load playlists for the update dialog");
+                        return;
+                    };
+                    let new_playlists = (*playlists)
                         .clone()
                         .into_iter()
                         .map(Arc::new)
@@ -79,11 +86,16 @@ impl UpdatePlaylist {
                 show_clone.write(cx, false);
             });
 
-            let items = (*cx.get_all_playlists().unwrap())
-                .clone()
-                .into_iter()
-                .map(Arc::new)
-                .collect();
+            let items = match cx.get_all_playlists() {
+                Ok(playlists) => (*playlists).clone(),
+                Err(e) => {
+                    error!("Failed to load playlists for the update dialog: {}", e);
+                    Vec::new()
+                }
+            }
+            .into_iter()
+            .map(Arc::new)
+            .collect();
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 
@@ -109,7 +121,13 @@ impl UpdatePlaylist {
                     middle: display.into(),
                     right: None,
                     on_accept: Arc::new(move |cx| {
-                        let playlist_id = cx.create_playlist(&name_string).unwrap();
+                        let playlist_id = match cx.create_playlist(&name_string) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                error!("Failed to create playlist '{}': {}", name_string, e);
+                                return;
+                            }
+                        };
 
                         import_playlist(cx, playlist_id);
 

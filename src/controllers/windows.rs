@@ -56,7 +56,14 @@ impl WindowsController {
             SystemMediaTransportControls,
             SystemMediaTransportControlsButtonPressedEventArgs,
         >::new(move |_, args| {
-            let event = args.as_ref().unwrap().Button().unwrap();
+            // A failed event payload or getter skips this button event instead
+            // of panicking the SMTC task (which would disable SMTC for good).
+            let Some(args) = args.as_ref() else {
+                return Ok(());
+            };
+            let Ok(event) = args.Button() else {
+                return Ok(());
+            };
 
             match event {
                 SystemMediaTransportControlsButton::Play => {
@@ -86,7 +93,13 @@ impl WindowsController {
                 SystemMediaTransportControls,
                 PlaybackPositionChangeRequestedEventArgs,
             >::new(move |_, args| {
-                let position = args.as_ref().unwrap().RequestedPlaybackPosition().unwrap();
+                // a failed payload/getter skips this seek event
+                let Some(args) = args.as_ref() else {
+                    return Ok(());
+                };
+                let Ok(position) = args.RequestedPlaybackPosition() else {
+                    return Ok(());
+                };
 
                 // TimeSpan is measured in 100ns intervals
                 let _ = cmd_tx.send(PlaybackCommand::Seek(
@@ -102,7 +115,13 @@ impl WindowsController {
                 SystemMediaTransportControls,
                 ShuffleEnabledChangeRequestedEventArgs,
             >::new(move |_, args| {
-                let shuffle = args.as_ref().unwrap().RequestedShuffleEnabled().unwrap();
+                // a failed payload/getter skips this shuffle event
+                let Some(args) = args.as_ref() else {
+                    return Ok(());
+                };
+                let Ok(shuffle) = args.RequestedShuffleEnabled() else {
+                    return Ok(());
+                };
                 let _ = cmd_tx.send(PlaybackCommand::SetShuffle(shuffle));
 
                 Ok(())
@@ -114,7 +133,13 @@ impl WindowsController {
                 SystemMediaTransportControls,
                 AutoRepeatModeChangeRequestedEventArgs,
             >::new(move |_, args| {
-                let mode = args.as_ref().unwrap().RequestedAutoRepeatMode().unwrap();
+                // a failed payload/getter skips this repeat event
+                let Some(args) = args.as_ref() else {
+                    return Ok(());
+                };
+                let Ok(mode) = args.RequestedAutoRepeatMode() else {
+                    return Ok(());
+                };
 
                 let _ = cmd_tx.send(PlaybackCommand::SetRepeat(match mode {
                     MediaPlaybackAutoRepeatMode::List => RepeatState::Repeating,
@@ -299,10 +324,12 @@ impl PlaybackController for WindowsController {
         // replace invalid UTF-8 instead.
         let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
         let title_string = HSTRING::from(file_name.to_string_lossy().as_ref());
-        self.display
-            .MusicProperties()
-            .unwrap()
-            .SetTitle(&title_string)?;
+        // Same as metadata_changed: a failed MusicProperties() skips this
+        // update instead of panicking the controller task.
+        let Ok(music) = self.display.MusicProperties() else {
+            return Ok(());
+        };
+        music.SetTitle(&title_string)?;
         self.display.Update()?;
 
         Ok(())

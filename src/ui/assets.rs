@@ -21,12 +21,17 @@ impl MelioraAssetSource {
 
 impl AssetSource for MelioraAssetSource {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
-        let url = Url::parse(&path[1..])?;
+        // Malformed paths and unknown schemes resolve to a missing asset
+        // instead of panicking the asset task.
+        let Some(rest) = path.get(1..) else {
+            return Ok(None);
+        };
+        let url = Url::parse(rest)?;
 
         match url.scheme() {
             "db" => db::load(&self.pool, url),
             "bundled" => BundledAssets::load(url),
-            _ => panic!("invalid url scheme for resource"),
+            _ => Ok(None),
         }
     }
 

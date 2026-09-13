@@ -282,7 +282,7 @@ impl QueueItemData {
         let entity = self
             .data
             .read()
-            .expect("poisoned queue item data")
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()?
             .clone();
         entity.read(cx).as_ref()?.duration
@@ -293,10 +293,10 @@ impl QueueItemData {
         if self
             .data
             .read()
-            .expect("poisoned queue item data")
+            .unwrap_or_else(|e| e.into_inner())
             .is_none()
         {
-            let mut data = self.data.write().expect("poisoned queue item data");
+            let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
             if data.is_none() {
                 *data = Some(cx.new(|_| None));
             }
@@ -310,7 +310,7 @@ impl QueueItemData {
         let model = self
             .data
             .read()
-            .expect("poisoned queue item data")
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .unwrap()
             .clone();
@@ -399,7 +399,7 @@ impl QueueItemData {
     /// Drop the UI data from the queue item. This means the data must be retrieved again from disk
     /// if the item is used with get_data again.
     pub fn drop_data(&self, cx: &mut App) {
-        if let Some(model) = self.data.read().expect("poisoned queue item data").as_ref() {
+        if let Some(model) = self.data.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             model.update(cx, |m, cx| {
                 *m = None;
                 cx.notify();
@@ -433,7 +433,7 @@ impl QueueItemData {
         self.ensure_entity(cx);
         self.data
             .read()
-            .expect("poisoned queue item data")
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .unwrap()
             .entity_id()
@@ -443,7 +443,7 @@ impl QueueItemData {
     pub fn existing_slot_key(&self) -> Option<usize> {
         self.data
             .read()
-            .expect("poisoned queue item data")
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|e| e.entity_id().as_u64() as usize)
     }

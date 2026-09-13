@@ -487,7 +487,10 @@ pub fn run() -> anyhow::Result<()> {
             .detach();
 
         if !language.is_empty() {
-            I18N_MANAGER.write().unwrap().locale = Locale::new_from_locale_identifier(language);
+            I18N_MANAGER
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .locale = Locale::new_from_locale_identifier(language);
         }
 
         let (scan_interface, scan_events) = start_scanner(pool.clone(), scanning_settings);
@@ -632,7 +635,7 @@ fn refresh_restored_online_urls(
 
     let stale: Vec<(usize, OnlineIdentity)> = queue
         .read()
-        .expect("poisoned queue")
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
@@ -663,7 +666,7 @@ fn refresh_restored_online_urls(
         for (idx, identity) in stale {
             let display = queue
                 .read()
-                .expect("poisoned queue")
+                .unwrap_or_else(|e| e.into_inner())
                 .get(idx)
                 .and_then(|item| item.persisted_display())
                 .unwrap_or((None, None, None, None));

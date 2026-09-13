@@ -417,8 +417,16 @@ impl StatsSettings {
         // `heat_year_offset` pages back one year at a time, stopping at the
         // stats epoch year, before which there is no data at all.
         let year = today.year() - self.heat_year_offset as i32;
-        let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-        let last_day = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
+        // A year outside chrono's supported range can't build a heatmap;
+        // keep the current one instead of panicking.
+        let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else {
+            tracing::warn!("invalid heatmap year {year}, keeping current heatmap");
+            return;
+        };
+        let Some(last_day) = NaiveDate::from_ymd_opt(year, 12, 31) else {
+            tracing::warn!("invalid heatmap year {year}, keeping current heatmap");
+            return;
+        };
         let window_start =
             year_start - ChronoDuration::days(i64::from(year_start.weekday().num_days_from_monday()));
         let window_end_sunday = last_day
@@ -435,13 +443,15 @@ impl StatsSettings {
         // accumulated label widths and crowded each label next to the
         // previous one.
         self.month_items = (1..=12)
-            .map(|month| {
-                let month_start = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+            .filter_map(|month| {
+                // months 1..=12 are always valid; the guard only covers a
+                // year outside chrono's range
+                let month_start = NaiveDate::from_ymd_opt(year, month, 1)?;
                 let col = (month_start - window_start).num_days() / 7;
-                (
+                Some((
                     col as f32 * (HEAT_CELL_PX + HEAT_GAP_PX),
                     month.to_string().into(),
-                )
+                ))
             })
             .collect();
 
@@ -594,8 +604,11 @@ impl StatsSettings {
         // The window pads to whole Mon..Sun weeks: days outside the shown
         // year (previous December / next January) keep their grid slot for
         // column alignment but render invisibly.
-        let year_start = NaiveDate::from_ymd_opt(self.heat_year, 1, 1).unwrap();
-        let year_end = NaiveDate::from_ymd_opt(self.heat_year, 12, 31).unwrap();
+        // Sentinels only for the inclusive range check below: a year outside
+        // chrono's range (unreachable — rebuild_heat validates it) renders
+        // every cell as out-of-window instead of panicking.
+        let year_start = NaiveDate::from_ymd_opt(self.heat_year, 1, 1).unwrap_or(NaiveDate::MIN);
+        let year_end = NaiveDate::from_ymd_opt(self.heat_year, 12, 31).unwrap_or(NaiveDate::MAX);
 
         // Cells are stateful (day tooltip, 150 ms rest before it pops — fast
         // mouse travel never builds one); columns are plain layout.

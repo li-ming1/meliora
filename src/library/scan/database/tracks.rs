@@ -108,7 +108,9 @@ pub(super) async fn insert_track(
     length: u64,
     album_path_cache: &mut FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
 ) -> anyhow::Result<Option<i64>> {
-    let parent = path.parent().unwrap();
+    // A bare filename (no parent directory) degrades to an empty album path
+    // instead of aborting the whole scan.
+    let parent = path.parent().unwrap_or_else(|| Utf8Path::new(""));
 
     if let Some(album_id_val) = album_id {
         let disc_num = metadata.disc_current.map(|v| v as i64).unwrap_or(-1);
