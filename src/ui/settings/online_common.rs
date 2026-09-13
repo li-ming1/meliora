@@ -17,6 +17,7 @@ use crate::{
         components::{button::{ButtonIntent, button}, modal::modal, textbox::Textbox},
         theme::Theme,
     },
+    ui::components::managed_image::queue_orphan_tile_drop,
 };
 
 /// Consecutive transport failures tolerated by the poll loop before it gives
@@ -75,7 +76,13 @@ impl QrLogin {
     /// Dismisses the modal and invalidates any running flow.
     pub(crate) fn close(&mut self) {
         self.generation += 1;
-        self.state = None;
+        // `ImageSource::Render` 的图不经过任何缓存，瓦片只有显式
+        // drop_image 才会回收——把还挂着的二维码推入回收漏斗。
+        if let Some(state) = self.state.take()
+            && let Some(image) = state.image
+        {
+            queue_orphan_tile_drop(image);
+        }
     }
 
     pub(crate) fn state(&self) -> Option<&QrLoginState> {

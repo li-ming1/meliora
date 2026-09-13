@@ -8,6 +8,8 @@ use gpui::{
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use tracing::{error, trace};
 
+use crate::ui::components::managed_image::queue_orphan_tile_drop;
+
 pub fn meliora_cache(
     id: impl Into<ElementId>,
     max_items: usize,
@@ -52,7 +54,7 @@ impl MelioraImageCache {
                 for (idx, (mut image, resource)) in take(&mut this.cache) {
                     if let Some(Ok(image)) = image.get() {
                         trace!("Dropping image {idx}");
-                        cx.drop_image(image, None);
+                        queue_orphan_tile_drop(image);
                     }
 
                     ImageSource::Resource(resource).remove_asset(cx);
@@ -110,7 +112,10 @@ impl ImageCache for MelioraImageCache {
 
             if let Some(Ok(image)) = image.0.get() {
                 trace!("requesting image to be dropped");
-                cx.drop_image(image, Some(window));
+                // 驱逐发生在 img 的 request_layout/paint 调用栈内：直接
+                // drop_image 会在同帧释放图集页（sprite 已记录）并可能踩
+                // etagere 断言。推进回收漏斗，由事件循环的 drain 帧间释放。
+                queue_orphan_tile_drop(image);
             }
 
             ImageSource::Resource(image.1).remove_asset(cx);

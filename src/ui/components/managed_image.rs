@@ -163,6 +163,19 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
         .push((key, image));
 }
 
+/// 把不属于 RENDER_CACHE 的图（如 `MelioraImageCache` 的驱逐/释放、登录二
+/// 维码）也推进同一回收漏斗。哨兵键永远不会命中缓存（thumb = u32::MAX 且
+/// 路径为空），drain 的"缓存仍持有"判定对其恒为 false。
+pub(crate) fn queue_orphan_tile_drop(image: Arc<RenderImage>) {
+    queue_tile_drop(
+        RenderCacheKey {
+            key: ManagedImageKey::TrackFile(PathBuf::new()),
+            thumb: u32::MAX,
+        },
+        image,
+    );
+}
+
 /// Whether the cache still owns `image` under `key` (same allocation). Used
 /// by the drain to leave tiles alone that a live cache entry still serves.
 fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
@@ -174,6 +187,78 @@ fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
         .cache
         .get(key)
         .is_some_and(|(current, _)| Arc::ptr_eq(current, image))
+}
+
+/// Outcome of planning one drain batch. `reclaim` is the set of images whose
+/// atlas tiles may be dropped exactly once; the counters exist so tests can
+/// assert why an image was kept alive.
+#[derive(Default)]
+#[allow(dead_code)] // counters are asserted by tests only
+pub(crate) struct ReclaimPlan {
+    pub reclaim: Vec<Arc<RenderImage>>,
+    /// Images the render cache still serves under a pushed key: live tiles,
+    /// never reclaimed here (the cache pushes them itself on eviction).
+    pub kept_by_cache: usize,
+    /// Images with at least one strong reference outside this batch (a live
+    /// element state, a continuation-local clone, ...): they may paint again,
+    /// so their tiles must stay.
+    pub kept_by_holders: usize,
+}
+
+/// Pure core of [`drain_pending_tile_drops`]: groups the batch by image
+/// identity and decides which images' tiles can be reclaimed.
+///
+/// Invariant the decision rests on: grouping consumes every Arc the batch
+/// carried and keeps exactly ONE inspection Arc per unique image, so after
+/// grouping `Arc::strong_count == 1 + (every holder outside the batch)`.
+/// Reclaim is therefore correct iff `strong_count == 1` and the cache does
+/// not serve the image: nobody outside this function can ever paint it again,
+/// so its tile is dropped exactly once.
+///
+/// (The previous arithmetic `strong_count - batch_copies` was wrong twice
+/// over: with 2+ pushes of the same image and no external holders it
+/// underflowed usize in release and skipped the reclaim forever — a permanent
+/// atlas-tile leak on the common evict+unmount path — and with 2 pushes plus
+/// one live holder it computed 0 and freed a tile an element still painted.)
+///
+/// `cache_holds` reports whether the render cache still owns `image` under
+/// `key` (same allocation). Consulted for every key the image was pushed
+/// with, not just the first, so a multi-key push cannot slip past it.
+fn plan_tile_reclaims(
+    batch: Vec<(RenderCacheKey, Arc<RenderImage>)>,
+    mut cache_holds: impl FnMut(&RenderCacheKey, &Arc<RenderImage>) -> bool,
+) -> ReclaimPlan {
+    // Insertion-ordered dedup: one inspection Arc per unique image. Duplicate
+    // pushes (same image queued by several unmounting elements and by the
+    // cache) collapse here; their extra Arcs are dropped by this loop, which
+    // is exactly what makes the `strong_count == 1` test below valid.
+    let mut order: Vec<ImageId> = Vec::new();
+    let mut group: FxHashMap<ImageId, (RenderCacheKey, Arc<RenderImage>, bool)> =
+        FxHashMap::default();
+    for (key, image) in batch {
+        let id = image.id;
+        let cache_hold = cache_holds(&key, &image);
+        let entry = group.entry(id).or_insert_with(|| {
+            order.push(id);
+            (key, image, false)
+        });
+        if !entry.2 && cache_hold {
+            entry.2 = true;
+        }
+    }
+
+    let mut plan = ReclaimPlan::default();
+    for id in order {
+        let (_, image, cache_hold) = &group[&id];
+        if *cache_hold {
+            plan.kept_by_cache += 1;
+        } else if Arc::strong_count(image) == 1 {
+            plan.reclaim.push(image.clone());
+        } else {
+            plan.kept_by_holders += 1;
+        }
+    }
+    plan
 }
 
 /// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread,
@@ -196,32 +281,9 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
         return;
     }
 
-    // 同一图可能被多条路径 push（共享它的多个元素各自 unmount、缓存淘汰）。
-    // 按图分组后只看"批外还剩几个持有者"：strong_count 减去批内份数为 0
-    // 且缓存不再持有时才回收——每块瓦片因此恰好释放一次。二次释放会触发
-    // etagere 的代际断言（2026-09-12/13 闪退），无条件跳过则会泄漏被存活
-    // 元素 paint 复活的瓦片。
-    let mut order: Vec<ImageId> = Vec::new();
-    let mut group: FxHashMap<ImageId, (RenderCacheKey, Arc<RenderImage>, usize)> =
-        FxHashMap::default();
-    for (key, image) in batch {
-        let entry = group.entry(image.id).or_insert_with(|| {
-            order.push(image.id);
-            (key, image.clone(), 0)
-        });
-        entry.2 += 1;
-    }
-
-    let mut reclaimed: Vec<Arc<RenderImage>> = Vec::new();
-    for id in order {
-        let (key, image, batch_copies) = &group[&id];
-        let holders = Arc::strong_count(image) - batch_copies;
-        if holders == 0 && !render_cache_holds(key, image) {
-            reclaimed.push(image.clone());
-        }
-    }
-    if !reclaimed.is_empty() {
-        crate::ui::util::reclaim_images_from_app(cx, reclaimed);
+    let plan = plan_tile_reclaims(batch, |key, image| render_cache_holds(key, image));
+    if !plan.reclaim.is_empty() {
+        crate::ui::util::reclaim_images_from_app(cx, plan.reclaim);
     }
 }
 
@@ -689,5 +751,235 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         style: StyleRefinement::default(),
         object_fit: ObjectFit::Cover,
         thumb_size: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Frame, RgbaImage};
+    use smallvec::smallvec;
+    use std::collections::HashSet;
+
+    fn test_image() -> Arc<RenderImage> {
+        Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::new(2, 2))]))
+    }
+
+    fn key(album: i64, thumb: u32) -> RenderCacheKey {
+        RenderCacheKey {
+            key: ManagedImageKey::Album(album),
+            thumb,
+        }
+    }
+
+    /// Stand-in for `RENDER_CACHE`: maps cache keys to the Arc it serves.
+    /// Holding clones here mirrors the real cache, whose entry also counts
+    /// towards `Arc::strong_count`.
+    #[derive(Default)]
+    struct FakeCache(FxHashMap<RenderCacheKey, Arc<RenderImage>>);
+
+    impl FakeCache {
+        fn insert(&mut self, k: RenderCacheKey, img: Arc<RenderImage>) {
+            self.0.insert(k, img);
+        }
+        fn get(&self, k: &RenderCacheKey) -> Option<&Arc<RenderImage>> {
+            self.0.get(k)
+        }
+        fn remove(&mut self, k: &RenderCacheKey) -> Option<Arc<RenderImage>> {
+            self.0.remove(k)
+        }
+        fn holds(&self, k: &RenderCacheKey, img: &Arc<RenderImage>) -> bool {
+            self.get(k).is_some_and(|c| Arc::ptr_eq(c, img))
+        }
+    }
+
+    fn run_plan(
+        batch: Vec<(RenderCacheKey, Arc<RenderImage>)>,
+        cache: &FakeCache,
+    ) -> ReclaimPlan {
+        plan_tile_reclaims(batch, |k, img| cache.holds(k, img))
+    }
+
+    #[test]
+    fn single_element_release_is_reclaimed() {
+        let img = test_image();
+        let plan = run_plan(vec![(key(1, 256), img)], &FakeCache::default());
+        assert_eq!(plan.reclaim.len(), 1);
+        assert_eq!((plan.kept_by_cache, plan.kept_by_holders), (0, 0));
+    }
+
+    /// Regression: two pushes of one image with no external holders used to
+    /// evaluate `strong_count - batch_copies` = 1 - 2, underflowing usize in
+    /// release and skipping the reclaim forever (permanent atlas-tile leak on
+    /// the common evict+unmount path).
+    #[test]
+    fn same_batch_shared_release_reclaims_exactly_once() {
+        let img = test_image();
+        let a = img.clone(); // element A's reference, pushed by its on_release
+        let b = img.clone(); // element B's reference, pushed by its on_release
+        drop(img);
+        let plan = run_plan(vec![(key(1, 256), a), (key(1, 256), b)], &FakeCache::default());
+        assert_eq!(plan.reclaim.len(), 1);
+        assert_eq!(plan.kept_by_holders, 0);
+    }
+
+    #[test]
+    fn shared_release_across_batches_waits_for_last_holder() {
+        let img = test_image();
+        let holder_b = img.clone(); // element B still mounted
+
+        // Drain 1: only A pushed; B can still paint the image.
+        let p1 = run_plan(vec![(key(1, 256), img)], &FakeCache::default());
+        assert!(p1.reclaim.is_empty());
+        assert_eq!(p1.kept_by_holders, 1);
+
+        // Drain 2: B unmounted and pushed its reference; nobody else holds it.
+        let p2 = run_plan(vec![(key(1, 256), holder_b)], &FakeCache::default());
+        assert_eq!(p2.reclaim.len(), 1);
+    }
+
+    #[test]
+    fn cache_still_holding_skips_reclaim() {
+        let mut cache = FakeCache::default();
+        let img = test_image();
+        cache.insert(key(1, 256), img.clone());
+        let element_ref = img.clone();
+        drop(img);
+
+        // Element unmounts and pushes while the cache still serves the image.
+        let p = run_plan(vec![(key(1, 256), element_ref)], &cache);
+        assert!(p.reclaim.is_empty());
+        assert_eq!(p.kept_by_cache, 1);
+
+        // A duplicate push (second element) stays skipped while cached: the
+        // cache pushes the tile itself when it eventually evicts.
+        let cached = cache.get(&key(1, 256)).unwrap().clone();
+        let e1 = cached.clone();
+        let e2 = cached.clone();
+        drop(cached);
+        let p = run_plan(vec![(key(1, 256), e1), (key(1, 256), e2)], &cache);
+        assert!(p.reclaim.is_empty());
+        assert_eq!(p.kept_by_cache, 1);
+    }
+
+    /// Cache replaces an entry while an element still paints the old image:
+    /// the old tile must be reclaimed exactly once, only after the element is
+    /// gone, and the replacement must never be reclaimed while cache-held.
+    #[test]
+    fn replacement_race_reclaims_old_image_only() {
+        let mut cache = FakeCache::default();
+        let old = test_image();
+        let old_id = old.id;
+        cache.insert(key(1, 256), old.clone());
+        let element_ref = old.clone();
+        drop(old);
+
+        // Cache swap: old evicted (queued), fresh decode takes the slot.
+        let evicted = cache.remove(&key(1, 256)).unwrap();
+        assert!(Arc::ptr_eq(&evicted, &element_ref));
+        let new = test_image();
+        cache.insert(key(1, 256), new.clone());
+
+        // Drain 1: element still holds the old image → skip.
+        let p1 = run_plan(vec![(key(1, 256), evicted)], &cache);
+        assert!(p1.reclaim.is_empty());
+        assert_eq!(p1.kept_by_holders, 1);
+
+        // Drain 2: element released and pushed → old reclaimed once, new one
+        // untouched.
+        let p2 = run_plan(vec![(key(1, 256), element_ref)], &cache);
+        assert_eq!(p2.reclaim.len(), 1);
+        assert_eq!(p2.reclaim[0].id, old_id);
+        assert!(cache.holds(&key(1, 256), &new));
+    }
+
+    /// The resurrection property: a reclaim decision is made only when zero
+    /// strong references exist outside the batch, so no element can ever paint
+    /// the image again after its tile is freed — the tile is dropped exactly
+    /// once, for every combination of holder counts and duplicate pushes.
+    #[test]
+    fn no_reclaim_while_any_external_holder_alive() {
+        for holders in 0..=3usize {
+            for pushes in 1..=3usize {
+                let img = test_image();
+                let guards: Vec<_> = (0..holders).map(|_| img.clone()).collect();
+                let batch: Vec<_> = (0..pushes).map(|_| (key(2, 72), img.clone())).collect();
+                drop(img);
+
+                let plan = run_plan(batch, &FakeCache::default());
+                if holders == 0 {
+                    assert_eq!(
+                        plan.reclaim.len(),
+                        1,
+                        "holders={holders} pushes={pushes}: must reclaim exactly once"
+                    );
+                } else {
+                    assert!(
+                        plan.reclaim.is_empty(),
+                        "holders={holders} pushes={pushes}: live holder must prevent reclaim"
+                    );
+                    assert_eq!(plan.kept_by_holders, 1);
+                }
+                drop(guards);
+            }
+        }
+    }
+
+    /// thumb=0 art never enters the render cache, so its tiles are judged
+    /// purely by the remaining strong count.
+    #[test]
+    fn thumb_zero_uncached_image_reclaims() {
+        let img = test_image();
+        let plan = run_plan(vec![(key(3, 0), img)], &FakeCache::default());
+        assert_eq!(plan.reclaim.len(), 1);
+        assert_eq!(plan.kept_by_cache, 0);
+    }
+
+    #[test]
+    fn triple_push_in_one_batch_dedups_to_one_reclaim() {
+        let img = test_image();
+        let batch = vec![
+            (key(4, 256), img.clone()),
+            (key(4, 256), img.clone()),
+            (key(4, 256), img),
+        ];
+        let plan = run_plan(batch, &FakeCache::default());
+        assert_eq!(plan.reclaim.len(), 1);
+    }
+
+    /// Locks the global invariant across a simulated session: every image's
+    /// tile is reclaimed at most once, and every fully-released image is
+    /// eventually reclaimed.
+    #[test]
+    fn every_tile_is_reclaimed_at_most_once_across_drains() {
+        let mut cache = FakeCache::default();
+        let mut dropped: HashSet<ImageId> = HashSet::new();
+
+        let i1 = test_image();
+        let i2 = test_image();
+        cache.insert(key(10, 256), i1.clone());
+        let h1 = i1.clone(); // element painting the cached cover
+        let h2 = i2.clone(); // element painting full-size (thumb=0) art
+        drop(i1);
+        drop(i2);
+
+        // Round 1: cache evicts i1 (queued) while h1 is alive; h2 unmounts.
+        let evicted = cache.remove(&key(10, 256)).unwrap();
+        let p1 = run_plan(vec![(key(10, 256), evicted), (key(11, 0), h2)], &cache);
+        assert_eq!(p1.reclaim.len(), 1, "i2 reclaimed, i1 kept for h1");
+        for img in &p1.reclaim {
+            assert!(dropped.insert(img.id), "tile reclaimed twice");
+        }
+        drop(p1);
+
+        // Round 2: h1 unmounts and pushes → i1 reclaimed exactly once.
+        let p2 = run_plan(vec![(key(10, 256), h1)], &cache);
+        assert_eq!(p2.reclaim.len(), 1);
+        for img in &p2.reclaim {
+            assert!(dropped.insert(img.id), "tile reclaimed twice");
+        }
+        drop(p2);
+
+        assert_eq!(dropped.len(), 2, "every released image reclaimed once");
     }
 }
