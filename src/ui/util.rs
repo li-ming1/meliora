@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui::{App, Entity, Render, RenderImage};
 use rustc_hash::FxHashMap;
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Rows this far outside the visible window stay cached. Scrolling back
 /// within the band reuses the existing row entities instead of re-running
@@ -80,9 +80,16 @@ where
 }
 
 /// Drops the atlas tiles for a batch of images whose owning elements are gone.
-/// Unlike [`drop_image_from_app`] this tolerates windows disappearing
+/// Unlike the old `drop_image_from_app` this tolerates windows disappearing
 /// mid-reclaim (skips instead of panicking), which matters when draining the
 /// render cache's eviction queue: the cache outlives any single window.
+///
+/// Each drop is additionally wrapped in `catch_unwind`: etagere's generation
+/// assertion (stale tile id after the atlas recycles a page — an upstream
+/// gpui-windows issue) used to abort the whole process from inside the
+/// Windows message callback. The assertion fires before any state mutation,
+/// so catching it degrades to one leaked tile per occurrence and the app
+/// keeps running; the panic hook still logs the occurrence.
 pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
     if images.is_empty() {
         return;
@@ -92,7 +99,19 @@ pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
             for window in cx.windows() {
                 let image = image.clone();
                 let _ = window.update(cx, move |_, window, _| {
-                    let _ = window.drop_image(image);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = window.drop_image(image);
+                    }));
+                    if let Err(payload) = result {
+                        let message = payload
+                            .downcast_ref::<&str>()
+                            .map(|s| (*s).to_string())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "unknown panic payload".into());
+                        error!(
+                            "[atlas] tile drop panicked (tile leaked, app continues): {message}"
+                        );
+                    }
                 });
             }
         }
