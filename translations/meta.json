@@ -2191,31 +2191,31 @@
   },
   "STATS_EMPTY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1068",
+    "definedIn": "src/ui/settings/stats.rs:1069",
     "plural": false,
     "description": null
   },
   "STATS_HEATMAP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:706",
+    "definedIn": "src/ui/settings/stats.rs:707",
     "plural": false,
     "description": null
   },
   "STATS_HOURS_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:897",
+    "definedIn": "src/ui/settings/stats.rs:898",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_LESS": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:671",
+    "definedIn": "src/ui/settings/stats.rs:672",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_MORE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:688",
+    "definedIn": "src/ui/settings/stats.rs:689",
     "plural": false,
     "description": null
   },
@@ -2287,7 +2287,7 @@
   },
   "STATS_TOP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1013",
+    "definedIn": "src/ui/settings/stats.rs:1014",
     "plural": false,
     "description": null
   },

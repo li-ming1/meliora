@@ -606,7 +606,8 @@ impl StatsSettings {
         // column alignment but render invisibly.
         // Sentinels only for the inclusive range check below: a year outside
         // chrono's range (unreachable — rebuild_heat validates it) renders
-        // every cell as out-of-window instead of panicking.
+        // every cell as in-window instead of panicking (the sentinels accept
+        // all real dates).
         let year_start = NaiveDate::from_ymd_opt(self.heat_year, 1, 1).unwrap_or(NaiveDate::MIN);
         let year_end = NaiveDate::from_ymd_opt(self.heat_year, 12, 31).unwrap_or(NaiveDate::MAX);
 

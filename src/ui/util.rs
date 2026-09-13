@@ -26,18 +26,17 @@ where
     let mut to_remove: Vec<usize> = Vec::new();
     let mut did_remove = false;
 
-    // determine whether or not we are at the start of a new render cycle
-    if current < last {
-        // we are at the start of a new render cycle (scrolled up): prune
-        // views outside the previous window plus the keep-around band, so a
-        // small scroll or a scroll-back reuses cached rows. Don't prune the
-        // first view so this still works with uniform_list.
-        let lower = current.saturating_sub(VIEW_KEEP_AROUND);
-        let upper = last + 1 + VIEW_KEEP_AROUND;
-        for idx in views_model.read(cx).keys() {
-            if (*idx < lower || *idx >= upper) && *idx != 0_usize {
-                to_remove.push(*idx);
-            }
+    // Prune views outside the union of the previous and current windows
+    // plus the keep-around band. Covers both scroll directions: upward
+    // (current < last) behaves exactly as before, and downward scrolling
+    // now also prunes far-above rows instead of accumulating the whole
+    // table's row views on a long one-way scroll. Don't prune the first
+    // view so this still works with uniform_list.
+    let lower = last.min(current).saturating_sub(VIEW_KEEP_AROUND);
+    let upper = last.max(current) + 1 + VIEW_KEEP_AROUND;
+    for idx in views_model.read(cx).keys() {
+        if (*idx < lower || *idx >= upper) && *idx != 0_usize {
+            to_remove.push(*idx);
         }
     }
 

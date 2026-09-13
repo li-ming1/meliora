@@ -10,7 +10,10 @@
 //! string, so queue/session serialization needs no changes.
 
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{
+        hash_map::{DefaultHasher, Entry},
+        HashMap,
+    },
     ffi::OsStr,
     hash::{Hash, Hasher},
     io::{self, Read, Seek, SeekFrom},
@@ -247,14 +250,40 @@ static INFLIGHT_COVERS: LazyLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// 取出（或新建）`url` 的闸门；查表临界区不含任何 await。
-fn inflight_cover_gate(url: &str) -> Arc<AsyncMutex<()>> {
+/// 返回值第二项只有条目创建者才是 Some——携带 RAII 守卫，Drop 时回收
+/// 表条目（含任务被 abort 的路径：守卫随 future 丢弃而执行，堵住
+/// "managed_image 中止取回 → 条目永久残留"的无界增长缺口）。
+fn inflight_cover_gate(url: &str) -> (Arc<AsyncMutex<()>>, Option<InflightCoverGuard>) {
     let mut inflight = INFLIGHT_COVERS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    inflight
-        .entry(url.to_string())
-        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-        .clone()
+    match inflight.entry(url.to_string()) {
+        Entry::Occupied(entry) => (entry.get().clone(), None),
+        Entry::Vacant(entry) => {
+            let gate = Arc::new(AsyncMutex::new(()));
+            entry.insert(gate.clone());
+            (
+                gate.clone(),
+                Some(InflightCoverGuard {
+                    url: url.to_string(),
+                    gate,
+                }),
+            )
+        },
+    }
+}
+
+/// 创建者的 RAII 守卫：Drop（作用域结束或任务被 abort）时按代际回收表
+/// 条目。等待方不持有守卫——它们从不回收条目，语义与手工版本一致。
+struct InflightCoverGuard {
+    url: String,
+    gate: Arc<AsyncMutex<()>>,
+}
+
+impl Drop for InflightCoverGuard {
+    fn drop(&mut self) {
+        release_inflight_cover_gate(&self.url, &self.gate);
+    }
 }
 
 /// 下载结束后回收闸门条目，防止 in-flight 表无限增长。只有表中仍是
@@ -283,34 +312,26 @@ pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<Vec<u8>
         return Ok(Some(bytes));
     }
 
-    let gate = inflight_cover_gate(url);
+    let (gate, _creator_guard) = inflight_cover_gate(url);
     let _gate = gate.lock().await;
 
     // 拿到闸门后再查一次盘：前一个持有者可能已经把这张图下载写盘了。
     if let Some(bytes) = read_cached_cover(url).await {
-        release_inflight_cover_gate(url, &gate);
         return Ok(Some(bytes));
     }
 
-    // 真正的 HTTP 下载限制在 4 个并发（写盘不占许可）。
+    // 真正的 HTTP 下载限制在 4 个并发（写盘不占许可）。所有退出路径的
+    // 闸门条目回收由 _creator_guard 的 Drop 负责（含任务被 abort）。
     let bytes = {
         let _permit = COVER_FETCH_PERMITS
             .acquire()
             .await
             .expect("semaphore is never closed");
-        match http_cover_bytes(url).await {
-            Ok(bytes) => bytes,
-            // 失败路径也要回收闸门条目，再原样传出错误。
-            Err(e) => {
-                release_inflight_cover_gate(url, &gate);
-                return Err(e);
-            }
-        }
+        http_cover_bytes(url).await?
     };
     if let Some(bytes) = &bytes {
         write_cached_cover(url, bytes).await;
     }
-    release_inflight_cover_gate(url, &gate);
     Ok(bytes)
 }
 
