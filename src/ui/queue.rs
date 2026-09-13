@@ -10,7 +10,7 @@ use crate::{
                 AlbumDragData, DragDropItemState, DragDropListConfig, DragDropListManager,
                 DragPreview, DropIndicator, TrackDragData, check_drag_cancelled,
                 handle_external_drag_move, handle_track_drag_move,
-                handle_track_drop_multi, schedule_edge_scroll,
+                handle_track_drop_multi, request_edge_scroll,
             },
             icons::{CROSS, DISC, PLAYLIST_ADD, STAR, STAR_FILLED, TRASH, USERS, icon},
             managed_image::{ManagedImageKey, managed_image},
@@ -1051,23 +1051,16 @@ impl Render for Queue {
                             );
 
                             if scrolled {
-                                let entity = cx.entity().downgrade();
-                                let manager = this.drag_drop_manager.clone();
-                                let scroll_handle: ScrollableHandle =
-                                    this.scroll_handle.clone().into();
-
-                                window.on_next_frame(move |window, cx| {
-                                    if let Some(entity) = entity.upgrade() {
-                                        entity.update(cx, |_, cx| {
-                                            schedule_edge_scroll(
-                                                manager,
-                                                scroll_handle,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                });
+                                // guarded, at most one pending frame chain
+                                // (per-event scheduling used to accumulate
+                                // chains: scroll speed multiplied with the
+                                // mouse report rate)
+                                request_edge_scroll(
+                                    this.drag_drop_manager.clone(),
+                                    this.scroll_handle.clone().into(),
+                                    window,
+                                    cx,
+                                );
                             }
 
                             // repaint only when something visible moved (same
@@ -1113,23 +1106,12 @@ impl Render for Queue {
                             );
 
                             if scrolled {
-                                let entity = cx.entity().downgrade();
-                                let manager = this.drag_drop_manager.clone();
-                                let scroll_handle: ScrollableHandle =
-                                    this.scroll_handle.clone().into();
-
-                                window.on_next_frame(move |window, cx| {
-                                    if let Some(entity) = entity.upgrade() {
-                                        entity.update(cx, |_, cx| {
-                                            schedule_edge_scroll(
-                                                manager,
-                                                scroll_handle,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                });
+                                request_edge_scroll(
+                                    this.drag_drop_manager.clone(),
+                                    this.scroll_handle.clone().into(),
+                                    window,
+                                    cx,
+                                );
                             }
 
                             // same gating as the track handler above

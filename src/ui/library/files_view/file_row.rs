@@ -47,7 +47,9 @@ const ART_SIZE: f32 = 20.0;
 
 pub struct FileRowItem {
     flat_row: FlatRow,
-    files_view: Entity<FilesView>,
+    /// Weak on purpose: FilesView 持有全部行实体，行再强持有 view 会成环，
+    /// 把整棵视图树钉在导航历史里无法释放。
+    files_view: WeakEntity<FilesView>,
     is_liked: Option<i64>,
     show_add_to: Entity<bool>,
     add_to: Option<Entity<AddToPlaylist>>,
@@ -66,6 +68,7 @@ impl FileRowItem {
     pub fn new(cx: &mut App, flat_row: FlatRow, files_view: Entity<FilesView>) -> Entity<Self> {
         cx.new(|cx| {
             cx.observe(&files_view, |_, _, cx| cx.notify()).detach();
+            let files_view = files_view.downgrade();
 
             // Row construction is pure in-memory state: the full track row
             // (needed by the context menu) and the file-availability stat are
@@ -264,8 +267,12 @@ impl Render for FileRowItem {
         let has_children = self.flat_row.has_children;
         let track_ref = self.flat_row.track.clone();
 
-        let files_view = self.files_view.clone();
-        let is_selected = self.files_view.read(cx).selection_contains(&path);
+        // 行只在 FilesView 存活期间被渲染；upgrade 失败 = 视图正在释放，
+        // 渲染一个无选中态的朴素行即可。
+        let Some(files_view) = self.files_view.upgrade() else {
+            return div().into_any_element();
+        };
+        let is_selected = files_view.read(cx).selection_contains(&path);
 
         let is_current = is_audio
             && cx
@@ -299,7 +306,7 @@ impl Render for FileRowItem {
         let context_id = ElementId::named_usize("fctx", hash_id);
 
         let batch_items: Option<BatchItems> = {
-            let fv = self.files_view.read(cx);
+            let fv = files_view.read(cx);
             if is_selected && fv.is_multi() {
                 fv.selected_batch.clone()
             } else {
@@ -545,10 +552,13 @@ impl Render for FileRowItem {
                     .into_any_element()
             });
 
-        div().w_full().child(if let Some(add_to) = add_to_element {
-            ctx.child(add_to).into_any_element()
-        } else {
-            ctx.into_any_element()
-        })
+        div()
+            .w_full()
+            .child(if let Some(add_to) = add_to_element {
+                ctx.child(add_to).into_any_element()
+            } else {
+                ctx.into_any_element()
+            })
+            .into_any_element()
     }
 }

@@ -31,12 +31,16 @@ impl TrackView {
                 .get(Table::<Track, TrackColumn>::get_table_name().as_str())
                 .cloned();
 
-            let table_ref = Rc::new(RefCell::new(None::<Entity<Table<Track, TrackColumn>>>));
+            // Weak on purpose: Table 持有的行回调会捕获这个 cell，强引用
+            // Entity 会成环——把整棵表钉在导航历史里无法释放。
+            let table_ref = Rc::new(RefCell::new(None::<WeakEntity<Table<Track, TrackColumn>>>));
             let table_ref_clone = table_ref.clone();
 
             let handler = Rc::new(
                 move |cx: &mut App, id: &(i64, String, Option<i64>, String)| {
-                    if let Some(table) = table_ref_clone.borrow().as_ref() {
+                    if let Some(table) =
+                        table_ref_clone.borrow().as_ref().and_then(|w| w.upgrade())
+                    {
                         let items = table.read(cx).get_items();
                         if let Some(items) = items {
                             // no per-track `Path::exists` probe here: filtering
@@ -81,7 +85,9 @@ impl TrackView {
                     let table_ref = table_ref.clone();
                     move |cx, track| {
                         let table_ref_read = table_ref.borrow();
-                        let Some(table) = table_ref_read.as_ref() else {
+                        let Some(table) =
+                            table_ref_read.as_ref().and_then(|w| w.upgrade())
+                        else {
                             return;
                         };
                         let Some(items) = table.read(cx).get_items() else {
@@ -110,7 +116,7 @@ impl TrackView {
                 initial_scroll_offset,
                 initial_settings.as_ref(),
             );
-            *table_ref.borrow_mut() = Some(table.clone());
+            *table_ref.borrow_mut() = Some(table.downgrade());
 
             super::observe_scan_for_table(cx, &state, table.clone());
 

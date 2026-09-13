@@ -27,7 +27,7 @@ use crate::{
                 AlbumDragData, DragDropItemState, DragDropListConfig, DragDropListManager,
                 DragPreview, DropIndicator, DropPosition, TrackDragData, check_drag_cancelled,
                 handle_external_drag_move, handle_track_drag_move,
-                handle_track_drop, schedule_edge_scroll,
+                handle_track_drop, request_edge_scroll,
             },
             dropdown::dropdown,
             icons::{PLAYLIST, SORT_ASCENDING, SORT_DESCENDING, STAR, icon},
@@ -783,23 +783,13 @@ impl Render for PlaylistView {
                                     );
 
                                     if scrolled {
-                                        let entity = cx.entity().downgrade();
-                                        let manager = this.drag_drop_manager.clone();
-                                        let scroll_handle: ScrollableHandle =
-                                            this.scroll_handle.clone().into();
-
-                                        window.on_next_frame(move |window, cx| {
-                                            if let Some(entity) = entity.upgrade() {
-                                                entity.update(cx, |_, cx| {
-                                                    schedule_edge_scroll(
-                                                        manager,
-                                                        scroll_handle,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }
-                                        });
+                                        // guarded, at most one pending frame chain
+                                        request_edge_scroll(
+                                            this.drag_drop_manager.clone(),
+                                            this.scroll_handle.clone().into(),
+                                            window,
+                                            cx,
+                                        );
                                     }
 
                                     // repaint only when something visible moved:
@@ -848,23 +838,12 @@ impl Render for PlaylistView {
                                     );
 
                                     if scrolled {
-                                        let entity = cx.entity().downgrade();
-                                        let manager = this.drag_drop_manager.clone();
-                                        let scroll_handle: ScrollableHandle =
-                                            this.scroll_handle.clone().into();
-
-                                        window.on_next_frame(move |window, cx| {
-                                            if let Some(entity) = entity.upgrade() {
-                                                entity.update(cx, |_, cx| {
-                                                    schedule_edge_scroll(
-                                                        manager,
-                                                        scroll_handle,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }
-                                        });
+                                        request_edge_scroll(
+                                            this.drag_drop_manager.clone(),
+                                            this.scroll_handle.clone().into(),
+                                            window,
+                                            cx,
+                                        );
                                     }
 
                                     // same gating as the track handler above
@@ -896,7 +875,15 @@ impl Render for PlaylistView {
                                             drag_data,
                                             cx,
                                             |from_idx, to_idx, cx| {
-                                                let item_id = playlist_track_ids[from_idx].playlist_item_id;
+                                                // The list can reload between drag start
+                                                // and drop (async PlaylistUpdated): a
+                                                // stale source index must not panic here.
+                                                let Some(source_row) =
+                                                    playlist_track_ids.get(from_idx)
+                                                else {
+                                                    return;
+                                                };
+                                                let item_id = source_row.playlist_item_id;
 
                                                 let new_position = if to_idx < playlist_track_ids.len() {
                                                     let target_item_id = playlist_track_ids[to_idx].playlist_item_id;
@@ -910,17 +897,19 @@ impl Render for PlaylistView {
                                                         }
                                                     };
                                                     target_item.position
-                                                } else {
-                                                    let last_item_id =
-                                                        playlist_track_ids[playlist_track_ids.len() - 1].playlist_item_id;
-                                                    let last_item = match cx.get_playlist_item(last_item_id) {
+                                                } else if let Some(last_row) = playlist_track_ids.last() {
+                                                    // last row (to_idx beyond the end)
+                                                    let last_item = match cx.get_playlist_item(last_row.playlist_item_id) {
                                                         Ok(item) => item,
                                                         Err(e) => {
-                                                            error!("Failed to move playlist item {}: {}", item_id, e);
+                                                            error!("Failed to move playlist item {}: {}", last_row.playlist_item_id, e);
                                                             return;
                                                         }
                                                     };
                                                     last_item.position + 1
+                                                } else {
+                                                    // empty snapshot: nothing to move against
+                                                    return;
                                                 };
 
                                                 if let Err(e) = cx.move_playlist_item(item_id, new_position)

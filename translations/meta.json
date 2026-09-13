@@ -253,7 +253,7 @@
   },
   "ADD_N_TO_QUEUE": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:158",
+    "definedIn": "src/ui/library/files_view/file_row.rs:161",
     "plural": true,
     "description": null
   },
@@ -1693,7 +1693,7 @@
   },
   "PLAY_N_NOW": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:129",
+    "definedIn": "src/ui/library/files_view/file_row.rs:132",
     "plural": true,
     "description": null
   },
