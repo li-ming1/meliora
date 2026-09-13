@@ -309,13 +309,20 @@ impl CommandPalette {
                 let item = item.clone();
                 let show_clone = show_clone.clone();
                 cx.defer(move |cx| {
-                    if let Some(focus_handle) = &item.focus_handle
-                        && let Err(err) =
-                            cx.update_window(cx.active_window().unwrap(), |_, window, cx| {
+                    if let Some(focus_handle) = &item.focus_handle {
+                        // The active window can disappear between accepting a
+                        // command and this deferred run; degrading to not
+                        // focusing beats panicking the UI thread.
+                        if let Some(window_id) = cx.active_window()
+                            && let Err(err) = cx.update_window(window_id, |_, window, cx| {
                                 focus_handle.focus(window, cx);
                             })
-                    {
-                        error!("Failed to focus window, action may not trigger: {}", err);
+                        {
+                            error!(
+                                "Failed to focus window, action may not trigger: {}",
+                                err
+                            );
+                        }
                     }
 
                     item.action

@@ -166,7 +166,6 @@ impl PlaybackInterface {
 
         let metadata_model = app.global::<Models>().metadata.clone();
         let albumart_model = app.global::<Models>().albumart.clone();
-        let albumart_original_model = app.global::<Models>().albumart_original.clone();
         let queue_model = app.global::<Models>().queue.clone();
 
         let playback_info = app.global::<PlaybackInfo>().clone();
@@ -203,18 +202,8 @@ impl PlaybackInterface {
                             });
                         }
                         PlaybackEvent::AlbumArtUpdate(v) => {
-                            let v_clone = v.clone();
                             albumart_model.update(cx, |m, cx| {
                                 if let Some(v) = v {
-                                    cx.emit(ImageEvent(v))
-                                } else {
-                                    *m = None;
-                                    cx.notify()
-                                }
-                            });
-
-                            albumart_original_model.update(cx, |m, cx| {
-                                if let Some(v) = v_clone {
                                     cx.emit(ImageEvent(v))
                                 } else {
                                     *m = None;

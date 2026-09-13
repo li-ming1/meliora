@@ -66,6 +66,13 @@ impl QrLogin {
     /// Arms the modal for a fresh login; returns the new generation.
     fn begin(&mut self) -> u64 {
         self.generation += 1;
+        // "重新生成"会直接替换旧 state：旧二维码若已上传进图集，这里的
+        // plain-drop 会泄漏瓦片——与 close() 一样推入回收漏斗。
+        if let Some(old) = self.state.take()
+            && let Some(image) = old.image
+        {
+            queue_orphan_tile_drop(image);
+        }
         self.state = Some(QrLoginState {
             image: None,
             phase: QrPhase::Generating,

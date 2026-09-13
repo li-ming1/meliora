@@ -935,6 +935,52 @@ mod tests {
         assert_eq!(plan.kept_by_cache, 0);
     }
 
+    /// Adversarial: one image pushed under two different keys in the same
+    /// batch while the cache still serves it under one of them. The hold
+    /// check must OR across every pushed key, not just the first — this
+    /// locks the "consulted for every key" claim of `plan_tile_reclaims`.
+    #[test]
+    fn multi_key_push_cache_hold_on_any_key_keeps_image() {
+        let mut cache = FakeCache::default();
+        let img = test_image();
+        cache.insert(key(7, 256), img.clone());
+        let element_ref = img.clone();
+        drop(img);
+
+        let orphan_key = RenderCacheKey {
+            key: ManagedImageKey::TrackFile(PathBuf::new()),
+            thumb: u32::MAX,
+        };
+        let plan = run_plan(
+            vec![(key(7, 256), element_ref.clone()), (orphan_key, element_ref)],
+            &cache,
+        );
+        assert!(plan.reclaim.is_empty());
+        assert_eq!(plan.kept_by_cache, 1);
+    }
+
+    /// The full same-batch triple-push sequence: the cache's eviction push
+    /// plus two shared elements' `on_release` pushes of one image. Grouping
+    /// must collapse all three Arcs and reclaim exactly once.
+    #[test]
+    fn cache_evict_and_two_element_releases_in_one_batch_reclaim_once() {
+        let mut cache = FakeCache::default();
+        let img = test_image();
+        cache.insert(key(9, 256), img.clone());
+        let a = img.clone();
+        let b = img.clone();
+        drop(img);
+
+        // The cache evicts (remove + queue) while both elements release.
+        let evicted = cache.remove(&key(9, 256)).unwrap();
+        let plan = run_plan(
+            vec![(key(9, 256), evicted), (key(9, 256), a), (key(9, 256), b)],
+            &cache,
+        );
+        assert_eq!(plan.reclaim.len(), 1);
+        assert_eq!((plan.kept_by_cache, plan.kept_by_holders), (0, 0));
+    }
+
     #[test]
     fn triple_push_in_one_batch_dedups_to_one_reclaim() {
         let img = test_image();

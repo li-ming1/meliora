@@ -65,8 +65,10 @@ pub type ArtistPickerState = Option<(Point<Pixels>, Vec<(i64, SharedString)>)>;
 
 pub struct Models {
     pub metadata: Entity<Metadata>,
+    /// Current-track artwork. The stored *value* stays `None` — the entity is
+    /// used purely as an `ImageEvent` bus for the SMTC controller
+    /// (see `controllers::register_pbc_event_handlers`); never read the value.
     pub albumart: Entity<Option<Arc<RenderImage>>>,
-    pub albumart_original: Entity<Option<Arc<RenderImage>>>,
     /// Cached id set of the "Liked Songs" playlist, loaded once at startup
     /// and re-loaded whenever that playlist changes. Lets track rows check
     /// like state without one DB query per row.
@@ -187,7 +189,6 @@ pub fn build_models(
     debug!("Building models");
     let metadata: Entity<Metadata> = cx.new(|_| Metadata::default());
     let albumart: Entity<Option<Arc<RenderImage>>> = cx.new(|_| None);
-    let albumart_original: Entity<Option<Arc<RenderImage>>> = cx.new(|_| None);
     let queue: Entity<Queue> = cx.new(move |_| queue);
     let scan_state: Entity<ScanEvent> = cx.new(|_| ScanEvent::ScanCompleteIdle);
     let initial_corrupt_path = cx.global::<SettingsGlobal>().initial_corrupt_path.clone();
@@ -284,7 +285,6 @@ pub fn build_models(
     cx.set_global(Models {
         metadata,
         albumart,
-        albumart_original,
         liked_ids,
         available_albums,
         available_artists,

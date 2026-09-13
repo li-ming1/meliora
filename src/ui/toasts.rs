@@ -103,6 +103,10 @@ impl Render for ToastLayer {
             .read(cx)
             .interface
             .reduced_motion;
+        // Read once for the whole layer: render_toast runs per toast per
+        // frame (the progress animation re-renders every frame), and cloning
+        // the whole Theme there just to read one radius is pure waste.
+        let radius_md = px(cx.global::<Theme>().radius_md);
 
         let mut column = div().flex().flex_col().gap(px(8.0)).w(px(360.0));
         for toast in &self.toasts {
@@ -142,6 +146,7 @@ impl Render for ToastLayer {
                 text,
                 track,
                 reduced_motion,
+                radius_md,
                 cx,
             ));
         }
@@ -162,11 +167,11 @@ fn render_toast(
     text: gpui::Rgba,
     track: gpui::Rgba,
     reduced_motion: bool,
+    radius_md: gpui::Pixels,
     cx: &mut Context<ToastLayer>,
 ) -> impl IntoElement {
     let id = active.id;
     let toast = &active.toast;
-    let theme = cx.global::<Theme>().clone();
     let icon_path = match toast.severity {
         Severity::Success => CHECK,
         Severity::Info | Severity::Warning | Severity::Error => ALERT_CIRCLE,
@@ -250,7 +255,7 @@ fn render_toast(
 
     div()
         .occlude()
-        .rounded(px(theme.radius_md))
+        .rounded(radius_md)
         .bg(bg)
         .border_1()
         .border_color(border)
