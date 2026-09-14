@@ -184,11 +184,14 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
 /// 2026-09 logs show unattributable +35..155 MB steps during browsing.
 pub fn log_mem_event(event: &str) {
     let (private, working) = process_memory_mb();
+    let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
     tracing::info!(
         event,
         private_mb = private,
         working_mb = working,
         render_cache_mb = crate::ui::components::managed_image::render_cache_mb(),
+        img_cache_mb = img_mb,
+        img_cache_entries = img_entries,
         "[mem] ui event"
     );
 }
@@ -214,6 +217,8 @@ fn spawn_memory_probe() {
             let covers = disk_cover_cache_mb();
             let render_cache =
                 crate::ui::components::managed_image::render_cache_mb();
+            let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
+            let funnel = crate::ui::components::managed_image::tile_drop_stats();
 
             let step_alert = match baseline {
                 Some((at, from_mb)) if at.elapsed() >= STEP_WINDOW => {
@@ -236,7 +241,9 @@ fn spawn_memory_probe() {
                     step_mb = delta,
                     private_mb = private,
                     render_cache_mb = render_cache,
+                    img_cache_mb = img_mb,
                     covers_mb = covers,
+                    tiles_leaked = funnel.5,
                     "mem step: committed grew in last 10 min"
                 );
             } else {
@@ -248,6 +255,12 @@ fn spawn_memory_probe() {
                     working_mb = working,
                     covers_mb = covers,
                     render_cache_mb = render_cache,
+                    img_cache_mb = img_mb,
+                    img_cache_entries = img_entries,
+                    funnel_pending = funnel.0,
+                    tiles_reclaimed = funnel.2,
+                    tiles_kept_holders = funnel.4,
+                    tiles_leaked = funnel.5,
                     purge_delay0 = purge0,
                     "[mem] periodic"
                 );

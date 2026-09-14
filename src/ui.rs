@@ -3,7 +3,7 @@ pub mod app;
 mod artist_picker;
 mod assets;
 pub mod availability;
-mod caching;
+pub(crate) mod caching;
 mod command_palette;
 pub mod components;
 mod constants;

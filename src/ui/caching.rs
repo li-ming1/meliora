@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, mem::take};
+use std::{
+    collections::VecDeque,
+    mem::take,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use futures::FutureExt;
 use gpui::{
@@ -8,7 +12,23 @@ use gpui::{
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use tracing::{error, trace};
 
-use crate::ui::components::managed_image::queue_orphan_tile_drop;
+use crate::ui::components::managed_image::{image_bytes, queue_orphan_tile_drop};
+
+/// Live footprint of every `MelioraImageCache` instance combined, reported
+/// by the `[mem]` probe. Bytes are credited when an entry's load task first
+/// resolves (see `load`) and debited on eviction / entity release, so the
+/// probe curve attributes the view caches' share of resident memory exactly
+/// instead of leaving it inside the unattributed plateau.
+static IMAGE_CACHE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static IMAGE_CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// (live entries, decoded MiB) across all `MelioraImageCache` instances.
+pub fn image_cache_stats() -> (u64, u64) {
+    (
+        IMAGE_CACHE_ENTRIES.load(Ordering::Relaxed),
+        IMAGE_CACHE_BYTES.load(Ordering::Relaxed) / (1024 * 1024),
+    )
+}
 
 pub fn meliora_cache(
     id: impl Into<ElementId>,
@@ -43,7 +63,9 @@ impl ImageCacheProvider for MelioraImageCacheProvider {
 pub struct MelioraImageCache {
     max_items: usize,
     usage_list: VecDeque<u64>,
-    cache: FxHashMap<u64, (ImageCacheItem, Resource)>,
+    /// (loading task, resource, decoded-pixel bytes credited to the `[mem]`
+    /// probe — stays 0 until the load task resolves).
+    cache: FxHashMap<u64, (ImageCacheItem, Resource, u64)>,
 }
 
 impl MelioraImageCache {
@@ -51,7 +73,9 @@ impl MelioraImageCache {
         cx.new(|cx| {
             trace!("Creating MelioraImageCache");
             cx.on_release(|this: &mut Self, cx| {
-                for (idx, (mut image, resource)) in take(&mut this.cache) {
+                let entries = this.cache.len() as u64;
+                for (idx, (mut image, resource, recorded)) in take(&mut this.cache) {
+                    IMAGE_CACHE_BYTES.fetch_sub(recorded, Ordering::Relaxed);
                     if let Some(Ok(image)) = image.get() {
                         trace!("Dropping image {idx}");
                         queue_orphan_tile_drop(image);
@@ -59,6 +83,7 @@ impl MelioraImageCache {
 
                     ImageSource::Resource(resource).remove_asset(cx);
                 }
+                IMAGE_CACHE_ENTRIES.fetch_sub(entries, Ordering::Relaxed);
             })
             .detach();
 
@@ -95,7 +120,18 @@ impl ImageCache for MelioraImageCache {
                 self.usage_list.push_front(hash);
             }
 
-            return item.0.get();
+            // Credit the entry's decoded pixels once, the first time the
+            // shared load task resolves, so the [mem] probe reports the view
+            // caches' live footprint without scanning per tick.
+            let resolved = item.0.get();
+            if item.2 == 0
+                && let Some(Ok(image)) = &resolved
+            {
+                let bytes = image_bytes(image);
+                item.2 = bytes;
+                IMAGE_CACHE_BYTES.fetch_add(bytes, Ordering::Relaxed);
+            }
+            return resolved;
         }
 
         let load_future = AssetLogger::<ImageAssetLoader>::load(resource.clone(), cx);
@@ -118,6 +154,8 @@ impl ImageCache for MelioraImageCache {
                 queue_orphan_tile_drop(image);
             }
 
+            IMAGE_CACHE_ENTRIES.fetch_sub(1, Ordering::Relaxed);
+            IMAGE_CACHE_BYTES.fetch_sub(image.2, Ordering::Relaxed);
             ImageSource::Resource(image.1).remove_asset(cx);
         }
 
@@ -126,8 +164,10 @@ impl ImageCache for MelioraImageCache {
             (
                 gpui::ImageCacheItem::Loading(task.clone()),
                 resource.clone(),
+                0,
             ),
         );
+        IMAGE_CACHE_ENTRIES.fetch_add(1, Ordering::Relaxed);
         self.usage_list.push_front(hash);
 
         let entity = window.current_view();

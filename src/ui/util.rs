@@ -102,6 +102,7 @@ pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
                         let _ = window.drop_image(image);
                     }));
                     if let Err(payload) = result {
+                        crate::ui::components::managed_image::note_tile_drop_panic();
                         let message = payload
                             .downcast_ref::<&str>()
                             .map(|s| (*s).to_string())

@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -130,7 +131,7 @@ struct RenderCache {
 }
 
 /// Estimated RGBA footprint in bytes of a decoded cover.
-fn image_bytes(image: &RenderImage) -> u64 {
+pub(crate) fn image_bytes(image: &RenderImage) -> u64 {
     let size = image.size(0);
     (size.width.0 as u64) * (size.height.0 as u64) * 4
 }
@@ -156,11 +157,64 @@ static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<(RenderCacheKey, Arc<RenderImage>)
     OnceLock::new();
 
 fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
+    TILE_DROP_STATS.pushed.fetch_add(1, Ordering::Relaxed);
     PENDING_TILE_DROPS
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .push((key, image));
+}
+
+/// Cumulative reclaim-funnel counters for the `[mem]` periodic probe, so the
+/// log curve shows why resident memory sits where it does: how much tile
+/// traffic went through the funnel, what each drain decided, and — most
+/// importantly — how many atlas tiles leaked through a panicked drop (each
+/// permanently pins a ~4 MB shared GPU page, see `patches/UPSTREAM_NOTES.md`).
+pub(crate) struct TileDropStats {
+    pushed: AtomicU64,
+    reclaimed: AtomicU64,
+    kept_by_cache: AtomicU64,
+    kept_by_holders: AtomicU64,
+    leaked_tiles: AtomicU64,
+}
+
+static TILE_DROP_STATS: TileDropStats = TileDropStats {
+    pushed: AtomicU64::new(0),
+    reclaimed: AtomicU64::new(0),
+    kept_by_cache: AtomicU64::new(0),
+    kept_by_holders: AtomicU64::new(0),
+    leaked_tiles: AtomicU64::new(0),
+};
+
+/// Snapshot for the `[mem]` probe: (pending, pushed, reclaimed,
+/// kept_by_cache, kept_by_holders, leaked_tiles).
+// Only the non-test probe consumes this; test builds would flag it dead.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
+    let pending = PENDING_TILE_DROPS
+        .get()
+        .map(|queue| {
+            queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len() as u64
+        })
+        .unwrap_or(0);
+    let s = &TILE_DROP_STATS;
+    let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+    (
+        pending,
+        load(&s.pushed),
+        load(&s.reclaimed),
+        load(&s.kept_by_cache),
+        load(&s.kept_by_holders),
+        load(&s.leaked_tiles),
+    )
+}
+
+/// Records one leaked atlas tile; called by the catch site in `ui::util`.
+pub(crate) fn note_tile_drop_panic() {
+    TILE_DROP_STATS.leaked_tiles.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 把不属于 RENDER_CACHE 的图（如 `MelioraImageCache` 的驱逐/释放、登录二
@@ -193,7 +247,6 @@ fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
 /// atlas tiles may be dropped exactly once; the counters exist so tests can
 /// assert why an image was kept alive.
 #[derive(Default)]
-#[allow(dead_code)] // counters are asserted by tests only
 pub(crate) struct ReclaimPlan {
     pub reclaim: Vec<Arc<RenderImage>>,
     /// Images the render cache still serves under a pushed key: live tiles,
@@ -282,6 +335,16 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     }
 
     let plan = plan_tile_reclaims(batch, |key, image| render_cache_holds(key, image));
+    let stats = &TILE_DROP_STATS;
+    stats
+        .reclaimed
+        .fetch_add(plan.reclaim.len() as u64, Ordering::Relaxed);
+    stats
+        .kept_by_cache
+        .fetch_add(plan.kept_by_cache as u64, Ordering::Relaxed);
+    stats
+        .kept_by_holders
+        .fetch_add(plan.kept_by_holders as u64, Ordering::Relaxed);
     if !plan.reclaim.is_empty() {
         crate::ui::util::reclaim_images_from_app(cx, plan.reclaim);
     }
