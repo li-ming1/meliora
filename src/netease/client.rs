@@ -577,6 +577,16 @@ impl NeteaseClient {
         let http_status = response.status().as_u16() as i64;
         let bytes = response.bytes().await?;
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        // Payload-size telemetry: the parsed `Value` tree costs a multiple of
+        // this, so an endpoint that quietly ships megabytes (toplist carries
+        // per-chart track lists) shows up here before it shows up as a memory
+        // step in the `[mem]` probe.
+        tracing::info!(
+            target: "meliora::netease",
+            endpoint = uri,
+            raw_bytes = bytes.len(),
+            "netease response"
+        );
 
         let code = body.get("code").and_then(Value::as_i64);
         let status = code.unwrap_or(http_status);
