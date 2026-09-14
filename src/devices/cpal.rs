@@ -141,6 +141,7 @@ fn create_stream_internal<T: CpalSample>(
     buffer_size: usize,
     target_gain: Arc<AtomicF64>,
     underruns: Arc<AtomicU64>,
+    primed: Arc<AtomicBool>,
     device_error_message: Arc<Mutex<Option<String>>>,
 ) -> Result<(cpal::Stream, Producer<T>, Arc<AtomicBool>), OpenError> {
     let (prod, mut cons) = RingBuffer::<T>::new(buffer_size);
@@ -158,7 +159,15 @@ fn create_stream_internal<T: CpalSample>(
                 // Zero the tail so an underrun plays silence instead of
                 // whatever stale samples the device buffer still holds.
                 data[read..].fill(T::default());
-                underruns.fetch_add(1, Ordering::Relaxed);
+                // Before the producer's first submit the silence is the
+                // expected open->prime gap (device stream runs while the
+                // pipeline is still preparing the first track), not an
+                // underrun — counting it logged a ~20-callback false burst
+                // at every session start (2026-09 logs). Gate on primed so
+                // the counter only reports real starvation of a fed stream.
+                if primed.load(Ordering::Relaxed) {
+                    underruns.fetch_add(1, Ordering::Relaxed);
+                }
             }
 
             let target = target_gain.load(Ordering::Relaxed);
@@ -198,9 +207,14 @@ impl CpalDevice {
             "CPAL buffer size {buffer_size}, \
             ring buffer {ring_buffer_frames} frames ({buffer_size} samples)",
         );
-        info!("Requesting buffer size: {buffer_size}");
+        info!(
+            "audio ring: {ring_buffer_frames} frames ({} ms) × {channels} ch; device buffer target {} ms",
+            RING_BUFFER_TARGET.as_millis(),
+            DEVICE_BUFFER_TARGET.as_millis()
+        );
         let target_gain = Arc::new(AtomicF64::new(1.0));
         let underruns = Arc::new(AtomicU64::new(0));
+        let primed = Arc::new(AtomicBool::new(false));
         let device_error_message = Arc::new(Mutex::new(None::<String>));
         let (stream, prod, device_errored) = create_stream_internal::<T>(
             &self.device,
@@ -208,6 +222,7 @@ impl CpalDevice {
             buffer_size,
             target_gain.clone(),
             underruns.clone(),
+            primed.clone(),
             device_error_message.clone(),
         )?;
 
@@ -224,6 +239,7 @@ impl CpalDevice {
             // worst case: a full pipeline staging buffer, interleaved
             interleave_buffer: Vec::with_capacity(DEFAULT_BUFFER_FRAMES * channels as usize),
             underruns,
+            primed,
             underruns_reported: 0,
             last_underrun_log: Instant::now(),
             stream_started_at: Instant::now(),
@@ -297,6 +313,10 @@ where
     pub dither: u64,
     pub interleave_buffer: Vec<T>,
     pub underruns: Arc<AtomicU64>,
+    /// Cleared until the producer's first successful submit (and again on
+    /// `reset`): the realtime callback counts underruns only while this is
+    /// set, so the open->prime silence gap is not counted as starvation.
+    pub primed: Arc<AtomicBool>,
     /// keep track of the last log, so we don't log the same underrun multiple times
     underruns_reported: u64,
     last_underrun_log: Instant,
@@ -375,6 +395,7 @@ where
             self.buffer_size,
             self.target_gain.clone(),
             self.underruns.clone(),
+            self.primed.clone(),
             self.device_error_message.clone(),
         )?;
 
@@ -385,6 +406,8 @@ where
         self.stream_started_at = Instant::now();
         self.idle_since = None;
         self.logged_first_submit = false;
+        // The rebuilt stream is unprimed until samples flow again.
+        self.primed.store(false, Ordering::Relaxed);
 
         if pause_pending && let Err(e) = self.stream.pause() {
             return Err(ResetError::Unknown(e.to_string()));
@@ -494,6 +517,9 @@ where
 
         write_bounded_planar(std::slice::from_mut(&mut self.ring_buf), &[&self.interleave_buffer], self.interleave_buffer.len())
             .map_err(|_| SubmissionError::WriteTimeout)?;
+        // Samples are in the ring: from here on a starving callback is a
+        // real underrun and gets counted.
+        self.primed.store(true, Ordering::Relaxed);
 
         Ok(read)
     }
