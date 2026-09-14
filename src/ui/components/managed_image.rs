@@ -146,6 +146,16 @@ pub fn render_cache_mb() -> u64 {
     cache.bytes / (1024 * 1024)
 }
 
+/// Entry count of the decoded-cover LRU. Reported next to `render_cache_mb`
+/// so the [mem] probe can tell a growing entry set (per-track cache churn)
+/// from a growing per-entry size.
+pub fn render_cache_entries() -> usize {
+    let Some(cache) = RENDER_CACHE.get() else {
+        return 0;
+    };
+    cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cache.len()
+}
+
 /// Covers whose atlas tiles still need dropping, tagged with their cache key.
 /// This queue is the SINGLE reclaim funnel: cache evictions/replacements and
 /// element `on_release` both push here, and `drain_pending_tile_drops` (event
@@ -422,15 +432,18 @@ impl ManagedImageKey {
         &self,
         pool: SqlitePool,
         thumb_size: u32,
+        use_cache: bool,
     ) -> anyhow::Result<Option<Arc<RenderImage>>> {
-        if thumb_size > 0
+        if use_cache
+            && thumb_size > 0
             && let Some(image) = render_cache_lookup(self, thumb_size)
         {
             return Ok(Some(image));
         }
 
         let decoded = self.retrieve_uncached(pool, thumb_size).await?;
-        if thumb_size > 0
+        if use_cache
+            && thumb_size > 0
             && let Some(image) = &decoded
         {
             render_cache_insert(self.clone(), thumb_size, image.clone());
@@ -582,6 +595,12 @@ pub struct ManagedImage {
     /// Decodes cheaply so grid/list art never holds a full-resolution RGBA
     /// buffer just to paint a small tile (was: GB-scale working set).
     thumb_size: u32,
+    /// Whether decodes may live in `RENDER_CACHE` (default). Images painted
+    /// exactly once — the now-playing bar's per-track cover — must opt out:
+    /// each track's unique URL would otherwise add a fresh cache entry and
+    /// atlas tile whose reclamation waits on the 64-entry LRU, the measured
+    /// per-track commit ratchet of the 2026-09-14 soak.
+    cache: bool,
 }
 
 impl ManagedImage {
@@ -599,6 +618,14 @@ impl ManagedImage {
     /// Downscale to a square of at most `size` pixels (grid tiles).
     pub fn thumb_max(mut self, size: u32) -> Self {
         self.thumb_size = size;
+        self
+    }
+
+    /// Skips `RENDER_CACHE` for this image: decoded once for this element
+    /// instance, its atlas tile is reclaimed through the funnel as soon as
+    /// the element unmounts instead of pinning the page until LRU eviction.
+    pub fn uncached(mut self) -> Self {
+        self.cache = false;
         self
     }
 }
@@ -638,6 +665,7 @@ impl Element for ManagedImage {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
+        let use_cache = self.cache;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
@@ -645,7 +673,7 @@ impl Element for ManagedImage {
             let task_key = key.clone();
 
             let handle = crate::RUNTIME.spawn(async move {
-                let result = task_key.retrieve(pool, thumb_size).await;
+                let result = task_key.retrieve(pool, thumb_size, use_cache).await;
                 let image = match &result {
                     Ok(img) => img.clone(),
                     Err(_) => None,
@@ -814,6 +842,7 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         style: StyleRefinement::default(),
         object_fit: ObjectFit::Cover,
         thumb_size: 0,
+        cache: true,
     }
 }
 

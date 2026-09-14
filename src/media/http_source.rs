@@ -41,6 +41,11 @@ use crate::media::{symphonia::SymphoniaProvider, traits::MediaStream};
 static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
     zed_reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        // Streaming hops hosts once per track; without explicit caps the pool
+        // defaults to 90 s idle keep-alive with unlimited idle connections
+        // per host (each pinning hyper's read buffer).
+        .pool_max_idle_per_host(1)
+        .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| zed_reqwest::Client::new())

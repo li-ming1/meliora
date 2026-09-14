@@ -533,6 +533,7 @@ impl Render for InfoSection {
                                                         key.clone(),
                                                     )
                                                     .thumb_max(256)
+                                                    .uncached()
                                                     .w(px(256.0))
                                                     .h(px(256.0))
                                                     .rounded(px(theme.radius_lg))
@@ -547,7 +548,8 @@ impl Render for InfoSection {
                                         .h(px(36.0))
                                         .object_fit(ObjectFit::Fill)
                                         .rounded(px(theme.radius_sm))
-                                        .thumb(),
+                                        .thumb()
+                                        .uncached(),
                                 )
                             }),
                     )

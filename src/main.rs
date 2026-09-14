@@ -217,6 +217,8 @@ fn spawn_memory_probe() {
             let covers = disk_cover_cache_mb();
             let render_cache =
                 crate::ui::components::managed_image::render_cache_mb();
+            let render_cache_entries =
+                crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
 
@@ -255,6 +257,7 @@ fn spawn_memory_probe() {
                     working_mb = working,
                     covers_mb = covers,
                     render_cache_mb = render_cache,
+                    render_cache_entries = render_cache_entries,
                     img_cache_mb = img_mb,
                     img_cache_entries = img_entries,
                     funnel_pending = funnel.0,
