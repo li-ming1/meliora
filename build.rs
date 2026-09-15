@@ -35,6 +35,14 @@ fn version_id_from_git() -> Result<String> {
 }
 
 fn main() -> Result<()> {
+    // The [mem] probe calls mimalloc's statistics API (mi_process_info /
+    // mi_collect) via a bare extern block; the symbols live in the statically
+    // linked mimalloc.lib, whose objects carry DLL-style export decorations,
+    // so MSVC remarks LNK4217/LNK4286 on every reference. The import is
+    // exactly what we want — silence the remark instead of the feature.
+    println!("cargo:rustc-link-arg-bins=/IGNORE:4217");
+    println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
+
     // set build time information
     let build = Build::builder()
         .build_timestamp(true)

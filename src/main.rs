@@ -195,6 +195,8 @@ unsafe extern "C" {
         peak_commit: *mut usize,
         page_faults: *mut usize,
     );
+
+    fn mi_collect(force: bool);
 }
 
 fn mimalloc_memory_mb() -> (u64, u64) {
@@ -220,6 +222,18 @@ fn mimalloc_memory_mb() -> (u64, u64) {
         );
     }
     (commit as u64 / (1024 * 1024), rss as u64 / (1024 * 1024))
+}
+
+/// Forces a full purge and reports how many MiB of committed heap it bought
+/// back. A large reclaim means the per-track ratchet is idle-page
+/// fragmentation the allocator simply hadn't decommitted yet (harmless — the
+/// pages get reused); a ~0 reclaim at a rising commit means live allocations
+/// are accumulating and the leak is real.
+fn mimalloc_force_collect_reclaim_mb(before: u64) -> u64 {
+    // SAFETY: stats-adjacent maintenance call; safe per mimalloc docs.
+    unsafe { mi_collect(true) };
+    let (after, _) = mimalloc_memory_mb();
+    before.saturating_sub(after)
 }
 
 /// Samples and logs process memory at a named low-frequency UI event so a
@@ -255,6 +269,7 @@ fn spawn_memory_probe() {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut baseline: Option<(std::time::Instant, u64)> = None;
+        let mut tick_count: u64 = 0;
         loop {
             tick.tick().await;
             let (private, working) = process_memory_mb();
@@ -266,6 +281,13 @@ fn spawn_memory_probe() {
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
             let (mi_commit_mb, mi_rss_mb) = mimalloc_memory_mb();
+            // Every 10th sample (~5 min), force a full purge and log what it
+            // bought back: large reclaim = idle-page fragmentation, ~0 = the
+            // growth is live data and the leak is real.
+            tick_count += 1;
+            let mi_collect_reclaim_mb = (tick_count % 10 == 0).then(|| {
+                mimalloc_force_collect_reclaim_mb(mi_commit_mb)
+            });
 
             let step_alert = match baseline {
                 Some((at, from_mb)) if at.elapsed() >= STEP_WINDOW => {
@@ -302,6 +324,7 @@ fn spawn_memory_probe() {
                     working_mb = working,
                     mi_commit_mb = mi_commit_mb,
                     mi_rss_mb = mi_rss_mb,
+                    mi_collect_reclaim_mb = mi_collect_reclaim_mb,
                     covers_mb = covers,
                     render_cache_mb = render_cache,
                     render_cache_entries = render_cache_entries,
