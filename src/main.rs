@@ -178,6 +178,50 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
     }
 }
 
+// mimalloc's own accounting, in MiB: `(committed, rss)`. Sampled next to the
+// `[mem]` probe so per-track commit growth splits into "the allocator holds
+// it" (mi_commit climbs in lockstep with private_mb — retention/fragmentation
+// inside the heap) versus "something outside the heap grew" (private_mb
+// climbs while mi_commit stays flat — D3D/driver territory).
+#[link(name = "mimalloc")]
+unsafe extern "C" {
+    fn mi_process_info(
+        elapsed_msecs: *mut usize,
+        user_msecs: *mut usize,
+        system_msecs: *mut usize,
+        current_rss: *mut usize,
+        peak_rss: *mut usize,
+        current_commit: *mut usize,
+        peak_commit: *mut usize,
+        page_faults: *mut usize,
+    );
+}
+
+fn mimalloc_memory_mb() -> (u64, u64) {
+    let mut elapsed: usize = 0;
+    let mut user: usize = 0;
+    let mut system: usize = 0;
+    let mut rss: usize = 0;
+    let mut peak_rss: usize = 0;
+    let mut commit: usize = 0;
+    let mut peak_commit: usize = 0;
+    let mut page_faults: usize = 0;
+    // SAFETY: all pointers are valid out-params; the call is pure statistics.
+    unsafe {
+        mi_process_info(
+            &mut elapsed,
+            &mut user,
+            &mut system,
+            &mut rss,
+            &mut peak_rss,
+            &mut commit,
+            &mut peak_commit,
+            &mut page_faults,
+        );
+    }
+    (commit as u64 / (1024 * 1024), rss as u64 / (1024 * 1024))
+}
+
 /// Samples and logs process memory at a named low-frequency UI event so a
 /// later `[mem]` step can be attributed to the user action that preceded it:
 /// the 30-second probe alone cannot tell browsing from playback, and the
@@ -221,6 +265,7 @@ fn spawn_memory_probe() {
                 crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
+            let (mi_commit_mb, mi_rss_mb) = mimalloc_memory_mb();
 
             let step_alert = match baseline {
                 Some((at, from_mb)) if at.elapsed() >= STEP_WINDOW => {
@@ -255,6 +300,8 @@ fn spawn_memory_probe() {
                 tracing::info!(
                     private_mb = private,
                     working_mb = working,
+                    mi_commit_mb = mi_commit_mb,
+                    mi_rss_mb = mi_rss_mb,
                     covers_mb = covers,
                     render_cache_mb = render_cache,
                     render_cache_entries = render_cache_entries,
