@@ -2889,7 +2889,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2980,7 +2980,7 @@ dependencies = [
 [[package]]
 name = "gpui_ce_util"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "anyhow",
  "log",
@@ -2990,7 +2990,7 @@ dependencies = [
 [[package]]
 name = "gpui_collections"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "gpui_ce_util",
  "indexmap",
@@ -3000,7 +3000,7 @@ dependencies = [
 [[package]]
 name = "gpui_derive_refineable"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3010,7 +3010,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3061,7 +3061,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3111,7 +3111,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -3122,7 +3122,7 @@ dependencies = [
 [[package]]
 name = "gpui_media"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "anyhow",
  "bindgen 0.71.1",
@@ -3137,7 +3137,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -3150,7 +3150,7 @@ dependencies = [
 [[package]]
 name = "gpui_refineable"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "gpui_derive_refineable",
 ]
@@ -3158,7 +3158,7 @@ dependencies = [
 [[package]]
 name = "gpui_scheduler"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "async-task",
  "backtrace",
@@ -3173,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "schemars",
  "serde",
@@ -3183,7 +3183,7 @@ dependencies = [
 [[package]]
 name = "gpui_sum_tree"
 version = "0.2.2"
-source = "git+https://github.com/gpui-ce/gpui-ce#ae7c41157feb180ce096cd1afdb2d6b48850b539"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "heapless 0.9.3",
  "log",
@@ -3194,7 +3194,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3216,7 +3216,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3246,7 +3246,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/gpui-ce/gpui-ce#c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+source = "git+https://github.com/gpui-ce/gpui-ce?rev=ae7c41157feb180ce096cd1afdb2d6b48850b539#ae7c41157feb180ce096cd1afdb2d6b48850b539"
 dependencies = [
  "accesskit",
  "accesskit_windows",
