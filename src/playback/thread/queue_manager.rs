@@ -190,10 +190,13 @@ pub enum UndoResult {
 /// PlaybackThread.
 pub struct QueueManager {
     playback_settings: PlaybackSettings,
-    /// The current queue. Shared with the UI thread for display.
-    queue: Arc<RwLock<Vec<QueueItemData>>>,
+    /// The current queue. Shared with the UI thread for display. The inner
+    /// `Arc` makes session snapshots and undo snapshots refcount grabs:
+    /// mutations take `Arc::make_mut` so a copy only happens when a snapshot
+    /// is actually still alive (copy-on-write).
+    queue: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
     /// If shuffled, this holds the original (unshuffled) queue order.
-    original_queue: Vec<QueueItemData>,
+    original_queue: Arc<Vec<QueueItemData>>,
     /// Whether shuffle mode is enabled.
     shuffle: bool,
     /// Index of the next track to play.
@@ -283,9 +286,8 @@ impl QueueManager {
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
-                *queue = Arc::try_unwrap(old_queue).unwrap_or_else(|shared| (*shared).clone());
-                self.original_queue =
-                    Arc::try_unwrap(old_original_queue).unwrap_or_else(|shared| (*shared).clone());
+                *queue = old_queue;
+                self.original_queue = old_original_queue;
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
 
@@ -298,6 +300,7 @@ impl QueueManager {
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let queue = Arc::make_mut(&mut queue);
 
                 let mut queue_items = queue_items.into_vec();
                 queue_items.sort_unstable_by_key(|(idx, _)| *idx);
@@ -305,16 +308,17 @@ impl QueueManager {
                     queue.insert(idx, item);
                 }
 
+                let original_queue = Arc::make_mut(&mut self.original_queue);
                 let mut original_queue_items = original_queue_items.into_vec();
                 original_queue_items.sort_unstable_by_key(|(idx, _)| *idx);
                 for (idx, item) in original_queue_items {
-                    self.original_queue.insert(idx, item);
+                    original_queue.insert(idx, item);
                 }
 
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
 
-                Self::undo_result_from_state(&queue, self.queue_next, self.shuffle)
+                Self::undo_result_from_state(queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::Inserted {
                 queue_indices,
@@ -323,6 +327,7 @@ impl QueueManager {
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let queue = Arc::make_mut(&mut queue);
 
                 let mut queue_indices = queue_indices.into_vec();
                 queue_indices.sort_unstable_by(|a, b| b.cmp(a));
@@ -330,16 +335,17 @@ impl QueueManager {
                     queue.remove(idx);
                 }
 
+                let original_queue = Arc::make_mut(&mut self.original_queue);
                 let mut original_queue_indices = original_queue_indices.into_vec();
                 original_queue_indices.sort_unstable_by(|a, b| b.cmp(a));
                 for idx in original_queue_indices {
-                    self.original_queue.remove(idx);
+                    original_queue.remove(idx);
                 }
 
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
 
-                Self::undo_result_from_state(&queue, self.queue_next, self.shuffle)
+                Self::undo_result_from_state(queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::Moved {
                 original,
@@ -348,6 +354,7 @@ impl QueueManager {
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let queue = Arc::make_mut(&mut queue);
 
                 let item = queue.remove(new);
                 queue.insert(original, item);
@@ -355,7 +362,7 @@ impl QueueManager {
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
 
-                Self::undo_result_from_state(&queue, self.queue_next, self.shuffle)
+                Self::undo_result_from_state(queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::MovedMany {
                 items,
@@ -364,6 +371,7 @@ impl QueueManager {
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let queue = Arc::make_mut(&mut queue);
 
                 for _ in 0..items.len() {
                     if destination < queue.len() {
@@ -380,7 +388,7 @@ impl QueueManager {
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
 
-                Self::undo_result_from_state(&queue, self.queue_next, self.shuffle)
+                Self::undo_result_from_state(queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::Shuffled) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
@@ -394,9 +402,7 @@ impl QueueManager {
                 previous_queue_next,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
-                let restored =
-                    Arc::try_unwrap(shuffled_queue).unwrap_or_else(|shared| (*shared).clone());
-                self.original_queue = std::mem::replace(&mut *queue, restored);
+                self.original_queue = std::mem::replace(&mut *queue, shuffled_queue);
                 self.queue_next = previous_queue_next;
                 self.shuffle = true;
 
@@ -413,7 +419,7 @@ impl QueueManager {
     }
 
     pub fn new(
-        queue: Arc<RwLock<Vec<QueueItemData>>>,
+        queue: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
         playback_settings: PlaybackSettings,
         session: PlaybackSessionData,
         storage_tx: tokio::sync::watch::Sender<PlaybackSessionData>,
@@ -431,9 +437,9 @@ impl QueueManager {
             let original_queue = if shuffle && session_original_queue.len() == queue_len {
                 session_original_queue
             } else if shuffle {
-                queue.clone()
+                Arc::clone(&queue)
             } else {
-                Vec::new()
+                Arc::new(Vec::new())
             };
 
             (queue_len, original_queue)
@@ -499,7 +505,7 @@ impl QueueManager {
         let Ok(mut guard) = self.queue.write() else {
             return false;
         };
-        match guard.get_mut(position) {
+        match Arc::make_mut(&mut guard).get_mut(position) {
             Some(item) => {
                 item.replace_path(path);
                 true
@@ -603,7 +609,7 @@ impl QueueManager {
                     // The wrap reshuffles the whole queue, so every recorded
                     // undo entry's indices refer to a stale ordering; applying
                     // them later would remove or re-insert the wrong items.
-                    queue.shuffle(&mut rng());
+                    Arc::make_mut(&mut queue).shuffle(&mut rng());
                     self.undo_stack.clear();
                 }
                 if let Some(index) = Self::first_playable_index(&queue) {
@@ -672,7 +678,7 @@ impl QueueManager {
                     if self.shuffle {
                         // Same stale-undo concern as the wrap in `next()`:
                         // recorded indices refer to the pre-reshuffle ordering.
-                        queue.shuffle(&mut rng());
+                        Arc::make_mut(&mut queue).shuffle(&mut rng());
                         self.undo_stack.clear();
                     }
                     Self::last_playable_index(&queue)
@@ -753,10 +759,10 @@ impl QueueManager {
 
         if self.shuffle {
             original_queue_indices.push(self.original_queue.len());
-            self.original_queue.push(item.clone());
+            Arc::make_mut(&mut self.original_queue).push(item.clone());
         }
 
-        queue.push(item);
+        Arc::make_mut(&mut queue).push(item);
 
         let index = queue.len() - 1;
 
@@ -792,14 +798,14 @@ impl QueueManager {
 
         if self.shuffle {
             let original_start = self.original_queue.len();
-            self.original_queue.extend(items.clone());
+            Arc::make_mut(&mut self.original_queue).extend(items.clone());
             original_queue_indices.extend(original_start..original_start + items_len);
 
             let mut shuffled = items;
             shuffled.shuffle(&mut rng());
-            queue.extend(shuffled);
+            Arc::make_mut(&mut queue).extend(shuffled);
         } else {
-            queue.extend(items);
+            Arc::make_mut(&mut queue).extend(items);
         }
 
         drop(queue);
@@ -827,10 +833,10 @@ impl QueueManager {
 
         if self.shuffle {
             original_queue_indices.push(self.original_queue.len());
-            self.original_queue.push(item.clone());
+            Arc::make_mut(&mut self.original_queue).push(item.clone());
         }
 
-        queue.insert(insert_pos, item);
+        Arc::make_mut(&mut queue).insert(insert_pos, item);
 
         drop(queue);
 
@@ -875,11 +881,11 @@ impl QueueManager {
 
         if self.shuffle {
             let original_start = self.original_queue.len();
-            self.original_queue.extend(items.clone());
+            Arc::make_mut(&mut self.original_queue).extend(items.clone());
             original_queue_indices.extend(original_start..original_start + items_len);
         }
 
-        queue.splice(insert_pos..insert_pos, items);
+        Arc::make_mut(&mut queue).splice(insert_pos..insert_pos, items);
 
         drop(queue);
 
@@ -918,13 +924,13 @@ impl QueueManager {
             return DequeueResult::Unchanged;
         }
 
-        let removed = queue.remove(index);
+        let removed = Arc::make_mut(&mut queue).remove(index);
         let mut original_queue_items = SmallVec::new();
 
         if self.shuffle
             && let Some(pos) = self.original_queue.iter().position(|item| item == &removed)
         {
-            let original_removed = self.original_queue.remove(pos);
+            let original_removed = Arc::make_mut(&mut self.original_queue).remove(pos);
             original_queue_items.push((pos, original_removed));
         }
 
@@ -998,12 +1004,12 @@ impl QueueManager {
         let mut removed_original_items: SmallVec<[(usize, QueueItemData); 1]> = SmallVec::new();
 
         for &idx in indices.iter().rev() {
-            let item = queue.remove(idx);
+            let item = Arc::make_mut(&mut queue).remove(idx);
 
             if self.shuffle
                 && let Some(pos) = self.original_queue.iter().position(|q| q == &item)
             {
-                let orig_item = self.original_queue.remove(pos);
+                let orig_item = Arc::make_mut(&mut self.original_queue).remove(pos);
                 removed_original_items.push((pos, orig_item));
             }
 
@@ -1071,8 +1077,11 @@ impl QueueManager {
             return MoveResult::Unchanged;
         }
 
-        let item = queue.remove(from);
-        queue.insert(to, item);
+        {
+            let queue = Arc::make_mut(&mut queue);
+            let item = queue.remove(from);
+            queue.insert(to, item);
+        }
 
         let res = if let Some(current) = self.queue_next.checked_sub(1) {
             if from == current {
@@ -1156,16 +1165,19 @@ impl QueueManager {
 
         // Record original positions and items, then remove in reverse order
         let mut original_items: SmallVec<[(usize, QueueItemData); 2]> = SmallVec::new();
-        for &idx in indices.iter().rev() {
-            let item = queue.remove(idx);
-            original_items.push((idx, item));
-        }
-        // original_items is in reverse order, reverse to get ascending order
-        original_items.reverse();
+        {
+            let queue = Arc::make_mut(&mut queue);
+            for &idx in indices.iter().rev() {
+                let item = queue.remove(idx);
+                original_items.push((idx, item));
+            }
+            // original_items is in reverse order, reverse to get ascending order
+            original_items.reverse();
 
-        // Insert all items at the destination
-        for (i, (_, item)) in original_items.iter().enumerate() {
-            queue.insert(insert_at + i, item.clone());
+            // Insert all items at the destination
+            for (i, (_, item)) in original_items.iter().enumerate() {
+                queue.insert(insert_at + i, item.clone());
+            }
         }
 
         // Adjust current position
@@ -1220,11 +1232,11 @@ impl QueueManager {
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
-        // Snapshot by taking the live Vecs out instead of cloning: the write lock is held for the
+        // Snapshot by taking the live Arcs out instead of cloning: the write lock is held for the
         // whole swap so readers never observe the empty intermediate state, and the undo stack
-        // gets sole ownership (so `Arc::try_unwrap` at undo time never deep-copies either).
-        let old_queue = Arc::new(take(&mut *queue));
-        let old_original_queue = Arc::new(take(&mut self.original_queue));
+        // gets sole ownership (so the next mutation's `make_mut` never deep-copies either).
+        let old_queue = take(&mut *queue);
+        let old_original_queue = take(&mut self.original_queue);
 
         if self.shuffle {
             // Consume `items` by value: cloning it twice per replace put three
@@ -1232,11 +1244,11 @@ impl QueueManager {
             let mut shuffled = items.clone();
             shuffled.shuffle(&mut rng());
 
-            self.original_queue = items;
-            *queue = shuffled;
+            self.original_queue = Arc::new(items);
+            *queue = Arc::new(shuffled);
         } else {
-            self.original_queue.clear();
-            *queue = items;
+            self.original_queue = Arc::new(Vec::new());
+            *queue = Arc::new(items);
         }
 
         let first_item = Self::first_playable_index(&queue).map(|idx| queue[idx].clone());
@@ -1283,18 +1295,18 @@ impl QueueManager {
             .flatten();
 
         // take-based snapshots, same rationale as replace_queue: no full-queue copy
-        let queue_clone = Arc::new(take(&mut *queue));
-        let old_original_queue = Arc::new(take(&mut self.original_queue));
+        let queue_clone = take(&mut *queue);
+        let old_original_queue = take(&mut self.original_queue);
 
-        queue.clear();
-        self.original_queue.clear();
+        Arc::make_mut(&mut queue).clear();
+        Arc::make_mut(&mut self.original_queue).clear();
 
         if let Some(current_item) = current_item {
-            queue.push(current_item.clone());
+            Arc::make_mut(&mut queue).push(current_item.clone());
             self.queue_next = 1;
 
             if self.shuffle {
-                self.original_queue.push(current_item);
+                Arc::make_mut(&mut self.original_queue).push(current_item);
             }
         } else {
             self.queue_next = 0;
@@ -1325,11 +1337,11 @@ impl QueueManager {
             self.shuffle = !self.shuffle;
 
             if self.shuffle {
-                self.original_queue = queue.clone();
+                self.original_queue = Arc::clone(&queue);
 
                 let start = self.queue_next.min(queue.len());
                 if start < queue.len() {
-                    queue[start..].shuffle(&mut rng());
+                    Arc::make_mut(&mut queue)[start..].shuffle(&mut rng());
                 }
 
                 drop(queue);
@@ -1356,7 +1368,7 @@ impl QueueManager {
 
                 // take the shuffled Vec as the undo snapshot instead of cloning it:
                 // its contents move into the Arc either way, this just skips the copy
-                let shuffled_queue = Arc::new(take(&mut *queue));
+                let shuffled_queue = take(&mut *queue);
                 *queue = take(&mut self.original_queue);
                 // Only remap the cursor when there was a current track; with
                 // nothing playing (or a stale past-end cursor) keep queue_next
@@ -1433,12 +1445,12 @@ impl QueueManager {
 
     /// Take and send a consistent queue snapshot to the session storage worker.
     ///
-    /// This deep-copies the queue (and original queue) under the read lock —
-    /// the price of handing the worker a consistent snapshot of a live `Vec`.
-    /// Call sites debounce to keep it off burst paths.
+    /// With the copy-on-write queue this is two refcount bumps under the read
+    /// lock — the worker serializes from its own ref after the lock is
+    /// released. Call sites debounce to keep it off burst paths.
     fn send_session_with_queue(&mut self) {
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
-        let queue_snapshot = queue.clone();
+        let queue_snapshot = Arc::clone(&queue);
         let queue_position = self
             .queue_next
             .checked_sub(1)
@@ -1483,8 +1495,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     struct QueueManagerState {
-        queue: Vec<QueueItemData>,
-        original_queue: Vec<QueueItemData>,
+        queue: Arc<Vec<QueueItemData>>,
+        original_queue: Arc<Vec<QueueItemData>>,
         queue_next: usize,
         shuffle: bool,
     }
@@ -1499,7 +1511,7 @@ mod tests {
     }
 
     fn manager_with_queue(items: Vec<QueueItemData>) -> QueueManager {
-        let queue = Arc::new(RwLock::new(items));
+        let queue = Arc::new(RwLock::new(Arc::new(items)));
         let (storage_tx, _storage_rx) = watch::channel(PlaybackSessionData::default());
 
         QueueManager::new(

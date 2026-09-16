@@ -889,31 +889,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:986",
+    "definedIn": "src/ui/kugou.rs:985",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:998",
+    "definedIn": "src/ui/kugou.rs:997",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1186",
+    "definedIn": "src/ui/kugou.rs:1185",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1191",
+    "definedIn": "src/ui/kugou.rs:1190",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1012",
+    "definedIn": "src/ui/kugou.rs:1011",
     "plural": false,
     "description": null
   },
@@ -1099,7 +1099,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1196",
+    "definedIn": "src/ui/kugou.rs:1195",
     "plural": false,
     "description": null
   },
@@ -1243,31 +1243,31 @@
   },
   "NETEASE_LIKE_ADDED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:779",
+    "definedIn": "src/ui/netease.rs:778",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:785",
+    "definedIn": "src/ui/netease.rs:784",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:821",
+    "definedIn": "src/ui/netease.rs:820",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:827",
+    "definedIn": "src/ui/netease.rs:826",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:792",
+    "definedIn": "src/ui/netease.rs:791",
     "plural": false,
     "description": null
   },
@@ -1303,7 +1303,7 @@
   },
   "NETEASE_LOGIN_REQUIRED_LIKE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:754",
+    "definedIn": "src/ui/netease.rs:753",
     "plural": false,
     "description": null
   },
@@ -1483,7 +1483,7 @@
   },
   "NETEASE_UNLIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:834",
+    "definedIn": "src/ui/netease.rs:833",
     "plural": false,
     "description": null
   },
@@ -1543,7 +1543,7 @@
   },
   "PALETTE_SHOW_MORE": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:717",
+    "definedIn": "src/ui/components/palette/finder.rs:751",
     "plural": true,
     "description": null
   },
@@ -2197,55 +2197,55 @@
   },
   "STATS_EMPTY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1069",
+    "definedIn": "src/ui/settings/stats.rs:1074",
     "plural": false,
     "description": null
   },
   "STATS_HEATMAP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:707",
+    "definedIn": "src/ui/settings/stats.rs:712",
     "plural": false,
     "description": null
   },
   "STATS_HOURS_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:898",
+    "definedIn": "src/ui/settings/stats.rs:903",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_LESS": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:672",
+    "definedIn": "src/ui/settings/stats.rs:677",
     "plural": false,
     "description": null
   },
   "STATS_LEGEND_MORE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:689",
+    "definedIn": "src/ui/settings/stats.rs:694",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_STREAK": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:522",
+    "definedIn": "src/ui/settings/stats.rs:527",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_TODAY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:520",
+    "definedIn": "src/ui/settings/stats.rs:525",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_TOTAL": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:519",
+    "definedIn": "src/ui/settings/stats.rs:524",
     "plural": false,
     "description": null
   },
   "STATS_OVERVIEW_WEEK": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:521",
+    "definedIn": "src/ui/settings/stats.rs:526",
     "plural": false,
     "description": null
   },
@@ -2293,13 +2293,13 @@
   },
   "STATS_TOP_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1014",
+    "definedIn": "src/ui/settings/stats.rs:1019",
     "plural": false,
     "description": null
   },
   "STATS_UNIT_DAY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:342",
+    "definedIn": "src/ui/settings/stats.rs:347",
     "plural": false,
     "description": null
   },
@@ -2323,19 +2323,19 @@
   },
   "STATS_WD_FRI": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:579",
+    "definedIn": "src/ui/settings/stats.rs:584",
     "plural": false,
     "description": null
   },
   "STATS_WD_MON": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:575",
+    "definedIn": "src/ui/settings/stats.rs:580",
     "plural": false,
     "description": null
   },
   "STATS_WD_WED": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:577",
+    "definedIn": "src/ui/settings/stats.rs:582",
     "plural": false,
     "description": null
   },

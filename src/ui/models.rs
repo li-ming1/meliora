@@ -151,7 +151,7 @@ impl Global for PlaybackInfo {}
 
 #[derive(Debug, Clone)]
 pub struct Queue {
-    pub data: Arc<RwLock<Vec<QueueItemData>>>,
+    pub data: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
     pub position: usize,
 }
 

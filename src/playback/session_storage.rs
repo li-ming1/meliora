@@ -1,4 +1,4 @@
-use std::{io::BufReader, path::PathBuf};
+use std::{io::BufReader, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt, sync::watch};
@@ -6,10 +6,14 @@ use tracing::error;
 
 use crate::playback::{events::RepeatState, queue::QueueItemData};
 
+/// Queue snapshots are `Arc`-shared between the playback thread and this
+/// worker: a session send bumps refcounts instead of deep-copying a
+/// 100k-item queue, and the worker serializes its own ref without blocking
+/// further sends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackSessionData {
-    pub queue: Vec<QueueItemData>,
-    pub original_queue: Vec<QueueItemData>,
+    pub queue: Arc<Vec<QueueItemData>>,
+    pub original_queue: Arc<Vec<QueueItemData>>,
     pub queue_position: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatState,
@@ -18,8 +22,8 @@ pub struct PlaybackSessionData {
 impl Default for PlaybackSessionData {
     fn default() -> Self {
         Self {
-            queue: Vec::new(),
-            original_queue: Vec::new(),
+            queue: Arc::new(Vec::new()),
+            original_queue: Arc::new(Vec::new()),
             queue_position: None,
             shuffle: false,
             repeat: RepeatState::NotRepeating,
@@ -39,10 +43,11 @@ impl PlaybackSessionStorageWorker {
 
     pub async fn run(mut self) {
         while self.rx.changed().await.is_ok() {
-            let serialized_session = {
-                let session = self.rx.borrow_and_update();
-                serde_json::to_vec(&*session)
-            };
+            // Clone the session out of the watch borrow before serializing:
+            // with Arc'd queues this is two refcounts, and serialization no
+            // longer blocks the playback thread's next send.
+            let session = self.rx.borrow_and_update().clone();
+            let serialized_session = serde_json::to_vec(&session);
 
             let mut json = match serialized_session {
                 Ok(json) => json,
@@ -99,7 +104,7 @@ impl PlaybackSessionStorageWorker {
 mod tests {
     use super::{PlaybackSessionData, PlaybackSessionStorageWorker};
     use crate::{playback::events::RepeatState, test_support::TestDir};
-    use std::fs;
+    use std::{fs, sync::Arc};
 
     fn create_test_dir() -> TestDir {
         TestDir::new("meliora-session-storage-test")
@@ -141,8 +146,8 @@ mod tests {
         let dir = create_test_dir();
         let path = dir.join("session.json");
         let expected = PlaybackSessionData {
-            queue: Vec::new(),
-            original_queue: Vec::new(),
+            queue: Arc::new(Vec::new()),
+            original_queue: Arc::new(Vec::new()),
             queue_position: Some(3),
             shuffle: true,
             repeat: RepeatState::RepeatingOne,

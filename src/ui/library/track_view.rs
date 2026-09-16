@@ -49,6 +49,17 @@ impl TrackView {
                             // before anything could start. Missing files are
                             // skipped by the playback engine instead, and row
                             // availability is already greyed from the row data.
+                            if items.is_empty() {
+                                return;
+                            }
+
+                            // The clicked row's index falls out of the item scan
+                            // directly — no second pass over the built queue.
+                            let index = items
+                                .iter()
+                                .position(|(row_id, _, _, _)| *row_id == id.0)
+                                .unwrap_or(0);
+
                             let queue_items: Vec<QueueItemData> = items
                                 .iter()
                                 .map(|(id, _, album_id, path)| {
@@ -60,15 +71,6 @@ impl TrackView {
                                     )
                                 })
                                 .collect();
-
-                            if queue_items.is_empty() {
-                                return;
-                            }
-
-                            let index = queue_items
-                                .iter()
-                                .position(|item| item.get_db_id() == Some(id.0))
-                                .unwrap_or(0);
 
                             let playback = cx.global::<PlaybackInterface>();
                             playback.replace_queue_with_index(queue_items, index);

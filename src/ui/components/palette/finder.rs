@@ -22,6 +22,13 @@ use crate::ui::{
 
 const MAX_VISIBLE_PER_CATEGORY: usize = 5;
 
+/// Pointer-equality check for item lists: same `Arc`s in the same order means
+/// the same items, avoiding deep `PartialEq` walks (per-item String compares)
+/// on every 25ms matcher poll.
+fn same_items<T>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| Arc::ptr_eq(a, b))
+}
+
 pub trait PaletteItem {
     fn left_content(&self, cx: &mut App) -> Option<FinderItemLeft>;
     fn middle_content(&self, cx: &mut App) -> SharedString;
@@ -92,6 +99,10 @@ where
     views_model: ViewsModel<T, MatcherFunc, OnAccept>,
     render_counter: Entity<usize>,
     last_match: Vec<Arc<T>>,
+    /// Items currently injected into the matcher, used to reconcile updates:
+    /// an append-only change (online results landing behind the local index)
+    /// pushes only the new tail instead of rebuilding the whole matcher.
+    injected: Vec<Arc<T>>,
     // Arc-wrapped so the per-frame render clone is a refcount bump; rebuilt
     // only by `regenerate_list_state` / `recompute_extra_items`.
     display_list: Arc<Vec<DisplayEntry<T>>>,
@@ -137,7 +148,7 @@ where
                 let search_text = (get_item_display)(&item_clone, cx);
                 trace!("Injecting item with search text: '{search_text}'");
                 injector.push(item_clone, move |_v, dest| {
-                    dest[0] = search_text.clone();
+                    dest[0] = search_text;
                 });
             }
 
@@ -163,7 +174,7 @@ where
                             this.tick(10);
 
                             let matches: Vec<Arc<T>> = this.get_matches();
-                            if matches != this.last_match {
+                            if !same_items(&matches, &this.last_match) {
                                 this.last_match = matches;
                                 this.regenerate_list_state(cx);
                                 cx.notify();
@@ -243,16 +254,7 @@ where
             // handle item list updates
             let get_item_display_for_updates = get_item_display.clone();
             cx.subscribe(&cx.entity(), move |this, _, items: &Vec<Arc<T>>, cx| {
-                this.matcher.restart(false);
-                let injector = this.matcher.injector();
-
-                for item in items {
-                    let item_clone = item.clone();
-                    let search_text = (get_item_display_for_updates)(&item_clone, cx);
-                    injector.push(item_clone, move |_v, dest| {
-                        dest[0] = search_text.clone();
-                    });
-                }
+                this.set_items(items, &get_item_display_for_updates, cx);
 
                 cx.notify();
             })
@@ -265,6 +267,7 @@ where
                 matcher,
                 views_model,
                 last_match: Vec::new(),
+                injected: items,
                 display_list: Arc::new(Vec::new()),
                 extra_providers: Vec::new(),
                 extra_items: Arc::new(Vec::new()),
@@ -414,7 +417,7 @@ where
         let matches = self.get_matches();
 
         // if there are extras or the items are different regenerate the list state
-        if matches != self.last_match || !self.extra_items.is_empty() {
+        if !same_items(&matches, &self.last_match) || !self.extra_items.is_empty() {
             self.last_match = matches;
             self.regenerate_list_state(cx);
         }
@@ -431,6 +434,37 @@ where
 
     fn tick(&mut self, iterations: u32) {
         self.matcher.tick(iterations as u64);
+    }
+
+    /// Reconcile the matcher with a new item list. When the new list only
+    /// appends behind the currently injected one (online search results landing
+    /// behind the unchanged local index), just push the new tail — nucleo is
+    /// append-only, so any other change (local index reload, online results
+    /// replaced by a newer query) needs a full `restart` + re-inject.
+    fn set_items(&mut self, items: &[Arc<T>], get_item_display: &MatcherFunc, cx: &mut App) {
+        let common = self
+            .injected
+            .iter()
+            .zip(items.iter())
+            .take_while(|(a, b)| Arc::ptr_eq(a, b))
+            .count();
+        let append_only = common == self.injected.len();
+
+        if !append_only {
+            self.matcher.restart(false);
+        }
+
+        let injector = self.matcher.injector();
+        for item in &items[common..] {
+            let item = item.clone();
+            let search_text = (get_item_display)(&item, cx);
+            injector.push(item, move |_v, dest| {
+                dest[0] = search_text;
+            });
+        }
+
+        self.injected.clear();
+        self.injected.extend_from_slice(items);
     }
 
     fn get_matches(&self) -> Vec<Arc<T>> {

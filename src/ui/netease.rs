@@ -606,9 +606,8 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
                 // Re-check under the write lock (the queue may have changed
                 // since the read above): skip the refresh if the item is gone
                 // instead of panicking.
-                let replaced = queue_data
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
+                let mut guard = queue_data.write().unwrap_or_else(|e| e.into_inner());
+                let replaced = Arc::make_mut(&mut guard)
                     .get_mut(index)
                     .map(|item| item.replace_path(PathBuf::from(url)))
                     .is_some();

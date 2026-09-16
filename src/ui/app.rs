@@ -447,8 +447,8 @@ pub fn run() -> anyhow::Result<()> {
             .and_then(|position| playback_session.queue.get(position))
             .map(|item| CurrentTrack::new(item.get_path().clone()));
 
-        let queue: Arc<RwLock<Vec<QueueItemData>>> =
-            Arc::new(RwLock::new(playback_session.queue.clone()));
+        let queue: Arc<RwLock<Arc<Vec<QueueItemData>>>> =
+            Arc::new(RwLock::new(Arc::clone(&playback_session.queue)));
 
         let (queue_tx, queue_rx) = tokio::sync::watch::channel(playback_session.clone());
         crate::RUNTIME.spawn(PlaybackSessionStorageWorker::new(session_file, queue_rx).run());
@@ -636,7 +636,7 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(feature = "online_sources")]
 fn refresh_restored_online_urls(
     cx: &mut App,
-    queue: &Arc<RwLock<Vec<QueueItemData>>>,
+    queue: &Arc<RwLock<Arc<Vec<QueueItemData>>>>,
     playback: &crate::settings::playback::PlaybackSettings,
 ) {
     use crate::playback::queue::OnlineIdentity;
@@ -697,7 +697,7 @@ fn refresh_restored_online_urls(
 
             let was_current = {
                 let Ok(mut guard) = queue.write() else { continue };
-                let Some(item) = guard.get_mut(idx) else { continue };
+                let Some(item) = Arc::make_mut(&mut guard).get_mut(idx) else { continue };
                 // the queue may have shifted since the snapshot; never clobber
                 // a different item
                 if item.online_identity() != Some(&identity) {

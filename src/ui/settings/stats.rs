@@ -247,7 +247,7 @@ impl StatsSettings {
             top_items: Vec::new(),
         });
         entity.update(cx, |this, cx| {
-            this.load_base(cx);
+            this.load_base(cx, true);
             this.spawn_refresh(cx);
         });
         entity
@@ -266,7 +266,7 @@ impl StatsSettings {
                     .await;
                 // Err = entity released; stop ticking.
                 if this
-                    .update(cx, |this, cx| this.load_base(cx))
+                    .update(cx, |this, cx| this.load_base(cx, false))
                     .is_err()
                 {
                     break;
@@ -277,8 +277,11 @@ impl StatsSettings {
     }
 
     /// One async batch for the daily map and the hour histogram; the Top list
-    /// follows once the base data (and its color scale) is in place.
-    fn load_base(&mut self, cx: &mut Context<Self>) {
+    /// follows once the base data (and its color scale) is in place. The
+    /// 30s refresh tick passes `with_top = false` — the Top list only changes
+    /// with tab/range, so re-querying it every tick would just burn a
+    /// `GROUP BY` for identical rows.
+    fn load_base(&mut self, cx: &mut Context<Self>, with_top: bool) {
         let pool = cx.global::<Pool>().0.clone();
         cx.spawn(async move |this, cx| {
             let base = crate::RUNTIME
@@ -292,7 +295,9 @@ impl StatsSettings {
             if let Ok((daily, hours)) = base {
                 let _ = this.update(cx, |this, cx| {
                     this.apply_base(daily, hours, cx);
-                    this.load_top(cx);
+                    if with_top {
+                        this.load_top(cx);
+                    }
                     cx.notify();
                 });
             }

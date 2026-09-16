@@ -131,7 +131,7 @@ pub struct PlaybackThread {
 impl PlaybackThread {
     /// Creates a new playback interface and starts the playback thread.
     pub fn start(
-        queue: Arc<RwLock<Vec<QueueItemData>>>,
+        queue: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
         playback_settings: PlaybackSettings,
         last_volume: f64,
         session: PlaybackSessionData,
