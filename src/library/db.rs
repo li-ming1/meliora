@@ -1017,7 +1017,7 @@ impl LibraryAccess for App {
 
     fn get_artist_by_id(&self, artist_id: i64) -> sqlx::Result<Arc<Artist>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_artist_by_id(&pool.0, artist_id))
+        blocking_query("get_artist_by_id", get_artist_by_id(&pool.0, artist_id))
     }
 
     fn get_track_by_id(&self, track_id: i64) -> sqlx::Result<Arc<Track>> {
@@ -1027,22 +1027,22 @@ impl LibraryAccess for App {
 
     fn get_track_by_path(&self, path: &Path) -> sqlx::Result<Option<Arc<Track>>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_track_by_path(&pool.0, path))
+        blocking_query("get_track_by_path", get_track_by_path(&pool.0, path))
     }
 
     fn create_playlist(&self, name: &str) -> sqlx::Result<i64> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(create_playlist(&pool.0, name))
+        blocking_query("create_playlist", create_playlist(&pool.0, name))
     }
 
     fn delete_playlist(&self, playlist_id: i64) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(delete_playlist(&pool.0, playlist_id))
+        blocking_query("delete_playlist", delete_playlist(&pool.0, playlist_id))
     }
 
     fn rename_playlist(&self, playlist_id: i64, name: &str) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(rename_playlist(&pool.0, playlist_id, name))
+        blocking_query("rename_playlist", rename_playlist(&pool.0, playlist_id, name))
     }
 
     fn get_all_playlists(&self) -> sqlx::Result<Arc<Vec<Playlist>>> {
@@ -1061,31 +1061,30 @@ impl LibraryAccess for App {
         sort_method: PlaylistTrackSortMethod,
     ) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_playlist_tracks_sorted(
-            &pool.0,
-            playlist_id,
-            sort_method,
-        ))
+        blocking_query(
+            "get_playlist_tracks_sorted",
+            get_playlist_tracks_sorted(&pool.0, playlist_id, sort_method),
+        )
     }
 
     fn move_playlist_item(&self, item_id: i64, new_position: i64) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(move_playlist_item(&pool.0, item_id, new_position))
+        blocking_query("move_playlist_item", move_playlist_item(&pool.0, item_id, new_position))
     }
 
     fn reorder_playlist(&self, playlist_id: i64, new_position: i64) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(reorder_playlist(&pool.0, playlist_id, new_position))
+        blocking_query("reorder_playlist", reorder_playlist(&pool.0, playlist_id, new_position))
     }
 
     fn get_playlist_item(&self, item_id: i64) -> sqlx::Result<PlaylistItem> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_playlist_item(&pool.0, item_id))
+        blocking_query("get_playlist_item", get_playlist_item(&pool.0, item_id))
     }
 
     fn playlist_has_track(&self, playlist_id: i64, track_id: i64) -> sqlx::Result<Option<i64>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(playlist_has_track(&pool.0, playlist_id, track_id))
+        blocking_query("playlist_has_track", playlist_has_track(&pool.0, playlist_id, track_id))
     }
 
     fn playlist_contains_all_tracks(
@@ -1094,11 +1093,10 @@ impl LibraryAccess for App {
         track_ids: &[i64],
     ) -> sqlx::Result<bool> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(playlist_contains_all_tracks(
-            &pool.0,
-            playlist_id,
-            track_ids,
-        ))
+        blocking_query(
+            "playlist_contains_all_tracks",
+            playlist_contains_all_tracks(&pool.0, playlist_id, track_ids),
+        )
     }
 
     fn list_albums_by_artist(&self, artist_id: i64) -> sqlx::Result<Vec<(u32, String)>> {
@@ -1117,7 +1115,10 @@ impl LibraryAccess for App {
         sort_method: LikedTrackSortMethod,
     ) -> sqlx::Result<Arc<Vec<Track>>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_liked_tracks_by_artist(&pool.0, artist_id, sort_method))
+        blocking_query(
+            "get_liked_tracks_by_artist",
+            get_liked_tracks_by_artist(&pool.0, artist_id, sort_method),
+        )
     }
 
     fn get_standalone_tracks_by_artist(
@@ -1126,11 +1127,10 @@ impl LibraryAccess for App {
         sort_method: LikedTrackSortMethod,
     ) -> sqlx::Result<Arc<Vec<Track>>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(get_standalone_tracks_by_artist(
-            &pool.0,
-            artist_id,
-            sort_method,
-        ))
+        blocking_query(
+            "get_standalone_tracks_by_artist",
+            get_standalone_tracks_by_artist(&pool.0, artist_id, sort_method),
+        )
     }
 
     fn get_all_tracks_by_artist(&self, artist_id: i64) -> sqlx::Result<Arc<Vec<Track>>> {
@@ -1140,16 +1140,16 @@ impl LibraryAccess for App {
 
     fn artist_ids_for_album(&self, album_id: i64) -> sqlx::Result<Vec<(i64, String)>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(artist_ids_for_album(&pool.0, album_id))
+        blocking_query("artist_ids_for_album", artist_ids_for_album(&pool.0, album_id))
     }
 
     fn artist_ids_for_track(&self, track_id: i64) -> sqlx::Result<Vec<(i64, String)>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(artist_ids_for_track(&pool.0, track_id))
+        blocking_query("artist_ids_for_track", artist_ids_for_track(&pool.0, track_id))
     }
 
     fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>> {
         let pool: &Pool = self.global();
-        crate::RUNTIME.block_on(list_album_paths(&pool.0, album_id))
+        blocking_query("list_album_paths", list_album_paths(&pool.0, album_id))
     }
 }

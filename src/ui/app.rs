@@ -402,11 +402,19 @@ pub fn run() -> anyhow::Result<()> {
         )
     })?;
 
+    // 一次性启动打点：create_pool（连接 + 迁移）的耗时决定它是否值得异步化
+    // （MelioraAssetSource 在窗口创建前就需要 pool，异步化是大手术）。数据
+    // 说话——日志里 elapsed_ms 长期小于几十毫秒就不动（教义 §1/§39）。
+    let pool_create_started_at = std::time::Instant::now();
     let pool = crate::RUNTIME
         .block_on(create_pool(data_dir.join("library.db")))
         .inspect_err(|error| {
             tracing::error!(?error, "fatal: unable to create database pool");
         })?;
+    tracing::info!(
+        elapsed_ms = pool_create_started_at.elapsed().as_millis() as u64,
+        "[startup] database pool ready"
+    );
 
     let application = Application::with_platform(current_platform(false))
         .with_assets(MelioraAssetSource::new(pool.clone()));

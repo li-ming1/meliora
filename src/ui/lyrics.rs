@@ -208,6 +208,10 @@ impl Lyrics {
             cx.observe(&position, |this: &mut Lyrics, pos, cx| {
                 let pos_ms = *pos.read(cx);
                 this.position_ms = pos_ms;
+                // 面板隐藏时实体仍存活（RightSidebar 持有），但 notify 只会
+                // 白白调度一次整窗 draw（所有视图走缓存重放）。状态照常更新，
+                // 重新显示时由下一次 render 的动画调度接管。
+                let visible = *cx.global::<Models>().show_lyrics.read(cx);
                 if let Some(parsed) = &this.parsed {
                     let idx = parsed.partition_point(|l| l.time_ms <= pos_ms);
                     let new_line = if idx == 0 { None } else { Some(idx - 1) };
@@ -226,12 +230,16 @@ impl Lyrics {
                             this.scroll_follow.cancel();
                         }
 
-                        cx.notify();
-                    } else if this.last_active_line.is_some_and(|line| {
-                        parsed
-                            .get(line)
-                            .is_some_and(|l| !l.words.is_empty())
-                    }) {
+                        if visible {
+                            cx.notify();
+                        }
+                    } else if visible
+                        && this.last_active_line.is_some_and(|line| {
+                            parsed
+                                .get(line)
+                                .is_some_and(|l| !l.words.is_empty())
+                        })
+                    {
                         // 激活行带逐字歌词：position 每 ~33ms 广播一次，
                         // 需要按字进度持续重绘。
                         cx.notify();
@@ -247,7 +255,9 @@ impl Lyrics {
                     this.register_user_interaction();
                 }
 
-                cx.notify();
+                if *cx.global::<Models>().show_lyrics.read(cx) {
+                    cx.notify();
+                }
             })
             .detach();
 
