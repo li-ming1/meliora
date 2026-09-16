@@ -14,7 +14,7 @@ use gpui::{
 #[cfg(feature = "online_sources")]
 use gpui::SharedString;
 use globwalk::GlobWalkerBuilder;
-use image::{Frame, Pixel, imageops};
+use image::{Frame, Pixel};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use sqlx::SqlitePool;
@@ -76,12 +76,64 @@ fn decode_to_render_image_scaled(
     bound: u32,
 ) -> anyhow::Result<Arc<RenderImage>> {
     let image = image::load_from_memory(data)?;
-    let image = if bound > 0 {
-        image.thumbnail(bound, bound)
-    } else {
-        image
-    };
-    decode_rgba_to_render_image(image.to_rgba8())
+    decode_rgba_to_render_image(dynamic_to_rgba_scaled(image, bound))
+}
+
+/// Converts a decoded image to RGBA, preferring steal-or-expand over
+/// `to_rgba8`'s full-size copy: PNG-decoded images hand their buffer over
+/// untouched, Rgb8 (JPEG) expands in place with a backwards fill, and only
+/// exotic color types pay `to_rgba8`. Thumbnailing (bound > 0) runs first on
+/// the DynamicImage so the conversion never sees full-size data — the
+/// TrackFile path used to convert at full size and thumbnail after, holding
+/// Rgb8+Rgba8 of a ~2500px cover simultaneously (dhat: 23.6MB transient,
+/// 2026-09-16).
+fn dynamic_to_rgba_scaled(image: image::DynamicImage, bound: u32) -> image::RgbaImage {
+    let image = if bound > 0 { image.thumbnail(bound, bound) } else { image };
+    match image {
+        image::DynamicImage::ImageRgba8(rgba) => rgba,
+        image::DynamicImage::ImageRgb8(rgb) => {
+            let (w, h) = rgb.dimensions();
+            let mut buf = rgb.into_raw();
+            expand_rgb8_to_rgba8_in_place(&mut buf, w, h);
+            image::RgbaImage::from_raw(w, h, buf)
+                .expect("rgb8 expansion preserves the w*h*4 length")
+        }
+        other => other.to_rgba8(),
+    }
+}
+
+/// Expands an Rgb8 buffer to Rgba8 in place: grow by one byte per pixel, then
+/// fill backwards (pixel i reads src `3i..3i+3` and writes dst `4i..4i+4`;
+/// larger-i writes only ever touch bytes ≥ `4i+4`, above every remaining
+/// source byte). Avoids allocating a second full-size buffer, halving the
+/// decode transient for JPEG covers.
+fn expand_rgb8_to_rgba8_in_place(buf: &mut Vec<u8>, w: u32, h: u32) {
+    let pixels = (w as usize) * (h as usize);
+    debug_assert_eq!(buf.len(), pixels * 3);
+    buf.resize(pixels * 4, 255);
+    // The backwards fill is clobber-free only for i ≥ 3: write `4i+k` hits
+    // read `3i+j` whenever `i + k == j`, possible while `i + 2 ≤ 2`. Park the
+    // first three pixels and write them from the saved copy afterwards. Alpha
+    // is written explicitly for every pixel — most alpha bytes sit inside the
+    // original Rgb8 region, not the 255-filled tail.
+    let head = pixels.min(3);
+    let mut saved = [0u8; 9];
+    saved[..head * 3].copy_from_slice(&buf[..head * 3]);
+    for i in (3..pixels).rev() {
+        let s = i * 3;
+        let d = i * 4;
+        buf[d] = buf[s];
+        buf[d + 1] = buf[s + 1];
+        buf[d + 2] = buf[s + 2];
+        buf[d + 3] = 255;
+    }
+    for i in 0..head {
+        let d = i * 4;
+        buf[d] = saved[i * 3];
+        buf[d + 1] = saved[i * 3 + 1];
+        buf[d + 2] = saved[i * 3 + 2];
+        buf[d + 3] = 255;
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -541,20 +593,23 @@ impl ManagedImageKey {
                         // `last_image`, churning the heap on every track
                         // change for nothing.
 
-                        let mut image = if let Ok(Some(data)) = stream.read_image() {
-                            image::load_from_memory(&data)?.to_rgba8()
+                        let decoded = if let Ok(Some(data)) = stream.read_image() {
+                            Some(image::load_from_memory(&data)?)
                         } else if let Some(cover_path) = find_art_file_for_path(&path) {
                             let data = std::fs::read(&*cover_path)?;
-                            image::load_from_memory(&data)?.to_rgba8()
+                            Some(image::load_from_memory(&data)?)
                         } else {
+                            None
+                        };
+                        let Some(dyn_image) = decoded else {
                             return Ok(None);
                         };
-
-                        if thumb_size > 0 {
-                            image = imageops::thumbnail(&image, thumb_size, thumb_size);
-                        }
-
-                        Ok(Some(decode_rgba_to_render_image(image)?))
+                        // Thumbnail (never upscales) runs on the DynamicImage
+                        // BEFORE conversion, so neither the thumbnail nor the
+                        // RGBA expansion ever sees full-size buffers.
+                        Ok(Some(decode_rgba_to_render_image(dynamic_to_rgba_scaled(
+                            dyn_image, thumb_size,
+                        ))?))
                     })
                     .await?
             }
@@ -1039,6 +1094,48 @@ mod tests {
         assert_eq!(ready.len(), 1);
         assert_eq!(young_out.len(), 1);
         assert_eq!(young_out[0].due, young_due);
+    }
+
+    /// The in-place Rgb8→Rgba8 expansion must match `to_rgba8` exactly,
+    /// including the overlap-prone first pixels (i < 3) and the last row.
+    #[test]
+    fn rgb8_expansion_matches_to_rgba8() {
+        for (w, h) in [(1, 1), (2, 2), (3, 2), (7, 5), (64, 33)] {
+            let rgb = image::RgbImage::from_fn(w, h, |x, y| {
+                image::Rgb([(x * 7) as u8, (y * 11 + 3) as u8, (x * 13 + y) as u8])
+            });
+            let expected = image::DynamicImage::ImageRgb8(rgb.clone()).to_rgba8();
+
+            let mut buf = rgb.into_raw();
+            expand_rgb8_to_rgba8_in_place(&mut buf, w, h);
+            let actual =
+                image::RgbaImage::from_raw(w, h, buf).expect("expansion preserves length");
+
+            assert_eq!(*actual, *expected, "mismatch at {w}x{h}");
+        }
+    }
+
+    /// PNG covers arrive as Rgba8 and must be stolen (no second buffer), and
+    /// bounded conversion must thumbnail before expanding.
+    #[test]
+    fn dynamic_conversion_steals_rgba_and_scales() {
+        let src = image::RgbaImage::from_fn(64, 64, |x, y| {
+            image::Rgba([x as u8, y as u8, 42, 255])
+        });
+
+        // bound = 0: the exact buffer is handed over, no clone.
+        let full = dynamic_to_rgba_scaled(
+            image::DynamicImage::ImageRgba8(src.clone()),
+            0,
+        );
+        assert_eq!(*full, *src);
+
+        // bound = 16: downscaled, still correct dimensions.
+        let scaled = dynamic_to_rgba_scaled(
+            image::DynamicImage::ImageRgba8(src),
+            16,
+        );
+        assert!(scaled.width() <= 16 && scaled.height() <= 16);
     }
 
     /// Cache replaces an entry while an element still paints the old image:
