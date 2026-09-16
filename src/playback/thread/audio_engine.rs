@@ -129,7 +129,18 @@ pub struct AudioEngine {
     prepared: Option<PreparedMedia>,
     /// Receiver of the in-flight background prepare, if any.
     prepare_rx: Option<mpsc::Receiver<PrepareOutcome>>,
+    /// Path handed to the in-flight prepare thread (mirrors `prepare_rx`).
+    prepare_request: Option<PathBuf>,
+    /// Path whose prepare was just invalidated by a queue mutation, with the
+    /// time it was dropped: `prepare_next` skips re-spawning for the same
+    /// path within [`PREPARE_COOLDOWN`], so a burst of queue edits in the
+    /// prepare window doesn't spawn a full open per edit.
+    dropped_prepare: Option<(PathBuf, std::time::Instant)>,
 }
+
+/// How long after a queue-mutation invalidation a re-prepare of the same next
+/// track is deferred (see [`AudioEngine::dropped_prepare`]).
+const PREPARE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Background prepare result sent back to the playback thread.
 struct PrepareOutcome {
@@ -157,6 +168,8 @@ impl AudioEngine {
             device_recreate_defer: None,
             prepared: None,
             prepare_rx: None,
+            prepare_request: None,
+            dropped_prepare: None,
         }
     }
 
@@ -190,12 +203,22 @@ impl AudioEngine {
         if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
             return;
         }
+        // A prepare of this track was invalidated moments ago by a queue
+        // mutation: defer until the edits settle instead of re-opening the
+        // stream (connect+probe, or a wasted HTTP request) once per edit.
+        if let Some((dropped, at)) = &self.dropped_prepare
+            && dropped == path
+            && at.elapsed() < PREPARE_COOLDOWN
+        {
+            return;
+        }
         // A prepared stream for a different track is stale by definition.
         self.prepared = None;
 
         let (tx, rx) = mpsc::channel();
         self.prepare_rx = Some(rx);
         let path = path.to_path_buf();
+        self.prepare_request = Some(path.clone());
         let spawned = std::thread::Builder::new()
             .name("media-prepare".into())
             .spawn(move || {
@@ -206,6 +229,7 @@ impl AudioEngine {
         if spawned.is_err() {
             // No prepare thread; the transition falls back to a normal open.
             self.prepare_rx = None;
+            self.prepare_request = None;
         }
     }
 
@@ -217,6 +241,7 @@ impl AudioEngine {
         match rx.try_recv() {
             Ok(outcome) => {
                 self.prepare_rx = None;
+                self.prepare_request = None;
                 match outcome.result {
                     Ok((stream, duration_ms)) => {
                         info!(
@@ -239,6 +264,7 @@ impl AudioEngine {
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 self.prepare_rx = None;
+                self.prepare_request = None;
             }
         }
     }
@@ -246,6 +272,16 @@ impl AudioEngine {
     /// Drop any pre-opened media; called when the queue changes (the next
     /// track may no longer be the prepared one) or playback stops.
     pub fn drop_prepared(&mut self) {
+        // Remember what was invalidated so `prepare_next` can rate-limit
+        // re-spawns of the same path while queue edits are settling.
+        let dropped = self.prepare_request.take().or_else(|| {
+            self.prepared
+                .as_ref()
+                .map(|prepared| prepared.path.clone())
+        });
+        if let Some(path) = dropped {
+            self.dropped_prepare = Some((path, std::time::Instant::now()));
+        }
         self.prepared = None;
         self.prepare_rx = None;
     }

@@ -235,7 +235,27 @@ impl PlaybackThread {
 
     /// Read incoming commands from the command channel, and process them.
     pub fn command_intake(&mut self) {
+        // Collapse runs of consecutive Next commands into one advance: rapid
+        // clicks while a slow open is in flight would otherwise queue one full
+        // track-open per click and skip through several tracks.
+        let mut commands: Vec<PlaybackCommand> = Vec::new();
         while let Ok(command) = self.commands_rx.try_recv() {
+            commands.push(command);
+        }
+        let mut prev_next = false;
+        commands.retain(|command| match command {
+            PlaybackCommand::Next if prev_next => false,
+            PlaybackCommand::Next => {
+                prev_next = true;
+                true
+            }
+            _ => {
+                prev_next = false;
+                true
+            }
+        });
+
+        for command in commands {
             match command {
                 PlaybackCommand::Play => self.play(),
                 PlaybackCommand::Pause => self.pause(),
@@ -276,7 +296,6 @@ impl PlaybackThread {
             }
         }
     }
-
     /// Get the current playback state.
     fn state(&self) -> PlaybackState {
         self.engine.state().into()

@@ -670,6 +670,29 @@ fn refresh_restored_online_urls(
         .as_ref()
         .map(|track| track.get_path().clone());
 
+    // Only the current track needs a valid URL right now; anything else in the
+    // restored queue is refreshed on demand by the playback thread when it is
+    // actually played (`PlaybackThread::refresh_expired_online_url`). Refresh
+    // the current one first, cap the startup burst, let the fallback handle
+    // the tail instead of burning a serial HTTP round trip per queued track.
+    const STARTUP_REFRESH_CAP: usize = 8;
+    let mut stale = stale;
+    if let Some(current) = current_track_path.as_ref()
+        && let Some(pos) = stale.iter().position(|(idx, _)| {
+            queue
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(*idx)
+                .is_some_and(|item| item.get_path() == current)
+        })
+    {
+        stale.swap(0, pos);
+    }
+    stale.truncate(STARTUP_REFRESH_CAP);
+    if stale.is_empty() {
+        return;
+    }
+
     cx.spawn(async move |cx| {
         for (idx, identity) in stale {
             let display = queue
