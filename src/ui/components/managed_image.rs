@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -163,8 +164,30 @@ pub fn render_cache_entries() -> usize {
 /// Eviction runs on the RUNTIME where no `App` exists, which is why the drop
 /// itself has to be deferred. Without any of this, an evicted cover's atlas
 /// page stays pinned forever once its owning elements have unmounted.
-static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<(RenderCacheKey, Arc<RenderImage>)>>> =
-    OnceLock::new();
+static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<PendingTileDrop>>> = OnceLock::new();
+
+struct PendingTileDrop {
+    key: RenderCacheKey,
+    image: Arc<RenderImage>,
+    /// Earliest drain that may reclaim this image. Reclaiming is only safe
+    /// once nothing can still paint the image — including the *replayed*
+    /// paint ops of a cache-skipped view, which hold no Arc at all. A view
+    /// skipped at eviction time replays its last scene until it re-renders,
+    /// so a fresh eviction must age out before its tiles may be freed
+    /// (2026-09-16 funnel audit; see `RECLAIM_DELAY`).
+    due: Instant,
+}
+
+/// Minimum age of a queued image before `drain_pending_tile_drops` may free
+/// its atlas tiles. Bounds the "skipped-view replay" hazard: a view that gpui
+/// skipped (no re-render) replays the sprites of its last paint without
+/// holding the image, so freeing the image's page while that view is still
+/// skipped would dangle the replayed sprite (`texture()` unwrap, 2026-09-08
+/// crash class). 60s covers every realistic static-view lifetime while
+/// keeping reclaim latency irrelevant for memory (pages are transient, and
+/// the probe curve showed the floor is dominated by allocator/GPU residency,
+/// not reclaim latency).
+const RECLAIM_DELAY: Duration = Duration::from_secs(60);
 
 fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
     TILE_DROP_STATS.pushed.fetch_add(1, Ordering::Relaxed);
@@ -172,7 +195,11 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push((key, image));
+        .push(PendingTileDrop {
+            key,
+            image,
+            due: Instant::now() + RECLAIM_DELAY,
+        });
 }
 
 /// Cumulative reclaim-funnel counters for the `[mem]` periodic probe, so the
@@ -335,15 +362,20 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return;
     };
-    let batch: Vec<(RenderCacheKey, Arc<RenderImage>)> = queue
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .drain(..)
-        .collect();
-    if batch.is_empty() {
+    let now = Instant::now();
+    let (ready, young) = {
+        let mut queue = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (ready, young) = partition_ready(queue.drain(..).collect(), now);
+        (ready, young)
+    };
+    if ready.is_empty() {
         return;
     }
 
+    let batch: Vec<(RenderCacheKey, Arc<RenderImage>)> = ready
+        .into_iter()
+        .map(|entry| (entry.key, entry.image))
+        .collect();
     let plan = plan_tile_reclaims(batch, |key, image| render_cache_holds(key, image));
     let stats = &TILE_DROP_STATS;
     stats
@@ -358,6 +390,36 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     if !plan.reclaim.is_empty() {
         crate::ui::util::reclaim_images_from_app(cx, plan.reclaim);
     }
+    // Re-queue the not-yet-due entries only after the reclaim decision, so a
+    // young entry's Arc never dilutes the strong_count test of a ready one.
+    if !young.is_empty() {
+        queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(young);
+    }
+}
+
+/// Splits the queue into entries whose tiles may be reclaimed now and entries
+/// that must age further. Ready entries leave the queue (releasing their Arc
+/// so the drain's `strong_count == 1` test stays valid); young entries are
+/// pushed back by the caller with their ORIGINAL due instant — resetting it
+/// would either leak the tile forever (delay grows unboundedly) or free it
+/// while a skipped view still replays it (the 2026-09-08 crash class).
+fn partition_ready(
+    entries: Vec<PendingTileDrop>,
+    now: Instant,
+) -> (Vec<PendingTileDrop>, Vec<PendingTileDrop>) {
+    let mut ready = Vec::new();
+    let mut young = Vec::new();
+    for entry in entries {
+        if entry.due <= now {
+            ready.push(entry);
+        } else {
+            young.push(entry);
+        }
+    }
+    (ready, young)
 }
 
 fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderImage>> {
@@ -952,6 +1014,31 @@ mod tests {
         let p = run_plan(vec![(key(1, 256), e1), (key(1, 256), e2)], &cache);
         assert!(p.reclaim.is_empty());
         assert_eq!(p.kept_by_cache, 1);
+    }
+
+    /// The drain must age entries out by their ORIGINAL due instant: resetting
+    /// the due on re-queue would either leak the tile forever (due pushed
+    /// forward on every drain) or free it while a skipped view still replays
+    /// it (due pulled back — the 2026-09-08 crash class).
+    #[test]
+    fn partition_ready_keeps_original_due_for_young_entries() {
+        let now = Instant::now();
+        let old = PendingTileDrop {
+            key: key(1, 256),
+            image: test_image(),
+            due: now - Duration::from_secs(1),
+        };
+        let young = PendingTileDrop {
+            key: key(2, 256),
+            image: test_image(),
+            due: now + Duration::from_secs(30),
+        };
+        let young_due = young.due;
+
+        let (ready, young_out) = partition_ready(vec![old, young], now);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(young_out.len(), 1);
+        assert_eq!(young_out[0].due, young_due);
     }
 
     /// Cache replaces an entry while an element still paints the old image:
