@@ -4828,7 +4828,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-media-player",
- "open",
  "palette",
  "postcard",
  "qrcode",

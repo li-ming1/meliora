@@ -12,21 +12,12 @@ pub type OnDismissHandler = dyn Fn(&mut Window, &mut App);
 
 actions!(popover, [ClosePopover]);
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// Placement relative to the parent bounds; for example, `RightTop` sits to the
 /// right of the parent and aligns to its top edge.
 pub enum PopoverPosition {
-    Left,
-    LeftTop,
-    LeftBottom,
-    Right,
     RightTop,
-    RightBottom,
-    TopLeft,
-    TopCenter,
     TopRight,
-    BottomLeft,
     #[default]
     BottomCenter,
     BottomRight,
@@ -103,50 +94,28 @@ fn anchor(position: PopoverPosition, edge_offset: Pixels, content: Div) -> Div {
     let mut content = content.absolute();
 
     match position {
-        PopoverPosition::Left | PopoverPosition::LeftTop | PopoverPosition::LeftBottom => {
-            anchor = anchor.left(px(0.0));
-            content = content.right(px(0.0)).mr(edge_offset);
-        }
-        PopoverPosition::Right | PopoverPosition::RightTop | PopoverPosition::RightBottom => {
+        PopoverPosition::RightTop => {
             anchor = anchor.right(px(0.0));
             content = content.left(px(0.0)).ml(edge_offset);
-        }
-        PopoverPosition::TopLeft | PopoverPosition::BottomLeft => {
-            anchor = anchor.left(px(0.0));
-            content = content.left(px(0.0));
-        }
-        PopoverPosition::TopCenter | PopoverPosition::BottomCenter => {
-            anchor = anchor.left(relative(0.5));
-            content = content.left(px(0.0)).ml(relative(-0.5));
         }
         PopoverPosition::TopRight | PopoverPosition::BottomRight => {
             anchor = anchor.right(px(0.0));
             content = content.right(px(0.0));
         }
+        PopoverPosition::BottomCenter => {
+            anchor = anchor.left(relative(0.5));
+            content = content.left(px(0.0)).ml(relative(-0.5));
+        }
     }
 
     match position {
-        PopoverPosition::TopLeft | PopoverPosition::TopCenter | PopoverPosition::TopRight => {
-            anchor = anchor.top(px(0.0));
-            content = content.bottom(px(0.0)).mb(edge_offset);
-        }
-        PopoverPosition::BottomLeft
-        | PopoverPosition::BottomCenter
-        | PopoverPosition::BottomRight => {
-            anchor = anchor.bottom(px(0.0));
-            content = content.top(px(0.0)).mt(edge_offset);
-        }
-        PopoverPosition::LeftTop | PopoverPosition::RightTop => {
+        PopoverPosition::RightTop | PopoverPosition::TopRight => {
             anchor = anchor.top(px(0.0));
             content = content.top(px(0.0));
         }
-        PopoverPosition::Left | PopoverPosition::Right => {
-            anchor = anchor.top(relative(0.5));
-            content = content.top(px(0.0)).mt(relative(-0.5));
-        }
-        PopoverPosition::LeftBottom | PopoverPosition::RightBottom => {
+        PopoverPosition::BottomCenter | PopoverPosition::BottomRight => {
             anchor = anchor.bottom(px(0.0));
-            content = content.bottom(px(0.0));
+            content = content.top(px(0.0)).mt(edge_offset);
         }
     }
 

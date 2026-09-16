@@ -62,7 +62,6 @@ rsa = { version = "0.9", optional = true, default-features = false, features = [
 qrcode = { version = "0.14", optional = true, default-features = false, features = ["image"] }
 notify = "8"
 nucleo = "0.5"
-open = "5"
 palette = "0.7"
 postcard = { version = "1", features = ["use-std"] }
 rand = "0.10"
