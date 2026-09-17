@@ -657,25 +657,26 @@ pub async fn reorder_playlist(
     .fetch_one(pool)
     .await?;
 
-    if original_position < new_position {
-        let move_query = include_str!("../../queries/playlist/move_playlist_down.sql");
-
-        sqlx::query(move_query)
-            .bind(new_position)
-            .bind(original_position)
-            .bind(playlist_id)
-            .execute(pool)
-            .await?;
+    let move_query = if original_position < new_position {
+        include_str!("../../queries/playlist/move_playlist_down.sql")
     } else if original_position > new_position {
-        let move_query = include_str!("../../queries/playlist/move_playlist_up.sql");
+        include_str!("../../queries/playlist/move_playlist_up.sql")
+    } else {
+        return Ok(());
+    };
 
-        sqlx::query(move_query)
-            .bind(new_position)
-            .bind(original_position)
-            .bind(playlist_id)
-            .execute(pool)
-            .await?;
-    }
+    // The two UPDATEs in the move script must apply together or not at all:
+    // committing only the shift leaves every playlist after it off by one.
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(move_query)
+        .bind(new_position)
+        .bind(original_position)
+        .bind(playlist_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
 
     Ok(())
 }

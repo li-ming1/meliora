@@ -31,7 +31,7 @@ const HOP_SIZE: usize = 1024;
 /// Publish interval, the analyzer notifies at most 30 times a second.
 const FRAME_MS: u64 = 33;
 /// Poll interval while no equalizer view is open, the rings stay empty without an audience.
-const PARKED_FRAME_MS: u64 = 250;
+const PARKED_FRAME_MS: u64 = 1000;
 /// Display tilt, typical program material reads roughly flat.
 const TILT_DB_PER_OCT: f32 = 4.5;
 /// Smoothing time constant, a frame about 500 ms old carries e^-2 of the weight.

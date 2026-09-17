@@ -418,6 +418,23 @@ impl Lyrics {
         cx.spawn(async move |this, cx| {
             let lyric = fetch_online_lyric(&track).await.ok().flatten();
 
+            // Parse off the UI thread: KRC is two full-text passes plus JSON
+            // block deserialization, and the fetch above already runs on the
+            // runtime so this just stays there instead of dropping back to
+            // the main thread for the parse.
+            let (parsed, content) = crate::RUNTIME
+                .spawn(async move {
+                    let parsed = match &lyric {
+                        Some(OnlineLyric::Lrc(lrc)) => parse_lrc(lrc),
+                        Some(OnlineLyric::Krc(krc)) => krc::parse_krc(krc),
+                        None => None,
+                    };
+                    let content = lyric.as_ref().map(|lyric| lyric.describe());
+                    (parsed, content)
+                })
+                .await
+                .unwrap_or_default();
+
             this.update(cx, |this, cx| {
                 // ignore the result if the user has already switched tracks
                 let current_path = cx
@@ -429,13 +446,6 @@ impl Lyrics {
                 if current_path != expected {
                     return;
                 }
-
-                let parsed = match &lyric {
-                    Some(OnlineLyric::Lrc(lrc)) => parse_lrc(lrc),
-                    Some(OnlineLyric::Krc(krc)) => krc::parse_krc(krc),
-                    None => None,
-                };
-                let content = lyric.as_ref().map(|lyric| lyric.describe());
 
                 this.reset_track_state();
                 this.apply_loaded_lyrics(content.clone(), parsed.clone(), cx);

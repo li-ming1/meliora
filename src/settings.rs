@@ -214,10 +214,11 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
                 }
             }
 
-            // settings.json is hand-edited; a 250 ms poll reacts well within
-            // perception without waking the main thread 100x/second.
+            // settings.json is hand-edited; a 1 s poll reacts within
+            // perception without waking the main thread multiple times a
+            // second.
             app.background_executor()
-                .timer(Duration::from_millis(250))
+                .timer(Duration::from_secs(1))
                 .await;
         }
     })
