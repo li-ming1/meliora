@@ -11,7 +11,7 @@ use tracing::{debug, error};
 /// within the band reuses the existing row entities instead of re-running
 /// their DB/stat construction pipeline on the UI thread; the band must stay
 /// wider than any viewport so visible rows are never pruned.
-const VIEW_KEEP_AROUND: usize = 128;
+pub const VIEW_KEEP_AROUND: usize = 128;
 
 pub fn prune_views<T>(
     views_model: &Entity<FxHashMap<usize, Entity<T>>>,

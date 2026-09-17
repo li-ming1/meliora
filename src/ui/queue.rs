@@ -40,7 +40,7 @@ use super::{
     },
     scroll_follow::SmoothScrollFollow,
     theme::Theme,
-    util::create_or_retrieve_view,
+    util::{VIEW_KEEP_AROUND, create_or_retrieve_view},
 };
 
 /// The list identifier for queue drag-drop operations
@@ -1336,7 +1336,28 @@ impl Render for Queue {
                                     .map(|i| (i, queue[i].existing_slot_key()))
                                     .collect();
 
+                                // Scroll pruning: row views live in `views_model`
+                                // keyed by slot key and nothing removed them on a
+                                // one-way scroll, so a long queue accumulated one
+                                // live row entity (with its observers) per slot ever
+                                // rendered. Keep only the visible window ± the same
+                                // band the table uses; pruned rows rebuild on demand.
+                                let prune_start = start.saturating_sub(VIEW_KEEP_AROUND);
+                                let prune_end =
+                                    (range.end + VIEW_KEEP_AROUND).min(queue.len());
+                                let keep: FxHashSet<usize> = (prune_start..prune_end)
+                                    .filter_map(|i| {
+                                        queue
+                                            .get(i)
+                                            .and_then(|item| item.existing_slot_key())
+                                    })
+                                    .collect();
+
                                 drop(queue);
+
+                                views_model.update(cx, |m, _| {
+                                    m.retain(|k, _| keep.contains(k))
+                                });
 
                                 keys.into_iter()
                                     .filter_map(|(idx, existing_key)| {

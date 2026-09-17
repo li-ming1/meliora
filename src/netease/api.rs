@@ -110,11 +110,17 @@ impl NeteaseClient {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        // NetEase CDN serves originals unless a `?param=WxH` size is appended;
+        // the avatar renders at ~40px, so 128 covers it at high DPI.
         let avatar_url = profile
             .and_then(|profile| profile.get("avatarUrl"))
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+            .unwrap_or_default();
+        let avatar_url = if avatar_url.is_empty() || avatar_url.contains("?param=") {
+            avatar_url.to_string()
+        } else {
+            format!("{avatar_url}?param=128y128")
+        };
         let profile = UserProfile {
             nickname,
             avatar_url,

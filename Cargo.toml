@@ -75,9 +75,14 @@ same-file = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 smallvec = "1"
-sqlx = { version = "0.9", features = ["chrono", "runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = [
+    "chrono",
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+] }
 symphonia = { version = "0.6", default-features = false, features = [
-    "aac",
     "adpcm",
     "aiff",
     "alac",
