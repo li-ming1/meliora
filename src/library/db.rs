@@ -823,33 +823,37 @@ pub async fn remove_tracks_from_playlist(
     playlist_id: i64,
     track_ids: &[i64],
 ) -> sqlx::Result<()> {
-    let has_track_query = include_str!("../../queries/playlist/playlist_has_track.sql");
-    let item_query = include_str!("../../queries/playlist/select_playlist_item.sql");
-    let remove_query = include_str!("../../queries/playlist/remove_track.sql");
+    if track_ids.is_empty() {
+        return Ok(());
+    }
+
+    // one DELETE for the whole batch replaces the per-track
+    // lookup-select-delete-renumber chain (remove_track.sql rewrites every
+    // later row per removal: 100 removals from a 3000-item playlist used to
+    // cost ~100 O(n) updates plus 200 lookups). the unique
+    // (playlist_id, track_id) index serves the delete; positions are
+    // re-compacted once in the same transaction.
+    let placeholders = std::iter::repeat_n("?", track_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM playlist_item WHERE playlist_id = ? AND track_id IN ({placeholders})"
+    );
+
+    let mut delete_query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(playlist_id);
+    for &id in track_ids {
+        delete_query = delete_query.bind(id);
+    }
+
+    let renumber_query = include_str!("../../queries/playlist/renumber_playlist_positions.sql");
 
     let mut tx = pool.begin().await?;
 
-    for &track_id in track_ids {
-        let item_id: Option<i64> = sqlx::query_scalar(has_track_query)
-            .bind(playlist_id)
-            .bind(track_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-
-        if let Some(item_id) = item_id {
-            let item: PlaylistItem = sqlx::query_as(item_query)
-                .bind(item_id)
-                .fetch_one(&mut *tx)
-                .await?;
-
-            sqlx::query(remove_query)
-                .bind(item.playlist_id)
-                .bind(item.position)
-                .bind(item_id)
-                .execute(&mut *tx)
-                .await?;
-        }
-    }
+    delete_query.execute(&mut *tx).await?;
+    sqlx::query(renumber_query)
+        .bind(playlist_id)
+        .execute(&mut *tx)
+        .await?;
 
     tx.commit().await?;
     Ok(())
@@ -1152,5 +1156,50 @@ impl LibraryAccess for App {
     fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>> {
         let pool: &Pool = self.global();
         blocking_query("list_album_paths", list_album_paths(&pool.0, album_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn remove_tracks_renumbers_positions_contiguously() {
+        let (_dir, pool) = crate::test_support::create_test_pool("playlist-remove-test").await;
+
+        let playlist_id = create_playlist(&pool, "test").await.unwrap();
+        for n in 1..=6 {
+            sqlx::query(
+                "INSERT INTO track (title, title_sortable, duration, location) \
+                 VALUES ('t', 't', 0, ?)",
+            )
+            .bind(format!("t{n}.flac"))
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO playlist_item (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(playlist_id)
+            .bind(n)
+            .bind(n)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // remove #2 and #5 in one batch; the rest must compact to 1..4 in order
+        remove_tracks_from_playlist(&pool, playlist_id, &[2, 5])
+            .await
+            .unwrap();
+
+        let positions: Vec<i64> = sqlx::query_scalar(
+            "SELECT position FROM playlist_item WHERE playlist_id = ? ORDER BY track_id",
+        )
+        .bind(playlist_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(positions, vec![1, 2, 3, 4]);
     }
 }

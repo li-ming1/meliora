@@ -47,16 +47,28 @@ impl PlaybackSessionStorageWorker {
             // with Arc'd queues this is two refcounts, and serialization no
             // longer blocks the playback thread's next send.
             let session = self.rx.borrow_and_update().clone();
-            let serialized_session = serde_json::to_vec(&session);
+            // Serialize off the async executor: a 100k-item queue takes tens of
+            // ms of pure CPU, enough to stall other tasks sharing the runtime.
+            // The loop awaits the result, so writes stay strictly ordered.
+            let serialized_session = tokio::task::spawn_blocking(move || {
+                serde_json::to_vec(&session).map(|mut json| {
+                    json.push(b'\n');
+                    json
+                })
+            })
+            .await;
 
-            let mut json = match serialized_session {
-                Ok(json) => json,
-                Err(e) => {
+            let json = match serialized_session {
+                Ok(Ok(json)) => json,
+                Ok(Err(e)) => {
                     error!("Failed to serialize PlaybackSessionData: {}", e);
                     continue;
                 }
+                Err(e) => {
+                    error!("Session serialization task failed: {}", e);
+                    continue;
+                }
             };
-            json.push(b'\n');
 
             // Write to a temporary file and rename it into place (same pattern
             // as `library/scan/record.rs`): an in-place truncate+rewrite can

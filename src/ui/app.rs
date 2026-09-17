@@ -504,7 +504,21 @@ pub fn run() -> anyhow::Result<()> {
         let (scan_interface, scan_events) = start_scanner(pool.clone(), scanning_settings);
         let initial_health = cx.global::<Models>().settings_health.read(cx).clone();
         if matches!(initial_health, models::SettingsHealth::Ok) {
-            scan_interface.scan();
+            // Defer the first scan past startup: the incremental walk stats
+            // every audio file, and that disk IO used to race the first frame
+            // and the startup DB reads. The scanner is already background, so
+            // a 1 s head start costs nothing.
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let _ = cx.update(|cx| {
+                    if cx.has_global::<ScanInterface>() {
+                        cx.global::<ScanInterface>().scan();
+                    }
+                });
+            })
+            .detach();
         } else {
             tracing::warn!("Settings file is corrupt; holding scanner until resolved");
         }
