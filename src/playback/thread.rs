@@ -234,28 +234,31 @@ impl PlaybackThread {
     }
 
     /// Read incoming commands from the command channel, and process them.
+    /// Consecutive Next/Seek runs are collapsed first (see below).
     pub fn command_intake(&mut self) {
-        // Collapse runs of consecutive Next commands into one advance: rapid
-        // clicks while a slow open is in flight would otherwise queue one full
-        // track-open per click and skip through several tracks.
         let mut commands: Vec<PlaybackCommand> = Vec::new();
         while let Ok(command) = self.commands_rx.try_recv() {
             commands.push(command);
         }
-        let mut prev_next = false;
-        commands.retain(|command| match command {
-            PlaybackCommand::Next if prev_next => false,
-            PlaybackCommand::Next => {
-                prev_next = true;
-                true
-            }
-            _ => {
-                prev_next = false;
-                true
-            }
-        });
-
+        // Collapse runs of consecutive Next commands (rapid clicks) and Seek
+        // commands (scrubber drag emits at ~30 Hz) into the last of each run:
+        // every executed Seek rebuilds the audio stream and re-anchors online
+        // sources, so intermediate positions are pure waste.
+        let mut collapsed: Vec<PlaybackCommand> = Vec::with_capacity(commands.len());
         for command in commands {
+            let repeats_last = match (&command, collapsed.last()) {
+                (PlaybackCommand::Next, Some(PlaybackCommand::Next)) => true,
+                (PlaybackCommand::Seek(_), Some(PlaybackCommand::Seek(_))) => true,
+                _ => false,
+            };
+            if repeats_last {
+                *collapsed.last_mut().expect("matched collapsed.last()") = command;
+            } else {
+                collapsed.push(command);
+            }
+        }
+
+        for command in collapsed {
             match command {
                 PlaybackCommand::Play => self.play(),
                 PlaybackCommand::Pause => self.pause(),

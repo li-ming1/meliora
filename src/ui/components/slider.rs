@@ -12,6 +12,37 @@ use crate::ui::theme::Theme;
 type ClickHandler = dyn FnMut(f32, &mut Window, &mut App);
 type DoubleClickHandler = dyn FnMut(&mut Window, &mut App);
 
+/// Per-slider drag bookkeeping, kept as keyed element state.
+#[derive(Clone)]
+struct SliderDragState {
+    dragging: bool,
+    last_emit: Instant,
+    drag_value: f32,
+    /// When the drag ended. Until the prop (engine echo) catches up with
+    /// `drag_value` — or this grace expires — the fill keeps painting
+    /// `drag_value`, so the thumb never snaps back to a stale position on
+    /// slow-echo (online) sources.
+    released_at: Option<Instant>,
+}
+
+impl SliderDragState {
+    fn new() -> Self {
+        Self {
+            dragging: false,
+            last_emit: Instant::now(),
+            drag_value: 0.0,
+            released_at: None,
+        }
+    }
+}
+
+/// How long the fill may keep painting the dragged value after release while
+/// waiting for the engine echo to land.
+const ECHO_GRACE: Duration = Duration::from_millis(600);
+/// Echo within this fraction of the drag target counts as caught up (0.5% of
+/// the bar ≈ 1.5 s on a 5-minute track).
+const ECHO_EPSILON: f32 = 0.005;
+
 pub struct Slider {
     pub(self) id: Option<ElementId>,
     pub(self) style: StyleRefinement,
@@ -107,7 +138,7 @@ impl Element for Slider {
 
     fn paint(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
@@ -119,17 +150,39 @@ impl Element for Slider {
         let default_background = theme.slider_background;
         let default_foreground = theme.slider_foreground;
 
-        let mut inner_bounds = bounds;
-        inner_bounds.size.width = bounds.size.width * self.value;
-
         let mut corners = Corners::default();
         corners.refine(&self.style.corner_radii);
+        let corner_radii = corners.to_pixels(window.rem_size());
+
+        let mut borders = Edges::default();
+        borders.refine(&self.style.border_widths);
+        let border_widths = borders.to_pixels(window.rem_size());
+        let border_color = self.style.border_color.unwrap_or_default();
+        let foreground = self
+            .style
+            .text
+            .color
+            .unwrap_or(default_foreground.into_color());
+        let prop_value = self.value;
+
+        let paint_fill = move |value: f32, window: &mut Window| {
+            let mut inner_bounds = bounds;
+            inner_bounds.size.width = bounds.size.width * value;
+            window.paint_quad(quad(
+                inner_bounds,
+                corner_radii,
+                foreground,
+                border_widths,
+                border_color,
+                BorderStyle::Solid,
+            ));
+        };
 
         window.set_cursor_style(CursorStyle::PointingHand, hitbox);
 
         window.paint_quad(quad(
             bounds,
-            corners.to_pixels(window.rem_size()),
+            corner_radii,
             self.style
                 .background
                 .clone()
@@ -140,105 +193,124 @@ impl Element for Slider {
             BorderStyle::Solid,
         ));
 
-        let mut borders = Edges::default();
-        borders.refine(&self.style.border_widths);
+        // Drag state, shared between this paint pass (fill position) and the
+        // mouse handlers below. Keyed by the slider id; `use_keyed_state`
+        // observes the entity and notifies the owning view on change, so
+        // drags repaint even when the engine echo is silent (paused).
+        let drag_entity = self
+            .id
+            .clone()
+            .map(|id| window.use_keyed_state(id, cx, |_, _| SliderDragState::new()));
 
-        window.paint_quad(quad(
-            inner_bounds,
-            corners.to_pixels(window.rem_size()),
-            self.style
-                .text
-                .color
-                .unwrap_or(default_foreground.into_color()),
-            borders.to_pixels(window.rem_size()),
-            self.style.border_color.unwrap_or_default(),
-            BorderStyle::Solid,
-        ));
+        // While dragging (and until the engine echo lands after release) the
+        // fill must come from the finger position — the echo lags behind on
+        // online tracks and the thumb would otherwise jump backwards mid-drag
+        // and after release.
+        let fill = match drag_entity.as_ref() {
+            Some(state) => {
+                let state = state.read(cx);
+                let echo_pending = state.released_at.is_some_and(|at| {
+                    at.elapsed() < ECHO_GRACE && (prop_value - state.drag_value).abs() > ECHO_EPSILON
+                });
+                if state.dragging || echo_pending {
+                    state.drag_value
+                } else {
+                    prop_value
+                }
+            }
+            None => prop_value,
+        };
+        paint_fill(fill, window);
 
-        if let Some(func) = self.on_change.as_ref() {
-            let on_double_click = self.on_double_click.clone();
-            let change_interval = self.change_interval;
-            let min_interval = change_interval.unwrap_or(Duration::from_millis(1));
-            window.with_optional_element_state(
-                id,
-                #[allow(clippy::type_complexity)]
-                move |v: Option<Option<Rc<RefCell<(bool, Instant, f32)>>>>, cx| {
-                    let drag_state = v
-                        .flatten()
-                        .unwrap_or_else(|| Rc::new(RefCell::new((false, Instant::now(), 0.0))));
-                    let func = func.clone();
-                    let func_move = func.clone();
-                    let func_release = func.clone();
+        let (Some(func), Some(drag_entity)) = (self.on_change.as_ref(), drag_entity) else {
+            return;
+        };
 
-                    let drag_state_1 = drag_state.clone();
-                    let hitbox = hitbox.clone();
+        let on_double_click = self.on_double_click.clone();
+        let change_interval = self.change_interval;
+        let min_interval = change_interval.unwrap_or(Duration::from_millis(1));
 
-                    cx.on_mouse_event(move |ev: &MouseDownEvent, _, window, cx| {
-                        if !hitbox.is_hovered(window) {
-                            return;
-                        }
+        let drag_state_down = drag_entity.clone();
+        let hitbox = hitbox.clone();
+        let func_down = func.clone();
 
-                        window.prevent_default();
-                        cx.stop_propagation();
+        window.on_mouse_event(move |ev: &MouseDownEvent, _, window, cx| {
+            if !hitbox.is_hovered(window) {
+                return;
+            }
 
-                        if ev.click_count == 2 {
-                            if let Some(on_double_click) = on_double_click.as_ref() {
-                                (on_double_click.borrow_mut())(window, cx);
-                            }
+            window.prevent_default();
+            cx.stop_propagation();
 
-                            drag_state_1.borrow_mut().0 = false;
-                            return;
-                        }
+            if ev.click_count == 2 {
+                if let Some(on_double_click) = on_double_click.as_ref() {
+                    (on_double_click.borrow_mut())(window, cx);
+                }
+                drag_state_down.update(cx, |state, _| state.dragging = false);
+                return;
+            }
 
-                        let relative = ev.position - bounds.origin;
-                        let relative_x: f32 = relative.x.into();
-                        let width: f32 = bounds.size.width.into();
-                        let value = (relative_x / width).clamp(0.0, 1.0);
+            let relative = ev.position - bounds.origin;
+            let relative_x: f32 = relative.x.into();
+            let width: f32 = bounds.size.width.into();
+            let value = (relative_x / width).clamp(0.0, 1.0);
 
-                        (func.borrow_mut())(value, window, cx);
-                        let mut state = drag_state_1.borrow_mut();
-                        state.0 = true;
-                        state.1 = Instant::now();
-                        state.2 = value;
-                    });
+            (func_down.borrow_mut())(value, window, cx);
+            drag_state_down.update(cx, |state, _| {
+                state.dragging = true;
+                state.released_at = None;
+                state.last_emit = Instant::now();
+                state.drag_value = value;
+            });
+        });
 
-                    let drag_state_2 = drag_state.clone();
+        let drag_state_move = drag_entity.clone();
+        let func_move = func.clone();
 
-                    cx.on_mouse_event(move |ev: &MouseMoveEvent, _, window, cx| {
-                        let mut state = drag_state_2.borrow_mut();
-                        if !state.0 {
-                            return;
-                        }
+        window.on_mouse_event(move |ev: &MouseMoveEvent, _, window, cx| {
+            let emit = drag_state_move.update(cx, |state, _| {
+                if !state.dragging {
+                    return None;
+                }
 
-                        let relative = ev.position - bounds.origin;
-                        let relative_x: f32 = relative.x.into();
-                        let width: f32 = bounds.size.width.into();
-                        let value = (relative_x / width).clamp(0.0, 1.0);
+                let relative = ev.position - bounds.origin;
+                let relative_x: f32 = relative.x.into();
+                let width: f32 = bounds.size.width.into();
+                let value = (relative_x / width).clamp(0.0, 1.0);
 
-                        state.2 = value;
+                state.drag_value = value;
 
-                        let now = Instant::now();
-                        if now.duration_since(state.1) >= min_interval {
-                            (func_move.borrow_mut())(value, window, cx);
-                            state.1 = now;
-                        }
-                    });
+                let now = Instant::now();
+                let due = now.duration_since(state.last_emit) >= min_interval;
+                if due {
+                    state.last_emit = now;
+                }
+                due.then_some(value)
+            });
 
-                    let drag_state_3 = drag_state.clone();
-                    let flush_on_release = change_interval.is_some();
+            if let Some(value) = emit {
+                (func_move.borrow_mut())(value, window, cx);
+            }
+        });
 
-                    cx.on_mouse_event(move |_ev: &MouseUpEvent, _, window, cx| {
-                        let mut state = drag_state_3.borrow_mut();
-                        if state.0 && flush_on_release {
-                            (func_release.borrow_mut())(state.2, window, cx);
-                        }
-                        state.0 = false;
-                    });
+        let drag_state_up = drag_entity.clone();
+        let func_release = func.clone();
+        let flush_on_release = change_interval.is_some();
 
-                    ((), if id.is_some() { Some(drag_state) } else { None })
-                },
-            )
-        }
+        window.on_mouse_event(move |_ev: &MouseUpEvent, _, window, cx| {
+            let flushed = drag_state_up.update(cx, |state, _| {
+                if !state.dragging {
+                    return None;
+                }
+                state.released_at = Some(Instant::now());
+                state.dragging = false;
+                Some(state.drag_value)
+            });
+
+            if flush_on_release && let Some(value) = flushed {
+                (func_release.borrow_mut())(value, window, cx);
+            }
+        });
     }
 }
 
