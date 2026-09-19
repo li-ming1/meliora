@@ -510,7 +510,10 @@ impl NeteaseClient {
                     Value::String(session.csrf.clone().unwrap_or_default()),
                 );
                 let (params, enc_sec_key) = crypto::weapi(&data.to_string());
-                let url = format!("{DOMAIN}/weapi/{}", uri.strip_prefix("/api/").unwrap_or(uri));
+                let url = format!(
+                    "{DOMAIN}/weapi/{}",
+                    uri.strip_prefix("/api/").unwrap_or(uri)
+                );
                 let body = format!(
                     "params={}&encSecKey={}",
                     urlencoding::encode(&params),
@@ -532,8 +535,10 @@ impl NeteaseClient {
                     );
                 }
                 let params = crypto::eapi(uri, &data.to_string());
-                let url =
-                    format!("{EAPI_DOMAIN}/eapi/{}", uri.strip_prefix("/api/").unwrap_or(uri));
+                let url = format!(
+                    "{EAPI_DOMAIN}/eapi/{}",
+                    uri.strip_prefix("/api/").unwrap_or(uri)
+                );
                 let body = format!("params={}", urlencoding::encode(&params));
                 (url, body, EAPI_UA, None)
             }
@@ -546,15 +551,18 @@ impl NeteaseClient {
 
         let mut headers = HeaderMap::new();
         let set_header = |headers: &mut HeaderMap, name: &str, value: &str| {
-            if let (Ok(name), Ok(value)) = (
-                HeaderName::try_from(name),
-                HeaderValue::try_from(value),
-            ) {
+            if let (Ok(name), Ok(value)) =
+                (HeaderName::try_from(name), HeaderValue::try_from(value))
+            {
                 headers.insert(name, value);
             }
         };
         set_header(&mut headers, "User-Agent", user_agent);
-        set_header(&mut headers, "Cookie", &Self::cookie_header_value(&cookie_pairs));
+        set_header(
+            &mut headers,
+            "Cookie",
+            &Self::cookie_header_value(&cookie_pairs),
+        );
         set_header(&mut headers, "Content-Type", CONTENT_TYPE_FORM);
         if let Some(referer) = referer {
             set_header(&mut headers, "Referer", referer);
@@ -578,9 +586,10 @@ impl NeteaseClient {
         let bytes = response.bytes().await?;
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         // Payload-size telemetry: the parsed `Value` tree costs a multiple of
-        // this, so an endpoint that quietly ships megabytes (toplist carries
-        // per-chart track lists) shows up here before it shows up as a memory
-        // step in the `[mem]` probe.
+        // this, so an endpoint that quietly ships megabytes shows up here
+        // before it shows up as a memory step in the `[mem]` probe. (The
+        // /api/v6/playlist/detail `n: 100000` days are over — `n: 0` keeps
+        // the track entities off the wire; see api.rs.)
         tracing::info!(
             target: "meliora::netease",
             endpoint = uri,
@@ -591,10 +600,7 @@ impl NeteaseClient {
         let code = body.get("code").and_then(Value::as_i64);
         let status = code.unwrap_or(http_status);
         if status == 200 || SPECIAL_STATUS_CODES.contains(&status) {
-            return Ok(NeteaseResponse {
-                body,
-                set_cookies,
-            });
+            return Ok(NeteaseResponse { body, set_cookies });
         }
         let msg = body
             .get("message")

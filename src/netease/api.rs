@@ -30,7 +30,11 @@ impl NeteaseClient {
     /// (`/api/login/qrcode/unikey`, eapi, `{type: 3}`).
     pub async fn qr_create_key(&self) -> Result<String, NeteaseError> {
         let response = self
-            .request(Crypto::Eapi, "/api/login/qrcode/unikey", json!({ "type": 3 }))
+            .request(
+                Crypto::Eapi,
+                "/api/login/qrcode/unikey",
+                json!({ "type": 3 }),
+            )
             .await?;
         response
             .body
@@ -160,12 +164,16 @@ impl NeteaseClient {
     }
 
     /// Playlist metadata incl. the full `trackIds` list. Mirrors
-    /// `playlist_detail.js` (`/api/v6/playlist/detail`, eapi).
+    /// `playlist_detail.js` (`/api/v6/playlist/detail`, eapi). `n: 0` keeps
+    /// the server from materializing `playlist.tracks` (full song entities
+    /// for every track — megabytes of JSON whose serde_json::Value tree
+    /// inflated opening a playlist/rank by up to ~120 MB); the separate
+    /// `trackIds` array is always returned in full regardless of `n`.
     pub async fn playlist_detail(&self, id: i64) -> Result<NeteaseResponse, NeteaseError> {
         self.request(
             Crypto::Eapi,
             "/api/v6/playlist/detail",
-            json!({ "id": id, "n": 100000, "s": 8 }),
+            json!({ "id": id, "n": 0, "s": 8 }),
         )
         .await
     }
@@ -233,11 +241,7 @@ impl NeteaseClient {
     /// the endpoint over the new xeapi handshake, plain eapi on the same path
     /// works identically. `data[0].url` may be `null` and may be a
     /// `freeTrialInfo` trial clip for VIP songs.
-    pub async fn song_url(
-        &self,
-        id: i64,
-        level: &str,
-    ) -> Result<NeteaseResponse, NeteaseError> {
+    pub async fn song_url(&self, id: i64, level: &str) -> Result<NeteaseResponse, NeteaseError> {
         self.request(
             Crypto::Eapi,
             "/api/song/enhance/player/url/v1",
@@ -321,12 +325,7 @@ impl NeteaseClient {
             .body
             .pointer("/ids")
             .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_i64)
-                    .collect::<Vec<i64>>()
-            })
+            .map(|items| items.iter().filter_map(Value::as_i64).collect::<Vec<i64>>())
             .unwrap_or_default())
     }
 

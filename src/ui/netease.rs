@@ -14,12 +14,13 @@ pub fn download_label() -> cntp_i18n::I18nString {
 }
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use cntp_i18n::tr;
@@ -423,9 +424,10 @@ pub fn parse_ranks(body: &Value) -> Vec<NeteaseRank> {
                         id,
                         name: SharedString::from(string_field(item, &["name"])),
                         cover_url: cover_url_field(item),
-                        update_frequency: SharedString::from(string_field(item, &[
-                            "updateFrequency",
-                        ])),
+                        update_frequency: SharedString::from(string_field(
+                            item,
+                            &["updateFrequency"],
+                        )),
                     })
                 })
                 .collect()
@@ -437,17 +439,18 @@ pub fn parse_ranks(body: &Value) -> Vec<NeteaseRank> {
 /// (`data[0].url`), together with whether it is only a trial clip
 /// (`freeTrialInfo` present).
 pub fn extract_song_url(body: &Value) -> Option<(String, bool)> {
-    body.pointer("/data/0")
-        .and_then(|entry| {
-            entry
-                .get("url")
-                .and_then(Value::as_str)
-                .filter(|url| !url.is_empty())
-                .map(|url| {
-                    let trial = entry.get("freeTrialInfo").is_some_and(|info| !info.is_null());
-                    (url.to_string(), trial)
-                })
-        })
+    body.pointer("/data/0").and_then(|entry| {
+        entry
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|url| !url.is_empty())
+            .map(|url| {
+                let trial = entry
+                    .get("freeTrialInfo")
+                    .is_some_and(|info| !info.is_null());
+                (url.to_string(), trial)
+            })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -519,17 +522,34 @@ pub async fn refresh_restored_url(
     Some(url)
 }
 
-/// Song ids whose play-URL fetch is currently in flight. Concurrent clicks on
-/// the same song coalesce into the first fetch so the track can't be queued
-/// twice while the (slow) URL request is still outstanding.
-static PENDING_FETCHES: OnceLock<RwLock<HashSet<i64>>> = OnceLock::new();
+/// Song ids whose play-URL fetch is currently in flight, plus ids whose
+/// fetch recently succeeded (tagged with the intent it served). Concurrent
+/// clicks on the same song coalesce into the first fetch so the track can't
+/// be queued twice while the (slow) URL request is still outstanding, and a
+/// short same-intent cooldown after a success keeps a click burst from
+/// running the full fetch + open churn several times — GPUI delivers one
+/// click event per click of a multi-click sequence, so a double-click is
+/// two `play_track` calls a few hundred ms apart.
+struct PlayFetchDedup {
+    in_flight: HashSet<i64>,
+    recent: HashMap<i64, (u8, Instant)>,
+}
 
-fn pending_fetches() -> &'static RwLock<HashSet<i64>> {
-    PENDING_FETCHES.get_or_init(|| RwLock::new(HashSet::new()))
+/// How long a successful fetch suppresses an identical-intent re-request.
+const FETCH_COOLDOWN: Duration = Duration::from_millis(800);
+
+static PENDING_FETCHES: OnceLock<RwLock<PlayFetchDedup>> = OnceLock::new();
+
+fn pending_fetches() -> &'static RwLock<PlayFetchDedup> {
+    PENDING_FETCHES.get_or_init(|| {
+        RwLock::new(PlayFetchDedup {
+            in_flight: HashSet::new(),
+            recent: HashMap::new(),
+        })
+    })
 }
 
 fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
-    tracing::info!(title = %track.title, id = track.id, "netease play_track: fetching play URL");
     let quality = cx
         .global::<SettingsGlobal>()
         .model
@@ -542,14 +562,23 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
     cx.spawn(async move |cx| {
         // Coalesce concurrent clicks on the same song: only the first click
         // fetches and queues; later clicks in the same window are dropped so
-        // a double-click can't enqueue the track twice.
-        if !pending_fetches()
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(track.id)
+        // a double-click can't enqueue the track twice. The intent tag keeps
+        // the cooldown from swallowing a deliberate play right after a
+        // queue-add of the same song.
+        let intent_key = matches!(intent, PlayIntent::Now) as u8;
         {
-            return;
+            let mut dedup = pending_fetches().write().unwrap_or_else(|e| e.into_inner());
+            dedup.recent.retain(|_, (_, at)| at.elapsed() < FETCH_COOLDOWN);
+            let duplicate = dedup
+                .recent
+                .get(&track.id)
+                .is_some_and(|&(seen_intent, _)| seen_intent == intent_key)
+                || !dedup.in_flight.insert(track.id);
+            if duplicate {
+                return;
+            }
         }
+        tracing::info!(title = %track.title, id = track.id, "netease play_track: fetching play URL");
 
         let client = crate::netease::shared_client();
         let fetch_track = track.clone();
@@ -558,9 +587,12 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
             .await;
 
         let Some(url) = request.ok().flatten() else {
+            // Clear the in-flight tag only: a failed fetch must stay
+            // retryable on the next click.
             pending_fetches()
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
+                .in_flight
                 .remove(&track.id);
             tracing::warn!(id = track.id, "netease play_track: no playable URL in response");
             emit_toast(Toast::warning(tr!(
@@ -632,10 +664,11 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
             }
         });
 
-        pending_fetches()
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&track.id);
+        {
+            let mut dedup = pending_fetches().write().unwrap_or_else(|e| e.into_inner());
+            dedup.in_flight.remove(&track.id);
+            dedup.recent.insert(track.id, (intent_key, Instant::now()));
+        }
     })
     .detach();
 }
@@ -766,7 +799,9 @@ pub fn like_track(cx: &mut App, track: &NeteaseTrackInfo) {
     let id = track.id;
     cx.spawn(async move |cx| {
         let client = crate::netease::shared_client();
-        let request = crate::RUNTIME.spawn(async move { client.like(id, true).await }).await;
+        let request = crate::RUNTIME
+            .spawn(async move { client.like(id, true).await })
+            .await;
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
@@ -808,7 +843,9 @@ pub fn unlike_track(cx: &mut App, track: &NeteaseTrackInfo) {
     let id = track.id;
     cx.spawn(async move |cx| {
         let client = crate::netease::shared_client();
-        let request = crate::RUNTIME.spawn(async move { client.like(id, false).await }).await;
+        let request = crate::RUNTIME
+            .spawn(async move { client.like(id, false).await })
+            .await;
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
@@ -864,9 +901,7 @@ fn merge_translation(lines: &mut [LrcLine], translation: &str) {
     for line in lines.iter_mut() {
         let best = translated
             .iter()
-            .filter(|candidate| {
-                candidate.time_ms.abs_diff(line.time_ms) <= 500
-            })
+            .filter(|candidate| candidate.time_ms.abs_diff(line.time_ms) <= 500)
             .min_by_key(|candidate| candidate.time_ms.abs_diff(line.time_ms));
         if let Some(best) = best
             && !best.text.is_empty()
@@ -1018,7 +1053,15 @@ where
             let theme = theme.clone();
             move |this| this.bg(theme.queue_item_hover)
         })
-        .on_click(on_play)
+        .on_click(move |event, window, cx| {
+            // GPUI delivers one click event per click of a multi-click
+            // sequence; only the first click starts playback so a
+            // double-click doesn't run the fetch + open churn twice.
+            if event.click_count() > 1 {
+                return;
+            }
+            on_play(event, window, cx)
+        })
         .child(
             div()
                 .text_xs()
@@ -1031,8 +1074,11 @@ where
             this.child(
                 // composite (name, index) id: zero per-frame allocation; the
                 // image is scoped under this row's `.id((id_prefix, index))`
-                managed_image(("thumb", index), ManagedImageKey::HttpCover(track.cover_url.clone()))
-                    .thumb(),
+                managed_image(
+                    ("thumb", index),
+                    ManagedImageKey::HttpCover(track.cover_url.clone()),
+                )
+                .thumb(),
             )
         })
         .child(
@@ -1131,7 +1177,10 @@ mod tests {
         });
         let playlists = parse_playlists(&body);
         assert_eq!(playlists.len(), 1);
-        assert_eq!(playlists[0].cover_url, "https://p1.music.126.net/x/y.jpg?param=120y120");
+        assert_eq!(
+            playlists[0].cover_url,
+            "https://p1.music.126.net/x/y.jpg?param=120y120"
+        );
     }
 
     #[test]
@@ -1146,7 +1195,10 @@ mod tests {
         });
         let tracks = parse_tracks(&body, "/result/songs");
         assert_eq!(tracks.len(), 1);
-        assert_eq!(tracks[0].cover_url, "https://p2.music.126.net/z.jpg?param=256y256");
+        assert_eq!(
+            tracks[0].cover_url,
+            "https://p2.music.126.net/z.jpg?param=256y256"
+        );
         assert_eq!(tracks[0].duration, 269);
         assert_eq!(tracks[0].artist, "周杰伦");
     }

@@ -51,15 +51,12 @@ impl KugouClient {
     /// Step 2 of QR login: poll the key until the mobile app confirms.
     pub async fn qr_check(&self, key: &str) -> Result<QrStatus, KugouError> {
         let session = self.session_snapshot();
-        let mut spec = KugouRequest::new(
-            "https://login-user.kugou.com",
-            "/v2/get_userinfo_qrcode",
-        )
-        .web()
-        .param("plat", 4)
-        .param("appid", APPID)
-        .param("srcappid", SRCAPPID)
-        .param("qrcode", key);
+        let mut spec = KugouRequest::new("https://login-user.kugou.com", "/v2/get_userinfo_qrcode")
+            .web()
+            .param("plat", 4)
+            .param("appid", APPID)
+            .param("srcappid", SRCAPPID)
+            .param("qrcode", key);
         if !session.dev.is_empty() {
             spec = spec.param("dev", session.dev);
         }
@@ -388,7 +385,6 @@ impl KugouClient {
         self.request(spec).await
     }
 
-
     /// Lyric search: hash/keyword -> (id, accesskey) pairs.
     /// Mirrors `search_lyric.js`: no default params; the reference client's
     /// `notSign` flag is a no-op, so this stays android-signed.
@@ -424,14 +420,12 @@ impl KugouClient {
         let response = self.request(spec).await?;
         match response.body.get("content").and_then(Value::as_str) {
             Some(content) => {
-                use base64::engine::general_purpose::STANDARD;
                 use base64::Engine;
-                let bytes = STANDARD
-                    .decode(content)
-                    .map_err(|_| KugouError::Api {
-                        status: -1,
-                        msg: "lyric content is not valid base64".into(),
-                    })?;
+                use base64::engine::general_purpose::STANDARD;
+                let bytes = STANDARD.decode(content).map_err(|_| KugouError::Api {
+                    status: -1,
+                    msg: "lyric content is not valid base64".into(),
+                })?;
                 Ok(String::from_utf8_lossy(&bytes).into_owned())
             }
             None => Ok(String::new()),
@@ -458,12 +452,16 @@ impl KugouClient {
             .to_string())
     }
 
-    /// Rank list (`/ocean/v6/rank/list`), each entry carrying a cover and a
-    /// few song previews. Mirrors `RawRankApi.GetRankListAsync`.
+    /// Rank list (`/ocean/v6/rank/list`), each entry carrying a cover.
+    /// Mirrors `RawRankApi.GetRankListAsync`, but with `withsong: 0`: the
+    /// server otherwise attaches the full song entities of every rank to
+    /// every entry (megabytes of JSON the UI never reads — the rank cards
+    /// only show name + cover), and the serde_json::Value tree inflated the
+    /// view-entry memory step by ~100 MB.
     pub async fn rank_list(&self) -> Result<KugouResponse, KugouError> {
         let spec = KugouRequest::new(GATEWAY, "/ocean/v6/rank/list")
             .param("plat", 2)
-            .param("withsong", 1)
+            .param("withsong", 0)
             .param("parentid", 0);
         self.request(spec).await
     }

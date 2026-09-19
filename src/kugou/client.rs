@@ -187,7 +187,10 @@ impl KugouRequest {
     }
 
     fn body_string(&self) -> String {
-        self.json_body.as_ref().map(|json| json.to_string()).unwrap_or_default()
+        self.json_body
+            .as_ref()
+            .map(|json| json.to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -202,7 +205,6 @@ pub struct UserProfile {
     pub nickname: String,
     pub avatar_url: String,
 }
- 
 
 pub struct KugouClient {
     http: Client,
@@ -334,21 +336,8 @@ impl KugouClient {
             .any(|item| item.get("is_vip").and_then(Value::as_i64) == Some(1))
     }
 
-    /// Executes a signed request and checks the payload-level status fields
-    /// (the JS client treats `status == 0` / non-zero `error_code` as failure).
-    pub async fn request(&self, spec: KugouRequest) -> Result<KugouResponse, KugouError> {
-        let bytes = self.request_raw(spec).await?;
-        let body: Value = serde_json::from_slice(&bytes)
-            .ok()
-            .or_else(|| parse_jsonp(&bytes))
-            .unwrap_or(Value::Null);
-        check_payload_status(&body)?;
-        Ok(KugouResponse { body })
-    }
-
-    /// Executes a signed request, returning the raw response bytes. The only
-    /// endpoint needing this is device registration (binary-ish AES payload).
-    pub async fn request_raw(&self, spec: KugouRequest) -> Result<Vec<u8>, KugouError> {
+    /// Builds the signed request for `spec`.
+    fn build_signed(&self, spec: &KugouRequest) -> Result<zed_reqwest::RequestBuilder, KugouError> {
         let session = self.session_guard().clone();
         let dfid = if spec.random_dfid {
             crypto::random_string(24)
@@ -404,10 +393,9 @@ impl KugouClient {
 
         let mut headers = HeaderMap::new();
         let set_header = |headers: &mut HeaderMap, name: &str, value: &str| {
-            if let (Ok(name), Ok(value)) = (
-                HeaderName::try_from(name),
-                HeaderValue::try_from(value),
-            ) {
+            if let (Ok(name), Ok(value)) =
+                (HeaderName::try_from(name), HeaderValue::try_from(value))
+            {
                 headers.insert(name, value);
             }
         };
@@ -432,15 +420,28 @@ impl KugouClient {
         let url = format!("{}{}", spec.base_url, spec.path);
         let mut builder = self
             .http
-            .request(spec.method, &url)
+            .request(spec.method.clone(), &url)
             .headers(headers)
             .query(&params);
         if let Some(json) = &spec.json_body {
             builder = builder.body(json.to_string());
         }
+        Ok(builder)
+    }
 
-        let response = builder.send().await?;
-        Ok(response.bytes().await?.to_vec())
+    /// Executes a signed request and checks the payload-level status fields
+    /// (the JS client treats `status == 0` / non-zero `error_code` as failure).
+    /// The response bytes are parsed in place: the multi-megabyte bodies some
+    /// endpoints return must not be copied once more before parsing.
+    pub async fn request(&self, spec: KugouRequest) -> Result<KugouResponse, KugouError> {
+        let response = self.build_signed(&spec)?.send().await?;
+        let bytes = response.bytes().await?;
+        let body: Value = serde_json::from_slice(&bytes)
+            .ok()
+            .or_else(|| parse_jsonp(&bytes))
+            .unwrap_or(Value::Null);
+        check_payload_status(&body)?;
+        Ok(KugouResponse { body })
     }
 }
 
@@ -474,15 +475,12 @@ fn check_payload_status(body: &Value) -> Result<(), KugouError> {
             .and_then(Value::as_str)
             .unwrap_or("unknown error")
             .to_string();
-        let raw = body.to_string();
-        let snippet = if raw.len() > 400 {
-            format!("{}...", raw.chars().take(400).collect::<String>())
-        } else {
-            raw
-        };
+        // No full-body snippet here: the failing bodies can be multi-MB and
+        // serializing them just for an error string doubles the peak of an
+        // already failed request. status/error_code carry the signal.
         return Err(KugouError::Api {
             status: status.unwrap_or(-1),
-            msg: format!("{msg} | body: {snippet}"),
+            msg: format!("{msg} | error_code={error_code:?}"),
         });
     }
     Ok(())
@@ -498,7 +496,12 @@ mod tests {
         assert_eq!(session.mid, crypto::calculate_mid(&session.guid));
         assert_eq!(session.dfid, "-");
         assert_eq!(session.dev.len(), 10);
-        assert!(session.dev.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+        assert!(
+            session
+                .dev
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        );
     }
 
     #[test]
