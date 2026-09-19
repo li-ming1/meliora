@@ -50,7 +50,7 @@ file-rotate = "0.8.0"
 flate2 = "1"
 futures = "0.3"
 globwalk = "0.9"
-gpui = { package = "gpui-unofficial", git = "https://git.mailliw.org/hummingbird/gpui-unofficial-shim", rev = "74c47fc429f52fc3bf5277ad05e6dd2a58584ff8" }
+gpui = { package = "gpui-unofficial", path = "vendor/gpui-unofficial-shim" }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "ae7c41157feb180ce096cd1afdb2d6b48850b539", features = ["wayland", "x11", "font-kit"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 indexmap = { version = "2", features = ["serde"] }
@@ -123,9 +123,11 @@ notify-debouncer-full = "0.7.0"
 mimalloc = { version = "0.1", features = ["no_thp"] }
 
 [patch.crates-io]
-# Pinned so a re-resolve uses the cached commit instead of the remote HEAD
-# (ef7c4549 renamed the package and drags in an unresolvable gpui-ce tree).
-gpui-unofficial = { git = "https://git.mailliw.org/hummingbird/gpui-unofficial-shim", rev = "74c47fc429f52fc3bf5277ad05e6dd2a58584ff8" }
+# cntp-i18n (crates.io) depends on the package name `gpui-unofficial`; the
+# vendored shim satisfies it from the same source as our own `gpui` dep.
+# See vendor/gpui-unofficial-shim/ for why it exists and why the gpui rev
+# inside is pinned.
+gpui-unofficial = { path = "vendor/gpui-unofficial-shim" }
 
 # NOTE: gpui_platform is pinned to the same rev as the shim's `gpui`
 # (ae7c411): as a workspace member it drags the whole gpui-ce tree, and two
