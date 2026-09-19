@@ -1118,6 +1118,17 @@ fn liked_set() -> &'static RwLock<HashSet<String>> {
     LIKED_SET.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
+/// Fileids for the hashes currently in the liked list. The remove API
+/// (`delete_songs`) needs the fileid, which only the paged list fetch
+/// provides — caching it beside the hash set lets unlike skip that fetch
+/// entirely in the common case instead of re-pulling up to 10 pages of full
+/// song entities per unlike.
+static LIKED_FILEIDS: OnceLock<RwLock<HashMap<String, i64>>> = OnceLock::new();
+
+fn liked_fileids() -> &'static RwLock<HashMap<String, i64>> {
+    LIKED_FILEIDS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
 /// True when the cache holds `hash` as liked.
 pub fn liked_set_contains(hash: &str) -> bool {
     liked_set()
@@ -1142,8 +1153,20 @@ async fn refresh_liked_set_from_service() {
     let Some(entries) = fetch_liked_entries().await else {
         return;
     };
-    let hashes = entries.into_iter().map(|(h, _)| h).collect();
+    store_liked_entries(entries);
+}
+
+/// Replaces both liked caches (hash set + hash→fileid map) from one paged
+/// fetch result.
+fn store_liked_entries(entries: Vec<(String, i64)>) {
+    let mut hashes = HashSet::with_capacity(entries.len());
+    let mut fileids = HashMap::with_capacity(entries.len());
+    for (hash, fileid) in entries {
+        hashes.insert(hash.clone());
+        fileids.insert(hash, fileid);
+    }
     *liked_set().write().unwrap_or_else(|e| e.into_inner()) = hashes;
+    *liked_fileids().write().unwrap_or_else(|e| e.into_inner()) = fileids;
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
@@ -1186,12 +1209,25 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
     cx.spawn(async move |cx| {
         let client = kugou::shared_client();
         let hash = track.hash.clone();
-        let fileid = fetch_liked_entries()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .find(|(h, _)| *h == hash)
-            .map(|(_, f)| f);
+        // The fileid usually sits in the cache primed by the last full liked
+        // fetch; only a miss (like made on another device since then, or the
+        // cache never primed) pays for a fresh paged fetch.
+        let fileid = match liked_fileids()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&hash)
+            .copied()
+        {
+            Some(fid) => Some(fid),
+            None => match fetch_liked_entries().await {
+                Some(entries) => {
+                    let found = entries.iter().find(|(h, _)| *h == hash).map(|(_, f)| *f);
+                    store_liked_entries(entries);
+                    found
+                }
+                None => None,
+            },
+        };
 
         let request = match fileid {
             Some(fid) => crate::RUNTIME
@@ -1215,6 +1251,10 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
                 liked_set()
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&hash);
+                liked_fileids()
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&hash);

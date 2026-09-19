@@ -82,6 +82,9 @@ struct SelectedPlaylist {
     global_collection_id: String,
     listid: i64,
     name: SharedString,
+    /// track count as reported by the playlist list; lets load_first_page
+    /// fetch the last page directly instead of probing page 1 for the count
+    count: i64,
 }
 
 pub struct KugouPlaylistsView {
@@ -194,6 +197,7 @@ impl KugouPlaylistsView {
             global_collection_id: playlist.global_collection_id.clone(),
             listid: playlist.listid,
             name: playlist.name.clone(),
+            count: playlist.count,
         });
         self.tracks.clear();
         self.tracks_state = TracksState::Loading;
@@ -247,29 +251,40 @@ impl KugouPlaylistsView {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let listid = selected.listid;
+            let count = selected.count;
             let request = crate::RUNTIME
                 .spawn(async move {
-                    // probe page 1 for the total count
-                    let probe = client.playlist_tracks(listid, 1, TRACKS_PER_PAGE).await?;
-                    let count = probe
-                        .body
-                        .pointer("/data/count")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
-                    let total_pages = if count > 0 {
-                        (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE
-                    } else {
-                        1
-                    };
-
-                    let response = if total_pages <= 1 {
-                        probe
-                    } else {
-                        client
+                    // The playlist list already carries the track count, so
+                    // the last page is fetched directly; the page-1 probe is
+                    // only the fallback for lists that came back without one.
+                    if count > 0 {
+                        let total_pages = (selected.count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE;
+                        let response = client
                             .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
-                            .await?
-                    };
-                    Ok::<_, kugou::KugouError>((response, total_pages))
+                            .await?;
+                        Ok::<_, kugou::KugouError>((response, total_pages))
+                    } else {
+                        let probe = client.playlist_tracks(listid, 1, TRACKS_PER_PAGE).await?;
+                        let count = probe
+                            .body
+                            .pointer("/data/count")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let total_pages = if count > 0 {
+                            (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE
+                        } else {
+                            1
+                        };
+
+                        let response = if total_pages <= 1 {
+                            probe
+                        } else {
+                            client
+                                .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
+                                .await?
+                        };
+                        Ok((response, total_pages))
+                    }
                 })
                 .await;
 

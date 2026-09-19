@@ -811,79 +811,79 @@
   },
   "KUGOU_IMPORT_CANCEL": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:1006",
+    "definedIn": "src/ui/library/kugou_playlists.rs:1021",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_CREATE_FAILED": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:512",
+    "definedIn": "src/ui/library/kugou_playlists.rs:527",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_DEFAULT_NAME": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:474",
+    "definedIn": "src/ui/library/kugou_playlists.rs:489",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_DONE": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:493",
+    "definedIn": "src/ui/library/kugou_playlists.rs:508",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_FAILED": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:504",
+    "definedIn": "src/ui/library/kugou_playlists.rs:519",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_HINT": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:986",
+    "definedIn": "src/ui/library/kugou_playlists.rs:1001",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_NOT_FOUND": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:522",
+    "definedIn": "src/ui/library/kugou_playlists.rs:537",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_NO_MATCH": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:529",
+    "definedIn": "src/ui/library/kugou_playlists.rs:544",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_PARSING": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:471",
+    "definedIn": "src/ui/library/kugou_playlists.rs:486",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_PLAYLIST": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:565",
+    "definedIn": "src/ui/library/kugou_playlists.rs:580",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_RUNNING": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:1016",
+    "definedIn": "src/ui/library/kugou_playlists.rs:1031",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_START": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:1018",
+    "definedIn": "src/ui/library/kugou_playlists.rs:1033",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_TITLE": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:983",
+    "definedIn": "src/ui/library/kugou_playlists.rs:998",
     "plural": false,
     "description": null
   },
@@ -901,13 +901,13 @@
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1222",
+    "definedIn": "src/ui/kugou.rs:1262",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1227",
+    "definedIn": "src/ui/kugou.rs:1267",
     "plural": false,
     "description": null
   },
@@ -925,13 +925,13 @@
   },
   "KUGOU_LOAD_FAILED": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:693",
+    "definedIn": "src/ui/library/kugou_playlists.rs:708",
     "plural": false,
     "description": null
   },
   "KUGOU_LOAD_MORE": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:912",
+    "definedIn": "src/ui/library/kugou_playlists.rs:927",
     "plural": false,
     "description": null
   },
@@ -949,7 +949,7 @@
   },
   "KUGOU_LOGIN_REQUIRED": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:778",
+    "definedIn": "src/ui/library/kugou_playlists.rs:793",
     "plural": false,
     "description": null
   },
@@ -967,7 +967,7 @@
   },
   "KUGOU_NO_PLAYLISTS": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:829",
+    "definedIn": "src/ui/library/kugou_playlists.rs:844",
     "plural": false,
     "description": null
   },
@@ -997,7 +997,7 @@
   },
   "KUGOU_OPEN_SETTINGS": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:786",
+    "definedIn": "src/ui/library/kugou_playlists.rs:801",
     "plural": false,
     "description": null
   },
@@ -1009,7 +1009,7 @@
   },
   "KUGOU_PLAYLIST_EMPTY": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:760",
+    "definedIn": "src/ui/library/kugou_playlists.rs:775",
     "plural": false,
     "description": null
   },
@@ -1075,7 +1075,7 @@
   },
   "KUGOU_RETRY": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:748",
+    "definedIn": "src/ui/library/kugou_playlists.rs:763",
     "plural": false,
     "description": null
   },
@@ -1093,13 +1093,13 @@
   },
   "KUGOU_TRACK_COUNT": {
     "context": "kugou_playlists.rs",
-    "definedIn": "src/ui/library/kugou_playlists.rs:705",
+    "definedIn": "src/ui/library/kugou_playlists.rs:720",
     "plural": true,
     "description": null
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1232",
+    "definedIn": "src/ui/kugou.rs:1272",
     "plural": false,
     "description": null
   },
