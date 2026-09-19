@@ -40,8 +40,12 @@ fn main() -> Result<()> {
     // linked mimalloc.lib, whose objects carry DLL-style export decorations,
     // so MSVC remarks LNK4217/LNK4286 on every reference. The import is
     // exactly what we want — silence the remark instead of the feature.
-    println!("cargo:rustc-link-arg-bins=/IGNORE:4217");
-    println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
+    // MSVC-only flags: other linkers parse them as file paths and fail the
+    // build (observed on the macOS/Linux CI legs).
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/IGNORE:4217");
+        println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
+    }
 
     // set build time information
     let build = Build::builder()
