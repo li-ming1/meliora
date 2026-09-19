@@ -30,10 +30,7 @@ pub fn image_cache_stats() -> (u64, u64) {
     )
 }
 
-pub fn meliora_cache(
-    id: impl Into<ElementId>,
-    max_items: usize,
-) -> MelioraImageCacheProvider {
+pub fn meliora_cache(id: impl Into<ElementId>, max_items: usize) -> MelioraImageCacheProvider {
     MelioraImageCacheProvider {
         id: id.into(),
         max_items,
@@ -50,8 +47,7 @@ impl ImageCacheProvider for MelioraImageCacheProvider {
         window
             .with_global_id(self.id.clone(), |id, window| {
                 window.with_element_state(id, |cache, _| {
-                    let cache =
-                        cache.unwrap_or_else(|| MelioraImageCache::new(self.max_items, cx));
+                    let cache = cache.unwrap_or_else(|| MelioraImageCache::new(self.max_items, cx));
 
                     (cache.clone(), cache)
                 })

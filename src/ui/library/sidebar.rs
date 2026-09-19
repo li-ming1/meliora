@@ -8,42 +8,40 @@ use gpui::{
 use gpui::InteractiveElement;
 use std::time::{Duration, Instant};
 
-use crate::settings::{save_settings, Settings, SettingsGlobal};
+use crate::settings::{Settings, SettingsGlobal, save_settings};
 
 use crate::settings::storage::DEFAULT_SIDEBAR_WIDTH;
 use crate::ui::constants::COLLAPSED_SIDEBAR_WIDTH;
 use crate::ui::scroll_follow::ease_out_cubic;
 use crate::ui::theme::LIGHT_THEME_ID;
 
-use crate::ui::components::icons::{FOLDER, MOON, MUSIC, SETTINGS, SIDEBAR, SIDEBAR_INACTIVE, SUN};
-#[cfg(any(feature = "kugou", feature = "netease"))]
-use crate::ui::components::icons::RANKING;
-#[cfg(any(feature = "kugou", feature = "netease"))]
-use crate::ui::components::icons::icon;
-#[cfg(any(feature = "kugou", feature = "netease"))]
-use gpui::{ClickEvent, Div, FontWeight, Stateful};
-#[cfg(feature = "kugou")]
-use crate::ui::components::icons::KUGOU;
-#[cfg(feature = "netease")]
-use crate::ui::components::icons::NETEASE;
 #[cfg(feature = "kugou")]
 use crate::kugou::shared_client;
 #[cfg(feature = "netease")]
 use crate::netease::shared_client as netease_shared_client;
+#[cfg(feature = "kugou")]
+use crate::ui::components::icons::KUGOU;
+#[cfg(feature = "netease")]
+use crate::ui::components::icons::NETEASE;
+#[cfg(any(feature = "kugou", feature = "netease"))]
+use crate::ui::components::icons::RANKING;
+#[cfg(any(feature = "kugou", feature = "netease"))]
+use crate::ui::components::icons::icon;
+use crate::ui::components::icons::{FOLDER, MOON, MUSIC, SETTINGS, SIDEBAR, SIDEBAR_INACTIVE, SUN};
 use crate::ui::components::tooltip::build_tooltip;
-use crate::{
-    ui::{
-        components::{
-            icons::{DISC, USERS},
-            nav_button::nav_button,
-            resizable::{ResizeEdge, resizable},
-            sidebar::{sidebar, sidebar_item, sidebar_separator},
-        },
-        library::{NavigationHistory, ViewSwitchMessage, sidebar::playlists::PlaylistList},
-        models::Models,
-        theme::Theme,
+use crate::ui::{
+    components::{
+        icons::{DISC, USERS},
+        nav_button::nav_button,
+        resizable::{ResizeEdge, resizable},
+        sidebar::{sidebar, sidebar_item, sidebar_separator},
     },
+    library::{NavigationHistory, ViewSwitchMessage, sidebar::playlists::PlaylistList},
+    models::Models,
+    theme::Theme,
 };
+#[cfg(any(feature = "kugou", feature = "netease"))]
+use gpui::{ClickEvent, Div, FontWeight, Stateful};
 
 mod playlists;
 
@@ -251,7 +249,10 @@ impl Render for Sidebar {
             .when(collapsed, |this| this.items_center())
             // 分组一：音乐库
             .when(!collapsed, |this| {
-                this.child(section_label(tr!("SIDEBAR_LIBRARY", "Music Library"), &theme))
+                this.child(section_label(
+                    tr!("SIDEBAR_LIBRARY", "Music Library"),
+                    &theme,
+                ))
             })
             .child(
                 sidebar_item("albums")
@@ -328,10 +329,7 @@ impl Render for Sidebar {
             // 分组二：播放列表
             .child(sidebar_separator())
             .when(!collapsed, |this| {
-                this.child(section_label(
-                    tr!("SIDEBAR_PLAYLISTS", "Playlists"),
-                    &theme,
-                ))
+                this.child(section_label(tr!("SIDEBAR_PLAYLISTS", "Playlists"), &theme))
             })
             .child(self.playlists.clone());
 
@@ -402,9 +400,7 @@ impl Render for Sidebar {
                             .icon(NETEASE)
                             // fallback for NETEASE_PLAYLISTS is defined by the
                             // playlists page (single definition point)
-                            .when(!collapsed, |this| {
-                                this.child(tr!("NETEASE_PLAYLISTS"))
-                            })
+                            .when(!collapsed, |this| this.child(tr!("NETEASE_PLAYLISTS")))
                             .when(collapsed, |this| {
                                 this.collapsed().collapsed_label(tr!("NETEASE_PLAYLISTS"))
                             })
@@ -421,9 +417,7 @@ impl Render for Sidebar {
                     .child(
                         sidebar_item("netease-ranks")
                             .icon(RANKING)
-                            .when(!collapsed, |this| {
-                                this.child(tr!("NETEASE_RANKS"))
-                            })
+                            .when(!collapsed, |this| this.child(tr!("NETEASE_RANKS")))
                             .when(collapsed, |this| {
                                 this.collapsed().collapsed_label(tr!("NETEASE_RANKS"))
                             })
@@ -484,26 +478,24 @@ impl Render for Sidebar {
                 let sidebar_collapsed_entity = sidebar_collapsed_entity.clone();
                 let sidebar_width = sidebar_width.clone();
                 let animated_sidebar_width = animated_sidebar_width.clone();
-                cx.listener(
-                    move |this, _, _window, cx| {
-                        let target_collapsed = !*sidebar_collapsed_entity.read(cx);
-                        sidebar_collapsed_entity.update(cx, |v, cx| {
-                            *v = target_collapsed;
-                            cx.notify();
-                        });
-                        let from = f32::from(*animated_sidebar_width.read(cx));
-                        let to = if target_collapsed {
-                            f32::from(COLLAPSED_SIDEBAR_WIDTH)
-                        } else {
-                            f32::from(*sidebar_width.read(cx))
-                        };
-                        this.width_tween = Some(WidthTween {
-                            from,
-                            to,
-                            started_at: Instant::now(),
-                        });
-                    },
-                )
+                cx.listener(move |this, _, _window, cx| {
+                    let target_collapsed = !*sidebar_collapsed_entity.read(cx);
+                    sidebar_collapsed_entity.update(cx, |v, cx| {
+                        *v = target_collapsed;
+                        cx.notify();
+                    });
+                    let from = f32::from(*animated_sidebar_width.read(cx));
+                    let to = if target_collapsed {
+                        f32::from(COLLAPSED_SIDEBAR_WIDTH)
+                    } else {
+                        f32::from(*sidebar_width.read(cx))
+                    };
+                    this.width_tween = Some(WidthTween {
+                        from,
+                        to,
+                        started_at: Instant::now(),
+                    });
+                })
             })
         };
 
@@ -635,12 +627,7 @@ impl Render for Sidebar {
         #[cfg(any(feature = "kugou", feature = "netease"))]
         let bottom = {
             let account_row = if collapsed {
-                let col = div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(4.0));
+                let col = div().w_full().flex().flex_col().items_center().gap(px(4.0));
                 #[cfg(feature = "kugou")]
                 let col = col.child(kugou_pill);
                 #[cfg(feature = "netease")]

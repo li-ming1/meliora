@@ -90,7 +90,11 @@ fn rsa_raw_encrypt(data: &[u8]) -> String {
     let mut padded = vec![0u8; key_len];
     padded[key_len - data.len()..].copy_from_slice(data);
     let encrypted = BigUint::from_bytes_be(&padded).modpow(exponent, modulus);
-    format!("{:0>width$}", encrypted.to_str_radix(16), width = key_len * 2)
+    format!(
+        "{:0>width$}",
+        encrypted.to_str_radix(16),
+        width = key_len * 2
+    )
 }
 
 /// `crypto.weapi(object)`: double AES-128-CBC (fixed preset key, then a random
@@ -105,7 +109,10 @@ pub fn weapi(json_text: &str) -> (String, String) {
 pub(crate) fn weapi_with_secret(json_text: &str, secret: &str) -> (String, String) {
     assert_eq!(secret.len(), 16, "weapi secret must be 16 chars");
     let inner = aes_cbc_encrypt_b64(json_text.as_bytes(), PRESET_KEY);
-    let params = aes_cbc_encrypt_b64(inner.as_bytes(), secret.as_bytes().try_into().expect("16 bytes"));
+    let params = aes_cbc_encrypt_b64(
+        inner.as_bytes(),
+        secret.as_bytes().try_into().expect("16 bytes"),
+    );
     let reversed: String = secret.chars().rev().collect();
     (params, rsa_raw_encrypt(reversed.as_bytes()))
 }

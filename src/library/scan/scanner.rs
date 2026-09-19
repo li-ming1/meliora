@@ -378,11 +378,7 @@ impl ActiveCommandContext<'_> {
 
 /// Reconcile the library and scan record before starting discovery.
 impl ScanPreparationContext<'_> {
-    async fn run(
-        self,
-        mode: &ScanMode,
-        scan_record: &mut ScanRecord,
-    ) -> ScanPreparation {
+    async fn run(self, mode: &ScanMode, scan_record: &mut ScanRecord) -> ScanPreparation {
         let Self {
             pool,
             scan_settings,

@@ -96,7 +96,9 @@ impl NeteaseSettings {
             let client = netease::shared_client();
             // The server call runs on the Tokio runtime; the client clears the
             // local session itself regardless of the outcome.
-            let _ = crate::RUNTIME.spawn(async move { client.logout().await }).await;
+            let _ = crate::RUNTIME
+                .spawn(async move { client.logout().await })
+                .await;
 
             this.update(cx, |this, cx| {
                 this.logged_in = false;
@@ -114,7 +116,10 @@ impl NeteaseSettings {
 /// Localized "select download folder" label, defined once so the i18n
 /// generator never sees a duplicate `NETEASE_SELECT_DOWNLOAD_DIR` key.
 fn select_download_dir_label() -> cntp_i18n::I18nString {
-    tr!("NETEASE_SELECT_DOWNLOAD_DIR", "Select the download folder...")
+    tr!(
+        "NETEASE_SELECT_DOWNLOAD_DIR",
+        "Select the download folder..."
+    )
 }
 
 impl QrLoginHost for NeteaseSettings {
@@ -160,9 +165,11 @@ impl QrLoginHost for NeteaseSettings {
     fn phase_label(phase: QrPhase) -> SharedString {
         match phase {
             QrPhase::Generating => tr!("NETEASE_QR_LOADING", "Generating QR code...").into(),
-            QrPhase::Waiting => {
-                tr!("NETEASE_QR_WAITING", "Scan with the NetEase Cloud Music app").into()
-            }
+            QrPhase::Waiting => tr!(
+                "NETEASE_QR_WAITING",
+                "Scan with the NetEase Cloud Music app"
+            )
+            .into(),
             QrPhase::Scanned => tr!("NETEASE_QR_SCANNED", "Scanned — confirm on your phone").into(),
             QrPhase::Expired => tr!("NETEASE_QR_EXPIRED", "QR code expired").into(),
         }

@@ -19,11 +19,7 @@ use crate::{
         types::Album,
     },
     media::metadata::Metadata,
-    playback::{
-        events::RepeatState,
-        queue::QueueItemData,
-        thread::PlaybackState,
-    },
+    playback::{events::RepeatState, queue::QueueItemData, thread::PlaybackState},
     settings::{
         SettingsGlobal,
         interface::StartupLibraryView,
@@ -653,11 +649,7 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
                     .bind(LIKED_SONGS_PLAYLIST_ID)
                     .fetch_all(&pool)
                     .await
-                    .map(|rows| {
-                        rows.into_iter()
-                            .map(|(id,)| id)
-                            .collect::<HashSet<i64>>()
-                    })
+                    .map(|rows| rows.into_iter().map(|(id,)| id).collect::<HashSet<i64>>())
             })
             .await;
         // Best-effort for real: a failed query (e.g. SQLITE_BUSY) or a

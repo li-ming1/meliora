@@ -655,7 +655,8 @@ impl QueueManager {
             return Some(path.get_path().clone());
         }
 
-        Self::next_playable_from(&queue, self.queue_next).map(|index| queue[index].get_path().clone())
+        Self::next_playable_from(&queue, self.queue_next)
+            .map(|index| queue[index].get_path().clone())
     }
 
     /// Go to the previous track in the queue.
@@ -2211,7 +2212,9 @@ mod tests {
         let res = manager.jump_unshuffled(first_index);
         match res {
             JumpResult::Jumped { .. } => {
-                let pos = manager.current_position().expect("jumped onto a valid slot");
+                let pos = manager
+                    .current_position()
+                    .expect("jumped onto a valid slot");
                 assert_eq!(
                     queue_ids(&manager)[pos],
                     10,

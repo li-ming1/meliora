@@ -23,7 +23,7 @@ use crate::{
     toasts::{Toast, emit_toast},
     ui::kugou::KugouTrackInfo,
 };
-use zed_reqwest::header::{USER_AGENT, HeaderValue};
+use zed_reqwest::header::{HeaderValue, USER_AGENT};
 
 use super::extract_song_url;
 
@@ -78,7 +78,11 @@ async fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|err| err.to_string())
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| err.to_string())
 }
 
 /// Best-quality playable URL for `track` (flac -> 320 -> 128), asking for the
@@ -89,7 +93,13 @@ async fn resolve_best_url(
 ) -> Result<(String, &'static str), String> {
     for quality in QUALITY_LADDER {
         if let Ok(resp) = client
-            .song_url(&track.hash, track.mix_song_id, track.album_id, quality, false)
+            .song_url(
+                &track.hash,
+                track.mix_song_id,
+                track.album_id,
+                quality,
+                false,
+            )
             .await
             && let Some(url) = extract_song_url(&resp.body)
         {

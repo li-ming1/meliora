@@ -1,8 +1,7 @@
 use crate::{
     devices::{
         errors::{
-            CloseError, FindError, InfoError, OpenError, ResetError, StateError,
-            SubmissionError,
+            CloseError, FindError, InfoError, OpenError, ResetError, StateError, SubmissionError,
         },
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         resample::SampleFrom,
@@ -291,7 +290,6 @@ impl Device for CpalDevice {
             .map_err(|v| v.into())
             .map(|v| v.name().to_string())
     }
-
 }
 
 struct CpalStream<T>
@@ -430,10 +428,7 @@ where
     }
 
     #[allow(clippy::needless_range_loop)]
-    fn consume_from(
-        &mut self,
-        input: &mut ChannelConsumers,
-    ) -> Result<usize, SubmissionError> {
+    fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError> {
         if self.device_errored.load(Ordering::Relaxed) {
             // Take the message under the lock, log outside of it: the realtime
             // error callback shares this mutex and must never be kept waiting
@@ -515,8 +510,12 @@ where
         }
         self.dither = dither;
 
-        write_bounded_planar(std::slice::from_mut(&mut self.ring_buf), &[&self.interleave_buffer], self.interleave_buffer.len())
-            .map_err(|_| SubmissionError::WriteTimeout)?;
+        write_bounded_planar(
+            std::slice::from_mut(&mut self.ring_buf),
+            &[&self.interleave_buffer],
+            self.interleave_buffer.len(),
+        )
+        .map_err(|_| SubmissionError::WriteTimeout)?;
         // Samples are in the ring: from here on a starving callback is a
         // real underrun and gets counted.
         self.primed.store(true, Ordering::Relaxed);

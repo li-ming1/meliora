@@ -31,8 +31,8 @@ use crate::{
                 AlbumContextMenuContext, add_album_to_playlist_state, album::AlbumContextMenu,
                 navigate_to_album_artists, queue_items_from_tracks,
             },
-            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
             detail_close_button,
+            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
         },
         models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent, toggle_album_like},
         scroll_follow::SmoothScrollFollow,
@@ -485,7 +485,9 @@ impl ReleaseView {
             .when_some(self.release_info.clone(), |this, release_info| {
                 this.child(div().child(release_info))
             })
-            .when_some(self.album.date_precision, |this, precision| match precision {
+            .when_some(
+                self.album.date_precision,
+                |this, precision| match precision {
                     DATE_PRECISION_FULL_DATE | DATE_PRECISION_YEAR_MONTH => {
                         if let Some(utc) = self.release_date_utc {
                             this.child(if precision == DATE_PRECISION_FULL_DATE {

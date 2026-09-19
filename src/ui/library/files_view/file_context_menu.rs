@@ -130,7 +130,8 @@ impl RenderOnce for FileContextMenu {
                         let path = path.clone();
                         let files_view = files_view.clone();
                         move |_, _, cx| {
-                            files_view.update(cx, |view, cx| view.refresh_dir(path.to_path_buf(), cx));
+                            files_view
+                                .update(cx, |view, cx| view.refresh_dir(path.to_path_buf(), cx));
                         }
                     },
                 ))

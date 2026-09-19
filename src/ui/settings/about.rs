@@ -47,22 +47,25 @@ impl Render for AboutSettings {
                     ),
             )
             .child(
-                label("about-report-issue", tr!("CODEBERG_ISSUES", "Report an Issue"))
-                    .subtext(tr!(
-                        "ABOUT_SECTION_ISSUE_SUBTEXT",
-                        "Report a bug or share feedback on the project's issue tracker."
-                    ))
-                    .w_full()
-                    .child(
-                        button()
-                            .style(ButtonStyle::Regular)
-                            .intent(ButtonIntent::Secondary)
-                            .child(tr!("CODEBERG_ISSUES_OPEN", "Open Issue Tracker"))
-                            .id("report-issue-button")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.defer(move |cx| cx.dispatch_action(&Issues));
-                            })),
-                    ),
+                label(
+                    "about-report-issue",
+                    tr!("CODEBERG_ISSUES", "Report an Issue"),
+                )
+                .subtext(tr!(
+                    "ABOUT_SECTION_ISSUE_SUBTEXT",
+                    "Report a bug or share feedback on the project's issue tracker."
+                ))
+                .w_full()
+                .child(
+                    button()
+                        .style(ButtonStyle::Regular)
+                        .intent(ButtonIntent::Secondary)
+                        .child(tr!("CODEBERG_ISSUES_OPEN", "Open Issue Tracker"))
+                        .id("report-issue-button")
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.defer(move |cx| cx.dispatch_action(&Issues));
+                        })),
+                ),
             )
             .child(
                 label(

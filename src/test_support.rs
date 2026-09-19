@@ -19,11 +19,7 @@ use crate::{
             decode::FileArt,
         },
     },
-    media::{
-        lofty, lookup_table,
-        metadata::Metadata,
-        symphonia,
-    },
+    media::{lofty, lookup_table, metadata::Metadata, symphonia},
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -441,8 +437,7 @@ pub(crate) mod audio_fixtures {
         streaminfo[0..2].copy_from_slice(&4096u16.to_be_bytes()); // min blocksize
         streaminfo[2..4].copy_from_slice(&4096u16.to_be_bytes()); // max blocksize
         // min/max frame size stay 0 (unknown); MD5 stays 0 (unknown)
-        let packed =
-            (44_100u64 << 44) | (1u64 << 41) | (15u64 << 36) | 44_100u64; // rate/ch/bps/total samples
+        let packed = (44_100u64 << 44) | (1u64 << 41) | (15u64 << 36) | 44_100u64; // rate/ch/bps/total samples
         streaminfo[10..18].copy_from_slice(&packed.to_be_bytes());
         out.extend_from_slice(&streaminfo);
         // PADDING (type 1), empty, last block
@@ -532,7 +527,10 @@ pub(crate) mod audio_fixtures {
 
     /// A single-packet Ogg page with a correct CRC.
     fn ogg_page(out: &mut Vec<u8>, packet: &[u8], bos: bool, sequence: u32) {
-        assert!(packet.len() < 255, "this builder emits single-segment pages");
+        assert!(
+            packet.len() < 255,
+            "this builder emits single-segment pages"
+        );
 
         let mut page = Vec::with_capacity(28 + packet.len());
         page.extend_from_slice(b"OggS");
@@ -756,7 +754,7 @@ mod benches {
             let cycle = lru.depth_cycle(depth);
             let mut samples = Vec::new();
             let mut op = 0usize; // cumulative across batches: the cycle must
-                                 // stay aligned with the LRU's rotation state
+            // stay aligned with the LRU's rotation state
             for batch in 0..WARMUP_BATCHES + BATCHES {
                 let start = Instant::now();
                 for _ in 0..OPS_PER_BATCH {

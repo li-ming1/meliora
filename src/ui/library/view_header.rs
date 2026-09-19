@@ -18,14 +18,14 @@ pub struct ViewHeader {
 
 impl ViewHeader {
     /// Secondary line rendered under the title (e.g. "5 tracks · 23 min").
-#[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
+    #[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
     pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
     /// Element placed before the title (e.g. a back button).
-#[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
+    #[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
     pub fn left(mut self, left: impl IntoElement) -> Self {
         self.left = Some(left.into_any_element());
         self

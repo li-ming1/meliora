@@ -10,9 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     devices::{
-        errors::{
-            CloseError, FindError, InfoError, OpenError, StateError, SubmissionError,
-        },
+        errors::{CloseError, FindError, InfoError, OpenError, StateError, SubmissionError},
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         traits::{Device, DeviceProvider, OutputStream},
     },
@@ -183,8 +181,6 @@ impl Device for DummyDevice {
     fn get_name(&self) -> Result<String, InfoError> {
         Ok("Meliora Dummy Audio Device".to_string())
     }
-
-
 }
 
 pub struct DummyStream {
@@ -231,10 +227,7 @@ impl OutputStream for DummyStream {
         Ok(())
     }
 
-    fn consume_from(
-        &mut self,
-        input: &mut ChannelConsumers,
-    ) -> Result<usize, SubmissionError> {
+    fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError> {
         // fault before reading so no frames are lost
         if self.should_die() {
             return Err(SubmissionError::DeviceError);
@@ -297,10 +290,7 @@ impl OutputStream for BoundedDummyStream {
         Ok(())
     }
 
-    fn consume_from(
-        &mut self,
-        input: &mut ChannelConsumers,
-    ) -> Result<usize, SubmissionError> {
+    fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError> {
         // advance playback: drain up to `drain` frames from the ring
         self.fill = self.fill.saturating_sub(self.drain);
 

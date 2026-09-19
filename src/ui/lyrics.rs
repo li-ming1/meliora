@@ -24,8 +24,8 @@ use crate::{
     },
 };
 use cntp_i18n::tr;
-use gpui::*;
 use gpui::prelude::FluentBuilder;
+use gpui::*;
 use rustc_hash::FxHashMap;
 #[cfg(any(feature = "kugou", feature = "netease"))]
 use std::path::Path;
@@ -125,7 +125,10 @@ impl Lyrics {
                 let track = ct.read(cx).clone();
 
                 #[cfg(any(feature = "kugou", feature = "netease"))]
-                if track.as_ref().is_some_and(|t| crate::ui::availability::is_online_path(t.get_path())) {
+                if track
+                    .as_ref()
+                    .is_some_and(|t| crate::ui::availability::is_online_path(t.get_path()))
+                {
                     // Invalidate in-flight local (sidecar/DB) loads: the
                     // online fetch below is guarded by the current-path
                     // check, but the local loads are guarded by this
@@ -140,13 +143,19 @@ impl Lyrics {
                     // lyrics handling below.
                     let path = track.as_ref().map(|t| t.get_path().as_path());
                     #[cfg(feature = "kugou")]
-                    if path.and_then(crate::ui::kugou::online_track_matching_path).is_some() {
+                    if path
+                        .and_then(crate::ui::kugou::online_track_matching_path)
+                        .is_some()
+                    {
                         this.reset_track_state();
                         this.fetch_online_lyrics(path, cx);
                         return;
                     }
                     #[cfg(feature = "netease")]
-                    if path.and_then(crate::ui::netease::online_track_matching_path).is_some() {
+                    if path
+                        .and_then(crate::ui::netease::online_track_matching_path)
+                        .is_some()
+                    {
                         this.reset_track_state();
                         this.fetch_netease_online_lyrics(path, cx);
                         return;
@@ -181,9 +190,7 @@ impl Lyrics {
                     let loaded = crate::RUNTIME
                         .spawn(async move {
                             match track_path {
-                                Some(path) => {
-                                    Self::load_lyrics_off_thread(&pool, path).await
-                                }
+                                Some(path) => Self::load_lyrics_off_thread(&pool, path).await,
                                 None => (None, None),
                             }
                         })
@@ -235,9 +242,7 @@ impl Lyrics {
                         }
                     } else if visible
                         && this.last_active_line.is_some_and(|line| {
-                            parsed
-                                .get(line)
-                                .is_some_and(|l| !l.words.is_empty())
+                            parsed.get(line).is_some_and(|l| !l.words.is_empty())
                         })
                     {
                         // 激活行带逐字歌词：position 每 ~33ms 广播一次，
@@ -324,14 +329,17 @@ impl Lyrics {
             }
         }
 
-        let content =
-            match crate::library::db::get_track_by_path(pool, &path).await.ok().flatten() {
-                Some(track) => crate::library::db::lyrics_for_track(pool, track.id)
-                    .await
-                    .ok()
-                    .flatten(),
-                None => None,
-            };
+        let content = match crate::library::db::get_track_by_path(pool, &path)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(track) => crate::library::db::lyrics_for_track(pool, track.id)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
         let parsed = content.as_ref().and_then(|c| parse_lyrics(c));
         (content, parsed)
     }
@@ -381,7 +389,10 @@ impl Lyrics {
     fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Vec<LrcLine>>)) {
         // 在线 URL 暂未进注册表时的未命中不缓存负结果：同 URL 稍后可能
         // 进注册表并取到歌词，负缓存会一直给出过期的"无歌词"。
-        if loaded.0.is_none() && loaded.1.is_none() && crate::ui::availability::is_online_path(&path) {
+        if loaded.0.is_none()
+            && loaded.1.is_none()
+            && crate::ui::availability::is_online_path(&path)
+        {
             return;
         }
         if self.lyric_cache.insert(path.clone(), loaded).is_none() {
@@ -656,9 +667,7 @@ impl Render for Lyrics {
                                                 text_color,
                                                 word_progress(word, self.position_ms),
                                             );
-                                            div()
-                                                .text_color(color)
-                                                .child(word.text.clone())
+                                            div().text_color(color).child(word.text.clone())
                                         }))
                                         .into_any_element()
                                 } else {
@@ -1013,4 +1022,3 @@ fn lerp_color(start: Rgba, end: Rgba, progress: f32) -> Rgba {
         lerp(start.alpha, end.alpha, progress),
     )
 }
-

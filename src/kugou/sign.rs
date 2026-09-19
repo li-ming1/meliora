@@ -103,10 +103,7 @@ mod tests {
             signature_android(&params, ""),
             "b393d0a09117e5ea0366421a501b197f"
         );
-        assert_eq!(
-            signature_web(&params),
-            "40fb8f10e2077f582ecf350ed6838b99"
-        );
+        assert_eq!(signature_web(&params), "40fb8f10e2077f582ecf350ed6838b99");
         assert_eq!(
             sign_key(
                 "ABCDEF1234",

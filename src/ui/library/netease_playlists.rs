@@ -7,12 +7,12 @@
 use std::sync::Arc;
 
 use cntp_i18n::{tr, trn};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
-use gpui::prelude::FluentBuilder;
 
 use crate::{
     netease,
@@ -161,43 +161,44 @@ impl NeteasePlaylistsView {
                 .spawn(async move { client.user_playlists(uid, PLAYLISTS_PER_PAGE, offset).await })
                 .await;
 
-            let _ = this.update(cx, |this, cx| {
-                // a newer request (another page or a full reload) supersedes
-                // this one
-                let current = this.playlists_generation == generation;
-                match request {
-                    Ok(Ok(response)) if current => {
-                        let page_playlists = parse_playlists(&response.body);
-                        // the endpoint carries no total, so a full page is
-                        // the "maybe more" signal
-                        this.has_more_playlists =
-                            page_playlists.len() as i64 >= PLAYLISTS_PER_PAGE;
-                        this.playlist_page = page;
-                        if append {
-                            if let PlaylistsState::Ready(playlists) = &mut this.playlists {
-                                playlists.extend(page_playlists);
+            let _ = this
+                .update(cx, |this, cx| {
+                    // a newer request (another page or a full reload) supersedes
+                    // this one
+                    let current = this.playlists_generation == generation;
+                    match request {
+                        Ok(Ok(response)) if current => {
+                            let page_playlists = parse_playlists(&response.body);
+                            // the endpoint carries no total, so a full page is
+                            // the "maybe more" signal
+                            this.has_more_playlists =
+                                page_playlists.len() as i64 >= PLAYLISTS_PER_PAGE;
+                            this.playlist_page = page;
+                            if append {
+                                if let PlaylistsState::Ready(playlists) = &mut this.playlists {
+                                    playlists.extend(page_playlists);
+                                }
+                            } else {
+                                this.playlists = PlaylistsState::Ready(page_playlists);
                             }
-                        } else {
-                            this.playlists = PlaylistsState::Ready(page_playlists);
                         }
+                        // an in-flight "load more" keeps the visible list (and
+                        // its still-present Load More button) as-is for a retry
+                        Ok(Err(err)) if !append && current => {
+                            this.playlists = PlaylistsState::Failed(load_failed_message(&err));
+                        }
+                        Err(err) if !append && current => {
+                            this.playlists = PlaylistsState::Failed(load_failed_message(&err));
+                        }
+                        _ => {}
                     }
-                    // an in-flight "load more" keeps the visible list (and
-                    // its still-present Load More button) as-is for a retry
-                    Ok(Err(err)) if !append && current => {
-                        this.playlists = PlaylistsState::Failed(load_failed_message(&err));
+                    // only the newest request may release the in-flight gate
+                    if current {
+                        this.playlists_loading = false;
                     }
-                    Err(err) if !append && current => {
-                        this.playlists = PlaylistsState::Failed(load_failed_message(&err));
-                    }
-                    _ => {}
-                }
-                // only the newest request may release the in-flight gate
-                if current {
-                    this.playlists_loading = false;
-                }
-                cx.notify();
-            })
-            .ok();
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -265,36 +266,37 @@ impl NeteasePlaylistsView {
                 })
                 .await;
 
-            let _ = this.update(cx, |this, cx| {
-                // the selection may have changed, or a newer page may have
-                // been requested, while this request was in flight
-                let still_current = this.selected.as_ref().is_some_and(|p| p.id == selected.id)
-                    && this.track_generation == generation;
+            let _ = this
+                .update(cx, |this, cx| {
+                    // the selection may have changed, or a newer page may have
+                    // been requested, while this request was in flight
+                    let still_current = this.selected.as_ref().is_some_and(|p| p.id == selected.id)
+                        && this.track_generation == generation;
 
-                match request {
-                    Ok(Ok((ids, response))) if still_current => {
-                        this.track_ids = Some(ids);
-                        let page_tracks = parse_tracks(&response.body, "/songs");
-                        // the song-detail response carries no total, so a full
-                        // page is the "maybe more" signal
-                        this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
-                        this.tracks.extend(page_tracks);
-                        this.track_page = page;
-                        this.tracks_state = TracksState::Idle;
+                    match request {
+                        Ok(Ok((ids, response))) if still_current => {
+                            this.track_ids = Some(ids);
+                            let page_tracks = parse_tracks(&response.body, "/songs");
+                            // the song-detail response carries no total, so a full
+                            // page is the "maybe more" signal
+                            this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
+                            this.tracks.extend(page_tracks);
+                            this.track_page = page;
+                            this.tracks_state = TracksState::Idle;
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) if still_current => {
+                            this.tracks_state = TracksState::Failed(load_failed_message(&err));
+                        }
+                        Ok(Err(_)) => {}
+                        Err(err) if still_current => {
+                            this.tracks_state = TracksState::Failed(load_failed_message(&err));
+                        }
+                        Err(_) => {}
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) if still_current => {
-                        this.tracks_state = TracksState::Failed(load_failed_message(&err));
-                    }
-                    Ok(Err(_)) => {}
-                    Err(err) if still_current => {
-                        this.tracks_state = TracksState::Failed(load_failed_message(&err));
-                    }
-                    Err(_) => {}
-                }
-                cx.notify();
-            })
-            .ok();
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -381,9 +383,7 @@ impl NeteasePlaylistsView {
                 let playlist = this
                     .playlists
                     .as_ready()
-                    .and_then(|playlists| {
-                        playlists.iter().find(|p| p.id == row_id).cloned()
-                    });
+                    .and_then(|playlists| playlists.iter().find(|p| p.id == row_id).cloned());
 
                 if let Some(playlist) = playlist {
                     this.open_playlist(&playlist, cx);
@@ -433,10 +433,9 @@ impl NeteasePlaylistsView {
 }
 
 fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
-    tr!(
-        "NETEASE_LOAD_FAILED", err = err.to_string())
-    .to_string()
-    .into()
+    tr!("NETEASE_LOAD_FAILED", err = err.to_string())
+        .to_string()
+        .into()
 }
 
 /// Localized "{count} track(s)" label. Single place where the plural string is
@@ -518,15 +517,10 @@ impl Render for NeteasePlaylistsView {
                             .gap(px(12.0))
                             .py(px(48.0))
                             .w_full()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.text_secondary)
-                                    .child(tr!(
-                                        "NETEASE_LOGIN_REQUIRED",
-                                        "Log in to NetEase Cloud Music in Settings to see your playlists."
-                                    )),
-                            )
+                            .child(div().text_sm().text_color(theme.text_secondary).child(tr!(
+                                "NETEASE_LOGIN_REQUIRED",
+                                "Log in to NetEase Cloud Music in Settings to see your playlists."
+                            )))
                             .child(
                                 button()
                                     .id("netease-open-settings")
@@ -584,18 +578,14 @@ impl Render for NeteasePlaylistsView {
 
                         if self.has_more_playlists {
                             content = content.child(
-                                div()
-                                    .flex()
-                                    .justify_center()
-                                    .pt(px(12.0))
-                                    .child(
-                                        button()
-                                            .id("netease-load-more-playlists")
-                                            .child(tr!("NETEASE_LOAD_MORE"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.load_more_playlists(cx);
-                                            })),
-                                    ),
+                                div().flex().justify_center().pt(px(12.0)).child(
+                                    button()
+                                        .id("netease-load-more-playlists")
+                                        .child(tr!("NETEASE_LOAD_MORE"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.load_more_playlists(cx);
+                                        })),
+                                ),
                             );
                         }
                     }
@@ -659,13 +649,9 @@ impl Render for NeteasePlaylistsView {
                                             .iter()
                                             .enumerate()
                                             .map(|(i, track)| {
-                                                div()
-                                                    .h(px(TRACK_ROW_HEIGHT))
-                                                    .child(view.render_track_row(
-                                                        track,
-                                                        start + i,
-                                                        cx,
-                                                    ))
+                                                div().h(px(TRACK_ROW_HEIGHT)).child(
+                                                    view.render_track_row(track, start + i, cx),
+                                                )
                                             })
                                             .collect()
                                     },
@@ -677,18 +663,14 @@ impl Render for NeteasePlaylistsView {
                     )
                     .when(has_more_tracks, |this| {
                         this.child(
-                            div()
-                                .flex()
-                                .justify_center()
-                                .pt(px(12.0))
-                                .child(
-                                    button()
-                                        .id("netease-load-more-tracks")
-                                        .child(tr!("NETEASE_LOAD_MORE"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.load_more_tracks(cx);
-                                        })),
-                                ),
+                            div().flex().justify_center().pt(px(12.0)).child(
+                                button()
+                                    .id("netease-load-more-tracks")
+                                    .child(tr!("NETEASE_LOAD_MORE"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.load_more_tracks(cx);
+                                    })),
+                            ),
                         )
                     })
                     .child(floating_scrollbar(

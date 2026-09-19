@@ -74,7 +74,11 @@ async fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|err| err.to_string())
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| err.to_string())
 }
 
 /// Best-quality full-track URL for `track` (hires -> ... -> standard),

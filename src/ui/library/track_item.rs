@@ -10,9 +10,7 @@ use crate::ui::components::drag_drop::{DragPreview, TrackDragData};
 use crate::ui::components::icons::{STAR, STAR_FILLED, icon};
 use crate::ui::library::context_menus::play_track_next;
 use crate::ui::library::context_menus::track::TrackContextMenu;
-use crate::ui::models::{
-    HasLikedState, subscribe_liked_updates, toggle_like,
-};
+use crate::ui::models::{HasLikedState, subscribe_liked_updates, toggle_like};
 use crate::ui::util::format_duration;
 
 use crate::library::types::{DBString, Track};

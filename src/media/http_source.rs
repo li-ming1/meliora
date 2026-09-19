@@ -11,8 +11,8 @@
 
 use std::{
     collections::{
-        hash_map::{DefaultHasher, Entry},
         HashMap,
+        hash_map::{DefaultHasher, Entry},
     },
     ffi::OsStr,
     hash::{Hash, Hasher},
@@ -70,9 +70,7 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     // per-request timeout. A fresh Client per cover built a new rustls
     // config and pool per track and left idle-connection teardown work on
     // the runtime after every fetch.
-    let request = HTTP_CLIENT
-        .get(url)
-        .timeout(Duration::from_secs(15));
+    let request = HTTP_CLIENT.get(url).timeout(Duration::from_secs(15));
 
     let response = match request.send().await {
         Ok(response) => response,
@@ -216,7 +214,10 @@ fn prune_image_cache() {
             continue;
         }
         let modified = meta.modified().unwrap_or(UNIX_EPOCH);
-        if now.duration_since(modified).is_ok_and(|age| age > IMAGE_CACHE_MAX_AGE) {
+        if now
+            .duration_since(modified)
+            .is_ok_and(|age| age > IMAGE_CACHE_MAX_AGE)
+        {
             let _ = std::fs::remove_file(&path);
             continue;
         }
@@ -274,7 +275,7 @@ fn inflight_cover_gate(url: &str) -> (Arc<AsyncMutex<()>>, Option<InflightCoverG
                     gate,
                 }),
             )
-        },
+        }
     }
 }
 
@@ -467,9 +468,7 @@ impl HttpRangeSource {
         }
 
         let response = crate::RUNTIME
-            .block_on(async {
-                tokio::time::timeout(STREAM_IO_TIMEOUT, request.send()).await
-            })
+            .block_on(async { tokio::time::timeout(STREAM_IO_TIMEOUT, request.send()).await })
             .map_err(|_| io::Error::other("HTTP request timed out"))?
             .and_then(|response| response.error_for_status())
             .map_err(|e| io::Error::other(format!("HTTP request failed: {e}")))?;
@@ -526,9 +525,8 @@ impl Read for HttpRangeSource {
                     return Ok(0);
                 };
                 let mut body = body.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                crate::RUNTIME.block_on(async {
-                    tokio::time::timeout(STREAM_IO_TIMEOUT, body.chunk()).await
-                })
+                crate::RUNTIME
+                    .block_on(async { tokio::time::timeout(STREAM_IO_TIMEOUT, body.chunk()).await })
             };
 
             match chunk {

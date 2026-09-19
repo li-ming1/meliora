@@ -1,5 +1,5 @@
-pub mod corrupt_settings_dialog;
 mod about;
+pub mod corrupt_settings_dialog;
 mod equalizer;
 mod interface;
 #[cfg(feature = "kugou")]
@@ -382,8 +382,7 @@ impl Render for SettingsWindow {
         #[cfg(feature = "netease")]
         let sidebar = sidebar.child(self.render_section_item(SettingsSectionKind::Netease, cx));
 
-        let sidebar =
-            sidebar.child(self.render_section_item(SettingsSectionKind::About, cx));
+        let sidebar = sidebar.child(self.render_section_item(SettingsSectionKind::About, cx));
 
         window_chrome(
             div()

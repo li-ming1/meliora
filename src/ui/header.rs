@@ -1,8 +1,4 @@
-use super::{
-    library::ViewSwitchMessage,
-    models::Models,
-    theme::Theme,
-};
+use super::{library::ViewSwitchMessage, models::Models, theme::Theme};
 use crate::{
     library::scan::ScanEvent,
     settings::SettingsGlobal,
@@ -13,9 +9,7 @@ use crate::{
             tooltip::build_complex_tooltip,
             window_header::header,
         },
-        constants::{
-            TITLEBAR_LEFT_PAD_BOTTOM, TITLEBAR_LEFT_PAD_TOP, TITLEBAR_LEFT_PAD_X,
-        },
+        constants::{TITLEBAR_LEFT_PAD_BOTTOM, TITLEBAR_LEFT_PAD_TOP, TITLEBAR_LEFT_PAD_X},
         global_actions::Search,
     },
 };
@@ -126,15 +120,13 @@ impl Render for Header {
                     .when(collapsed, |this| this.pl(px(8.0)))
                     .child(img("!bundled:images/logo.png").size(px(20.0)).rounded_sm())
                     .when(!collapsed, |this| {
-                        this.gap(px(8.0))
-                            .pl(px(14.0))
-                            .child(
-                                div()
-                                    .text_color(theme.text)
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_size(px(15.0))
-                                    .child("Meliora"),
-                            )
+                        this.gap(px(8.0)).pl(px(14.0)).child(
+                            div()
+                                .text_color(theme.text)
+                                .font_weight(FontWeight::BOLD)
+                                .text_size(px(15.0))
+                                .child("Meliora"),
+                        )
                     }),
             );
         }

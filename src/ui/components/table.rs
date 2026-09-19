@@ -35,8 +35,7 @@ use indexmap::IndexMap;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use table_data::{
     Column, ColumnReorderDrag, GridContext, MIN_COLUMN_WIDTH, TABLE_HEADER_GROUP,
-    TABLE_IMAGE_COLUMN_WIDTH,
-    TableData, TableSort,
+    TABLE_IMAGE_COLUMN_WIDTH, TableData, TableSort,
 };
 use table_item::TableItem;
 
@@ -575,7 +574,6 @@ where
         let columns_read = self.columns.read(cx);
         let column_count = columns_read.len();
         let default_columns = &self.default_columns;
-
 
         let mut header = div()
             .w_full()

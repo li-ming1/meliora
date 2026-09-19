@@ -16,7 +16,7 @@ use tokio::sync::mpsc::channel;
 use tracing::{debug, trace};
 
 use crate::ui::{
-    components::{context::context, context::ContextMenuBuilder, input::EnrichedInputAction},
+    components::{context::ContextMenuBuilder, context::context, input::EnrichedInputAction},
     theme::Theme,
 };
 
@@ -482,8 +482,11 @@ where
         let matches = self.get_matches();
         let curr_scroll = self.list_state.logical_scroll_top();
 
-        self.display_list =
-            Arc::new(Self::build_display_list(&matches, &self.expanded_categories, self.query.is_empty()));
+        self.display_list = Arc::new(Self::build_display_list(
+            &matches,
+            &self.expanded_categories,
+            self.query.is_empty(),
+        ));
 
         self.views_model = cx.new(|_| FxHashMap::default());
         self.render_counter = cx.new(|_| 0);
@@ -980,7 +983,10 @@ where
                 )
             });
 
-        let context_menu = self.item_data.as_ref().and_then(|v| v.context_menu(window, cx));
+        let context_menu = self
+            .item_data
+            .as_ref()
+            .and_then(|v| v.context_menu(window, cx));
         let overlay = self.context_overlay.clone();
 
         let base = if let Some(menu_builder) = context_menu {

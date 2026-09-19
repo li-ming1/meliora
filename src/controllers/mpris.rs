@@ -10,16 +10,16 @@ use mpris_server::{
     Signal, Time, Volume,
 };
 use raw_window_handle::RawWindowHandle;
-use tokio::sync::{mpsc::UnboundedSender, RwLock};
+use tokio::sync::{RwLock, mpsc::UnboundedSender};
 use zbus::fdo;
 
 use crate::{
+    controllers::PlaybackController,
     media::metadata::Metadata,
     playback::{
         events::{PlaybackCommand, RepeatState},
         thread::PlaybackState,
     },
-    controllers::PlaybackController,
 };
 
 pub struct MprisControllerData {
@@ -238,11 +238,9 @@ impl PlayerInterface for MprisControllerServer {
 
         if let Some(position) = data.last_position {
             let offset = offset.as_secs();
-            let _ = self
-                .cmd_tx
-                .send(PlaybackCommand::Seek(
-                    position.saturating_add_signed(offset) as f64,
-                ));
+            let _ = self.cmd_tx.send(PlaybackCommand::Seek(
+                position.saturating_add_signed(offset) as f64,
+            ));
         }
 
         Ok(())
@@ -257,11 +255,13 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn set_loop_status(&self, loop_status: LoopStatus) -> zbus::Result<()> {
-        let _ = self.cmd_tx.send(PlaybackCommand::SetRepeat(match loop_status {
-            LoopStatus::None => RepeatState::NotRepeating,
-            LoopStatus::Track => RepeatState::RepeatingOne,
-            LoopStatus::Playlist => RepeatState::Repeating,
-        }));
+        let _ = self
+            .cmd_tx
+            .send(PlaybackCommand::SetRepeat(match loop_status {
+                LoopStatus::None => RepeatState::NotRepeating,
+                LoopStatus::Track => RepeatState::RepeatingOne,
+                LoopStatus::Playlist => RepeatState::Repeating,
+            }));
         Ok(())
     }
 
@@ -316,7 +316,9 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn set_volume(&self, volume: Volume) -> zbus::Result<()> {
-        let _ = self.cmd_tx.send(PlaybackCommand::SetVolume(volume.min(1_f64)));
+        let _ = self
+            .cmd_tx
+            .send(PlaybackCommand::SetVolume(volume.min(1_f64)));
         Ok(())
     }
 

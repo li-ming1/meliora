@@ -15,10 +15,7 @@ use crate::{
         traits::MediaStream,
     },
     playback::{
-        dsp::{
-            equalizer::EqualizerProcessor,
-            spectrum::SpectrumTap,
-        },
+        dsp::{equalizer::EqualizerProcessor, spectrum::SpectrumTap},
         events::PlaybackEvent,
         thread::media_controller::{CompleteMetadata, PreparedMedia},
     },
@@ -222,8 +219,7 @@ impl AudioEngine {
         let spawned = std::thread::Builder::new()
             .name("media-prepare".into())
             .spawn(move || {
-                let result = MediaController::open_stream(&path)
-                    .map_err(|e| e.to_string());
+                let result = MediaController::open_stream(&path).map_err(|e| e.to_string());
                 let _ = tx.send(PrepareOutcome { path, result });
             });
         if spawned.is_err() {
@@ -274,11 +270,10 @@ impl AudioEngine {
     pub fn drop_prepared(&mut self) {
         // Remember what was invalidated so `prepare_next` can rate-limit
         // re-spawns of the same path while queue edits are settling.
-        let dropped = self.prepare_request.take().or_else(|| {
-            self.prepared
-                .as_ref()
-                .map(|prepared| prepared.path.clone())
-        });
+        let dropped = self
+            .prepare_request
+            .take()
+            .or_else(|| self.prepared.as_ref().map(|prepared| prepared.path.clone()));
         if let Some(path) = dropped {
             self.dropped_prepare = Some((path, std::time::Instant::now()));
         }
@@ -419,10 +414,7 @@ impl AudioEngine {
                             "Failed to reset stream on resume, recreating device instead... {:?}",
                             err
                         );
-                        let channels = self
-                            .device
-                            .current_format()
-                            .map(|f| f.channels.clone());
+                        let channels = self.device.current_format().map(|f| f.channels.clone());
                         if let Err(e) = self.device.create_stream(channels) {
                             return Err(EngineError::DeviceError(format!(
                                 "Failed to recreate stream: {:?}",
@@ -438,10 +430,7 @@ impl AudioEngine {
                             "Failed to restart playback after resume reset, recreating device and retrying... {:?}",
                             err
                         );
-                        let channels = self
-                            .device
-                            .current_format()
-                            .map(|f| f.channels.clone());
+                        let channels = self.device.current_format().map(|f| f.channels.clone());
                         if let Err(e) = self.device.create_stream(channels) {
                             return Err(EngineError::DeviceError(format!(
                                 "Failed to recreate stream: {:?}",

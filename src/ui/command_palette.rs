@@ -318,10 +318,7 @@ impl CommandPalette {
                                 focus_handle.focus(window, cx);
                             })
                         {
-                            error!(
-                                "Failed to focus window, action may not trigger: {}",
-                                err
-                            );
+                            error!("Failed to focus window, action may not trigger: {}", err);
                         }
                     }
 

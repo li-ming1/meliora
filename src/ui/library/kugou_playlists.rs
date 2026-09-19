@@ -5,12 +5,12 @@
 use std::collections::HashSet;
 
 use cntp_i18n::{tr, trn};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
-use gpui::prelude::FluentBuilder;
 
 use crate::{
     kugou,
@@ -24,9 +24,7 @@ use crate::{
             scrollbar::floating_scrollbar,
             textbox::Textbox,
         },
-        kugou::{
-            KugouPlaylistInfo, KugouTrackInfo, parse_playlists, parse_tracks,
-        },
+        kugou::{KugouPlaylistInfo, KugouTrackInfo, parse_playlists, parse_tracks},
         library::view_header::view_header,
         settings::{SettingsSectionKind, open_settings_window_with_section},
         theme::Theme,
@@ -173,18 +171,20 @@ impl KugouPlaylistsView {
 
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
-            let request =
-                crate::RUNTIME.spawn(async move { client.user_playlists(1, 100).await }).await;
+            let request = crate::RUNTIME
+                .spawn(async move { client.user_playlists(1, 100).await })
+                .await;
 
-            let _ = this.update(cx, |this, cx| {
-                this.playlists = match request {
-                    Ok(Ok(response)) => PlaylistsState::Ready(parse_playlists(&response.body)),
-                    Ok(Err(err)) => PlaylistsState::Failed(load_failed_message(&err)),
-                    Err(err) => PlaylistsState::Failed(load_failed_message(&err)),
-                };
-                cx.notify();
-            })
-            .ok();
+            let _ = this
+                .update(cx, |this, cx| {
+                    this.playlists = match request {
+                        Ok(Ok(response)) => PlaylistsState::Ready(parse_playlists(&response.body)),
+                        Ok(Err(err)) => PlaylistsState::Failed(load_failed_message(&err)),
+                        Err(err) => PlaylistsState::Failed(load_failed_message(&err)),
+                    };
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -273,36 +273,37 @@ impl KugouPlaylistsView {
                 })
                 .await;
 
-            let _ = this.update(cx, |this, cx| {
-                // the selection may have changed while the request was in flight
-                let still_current = this
-                    .selected
-                    .as_ref()
-                    .is_some_and(|s| s.global_collection_id == selected.global_collection_id);
+            let _ = this
+                .update(cx, |this, cx| {
+                    // the selection may have changed while the request was in flight
+                    let still_current = this
+                        .selected
+                        .as_ref()
+                        .is_some_and(|s| s.global_collection_id == selected.global_collection_id);
 
-                match request {
-                    Ok(Ok((response, total_pages))) if still_current => {
-                        let mut page_tracks = parse_tracks(&response.body, "/data/info");
-                        page_tracks.reverse();
-                        this.tracks = page_tracks;
-                        this.track_page = total_pages;
-                        this.has_more_tracks = total_pages > 1;
-                        this.tracks_state = TracksState::Idle;
+                    match request {
+                        Ok(Ok((response, total_pages))) if still_current => {
+                            let mut page_tracks = parse_tracks(&response.body, "/data/info");
+                            page_tracks.reverse();
+                            this.tracks = page_tracks;
+                            this.track_page = total_pages;
+                            this.has_more_tracks = total_pages > 1;
+                            this.tracks_state = TracksState::Idle;
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) if still_current => {
+                            this.tracks_state = TracksState::Failed(load_failed_message(&err));
+                        }
+                        Ok(Err(_)) => {}
+                        Err(err) if still_current => {
+                            this.tracks_state = TracksState::Failed(load_failed_message(&err));
+                        }
+                        Err(_) => {}
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) if still_current => {
-                        this.tracks_state = TracksState::Failed(load_failed_message(&err));
-                    }
-                    Ok(Err(_)) => {}
-                    Err(err) if still_current => {
-                        this.tracks_state = TracksState::Failed(load_failed_message(&err));
-                    }
-                    Err(_) => {}
-                }
 
-                cx.notify();
-            })
-            .ok();
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -315,45 +316,45 @@ impl KugouPlaylistsView {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let listid = selected.listid;
-            let request = crate::RUNTIME.spawn(async move {
-                client.playlist_tracks(listid, page, TRACKS_PER_PAGE).await
-            })
-            .await;
+            let request = crate::RUNTIME
+                .spawn(async move { client.playlist_tracks(listid, page, TRACKS_PER_PAGE).await })
+                .await;
 
-            let _ = this.update(cx, |this, cx| {
-                // the selection may have changed while the request was in flight
-                let still_current = this
-                    .selected
-                    .as_ref()
-                    .is_some_and(|s| s.global_collection_id == selected.global_collection_id);
+            let _ = this
+                .update(cx, |this, cx| {
+                    // the selection may have changed while the request was in flight
+                    let still_current = this
+                        .selected
+                        .as_ref()
+                        .is_some_and(|s| s.global_collection_id == selected.global_collection_id);
 
-                match request {
-                    Ok(Ok(response)) if still_current => {
-                        let mut page_tracks = parse_tracks(&response.body, "/data/info");
-                        page_tracks.reverse();
-                        if append {
-                            this.tracks.extend(page_tracks);
-                        } else {
-                            this.tracks = page_tracks;
+                    match request {
+                        Ok(Ok(response)) if still_current => {
+                            let mut page_tracks = parse_tracks(&response.body, "/data/info");
+                            page_tracks.reverse();
+                            if append {
+                                this.tracks.extend(page_tracks);
+                            } else {
+                                this.tracks = page_tracks;
+                            }
+                            this.track_page = page;
+                            this.has_more_tracks = page > 1;
+                            this.tracks_state = TracksState::Idle;
                         }
-                        this.track_page = page;
-                        this.has_more_tracks = page > 1;
-                        this.tracks_state = TracksState::Idle;
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) if still_current => {
+                            this.tracks_state = TracksState::Failed(load_failed_message(&err));
+                        }
+                        Ok(Err(_)) => {}
+                        Err(err) if still_current => {
+                            this.tracks_state = TracksState::Failed(load_failed_message(&err));
+                        }
+                        Err(_) => {}
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) if still_current => {
-                        this.tracks_state = TracksState::Failed(load_failed_message(&err));
-                    }
-                    Ok(Err(_)) => {}
-                    Err(err) if still_current => {
-                        this.tracks_state = TracksState::Failed(load_failed_message(&err));
-                    }
-                    Err(_) => {}
-                }
 
-                cx.notify();
-            })
-            .ok();
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -434,8 +435,11 @@ impl KugouPlaylistsView {
 
     fn open_import(&mut self, cx: &mut Context<Self>) {
         if self.import_input.is_none() {
-            self.import_input =
-                Some(Textbox::new_with_value_submit(cx, Default::default(), |_, _| {}));
+            self.import_input = Some(Textbox::new_with_value_submit(
+                cx,
+                Default::default(),
+                |_, _| {},
+            ));
         }
         self.import_open = true;
         self.import_busy = false;
@@ -463,7 +467,8 @@ impl KugouPlaylistsView {
         }
 
         self.import_busy = true;
-        self.import_status = SharedString::from(tr!("KUGOU_IMPORT_PARSING", "Parsing link…").to_string());
+        self.import_status =
+            SharedString::from(tr!("KUGOU_IMPORT_PARSING", "Parsing link…").to_string());
         // resolved here on the UI thread so the localized fallback name uses
         // the right locale once the pipeline runs on the Tokio runtime
         let default_name = tr!("KUGOU_IMPORT_DEFAULT_NAME", "Imported playlist").to_string();
@@ -495,37 +500,34 @@ impl KugouPlaylistsView {
                             Some(Toast::success(summary))
                         }
                         ImportOutcome::ParseFailed(err) => {
-                            this.import_status = SharedString::from(tr!(
-                                "KUGOU_IMPORT_FAILED",
-                                "导入失败：{{err}}",
-                                err = err
-                            )
-                            .to_string());
+                            this.import_status = SharedString::from(
+                                tr!("KUGOU_IMPORT_FAILED", "导入失败：{{err}}", err = err)
+                                    .to_string(),
+                            );
                             None
                         }
                         ImportOutcome::CreateFailed(err) => {
-                            this.import_status = SharedString::from(tr!(
-                                "KUGOU_IMPORT_CREATE_FAILED",
-                                "Could not create playlist: {{err}}",
-                                err = err
-                            )
-                            .to_string());
+                            this.import_status = SharedString::from(
+                                tr!(
+                                    "KUGOU_IMPORT_CREATE_FAILED",
+                                    "Could not create playlist: {{err}}",
+                                    err = err
+                                )
+                                .to_string(),
+                            );
                             None
                         }
                         ImportOutcome::NotFound => {
-                            this.import_status = SharedString::from(tr!(
-                                "KUGOU_IMPORT_NOT_FOUND",
-                                "Created playlist not found"
-                            )
-                            .to_string());
+                            this.import_status = SharedString::from(
+                                tr!("KUGOU_IMPORT_NOT_FOUND", "Created playlist not found")
+                                    .to_string(),
+                            );
                             None
                         }
                         ImportOutcome::NoMatch => {
-                            this.import_status = SharedString::from(tr!(
-                                "KUGOU_IMPORT_NO_MATCH",
-                                "No tracks matched"
-                            )
-                            .to_string());
+                            this.import_status = SharedString::from(
+                                tr!("KUGOU_IMPORT_NO_MATCH", "No tracks matched").to_string(),
+                            );
                             this.refresh_playlists(cx);
                             None
                         }
@@ -609,15 +611,12 @@ impl KugouPlaylistsView {
                     .child(kugou_track_count(playlist.count)),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                let playlist = this
-                    .playlists
-                    .as_ready()
-                    .and_then(|playlists| {
-                        playlists
-                            .iter()
-                            .find(|p| p.global_collection_id == row_id)
-                            .cloned()
-                    });
+                let playlist = this.playlists.as_ready().and_then(|playlists| {
+                    playlists
+                        .iter()
+                        .find(|p| p.global_collection_id == row_id)
+                        .cloned()
+                });
 
                 if let Some(playlist) = playlist {
                     this.open_playlist(&playlist, cx);
@@ -888,14 +887,14 @@ impl Render for KugouPlaylistsView {
                                             .iter()
                                             .enumerate()
                                             .map(|(i, track)| {
-                                                div()
-                                                    .h(px(TRACK_ROW_HEIGHT))
-                                                    .child(view.render_track_row(
+                                                div().h(px(TRACK_ROW_HEIGHT)).child(
+                                                    view.render_track_row(
                                                         track,
                                                         start + i,
                                                         &list_entity,
                                                         cx,
-                                                    ))
+                                                    ),
+                                                )
                                             })
                                             .collect()
                                     },
@@ -907,18 +906,14 @@ impl Render for KugouPlaylistsView {
                     )
                     .when(has_more_tracks, |this| {
                         this.child(
-                            div()
-                                .flex()
-                                .justify_center()
-                                .pt(px(12.0))
-                                .child(
-                                    button()
-                                        .id("kugou-load-more")
-                                        .child(tr!("KUGOU_LOAD_MORE", "Load More"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.load_more_tracks(cx);
-                                        })),
-                                ),
+                            div().flex().justify_center().pt(px(12.0)).child(
+                                button()
+                                    .id("kugou-load-more")
+                                    .child(tr!("KUGOU_LOAD_MORE", "Load More"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.load_more_tracks(cx);
+                                    })),
+                            ),
                         )
                     })
                     .child(floating_scrollbar(
@@ -951,7 +946,9 @@ impl Render for KugouPlaylistsView {
                 ));
         }
 
-        root.when(self.import_open, |this| this.child(self.render_import_modal(cx)))
+        root.when(self.import_open, |this| {
+            this.child(self.render_import_modal(cx))
+        })
     }
 }
 
@@ -985,15 +982,10 @@ impl KugouPlaylistsView {
                             .font_weight(FontWeight::BOLD)
                             .child(tr!("KUGOU_IMPORT_TITLE", "Import playlist")),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .child(tr!(
-                                "KUGOU_IMPORT_HINT",
-                                "Paste a NetEase Cloud Music or QQ Music playlist share link"
-                            )),
-                    )
+                    .child(div().text_sm().text_color(theme.text_secondary).child(tr!(
+                        "KUGOU_IMPORT_HINT",
+                        "Paste a NetEase Cloud Music or QQ Music playlist share link"
+                    )))
                     .when_some(input, |this, input| this.child(input))
                     .when(!status.is_empty(), |this| {
                         this.child(
@@ -1004,27 +996,31 @@ impl KugouPlaylistsView {
                         )
                     })
                     .child(
-                        div().flex().gap(px(8.0)).justify_end().child(
-                            button()
-                                .id("kugou-import-cancel")
-                                .child(tr!("KUGOU_IMPORT_CANCEL", "Cancel"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_import(cx);
-                                })),
-                        )
-                        .child(
-                            button()
-                                .id("kugou-import-start")
-                                .intent(ButtonIntent::Primary)
-                                .child(if busy {
-                                    tr!("KUGOU_IMPORT_RUNNING", "Importing…")
-                                } else {
-                                    tr!("KUGOU_IMPORT_START", "Import")
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.begin_import(cx);
-                                })),
-                        ),
+                        div()
+                            .flex()
+                            .gap(px(8.0))
+                            .justify_end()
+                            .child(
+                                button()
+                                    .id("kugou-import-cancel")
+                                    .child(tr!("KUGOU_IMPORT_CANCEL", "Cancel"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.close_import(cx);
+                                    })),
+                            )
+                            .child(
+                                button()
+                                    .id("kugou-import-start")
+                                    .intent(ButtonIntent::Primary)
+                                    .child(if busy {
+                                        tr!("KUGOU_IMPORT_RUNNING", "Importing…")
+                                    } else {
+                                        tr!("KUGOU_IMPORT_START", "Import")
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.begin_import(cx);
+                                    })),
+                            ),
                     ),
             )
     }
@@ -1042,7 +1038,12 @@ async fn kugou_match(
     if track.hash.is_empty() {
         return None;
     }
-    Some((track.title.to_string(), track.hash, track.album_id, track.mix_song_id))
+    Some((
+        track.title.to_string(),
+        track.hash,
+        track.album_id,
+        track.mix_song_id,
+    ))
 }
 
 /// Resolves the just-created playlist's numeric listid from the user's list

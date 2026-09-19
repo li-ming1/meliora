@@ -2,7 +2,11 @@ pub mod album;
 pub mod info_section;
 pub mod track;
 
-use std::{path::{Path, PathBuf}, rc::Rc, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 
 use camino::Utf8PathBuf;
 use cntp_i18n::tr;
@@ -14,11 +18,11 @@ use crate::{
         scan::ScanInterface,
         types::{Album, Track},
     },
-    ui::app::Pool,
     playback::{
         interface::{PlaybackInterface, replace_queue},
         queue::QueueItemData,
     },
+    ui::app::Pool,
     ui::{
         availability::is_track_available,
         components::context::ContextMenuBuilder,
@@ -55,7 +59,12 @@ pub fn queue_items_from_tracks(cx: &mut App, tracks: &[Track]) -> Vec<QueueItemD
         .collect()
 }
 
-fn queue_item_data(cx: &mut App, location: PathBuf, id: i64, album_id: Option<i64>) -> QueueItemData {
+fn queue_item_data(
+    cx: &mut App,
+    location: PathBuf,
+    id: i64,
+    album_id: Option<i64>,
+) -> QueueItemData {
     QueueItemData::new(cx, location, Some(id), album_id)
 }
 
@@ -249,7 +258,12 @@ pub fn play_from_track_listing(
         let tracks = cx.list_tracks_in_album(album_id).unwrap_or_default();
         queue_items_from_tracks(cx, &tracks)
     } else {
-        vec![queue_item_data(cx, track.location.clone(), track.id, track.album_id)]
+        vec![queue_item_data(
+            cx,
+            track.location.clone(),
+            track.id,
+            track.album_id,
+        )]
     };
 
     play_from_track(cx, track, queue_items);

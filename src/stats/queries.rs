@@ -78,7 +78,11 @@ async fn resolve_local_meta(pool: &SqlitePool, track_key: &str) -> Option<TrackM
     } else {
         title
     };
-    Some(TrackMeta { title, artist, album })
+    Some(TrackMeta {
+        title,
+        artist,
+        album,
+    })
 }
 
 pub async fn daily_sums(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, i64)>> {
@@ -104,10 +108,7 @@ pub async fn hour_histogram(pool: &SqlitePool, since: i64) -> sqlx::Result<[i64;
 }
 
 /// (title, artist, seconds), best first.
-pub async fn top_tracks(
-    pool: &SqlitePool,
-    since: i64,
-) -> sqlx::Result<Vec<(String, String, i64)>> {
+pub async fn top_tracks(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, String, i64)>> {
     let sql = include_str!("../../queries/stats/top_tracks.sql");
     let rows = sqlx::query(sql).bind(since).fetch_all(pool).await?;
     Ok(rows

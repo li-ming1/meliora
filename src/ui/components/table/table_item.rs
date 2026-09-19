@@ -195,7 +195,12 @@ where
                             .rounded(px(theme.radius_sm))
                             .bg(theme.album_art_background)
                             .when_some(self.image_path.clone(), |div, image| {
-                                div.child(img(image).w(px(22.0)).h(px(22.0)).rounded(px(theme.radius_sm)))
+                                div.child(
+                                    img(image)
+                                        .w(px(22.0))
+                                        .h(px(22.0))
+                                        .rounded(px(theme.radius_sm)),
+                                )
                             }),
                     ),
             );

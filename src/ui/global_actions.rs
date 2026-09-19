@@ -10,9 +10,7 @@ use crate::{
     toasts::{Toast, emit_toast},
     ui::{
         app::Pool,
-        settings::{
-            SettingsSectionKind, open_settings_window, open_settings_window_with_section,
-        },
+        settings::{SettingsSectionKind, open_settings_window, open_settings_window_with_section},
         troubleshooting::{copy_troubleshooting_info, open_log},
     },
 };

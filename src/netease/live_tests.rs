@@ -7,8 +7,8 @@
 //! the NetEase Cloud Music mobile app, then prints the account profile and
 //! playlists.
 
-use super::api::QrStatus;
 use super::NeteaseClient;
+use super::api::QrStatus;
 use crate::paths;
 
 fn client() -> NeteaseClient {
@@ -48,7 +48,9 @@ fn live_offline_flow() {
             }
         };
 
-        let song_id = song.as_ref().and_then(|song| song.get("id").and_then(|v| v.as_i64()));
+        let song_id = song
+            .as_ref()
+            .and_then(|song| song.get("id").and_then(|v| v.as_i64()));
         if let Some(song) = &song {
             report.push_str(&format!(
                 "first song: {}\n",
@@ -133,7 +135,10 @@ fn live_http_source_decodes_netease_stream() {
         let resp = client.cloudsearch("晴天", 1, 1, 0).await.expect("search");
         let song = first_search_result(&resp.body).expect("search result");
         let song_id = song.get("id").and_then(|v| v.as_i64()).expect("song id");
-        let url_resp = client.song_url(song_id, "standard").await.expect("song url");
+        let url_resp = client
+            .song_url(song_id, "standard")
+            .await
+            .expect("song url");
         url_resp
             .body
             .pointer("/data/0/url")
@@ -152,9 +157,15 @@ fn live_http_source_decodes_netease_stream() {
     println!(
         "decode ok: duration {}ms, title={:?}",
         duration,
-        metadata.as_ref().and_then(|m| m.name.clone()).unwrap_or_default()
+        metadata
+            .as_ref()
+            .and_then(|m| m.name.clone())
+            .unwrap_or_default()
     );
-    assert!(duration > 30_000, "expected a real stream, got {duration}ms");
+    assert!(
+        duration > 30_000,
+        "expected a real stream, got {duration}ms"
+    );
 }
 
 #[test]

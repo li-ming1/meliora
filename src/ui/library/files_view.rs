@@ -162,14 +162,21 @@ impl FilesView {
     }
 
     pub fn select_range(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let Some(target_idx) = self.flat.iter().position(|r| r.path.as_ref() == path.as_path())
+        let Some(target_idx) = self
+            .flat
+            .iter()
+            .position(|r| r.path.as_ref() == path.as_path())
         else {
             return;
         };
         let anchor_idx = self
             .anchor
             .as_ref()
-            .and_then(|a| self.flat.iter().position(|r| r.path.as_ref() == a.as_path()))
+            .and_then(|a| {
+                self.flat
+                    .iter()
+                    .position(|r| r.path.as_ref() == a.as_path())
+            })
             .unwrap_or(target_idx);
         self.anchor = Some(self.flat[anchor_idx].path.to_path_buf());
 
@@ -192,7 +199,11 @@ impl FilesView {
         let mut audio_items = Vec::with_capacity(self.selected.len());
         let mut track_ids = Vec::with_capacity(self.selected.len());
 
-        for row in self.flat.iter().filter(|r| self.selected.contains(r.path.as_ref())) {
+        for row in self
+            .flat
+            .iter()
+            .filter(|r| self.selected.contains(r.path.as_ref()))
+        {
             if row.is_audio {
                 audio_items.push((row.path.clone(), row.track.clone()));
             }

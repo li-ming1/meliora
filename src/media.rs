@@ -15,8 +15,9 @@ pub mod traits;
 use std::path::Path;
 
 /// Extensions every builtin provider claims; both parse the same formats.
-pub const SUPPORTED_EXTENSIONS: &[&str] =
-    &["ogg", "oga", "aac", "flac", "wav", "mp3", "m4a", "aiff", "opus"];
+pub const SUPPORTED_EXTENSIONS: &[&str] = &[
+    "ogg", "oga", "aac", "flac", "wav", "mp3", "m4a", "aiff", "opus",
+];
 
 /// Whether `path` carries an HTTP(S) URL instead of a filesystem location.
 /// Available unconditionally: queue metadata and availability checks consult

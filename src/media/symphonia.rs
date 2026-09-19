@@ -847,5 +847,4 @@ mod tests {
         assert!(!open_fixture(&dir, "fixture.wav").metadata_updated());
         assert!(open_fixture(&dir, "fixture.flac").metadata_updated());
     }
-
 }

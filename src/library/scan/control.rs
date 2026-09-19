@@ -1,11 +1,11 @@
 use camino::Utf8PathBuf;
 use gpui::{App, Global};
-use tracing::error;
 use tokio::sync::{
     mpsc::UnboundedReceiver,
     mpsc::UnboundedSender,
     mpsc::{Receiver, Sender},
 };
+use tracing::error;
 
 use crate::{
     settings::scan::{MissingFolderPolicy, ScanSettings},
@@ -115,13 +115,19 @@ impl ScanInterface {
     }
 
     pub fn update_settings(&self, settings: ScanSettings) {
-        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::UpdateSettings(settings)) {
+        if let Err(err) = self
+            .cmd_tx
+            .blocking_send(ScanCommand::UpdateSettings(settings))
+        {
             error!("could not send scan settings update command: {err}");
         }
     }
 
     pub fn resolve_missing_folders(&self, decision: MissingFolderDecision) {
-        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::ResolveMissingFolders(decision)) {
+        if let Err(err) = self
+            .cmd_tx
+            .blocking_send(ScanCommand::ResolveMissingFolders(decision))
+        {
             error!("could not send missing folder resolution: {err}");
         }
     }

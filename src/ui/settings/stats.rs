@@ -4,9 +4,9 @@ use std::time::Duration;
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate};
 use cntp_i18n::tr;
 use gpui::{
-    canvas, fill, point, relative, size, App, AppContext, Bounds, Context, Div, Entity,
-    InteractiveElement, IntoElement, ParentElement, PathBuilder, Render, Rgba, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Window, div, px,
+    App, AppContext, Bounds, Context, Div, Entity, InteractiveElement, IntoElement, ParentElement,
+    PathBuilder, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
+    canvas, div, fill, point, px, relative, size,
 };
 
 use crate::{
@@ -120,7 +120,11 @@ struct HeatWeek {
 
 fn fmt_duration(secs: i64) -> String {
     if secs >= 3600 {
-        format!("{:.1} {}", secs as f64 / 3600.0, tr!("STATS_UNIT_HOUR", "h"))
+        format!(
+            "{:.1} {}",
+            secs as f64 / 3600.0,
+            tr!("STATS_UNIT_HOUR", "h")
+        )
     } else if secs >= 60 {
         format!("{} {}", secs / 60, tr!("STATS_UNIT_MIN", "min"))
     } else {
@@ -288,7 +292,9 @@ impl StatsSettings {
                 .spawn(async move {
                     let since = crate::stats::epoch_ts();
                     let daily = queries::daily_sums(&pool, since).await.unwrap_or_default();
-                    let hours = queries::hour_histogram(&pool, since).await.unwrap_or_default();
+                    let hours = queries::hour_histogram(&pool, since)
+                        .await
+                        .unwrap_or_default();
                     (daily, hours)
                 })
                 .await;
@@ -305,12 +311,7 @@ impl StatsSettings {
         .detach();
     }
 
-    fn apply_base(
-        &mut self,
-        daily: Vec<(String, i64)>,
-        hours: [i64; 24],
-        _cx: &mut Context<Self>,
-    ) {
+    fn apply_base(&mut self, daily: Vec<(String, i64)>, hours: [i64; 24], _cx: &mut Context<Self>) {
         let mut map = BTreeMap::new();
         for (day, total) in daily {
             if let Ok(date) = NaiveDate::parse_from_str(&day, "%Y-%m-%d") {
@@ -325,9 +326,7 @@ impl StatsSettings {
         self.hours = hours;
         self.hours_labels = std::array::from_fn(|hour| {
             let secs = hours[hour];
-            (secs > 0).then(|| {
-                SharedString::from(format!("{hour:02}:00 · {}", fmt_duration(secs)))
-            })
+            (secs > 0).then(|| SharedString::from(format!("{hour:02}:00 · {}", fmt_duration(secs))))
         });
 
         // Overview numbers are derived from the daily map (single source of
@@ -359,19 +358,13 @@ impl StatsSettings {
                 .spawn(async move {
                     match tab {
                         TopTab::Tracks => TopRows::Tracks(
-                            queries::top_tracks(&pool, since)
-                                .await
-                                .unwrap_or_default(),
+                            queries::top_tracks(&pool, since).await.unwrap_or_default(),
                         ),
                         TopTab::Artists => TopRows::Artists(
-                            queries::top_artists(&pool, since)
-                                .await
-                                .unwrap_or_default(),
+                            queries::top_artists(&pool, since).await.unwrap_or_default(),
                         ),
                         TopTab::Albums => TopRows::Albums(
-                            queries::top_albums(&pool, since)
-                                .await
-                                .unwrap_or_default(),
+                            queries::top_albums(&pool, since).await.unwrap_or_default(),
                         ),
                     }
                 })
@@ -405,12 +398,16 @@ impl StatsSettings {
                     .map(|(title, artist, secs)| (title, Some(artist), secs))
                     .collect(),
             ),
-            TopRows::Artists(rows) => {
-                to_items(rows.into_iter().map(|(name, secs)| (name, None, secs)).collect())
-            }
-            TopRows::Albums(rows) => {
-                to_items(rows.into_iter().map(|(name, secs)| (name, None, secs)).collect())
-            }
+            TopRows::Artists(rows) => to_items(
+                rows.into_iter()
+                    .map(|(name, secs)| (name, None, secs))
+                    .collect(),
+            ),
+            TopRows::Albums(rows) => to_items(
+                rows.into_iter()
+                    .map(|(name, secs)| (name, None, secs))
+                    .collect(),
+            ),
         };
     }
 
@@ -432,8 +429,8 @@ impl StatsSettings {
             tracing::warn!("invalid heatmap year {year}, keeping current heatmap");
             return;
         };
-        let window_start =
-            year_start - ChronoDuration::days(i64::from(year_start.weekday().num_days_from_monday()));
+        let window_start = year_start
+            - ChronoDuration::days(i64::from(year_start.weekday().num_days_from_monday()));
         let window_end_sunday = last_day
             + ChronoDuration::days(6 - i64::from(last_day.weekday().num_days_from_monday()));
         let cols = ((window_end_sunday - window_start).num_days() / 7 + 1).max(1);
@@ -465,8 +462,10 @@ impl StatsSettings {
         // live theme.
         let mut heat_weeks: Vec<HeatWeek> = Vec::with_capacity(cols as usize);
         for col in 0..cols {
-            let mut days: [HeatDay; HEAT_ROWS] =
-                std::array::from_fn(|_| HeatDay { secs: 0, active: None });
+            let mut days: [HeatDay; HEAT_ROWS] = std::array::from_fn(|_| HeatDay {
+                secs: 0,
+                active: None,
+            });
             for row in 0..HEAT_ROWS as i64 {
                 let date = window_start + ChronoDuration::days(col * 7 + row);
                 if date > today {
@@ -493,7 +492,8 @@ impl StatsSettings {
 
     fn shift_heat(&mut self, delta: i64, cx: &mut Context<Self>) {
         // The pager stops at the stats epoch year: earlier years hold no data.
-        let max_offset = (i64::from(Local::now().year()) - i64::from(crate::stats::epoch_year())).max(0);
+        let max_offset =
+            (i64::from(Local::now().year()) - i64::from(crate::stats::epoch_year())).max(0);
         let next = (self.heat_year_offset + delta).clamp(0, max_offset);
         if next == self.heat_year_offset {
             return;
@@ -521,10 +521,22 @@ impl StatsSettings {
 
     fn render_overview(&self, theme: &Theme) -> impl IntoElement {
         let cards = [
-            (SharedString::from(tr!("STATS_OVERVIEW_TOTAL", "Total")), self.total_label.clone()),
-            (SharedString::from(tr!("STATS_OVERVIEW_TODAY", "Today")), self.today_label.clone()),
-            (SharedString::from(tr!("STATS_OVERVIEW_WEEK", "Last 7 days")), self.week_label.clone()),
-            (SharedString::from(tr!("STATS_OVERVIEW_STREAK", "Streak")), self.streak_label.clone()),
+            (
+                SharedString::from(tr!("STATS_OVERVIEW_TOTAL", "Total")),
+                self.total_label.clone(),
+            ),
+            (
+                SharedString::from(tr!("STATS_OVERVIEW_TODAY", "Today")),
+                self.today_label.clone(),
+            ),
+            (
+                SharedString::from(tr!("STATS_OVERVIEW_WEEK", "Last 7 days")),
+                self.week_label.clone(),
+            ),
+            (
+                SharedString::from(tr!("STATS_OVERVIEW_STREAK", "Streak")),
+                self.streak_label.clone(),
+            ),
         ];
         div()
             .flex()
@@ -550,7 +562,12 @@ impl StatsSettings {
                             .text_color(theme.text_secondary)
                             .child(label),
                     )
-                    .child(div().text_size(px(17.0)).text_color(theme.text).child(value))
+                    .child(
+                        div()
+                            .text_size(px(17.0))
+                            .text_color(theme.text)
+                            .child(value),
+                    )
             }))
     }
 
@@ -594,7 +611,11 @@ impl StatsSettings {
             .flex_shrink_0()
             .mr(px(HEAT_GAP_PX));
         for label in &weekday_labels {
-            let mut slot = div().w(px(HEAT_WD_W_PX)).h(px(HEAT_CELL_PX)).flex().items_center();
+            let mut slot = div()
+                .w(px(HEAT_WD_W_PX))
+                .h(px(HEAT_CELL_PX))
+                .flex()
+                .items_center();
             if let Some(l) = label {
                 slot = slot.child(
                     div()
@@ -622,8 +643,8 @@ impl StatsSettings {
         for (col, week) in self.heat_weeks.iter().enumerate() {
             let mut col_div = div().flex().flex_col().gap(px(HEAT_GAP_PX));
             for (row, day) in week.days.iter().enumerate() {
-                let date = self.heat_window_start
-                    + ChronoDuration::days(col as i64 * 7 + row as i64);
+                let date =
+                    self.heat_window_start + ChronoDuration::days(col as i64 * 7 + row as i64);
                 let base = div()
                     .w(px(HEAT_CELL_PX))
                     .h(px(HEAT_CELL_PX))
@@ -720,19 +741,22 @@ impl StatsSettings {
                     )
                     .child(
                         // ‹ pages to older years (+1), › back toward today.
-                        self.pager_button("stats-heat-prev", "<", theme).on_click(
-                            cx.listener(|this, _, _, cx| this.shift_heat(1, cx)),
-                        ),
+                        self.pager_button("stats-heat-prev", "<", theme)
+                            .on_click(cx.listener(|this, _, _, cx| this.shift_heat(1, cx))),
                     )
                     .child(
-                        self.pager_button("stats-heat-next", ">", theme).on_click(
-                            cx.listener(|this, _, _, cx| this.shift_heat(-1, cx)),
-                        ),
+                        self.pager_button("stats-heat-next", ">", theme)
+                            .on_click(cx.listener(|this, _, _, cx| this.shift_heat(-1, cx))),
                     ),
             )
             .child(month_row)
             .child(
-                div().flex().flex_row().flex_shrink_0().child(wd_col).child(grid),
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_shrink_0()
+                    .child(wd_col)
+                    .child(grid),
             )
             .child(legend)
     }
@@ -902,7 +926,14 @@ impl StatsSettings {
                     .text_color(theme.text_secondary)
                     .child(tr!("STATS_HOURS_TITLE", "By hour of day")),
             )
-            .child(div().relative().w_full().h(px(80.0)).child(chart).child(overlay))
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(80.0))
+                    .child(chart)
+                    .child(overlay),
+            )
             .child(labels)
     }
 
@@ -911,18 +942,16 @@ impl StatsSettings {
         for tab in [TopTab::Tracks, TopTab::Artists, TopTab::Albums] {
             let active = self.top_tab == tab;
             tab_row = tab_row.child(
-                self.pill(tab.id(), tab.label(), active, theme).on_click(
-                    cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx)),
-                ),
+                self.pill(tab.id(), tab.label(), active, theme)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx))),
             );
         }
         let mut range_row = div().flex().flex_row().gap(px(4.0));
         for range in [TopRange::Week, TopRange::Month, TopRange::All] {
             let active = self.top_range == range;
             range_row = range_row.child(
-                self.pill(range.id(), range.label(), active, theme).on_click(
-                    cx.listener(move |this, _, _, cx| this.switch_range(range, cx)),
-                ),
+                self.pill(range.id(), range.label(), active, theme)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_range(range, cx))),
             );
         }
 
@@ -1062,17 +1091,12 @@ impl Render for StatsSettings {
                 .gap(px(14.0))
                 .child(section_header(tr!("STATS_SECTION")))
                 .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_center()
-                        .pt(px(40.0))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(theme.text_secondary)
-                                .child(tr!("STATS_EMPTY", "No listening data yet.")),
-                        ),
+                    div().w_full().flex().justify_center().pt(px(40.0)).child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(theme.text_secondary)
+                            .child(tr!("STATS_EMPTY", "No listening data yet.")),
+                    ),
                 );
         }
 

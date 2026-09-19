@@ -129,8 +129,9 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
             return;
         }
         let result = tokio::task::spawn_blocking(move || {
-            File::create(path)
-                .and_then(|file| serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into()))
+            File::create(path).and_then(|file| {
+                serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into())
+            })
         })
         .await;
         match result {

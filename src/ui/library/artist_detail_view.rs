@@ -30,8 +30,8 @@ use crate::{
         },
         library::{
             context_menus::{AlbumContextMenuContext, queue_items_from_tracks},
-            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
             detail_close_button,
+            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
         },
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
@@ -46,7 +46,12 @@ type GridHandler = dyn Fn(&mut App, &(u32, String)) + 'static;
 /// Per-track `is_track_available` results, computed once per track-list load:
 /// re-statting every file on every render frame is far too expensive.
 fn availability_map(tracks: &[Track]) -> Arc<Vec<bool>> {
-    Arc::new(tracks.iter().map(|track| is_track_available(track)).collect())
+    Arc::new(
+        tracks
+            .iter()
+            .map(|track| is_track_available(track))
+            .collect(),
+    )
 }
 
 /// uniform_list needs one fixed row height; 40px is what the non-virtualized
@@ -788,10 +793,7 @@ impl Render for ArtistDetailView {
                                                     cx,
                                                 );
 
-                                                div()
-                                                    .size_full()
-                                                    .child(view)
-                                                    .into_any_element()
+                                                div().size_full().child(view).into_any_element()
                                             },
                                         )
                                         .min_item_width(px(grid_min_item_width))

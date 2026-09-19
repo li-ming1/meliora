@@ -1,4 +1,3 @@
-
 use crate::media::pipeline::ChannelConsumers;
 
 use super::{
@@ -65,6 +64,5 @@ pub trait OutputStream {
     }
 
     /// Consume samples from ring buffer consumers and submit them to the device.
-    fn consume_from(&mut self, input: &mut ChannelConsumers)
-    -> Result<usize, SubmissionError>;
+    fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError>;
 }

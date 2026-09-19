@@ -8,7 +8,9 @@ use gpui::{App, AppContext, Entity, SharedString};
 use tracing::{error, trace_span};
 
 use crate::library::db::LibraryAccess;
-use crate::media::{lookup_table::try_open_media, metadata::Metadata, traits::MediaProviderFeatures};
+use crate::media::{
+    lookup_table::try_open_media, metadata::Metadata, traits::MediaProviderFeatures,
+};
 
 /// Sentinel for "length not known yet" in [`QueueItemData`]'s duration slot.
 pub const UNKNOWN_DURATION: i64 = i64::MIN;
@@ -48,7 +50,11 @@ pub struct QueueItemData {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OnlineIdentity {
     /// KuGou: `song_url(hash, mix_song_id, album_id, quality, free_part)`.
-    Kugou { hash: String, mix_song_id: i64, album_id: i64 },
+    Kugou {
+        hash: String,
+        mix_song_id: i64,
+        album_id: i64,
+    },
     /// NetEase: `song_url(id, level)`.
     Netease { id: i64 },
 }
@@ -151,7 +157,10 @@ pub struct QueueItemUIData {
 /// Extracts the restart-surviving subset of online display metadata.
 #[cfg(feature = "online_sources")]
 fn persist_from(ui: QueueItemUIData) -> Option<PersistedQueueUIData> {
-    if ui.name.is_none() && ui.artist_name.is_none() && ui.cover_url.is_none() && ui.duration.is_none()
+    if ui.name.is_none()
+        && ui.artist_name.is_none()
+        && ui.cover_url.is_none()
+        && ui.duration.is_none()
     {
         return None;
     }
@@ -217,9 +226,7 @@ impl QueueItemData {
     #[cfg(feature = "online_sources")]
     pub fn with_ui_data(cx: &mut App, path: PathBuf, ui_data: QueueItemUIData) -> Self {
         let persisted_ui = persist_from(ui_data.clone());
-        let duration = Arc::new(AtomicI64::new(
-            ui_data.duration.unwrap_or(UNKNOWN_DURATION),
-        ));
+        let duration = Arc::new(AtomicI64::new(ui_data.duration.unwrap_or(UNKNOWN_DURATION)));
         QueueItemData {
             path,
             db_id: None,
@@ -364,8 +371,7 @@ impl QueueItemData {
 
             // if the database ids are known we can get the data from the database
             if let (Some(track_id), Some(album_id)) = (track_id, album_id) {
-                let album =
-                    cx.get_album_by_id(album_id);
+                let album = cx.get_album_by_id(album_id);
                 let track = cx.get_track_by_id(track_id);
 
                 if let (Ok(track), Ok(album)) = (track, album) {

@@ -79,9 +79,9 @@ impl MediaController {
             ));
         };
 
-        media_stream
-            .start_playback()
-            .map_err(|e| PlaybackStartError::MediaError(format!("Unable to start playback: {e}")))?;
+        media_stream.start_playback().map_err(|e| {
+            PlaybackStartError::MediaError(format!("Unable to start playback: {e}"))
+        })?;
 
         media_stream
             .channels()

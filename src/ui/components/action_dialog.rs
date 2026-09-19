@@ -290,44 +290,40 @@ fn render_action(action: ActionDialogAction) -> impl IntoElement {
 fn render_details(details: ActionDialogDetails, theme: &Theme) -> impl IntoElement {
     let ActionDialogDetails { item_icon, items } = details;
 
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .child(
-            div()
-                .id("action-dialog-details")
-                .max_h(px(140.0))
-                .overflow_hidden()
-                .rounded(px(theme.radius_md))
-                .bg(rgba(0x00000033))
-                .border_1()
-                .border_color(rgba(0xFFFFFF0A))
-                .p(px(8.0))
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .children(items.into_iter().enumerate().map(move |(idx, item)| {
-                    div()
-                        .id(format!("action-dialog-item-{idx}"))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .py(px(4.0))
-                        .px(px(6.0))
-                        .rounded(px(theme.radius_sm))
-                        .when_some(item_icon, |this, icon_path| {
-                            this.child(icon(icon_path).size(px(16.0)).flex_shrink_0())
-                        })
-                        .child(
-                            div()
-                                .text_xs()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(item),
-                        )
-                })),
-        )
+    div().flex().flex_col().gap(px(6.0)).child(
+        div()
+            .id("action-dialog-details")
+            .max_h(px(140.0))
+            .overflow_hidden()
+            .rounded(px(theme.radius_md))
+            .bg(rgba(0x00000033))
+            .border_1()
+            .border_color(rgba(0xFFFFFF0A))
+            .p(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children(items.into_iter().enumerate().map(move |(idx, item)| {
+                div()
+                    .id(format!("action-dialog-item-{idx}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .py(px(4.0))
+                    .px(px(6.0))
+                    .rounded(px(theme.radius_sm))
+                    .when_some(item_icon, |this, icon_path| {
+                        this.child(icon(icon_path).size(px(16.0)).flex_shrink_0())
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(item),
+                    )
+            })),
+    )
 }
 
 impl RenderOnce for ActionDialog {

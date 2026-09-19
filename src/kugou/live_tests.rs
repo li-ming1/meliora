@@ -6,9 +6,9 @@
 //! play URL, lyric). `live_qr_login` needs a human to scan a QR code with
 //! the KuGou mobile app, then lists the logged-in user's playlists.
 
+use super::KugouClient;
 use super::api::QrStatus;
 use super::client::LoginExtras;
-use super::KugouClient;
 use crate::paths;
 
 fn client() -> KugouClient {
@@ -88,8 +88,11 @@ fn live_offline_flow() {
                 match client.search_lyric(hash, "", 0).await {
                     Ok(resp) => report.push_str(&format!(
                         "search_lyric body: {}\n",
-                        serde_json::to_string(&resp.body).unwrap_or_default()
-                            .chars().take(300).collect::<String>()
+                        serde_json::to_string(&resp.body)
+                            .unwrap_or_default()
+                            .chars()
+                            .take(300)
+                            .collect::<String>()
                     )),
                     Err(e) => report.push_str(&format!("search_lyric: FAILED {e}\n")),
                 }
@@ -98,8 +101,11 @@ fn live_offline_flow() {
                 Ok(resp) => {
                     report.push_str(&format!(
                         "search_lyric: ok | {}\n",
-                        serde_json::to_string(&resp.body).unwrap_or_default()
-                            .chars().take(300).collect::<String>()
+                        serde_json::to_string(&resp.body)
+                            .unwrap_or_default()
+                            .chars()
+                            .take(300)
+                            .collect::<String>()
                     ));
                     let id = resp
                         .body
@@ -172,7 +178,10 @@ fn live_http_source_decodes_kugou_stream() {
             .expect("url field")
             .to_string();
         let time_length = url_resp.body.get("timeLength").and_then(|v| v.as_i64());
-        println!("stream url ok ({} chars), timeLength={time_length:?}", url.len());
+        println!(
+            "stream url ok ({} chars), timeLength={time_length:?}",
+            url.len()
+        );
         (url, time_length)
     });
 
@@ -187,9 +196,15 @@ fn live_http_source_decodes_kugou_stream() {
     println!(
         "decode ok: duration {}ms, title={:?}",
         duration,
-        metadata.as_ref().and_then(|m| m.name.clone()).unwrap_or_default()
+        metadata
+            .as_ref()
+            .and_then(|m| m.name.clone())
+            .unwrap_or_default()
     );
-    assert!(duration > 30_000, "expected a real stream, got {duration}ms");
+    assert!(
+        duration > 30_000,
+        "expected a real stream, got {duration}ms"
+    );
 }
 
 #[test]
@@ -243,7 +258,8 @@ fn live_qr_login() {
                                 match client.playlist_tracks(listid, 1, 10).await {
                                     Ok(resp) => println!(
                                         "playlist_tracks: {}",
-                                        serde_json::to_string_pretty(&resp.body).unwrap_or_default()
+                                        serde_json::to_string_pretty(&resp.body)
+                                            .unwrap_or_default()
                                     ),
                                     Err(e) => println!("playlist_tracks: FAILED {e}"),
                                 }

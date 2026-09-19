@@ -18,11 +18,7 @@ use tracing::{Instrument as _, debug, debug_span, error, trace_span, warn};
 
 use crate::{
     media::metadata::Metadata,
-    playback::{
-        events::RepeatState,
-        interface::PlaybackInterface,
-        thread::PlaybackState,
-    },
+    playback::{events::RepeatState, interface::PlaybackInterface, thread::PlaybackState},
     ui::models::{ImageEvent, Models, PlaybackInfo},
 };
 

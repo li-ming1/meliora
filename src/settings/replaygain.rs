@@ -45,10 +45,9 @@ pub fn calculate_gain(
         ReplayGainMode::Album => (album_gain.or(track_gain), album_peak.or(track_peak)),
         ReplayGainMode::Auto => match auto_hint {
             ReplayGainAutoHint::PreferTrack => (track_gain, track_peak),
-            ReplayGainAutoHint::PreferAlbum => (
-                album_gain.or(track_gain),
-                album_peak.or(track_peak),
-            ),
+            ReplayGainAutoHint::PreferAlbum => {
+                (album_gain.or(track_gain), album_peak.or(track_peak))
+            }
         },
     };
 
@@ -86,12 +85,29 @@ mod tests {
 
     #[test]
     fn off_mode_is_unity() {
-        assert_eq!(calculate_gain(&SETTINGS_OFF, ReplayGainAutoHint::PreferTrack, Some(-3.0), None, Some(0.5), None), 1.0);
+        assert_eq!(
+            calculate_gain(
+                &SETTINGS_OFF,
+                ReplayGainAutoHint::PreferTrack,
+                Some(-3.0),
+                None,
+                Some(0.5),
+                None
+            ),
+            1.0
+        );
     }
 
     #[test]
     fn gain_applies_preamp() {
-        let gain = calculate_gain(&track_settings(0.0), ReplayGainAutoHint::PreferTrack, Some(-6.0), None, None, None);
+        let gain = calculate_gain(
+            &track_settings(0.0),
+            ReplayGainAutoHint::PreferTrack,
+            Some(-6.0),
+            None,
+            None,
+            None,
+        );
         assert!((gain - 10.0_f64.powf(-6.0 / 20.0)).abs() < 1e-12);
     }
 
@@ -99,10 +115,24 @@ mod tests {
     fn peak_caps_boost_but_not_attenuation() {
         // -3 dB tag on a 0.9-peak track + 6 dB pre-amp → +3 dB net (1.41×),
         // which would clip the 0.9 peak → capped at 1/0.9.
-        let capped = calculate_gain(&track_settings(6.0), ReplayGainAutoHint::PreferTrack, Some(-3.0), None, Some(0.9), None);
+        let capped = calculate_gain(
+            &track_settings(6.0),
+            ReplayGainAutoHint::PreferTrack,
+            Some(-3.0),
+            None,
+            Some(0.9),
+            None,
+        );
         assert!((capped - 1.0 / 0.9).abs() < 1e-12);
         // -9 dB tag + 3 dB pre-amp → net attenuation, untouched.
-        let attenuated = calculate_gain(&track_settings(3.0), ReplayGainAutoHint::PreferTrack, Some(-9.0), None, Some(0.9), None);
+        let attenuated = calculate_gain(
+            &track_settings(3.0),
+            ReplayGainAutoHint::PreferTrack,
+            Some(-9.0),
+            None,
+            Some(0.9),
+            None,
+        );
         assert!((attenuated - 10.0_f64.powf(-6.0 / 20.0)).abs() < 1e-12);
     }
 
@@ -110,7 +140,14 @@ mod tests {
     fn missing_or_degenerate_peak_leaves_gain_uncapped() {
         let expected = 10.0_f64.powf(3.0 / 20.0);
         for peak in [None, Some(0.0)] {
-            let gain = calculate_gain(&track_settings(3.0), ReplayGainAutoHint::PreferTrack, Some(0.0), None, peak, None);
+            let gain = calculate_gain(
+                &track_settings(3.0),
+                ReplayGainAutoHint::PreferTrack,
+                Some(0.0),
+                None,
+                peak,
+                None,
+            );
             assert!((gain - expected).abs() < 1e-12);
         }
     }

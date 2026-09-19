@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    path::Path,
-    sync::OnceLock,
-};
+use std::{fs::File, path::Path, sync::OnceLock};
 
 use tracing::info;
 

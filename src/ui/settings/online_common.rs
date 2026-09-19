@@ -13,11 +13,15 @@ use gpui::{
 use crate::{
     settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
+    ui::components::managed_image::queue_orphan_tile_drop,
     ui::{
-        components::{button::{ButtonIntent, button}, modal::modal, textbox::Textbox},
+        components::{
+            button::{ButtonIntent, button},
+            modal::modal,
+            textbox::Textbox,
+        },
         theme::Theme,
     },
-    ui::components::managed_image::queue_orphan_tile_drop,
 };
 
 /// Consecutive transport failures tolerated by the poll loop before it gives
@@ -168,7 +172,10 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
         };
 
         // step 1: request a fresh key and render it as a QR image
-        let key = match crate::RUNTIME.spawn(async move { H::create_key().await }).await {
+        let key = match crate::RUNTIME
+            .spawn(async move { H::create_key().await })
+            .await
+        {
             Ok(Ok(key)) => Ok(key),
             Ok(Err(err)) => Err(err),
             Err(err) => Err(err.to_string()),
@@ -189,7 +196,10 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
         };
 
         let key_for_qr = key.clone();
-        let image = match crate::RUNTIME.spawn_blocking(move || H::build_qr(&key_for_qr)).await {
+        let image = match crate::RUNTIME
+            .spawn_blocking(move || H::build_qr(&key_for_qr))
+            .await
+        {
             Ok(Ok(image)) => Ok(image),
             Ok(Err(err)) => Err(err),
             Err(err) => Err(err.to_string()),
@@ -325,19 +335,16 @@ pub(crate) fn render_qr_modal<H: QrLoginHost>(
                         .font_weight(FontWeight::BOLD)
                         .child(title),
                 )
-                .children(hint.map(|hint| {
-                    div().text_sm().text_color(theme.text_secondary).child(hint)
-                }))
+                .children(
+                    hint.map(|hint| div().text_sm().text_color(theme.text_secondary).child(hint)),
+                )
                 .child(match &qr.image {
-                    Some(image) => div()
-                        .rounded(px(theme.radius_md))
-                        .overflow_hidden()
-                        .child(
-                            img(image.clone())
-                                .w(px(260.0))
-                                .h(px(260.0))
-                                .flex_shrink(0.0),
-                        ),
+                    Some(image) => div().rounded(px(theme.radius_md)).overflow_hidden().child(
+                        img(image.clone())
+                            .w(px(260.0))
+                            .h(px(260.0))
+                            .flex_shrink(0.0),
+                    ),
                     None => div()
                         .flex()
                         .items_center()

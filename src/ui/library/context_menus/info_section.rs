@@ -52,7 +52,9 @@ impl InfoSectionContextMenu {
 impl RenderOnce for InfoSectionContextMenu {
     fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
         let reveal_path = self.current_path;
-        let is_online = reveal_path.as_ref().is_some_and(|path| is_online_path(path));
+        let is_online = reveal_path
+            .as_ref()
+            .is_some_and(|path| is_online_path(path));
         let can_reveal_track = !is_online
             && reveal_path
                 .as_ref()

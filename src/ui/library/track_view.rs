@@ -38,8 +38,7 @@ impl TrackView {
 
             let handler = Rc::new(
                 move |cx: &mut App, id: &(i64, String, Option<i64>, String)| {
-                    if let Some(table) =
-                        table_ref_clone.borrow().as_ref().and_then(|w| w.upgrade())
+                    if let Some(table) = table_ref_clone.borrow().as_ref().and_then(|w| w.upgrade())
                     {
                         let items = table.read(cx).get_items();
                         if let Some(items) = items {
@@ -87,9 +86,7 @@ impl TrackView {
                     let table_ref = table_ref.clone();
                     move |cx, track| {
                         let table_ref_read = table_ref.borrow();
-                        let Some(table) =
-                            table_ref_read.as_ref().and_then(|w| w.upgrade())
-                        else {
+                        let Some(table) = table_ref_read.as_ref().and_then(|w| w.upgrade()) else {
                             return;
                         };
                         let Some(items) = table.read(cx).get_items() else {

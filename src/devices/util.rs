@@ -19,7 +19,11 @@ pub struct RingWriteTimeout {
 /// blocking or parking. Returns the total samples written (may be less than
 /// `total`). Use this when the consumer drains on the *same* thread — a
 /// blocking retry loop there can never make progress.
-pub fn try_write_planar<T: Copy>(producers: &mut [Producer<T>], planes: &[&[T]], total: usize) -> usize {
+pub fn try_write_planar<T: Copy>(
+    producers: &mut [Producer<T>],
+    planes: &[&[T]],
+    total: usize,
+) -> usize {
     let mut written = 0;
 
     while written < total {

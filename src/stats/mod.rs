@@ -76,12 +76,10 @@ pub fn song_info(
     #[cfg(feature = "online_sources")]
     {
         let item = queue.update(cx, |q, _| {
-            q.data.read().ok().and_then(|items| {
-                items
-                    .iter()
-                    .find(|item| item.get_path() == path)
-                    .cloned()
-            })
+            q.data
+                .read()
+                .ok()
+                .and_then(|items| items.iter().find(|item| item.get_path() == path).cloned())
         });
 
         let identity = item.as_ref().and_then(|item| item.online_identity());

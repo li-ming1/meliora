@@ -114,7 +114,11 @@ fn read_metadata_for_path_prefers_sidecar_lyrics() {
     register_test_media_providers();
     let dir = TestDir::new("decode-meta-test");
     let track = dir.utf8_join("track.flac");
-    fs::write(&track, crate::test_support::audio_fixtures::fixture("fixture.flac")).unwrap();
+    fs::write(
+        &track,
+        crate::test_support::audio_fixtures::fixture("fixture.flac"),
+    )
+    .unwrap();
     fs::write(dir.join("track.lrc"), "[00:00.00] override lyrics").unwrap();
 
     let info = read_metadata_for_path(&track).unwrap();
@@ -179,7 +183,11 @@ fn read_metadata_for_unreadable_file_is_transient() {
     register_test_media_providers();
     let dir = TestDir::new("decode-transient-test");
     let track = dir.utf8_join("locked.flac");
-    fs::write(&track, crate::test_support::audio_fixtures::fixture("fixture.flac")).unwrap();
+    fs::write(
+        &track,
+        crate::test_support::audio_fixtures::fixture("fixture.flac"),
+    )
+    .unwrap();
     fs::set_permissions(&track, fs::Permissions::from_mode(0o000)).unwrap();
 
     // skip if we can still open it (e.g. running as root)
@@ -282,7 +290,8 @@ mod bench {
             for (tgt_label, tw, th) in targets {
                 // last sample slot is the production thumbnail() reference (70x70 only)
                 let with_thumb_ref = th == 70;
-                let mut samples: Vec<Vec<f64>> = vec![Vec::new(); filters.len() + usize::from(with_thumb_ref)];
+                let mut samples: Vec<Vec<f64>> =
+                    vec![Vec::new(); filters.len() + usize::from(with_thumb_ref)];
 
                 // interleave rounds so every variant sees the same machine state
                 for round in 0..WARMUP_ROUNDS + ROUNDS {
@@ -306,7 +315,9 @@ mod bench {
 
                 let lanczos = median_ms(std::mem::take(&mut samples[0]));
                 println!("{src_label} -> {tgt_label}:");
-                println!("  Lanczos3    median {lanczos:8.3} ms  (production filter for the >1024 main image)");
+                println!(
+                    "  Lanczos3    median {lanczos:8.3} ms  (production filter for the >1024 main image)"
+                );
                 for (fi, (name, _)) in filters.iter().enumerate().skip(1) {
                     let m = median_ms(std::mem::take(&mut samples[fi]));
                     println!(
@@ -322,7 +333,9 @@ mod bench {
                 // copy (imageops/sample.rs:985), so that row measures a
                 // memcpy, not the filters.
                 if src.width() == tw && src.height() == th {
-                    println!("  note: same-size resize is short-circuited to a copy in image 0.25 - no filter work involved");
+                    println!(
+                        "  note: same-size resize is short-circuited to a copy in image 0.25 - no filter work involved"
+                    );
                 }
             }
         }

@@ -21,12 +21,7 @@ pub use crate::ui::netease::online_track_matching_path as netease_online_track_m
 
 /// Display metadata shape shared by both providers:
 /// `(name, artist, duration, cover_url)`.
-pub type OnlineDisplay = (
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-    Option<String>,
-);
+pub type OnlineDisplay = (Option<String>, Option<String>, Option<i64>, Option<String>);
 
 /// Re-fetches a fresh stream URL for an online identity and re-records it in
 /// the provider's stream registry (lyrics / like / download resolve by that

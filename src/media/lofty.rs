@@ -557,25 +557,65 @@ mod tests {
         &["fixture.flac", "fixture.ogg", "fixture.m4a", "fixture.opus"];
 
     fn assert_rich_metadata(metadata: &Metadata, context: &str) {
-        assert_eq!(metadata.name.as_deref(), Some("Test Track"), "name in {context}");
-        assert_eq!(metadata.artist.as_deref(), Some("Test Artist"), "artist in {context}");
-        assert_eq!(metadata.album_artist.as_deref(), Some("Test Album Artist"), "album artist in {context}");
-        assert_eq!(metadata.album.as_deref(), Some("Test Album"), "album in {context}");
-        assert_eq!(metadata.genre.as_deref(), Some("Test Genre"), "genre in {context}");
+        assert_eq!(
+            metadata.name.as_deref(),
+            Some("Test Track"),
+            "name in {context}"
+        );
+        assert_eq!(
+            metadata.artist.as_deref(),
+            Some("Test Artist"),
+            "artist in {context}"
+        );
+        assert_eq!(
+            metadata.album_artist.as_deref(),
+            Some("Test Album Artist"),
+            "album artist in {context}"
+        );
+        assert_eq!(
+            metadata.album.as_deref(),
+            Some("Test Album"),
+            "album in {context}"
+        );
+        assert_eq!(
+            metadata.genre.as_deref(),
+            Some("Test Genre"),
+            "genre in {context}"
+        );
         assert_eq!(metadata.track_current, Some(2), "track in {context}");
         assert_eq!(metadata.track_max, Some(9), "track total in {context}");
         assert_eq!(metadata.disc_current, Some(1), "disc in {context}");
         assert_eq!(metadata.disc_max, Some(3), "disc total in {context}");
-        assert_eq!(metadata.isrc.as_deref(), Some("QZHB12400001"), "isrc in {context}");
+        assert_eq!(
+            metadata.isrc.as_deref(),
+            Some("QZHB12400001"),
+            "isrc in {context}"
+        );
         assert_eq!(
             metadata.mbid_album.as_deref(),
             Some("12345678-1234-4234-9234-123456789abc"),
             "mbid in {context}"
         );
-        assert_eq!(metadata.replaygain_track_gain, Some(-3.21), "rg track gain in {context}");
-        assert_eq!(metadata.replaygain_track_peak, Some(0.987654), "rg track peak in {context}");
-        assert_eq!(metadata.replaygain_album_gain, Some(-4.56), "rg album gain in {context}");
-        assert_eq!(metadata.replaygain_album_peak, Some(0.876543), "rg album peak in {context}");
+        assert_eq!(
+            metadata.replaygain_track_gain,
+            Some(-3.21),
+            "rg track gain in {context}"
+        );
+        assert_eq!(
+            metadata.replaygain_track_peak,
+            Some(0.987654),
+            "rg track peak in {context}"
+        );
+        assert_eq!(
+            metadata.replaygain_album_gain,
+            Some(-4.56),
+            "rg album gain in {context}"
+        );
+        assert_eq!(
+            metadata.replaygain_album_peak,
+            Some(0.876543),
+            "rg album peak in {context}"
+        );
     }
 
     #[test]

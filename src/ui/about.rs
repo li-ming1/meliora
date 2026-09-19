@@ -103,7 +103,7 @@ impl RenderOnce for AboutDialog {
                                                 SOURCE_URL,
                                                 link_color,
                                                 tr!("ABOUT_LINKS_CODE", "view the source code"),
-                                            ))
+                                            )),
                                     )
                                     .child(div().mt(px(10.0)).child(tr!(
                                         "ABOUT_COPYRIGHT",

@@ -20,7 +20,9 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
         }
 
         if line.starts_with('{')
-            || line.strip_prefix('[').is_some_and(|rest| rest.starts_with('{'))
+            || line
+                .strip_prefix('[')
+                .is_some_and(|rest| rest.starts_with('{'))
         {
             parse_metadata_line(line, &mut lines);
             continue;

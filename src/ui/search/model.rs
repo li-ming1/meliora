@@ -11,11 +11,8 @@ use tracing::debug;
 use crate::{
     library::{db, scan::ScanEvent},
     ui::{
-        app::Pool,
-        availability::compute_available_albums,
-        components::palette::Palette,
-        library::ViewSwitchMessage,
-        models::Models,
+        app::Pool, availability::compute_available_albums, components::palette::Palette,
+        library::ViewSwitchMessage, models::Models,
     },
 };
 
@@ -53,11 +50,10 @@ pub struct SearchModel {
 /// first palette-open frame.
 async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchPaletteItem>> {
     let availability_rows = db::list_album_availability(&pool).await.unwrap_or_default();
-    let available_albums = tokio::task::spawn_blocking(move || {
-        compute_available_albums(availability_rows)
-    })
-    .await
-    .unwrap_or_default();
+    let available_albums =
+        tokio::task::spawn_blocking(move || compute_available_albums(availability_rows))
+            .await
+            .unwrap_or_default();
 
     let albums = match db::list_albums_search(&pool).await {
         Ok(album_data) => album_data
@@ -136,9 +132,9 @@ impl SearchModel {
                         Some(ViewSwitchMessage::Release(*id, None))
                     }
                     SearchPaletteItem::Artist { id, .. } => Some(ViewSwitchMessage::Artist(*id)),
-                    SearchPaletteItem::Track { id, album_id, .. } => {
-                        album_id.as_ref().map(|album_id| ViewSwitchMessage::Release(*album_id, Some(*id)))
-                    }
+                    SearchPaletteItem::Track { id, album_id, .. } => album_id
+                        .as_ref()
+                        .map(|album_id| ViewSwitchMessage::Release(*album_id, Some(*id))),
                     #[cfg(feature = "kugou")]
                     SearchPaletteItem::KugouTrack(track) => {
                         crate::ui::kugou::play_track_now(cx, track);
@@ -348,8 +344,9 @@ impl SearchModel {
             }
 
             let client = crate::kugou::shared_client();
-            let request =
-                crate::RUNTIME.spawn(async move { client.search(&query, 1, 15).await }).await;
+            let request = crate::RUNTIME
+                .spawn(async move { client.search(&query, 1, 15).await })
+                .await;
 
             this.update(cx, |this, cx| {
                 if this.kugou_query_generation != generation {
@@ -358,13 +355,11 @@ impl SearchModel {
 
                 match request {
                     Ok(Ok(response)) => {
-                        this.kugou_items = crate::ui::kugou::parse_tracks(
-                            &response.body,
-                            "/data/lists",
-                        )
-                        .into_iter()
-                        .map(|track| Arc::new(SearchPaletteItem::KugouTrack(track)))
-                        .collect();
+                        this.kugou_items =
+                            crate::ui::kugou::parse_tracks(&response.body, "/data/lists")
+                                .into_iter()
+                                .map(|track| Arc::new(SearchPaletteItem::KugouTrack(track)))
+                                .collect();
                         this.emit_merged_items(cx);
                     }
                     // a failed search keeps the previous results: wiping them
@@ -420,11 +415,7 @@ impl SearchModel {
 
             let client = crate::netease::shared_client();
             let request = crate::RUNTIME
-                .spawn(async move {
-                    client
-                        .cloudsearch(&query, 1, 15, 0)
-                        .await
-                })
+                .spawn(async move { client.cloudsearch(&query, 1, 15, 0).await })
                 .await;
 
             this.update(cx, |this, cx| {
@@ -434,13 +425,11 @@ impl SearchModel {
 
                 match request {
                     Ok(Ok(response)) => {
-                        this.netease_items = crate::ui::netease::parse_tracks(
-                            &response.body,
-                            "/result/songs",
-                        )
-                        .into_iter()
-                        .map(|track| Arc::new(SearchPaletteItem::NeteaseTrack(track)))
-                        .collect();
+                        this.netease_items =
+                            crate::ui::netease::parse_tracks(&response.body, "/result/songs")
+                                .into_iter()
+                                .map(|track| Arc::new(SearchPaletteItem::NeteaseTrack(track)))
+                                .collect();
                         this.emit_merged_items(cx);
                     }
                     // a failed search keeps the previous results: wiping them

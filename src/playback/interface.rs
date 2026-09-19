@@ -5,7 +5,10 @@ use crate::{
     playback::{dsp::spectrum::SpectrumTapConsumer, events::RepeatState},
     power::PowerManager,
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
-    ui::{app::Pool, models::{CurrentTrack, ImageEvent, Models, PlaybackInfo}},
+    ui::{
+        app::Pool,
+        models::{CurrentTrack, ImageEvent, Models, PlaybackInfo},
+    },
 };
 
 use super::{
@@ -68,11 +71,15 @@ impl PlaybackInterface {
     }
 
     pub fn insert_at(&self, item: QueueItemData, position: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::InsertAt { item, position });
+        let _ = self
+            .cmd_tx
+            .send(PlaybackCommand::InsertAt { item, position });
     }
 
     pub fn insert_list_at(&self, items: Vec<QueueItemData>, position: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::InsertListAt { items, position });
+        let _ = self
+            .cmd_tx
+            .send(PlaybackCommand::InsertListAt { items, position });
     }
 
     pub fn next(&self) {
@@ -104,7 +111,9 @@ impl PlaybackInterface {
     }
 
     pub fn replace_queue_with_index(&self, items: Vec<QueueItemData>, idx: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::ReplaceQueueWithIndex(items, idx));
+        let _ = self
+            .cmd_tx
+            .send(PlaybackCommand::ReplaceQueueWithIndex(items, idx));
     }
 
     pub fn toggle_stop_after_current(&self) {
@@ -148,7 +157,9 @@ impl PlaybackInterface {
     }
 
     pub fn set_position_broadcast_active(&self, active: bool) {
-        let _ = self.cmd_tx.send(PlaybackCommand::SetPositionBroadcastActive(active));
+        let _ = self
+            .cmd_tx
+            .send(PlaybackCommand::SetPositionBroadcastActive(active));
     }
 
     pub fn get_sender(&self) -> UnboundedSender<PlaybackCommand> {
@@ -181,19 +192,19 @@ impl PlaybackInterface {
             // `recv()` returning None means the playback thread dropped its
             // senders; the loop must end there or it would spin on None.
             while let Some(event) = events_rx.recv().await {
-                    // Coalesce the backlog: after a busy frame the channel can
-                    // hold dozens of stale position ticks, and replaying them
-                    // just redoes the same entity writes. Every variant is
-                    // value-replacement semantics (the newest wins; QueueUpdated
-                    // is a bare signal), so keeping only the last occurrence of
-                    // each variant preserves correctness while shedding the rest.
-                    let mut latest = vec![event];
-                    while let Ok(next) = events_rx.try_recv() {
-                        let disc = std::mem::discriminant(&next);
-                        latest.retain(|e| std::mem::discriminant(e) != disc);
-                        latest.push(next);
-                    }
-                    for event in latest {
+                // Coalesce the backlog: after a busy frame the channel can
+                // hold dozens of stale position ticks, and replaying them
+                // just redoes the same entity writes. Every variant is
+                // value-replacement semantics (the newest wins; QueueUpdated
+                // is a bare signal), so keeping only the last occurrence of
+                // each variant preserves correctness while shedding the rest.
+                let mut latest = vec![event];
+                while let Ok(next) = events_rx.try_recv() {
+                    let disc = std::mem::discriminant(&next);
+                    latest.retain(|e| std::mem::discriminant(e) != disc);
+                    latest.push(next);
+                }
+                for event in latest {
                     match event {
                         PlaybackEvent::MetadataUpdate(v) => {
                             metadata_model.update(cx, |m, cx| {
@@ -332,17 +343,17 @@ impl PlaybackInterface {
                             })
                         }
                     }
-                    }
-
-                    // Reclaim evicted cover atlas tiles. This loop runs on the
-                    // UI thread regardless of window visibility - a minimized
-                    // window still receives playback events, while frames (and
-                    // therefore the request_layout drain) stop being produced.
-                    // Without this, idle playback leaked one atlas page per
-                    // song change. The drain must only run between frames
-                    // (never mid-paint, see managed_image.rs).
-                    cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
                 }
+
+                // Reclaim evicted cover atlas tiles. This loop runs on the
+                // UI thread regardless of window visibility - a minimized
+                // window still receives playback events, while frames (and
+                // therefore the request_layout drain) stop being produced.
+                // Without this, idle playback leaked one atlas page per
+                // song change. The drain must only run between frames
+                // (never mid-paint, see managed_image.rs).
+                cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
+            }
         })
         .detach();
 

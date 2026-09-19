@@ -18,6 +18,7 @@ use sqlx::SqlitePool;
 use tracing::{debug, info};
 
 use crate::{
+    controllers::{init_pbc_task, register_pbc_event_handlers},
     library::{
         db::create_pool,
         scan::{ScanEvent, ScanInterface, start_scanner},
@@ -28,7 +29,6 @@ use crate::{
         session_storage::PlaybackSessionStorageWorker, thread::PlaybackThread,
     },
     power::PowerManager,
-    controllers::{init_pbc_task, register_pbc_event_handlers},
     settings::{
         SettingsGlobal, setup_settings,
         storage::{Storage, StorageData},
@@ -55,7 +55,7 @@ use super::{
     controls::Controls,
     global_actions::register_actions,
     header::Header,
-    library::{sidebar::Sidebar, Library},
+    library::{Library, sidebar::Sidebar},
     models::{self, CurrentTrack, Models, PlaybackInfo, build_models},
     right_sidebar::RightSidebar,
     search::SearchView,
@@ -161,26 +161,18 @@ impl Render for MainWindow {
                                                 ),
                                             )
                                             .when(show_sidebar, |this| {
-                                                this.child(
-                                                    self.right_sidebar
-                                                        .render(cx, show_queue, show_lyrics),
-                                                )
+                                                this.child(self.right_sidebar.render(
+                                                    cx,
+                                                    show_queue,
+                                                    show_lyrics,
+                                                ))
                                             }),
                                     )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .w_full()
-                                            .h(px(68.0))
-                                            .child(
-                                                AnyView::from(self.controls.clone()).cached(
-                                                    StyleRefinement::default()
-                                                        .flex_1()
-                                                        .w_full()
-                                                        .h_full(),
-                                                ),
-                                            ),
-                                    ),
+                                    .child(div().flex().w_full().h(px(68.0)).child(
+                                        AnyView::from(self.controls.clone()).cached(
+                                            StyleRefinement::default().flex_1().w_full().h_full(),
+                                        ),
+                                    )),
                             ),
                     )
                     .child(self.header.clone())
@@ -733,8 +725,12 @@ fn refresh_restored_online_urls(
             let Some(url) = url else { continue };
 
             let was_current = {
-                let Ok(mut guard) = queue.write() else { continue };
-                let Some(item) = Arc::make_mut(&mut guard).get_mut(idx) else { continue };
+                let Ok(mut guard) = queue.write() else {
+                    continue;
+                };
+                let Some(item) = Arc::make_mut(&mut guard).get_mut(idx) else {
+                    continue;
+                };
                 // the queue may have shifted since the snapshot; never clobber
                 // a different item
                 if item.online_identity() != Some(&identity) {

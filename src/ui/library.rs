@@ -50,11 +50,11 @@ pub mod files_view;
 mod kugou_playlists;
 #[cfg(feature = "kugou")]
 mod kugou_ranks;
+pub mod missing_folder_dialog;
 #[cfg(feature = "netease")]
 mod netease_playlists;
 #[cfg(feature = "netease")]
 mod netease_ranks;
-pub mod missing_folder_dialog;
 pub mod playlist_view;
 mod release_view;
 pub mod sidebar;
@@ -68,20 +68,17 @@ actions!(library, [NavigateBack, NavigateForward, EscapeBack]);
 
 /// Absolute close button anchored to the detail-view host (album/release).
 pub fn detail_close_button(id: impl Into<ElementId>) -> impl IntoElement {
-    crate::ui::components::nav_button::nav_button(
-        id,
-        crate::ui::components::icons::CROSS,
-    )
-    .absolute()
-    .top(px(12.0))
-    .right(px(18.0))
-    .on_click(|_, window, cx| {
-        window.dispatch_action(Box::new(EscapeBack), cx);
-    })
-    .tooltip(crate::ui::components::tooltip::build_tooltip(tr!(
-        "CLOSE_RELEASE_DETAIL",
-        "Close"
-    )))
+    crate::ui::components::nav_button::nav_button(id, crate::ui::components::icons::CROSS)
+        .absolute()
+        .top(px(12.0))
+        .right(px(18.0))
+        .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(EscapeBack), cx);
+        })
+        .tooltip(crate::ui::components::tooltip::build_tooltip(tr!(
+            "CLOSE_RELEASE_DETAIL",
+            "Close"
+        )))
 }
 
 /// The navigation history + a cursor noting what the current message is.
@@ -370,8 +367,10 @@ impl ViewSwitchMessage {
         #[cfg(feature = "kugou")]
         if matches!(
             (lv, self),
-            (LibraryView::KugouPlaylists(_), ViewSwitchMessage::KugouPlaylists)
-                | (LibraryView::KugouRanks(_), ViewSwitchMessage::KugouRanks)
+            (
+                LibraryView::KugouPlaylists(_),
+                ViewSwitchMessage::KugouPlaylists
+            ) | (LibraryView::KugouRanks(_), ViewSwitchMessage::KugouRanks)
         ) {
             return true;
         }
@@ -379,8 +378,13 @@ impl ViewSwitchMessage {
         #[cfg(feature = "netease")]
         if matches!(
             (lv, self),
-            (LibraryView::NeteasePlaylists(_), ViewSwitchMessage::NeteasePlaylists)
-                | (LibraryView::NeteaseRanks(_), ViewSwitchMessage::NeteaseRanks)
+            (
+                LibraryView::NeteasePlaylists(_),
+                ViewSwitchMessage::NeteasePlaylists
+            ) | (
+                LibraryView::NeteaseRanks(_),
+                ViewSwitchMessage::NeteaseRanks
+            )
         ) {
             return true;
         }
@@ -826,9 +830,7 @@ impl Render for Library {
             .right_view
             .as_ref()
             .map(library_view_key)
-            .unwrap_or_else(|| {
-                library_view_key(self.left_view.as_ref().unwrap_or(&self.view))
-            });
+            .unwrap_or_else(|| library_view_key(self.left_view.as_ref().unwrap_or(&self.view)));
 
         let content = div()
             .flex_1()
@@ -931,7 +933,11 @@ impl Render for Library {
 }
 
 /// Three top-level tables refresh on the same scan events; one observer for all.
-pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table::table_data::TableData<C> + 'static, C: crate::ui::components::table::table_data::Column + 'static>(
+pub(crate) fn observe_scan_for_table<
+    V: 'static,
+    T: crate::ui::components::table::table_data::TableData<C> + 'static,
+    C: crate::ui::components::table::table_data::Column + 'static,
+>(
     cx: &mut Context<V>,
     state: &Entity<ScanEvent>,
     table: Entity<crate::ui::components::table::Table<T, C>>,
@@ -949,7 +955,9 @@ pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table
                 | ScanEvent::TargetedRescanComplete
         );
         if should_refresh {
-            table.update(cx, |_, cx| cx.emit(crate::ui::components::table::TableEvent::NewRows));
+            table.update(cx, |_, cx| {
+                cx.emit(crate::ui::components::table::TableEvent::NewRows)
+            });
         }
     })
     .detach();
@@ -957,7 +965,10 @@ pub(crate) fn observe_scan_for_table<V: 'static, T: crate::ui::components::table
     // Rows built before the availability snapshots land (startup) report
     // "unavailable"; refresh exactly once, when the last of them arrives.
     // Later landings coincide with the scan-completion refresh above.
-    let album_snapshot = cx.global::<crate::ui::models::Models>().available_albums.clone();
+    let album_snapshot = cx
+        .global::<crate::ui::models::Models>()
+        .available_albums
+        .clone();
     let artist_snapshot = cx
         .global::<crate::ui::models::Models>()
         .available_artists

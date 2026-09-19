@@ -2,8 +2,8 @@ use std::{cell::Cell, path::PathBuf};
 
 use gpui::{
     Anchor, App, AppContext, Bounds, Context, Div, DragMoveEvent, ElementId, Entity, Hsla,
-    IntoElement, ParentElement, Pixels, Point, Render, RenderOnce, SharedString, Styled,
-    Window, anchored, div, point, prelude::FluentBuilder, px, size,
+    IntoElement, ParentElement, Pixels, Point, Render, RenderOnce, SharedString, Styled, Window,
+    anchored, div, point, prelude::FluentBuilder, px, size,
 };
 use palette::IntoColor;
 

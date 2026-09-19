@@ -15,8 +15,8 @@
 #[cfg(feature = "kugou")]
 use std::io::Read;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 #[cfg(feature = "kugou")]
 use flate2::read::ZlibDecoder;
 use gpui::SharedString;
@@ -26,7 +26,9 @@ use super::lrc::{LrcLine, LrcWord};
 
 /// KRC 固定异或 key（前 4 字节为长度/头，之后逐一异或此表）。
 #[cfg(feature = "kugou")]
-const KRC_KEY: [u8; 16] = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
+const KRC_KEY: [u8; 16] = [
+    64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105,
+];
 
 /// `[language:]` JSON：`content` 数组按 `type` 区分翻译(1)与音译(0)。
 #[derive(Deserialize)]
@@ -104,11 +106,13 @@ pub fn parse_krc(content: &str) -> Option<Vec<LrcLine>> {
 
         let (mut text, words) = parse_words(raw, start_ms);
         let translation = translations.as_ref().and_then(|list| {
-            list.get(line_index).and_then(|entry| entry.first()).cloned()
+            list.get(line_index)
+                .and_then(|entry| entry.first())
+                .cloned()
         });
-        let romanization = romanizations.as_ref().and_then(|list| {
-            list.get(line_index).map(|entry| entry.concat())
-        });
+        let romanization = romanizations
+            .as_ref()
+            .and_then(|list| list.get(line_index).map(|entry| entry.concat()));
 
         if let Some(romanization) = romanization
             && !romanization.is_empty()
@@ -174,8 +178,14 @@ fn parse_words(raw: &str, line_start: u64) -> (String, Vec<LrcWord>) {
         }
 
         let mut fields = tag.split(',');
-        let offset = fields.next().and_then(|f| f.trim().parse().ok()).unwrap_or(0);
-        let duration = fields.next().and_then(|f| f.trim().parse().ok()).unwrap_or(0);
+        let offset = fields
+            .next()
+            .and_then(|f| f.trim().parse().ok())
+            .unwrap_or(0);
+        let duration = fields
+            .next()
+            .and_then(|f| f.trim().parse().ok())
+            .unwrap_or(0);
 
         let word_end = lt + relative_end + 1;
         let tail = &rest[word_end..];
@@ -208,8 +218,8 @@ fn is_word_tag(tag: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
     use std::io::Write;
@@ -242,7 +252,8 @@ mod tests {
     #[cfg(feature = "kugou")]
     fn decrypt_roundtrips_real_encryption() {
         // 明文里“你”与“世”隔着一个 `<500,1500,0>` 字级标签，逐字断言。
-        let decrypted = decrypt_krc(&encrypt_krc_for_test(KRC_SAMPLE)).expect("decrypt should succeed");
+        let decrypted =
+            decrypt_krc(&encrypt_krc_for_test(KRC_SAMPLE)).expect("decrypt should succeed");
         assert!(
             decrypted.contains("\u{4F60}\u{597D}<500,1500,0>\u{4E16}\u{754C}"),
             "roundtrip mismatch, decrypted: {:?}",
@@ -294,7 +305,10 @@ mod tests {
             "[ar:x]\n[language:{encoded}]\n[0,2000]\u{4F60}\u{597D}\u{4E16}\u{754C}\n[2000,1500]\u{5929}\u{7A7A}\n"
         );
         let lines = parse_krc(&content).expect("parse should succeed");
-        assert_eq!(lines[0].translation.as_deref(), Some("\u{4F60}\u{597D}\u{4E16}\u{754C}"));
+        assert_eq!(
+            lines[0].translation.as_deref(),
+            Some("\u{4F60}\u{597D}\u{4E16}\u{754C}")
+        );
         assert_eq!(lines[1].translation.as_deref(), Some("\u{5929}\u{7A7A}"));
     }
 

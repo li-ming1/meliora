@@ -210,7 +210,8 @@ impl Element for Slider {
             Some(state) => {
                 let state = state.read(cx);
                 let echo_pending = state.released_at.is_some_and(|at| {
-                    at.elapsed() < ECHO_GRACE && (prop_value - state.drag_value).abs() > ECHO_EPSILON
+                    at.elapsed() < ECHO_GRACE
+                        && (prop_value - state.drag_value).abs() > ECHO_EPSILON
                 });
                 if state.dragging || echo_pending {
                     state.drag_value

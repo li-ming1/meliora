@@ -1,6 +1,6 @@
+use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
-use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{App, Entity, Render, RenderImage};
@@ -135,7 +135,6 @@ pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
         cx.reveal_path(path);
     }
 }
-
 
 fn split_duration(secs: i64) -> (i64, i64, i64) {
     let secs = secs.max(0);

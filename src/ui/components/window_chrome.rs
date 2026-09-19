@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use gpui::{prelude::FluentBuilder, *};
 
-use crate::ui::{
-    constants::APP_SHADOW_SIZE,
-    theme::Theme,
-};
+use crate::ui::{constants::APP_SHADOW_SIZE, theme::Theme};
 
 #[derive(IntoElement)]
 pub struct WindowChrome {

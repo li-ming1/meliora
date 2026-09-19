@@ -1,6 +1,9 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, OnceLock, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,6 +22,7 @@ use crate::{
         },
         save_settings,
     },
+    ui::command_palette::OpenPalette,
     ui::components::{
         button::{ButtonIntent, ButtonStyle, button},
         checkbox::checkbox,
@@ -27,7 +31,6 @@ use crate::{
         labeled_slider::labeled_slider,
         section_header::section_header,
     },
-    ui::command_palette::OpenPalette,
     ui::global_actions::OpenThemeFolder,
     ui::theme::{ThemeOption, ThemeOptionsGlobal, resolve_theme_relative_path},
 };
@@ -167,8 +170,7 @@ impl InterfaceSettings {
             if generation_counter.load(Ordering::Relaxed) != generation {
                 return;
             }
-            settings
-                .update(cx, |settings, cx| save_settings(cx, settings));
+            settings.update(cx, |settings, cx| save_settings(cx, settings));
         })
         .detach();
     }
@@ -465,7 +467,6 @@ impl Render for InterfaceSettings {
                 )),
             );
 
-
         let body = body.child(
             label(
                 "interface-command-palette",
@@ -477,20 +478,18 @@ impl Render for InterfaceSettings {
             ))
             .w_full()
             .child(
-                div()
-                    .mt(px(6.0))
-                    .child(
-                        button()
-                            .style(ButtonStyle::Regular)
-                            .intent(ButtonIntent::Secondary)
-                            .child(tr!("COMMAND_PALETTE_OPEN", "Open Command Palette"))
-                            .id("open-command-palette-button")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.defer(move |cx| {
-                                    cx.dispatch_action(&OpenPalette);
-                                });
-                            })),
-                    ),
+                div().mt(px(6.0)).child(
+                    button()
+                        .style(ButtonStyle::Regular)
+                        .intent(ButtonIntent::Secondary)
+                        .child(tr!("COMMAND_PALETTE_OPEN", "Open Command Palette"))
+                        .id("open-command-palette-button")
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.defer(move |cx| {
+                                cx.dispatch_action(&OpenPalette);
+                            });
+                        })),
+                ),
             ),
         );
 

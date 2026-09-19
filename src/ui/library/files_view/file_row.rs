@@ -32,7 +32,9 @@ use crate::{
                 TrackContextMenuContext, add_to_playlist_state, navigate_to_track_album_and_reveal,
                 play_items_next, play_items_now, queue_items,
             },
-            files_view::{BatchItems, FilesView, FlatRow, TrackRef, file_context_menu::FileContextMenu},
+            files_view::{
+                BatchItems, FilesView, FlatRow, TrackRef, file_context_menu::FileContextMenu,
+            },
         },
         models::{
             HasLikedState, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_like_by_id,
@@ -318,15 +320,17 @@ impl Render for FileRowItem {
         // track ids load on first open via keyed state); the menu trees move
         // into menu_on_open so their per-item DB queries and stats only run
         // when the user actually opens a menu.
-        let add_to_element: Option<AnyElement> =
-            if batch_items.as_ref().is_some_and(|(items, _)| !items.is_empty()) {
-                self.add_to.clone().map(|a| a.into_any_element())
-            } else if let Some(track) = &track_ref {
-                let (_, add_to) = add_to_playlist_state("files-track-menu", track.id, window, cx);
-                Some(add_to.into_any_element())
-            } else {
-                None
-            };
+        let add_to_element: Option<AnyElement> = if batch_items
+            .as_ref()
+            .is_some_and(|(items, _)| !items.is_empty())
+        {
+            self.add_to.clone().map(|a| a.into_any_element())
+        } else if let Some(track) = &track_ref {
+            let (_, add_to) = add_to_playlist_state("files-track-menu", track.id, window, cx);
+            Some(add_to.into_any_element())
+        } else {
+            None
+        };
 
         let batch_menu_state = (batch_items, self.show_add_to.clone());
         let entity_for_menu = cx.entity();
@@ -444,8 +448,9 @@ impl Render for FileRowItem {
                         view.toggle_selection(click_path.to_path_buf(), cx)
                     });
                 } else if modifiers.shift {
-                    click_files_view
-                        .update(cx, |view, cx| view.select_range(click_path.to_path_buf(), cx));
+                    click_files_view.update(cx, |view, cx| {
+                        view.select_range(click_path.to_path_buf(), cx)
+                    });
                 } else {
                     click_files_view.update(cx, |view, cx| {
                         if is_dir {
@@ -477,11 +482,10 @@ impl Render for FileRowItem {
             .w_full()
             .with(row_content)
             .menu_on_open(move |window, cx| {
-                let menu = if let Some((audio_items, track_ids)) =
-                    batch_menu_state
-                        .0
-                        .clone()
-                        .filter(|(items, _)| !items.is_empty())
+                let menu = if let Some((audio_items, track_ids)) = batch_menu_state
+                    .0
+                    .clone()
+                    .filter(|(items, _)| !items.is_empty())
                 {
                     Self::render_batch_menu(
                         &audio_items,

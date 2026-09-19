@@ -836,9 +836,8 @@ pub async fn remove_tracks_from_playlist(
     let placeholders = std::iter::repeat_n("?", track_ids.len())
         .collect::<Vec<_>>()
         .join(",");
-    let sql = format!(
-        "DELETE FROM playlist_item WHERE playlist_id = ? AND track_id IN ({placeholders})"
-    );
+    let sql =
+        format!("DELETE FROM playlist_item WHERE playlist_id = ? AND track_id IN ({placeholders})");
 
     let mut delete_query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(playlist_id);
     for &id in track_ids {
@@ -1012,7 +1011,10 @@ fn blocking_query<T>(method: &'static str, future: impl std::future::Future<Outp
 impl LibraryAccess for App {
     fn list_tracks_in_album(&self, album_id: i64) -> sqlx::Result<Arc<Vec<Track>>> {
         let pool: &Pool = self.global();
-        blocking_query("list_tracks_in_album", list_tracks_in_album(&pool.0, album_id))
+        blocking_query(
+            "list_tracks_in_album",
+            list_tracks_in_album(&pool.0, album_id),
+        )
     }
 
     fn get_album_by_id(&self, album_id: i64) -> sqlx::Result<Arc<Album>> {
@@ -1047,7 +1049,10 @@ impl LibraryAccess for App {
 
     fn rename_playlist(&self, playlist_id: i64, name: &str) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        blocking_query("rename_playlist", rename_playlist(&pool.0, playlist_id, name))
+        blocking_query(
+            "rename_playlist",
+            rename_playlist(&pool.0, playlist_id, name),
+        )
     }
 
     fn get_all_playlists(&self) -> sqlx::Result<Arc<Vec<Playlist>>> {
@@ -1057,7 +1062,10 @@ impl LibraryAccess for App {
 
     fn get_playlist_tracks(&self, playlist_id: i64) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
         let pool: &Pool = self.global();
-        blocking_query("get_playlist_tracks", get_playlist_tracks(&pool.0, playlist_id))
+        blocking_query(
+            "get_playlist_tracks",
+            get_playlist_tracks(&pool.0, playlist_id),
+        )
     }
 
     fn get_playlist_tracks_sorted(
@@ -1074,12 +1082,18 @@ impl LibraryAccess for App {
 
     fn move_playlist_item(&self, item_id: i64, new_position: i64) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        blocking_query("move_playlist_item", move_playlist_item(&pool.0, item_id, new_position))
+        blocking_query(
+            "move_playlist_item",
+            move_playlist_item(&pool.0, item_id, new_position),
+        )
     }
 
     fn reorder_playlist(&self, playlist_id: i64, new_position: i64) -> sqlx::Result<()> {
         let pool: &Pool = self.global();
-        blocking_query("reorder_playlist", reorder_playlist(&pool.0, playlist_id, new_position))
+        blocking_query(
+            "reorder_playlist",
+            reorder_playlist(&pool.0, playlist_id, new_position),
+        )
     }
 
     fn get_playlist_item(&self, item_id: i64) -> sqlx::Result<PlaylistItem> {
@@ -1089,7 +1103,10 @@ impl LibraryAccess for App {
 
     fn playlist_has_track(&self, playlist_id: i64, track_id: i64) -> sqlx::Result<Option<i64>> {
         let pool: &Pool = self.global();
-        blocking_query("playlist_has_track", playlist_has_track(&pool.0, playlist_id, track_id))
+        blocking_query(
+            "playlist_has_track",
+            playlist_has_track(&pool.0, playlist_id, track_id),
+        )
     }
 
     fn playlist_contains_all_tracks(
@@ -1106,12 +1123,18 @@ impl LibraryAccess for App {
 
     fn list_albums_by_artist(&self, artist_id: i64) -> sqlx::Result<Vec<(u32, String)>> {
         let pool: &Pool = self.global();
-        blocking_query("list_albums_by_artist", list_albums_by_artist(&pool.0, artist_id))
+        blocking_query(
+            "list_albums_by_artist",
+            list_albums_by_artist(&pool.0, artist_id),
+        )
     }
 
     fn get_artist_with_counts(&self, artist_id: i64) -> sqlx::Result<Arc<ArtistWithCounts>> {
         let pool: &Pool = self.global();
-        blocking_query("get_artist_with_counts", get_artist_with_counts(&pool.0, artist_id))
+        blocking_query(
+            "get_artist_with_counts",
+            get_artist_with_counts(&pool.0, artist_id),
+        )
     }
 
     fn get_liked_tracks_by_artist(
@@ -1140,17 +1163,26 @@ impl LibraryAccess for App {
 
     fn get_all_tracks_by_artist(&self, artist_id: i64) -> sqlx::Result<Arc<Vec<Track>>> {
         let pool: &Pool = self.global();
-        blocking_query("get_all_tracks_by_artist", get_all_tracks_by_artist(&pool.0, artist_id))
+        blocking_query(
+            "get_all_tracks_by_artist",
+            get_all_tracks_by_artist(&pool.0, artist_id),
+        )
     }
 
     fn artist_ids_for_album(&self, album_id: i64) -> sqlx::Result<Vec<(i64, String)>> {
         let pool: &Pool = self.global();
-        blocking_query("artist_ids_for_album", artist_ids_for_album(&pool.0, album_id))
+        blocking_query(
+            "artist_ids_for_album",
+            artist_ids_for_album(&pool.0, album_id),
+        )
     }
 
     fn artist_ids_for_track(&self, track_id: i64) -> sqlx::Result<Vec<(i64, String)>> {
         let pool: &Pool = self.global();
-        blocking_query("artist_ids_for_track", artist_ids_for_track(&pool.0, track_id))
+        blocking_query(
+            "artist_ids_for_track",
+            artist_ids_for_track(&pool.0, track_id),
+        )
     }
 
     fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>> {

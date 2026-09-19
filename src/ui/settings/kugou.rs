@@ -138,8 +138,11 @@ impl QrLoginHost for KugouSettings {
                 QrStatus::Scanned => QrPoll::Scanned,
                 QrStatus::Expired => QrPoll::Expired,
                 QrStatus::Success { token, userid } => {
-                    kugou::shared_client()
-                        .store_login(token, userid, kugou::LoginExtras::default());
+                    kugou::shared_client().store_login(
+                        token,
+                        userid,
+                        kugou::LoginExtras::default(),
+                    );
                     QrPoll::Success
                 }
             })
@@ -213,9 +216,7 @@ impl Render for KugouSettings {
                             ),
                         )
                         .when_some(self.vip_line.clone(), |this, vip| {
-                            this.child(
-                                div().text_sm().text_color(theme.text_secondary).child(vip),
-                            )
+                            this.child(div().text_sm().text_color(theme.text_secondary).child(vip))
                         }),
                 )
                 .child(

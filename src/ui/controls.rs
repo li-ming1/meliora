@@ -1,5 +1,17 @@
 mod replaygain;
 
+#[cfg(feature = "kugou")]
+use crate::ui::kugou::{
+    KugouTrackInfo, like_track as kugou_like_track, online_track_is_liked,
+    online_track_matching_path, unlike_track as kugou_unlike_track,
+};
+#[cfg(feature = "netease")]
+use crate::ui::netease::{
+    NeteaseTrackInfo, like_track as netease_like_track,
+    online_track_is_liked as netease_track_is_liked,
+    online_track_matching_path as netease_track_matching_path,
+    unlike_track as netease_unlike_track,
+};
 use crate::{
     playback::{
         events::RepeatState, interface::PlaybackInterface, queue::QueueItemUIData,
@@ -27,17 +39,6 @@ use crate::{
             toggle_like,
         },
     },
-};
-#[cfg(feature = "kugou")]
-use crate::ui::kugou::{
-    KugouTrackInfo, like_track as kugou_like_track, online_track_is_liked,
-    online_track_matching_path, unlike_track as kugou_unlike_track,
-};
-#[cfg(feature = "netease")]
-use crate::ui::netease::{
-    NeteaseTrackInfo, like_track as netease_like_track,
-    online_track_is_liked as netease_track_is_liked,
-    online_track_matching_path as netease_track_matching_path, unlike_track as netease_unlike_track,
 };
 
 /// The currently playing online track, if any: the running stream URL is
@@ -270,9 +271,7 @@ fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSect
     this.queue_item_subscription = Some(subscription);
 
     let data = data.read(cx).clone();
-    if slot_is_current
-        && let Some(data) = data
-    {
+    if slot_is_current && let Some(data) = data {
         if this.track_name.is_none() {
             this.track_name = data.name;
         }
@@ -406,7 +405,9 @@ impl InfoSection {
     /// lands (so the star lights up by default for already-liked songs).
     #[cfg(any(feature = "kugou", feature = "netease"))]
     fn schedule_online_liked_query(&mut self, cx: &mut Context<Self>) {
-        let Some(track) = self.online_track.clone() else { return };
+        let Some(track) = self.online_track.clone() else {
+            return;
+        };
         let identity = track.identity();
         cx.spawn(async move |this, cx| {
             let liked = match &track {
@@ -635,17 +636,13 @@ impl Render for InfoSection {
                                         .hover(|this| this.bg(theme.button_secondary_hover))
                                         .active(|this| this.bg(theme.button_secondary_active))
                                         .child(
-                                            icon(if is_liked_filled {
-                                                STAR_FILLED
-                                            } else {
-                                                STAR
-                                            })
-                                            .size(px(14.0))
-                                            .text_color(if is_liked_filled {
-                                                theme.liked_song
-                                            } else {
-                                                theme.text_secondary
-                                            }),
+                                            icon(if is_liked_filled { STAR_FILLED } else { STAR })
+                                                .size(px(14.0))
+                                                .text_color(if is_liked_filled {
+                                                    theme.liked_song
+                                                } else {
+                                                    theme.text_secondary
+                                                }),
                                         )
                                         .when(is_liked_filled, |this| {
                                             this.tooltip(build_tooltip(tr!("UNLIKE", "Unlike")))
@@ -694,8 +691,7 @@ impl Render for InfoSection {
         // zero items (artist/album/like/add-to all key off the library track,
         // and "reveal" is hidden for streams) - don't attach the popup at all.
         #[cfg(any(feature = "kugou", feature = "netease"))]
-        let menu_has_items =
-            self.current_library_track.is_some() || self.online_track.is_some();
+        let menu_has_items = self.current_library_track.is_some() || self.online_track.is_some();
         #[cfg(not(any(feature = "kugou", feature = "netease")))]
         let menu_has_items = self.current_library_track.is_some();
 
@@ -791,12 +787,10 @@ fn spawn_library_resolve(this: &mut InfoSection, cx: &mut Context<InfoSection>) 
                     return None;
                 };
                 let can_navigate_to_artist = match track.album_id {
-                    Some(album_id) => {
-                        crate::library::db::artist_ids_for_album(&pool, album_id)
-                            .await
-                            .map(|v| !v.is_empty())
-                            .unwrap_or(false)
-                    }
+                    Some(album_id) => crate::library::db::artist_ids_for_album(&pool, album_id)
+                        .await
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false),
                     None => false,
                 };
                 let is_liked = crate::library::db::playlist_has_track(
@@ -819,8 +813,10 @@ fn spawn_library_resolve(this: &mut InfoSection, cx: &mut Context<InfoSection>) 
             match resolved {
                 Ok(Some((track, can_navigate_to_artist, is_liked))) => {
                     this.current_library_track = Some(Rc::new(track));
-                    this.can_navigate_to_album =
-                        this.current_library_track.as_ref().is_some_and(|t| t.album_id.is_some());
+                    this.can_navigate_to_album = this
+                        .current_library_track
+                        .as_ref()
+                        .is_some_and(|t| t.album_id.is_some());
                     this.can_navigate_to_artist = can_navigate_to_artist;
                     this.is_liked = is_liked;
                     cx.notify();
@@ -1195,20 +1191,25 @@ impl Render for Scrubber {
         let remaining_secs = duration_secs.saturating_sub(position_secs);
 
         // reuse the formatted labels while the whole-second key is unchanged
-        let (position_text, duration_text, remaining_text) =
-            if self.time_labels.0 == position_secs && self.time_labels.1 == duration_secs {
-                let (_, _, p, d, r) = &self.time_labels;
-                (p.clone(), d.clone(), r.clone())
-            } else {
-                let p = SharedString::from(format_duration(position_secs as i64, true));
-                let d = SharedString::from(format_duration(duration_secs as i64, true));
-                let r = SharedString::from(format!(
-                    "-{}",
-                    format_duration(remaining_secs as i64, true)
-                ));
-                self.time_labels = (position_secs, duration_secs, p.clone(), d.clone(), r.clone());
-                (p, d, r)
-            };
+        let (position_text, duration_text, remaining_text) = if self.time_labels.0 == position_secs
+            && self.time_labels.1 == duration_secs
+        {
+            let (_, _, p, d, r) = &self.time_labels;
+            (p.clone(), d.clone(), r.clone())
+        } else {
+            let p = SharedString::from(format_duration(position_secs as i64, true));
+            let d = SharedString::from(format_duration(duration_secs as i64, true));
+            let r =
+                SharedString::from(format!("-{}", format_duration(remaining_secs as i64, true)));
+            self.time_labels = (
+                position_secs,
+                duration_secs,
+                p.clone(),
+                d.clone(),
+                r.clone(),
+            );
+            (p, d, r)
+        };
 
         let window_width = window.viewport_size().width;
 

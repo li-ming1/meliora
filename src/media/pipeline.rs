@@ -113,7 +113,9 @@ impl ChannelProducers {
 
         let written = try_write_planar(&mut self.producers, samples, min);
         if written < min {
-            return Err(WriteError::Timeout { dropped: min - written });
+            return Err(WriteError::Timeout {
+                dropped: min - written,
+            });
         }
         Ok(())
     }

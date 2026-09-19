@@ -58,7 +58,10 @@ fn format_album_release_date_with(
     let format_var = (None, format);
     let length_var = (Some("length"), length);
     let variables = [&format_var, &length_var];
-    let locale = &I18N_MANAGER.read().unwrap_or_else(|e| e.into_inner()).locale;
+    let locale = &I18N_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .locale;
     Some(Date.transform(locale, &release_date, &variables).into())
 }
 
@@ -519,10 +522,9 @@ impl TableData<TrackColumn> for Track {
                 if let Some(artist) = &self.artist_names {
                     Some(artist.0.clone())
                 } else if let Some(album_id) = self.album_id {
-                    cached_album(cx, album_id)
-                        .and_then(|album| {
-                            album.artist_display_override.as_ref().map(|v| v.0.clone())
-                        })
+                    cached_album(cx, album_id).and_then(|album| {
+                        album.artist_display_override.as_ref().map(|v| v.0.clone())
+                    })
                 } else {
                     None
                 }

@@ -10,8 +10,8 @@ use crate::{
             drag_drop::{
                 AlbumDragData, DragDropItemState, DragDropListConfig, DragDropListManager,
                 DragPreview, DropIndicator, TrackDragData, check_drag_cancelled,
-                handle_external_drag_move, handle_track_drag_move,
-                handle_track_drop_multi, request_edge_scroll,
+                handle_external_drag_move, handle_track_drag_move, handle_track_drop_multi,
+                request_edge_scroll,
             },
             icons::{CROSS, DISC, PLAYLIST_ADD, STAR, STAR_FILLED, TRASH, USERS, icon},
             managed_image::{ManagedImageKey, managed_image},
@@ -294,7 +294,9 @@ impl Render for QueueItem {
                         return Some(ManagedImageKey::HttpCover(cover));
                     }
                 }
-                Some(ManagedImageKey::TrackFile(self.item.get_path().to_path_buf()))
+                Some(ManagedImageKey::TrackFile(
+                    self.item.get_path().to_path_buf(),
+                ))
             });
             let idx = self.idx;
             let current = self.current;
@@ -435,9 +437,7 @@ impl Render for QueueItem {
                                 // not consume the `track_name` reused later in
                                 // this render
                                 let track_name = track_name.clone();
-                                move |_, _, _, cx| {
-                                    DragPreview::new(cx, track_name.clone())
-                                }
+                                move |_, _, _, cx| DragPreview::new(cx, track_name.clone())
                             })
                             .drag_over::<TrackDragData>(
                                 move |style, _, _, _| style.bg(gpui::rgba(0x88888822)),
@@ -579,7 +579,9 @@ impl Render for QueueItem {
                                                 .clone();
                                             match &item.add_to {
                                                 Some(add_to) => {
-                                                    add_to.read(cx).set_track_ids(add_to_ids.clone());
+                                                    add_to
+                                                        .read(cx)
+                                                        .set_track_ids(add_to_ids.clone());
                                                 }
                                                 None => {
                                                     item.add_to = Some(AddToPlaylist::new(
@@ -639,12 +641,9 @@ impl Render for QueueItem {
                                     // queue mutated while the menu was open
                                     // invalidates the captured indices (see
                                     // `remove_snapshot` above).
-                                    if remove_snapshot
-                                        .iter()
-                                        .all(|&(i, id, ref path)| {
-                                            queue_slot_matches(cx, i, id, path)
-                                        })
-                                    {
+                                    if remove_snapshot.iter().all(|&(i, id, ref path)| {
+                                        queue_slot_matches(cx, i, id, path)
+                                    }) {
                                         cx.global::<PlaybackInterface>()
                                             .remove_items(remove_indices.clone());
                                     } else {
@@ -768,9 +767,8 @@ impl Render for QueueItem {
                                     // Same stale-index guard as remove_items
                                     // above: only delete while the snapshotted
                                     // row content still sits at this position.
-                                    let unchanged = remove_snapshot
-                                        .as_ref()
-                                        .is_some_and(|&(id, ref path)| {
+                                    let unchanged =
+                                        remove_snapshot.as_ref().is_some_and(|&(id, ref path)| {
                                             queue_slot_matches(cx, idx, id, path)
                                         });
                                     if unchanged {
@@ -984,24 +982,23 @@ impl Render for Queue {
         }
         // Reuse the formatted summary while the (length, total seconds) key is
         // unchanged; only re-run the format!/trn! when either actually moves.
-        let queue_summary = if self.cached_summary.0 == queue_len
-            && self.cached_summary.1 == self.summary_total
-        {
-            self.cached_summary.2.clone()
-        } else {
-            let summary = SharedString::from(format!(
-                "{} • {}",
-                trn!(
-                    "QUEUE_SUMMARY_TRACKS",
-                    "{{count}} song",
-                    "{{count}} songs",
-                    count = queue_len as i64
-                ),
-                crate::ui::util::format_duration_compact(self.summary_total)
-            ));
-            self.cached_summary = (queue_len, self.summary_total, summary.clone());
-            summary
-        };
+        let queue_summary =
+            if self.cached_summary.0 == queue_len && self.cached_summary.1 == self.summary_total {
+                self.cached_summary.2.clone()
+            } else {
+                let summary = SharedString::from(format!(
+                    "{} • {}",
+                    trn!(
+                        "QUEUE_SUMMARY_TRACKS",
+                        "{{count}} song",
+                        "{{count}} songs",
+                        count = queue_len as i64
+                    ),
+                    crate::ui::util::format_duration_compact(self.summary_total)
+                ));
+                self.cached_summary = (queue_len, self.summary_total, summary.clone());
+                summary
+            };
         let views_model = self.views_model.clone();
         let scroll_handle = self.scroll_handle.clone();
         let item_scroll_handle = scroll_handle.clone();
@@ -1236,8 +1233,7 @@ impl Render for Queue {
                                             let Some(source) = drag_data.source_index else {
                                                 return;
                                             };
-                                            cx.global::<PlaybackInterface>()
-                                                .move_item(source, to);
+                                            cx.global::<PlaybackInterface>().move_item(source, to);
                                         } else {
                                             let corrected_to = to.saturating_sub(
                                                 drag_data
@@ -1343,21 +1339,16 @@ impl Render for Queue {
                                 // rendered. Keep only the visible window ± the same
                                 // band the table uses; pruned rows rebuild on demand.
                                 let prune_start = start.saturating_sub(VIEW_KEEP_AROUND);
-                                let prune_end =
-                                    (range.end + VIEW_KEEP_AROUND).min(queue.len());
+                                let prune_end = (range.end + VIEW_KEEP_AROUND).min(queue.len());
                                 let keep: FxHashSet<usize> = (prune_start..prune_end)
                                     .filter_map(|i| {
-                                        queue
-                                            .get(i)
-                                            .and_then(|item| item.existing_slot_key())
+                                        queue.get(i).and_then(|item| item.existing_slot_key())
                                     })
                                     .collect();
 
                                 drop(queue);
 
-                                views_model.update(cx, |m, _| {
-                                    m.retain(|k, _| keep.contains(k))
-                                });
+                                views_model.update(cx, |m, _| m.retain(|k, _| keep.contains(k)));
 
                                 keys.into_iter()
                                     .filter_map(|(idx, existing_key)| {
@@ -1562,7 +1553,6 @@ impl Queue {
             FollowTarget::Target(target_scroll_top)
         }
     }
-
 }
 
 enum FollowTarget {

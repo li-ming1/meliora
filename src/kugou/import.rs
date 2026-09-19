@@ -50,7 +50,10 @@ pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
     let url = extract_url(text).ok_or_else(|| "未识别到有效链接".to_string())?;
     if hosted(&url, &["music.163.com", "163cn.tv"]) {
         netease(&url).await
-    } else if hosted(&url, &["y.qq.com", "qqmusic.qq.com", "music.qq.com", "c.y.qq.com"]) {
+    } else if hosted(
+        &url,
+        &["y.qq.com", "qqmusic.qq.com", "music.qq.com", "c.y.qq.com"],
+    ) {
         qq(&url).await
     } else {
         Err("仅支持网易云和 QQ 音乐歌单链接".to_string())
@@ -66,7 +69,10 @@ fn extract_url(text: &str) -> Option<String> {
     Some(
         rest[..end]
             .trim_end_matches(|c: char| {
-                matches!(c, ')' | ']' | '】' | '」' | '』' | '，' | ',' | '。' | '；' | ';')
+                matches!(
+                    c,
+                    ')' | ']' | '】' | '」' | '』' | '，' | ',' | '。' | '；' | ';'
+                )
             })
             .to_string(),
     )
@@ -101,7 +107,11 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 
 /// Follows a short link and returns its final URL.
 async fn resolve(url: &str) -> Result<String, String> {
-    let resp = http().get(url).send().await.map_err(|e| format!("短链解析失败：{e}"))?;
+    let resp = http()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("短链解析失败：{e}"))?;
     Ok(resp.url().to_string())
 }
 
@@ -127,7 +137,9 @@ fn netease_id(url: &str) -> Option<String> {
     let sub = &url[after..];
     let start = sub.find("id=")? + 3;
     let rest = &sub[start..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     (!rest[..end].is_empty()).then(|| rest[..end].to_string())
 }
 
@@ -147,7 +159,10 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
         .send()
         .await
         .map_err(|e| format!("请求网易云歌单失败：{e}"))?;
-    let text = resp.text().await.map_err(|e| format!("读取响应失败：{e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败：{e}"))?;
     let body: Value =
         serde_json::from_str(&text).map_err(|e| format!("网易云响应解析失败：{e}"))?;
 
@@ -189,10 +204,7 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
     if songs.is_empty() {
         return Err("网易云歌单未解析到歌曲，可能为私密歌单".to_string());
     }
-    Ok(ExternalPlaylist {
-        name,
-        songs,
-    })
+    Ok(ExternalPlaylist { name, songs })
 }
 
 async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
@@ -243,7 +255,10 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
                     .map(str::to_string)
             }));
         } else {
-            tracing::warn!(chunk = chunk_idx, "netease song detail response missing songs array");
+            tracing::warn!(
+                chunk = chunk_idx,
+                "netease song detail response missing songs array"
+            );
         }
     }
     out
@@ -254,7 +269,9 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
 fn qq_id(url: &str) -> Option<i64> {
     if let Some(pos) = url.find("playlist/") {
         let rest = &url[pos + "playlist/".len()..];
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         if end > 0
             && let Ok(id) = rest[..end].parse()
         {
@@ -269,7 +286,9 @@ fn qq_id(url: &str) -> Option<i64> {
     // generic trailing `id=NNN`
     let start = url.find("id=")? + 3;
     let rest = &url[start..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     if end > 0 {
         rest[..end].parse().ok()
     } else {
@@ -277,7 +296,15 @@ fn qq_id(url: &str) -> Option<i64> {
     }
 }
 
-const QQ_PLATFORMS: [&str; 7] = ["-1", "android", "iphone", "h5", "wxfshare", "iphone_wx", "windows"];
+const QQ_PLATFORMS: [&str; 7] = [
+    "-1",
+    "android",
+    "iphone",
+    "h5",
+    "wxfshare",
+    "iphone_wx",
+    "windows",
+];
 
 struct QqPage {
     name: String,
@@ -322,10 +349,7 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
     if songs.is_empty() {
         return Err("QQ 音乐歌单未解析到歌曲".to_string());
     }
-    Ok(ExternalPlaylist {
-        name,
-        songs,
-    })
+    Ok(ExternalPlaylist { name, songs })
 }
 
 async fn qq_page(headers: &HeaderMap, id: i64, begin: i64, num: i64) -> Result<QqPage, String> {
@@ -338,13 +362,21 @@ async fn qq_page(headers: &HeaderMap, id: i64, begin: i64, num: i64) -> Result<Q
             .unwrap_or(0);
         let url = format!("https://u6.y.qq.com/cgi-bin/musics.fcg?sign={sign}&_={ms}");
 
-        let Ok(resp) = http().post(&url).headers(headers.clone()).body(body).send().await else {
+        let Ok(resp) = http()
+            .post(&url)
+            .headers(headers.clone())
+            .body(body)
+            .send()
+            .await
+        else {
             continue;
         };
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(text) = resp.text().await else { continue };
+        let Ok(text) = resp.text().await else {
+            continue;
+        };
         if let Some(page) = qq_parse(&text) {
             return Ok(page);
         }
@@ -363,9 +395,7 @@ fn qq_parse(json: &str) -> Option<QqPage> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let total = data
-        .pointer("/dirinfo/songnum")
-        .and_then(Value::as_i64);
+    let total = data.pointer("/dirinfo/songnum").and_then(Value::as_i64);
     let songs = data
         .get("songlist")
         .and_then(Value::as_array)
@@ -389,7 +419,9 @@ fn qq_body(id: i64, platform: &str, begin: i64, num: i64) -> String {
 }
 
 fn qq_sign(param: &str) -> String {
-    const L1: [u8; 16] = [212, 45, 80, 68, 195, 163, 163, 203, 157, 220, 254, 91, 204, 79, 104, 6];
+    const L1: [u8; 16] = [
+        212, 45, 80, 68, 195, 163, 163, 203, 157, 220, 254, 91, 204, 79, 104, 6,
+    ];
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
 
     let md5 = crypto::md5_hex(param).to_uppercase();

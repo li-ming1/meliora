@@ -14,11 +14,11 @@ mod header;
 mod keymap;
 #[cfg(feature = "kugou")]
 mod kugou;
-#[cfg(feature = "netease")]
-mod netease;
 pub mod library;
 mod lyrics;
 pub mod models;
+#[cfg(feature = "netease")]
+mod netease;
 #[cfg(feature = "online_sources")]
 pub mod online;
 mod queue;

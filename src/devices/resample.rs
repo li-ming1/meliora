@@ -151,7 +151,12 @@ pub struct Resampler {
 impl Resampler {
     /// `Err` carries a displayable rubato failure (bad rate ratio/duration from
     /// a malformed file); the caller treats it as a fatal decode step.
-    pub fn new(orig_rate: u32, target_rate: u32, duration: u64, channels: u16) -> Result<Self, String> {
+    pub fn new(
+        orig_rate: u32,
+        target_rate: u32,
+        duration: u64,
+        channels: u16,
+    ) -> Result<Self, String> {
         info!(
             "Resampling required, resampling from {:?} to {:?} (duration {:?})",
             orig_rate, target_rate, duration
@@ -289,9 +294,9 @@ impl Resampler {
             )
             .unwrap();
 
-            let Ok((_, frames_written)) = self
-                .resampler
-                .process_into_buffer(&input_adapter, &mut output_adapter, None)
+            let Ok((_, frames_written)) =
+                self.resampler
+                    .process_into_buffer(&input_adapter, &mut output_adapter, None)
             else {
                 error!("resampler error while processing; chunk truncated");
                 break;

@@ -26,8 +26,8 @@ use crate::{
             drag_drop::{
                 AlbumDragData, DragDropItemState, DragDropListConfig, DragDropListManager,
                 DragPreview, DropIndicator, DropPosition, TrackDragData, check_drag_cancelled,
-                handle_external_drag_move, handle_track_drag_move,
-                handle_track_drop, request_edge_scroll,
+                handle_external_drag_move, handle_track_drag_move, handle_track_drop,
+                request_edge_scroll,
             },
             dropdown::dropdown,
             icons::{PLAYLIST, SORT_ASCENDING, SORT_DESCENDING, STAR, icon},
@@ -535,7 +535,6 @@ impl PlaylistView {
         })
         .detach();
     }
-
 }
 
 impl Render for PlaylistView {

@@ -4,10 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::*;
 use prelude::FluentBuilder;
 
-use crate::ui::{
-    constants::APP_SHADOW_SIZE,
-    theme::Theme,
-};
+use crate::ui::{constants::APP_SHADOW_SIZE, theme::Theme};
 
 pub struct ModalActive(pub AtomicBool);
 impl Global for ModalActive {}

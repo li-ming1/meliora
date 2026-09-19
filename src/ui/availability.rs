@@ -93,7 +93,7 @@ pub fn compute_availability(
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_available_albums, compute_availability};
+    use super::{compute_availability, compute_available_albums};
     use crate::test_support::TestDir;
 
     /// `(album id, location)` rows: an album counts as available when at least

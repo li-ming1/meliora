@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -13,9 +16,7 @@ use crate::{
     power::PowerManager,
     settings::{Settings, SettingsGlobal, save_settings},
     ui::components::{
-        checkbox::checkbox,
-        label::label,
-        labeled_slider::labeled_slider,
+        checkbox::checkbox, label::label, labeled_slider::labeled_slider,
         section_header::section_header,
     },
 };
@@ -65,12 +66,10 @@ impl PlaybackSettings {
             if generation_counter.load(Ordering::Relaxed) != generation {
                 return;
             }
-            settings
-                .update(cx, |settings, cx| save_settings(cx, settings));
+            settings.update(cx, |settings, cx| save_settings(cx, settings));
         })
         .detach();
     }
-
 }
 
 impl Render for PlaybackSettings {

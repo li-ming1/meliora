@@ -186,7 +186,9 @@ impl PlaybackThread {
 
         self.set_volume(self.initial_volume);
         self.send_event(PlaybackEvent::RepeatChanged(self.queue.repeat_state()));
-        self.send_event(PlaybackEvent::ShuffleToggled(self.queue.is_shuffle_enabled()));
+        self.send_event(PlaybackEvent::ShuffleToggled(
+            self.queue.is_shuffle_enabled(),
+        ));
 
         loop {
             self.main_loop();
@@ -385,7 +387,10 @@ impl PlaybackThread {
                 None
             }
         })?;
-        let display = self.queue.current_display().unwrap_or((None, None, None, None));
+        let display = self
+            .queue
+            .current_display()
+            .unwrap_or((None, None, None, None));
         #[cfg(feature = "kugou")]
         let kugou_quality = self.playback_settings.online_quality.as_str();
         #[cfg(feature = "netease")]
@@ -445,9 +450,7 @@ impl PlaybackThread {
                 else {
                     return Err(first_error);
                 };
-                info!(
-                    "persisted stream URL expired; retrying with refreshed URL"
-                );
+                info!("persisted stream URL expired; retrying with refreshed URL");
                 let fresh_path = PathBuf::from(fresh_path);
                 let duration = self
                     .engine

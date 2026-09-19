@@ -67,7 +67,6 @@ impl InterfaceSettings {
     pub fn effective_full_width(&self) -> bool {
         self.full_width_library || self.two_column_library
     }
-
 }
 
 impl Default for InterfaceSettings {

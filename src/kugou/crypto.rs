@@ -68,7 +68,11 @@ pub fn rsa_raw_encrypt(data: &str) -> String {
     let mut padded = vec![0u8; key_len];
     padded[..bytes.len()].copy_from_slice(bytes);
     let encrypted = BigUint::from_bytes_be(&padded).modpow(key.e(), key.n());
-    format!("{:0>width$}", encrypted.to_str_radix(16), width = key_len * 2)
+    format!(
+        "{:0>width$}",
+        encrypted.to_str_radix(16),
+        width = key_len * 2
+    )
 }
 
 #[cfg(test)]
@@ -92,7 +96,10 @@ mod tests {
     fn random_string_uses_client_charset() {
         let s = random_string(24);
         assert_eq!(s.len(), 24);
-        assert!(s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+        assert!(
+            s.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        );
     }
 
     #[test]

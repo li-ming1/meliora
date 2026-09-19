@@ -239,10 +239,7 @@ impl DeviceController {
     }
 
     /// Consume samples from ring buffer consumers and submit them to the device.
-    pub fn consume_from(
-        &mut self,
-        input: &mut ChannelConsumers,
-    ) -> Result<usize, DeviceError> {
+    pub fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
         let count = stream.consume_from(input)?;
         Ok(count)

@@ -63,13 +63,8 @@ impl RenderOnce for NavButton {
             return div.opacity(0.35).into_any_element();
         }
 
-        HoverTransition::new(
-            self.id,
-            div,
-            rgba(0x00000000),
-            theme.nav_button_hover,
-        )
-        .into_any_element()
+        HoverTransition::new(self.id, div, rgba(0x00000000), theme.nav_button_hover)
+            .into_any_element()
     }
 }
 

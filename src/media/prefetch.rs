@@ -65,7 +65,9 @@ struct Shared<S> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Fills the buffer ahead of the decoder. Owns the source; exits at the
@@ -233,9 +235,7 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
         let target = match pos {
             SeekFrom::Start(offset) => Some(offset),
             SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
-            SeekFrom::End(delta) => self
-                .byte_len
-                .and_then(|len| add_signed(len, delta)),
+            SeekFrom::End(delta) => self.byte_len.and_then(|len| add_signed(len, delta)),
         };
         let Some(target) = target else {
             return Err(io::Error::new(
@@ -377,7 +377,10 @@ mod tests {
         assert_eq!(source.seek(SeekFrom::Start(16 * 1024)).unwrap(), 16 * 1024);
         got.clear();
         read_exact_or_eof(&mut source, &mut got, 16 * 1024);
-        assert_eq!(got, (16 * 1024..32 * 1024).map(|i| i as u8).collect::<Vec<_>>());
+        assert_eq!(
+            got,
+            (16 * 1024..32 * 1024).map(|i| i as u8).collect::<Vec<_>>()
+        );
 
         assert_eq!(
             source.seek(SeekFrom::End(-1024)).unwrap(),
@@ -385,7 +388,10 @@ mod tests {
         );
         got.clear();
         read_exact_or_eof(&mut source, &mut got, 1024);
-        assert_eq!(got, ((LEN - 1024)..LEN).map(|i| i as u8).collect::<Vec<_>>());
+        assert_eq!(
+            got,
+            ((LEN - 1024)..LEN).map(|i| i as u8).collect::<Vec<_>>()
+        );
     }
 
     #[test]
