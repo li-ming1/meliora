@@ -9,20 +9,20 @@ use gpui::set_trace_enabled;
 use std::sync::LazyLock;
 
 use crate::media::{
-    lofty::LoftyProvider,
-    lookup_table::register_providers,
-    symphonia::SymphoniaProvider,
+    lofty::LoftyProvider, lookup_table::register_providers, symphonia::SymphoniaProvider,
 };
 
 mod controllers;
 mod devices;
 #[cfg(feature = "kugou")]
 mod kugou;
-#[cfg(feature = "netease")]
-mod netease;
 mod library;
 mod logging;
 mod media;
+#[cfg(not(test))]
+mod mimalloc_stats;
+#[cfg(feature = "netease")]
+mod netease;
 mod paths;
 mod playback;
 mod power;
@@ -274,20 +274,30 @@ fn spawn_memory_probe() {
             tick.tick().await;
             let (private, working) = process_memory_mb();
             let covers = disk_cover_cache_mb();
-            let render_cache =
-                crate::ui::components::managed_image::render_cache_mb();
-            let render_cache_entries =
-                crate::ui::components::managed_image::render_cache_entries();
+            let render_cache = crate::ui::components::managed_image::render_cache_mb();
+            let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
             let (mi_commit_mb, mi_rss_mb) = mimalloc_memory_mb();
+            // mi_process_info's commit mirrors the OS charge (it is refilled
+            // from GetProcessMemoryInfo), so the real mimalloc accounting
+            // comes from the stats API: heap = what the allocator owns,
+            // non-heap = driver/D3D/atlas/stack commit.
+            let heap_committed_mb = crate::mimalloc_stats::committed_mb().unwrap_or(mi_commit_mb);
             // Every 10th sample (~5 min), force a full purge and log what it
             // bought back: large reclaim = idle-page fragmentation, ~0 = the
             // growth is live data and the leak is real.
             tick_count += 1;
-            let mi_collect_reclaim_mb = (tick_count % 10 == 0).then(|| {
-                mimalloc_force_collect_reclaim_mb(mi_commit_mb)
-            });
+            let mi_collect_reclaim_mb =
+                (tick_count % 10 == 0).then(|| mimalloc_force_collect_reclaim_mb(mi_commit_mb));
+            // Same cadence as the forced collect: mimalloc's own size-bin
+            // statistics read right after a full purge, where stranded pages
+            // are at their minimum. A large stranded commit there is
+            // fragmentation the collector cannot return; a large live total
+            // is real retained data, and the top bins say which sizes.
+            if tick_count % 10 == 0 {
+                crate::mimalloc_stats::log_snapshot(mi_collect_reclaim_mb);
+            }
 
             let step_alert = match baseline {
                 Some((at, from_mb)) if at.elapsed() >= STEP_WINDOW => {
@@ -306,6 +316,8 @@ fn spawn_memory_probe() {
             };
 
             if let Some(delta) = step_alert {
+                // capture the allocator state right after suspicious growth
+                crate::mimalloc_stats::dump_once();
                 tracing::warn!(
                     step_mb = delta,
                     private_mb = private,
@@ -317,12 +329,14 @@ fn spawn_memory_probe() {
                 );
             } else {
                 #[cfg(not(test))]
-                let purge0 = MIMALLOC_PURGE_DELAY_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
+                let purge0 =
+                    MIMALLOC_PURGE_DELAY_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
                 #[cfg(not(test))]
                 tracing::info!(
                     private_mb = private,
                     working_mb = working,
-                    mi_commit_mb = mi_commit_mb,
+                    heap_commit_mb = heap_committed_mb,
+                    non_heap_mb = private.saturating_sub(heap_committed_mb),
                     mi_rss_mb = mi_rss_mb,
                     mi_collect_reclaim_mb = mi_collect_reclaim_mb,
                     covers_mb = covers,
@@ -406,10 +420,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(test))]
     spawn_memory_probe();
 
-    register_providers(vec![
-        Box::new(LoftyProvider),
-        Box::new(SymphoniaProvider),
-    ]);
+    register_providers(vec![Box::new(LoftyProvider), Box::new(SymphoniaProvider)]);
 
     // Bound the online image-cache to its 30-day age window even when no
     // cover has been written yet this session.
