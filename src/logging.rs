@@ -21,7 +21,13 @@ use tracing_subscriber::{
 // tracing-subscriber 0.3 they bypass the per-layer EnvFilter entirely, so
 // gpui's hot `#[instrument]` spans (sum_tree cursor seek, ~1 pair per list
 // scroll tick) flood the rotating log even with `sum_tree=warn` in place.
-const DEFAULT_LOG_FILTER: &str = "info,symphonia=warn,zbus=warn,sum_tree=warn";
+// `symphonia_bundle_flac` warns on every stream that ends short of its
+// declared frame count — Kugou transcodes do it on every track (68×/2h
+// session), and Meliora already logs EOF and decode failures itself, so the
+// crate's per-stream data quirks are kept to error level only. EnvFilter
+// matches the more specific prefix, other symphonia crates stay at warn.
+const DEFAULT_LOG_FILTER: &str =
+    "info,symphonia=warn,symphonia_bundle_flac=error,zbus=warn,sum_tree=warn";
 const LOG_FILE_NAME: &str = "meliora.log";
 const MAX_LOG_FILE_SIZE: usize = 1024 * 1024;
 const MAX_LOG_FILES: usize = 4;
