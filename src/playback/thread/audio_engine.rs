@@ -48,9 +48,12 @@ const MAX_REBUILD_ATTEMPTS: u32 = 8;
 /// First defer window before a device stream is recreated again after a failed
 /// consume. A device whose WriteTimeout recurs every cycle used to be recreated
 /// every cycle (observed 95 times in 77 s); the window doubles per consecutive
-/// failed cycle up to [`DEVICE_RECREATE_BACKOFF_MAX`] and a successful consume
-/// clears it. The consume attempt itself still runs every cycle - its timeout
-/// naturally paces the loop - only the recreate churn is deferred.
+/// failed cycle up to [`DEVICE_RECREATE_BACKOFF_MAX`]. A clean consume ends the
+/// episode only once it outlasts the current window - a brief recovery between
+/// recurrences must not reset `failures`, or the backoff can never escalate
+/// (observed: 8 recycles at ~0.7 s cadence, all `failures=0`). The consume
+/// attempt itself still runs every cycle - its timeout naturally paces the
+/// loop - only the recreate churn is deferred.
 const DEVICE_RECREATE_BACKOFF_INITIAL: std::time::Duration = std::time::Duration::from_secs(2);
 const DEVICE_RECREATE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -752,7 +755,8 @@ impl AudioEngine {
             // through recreation; pace the recreate with a growing defer
             // window instead of churning the stream every cycle. The consume
             // attempt above still runs each cycle, so its timeout keeps the
-            // loop paced, and a successful consume clears the backoff.
+            // loop paced, and a clean consume sustained past the window
+            // clears the backoff.
             let now = std::time::Instant::now();
             if let Some((next_recreate, _)) = self.device_recreate_defer
                 && now < next_recreate
@@ -794,10 +798,18 @@ impl AudioEngine {
                     "audio device unusable after recreation: {err}"
                 ));
             }
-        } else {
-            // Clean consume: the device recovered, recreate immediately if it
-            // ever fails again.
-            self.device_recreate_defer = None;
+        } else if let Some((next_recreate, _)) = self.device_recreate_defer {
+            // Clean consume. Don't forgive the failure history on the first
+            // healthy cycle: a driver that drains only briefly after each
+            // recreate would reset `failures` every time and the backoff
+            // could never escalate. End the episode only once the device has
+            // stayed healthy past the current defer window; while it hasn't,
+            // a renewed WriteTimeout lands inside the window and is paced by
+            // the deferred-recreate gate above instead of churning the
+            // stream.
+            if std::time::Instant::now() >= next_recreate {
+                self.device_recreate_defer = None;
+            }
         }
 
         EngineCycleResult::Continue
