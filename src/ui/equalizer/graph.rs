@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use gpui::*;
@@ -78,7 +78,39 @@ struct LabelCache {
     scale: f32,
     origin: Point<Pixels>,
     size: Size<Pixels>,
-    lines: Vec<(ShapedLine, Point<Pixels>)>,
+    lines: Rc<Vec<(ShapedLine, Point<Pixels>)>>,
+}
+
+/// How often a drag pushes new values downstream: mouse moves arrive at
+/// 125-1000 Hz and every push used to clone the config into the DSP channel
+/// and re-run the compensation grid.
+const DRAG_PUSH_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Built tessellations for one stable frame, reused while nothing visible
+/// changed. Painting still hands the scene its own copy of the painted path
+/// (paint_path takes it by value), but a cache hit skips PathBuilder's
+/// intermediate buffers and the curve sampling a rebuild would redo — a
+/// static page (paused spectrum, no drag) then tessellates nothing at all.
+#[derive(Default)]
+struct EqGraphPaths {
+    spectrum_pre_fill: Option<Path<Pixels>>,
+    spectrum_post_fill: Option<Path<Pixels>>,
+    spectrum_post_stroke: Option<Path<Pixels>>,
+    band_stroke: Option<Path<Pixels>>,
+    composite_fill: Option<Path<Pixels>>,
+    composite_stroke: Option<Path<Pixels>>,
+}
+
+struct PathCache {
+    config: EqualizerSettings,
+    selected: Option<usize>,
+    origin: Point<Pixels>,
+    size: Size<Pixels>,
+    scale: f32,
+    rate: f64,
+    spectrum_pre: Rc<Vec<f32>>,
+    spectrum_post: Rc<Vec<f32>>,
+    paths: Rc<EqGraphPaths>,
 }
 
 #[derive(Default)]
@@ -87,8 +119,11 @@ struct GraphState {
     hover: Option<Hover>,
     q_flash: Option<(Instant, usize)>,
     last_add: Option<(Instant, usize)>,
+    /// The last values a drag pushed downstream, for the push coalescing.
+    last_push: Option<(Instant, usize, f64, f64)>,
     cache: Option<CurveCache>,
     label_cache: Option<LabelCache>,
+    paths: Option<PathCache>,
 }
 
 // Bypass ignored so the curve stays visible for editing while the EQ is off
@@ -198,6 +233,59 @@ fn spectrum_path(builder: &mut PathBuilder, points: &[f32], plot: Bounds<Pixels>
         let ctrl_b = vertex((x2 - (x3 - x1) / 6.0, y2 - (y3 - y1) / 6.0));
         builder.cubic_bezier_to(vertex((x2, y2)), ctrl_a, ctrl_b);
     }
+}
+
+/// Tessellates the six paintable paths from the cached curves and the latest
+/// spectrum data. Same shapes the paint path used to build per frame.
+fn build_paths(
+    curves: &CurveCache,
+    spectrum_pre: &[f32],
+    spectrum_post: &[f32],
+    plot: Bounds<Pixels>,
+    scale: f32,
+) -> EqGraphPaths {
+    let plot_height: f32 = plot.size.height.into();
+    let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
+    let bottom_y = plot.origin.y + plot.size.height;
+    let right = plot.origin.x + plot.size.width;
+    let mut paths = EqGraphPaths::default();
+
+    if !spectrum_pre.is_empty() {
+        let mut fill = PathBuilder::fill();
+        spectrum_path(&mut fill, spectrum_pre, plot);
+        fill.line_to(point(right, bottom_y));
+        fill.line_to(point(plot.origin.x, bottom_y));
+        paths.spectrum_pre_fill = fill.build().ok();
+    }
+    if !spectrum_post.is_empty() {
+        let mut fill = PathBuilder::fill();
+        spectrum_path(&mut fill, spectrum_post, plot);
+        fill.line_to(point(right, bottom_y));
+        fill.line_to(point(plot.origin.x, bottom_y));
+        paths.spectrum_post_fill = fill.build().ok();
+
+        let mut edge = PathBuilder::stroke(px(1.5));
+        spectrum_path(&mut edge, spectrum_post, plot);
+        paths.spectrum_post_stroke = edge.build().ok();
+    }
+
+    if let Some(band) = &curves.band {
+        let mut builder = PathBuilder::stroke(px(1.5));
+        curve_path(&mut builder, band, plot, scale);
+        paths.band_stroke = builder.build().ok();
+    }
+
+    let mut fill = PathBuilder::fill();
+    curve_path(&mut fill, &curves.composite, plot, scale);
+    fill.line_to(point(right, zero_y));
+    fill.line_to(point(plot.origin.x, zero_y));
+    paths.composite_fill = fill.build().ok();
+
+    let mut stroke = PathBuilder::stroke(px(2.0));
+    curve_path(&mut stroke, &curves.composite, plot, scale);
+    paths.composite_stroke = stroke.build().ok();
+
+    paths
 }
 
 // Full-bleed plot: the axis labels are drawn inside it, so no gutter is
@@ -382,12 +470,8 @@ impl IntoElement for EqGraph {
 pub struct EqGraphPrepaint {
     hitbox: Hitbox,
     plot: Bounds<Pixels>,
-    composite: Rc<Vec<f32>>,
-    band_curve: Option<Rc<Vec<f32>>>,
-    spectrum_pre: Rc<Vec<f32>>,
-    spectrum_post: Rc<Vec<f32>>,
-    scale: f32,
-    labels: Vec<(ShapedLine, Point<Pixels>)>,
+    paths: Rc<EqGraphPaths>,
+    labels: Rc<Vec<(ShapedLine, Point<Pixels>)>>,
     dots: Vec<Point<Pixels>>,
     hover: Option<Hover>,
     drag: Option<DragState>,
@@ -450,7 +534,7 @@ impl Element for EqGraph {
         let config = &self.config;
         let selected = self.selected;
         let rate = self.sample_rate;
-        let (composite, band_curve, drag, hover, q_flash, labels) =
+        let (drag, hover, q_flash, labels, paths) =
             window.with_optional_element_state(id, |v, window| {
                 let state: Rc<RefCell<GraphState>> = v.flatten().unwrap_or_default();
                 {
@@ -524,7 +608,7 @@ impl Element for EqGraph {
                         None => true,
                     };
                     if stale {
-                        let lines = shape_axis_labels(window, label_color, plot);
+                        let lines = Rc::new(shape_axis_labels(window, label_color, plot));
                         state_ref.label_cache = Some(LabelCache {
                             font,
                             color: label_color,
@@ -542,26 +626,58 @@ impl Element for EqGraph {
                         .clone()
                 };
 
-                let grabbed = {
+                // tessellated paths: rebuilt only when the curves, the
+                // spectrum data or the plot geometry moved
+                let paths = {
+                    let mut state_ref = state.borrow_mut();
+                    let stale = match &state_ref.paths {
+                        Some(cache) => {
+                            cache.config != *config
+                                || cache.selected != selected
+                                || cache.origin != plot.origin
+                                || cache.size != plot.size
+                                || cache.scale != scale
+                                || cache.rate != rate
+                                || !Rc::ptr_eq(&cache.spectrum_pre, &self.spectrum_pre)
+                                || !Rc::ptr_eq(&cache.spectrum_post, &self.spectrum_post)
+                        }
+                        None => true,
+                    };
+                    if stale {
+                        let cache = &state_ref.cache.as_ref().expect("curve cache fresh");
+                        let paths = build_paths(
+                            cache,
+                            &self.spectrum_pre,
+                            &self.spectrum_post,
+                            plot,
+                            scale,
+                        );
+                        state_ref.paths = Some(PathCache {
+                            config: config.clone(),
+                            selected,
+                            origin: plot.origin,
+                            size: plot.size,
+                            scale,
+                            rate,
+                            spectrum_pre: self.spectrum_pre.clone(),
+                            spectrum_post: self.spectrum_post.clone(),
+                            paths: Rc::new(paths),
+                        });
+                    }
+                    state_ref
+                        .paths
+                        .as_ref()
+                        .expect("path cache just rebuilt")
+                        .paths
+                        .clone()
+                };
+
+                let (drag, hover, q_flash) = {
                     let state_ref = state.borrow();
-                    let cache = state_ref.cache.as_ref().unwrap();
-                    (
-                        cache.composite.clone(),
-                        cache.band.clone(),
-                        state_ref.drag,
-                        state_ref.hover,
-                        state_ref.q_flash,
-                    )
+                    (state_ref.drag, state_ref.hover, state_ref.q_flash)
                 };
                 (
-                    (
-                        grabbed.0,
-                        grabbed.1,
-                        grabbed.2,
-                        grabbed.3,
-                        grabbed.4,
-                        labels,
-                    ),
+                    (drag, hover, q_flash, labels, paths),
                     if id.is_some() { Some(state) } else { None },
                 )
             });
@@ -596,11 +712,7 @@ impl Element for EqGraph {
         EqGraphPrepaint {
             hitbox,
             plot,
-            composite,
-            band_curve,
-            spectrum_pre: self.spectrum_pre.clone(),
-            spectrum_post: self.spectrum_post.clone(),
-            scale,
+            paths,
             labels,
             dots,
             hover,
@@ -678,67 +790,45 @@ impl Element for EqGraph {
             ));
         }
 
-        let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
-        let bottom_y = plot.origin.y + plot.size.height;
         window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
-            for (points, color) in [
-                (&prepaint.spectrum_pre, spectrum_pre),
-                (&prepaint.spectrum_post, spectrum_post),
-            ] {
-                if points.is_empty() {
-                    continue;
-                }
-                let mut fill = PathBuilder::fill();
-                spectrum_path(&mut fill, points, plot);
-                fill.line_to(point(plot.origin.x + plot.size.width, bottom_y));
-                fill.line_to(point(plot.origin.x, bottom_y));
-                if let Ok(path) = fill.build() {
-                    window.paint_path(path, color);
-                }
+            // paint_path takes the path by value, so each painted path is one
+            // clone from the tessellation cache; the cache hit still saves the
+            // PathBuilder churn and, with the spectrum paused, the rebuilds.
+            let paths = &prepaint.paths;
+            if let Some(path) = &paths.spectrum_pre_fill {
+                window.paint_path(path.clone(), spectrum_pre);
             }
-            if !prepaint.spectrum_post.is_empty() {
+            if let Some(path) = &paths.spectrum_post_fill {
+                window.paint_path(path.clone(), spectrum_post);
+            }
+            if let Some(path) = &paths.spectrum_post_stroke {
                 // dimmed alongside the response curve while the EQ is bypassed
                 let mut edge_color: Hsla = spectrum_edge.into_color();
                 if !self.config.enabled {
                     edge_color.alpha *= 0.4;
                 }
-                let mut edge = PathBuilder::stroke(px(1.5));
-                spectrum_path(&mut edge, &prepaint.spectrum_post, plot);
-                if let Ok(path) = edge.build() {
-                    window.paint_path(path, edge_color);
-                }
+                window.paint_path(path.clone(), edge_color);
             }
 
-            if let Some(band_curve) = &prepaint.band_curve {
-                let mut builder = PathBuilder::stroke(px(1.5));
-                curve_path(&mut builder, band_curve, plot, prepaint.scale);
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, band_color);
-                }
+            if let Some(path) = &paths.band_stroke {
+                window.paint_path(path.clone(), band_color);
             }
 
-            let mut fill = PathBuilder::fill();
-            curve_path(&mut fill, &prepaint.composite, plot, prepaint.scale);
-            let right = plot.origin.x + plot.size.width;
-            fill.line_to(point(right, zero_y));
-            fill.line_to(point(plot.origin.x, zero_y));
-            if let Ok(path) = fill.build() {
-                window.paint_path(path, curve_fill);
+            if let Some(path) = &paths.composite_fill {
+                window.paint_path(path.clone(), curve_fill);
             }
 
             let mut stroke_color: Hsla = curve_color.into_color();
             if !self.config.enabled {
                 stroke_color.alpha *= 0.4;
             }
-            let mut stroke = PathBuilder::stroke(px(2.0));
-            curve_path(&mut stroke, &prepaint.composite, plot, prepaint.scale);
-            if let Ok(path) = stroke.build() {
-                window.paint_path(path, stroke_color);
+            if let Some(path) = &paths.composite_stroke {
+                window.paint_path(path.clone(), stroke_color);
             }
         });
 
         // labels sit on top of the spectrum and curve so they stay readable
-        for (line, origin) in &prepaint.labels {
+        for (line, origin) in prepaint.labels.iter() {
             if let Err(err) = line.paint(*origin, px(12.0), TextAlign::Left, None, window, cx) {
                 error!("Failed to paint equalizer label: {:?}", err);
             }
@@ -1060,7 +1150,26 @@ impl Element for EqGraph {
                             drag.start_gain_db = gain_db;
                             state.borrow_mut().drag = Some(drag);
                         }
-                        (on_change.borrow_mut())(drag.index, frequency, gain_db, cx);
+                        // coalesce the push to ~30 Hz and skip repeat values:
+                        // each push clones the config into the DSP channel and
+                        // re-runs the compensation grid
+                        let now = Instant::now();
+                        let (due, unchanged) = {
+                            let state_ref = state.borrow();
+                            (
+                                state_ref.last_push.is_none_or(|(at, ..)| {
+                                    now.duration_since(at) >= DRAG_PUSH_INTERVAL
+                                }),
+                                state_ref.last_push.is_some_and(|(_, index, f, g)| {
+                                    index == drag.index && f == frequency && g == gain_db
+                                }),
+                            )
+                        };
+                        if due && !unchanged {
+                            state.borrow_mut().last_push =
+                                Some((now, drag.index, frequency, gain_db));
+                            (on_change.borrow_mut())(drag.index, frequency, gain_db, cx);
+                        }
                         return;
                     }
 
@@ -1087,6 +1196,8 @@ impl Element for EqGraph {
                     let Some(drag) = state.borrow_mut().drag.take() else {
                         return;
                     };
+                    // the next drag starts with a fresh push budget
+                    state.borrow_mut().last_push = None;
                     if let Some(drag_active) = &on_drag_active {
                         (drag_active.borrow_mut())(false, cx);
                     }
