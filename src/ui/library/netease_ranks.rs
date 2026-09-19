@@ -5,12 +5,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use cntp_i18n::tr;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    UniformListScrollHandle, Window, div, px, uniform_list,
+    UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
 };
-use gpui::prelude::FluentBuilder;
 
 use crate::{
     netease,
@@ -51,6 +51,18 @@ enum RanksState {
     Failed(SharedString),
     Ready(Vec<NeteaseRank>),
 }
+
+fn rows_ready(ranks: &RanksState) -> bool {
+    matches!(ranks, RanksState::Ready(_))
+}
+
+/// Grid geometry for the virtualized rank-card grid. Five cards fill the
+/// 900px content column (with the 16px side padding); `GRID_ROW_H` covers
+/// the 148px cover plus the name and update-frequency lines.
+const GRID_COLS: usize = 5;
+const GRID_CARD_W: f32 = 148.0;
+const GRID_GAP: f32 = 18.0;
+const GRID_ROW_H: f32 = 196.0;
 
 enum TracksState {
     Idle,
@@ -124,30 +136,38 @@ impl NeteaseRanksView {
 
         cx.spawn(async move |this, cx| {
             let client = netease::shared_client();
-            let request = crate::RUNTIME.spawn(async move { client.toplist().await }).await;
+            let request = crate::RUNTIME
+                .spawn(async move { client.toplist().await })
+                .await;
 
-            let _ = this.update(cx, |this, cx| {
-                this.ranks = match request {
-                    Ok(Ok(response)) => {
-                        let ranks = parse_ranks(&response.body);
-                        if ranks.is_empty() {
-                            RanksState::Failed(tr!("NETEASE_NO_RANKS", "No charts found").into())
-                        } else {
-                            RanksState::Ready(ranks)
+            let _ = this
+                .update(cx, |this, cx| {
+                    this.ranks = match request {
+                        Ok(Ok(response)) => {
+                            let ranks = parse_ranks(&response.body);
+                            if ranks.is_empty() {
+                                RanksState::Failed(
+                                    tr!("NETEASE_NO_RANKS", "No charts found").into(),
+                                )
+                            } else {
+                                RanksState::Ready(ranks)
+                            }
                         }
-                    }
-                    Ok(Err(err)) => RanksState::Failed(
-                        tr!("NETEASE_LOAD_FAILED", "Request failed: {{err}}", err = err.to_string())
+                        Ok(Err(err)) => RanksState::Failed(
+                            tr!(
+                                "NETEASE_LOAD_FAILED",
+                                "Request failed: {{err}}",
+                                err = err.to_string()
+                            )
                             .into(),
-                    ),
-                    Err(err) => RanksState::Failed(
-                        tr!("NETEASE_LOAD_FAILED", err = err.to_string())
-                            .into(),
-                    ),
-                };
-                cx.notify();
-            })
-            .ok();
+                        ),
+                        Err(err) => RanksState::Failed(
+                            tr!("NETEASE_LOAD_FAILED", err = err.to_string()).into(),
+                        ),
+                    };
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -171,35 +191,35 @@ impl NeteaseRanksView {
 
         cx.spawn(async move |this, cx| {
             let client = netease::shared_client();
-            let request =
-                crate::RUNTIME.spawn(async move { client.recommend_songs().await }).await;
+            let request = crate::RUNTIME
+                .spawn(async move { client.recommend_songs().await })
+                .await;
 
-            let _ = this.update(cx, |this, cx| {
-                this.recommend = match request {
-                    Ok(Ok(response)) => {
-                        let tracks = parse_tracks(&response.body, "/data/dailySongs");
-                        if tracks.is_empty() {
-                            RecommendState::Failed(
-                                tr!("NETEASE_NO_RECOMMEND", "No recommendations today").into(),
-                            )
-                        } else {
-                            RecommendState::Ready(tracks)
+            let _ = this
+                .update(cx, |this, cx| {
+                    this.recommend = match request {
+                        Ok(Ok(response)) => {
+                            let tracks = parse_tracks(&response.body, "/data/dailySongs");
+                            if tracks.is_empty() {
+                                RecommendState::Failed(
+                                    tr!("NETEASE_NO_RECOMMEND", "No recommendations today").into(),
+                                )
+                            } else {
+                                RecommendState::Ready(tracks)
+                            }
                         }
-                    }
-                    // 301: the endpoint requires a logged-in session
-                    Ok(Err(err)) if err.status() == 301 => RecommendState::LoginRequired,
-                    Ok(Err(err)) => RecommendState::Failed(
-                        tr!("NETEASE_LOAD_FAILED", err = err.to_string())
-                            .into(),
-                    ),
-                    Err(err) => RecommendState::Failed(
-                        tr!("NETEASE_LOAD_FAILED", err = err.to_string())
-                            .into(),
-                    ),
-                };
-                cx.notify();
-            })
-            .ok();
+                        // 301: the endpoint requires a logged-in session
+                        Ok(Err(err)) if err.status() == 301 => RecommendState::LoginRequired,
+                        Ok(Err(err)) => RecommendState::Failed(
+                            tr!("NETEASE_LOAD_FAILED", err = err.to_string()).into(),
+                        ),
+                        Err(err) => RecommendState::Failed(
+                            tr!("NETEASE_LOAD_FAILED", err = err.to_string()).into(),
+                        ),
+                    };
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -258,36 +278,37 @@ impl NeteaseRanksView {
                 })
                 .await;
 
-            let _ = this.update(cx, |this, cx| {
-                // the selection may have changed, or a newer page may have
-                // been requested, while this request was in flight
-                let still_current = this.selected.as_ref().is_some_and(|r| r.id == rank.id)
-                    && this.track_generation == generation;
+            let _ = this
+                .update(cx, |this, cx| {
+                    // the selection may have changed, or a newer page may have
+                    // been requested, while this request was in flight
+                    let still_current = this.selected.as_ref().is_some_and(|r| r.id == rank.id)
+                        && this.track_generation == generation;
 
-                match request {
-                    Ok(Ok((ids, response))) if still_current => {
-                        this.track_ids = Some(ids);
-                        let page_tracks = parse_tracks(&response.body, "/songs");
-                        // the song-detail response carries no total, so a full
-                        // page is the "maybe more" signal
-                        this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
-                        this.tracks.extend(page_tracks);
-                        this.track_page = page;
-                        this.tracks_state = TracksState::Idle;
+                    match request {
+                        Ok(Ok((ids, response))) if still_current => {
+                            this.track_ids = Some(ids);
+                            let page_tracks = parse_tracks(&response.body, "/songs");
+                            // the song-detail response carries no total, so a full
+                            // page is the "maybe more" signal
+                            this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
+                            this.tracks.extend(page_tracks);
+                            this.track_page = page;
+                            this.tracks_state = TracksState::Idle;
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) if still_current => {
+                            this.tracks_state = TracksState::Failed(err.to_string().into());
+                        }
+                        Ok(Err(_)) => {}
+                        Err(err) if still_current => {
+                            this.tracks_state = TracksState::Failed(err.to_string().into());
+                        }
+                        Err(_) => {}
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) if still_current => {
-                        this.tracks_state = TracksState::Failed(err.to_string().into());
-                    }
-                    Ok(Err(_)) => {}
-                    Err(err) if still_current => {
-                        this.tracks_state = TracksState::Failed(err.to_string().into());
-                    }
-                    Err(_) => {}
-                }
-                cx.notify();
-            })
-            .ok();
+                    cx.notify();
+                })
+                .ok();
         })
         .detach();
     }
@@ -408,11 +429,7 @@ impl NeteaseRanksView {
                     .flex()
                     .items_center()
                     .gap(px(4.0))
-                    .child(self.tab_button(
-                        Tab::Ranks,
-                        tr!("NETEASE_RANKS").to_string(),
-                        cx,
-                    ))
+                    .child(self.tab_button(Tab::Ranks, tr!("NETEASE_RANKS").to_string(), cx))
                     .child(self.tab_button(
                         Tab::DailyRecommend,
                         tr!("NETEASE_DAILY_RECOMMEND").to_string(),
@@ -443,59 +460,126 @@ impl NeteaseRanksView {
             .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx)))
     }
 
-    fn render_ranks_grid(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
-        let ranks: &[NeteaseRank] = match &self.ranks {
-            RanksState::Ready(ranks) => ranks,
-            _ => &[],
+    fn render_ranks_grid(&self, cx: &mut Context<Self>) -> AnyElement {
+        let rows = match &self.ranks {
+            RanksState::Ready(ranks) => ranks.len().div_ceil(GRID_COLS),
+            _ => 0,
         };
-
+        let entity = cx.entity().downgrade();
         div()
+            .id("netease-ranks-grid-container")
+            .w_full()
+            .max_w(px(900.0))
+            .min_w(px(GRID_CARD_W * GRID_COLS as f32
+                + GRID_GAP * (GRID_COLS - 1) as f32
+                + 32.0))
+            .mr_auto()
+            .ml_auto()
             .flex()
-            .flex_wrap()
-            .gap(px(18.0))
-            .children(ranks.iter().enumerate().map(|(index, rank)| {
-                let theme = theme.clone();
-                let rank_clone = rank.clone();
+            .flex_col()
+            .flex_grow(1.0)
+            .min_h(px(0.0))
+            .px(px(16.0))
+            .pt(px(4.0))
+            .pb(px(24.0))
+            .child(
                 div()
-                    .id(("netease-rank", index))
-                    .flex()
-                    .flex_col()
-                    .w(px(148.0))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_rank(rank_clone.clone(), cx);
-                    }))
+                    .relative()
+                    .w_full()
+                    .flex_grow(1.0)
+                    .min_h(px(0.0))
                     .child(
-                        managed_image(
-                            ("netease-rank-cover", index),
-                            ManagedImageKey::HttpCover(rank.cover_url.clone()),
-                        )
-                        .thumb_max(256)
-                        .w(px(148.0))
-                        .h(px(148.0))
-                        .rounded(px(theme.radius_md)),
-                    )
-                    .child(
-                        div()
-                            .mt(px(6.0))
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text)
-                            .overflow_x_hidden()
-                            .text_ellipsis()
-                            .child(rank.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .mt(px(2.0))
-                            .text_xs()
-                            .text_color(theme.text_secondary)
-                            .overflow_x_hidden()
-                            .text_ellipsis()
-                            .child(rank.update_frequency.clone()),
-                    )
-            }))
+                        uniform_list("netease-ranks-grid", rows, move |range, _, cx| {
+                            let Some(view) = entity.upgrade() else {
+                                return Vec::new();
+                            };
+                            let ranks: &[NeteaseRank] = match &view.read(cx).ranks {
+                                RanksState::Ready(ranks) => ranks,
+                                _ => &[],
+                            };
+                            range
+                                .map(|row| {
+                                    let start = row * GRID_COLS;
+                                    let theme = cx.global::<Theme>().clone();
+                                    let cards: Vec<_> = ranks
+                                        .iter()
+                                        .skip(start)
+                                        .take(GRID_COLS)
+                                        .enumerate()
+                                        .map(|(i, rank)| {
+                                            Self::render_rank_card(rank, start + i, &theme, &entity)
+                                                .into_any_element()
+                                        })
+                                        .collect();
+                                    div()
+                                        .h(px(GRID_ROW_H))
+                                        .overflow_hidden()
+                                        .flex()
+                                        .gap(px(GRID_GAP))
+                                        .children(cards)
+                                        .into_any_element()
+                                })
+                                .collect()
+                        })
+                        .w_full()
+                        .h_full(),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// One rank card. Built from inside the uniform_list closure where only
+    /// `&App` is available, so the click reaches the view through the weak
+    /// entity handle (same pattern as the track rows below).
+    fn render_rank_card(
+        rank: &NeteaseRank,
+        index: usize,
+        theme: &Theme,
+        entity: &WeakEntity<Self>,
+    ) -> impl IntoElement {
+        let cover = managed_image(
+            ("netease-rank-cover", index),
+            ManagedImageKey::HttpCover(rank.cover_url.clone()),
+        )
+        // cards paint at 148 CSS px; 192 device px keeps 1.25-1.5 DPR sharp
+        // while shrinking every tile the atlas packs
+        .thumb_max(192)
+        .w(px(GRID_CARD_W))
+        .h(px(GRID_CARD_W))
+        .rounded(px(theme.radius_md));
+        let name = div()
+            .mt(px(6.0))
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.text)
+            .overflow_x_hidden()
+            .text_ellipsis()
+            .child(rank.name.clone());
+        let frequency = div()
+            .mt(px(2.0))
+            .text_xs()
+            .text_color(theme.text_secondary)
+            .overflow_x_hidden()
+            .text_ellipsis()
+            .child(rank.update_frequency.clone());
+        div()
+            .id(("netease-rank", index))
+            .flex()
+            .flex_col()
+            .w(px(GRID_CARD_W))
+            .cursor_pointer()
+            .on_click({
+                let entity = entity.clone();
+                let rank = rank.clone();
+                move |_, _, cx| {
+                    if let Some(view) = entity.upgrade() {
+                        view.update(cx, |this, cx| this.open_rank(rank.clone(), cx));
+                    }
+                }
+            })
+            .child(cover)
+            .child(name)
+            .child(frequency)
     }
 
     /// Rows are built from inside the uniform_list render closure where only
@@ -555,18 +639,14 @@ impl NeteaseRanksView {
 
     /// The "Load More" pill below the virtualized track list.
     fn render_load_more_button(cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .justify_center()
-            .pt(px(12.0))
-            .child(
-                button()
-                    .id("netease-rank-load-more")
-                    .child(tr!("NETEASE_LOAD_MORE", "Load More"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.load_more(cx);
-                    })),
-            )
+        div().flex().justify_center().pt(px(12.0)).child(
+            button()
+                .id("netease-rank-load-more")
+                .child(tr!("NETEASE_LOAD_MORE", "Load More"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.load_more(cx);
+                })),
+        )
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -592,20 +672,20 @@ impl NeteaseRanksView {
                             .child(message.clone()),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                button()
-                                    .id("netease-ranks-retry")
-                                    .child(tr!("NETEASE_RETRY", "Retry"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.load_ranks(cx);
-                                    })),
-                            ),
+                        div().flex().justify_center().child(
+                            button()
+                                .id("netease-ranks-retry")
+                                .child(tr!("NETEASE_RETRY", "Retry"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.load_ranks(cx);
+                                })),
+                        ),
                     )
                     .into_any_element(),
-                RanksState::Ready(_) => self.render_ranks_grid(cx).into_any_element(),
+                // unreachable in practice: Render::render routes a Ready rank
+                // grid to the virtualized container below; this arm only
+                // keeps the match exhaustive
+                RanksState::Ready(_) => div().into_any_element(),
             },
             Tab::DailyRecommend => match &self.recommend {
                 RecommendState::Idle | RecommendState::Loading => div()
@@ -622,15 +702,10 @@ impl NeteaseRanksView {
                     .gap(px(12.0))
                     .py(px(48.0))
                     .w_full()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .child(tr!(
-                                "NETEASE_DAILY_LOGIN_REQUIRED",
-                                "Log in to see your daily recommendations"
-                            )),
-                    )
+                    .child(div().text_sm().text_color(theme.text_secondary).child(tr!(
+                        "NETEASE_DAILY_LOGIN_REQUIRED",
+                        "Log in to see your daily recommendations"
+                    )))
                     .child(
                         button()
                             .id("netease-open-settings")
@@ -653,17 +728,14 @@ impl NeteaseRanksView {
                             .child(message.clone()),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                button()
-                                    .id("netease-recommend-retry")
-                                    .child(tr!("NETEASE_RETRY"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.load_recommend(cx);
-                                    })),
-                            ),
+                        div().flex().justify_center().child(
+                            button()
+                                .id("netease-recommend-retry")
+                                .child(tr!("NETEASE_RETRY"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.load_recommend(cx);
+                                })),
+                        ),
                     )
                     .into_any_element(),
                 RecommendState::Ready(tracks) => {
@@ -674,15 +746,10 @@ impl NeteaseRanksView {
                     div()
                         .flex()
                         .flex_col()
-                        .children(
-                            tracks
-                                .iter()
-                                .enumerate()
-                                .map(|(index, track)| {
-                                    self.render_track_row(track, index, &entity, cx)
-                                        .into_any_element()
-                                }),
-                        )
+                        .children(tracks.iter().enumerate().map(|(index, track)| {
+                            self.render_track_row(track, index, &entity, cx)
+                                .into_any_element()
+                        }))
                         .into_any_element()
                 }
             },
@@ -704,9 +771,13 @@ impl Render for NeteaseRanksView {
                 TracksState::Loading | TracksState::Failed(_)
             ) && self.tracks.is_empty())
         } else {
-            self.tab == Tab::DailyRecommend
-                && matches!(self.recommend, RecommendState::Ready(_))
+            self.tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Ready(_))
         };
+        // the rank-card grid is a uniform_list too: like the track lists it
+        // must be the scroll container itself, not a child of the page
+        // scroller, or the virtualization culls nothing
+        let grid_ready =
+            self.selected.is_none() && self.tab == Tab::Ranks && rows_ready(&self.ranks);
 
         let mut root = div()
             .id("netease-ranks-view")
@@ -770,14 +841,14 @@ impl Render for NeteaseRanksView {
                                             .iter()
                                             .enumerate()
                                             .map(|(i, track)| {
-                                                div()
-                                                    .h(px(TRACK_ROW_HEIGHT))
-                                                    .child(view.render_track_row(
+                                                div().h(px(TRACK_ROW_HEIGHT)).child(
+                                                    view.render_track_row(
                                                         track,
                                                         start + i,
                                                         &list_entity,
                                                         cx,
-                                                    ))
+                                                    ),
+                                                )
                                             })
                                             .collect()
                                     },
@@ -795,6 +866,8 @@ impl Render for NeteaseRanksView {
                         tracks_scroll_handle,
                     )),
             );
+        } else if grid_ready {
+            root = root.child(self.render_ranks_grid(cx));
         } else {
             let content: AnyElement = if self.selected.is_some() {
                 match &self.tracks_state {
@@ -836,10 +909,7 @@ impl Render for NeteaseRanksView {
                         .track_scroll(&scroll_handle)
                         .child(content),
                 )
-                .child(floating_scrollbar(
-                    "netease-ranks-scrollbar",
-                    scroll_handle,
-                ));
+                .child(floating_scrollbar("netease-ranks-scrollbar", scroll_handle));
         }
 
         root

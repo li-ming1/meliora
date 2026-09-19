@@ -6,14 +6,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use globwalk::GlobWalkerBuilder;
+#[cfg(feature = "online_sources")]
+use gpui::SharedString;
 use gpui::{
     App, Bounds, Corners, Element, ElementId, GlobalElementId, ImageId, InspectorElementId,
     IntoElement, LayoutId, ObjectFit, Pixels, Refineable, RenderImage, Style, StyleRefinement,
     Styled, Window,
 };
-#[cfg(feature = "online_sources")]
-use gpui::SharedString;
-use globwalk::GlobWalkerBuilder;
 use image::{Frame, Pixel};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -71,10 +71,7 @@ const STORED_THUMB_PX: u32 = 72;
 /// Decode `data`, downscaling to a square of at most `bound` pixels before
 /// converting to RGBA. Scaling at decode time keeps the transient RGBA buffer
 /// (and anything that retains it) bounded by what the UI actually paints.
-fn decode_to_render_image_scaled(
-    data: &[u8],
-    bound: u32,
-) -> anyhow::Result<Arc<RenderImage>> {
+fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<RenderImage>> {
     let image = image::load_from_memory(data)?;
     decode_rgba_to_render_image(dynamic_to_rgba_scaled(image, bound))
 }
@@ -88,7 +85,11 @@ fn decode_to_render_image_scaled(
 /// Rgb8+Rgba8 of a ~2500px cover simultaneously (dhat: 23.6MB transient,
 /// 2026-09-16).
 fn dynamic_to_rgba_scaled(image: image::DynamicImage, bound: u32) -> image::RgbaImage {
-    let image = if bound > 0 { image.thumbnail(bound, bound) } else { image };
+    let image = if bound > 0 {
+        image.thumbnail(bound, bound)
+    } else {
+        image
+    };
     match image {
         image::DynamicImage::ImageRgba8(rgba) => rgba,
         image::DynamicImage::ImageRgb8(rgb) => {
@@ -152,12 +153,16 @@ pub enum ManagedImageKey {
 /// each one re-decodes the same URL into a fresh `RenderImage` and re-uploads
 /// a new atlas texture. Capping the retained set keeps that churn from adding
 /// up, and re-painting a recently seen cover reuses the exact same
-/// `RenderImage`/atlas slot instead. 64 covers ≈ 16 MB of pixels; each atlas
-/// page holds a handful of 256 px tiles, so this keeps the live page count (the
-/// largest single contributor to steady-state private bytes) bounded well
-/// below what 128 entries allowed. Evictions queue their atlas tiles for
+/// `RenderImage`/atlas slot instead. Evictions queue their atlas tiles for
 /// reclamation, and evicted covers re-decode from the disk cache on return.
-const RENDER_CACHE_MAX: usize = 64;
+///
+/// The cap is the *live tile* budget, and each live tile measures a flat
+/// ~2.3 MB of driver-side commit regardless of its pixel size (2026-09-19
+/// soak: 192 px and 256 px tiles cost the same, the [mem] probe's
+/// `non_heap_mb` tracks the cache one-to-one). 128 entries ratcheted the
+/// driver commit; 64 still held ~150 MB above the idle floor; 32 keeps the
+/// recent-cover reuse window (≈ 6 grid rows) at half that.
+const RENDER_CACHE_MAX: usize = 32;
 
 /// Bounded set of decoded covers shared by all `ManagedImage` elements.
 /// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
@@ -195,7 +200,9 @@ pub fn render_cache_mb() -> u64 {
     let Some(cache) = RENDER_CACHE.get() else {
         return 0;
     };
-    let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.bytes / (1024 * 1024)
 }
 
@@ -206,7 +213,11 @@ pub fn render_cache_entries() -> usize {
     let Some(cache) = RENDER_CACHE.get() else {
         return 0;
     };
-    cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cache.len()
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .cache
+        .len()
 }
 
 /// Covers whose atlas tiles still need dropping, tagged with their cache key.
@@ -325,7 +336,9 @@ fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
     let Some(cache) = RENDER_CACHE.get() else {
         return false;
     };
-    let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache
         .cache
         .get(key)
@@ -416,7 +429,9 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     };
     let now = Instant::now();
     let (ready, young) = {
-        let mut queue = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut queue = queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (ready, young) = partition_ready(queue.drain(..).collect(), now);
         (ready, young)
     };
@@ -487,9 +502,14 @@ fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderIm
             bytes: 0,
         })
     });
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let hit = cache.cache.get(&cache_key).map(|(image, _)| image.clone())?;
+    let hit = cache
+        .cache
+        .get(&cache_key)
+        .map(|(image, _)| image.clone())?;
     // Refresh recency without allocating: reinserting the key would push a
     // duplicate, so rotate the existing position to the back instead.
     if let Some(pos) = cache.usage.iter().position(|k| *k == cache_key) {
@@ -510,15 +530,16 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
             bytes: 0,
         })
     });
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // Replace an existing entry (possibly decoded by a concurrent element) or
     // evict the least-recently-used slot once the budget is full. Both paths
     // queue the dropped image for atlas-tile reclamation — this is the ONLY
     // reclamation path for cached tiles (single owner), so each image's tile
     // is dropped exactly once.
-    if let Some((old_image, old_bytes)) =
-        cache.cache.insert(cache_key.clone(), (image, new_bytes))
+    if let Some((old_image, old_bytes)) = cache.cache.insert(cache_key.clone(), (image, new_bytes))
     {
         cache.bytes = cache.bytes.saturating_sub(old_bytes) + new_bytes;
         queue_tile_drop(cache_key, old_image);
@@ -619,8 +640,10 @@ impl ManagedImageKey {
                 let bytes = crate::media::http_source::http_cover_bytes_cached(&url).await?;
                 let Some(bytes) = bytes else { return Ok(None) };
                 let image = {
-                    let _permit =
-                        DECODE_PERMITS.acquire().await.expect("semaphore is never closed");
+                    let _permit = DECODE_PERMITS
+                        .acquire()
+                        .await
+                        .expect("semaphore is never closed");
                     crate::RUNTIME
                         .spawn_blocking(move || {
                             decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
@@ -668,7 +691,10 @@ impl ManagedImageKey {
                 }
 
                 let image = {
-                    let _permit = DECODE_PERMITS.acquire().await.expect("semaphore is never closed");
+                    let _permit = DECODE_PERMITS
+                        .acquire()
+                        .await
+                        .expect("semaphore is never closed");
                     crate::RUNTIME
                         .spawn_blocking(move || {
                             decode_to_render_image_scaled(&image_encoded, thumb_size).map(Some)
@@ -971,7 +997,9 @@ mod tests {
     use std::collections::HashSet;
 
     fn test_image() -> Arc<RenderImage> {
-        Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::new(2, 2))]))
+        Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::new(
+            2, 2
+        ))]))
     }
 
     fn key(album: i64, thumb: u32) -> RenderCacheKey {
@@ -1002,10 +1030,7 @@ mod tests {
         }
     }
 
-    fn run_plan(
-        batch: Vec<(RenderCacheKey, Arc<RenderImage>)>,
-        cache: &FakeCache,
-    ) -> ReclaimPlan {
+    fn run_plan(batch: Vec<(RenderCacheKey, Arc<RenderImage>)>, cache: &FakeCache) -> ReclaimPlan {
         plan_tile_reclaims(batch, |k, img| cache.holds(k, img))
     }
 
@@ -1027,7 +1052,10 @@ mod tests {
         let a = img.clone(); // element A's reference, pushed by its on_release
         let b = img.clone(); // element B's reference, pushed by its on_release
         drop(img);
-        let plan = run_plan(vec![(key(1, 256), a), (key(1, 256), b)], &FakeCache::default());
+        let plan = run_plan(
+            vec![(key(1, 256), a), (key(1, 256), b)],
+            &FakeCache::default(),
+        );
         assert_eq!(plan.reclaim.len(), 1);
         assert_eq!(plan.kept_by_holders, 0);
     }
@@ -1108,8 +1136,7 @@ mod tests {
 
             let mut buf = rgb.into_raw();
             expand_rgb8_to_rgba8_in_place(&mut buf, w, h);
-            let actual =
-                image::RgbaImage::from_raw(w, h, buf).expect("expansion preserves length");
+            let actual = image::RgbaImage::from_raw(w, h, buf).expect("expansion preserves length");
 
             assert_eq!(*actual, *expected, "mismatch at {w}x{h}");
         }
@@ -1119,22 +1146,15 @@ mod tests {
     /// bounded conversion must thumbnail before expanding.
     #[test]
     fn dynamic_conversion_steals_rgba_and_scales() {
-        let src = image::RgbaImage::from_fn(64, 64, |x, y| {
-            image::Rgba([x as u8, y as u8, 42, 255])
-        });
+        let src =
+            image::RgbaImage::from_fn(64, 64, |x, y| image::Rgba([x as u8, y as u8, 42, 255]));
 
         // bound = 0: the exact buffer is handed over, no clone.
-        let full = dynamic_to_rgba_scaled(
-            image::DynamicImage::ImageRgba8(src.clone()),
-            0,
-        );
+        let full = dynamic_to_rgba_scaled(image::DynamicImage::ImageRgba8(src.clone()), 0);
         assert_eq!(*full, *src);
 
         // bound = 16: downscaled, still correct dimensions.
-        let scaled = dynamic_to_rgba_scaled(
-            image::DynamicImage::ImageRgba8(src),
-            16,
-        );
+        let scaled = dynamic_to_rgba_scaled(image::DynamicImage::ImageRgba8(src), 16);
         assert!(scaled.width() <= 16 && scaled.height() <= 16);
     }
 
@@ -1228,7 +1248,10 @@ mod tests {
             thumb: u32::MAX,
         };
         let plan = run_plan(
-            vec![(key(7, 256), element_ref.clone()), (orphan_key, element_ref)],
+            vec![
+                (key(7, 256), element_ref.clone()),
+                (orphan_key, element_ref),
+            ],
             &cache,
         );
         assert!(plan.reclaim.is_empty());
