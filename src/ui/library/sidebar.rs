@@ -532,7 +532,7 @@ impl Render for Sidebar {
             .child(sidebar_separator())
             .child(div().h(px(4.0)));
 
-        // 酷狗账号药丸：登录后点击进酷狗歌单，未登录打开设置
+        // 酷狗账号药丸：点击深链到设置页酷狗分区（账户卡含登录/救赎等操作）
         #[cfg(feature = "kugou")]
         let kugou_pill = {
             let profile = shared_client().cached_user_profile();
@@ -562,23 +562,17 @@ impl Render for Sidebar {
                 logged_in,
                 collapsed,
                 &theme,
-                cx.listener(|this, _, _, cx| {
-                    // 点击时重新读登录态：渲染后登录状态可能已变化
-                    let logged_in = shared_client()
-                        .cached_user_profile()
-                        .is_some_and(|p| !p.nickname.is_empty());
-                    if logged_in {
-                        this.nav_model.update(cx, |_, cx| {
-                            cx.emit(ViewSwitchMessage::KugouPlaylists);
-                        });
-                    } else {
-                        crate::ui::settings::open_settings_window(cx);
-                    }
+                cx.listener(|_, _, _, cx| {
+                    // 统一深链到设置页的酷狗分区（登录/救赎等账户操作都在那里）
+                    crate::ui::settings::open_settings_window_with_section(
+                        cx,
+                        crate::ui::settings::SettingsSectionKind::Kugou,
+                    );
                 }),
             )
         };
 
-        // 网易云账号药丸：与酷狗药丸并排；行为同上
+        // 网易云账号药丸：与酷狗药丸并排；点击深链到设置页网易云分区
         #[cfg(feature = "netease")]
         let netease_pill = {
             let profile = netease_shared_client().cached_user_profile();
@@ -608,17 +602,11 @@ impl Render for Sidebar {
                 logged_in,
                 collapsed,
                 &theme,
-                cx.listener(|this, _, _, cx| {
-                    let logged_in = netease_shared_client()
-                        .cached_user_profile()
-                        .is_some_and(|p| !p.nickname.is_empty());
-                    if logged_in {
-                        this.nav_model.update(cx, |_, cx| {
-                            cx.emit(ViewSwitchMessage::NeteasePlaylists);
-                        });
-                    } else {
-                        crate::ui::settings::open_settings_window(cx);
-                    }
+                cx.listener(|_, _, _, cx| {
+                    crate::ui::settings::open_settings_window_with_section(
+                        cx,
+                        crate::ui::settings::SettingsSectionKind::Netease,
+                    );
                 }),
             )
         };
