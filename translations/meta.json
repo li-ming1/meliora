@@ -2003,6 +2003,30 @@
     "plural": false,
     "description": null
   },
+  "SCAN_CRASHED": {
+    "context": "scan.rs",
+    "definedIn": "src/library/scan.rs:52",
+    "plural": false,
+    "description": null
+  },
+  "SCAN_FAILED_FILES": {
+    "context": "execution.rs",
+    "definedIn": "src/library/scan/execution.rs:103",
+    "plural": false,
+    "description": null
+  },
+  "SCAN_FAILED_TRANSACTION": {
+    "context": "execution.rs",
+    "definedIn": "src/library/scan/execution.rs:109",
+    "plural": false,
+    "description": null
+  },
+  "SCAN_FAILED_WORKER": {
+    "context": "execution.rs",
+    "definedIn": "src/library/scan/execution.rs:97",
+    "plural": false,
+    "description": null
+  },
   "SCAN_PROGRESS_DISCOVERING": {
     "context": "header.rs",
     "definedIn": "src/ui/header.rs:248",

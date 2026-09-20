@@ -5,6 +5,7 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
+use cntp_i18n::tr;
 use rustc_hash::{FxHashMap, FxHashSet};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use tokio::{
@@ -33,7 +34,10 @@ use super::{
     scanner::{ActiveCommandContext, ActiveCommandOutcome},
     watch::WatcherState,
 };
-use crate::settings::scan::ScanSettings;
+use crate::{
+    settings::scan::ScanSettings,
+    toasts::{Toast, emit_toast},
+};
 
 const BATCH_SIZE: usize = 50;
 
@@ -47,6 +51,90 @@ const BATCH_SIZE: usize = 50;
 /// and completion writes the full record in finish_completed - a crash loses
 /// at most this much scan progress.
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Recoverable failures tallied over a single scan.
+///
+/// Every count here was previously an `expect`/`panic` that killed the scanner
+/// task mid-flight. Since `start_scanner` drops its `JoinHandle`, that surfaced
+/// to the user as a scan frozen on "scanning" forever with nothing in the UI.
+/// A degraded scan now runs to completion (state returns to idle/watching) and
+/// reports what was lost once, at the end.
+#[derive(Default)]
+struct ScanFailures {
+    /// `BEGIN`/`COMMIT` refused: whole batches were dropped, and those tracks
+    /// stay unindexed until a later scan picks them up.
+    transaction: u64,
+    /// A discovery worker panicked (`JoinError`) instead of returning a count.
+    worker_panic: u64,
+    /// Individual files dropped because no transaction could be opened.
+    file: u64,
+}
+
+impl ScanFailures {
+    fn is_empty(&self) -> bool {
+        self.transaction == 0 && self.worker_panic == 0 && self.file == 0
+    }
+
+    /// One toast per scan, most informative category first: a worker panic
+    /// means the scan is incomplete, a file count says how much was lost, and
+    /// the transaction count is only the fall-back when nothing was dropped
+    /// (a bare `COMMIT` failure). The full breakdown stays in the log.
+    fn report(&self) {
+        if self.is_empty() {
+            return;
+        }
+
+        error!(
+            "Scan finished degraded: {} panicked workers, {} files dropped, \
+             {} transaction failures",
+            self.worker_panic, self.file, self.transaction
+        );
+
+        // NOTE: the placeholder is deliberately not called `count` - `tr!`
+        // reserves that name for plural selection and types it as `isize`.
+        if self.worker_panic > 0 {
+            emit_toast(Toast::error(tr!(
+                "SCAN_FAILED_WORKER",
+                "Library scan stopped early — {{failed}} scan workers failed. Please scan again.",
+                failed = self.worker_panic
+            )));
+        } else if self.file > 0 {
+            emit_toast(Toast::error(tr!(
+                "SCAN_FAILED_FILES",
+                "Library scan could not index {{failed}} files. Please scan again.",
+                failed = self.file
+            )));
+        } else {
+            emit_toast(Toast::error(tr!(
+                "SCAN_FAILED_TRANSACTION",
+                "Library scan hit {{failed}} database errors. Some files were not indexed — see the log for details.",
+                failed = self.transaction
+            )));
+        }
+    }
+}
+
+/// Open a transaction if the previous commit closed it. Leaves `tx` as `None`
+/// when the database refuses, and counts the miss: callers then skip the write
+/// instead of panicking.
+///
+/// Takes the fields separately rather than `&mut self` so callers can hold the
+/// resulting transaction alongside other fields of the scan.
+async fn ensure_tx(
+    tx: &mut Option<Transaction<'static, Sqlite>>,
+    pool: &SqlitePool,
+    failures: &mut ScanFailures,
+) {
+    if tx.is_none() {
+        match pool.begin().await {
+            Ok(opened) => *tx = Some(opened),
+            Err(error) => {
+                error!("could not begin scan transaction: {:?}", error);
+                failures.transaction += 1;
+            }
+        }
+    }
+}
 
 pub(super) struct ScanExecutionContext<'a> {
     pub(super) pool: &'a SqlitePool,
@@ -75,6 +163,7 @@ pub(super) struct ScanExecution<'a> {
     artist_matcher: ArtistMatcher,
     tx: Option<Transaction<'static, Sqlite>>,
     items_in_tx: usize,
+    failures: ScanFailures,
     cancelled: bool,
     discovery_complete: bool,
     discovered_total: u64,
@@ -92,13 +181,18 @@ pub(super) struct ScanExecution<'a> {
 
 impl<'a> ScanExecution<'a> {
     pub(super) async fn new(active: ActiveScan, context: ScanExecutionContext<'a>) -> Self {
-        let tx = Some(
-            context
-                .pool
-                .begin()
-                .await
-                .expect("could not begin scan transaction"),
-        );
+        let mut failures = ScanFailures::default();
+        // A scan that cannot even open a transaction still has to run to
+        // completion so the watcher is refreshed and the UI leaves the
+        // "scanning" state; every write is skipped and counted instead.
+        let tx = match context.pool.begin().await {
+            Ok(tx) => Some(tx),
+            Err(error) => {
+                error!("could not begin scan transaction: {:?}", error);
+                failures.transaction += 1;
+                None
+            }
+        };
 
         Self {
             active,
@@ -110,6 +204,7 @@ impl<'a> ScanExecution<'a> {
             artist_matcher: ArtistMatcher::new(),
             tx,
             items_in_tx: 0,
+            failures,
             cancelled: false,
             discovery_complete: false,
             discovered_total: 0,
@@ -178,7 +273,15 @@ impl<'a> ScanExecution<'a> {
                 }
 
                 result = &mut self.active.discover_handle, if !self.discovery_complete => {
-                    self.discovered_total = result.expect("discover task panicked");
+                    match result {
+                        Ok(total) => self.discovered_total = total,
+                        Err(error) => {
+                            // A panicking discovery worker must not take the
+                            // whole scan down; finish with whatever was found.
+                            error!("discover task panicked: {:?}", error);
+                            self.failures.worker_panic += 1;
+                        }
+                    }
                     self.discovery_complete = true;
 
                     if self.discovered_total == 0 {
@@ -213,25 +316,29 @@ impl<'a> ScanExecution<'a> {
                         break;
                     };
 
-                    let result = update_metadata(
-                        self.tx
-                            .as_mut()
-                            .expect("scan transaction should be active"),
-                        &metadata,
-                        &path,
-                        length,
-                        &art,
-                        self.context.mode.force_albums(),
-                        &mut self.active.caches,
-                    )
-                    .await;
+                    ensure_tx(&mut self.tx, self.context.pool, &mut self.failures).await;
+                    let result = match self.tx.as_mut() {
+                        Some(tx) => Some(
+                            update_metadata(
+                                tx,
+                                &metadata,
+                                &path,
+                                length,
+                                &art,
+                                self.context.mode.force_albums(),
+                                &mut self.active.caches,
+                            )
+                            .await,
+                        ),
+                        None => None,
+                    };
                     self.active
                         .artwork_processor
                         .mark_resolved(&art, &self.active.caches.art_ids);
 
                     self.processed += 1;
                     match result {
-                        Ok(outcome) => {
+                        Some(Ok(outcome)) => {
                             // record skipped files so later scans don't re-read them until mtime
                             // changes
                             self.pending_commit.push((path, timestamp));
@@ -243,12 +350,13 @@ impl<'a> ScanExecution<'a> {
                                 }
                             }
                         }
-                        Err(err) => {
+                        Some(Err(err)) => {
                             error!(
                                 "Failed to update metadata for file: {:?}, error: {}",
                                 path, err
                             );
                         }
+                        None => self.failures.file += 1,
                     }
 
                     if self.items_in_tx >= BATCH_SIZE {
@@ -264,16 +372,14 @@ impl<'a> ScanExecution<'a> {
     }
 
     async fn relocate(&mut self, old: Utf8PathBuf, new: Utf8PathBuf, timestamp: SystemTime) {
-        let result = relocate_track(
-            self.tx.as_mut().expect("scan transaction should be active"),
-            &mut self.artist_matcher,
-            &old,
-            &new,
-        )
-        .await;
+        ensure_tx(&mut self.tx, self.context.pool, &mut self.failures).await;
+        let result = match self.tx.as_mut() {
+            Some(tx) => Some(relocate_track(tx, &mut self.artist_matcher, &old, &new).await),
+            None => None,
+        };
 
         match result {
-            Ok(updated) => {
+            Some(Ok(updated)) => {
                 if !updated.is_empty() {
                     let _ = self
                         .context
@@ -282,12 +388,13 @@ impl<'a> ScanExecution<'a> {
                 }
                 self.pending_relocations.push((old, new, timestamp));
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 error!(
                     "Failed to relocate track from {:?} to {:?}: {:?}",
                     old, new, error
                 );
             }
+            None => self.failures.file += 1,
         }
     }
 
@@ -343,13 +450,7 @@ impl<'a> ScanExecution<'a> {
         .await;
 
         self.start_checkpoint_write().await;
-        self.tx = Some(
-            self.context
-                .pool
-                .begin()
-                .await
-                .expect("could not begin new scan transaction"),
-        );
+        ensure_tx(&mut self.tx, self.context.pool, &mut self.failures).await;
         self.items_in_tx = 0;
     }
 
@@ -407,12 +508,17 @@ impl<'a> ScanExecution<'a> {
         self.active.cancel_flag.store(true, Ordering::Relaxed);
 
         if !self.discovery_complete {
-            let _ = (&mut self.active.discover_handle)
-                .await
-                .expect("discover task panicked");
+            if let Err(error) = (&mut self.active.discover_handle).await {
+                error!("discover task panicked: {:?}", error);
+                self.failures.worker_panic += 1;
+            }
+            self.discovery_complete = true;
         }
         if let Some(task) = self.active.slow_discover_task.take() {
-            let _ = task.await.expect("discover task panicked");
+            if let Err(error) = task.await {
+                error!("slow discover task panicked: {:?}", error);
+                self.failures.worker_panic += 1;
+            }
         }
         for task in self.active.metadata_tasks.drain(..) {
             if let Err(error) = task.await {
@@ -440,15 +546,8 @@ impl<'a> ScanExecution<'a> {
 
     async fn drain_relocations(&mut self) {
         while let Ok((old, new, timestamp)) = self.active.relocate_rx.try_recv() {
-            if self.tx.is_none() {
-                self.tx = Some(
-                    self.context
-                        .pool
-                        .begin()
-                        .await
-                        .expect("could not begin scan transaction"),
-                );
-            }
+            // `relocate` opens the transaction itself and counts the miss if it
+            // cannot, so a failed BEGIN here no longer kills the scan.
             self.relocate(old, new, timestamp).await;
         }
     }
@@ -499,7 +598,7 @@ impl<'a> ScanExecution<'a> {
         )
         .await;
 
-        let scan_record = self.take_scan_record();
+        let scan_record = self.take_scan_record().await;
         self.refresh_watcher_and_complete().await;
         scan_record
     }
@@ -521,7 +620,7 @@ impl<'a> ScanExecution<'a> {
         );
 
         self.finish_checkpoint_write().await;
-        let scan_record = self.take_scan_record();
+        let scan_record = self.take_scan_record().await;
         write_scan_record(&scan_record, self.context.scan_record_path).await;
 
         // full scan record is written - checkpoint can go
@@ -539,14 +638,15 @@ impl<'a> ScanExecution<'a> {
         if self.pending_relocations.is_empty() {
             return;
         }
-        if let Err(error) = self
-            .tx
-            .take()
-            .expect("scan transaction should be active")
-            .commit()
-            .await
-        {
+        let Some(tx) = self.tx.take() else {
+            error!("No scan transaction available to commit relocations");
+            self.failures.transaction += 1;
+            self.pending_relocations.clear();
+            return;
+        };
+        if let Err(error) = tx.commit().await {
             error!("Failed to commit relocation transaction: {:?}", error);
+            self.failures.transaction += 1;
             self.pending_relocations.clear();
             return;
         }
@@ -580,13 +680,16 @@ impl<'a> ScanExecution<'a> {
         }
     }
 
-    fn take_scan_record(&mut self) -> ScanRecord {
-        Arc::try_unwrap(std::mem::replace(
+    async fn take_scan_record(&mut self) -> ScanRecord {
+        match Arc::try_unwrap(std::mem::replace(
             &mut self.active.scan_record,
             Arc::new(Mutex::new(ScanRecord::new_current())),
-        ))
-        .expect("scan_record Arc still has multiple owners")
-        .into_inner()
+        )) {
+            Ok(mutex) => mutex.into_inner(),
+            // A worker we failed to join still holds a clone. Copy the record
+            // rather than killing an otherwise finished scan over bookkeeping.
+            Err(shared) => shared.lock().await.clone(),
+        }
     }
 
     async fn refresh_watcher_and_complete(&mut self) {
@@ -602,6 +705,7 @@ impl<'a> ScanExecution<'a> {
             .context
             .event_tx
             .send(self.context.mode.completion_event(watching));
+        self.failures.report();
     }
 }
 
@@ -698,31 +802,27 @@ async fn commit_batch<'tx, 'state>(
     state: PendingCommitState<'state>,
     options: CommitOptions,
 ) {
-    if let Err(e) = flush_album_artists(
-        tx.as_mut().expect("scan transaction should be active"),
-        artist_matcher,
-        &mut caches.pending_albums,
-    )
-    .await
-    {
+    // With no transaction (an earlier BEGIN failed) there is nothing to flush
+    // into: drop the batch and let the next scan retry these files.
+    let Some(mut tx) = tx.take() else {
+        error!("No scan transaction available to commit {}", options.label);
+        clear_failed_batch(
+            artist_matcher,
+            caches,
+            state.pending_commit,
+            state.pending_relocations,
+        );
+        return;
+    };
+
+    if let Err(e) = flush_album_artists(&mut tx, artist_matcher, &mut caches.pending_albums).await {
         error!("Failed to recompute album artists: {:?}", e);
     }
-    if let Err(e) = flush_track_artists(
-        tx.as_mut().expect("scan transaction should be active"),
-        artist_matcher,
-        &mut caches.pending_tracks,
-    )
-    .await
-    {
+    if let Err(e) = flush_track_artists(&mut tx, artist_matcher, &mut caches.pending_tracks).await {
         error!("Failed to recompute track artists: {:?}", e);
     }
 
-    match tx
-        .take()
-        .expect("scan transaction should be active")
-        .commit()
-        .await
-    {
+    match tx.commit().await {
         Ok(()) => {
             if options.update_checkpoint {
                 merge_checkpoint_records(
