@@ -1,11 +1,14 @@
 use gpui::{
     AnyElement, App, ClickEvent, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder, px,
+    prelude::FluentBuilder,
 };
 use smallvec::SmallVec;
 
-use crate::ui::theme::Theme;
+use crate::ui::{
+    design::{SPACE_HAIRLINE, SPACE_SM},
+    theme::Theme,
+};
 
 type ClickEvHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -55,7 +58,7 @@ impl RenderOnce for Label {
             .flex()
             .overflow_hidden()
             .text_sm()
-            .gap(px(6.0))
+            .gap(SPACE_SM)
             .child(
                 div()
                     .flex()
@@ -63,6 +66,9 @@ impl RenderOnce for Label {
                     .w_full()
                     .flex_shrink(1.0)
                     .flex_col()
+                    // Title over subtext: the hairline gap separates the two
+                    // levels of information without loosening the row itself.
+                    .gap(SPACE_HAIRLINE)
                     .my_auto()
                     .child(div().overflow_hidden().child(self.text))
                     .when_some(self.subtext, |this, that| {

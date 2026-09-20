@@ -8,6 +8,7 @@ mod command_palette;
 pub mod components;
 mod constants;
 mod controls;
+pub(crate) mod design;
 mod equalizer;
 mod global_actions;
 mod header;

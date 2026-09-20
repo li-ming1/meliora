@@ -3,7 +3,7 @@ use gpui::{
     Styled, Window, div, prelude::FluentBuilder, px,
 };
 
-use crate::ui::theme::Theme;
+use crate::ui::{design::SPACE_XS, theme::Theme};
 
 #[derive(IntoElement)]
 pub struct SectionHeader {
@@ -39,7 +39,7 @@ impl RenderOnce for SectionHeader {
         self.parent_div
             .flex()
             .flex_col()
-            .gap(px(4.0))
+            .gap(SPACE_XS)
             .child(
                 div()
                     .flex()

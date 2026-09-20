@@ -23,6 +23,7 @@ use crate::{
         save_settings,
     },
     ui::command_palette::OpenPalette,
+    ui::design::{SPACE_LG, SPACE_SM},
     ui::components::{
         button::{ButtonIntent, ButtonStyle, button},
         checkbox::checkbox,
@@ -245,7 +246,7 @@ impl Render for InterfaceSettings {
         let body = div()
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(SPACE_LG)
             .child(section_header(tr!("INTERFACE")))
             .child(
                 label("language-selector", tr!("LANGUAGE", "Language"))
@@ -266,7 +267,7 @@ impl Render for InterfaceSettings {
                     ))
                     .w_full()
                     .child(
-                        div().flex().flex_col().gap(px(8.0)).child(theme_dropdown).child(
+                        div().flex().flex_col().gap(SPACE_SM).child(theme_dropdown).child(
                             button()
                                 .style(ButtonStyle::Regular)
                                 .intent(ButtonIntent::Secondary)
@@ -478,7 +479,7 @@ impl Render for InterfaceSettings {
             ))
             .w_full()
             .child(
-                div().mt(px(6.0)).child(
+                div().mt(SPACE_SM).child(
                     button()
                         .style(ButtonStyle::Regular)
                         .intent(ButtonIntent::Secondary)

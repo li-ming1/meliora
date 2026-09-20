@@ -1,7 +1,7 @@
 use gpui::{prelude::FluentBuilder, *};
 
 use crate::ui::components::icons::{CHECK, icon};
-use crate::ui::theme::Theme;
+use crate::ui::{design::ICON_MD, theme::Theme};
 
 #[derive(IntoElement)]
 pub struct Checkbox {
@@ -66,12 +66,7 @@ impl RenderOnce for Checkbox {
                 },
             )
             .when(self.checked, |this| {
-                this.child(
-                    icon(CHECK)
-                        .size(px(16.0))
-                        .text_color(theme.checkbox_checked)
-                        .mr(px(1.0)),
-                )
+                this.child(icon(CHECK).size(ICON_MD).text_color(theme.checkbox_checked))
             })
     }
 }
