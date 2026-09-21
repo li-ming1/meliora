@@ -1,3 +1,4 @@
+use crate::ui::design::ICON_SM;
 use gpui::{prelude::FluentBuilder, *};
 use smallvec::SmallVec;
 
@@ -169,7 +170,7 @@ impl RenderOnce for WindowButton {
                         }
                     }
                 })
-                .size(px(14.0)),
+                .size(ICON_SM),
             )
             .when(matches!(self, WindowButton::Close(_)), |this| {
                 this.rounded_tr(px(theme.radius_md))

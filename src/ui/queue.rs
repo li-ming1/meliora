@@ -1,3 +1,4 @@
+use crate::ui::design::ICON_SM;
 use crate::{
     library::db::LibraryAccess,
     playback::{interface::PlaybackInterface, queue::QueueItemData},
@@ -1066,7 +1067,7 @@ impl Render for Queue {
                             .ml_auto()
                             .style(ButtonStyle::Minimal)
                             .size(ButtonSize::Large)
-                            .child(icon(TRASH).size(px(14.0)).my_auto())
+                            .child(icon(TRASH).size(ICON_SM).my_auto())
                             .child(tr!("CLEAR_QUEUE", "Clear"))
                             .id("clear-queue")
                             .on_click(|_, _, cx| {

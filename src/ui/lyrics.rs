@@ -9,6 +9,7 @@ use crate::ui::kugou::{OnlineLyric, fetch_online_lyric};
 #[cfg(feature = "netease")]
 use crate::ui::netease::fetch_online_lyric as fetch_netease_lyric;
 
+use crate::ui::design::ICON_MD;
 use crate::{
     library::scan::ScanEvent,
     playback::{interface::PlaybackInterface, thread::PlaybackState},
@@ -590,7 +591,7 @@ impl Render for Lyrics {
                         .gap_2()
                         .items_center()
                         .text_color(muted)
-                        .child(icon(MICROPHONE).size(px(16.0)))
+                        .child(icon(MICROPHONE).size(ICON_MD))
                         .child(tr!("NO_LYRICS", "No lyrics")),
                 )
                 .into_any_element()

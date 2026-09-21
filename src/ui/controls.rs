@@ -87,6 +87,7 @@ use super::{
 
 use crate::library::types::Track;
 use crate::settings::storage::{DEFAULT_CONTROLS_LEFT_WIDTH, DEFAULT_CONTROLS_RIGHT_WIDTH};
+use crate::ui::design::{ICON_MD, ICON_SM};
 use crate::ui::util::format_duration;
 
 pub struct Controls {
@@ -637,7 +638,7 @@ impl Render for InfoSection {
                                         .active(|this| this.bg(theme.button_secondary_active))
                                         .child(
                                             icon(if is_liked_filled { STAR_FILLED } else { STAR })
-                                                .size(px(14.0))
+                                                .size(ICON_SM)
                                                 .text_color(if is_liked_filled {
                                                     theme.liked_song
                                                 } else {
@@ -917,7 +918,7 @@ impl Render for PlaybackSection {
                     .on_click(|_, _, cx| {
                         cx.global::<PlaybackInterface>().toggle_shuffle();
                     })
-                    .child(icon(SHUFFLE).size(px(14.0)).when(*shuffling, |this| {
+                    .child(icon(SHUFFLE).size(ICON_SM).when(*shuffling, |this| {
                         this.text_color(theme.playback_button_toggled)
                     }))
                     .when_else(
@@ -951,7 +952,7 @@ impl Render for PlaybackSection {
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(Previous), cx);
                             })
-                            .child(icon(PREV_TRACK).size(px(16.0)))
+                            .child(icon(PREV_TRACK).size(ICON_MD))
                             .tooltip(build_tooltip(tr!("PREVIOUS_TRACK", "Previous Track")))
                             .into_transition(theme.playback_button, theme.playback_button_hover),
                     )
@@ -980,11 +981,11 @@ impl Render for PlaybackSection {
                                         window.dispatch_action(Box::new(PlayPause), cx);
                                     })
                                     .when(*state == PlaybackState::Playing, |div| {
-                                        div.child(icon(PAUSE).size(px(16.0)))
+                                        div.child(icon(PAUSE).size(ICON_MD))
                                             .tooltip(build_tooltip(tr!("PAUSE")))
                                     })
                                     .when(*state != PlaybackState::Playing, |div| {
-                                        div.child(icon(PLAY).size(px(16.0)))
+                                        div.child(icon(PLAY).size(ICON_MD))
                                             .tooltip(build_tooltip(tr!("PLAY")))
                                     })
                                     .when(stop_after_current, |this| {
@@ -1036,7 +1037,7 @@ impl Render for PlaybackSection {
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(Next), cx);
                             })
-                            .child(icon(NEXT_TRACK).size(px(16.0)))
+                            .child(icon(NEXT_TRACK).size(ICON_MD))
                             .tooltip(build_tooltip(tr!("NEXT_TRACK", "Next Track")))
                             .into_transition(theme.playback_button, theme.playback_button_hover),
                     ),
@@ -1095,7 +1096,7 @@ impl Render for PlaybackSection {
                                         }
                                         RepeatState::RepeatingOne => REPEAT_ONCE,
                                     })
-                                    .size(px(14.0))
+                                    .size(ICON_SM)
                                     .text_color(repeat_icon_color),
                                 ),
                         )
@@ -1327,7 +1328,7 @@ impl RenderOnce for SidebarToggleButton {
             .cursor_pointer()
             .hover(|this| this.bg(theme.playback_button_hover))
             .active(|this| this.bg(theme.playback_button_active))
-            .child(icon(self.icon_path).size(px(14.0)).text_color(icon_color))
+            .child(icon(self.icon_path).size(ICON_SM).text_color(icon_color))
     }
 }
 
@@ -1404,14 +1405,14 @@ impl Render for SecondaryControls {
                         .hover(|this| this.bg(theme.playback_button_hover))
                         .active(|this| this.bg(theme.playback_button_active))
                         .when(volume <= 0.0, |div| {
-                            div.child(icon(VOLUME_OFF).size(px(14.0)))
+                            div.child(icon(VOLUME_OFF).size(ICON_SM))
                                 .on_click(move |_, _, cx| {
                                     cx.global::<PlaybackInterface>().set_volume(prev_volume);
                                 })
                                 .tooltip(build_tooltip(tr!("UNMUTE", "Unmute")))
                         })
                         .when(volume > 0.0, |div| {
-                            div.child(icon(VOLUME).size(px(14.0)))
+                            div.child(icon(VOLUME).size(ICON_SM))
                                 .on_click(move |_, _, cx| {
                                     cx.global::<PlaybackInterface>().set_volume(0 as f64);
                                 })

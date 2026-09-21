@@ -5,6 +5,7 @@ use gpui::{
 
 use crate::ui::{
     components::{icons::icon, transition::HoverTransition},
+    design::ICON_MD,
     theme::Theme,
 };
 
@@ -57,7 +58,7 @@ impl RenderOnce for NavButton {
                     .bg(theme.nav_button_active)
                     .border_color(theme.nav_button_active_border)
             })
-            .child(icon(self.icon).size(px(16.0)));
+            .child(icon(self.icon).size(ICON_MD));
 
         if !self.enabled {
             return div.opacity(0.35).into_any_element();

@@ -6,6 +6,7 @@ mod table_item;
 
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
+use crate::ui::design::ICON_SM;
 use crate::{
     settings::{
         SettingsGlobal,
@@ -642,7 +643,7 @@ where
                                 } else {
                                     CHEVRON_DOWN
                                 })
-                                .size(px(14.0))
+                                .size(ICON_SM)
                                 .ml(px(4.0))
                                 .flex_shrink_0()
                                 .my_auto(),

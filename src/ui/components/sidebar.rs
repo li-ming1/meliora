@@ -7,7 +7,7 @@ use gpui::{
 
 use crate::{
     settings::storage::DEFAULT_SIDEBAR_WIDTH,
-    ui::{components::icons::icon, theme::Theme},
+    ui::{components::icons::icon, design::ICON_MD, theme::Theme},
 };
 
 pub enum MaybeStateful<T> {
@@ -287,13 +287,14 @@ impl RenderOnce for SidebarItem {
                 this.bg(theme.nav_button_active)
                     .border_color(theme.nav_button_active_border)
             })
+            // Placeholder reserves the same box the icon would occupy.
             .when_none(&self.icon, |this| {
-                this.child(div().size(px(18.0)).flex_shrink_0().min_w(px(18.0)))
+                this.child(div().size(ICON_MD).flex_shrink_0().min_w(ICON_MD))
             })
             .when_some(self.icon, |this, used_icon| {
                 this.child(
                     icon(used_icon)
-                        .size(px(18.0))
+                        .size(ICON_MD)
                         .flex_shrink_0()
                         .min_w(px(18.0)),
                 )

@@ -1,3 +1,4 @@
+use crate::ui::design::{ICON_MD, ICON_SM};
 use camino::{Utf8Path, Utf8PathBuf};
 use cntp_i18n::tr;
 use gpui::{
@@ -176,7 +177,7 @@ impl Render for LibrarySettings {
                     .bg(theme.background_secondary)
                     .child(
                         icon(FOLDER_SEARCH)
-                            .size(px(16.0))
+                            .size(ICON_MD)
                             .text_color(theme.text_secondary),
                     )
                     .child(
@@ -191,7 +192,7 @@ impl Render for LibrarySettings {
                         button()
                             .style(ButtonStyle::Minimal)
                             .intent(ButtonIntent::Secondary)
-                            .child(icon(TRASH).size(px(14.0)))
+                            .child(icon(TRASH).size(ICON_SM))
                             .id(format!("library-scan-remove-{idx}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if LibrarySettings::remove_folder(settings.clone(), &path_clone, cx)
@@ -284,7 +285,7 @@ impl Render for LibrarySettings {
                             div()
                                 .flex()
                                 .gap(px(6.0))
-                                .child(icon(CIRCLE_PLUS).my_auto().size(px(14.0)))
+                                .child(icon(CIRCLE_PLUS).my_auto().size(ICON_SM))
                                 .child(tr!("SCANNING_ADD_FOLDERS", "Add Folders")),
                         )
                         .id("library-settings-add-folder")

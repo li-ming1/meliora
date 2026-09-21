@@ -1,4 +1,5 @@
 use super::{library::ViewSwitchMessage, models::Models, theme::Theme};
+use crate::ui::design::ICON_SM;
 use crate::{
     library::scan::ScanEvent,
     settings::SettingsGlobal,
@@ -118,6 +119,7 @@ impl Render for Header {
                     .items_center()
                     .justify_center()
                     .when(collapsed, |this| this.pl(px(8.0)))
+                    // Not an icon: the brand mark, sized independently of ICON_*.
                     .child(img("!bundled:images/logo.png").size(px(20.0)).rounded_sm())
                     .when(!collapsed, |this| {
                         this.gap(px(8.0)).pl(px(14.0)).child(
@@ -204,7 +206,7 @@ impl Render for ScanStatus {
                                 ScanEvent::ScanCompleteWatching => FOLDER_BOLT,
                                 _ => unreachable!(),
                             })
-                            .size(px(14.0)),
+                            .size(ICON_SM),
                         ),
                     )
                 },
@@ -296,7 +298,7 @@ pub fn search_bar(cx: &App) -> impl IntoElement {
         .on_click(|_, window, cx| {
             window.dispatch_action(Box::new(Search), cx);
         })
-        .child(icon(SEARCH).size(px(14.0)).text_color(theme.text_secondary))
+        .child(icon(SEARCH).size(ICON_SM).text_color(theme.text_secondary))
         .child(
             div()
                 .text_sm()

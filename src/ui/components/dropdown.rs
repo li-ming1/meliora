@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::ui::design::ICON_MD;
 use cntp_i18n::tr;
 use gpui::{
     Anchor, App, Div, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -106,7 +107,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
             )
             .child(
                 icon(CHEVRON_DOWN)
-                    .size(px(16.0))
+                    .size(ICON_MD)
                     .flex_shrink_0()
                     .text_color(theme.text_secondary),
             )
@@ -269,7 +270,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                                 .justify_center()
                                 .when(is_selected, |this| {
                                     this.child(
-                                        icon(CHECK).size(px(18.0)).text_color(theme.text_secondary),
+                                        icon(CHECK).size(ICON_MD).text_color(theme.text_secondary),
                                     )
                                 }),
                         )

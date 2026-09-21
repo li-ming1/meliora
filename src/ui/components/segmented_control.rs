@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::ui::design::ICON_MD;
 use gpui::{
     App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
@@ -135,7 +136,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
             let segment = match content {
                 SegmentContent::Label(label) => segment.child(label.clone()),
                 SegmentContent::Icon { path, tooltip } => segment
-                    .child(icon(path.clone()).size(px(16.0)).text_color(text_color))
+                    .child(icon(path.clone()).size(ICON_MD).text_color(text_color))
                     .tooltip(build_tooltip(tooltip.clone())),
             };
 

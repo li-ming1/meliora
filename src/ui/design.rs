@@ -74,3 +74,7 @@ pub const ICON_MD: Pixels = px(16.0);
 
 /// Primary affordance: transport controls, section headers.
 pub const ICON_LG: Pixels = px(20.0);
+
+/// Only for an icon centered in its own circular badge. Anything else at this
+/// size wants a button, not an icon.
+pub const ICON_XL: Pixels = px(28.0);

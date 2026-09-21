@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::ui::design::ICON_MD;
 use cntp_i18n::tr;
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, FontWeight, IntoElement, ParentElement, RenderOnce,
@@ -60,7 +61,7 @@ impl PlaybackControls {
             .when(disabled, |this| this.opacity(0.5).cursor_default())
             .when(!disabled, |this| this.on_click(on_click))
             .tooltip(build_tooltip(tooltip_text))
-            .child(icon(icon_name).size(px(16.0)).my_auto())
+            .child(icon(icon_name).size(ICON_MD).my_auto())
     }
 }
 
@@ -102,7 +103,7 @@ impl RenderOnce for PlaybackControls {
                         } else {
                             PLAY
                         })
-                        .size(px(16.0))
+                        .size(ICON_MD)
                         .my_auto(),
                     )
                     .child(div().child(if is_current && is_playing {

@@ -1,5 +1,6 @@
 use std::{rc::Rc, sync::Arc, time::Duration};
 
+use crate::ui::design::ICON_MD;
 use cntp_i18n::tr;
 use gpui::*;
 use prelude::FluentBuilder;
@@ -400,7 +401,7 @@ impl ReleaseView {
             .when(!has_tracks, |this| this.opacity(0.5))
             .child(
                 icon(if all_liked { STAR_FILLED } else { STAR })
-                    .size(px(16.0))
+                    .size(ICON_MD)
                     .text_color(if all_liked {
                         theme.liked_song
                     } else {
@@ -436,7 +437,7 @@ impl ReleaseView {
                             cx.notify();
                         }),
                     )
-                    .child(icon(DOTS_VERTICAL).size(px(16.0)).my_auto()),
+                    .child(icon(DOTS_VERTICAL).size(ICON_MD).my_auto()),
             )
             .when(menu_open, |this| {
                 let album = Rc::new((*self.album).clone());

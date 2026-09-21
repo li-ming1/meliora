@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
@@ -499,7 +500,7 @@ impl Render for EqualizerView {
                             "EQ_CLIP_TOOLTIP",
                             "Output is clipping — lower band gains. Click to dismiss."
                         )))
-                        .child(icon(ALERT_CIRCLE).my_auto().size(px(12.0)))
+                        .child(icon(ALERT_CIRCLE).my_auto().size(ICON_SM))
                         .child(
                             div()
                                 .text_xs()

@@ -1,3 +1,4 @@
+use crate::ui::design::ICON_MD;
 use gpui::{prelude::FluentBuilder, *};
 
 use crate::ui::{
@@ -189,7 +190,7 @@ impl RenderOnce for MenuItem {
                 self.icon_color.unwrap_or(theme.text_secondary)
             };
             let icon = icon_container().when_some(self.icon_path, |this, icon_path| {
-                this.child(icon(icon_path).size(px(18.0)).text_color(icon_color))
+                this.child(icon(icon_path).size(ICON_MD).text_color(icon_color))
             });
 
             self.base.render(theme, icon, None)
@@ -235,7 +236,7 @@ impl RenderOnce for CheckMenuItem {
         };
 
         let icon = icon_container().when_some(icon_path, |this, path| {
-            this.child(icon(path).size(px(18.0)).text_color(if self.base.disabled {
+            this.child(icon(path).size(ICON_MD).text_color(if self.base.disabled {
                 theme.text_disabled
             } else {
                 theme.text_secondary

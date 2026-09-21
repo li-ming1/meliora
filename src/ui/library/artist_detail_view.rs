@@ -40,6 +40,7 @@ use crate::{
 };
 
 use super::ViewSwitchMessage;
+use crate::ui::design::ICON_MD;
 
 type GridHandler = dyn Fn(&mut App, &(u32, String)) + 'static;
 
@@ -526,7 +527,7 @@ impl Render for ArtistDetailView {
                                                         SORT_ASCENDING
                                                     })
                                                     .text_color(theme.text_secondary)
-                                                    .size(px(16.0)),
+                                                    .size(ICON_MD),
                                                 )
                                                 .tooltip(if Self::is_descending(self.liked_sort) {
                                                     build_tooltip(tr!(
@@ -628,7 +629,7 @@ impl Render for ArtistDetailView {
                                                     },
                                                 )
                                                 .text_color(theme.text_secondary)
-                                                .size(px(16.0)),
+                                                .size(ICON_MD),
                                             )
                                             .tooltip(
                                                 if Self::is_descending(self.standalone_sort) {

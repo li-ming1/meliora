@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
     Anchor, App, InteractiveElement, IntoElement, ParentElement, Pixels, Point, RenderOnce, Styled,
@@ -211,7 +212,7 @@ impl RenderOnce for BandEditor {
                     } else {
                         tr!("EQ_BAND_DISABLED", "Disabled")
                     }))
-                    .child(icon(POWER).size(px(12.0)))
+                    .child(icon(POWER).size(ICON_SM))
                     .on_click({
                         let on_edit = on_edit.clone();
                         move |_, _, cx| on_edit(BandEdit::Enabled(!band.enabled), cx)
@@ -223,7 +224,7 @@ impl RenderOnce for BandEditor {
                     .intent(ButtonIntent::Danger)
                     .size(ButtonSize::Small)
                     .tooltip(build_tooltip(tr!("EQ_BAND_REMOVE", "Remove")))
-                    .child(icon(TRASH).size(px(12.0)))
+                    .child(icon(TRASH).size(ICON_SM))
                     .on_click({
                         let on_remove = self.on_remove.clone();
                         move |_, _, cx| on_remove(cx)

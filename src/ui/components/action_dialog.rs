@@ -11,6 +11,7 @@ use crate::ui::{
         icons::{ALERT_CIRCLE, FOLDER_X, icon},
         modal,
     },
+    design::{ICON_LG, ICON_MD, ICON_XL},
     theme::Theme,
 };
 
@@ -261,7 +262,7 @@ fn render_action(action: ActionDialogAction) -> impl IntoElement {
                 .items_center()
                 .overflow_x_hidden()
                 .gap(px(12.0))
-                .child(icon(icon_path).size(px(22.0)).flex_shrink_0())
+                .child(icon(icon_path).size(ICON_LG).flex_shrink_0())
                 .child(
                     div()
                         .flex()
@@ -313,7 +314,7 @@ fn render_details(details: ActionDialogDetails, theme: &Theme) -> impl IntoEleme
                     .px(px(6.0))
                     .rounded(px(theme.radius_sm))
                     .when_some(item_icon, |this, icon_path| {
-                        this.child(icon(icon_path).size(px(16.0)).flex_shrink_0())
+                        this.child(icon(icon_path).size(ICON_MD).flex_shrink_0())
                     })
                     .child(
                         div()
@@ -364,7 +365,7 @@ impl RenderOnce for ActionDialog {
                                 .bg(circle_bg)
                                 .border_1()
                                 .border_color(circle_border)
-                                .child(icon(resolved_icon).size(px(28.0)).text_color(icon_color)),
+                                .child(icon(resolved_icon).size(ICON_XL).text_color(icon_color)),
                         )
                         .child(
                             div()

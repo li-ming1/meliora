@@ -11,6 +11,7 @@ use crate::{
 use cntp_i18n::tr;
 use gpui::{prelude::FluentBuilder, *};
 
+use crate::ui::design::ICON_SM;
 use crate::ui::theme::Theme;
 
 pub struct ReplayGainButton {
@@ -79,7 +80,7 @@ impl Render for ReplayGainButton {
                     )
                     .child(
                         icon(ADJUSTMENTS)
-                            .size(px(14.0))
+                            .size(ICON_SM)
                             .when(rg_mode != ReplayGainMode::Off, |this| {
                                 this.text_color(theme.playback_button_toggled)
                             }),

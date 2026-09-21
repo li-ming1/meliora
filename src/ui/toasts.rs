@@ -1,3 +1,4 @@
+use crate::ui::design::{ICON_LG, ICON_SM};
 use gpui::{
     Anchor, Animation, AnimationExt, App, AppContext, Context, ElementId, Entity,
     InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
@@ -208,7 +209,7 @@ fn render_toast(
                 .border_r_1()
                 .p(px(10.0))
                 .border_color(border)
-                .child(icon(icon_path).size(px(20.0))),
+                .child(icon(icon_path).size(ICON_LG)),
         )
         .child(
             div()
@@ -238,7 +239,7 @@ fn render_toast(
                 .p(px(6.0))
                 .items_start()
                 .cursor_pointer()
-                .child(icon(CROSS).size(px(14.0)))
+                .child(icon(CROSS).size(ICON_SM))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.dismiss(id, cx);

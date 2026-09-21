@@ -45,6 +45,7 @@ use crate::{
 };
 
 use super::track_item::TrackPlaylistInfo;
+use crate::ui::design::ICON_LG;
 
 actions!(playlist, [Export, Import]);
 
@@ -727,7 +728,7 @@ impl Render for PlaylistView {
                                                                         },
                                                                     )
                                                                     .text_color(theme.text_secondary)
-                                                                    .size(px(20.0)),
+                                                                    .size(ICON_LG),
                                                                 )
                                                                 .tooltip(
                                                                     if Self::is_descending(self.sort_method)

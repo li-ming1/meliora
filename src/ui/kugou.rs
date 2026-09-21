@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
     App, ClickEvent, FontWeight, InteractiveElement, IntoElement, ParentElement, RenderImage,
@@ -1415,7 +1416,7 @@ where
             button()
                 // composite ids scoped under the row's `.id((id_prefix, index))`
                 .id(("like", index))
-                .child(icon(if liked { STAR_FILLED } else { STAR }).size(px(14.0)))
+                .child(icon(if liked { STAR_FILLED } else { STAR }).size(ICON_SM))
                 .text_color(if liked {
                     theme.liked_song
                 } else {
@@ -1429,7 +1430,7 @@ where
         .child(
             button()
                 .id(("download", index))
-                .child(icon(DOWNLOAD).size(px(14.0)))
+                .child(icon(DOWNLOAD).size(ICON_SM))
                 .text_color(theme.text_secondary)
                 .tooltip(build_tooltip(download_label()))
                 .on_click(move |event, window, cx| {

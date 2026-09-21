@@ -14,6 +14,7 @@ use crate::ui::models::{HasLikedState, subscribe_liked_updates, toggle_like};
 use crate::ui::util::format_duration;
 
 use crate::library::types::{DBString, Track};
+use crate::ui::design::ICON_SM;
 use crate::ui::{
     availability::is_track_available,
     components::context::context,
@@ -377,7 +378,7 @@ impl Render for TrackItem {
                                                 } else {
                                                     STAR
                                                 })
-                                                .size(px(14.0))
+                                                .size(ICON_SM)
                                                 .text_color(if self.is_liked.is_some() {
                                                     theme.liked_song
                                                 } else {

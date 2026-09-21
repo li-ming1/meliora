@@ -7,6 +7,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
+use crate::ui::design::ICON_LG;
 use crate::ui::{components::icons::icon, theme::Theme};
 
 #[derive(IntoElement)]
@@ -62,7 +63,7 @@ impl RenderOnce for Callout {
                         .border_r_1()
                         .p(px(8.0))
                         .border_color(theme.callout_border)
-                        .child(icon(the_icon).size(px(22.0))),
+                        .child(icon(the_icon).size(ICON_LG)),
                 )
             })
             .child(

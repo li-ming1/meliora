@@ -29,6 +29,7 @@ use crate::ui::components::icons::RANKING;
 use crate::ui::components::icons::icon;
 use crate::ui::components::icons::{FOLDER, MOON, MUSIC, SETTINGS, SIDEBAR, SIDEBAR_INACTIVE, SUN};
 use crate::ui::components::tooltip::build_tooltip;
+use crate::ui::design::ICON_SM;
 use crate::ui::{
     components::{
         icons::{DISC, USERS},
@@ -105,14 +106,14 @@ fn account_pill(
     if collapsed {
         pill.w(px(28.0))
             .justify_center()
-            .child(icon(brand_icon).size(px(14.0)).text_color(tint))
+            .child(icon(brand_icon).size(ICON_SM).text_color(tint))
     } else {
         pill.w_full()
             .px(px(9.0))
             .gap(px(6.0))
             .child(
                 icon(brand_icon)
-                    .size(px(14.0))
+                    .size(ICON_SM)
                     .flex_shrink_0()
                     .text_color(tint),
             )

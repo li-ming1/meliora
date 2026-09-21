@@ -2,6 +2,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
+use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Context, Entity, IntoElement, ParentElement, Render, RenderImage,
@@ -348,7 +349,7 @@ impl Render for NeteaseSettings {
                     .child(
                         button()
                             .id("netease-download-dir-browse")
-                            .child(icon(FOLDER).size(px(14.0)))
+                            .child(icon(FOLDER).size(ICON_SM))
                             .tooltip(build_tooltip(select_download_dir_label()))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.download_dir.browse(select_download_dir_label().into(), cx);

@@ -1,3 +1,4 @@
+use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
@@ -93,7 +94,7 @@ impl Render for EqualizerSettings {
                                     } else {
                                         tr!("EQ_ENABLE", "Enable equalizer")
                                     }))
-                                    .child(icon(POWER).size(px(14.0)))
+                                    .child(icon(POWER).size(ICON_SM))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let enabled = !this.view.read(cx).enabled();
                                         this.view
