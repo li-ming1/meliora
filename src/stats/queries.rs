@@ -218,4 +218,136 @@ mod tests {
         assert_eq!(recent[1].0, "Song A");
         assert_eq!(recent[1].2, 30);
     }
+
+    fn meta(title: &str, artist: &str, album: &str) -> TrackMeta {
+        TrackMeta {
+            title: title.into(),
+            artist: artist.into(),
+            album: album.into(),
+        }
+    }
+
+    /// The point of grouping on the song instead of the track_key: playing the
+    /// same song from disk, from NetEase and from KuGou is one song, not three.
+    #[tokio::test]
+    async fn top_tracks_folds_every_source_of_one_song() {
+        let pool = test_pool().await;
+        write_rows(
+            &pool,
+            vec![
+                ListenRow {
+                    ts: 100,
+                    track_key: "local:/music/song.mp3".into(),
+                    seconds: 120,
+                    meta: Some(meta("Song A", "X", "L")),
+                },
+                ListenRow {
+                    ts: 200,
+                    track_key: "netease:12345".into(),
+                    seconds: 60,
+                    meta: Some(meta("Song A", "X", "L")),
+                },
+                ListenRow {
+                    ts: 300,
+                    track_key: "kugou:999".into(),
+                    seconds: 30,
+                    // Different casing and padding: still the same song.
+                    meta: Some(meta(" song a ", "x", "L")),
+                },
+            ],
+        )
+        .await;
+
+        let tracks = top_tracks(&pool, 0).await.unwrap();
+        assert_eq!(tracks.len(), 1, "all three sources should be one entry");
+        assert_eq!(tracks[0].2, 210, "120 + 60 + 30");
+    }
+
+    /// A moved or renamed file keeps its history, because the local key is no
+    /// longer what the rows are grouped on.
+    #[tokio::test]
+    async fn top_tracks_survives_a_file_move() {
+        let pool = test_pool().await;
+        write_rows(
+            &pool,
+            vec![
+                ListenRow {
+                    ts: 100,
+                    track_key: "local:/old/song.mp3".into(),
+                    seconds: 90,
+                    meta: Some(meta("Song A", "X", "L")),
+                },
+                ListenRow {
+                    ts: 200,
+                    track_key: "local:/new/song.mp3".into(),
+                    seconds: 45,
+                    meta: Some(meta("Song A", "X", "L")),
+                },
+            ],
+        )
+        .await;
+
+        let tracks = top_tracks(&pool, 0).await.unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].2, 135);
+    }
+
+    /// Folding must not over-merge: different songs stay apart, and rows with
+    /// no metadata keep their own entry rather than collapsing into one blank.
+    #[tokio::test]
+    async fn top_tracks_keeps_distinct_songs_and_unresolved_rows_apart() {
+        let pool = test_pool().await;
+        write_rows(
+            &pool,
+            vec![
+                ListenRow {
+                    ts: 100,
+                    track_key: "local:/a.mp3".into(),
+                    seconds: 60,
+                    meta: Some(meta("Song A", "X", "L")),
+                },
+                ListenRow {
+                    ts: 200,
+                    track_key: "local:/b.mp3".into(),
+                    seconds: 50,
+                    meta: Some(meta("Song B", "X", "L")),
+                },
+                // Same title, different artist: a cover, not the same track.
+                ListenRow {
+                    ts: 300,
+                    track_key: "local:/c.mp3".into(),
+                    seconds: 40,
+                    meta: Some(meta("Song A", "Y", "L")),
+                },
+                // No resolvable metadata: must not merge with the blank rows.
+                ListenRow {
+                    ts: 400,
+                    track_key: "local:/d.mp3".into(),
+                    seconds: 30,
+                    meta: None,
+                },
+                ListenRow {
+                    ts: 500,
+                    track_key: "local:/e.mp3".into(),
+                    seconds: 20,
+                    meta: None,
+                },
+            ],
+        )
+        .await;
+
+        let tracks = top_tracks(&pool, 0).await.unwrap();
+        assert_eq!(
+            tracks.len(),
+            5,
+            "each distinct song, plus each unresolved row"
+        );
+        assert_eq!(tracks[0].0, "Song A");
+        assert_eq!(tracks[0].2, 60);
+        assert_eq!(tracks[1].0, "Song B");
+        assert_eq!(tracks[2].2, 40);
+        // The two unresolved rows stay separate instead of summing to 50.
+        assert_eq!(tracks[3].2, 30);
+        assert_eq!(tracks[4].2, 20);
+    }
 }
