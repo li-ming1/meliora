@@ -139,7 +139,28 @@ impl NavigationHistory {
 
     /// Navigates to a new view. All history entries after the cursor are discarded, then the new
     /// view is appended and the cursor advances to it. History is capped at 100 entries.
-    pub fn navigate(&mut self, message: ViewSwitchMessage) {
+    ///
+    /// Navigating to the page the cursor already sits on is a no-op. Appending a duplicate entry
+    /// would make the back button look broken: it stays enabled (the cursor is past the start), but
+    /// pressing it walks onto an identical page and nothing visibly changes. Clicking the sidebar
+    /// item you are already on is an ordinary thing to do, so this is handled here rather than
+    /// relying on every call site to check first.
+    ///
+    /// Returns whether the history actually moved.
+    pub fn navigate(&mut self, message: ViewSwitchMessage) -> bool {
+        if self.current() == message {
+            return false;
+        }
+
+        // Re-focusing inside the page the user is already on - the same album,
+        // a different track - replaces the current entry instead of appending.
+        // Appending would make back land on that very same album again, which
+        // reads as a dead button.
+        if is_refocus_of(self.current(), message) {
+            self.history[self.cursor] = message;
+            return true;
+        }
+
         // Drop any forward history.
         self.history.truncate(self.cursor + 1);
 
@@ -155,6 +176,7 @@ impl NavigationHistory {
 
         self.history.push(message);
         self.cursor = self.history.len() - 1;
+        true
     }
 
     fn eviction_index(&self) -> usize {
@@ -210,6 +232,16 @@ impl NavigationHistory {
                 .min(self.history.len() - 1);
         }
     }
+}
+
+/// Whether `next` is the same page as `current` opened at a different target:
+/// currently only the same album at another track. Such a move is a re-focus
+/// within a page, not a step in the browsing history.
+fn is_refocus_of(current: ViewSwitchMessage, next: ViewSwitchMessage) -> bool {
+    matches!(
+        (current, next),
+        (ViewSwitchMessage::Release(a, _), ViewSwitchMessage::Release(b, _)) if a == b
+    )
 }
 
 impl Default for NavigationHistory {
@@ -579,12 +611,20 @@ impl Library {
                         }
 
                         _ => {
-                            m.update(cx, |history, cx| {
-                                history.navigate(*message);
+                            let navigated = m.update(cx, |history, cx| {
+                                let navigated = history.navigate(*message);
                                 cx.notify();
+                                navigated
                             });
 
-                            make_view(message, cx, &m, &this.scroll_state)
+                            // Re-navigating to the current page is a no-op, and
+                            // rebuilding the view for it would drop anything the
+                            // page holds that is not in the scroll state.
+                            if navigated {
+                                make_view(message, cx, &m, &this.scroll_state)
+                            } else {
+                                this.view.clone()
+                            }
                         }
                     };
 
@@ -992,5 +1032,136 @@ pub(crate) fn observe_scan_for_table<
             });
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Deliberately not `use super::*`: re-importing the module's GPUI glob
+    // pushes `#[test]` expansion past the default recursion limit.
+    use super::{NavigationHistory, ViewSwitchMessage};
+
+    fn history() -> NavigationHistory {
+        NavigationHistory::new(ViewSwitchMessage::Albums)
+    }
+
+    /// The reported symptom, minimal: tap the sidebar item you are already on,
+    /// then press back. The duplicate entry used to swallow the step, leaving
+    /// the button enabled while it walked onto an identical page.
+    #[test]
+    fn re_navigating_to_the_current_page_does_not_grow_history() {
+        let mut h = history();
+        assert!(!h.navigate(ViewSwitchMessage::Albums));
+        assert_eq!(h.history.len(), 1);
+        assert!(!h.can_go_back(), "back must stay disabled after a no-op");
+    }
+
+    #[test]
+    fn clicking_the_current_sidebar_item_keeps_back_meaningful() {
+        let mut h = history();
+        h.navigate(ViewSwitchMessage::Artists);
+        // User taps "Artists" again while already there.
+        assert!(!h.navigate(ViewSwitchMessage::Artists));
+
+        assert_eq!(h.go_back(), Some(ViewSwitchMessage::Albums));
+        assert!(!h.can_go_back());
+    }
+
+    #[test]
+    fn navigation_records_one_entry_per_distinct_page() {
+        let mut h = history();
+        assert!(h.navigate(ViewSwitchMessage::Artists));
+        assert!(h.navigate(ViewSwitchMessage::Tracks));
+        assert_eq!(h.history.len(), 3);
+        assert!(h.can_go_back());
+
+        assert_eq!(h.go_back(), Some(ViewSwitchMessage::Artists));
+        assert_eq!(h.go_back(), Some(ViewSwitchMessage::Albums));
+        assert!(!h.can_go_back());
+        assert_eq!(h.go_back(), None);
+    }
+
+    /// A different album is a real step; the same album at another track is a
+    /// re-focus and replaces the entry; an identical message is a plain no-op.
+    #[test]
+    fn detail_pages_compare_by_their_payload() {
+        let mut h = history();
+        assert!(h.navigate(ViewSwitchMessage::Release(1, None)));
+        assert!(h.navigate(ViewSwitchMessage::Release(1, Some(7))));
+        assert_eq!(h.history.len(), 2, "same album re-focus replaces the entry");
+        assert!(!h.navigate(ViewSwitchMessage::Release(1, Some(7))));
+
+        assert!(h.navigate(ViewSwitchMessage::Release(2, None)));
+        assert_eq!(h.history.len(), 3);
+    }
+
+    /// The second reported shape of "back does nothing": jumping to a track of
+    /// the album you are already viewing (e.g. from search) used to append a
+    /// step, so back landed on that same album again.
+    #[test]
+    fn refocusing_within_an_album_leaves_back_a_real_step() {
+        let mut h = history();
+        h.navigate(ViewSwitchMessage::Release(1, None));
+        h.navigate(ViewSwitchMessage::Release(1, Some(7)));
+
+        assert_eq!(h.go_back(), Some(ViewSwitchMessage::Albums));
+        assert!(!h.can_go_back());
+    }
+
+    #[test]
+    fn navigating_away_drops_the_forward_branch() {
+        let mut h = history();
+        h.navigate(ViewSwitchMessage::Artists);
+        h.navigate(ViewSwitchMessage::Tracks);
+        h.go_back();
+        assert!(h.can_go_forward());
+        assert_eq!(h.go_forward(), Some(ViewSwitchMessage::Tracks));
+
+        h.go_back();
+        h.navigate(ViewSwitchMessage::Files);
+        assert!(
+            !h.can_go_forward(),
+            "the Tracks branch must be gone after a new navigation"
+        );
+    }
+
+    /// Used when a playlist is deleted: its entries leave the history and the
+    /// cursor lands on the nearest survivor.
+    #[test]
+    fn retain_keeps_the_cursor_on_a_surviving_entry() {
+        let mut h = history();
+        h.navigate(ViewSwitchMessage::Playlist(1));
+        h.navigate(ViewSwitchMessage::Playlist(2));
+
+        h.retain(|v| *v != ViewSwitchMessage::Playlist(2));
+        assert_eq!(h.current(), ViewSwitchMessage::Playlist(1));
+
+        // Removing everything falls back to the startup view.
+        h.retain(|v| *v != ViewSwitchMessage::Playlist(1));
+        assert_eq!(h.current(), ViewSwitchMessage::Albums);
+        assert_eq!(h.history.len(), 1);
+        assert!(!h.can_go_back());
+    }
+
+    /// The cap must never evict the entry the user is standing on.
+    #[test]
+    fn history_cap_keeps_the_current_entry() {
+        let mut h = history();
+        for id in 0..150i64 {
+            h.navigate(ViewSwitchMessage::Playlist(id));
+        }
+        assert!(h.can_go_back(), "the current entry must survive eviction");
+        assert_eq!(h.current(), ViewSwitchMessage::Playlist(149));
+
+        let mut seen = Vec::new();
+        while let Some(msg) = h.go_back() {
+            seen.push(msg);
+        }
+        assert!(seen.contains(&ViewSwitchMessage::Playlist(148)));
+        assert!(
+            !seen.contains(&ViewSwitchMessage::Playlist(0)),
+            "the oldest entries are the ones evicted: {} entries kept",
+            seen.len()
+        );
     }
 }
