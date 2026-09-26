@@ -756,6 +756,11 @@ pub async fn playlist_has_track(
     Ok(has_track)
 }
 
+/// IN-clause chunk size for the playlist batch queries: stays under SQLite's
+/// bind-variable cap (999 on legacy builds, 32766 modern) so no selection size
+/// can fail the whole batch with "too many SQL variables".
+const PLAYLIST_IN_CHUNK: usize = 900;
+
 pub async fn playlist_contains_all_tracks(
     pool: &SqlitePool,
     playlist_id: i64,
@@ -765,21 +770,30 @@ pub async fn playlist_contains_all_tracks(
         return Ok(true);
     }
 
-    let placeholders = std::iter::repeat_n("?", track_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT COUNT(DISTINCT track_id) FROM playlist_item \
-         WHERE playlist_id = ? AND track_id IN ({placeholders})"
-    );
+    // chunked so the parameter count never hits SQLite's variable cap; each
+    // chunk counting its own full size is equivalent to one COUNT over the
+    // whole batch (the chunks are disjoint)
+    for chunk in track_ids.chunks(PLAYLIST_IN_CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT COUNT(DISTINCT track_id) FROM playlist_item \
+             WHERE playlist_id = ? AND track_id IN ({placeholders})"
+        );
 
-    let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql)).bind(playlist_id);
-    for &id in track_ids {
-        query = query.bind(id);
+        let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql)).bind(playlist_id);
+        for &id in chunk {
+            query = query.bind(id);
+        }
+
+        let count: i64 = query.fetch_one(pool).await?;
+        if count as usize != chunk.len() {
+            return Ok(false);
+        }
     }
 
-    let count: i64 = query.fetch_one(pool).await?;
-    Ok(count as usize == track_ids.len())
+    Ok(true)
 }
 
 pub async fn add_tracks_to_playlist_if_missing(
@@ -832,23 +846,29 @@ pub async fn remove_tracks_from_playlist(
     // later row per removal: 100 removals from a 3000-item playlist used to
     // cost ~100 O(n) updates plus 200 lookups). the unique
     // (playlist_id, track_id) index serves the delete; positions are
-    // re-compacted once in the same transaction.
-    let placeholders = std::iter::repeat_n("?", track_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql =
-        format!("DELETE FROM playlist_item WHERE playlist_id = ? AND track_id IN ({placeholders})");
-
-    let mut delete_query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(playlist_id);
-    for &id in track_ids {
-        delete_query = delete_query.bind(id);
-    }
-
+    // re-compacted once in the same transaction. the DELETE is chunked so the
+    // parameter count never hits SQLite's variable cap; the chunks share the
+    // transaction, so the batch stays all-or-nothing.
     let renumber_query = include_str!("../../queries/playlist/renumber_playlist_positions.sql");
 
     let mut tx = pool.begin().await?;
 
-    delete_query.execute(&mut *tx).await?;
+    for chunk in track_ids.chunks(PLAYLIST_IN_CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "DELETE FROM playlist_item WHERE playlist_id = ? AND track_id IN ({placeholders})"
+        );
+
+        let mut delete_query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(playlist_id);
+        for &id in chunk {
+            delete_query = delete_query.bind(id);
+        }
+
+        delete_query.execute(&mut *tx).await?;
+    }
+
     sqlx::query(renumber_query)
         .bind(playlist_id)
         .execute(&mut *tx)
