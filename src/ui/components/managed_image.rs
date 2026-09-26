@@ -452,6 +452,16 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
         (ready, young)
     };
     if ready.is_empty() {
+        // 未到期条目必须先回队再返回：drain 挂在播放事件循环上，几乎每秒
+        // 都会执行，一张刚入队的图（60s 年龄门未到）若在这里被丢弃，它的
+        // 最后一份 Arc 就地消失，瓦片永远无人回收——pushed 持续增长而其余
+        // 计数恒为零的 [mem] 曲线（2026-09-26 两个会话）正是这条路径。
+        if !young.is_empty() {
+            queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend(young);
+        }
         return;
     }
 
