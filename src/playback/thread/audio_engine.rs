@@ -136,11 +136,23 @@ pub struct AudioEngine {
     /// path within [`PREPARE_COOLDOWN`], so a burst of queue edits in the
     /// prepare window doesn't spawn a full open per edit.
     dropped_prepare: Option<(PathBuf, std::time::Instant)>,
+    /// Path whose background prepare failed last, with the time it failed:
+    /// `prepare_next` skips re-spawning for the same path within
+    /// [`PREPARE_FAILURE_COOLDOWN`]. Without this, a next track whose URL can
+    /// never open (e.g. an expired signed URL the refresh can't renew) is
+    /// re-requested once per playback cycle until it becomes current.
+    failed_prepare: Option<(PathBuf, std::time::Instant)>,
 }
 
 /// How long after a queue-mutation invalidation a re-prepare of the same next
 /// track is deferred (see [`AudioEngine::dropped_prepare`]).
 const PREPARE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long after a failed background prepare a re-prepare of the same path is
+/// deferred. Long enough that a permanently unopenable next track costs one
+/// request per cooldown instead of one per playback cycle; short enough that a
+/// transient network failure still gets gapless coverage soon.
+const PREPARE_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Background prepare result sent back to the playback thread.
 struct PrepareOutcome {
@@ -170,6 +182,7 @@ impl AudioEngine {
             prepare_rx: None,
             prepare_request: None,
             dropped_prepare: None,
+            failed_prepare: None,
         }
     }
 
@@ -209,6 +222,14 @@ impl AudioEngine {
         if let Some((dropped, at)) = &self.dropped_prepare
             && dropped == path
             && at.elapsed() < PREPARE_COOLDOWN
+        {
+            return;
+        }
+        // The last prepare of this path failed (dead URL, unreadable file):
+        // back off instead of paying a full open attempt once per cycle.
+        if let Some((failed, at)) = &self.failed_prepare
+            && failed == path
+            && at.elapsed() < PREPARE_FAILURE_COOLDOWN
         {
             return;
         }
@@ -257,6 +278,10 @@ impl AudioEngine {
                         // The transition re-runs the normal open path (with
                         // its URL-refresh retry) and logs there.
                         warn!("pre-opening next track failed: {e}");
+                        // Back off this path: without the record, the next
+                        // cycle re-requests the same unopenable URL (a real
+                        // HTTP round-trip per cycle while it stays next).
+                        self.failed_prepare = Some((outcome.path, std::time::Instant::now()));
                     }
                 }
             }
