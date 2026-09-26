@@ -151,6 +151,15 @@ gpui-unofficial = { path = "vendor/gpui-unofficial-shim" }
 # revs in the graph mean two copies of the `gpui` crate → E0308 trait
 # mismatch. ae7c411 is the checkout with the local directx_atlas patch.
 
+# Image copy with `default = ["gif"]`: gpui-ce hard-imports
+# image::codecs::gif::GifDecoder (img.rs, platform.rs), but nothing here needs
+# the rest of the default formats. Meliora's own declaration (jpeg/png/webp/
+# bmp) plus gif survives feature unification; avif/exr/tiff/qoi and their
+# chains (ravif/rav1e AV1 encoder, lebe, zune-* etc.) drop out of the graph,
+# measured at -5.9MB (-10.8%) on the release binary. Update this copy when
+# bumping `image`; keep the `default = ["gif"]` line.
+image = { path = "vendor/image-trim" }
+
 [build-dependencies]
 anyhow = "1"
 cntp_i18n_gen = "0.3"
