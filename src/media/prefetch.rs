@@ -180,10 +180,20 @@ impl<S: MediaSource + 'static> PrefetchSource<S> {
             signal: Condvar::new(),
         });
         let filler_shared = Arc::clone(&shared);
-        thread::Builder::new()
+        // A failed spawn must degrade, not panic: this runs on the playback
+        // thread per online track open, and a panic here kills playback for
+        // good (no one restarts the thread). Same tradeoff as audio_engine's
+        // prepare-thread fallback — lose the buffering, keep the music. With
+        // the shutdown flag set, reads go straight to the source instead of
+        // waiting on a buffer no filler will ever fill.
+        if thread::Builder::new()
             .name("media-prefetch".into())
             .spawn(move || fill_loop(filler_shared, retry_backoff))
-            .expect("spawn media prefetch thread");
+            .is_err()
+        {
+            tracing::warn!("media prefetch thread spawn failed; reading remote stream unbuffered");
+            lock(&shared.state).shutdown = true;
+        }
         Self {
             shared,
             pos: 0,
@@ -212,6 +222,15 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
             }
             if st.eof {
                 return Ok(0);
+            }
+            if st.shutdown {
+                // No filler thread (spawn failed): nothing will ever fill the
+                // buffer, so read the source directly — unbuffered, blocking
+                // for the source's own read timeout.
+                drop(st);
+                let n = lock(&self.shared.source).read(buf)?;
+                self.pos += n as u64;
+                return Ok(n);
             }
             let now = Instant::now();
             if now >= deadline {
@@ -243,6 +262,17 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
                 "seek target is out of range",
             ));
         };
+        // No filler thread (spawn failed): apply the seek to the source
+        // directly instead of queueing it for a filler that does not exist.
+        {
+            let st = lock(&self.shared.state);
+            if st.shutdown {
+                drop(st);
+                lock(&self.shared.source).seek(SeekFrom::Start(target))?;
+                self.pos = target;
+                return Ok(target);
+            }
+        }
         // Lazy re-anchor, mirroring the range source's own seek: the filler
         // applies the target before its next read, so no in-flight read can
         // leave the stream positioned past the target.
