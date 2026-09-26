@@ -75,14 +75,16 @@ enum RecommendState {
     Loading,
     Failed(SharedString),
     LoginRequired,
-    Ready(Vec<NeteaseTrackInfo>),
+    /// Arc-shared so the track-row closures capture refcounts, not deep
+    /// clones (every visible row re-clones its track every redraw).
+    Ready(Vec<Arc<NeteaseTrackInfo>>),
 }
 
 pub struct NeteaseRanksView {
     tab: Tab,
     ranks: RanksState,
     selected: Option<NeteaseRank>,
-    tracks: Vec<NeteaseTrackInfo>,
+    tracks: Vec<Arc<NeteaseTrackInfo>>,
     tracks_state: TracksState,
     track_page: i64,
     has_more_tracks: bool,
@@ -205,7 +207,7 @@ impl NeteaseRanksView {
                                     tr!("NETEASE_NO_RECOMMEND", "No recommendations today").into(),
                                 )
                             } else {
-                                RecommendState::Ready(tracks)
+                                RecommendState::Ready(tracks.into_iter().map(Arc::new).collect())
                             }
                         }
                         // 301: the endpoint requires a logged-in session
@@ -292,7 +294,7 @@ impl NeteaseRanksView {
                             // the song-detail response carries no total, so a full
                             // page is the "maybe more" signal
                             this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
-                            this.tracks.extend(page_tracks);
+                            this.tracks.extend(page_tracks.into_iter().map(Arc::new));
                             this.track_page = page;
                             this.tracks_state = TracksState::Idle;
                         }
@@ -590,7 +592,7 @@ impl NeteaseRanksView {
     /// the daily-recommend list while that tab is showing. Both lists used to
     /// render from their own state; the container reads a single slice, so
     /// this picks the right one.
-    fn visible_tracks(&self) -> &[NeteaseTrackInfo] {
+    fn visible_tracks(&self) -> &[Arc<NeteaseTrackInfo>] {
         if self.selected.is_some() || self.tab != Tab::DailyRecommend {
             &self.tracks
         } else if let RecommendState::Ready(tracks) = &self.recommend {
@@ -602,13 +604,16 @@ impl NeteaseRanksView {
 
     fn render_track_row(
         &self,
-        track: &NeteaseTrackInfo,
+        track: &Arc<NeteaseTrackInfo>,
         index: usize,
         entity: &Entity<Self>,
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let liked = self.is_liked(track.id);
+        // The row closures must own their data ('static): capture Arc clones
+        // (refcount bump only) instead of three full clones per visible row
+        // per redraw.
         let play = track.clone();
         let like = track.clone();
         let download = track.clone();
@@ -632,7 +637,7 @@ impl NeteaseRanksView {
                 view.update(cx, |this, cx| this.toggle_like(&like, cx));
             },
             move |_, _, cx| {
-                crate::ui::netease::download_track_ui(cx, download.clone());
+                crate::ui::netease::download_track_ui(cx, (*download).clone());
             },
         )
     }

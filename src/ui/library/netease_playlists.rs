@@ -78,7 +78,9 @@ pub struct NeteasePlaylistsView {
     /// newer one was issued must not touch the list
     playlists_generation: u64,
     selected: Option<NeteasePlaylistInfo>,
-    tracks: Vec<NeteaseTrackInfo>,
+    /// Arc-shared so the track-row closures capture refcounts, not deep
+    /// clones (every visible row re-clones its track every redraw).
+    tracks: Vec<Arc<NeteaseTrackInfo>>,
     tracks_state: TracksState,
     /// last track page that was loaded (1-based)
     track_page: i64,
@@ -280,7 +282,7 @@ impl NeteasePlaylistsView {
                             // the song-detail response carries no total, so a full
                             // page is the "maybe more" signal
                             this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
-                            this.tracks.extend(page_tracks);
+                            this.tracks.extend(page_tracks.into_iter().map(Arc::new));
                             this.track_page = page;
                             this.tracks_state = TracksState::Idle;
                         }
@@ -397,12 +399,15 @@ impl NeteasePlaylistsView {
     /// state.
     fn render_track_row(
         &self,
-        track: &NeteaseTrackInfo,
+        track: &Arc<NeteaseTrackInfo>,
         index: usize,
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let liked = crate::ui::netease::liked_set_contains(track.id);
+        // The row closures must own their data ('static): capture Arc clones
+        // (refcount bump only) instead of three full clones per visible row
+        // per redraw.
         let play = track.clone();
         let like = track.clone();
         let download = track.clone();
@@ -426,7 +431,7 @@ impl NeteasePlaylistsView {
                 }
             },
             move |_, _, cx| {
-                crate::ui::netease::download_track_ui(cx, download.clone());
+                crate::ui::netease::download_track_ui(cx, (*download).clone());
             },
         )
     }

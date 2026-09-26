@@ -2,7 +2,7 @@
 //! tracks. Tracks are streamed on double-click via a freshly fetched play URL.
 //! Gated behind the `kugou` cargo feature.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use cntp_i18n::{tr, trn};
 use gpui::prelude::FluentBuilder;
@@ -90,7 +90,9 @@ struct SelectedPlaylist {
 pub struct KugouPlaylistsView {
     playlists: PlaylistsState,
     selected: Option<SelectedPlaylist>,
-    tracks: Vec<KugouTrackInfo>,
+    /// Arc-shared so the row closures capture refcounts, not deep clones
+    /// (every visible row re-clones its track every redraw).
+    tracks: Vec<Arc<KugouTrackInfo>>,
     tracks_state: TracksState,
     /// last playlist page that was loaded (1-based, counts DOWN because the
     /// API returns tracks newest-first while we display oldest-first)
@@ -300,7 +302,7 @@ impl KugouPlaylistsView {
                         Ok(Ok((response, total_pages))) if still_current => {
                             let mut page_tracks = parse_tracks(&response.body, "/data/info");
                             page_tracks.reverse();
-                            this.tracks = page_tracks;
+                            this.tracks = page_tracks.into_iter().map(Arc::new).collect();
                             this.track_page = total_pages;
                             this.has_more_tracks = total_pages > 1;
                             this.tracks_state = TracksState::Idle;
@@ -348,9 +350,9 @@ impl KugouPlaylistsView {
                             let mut page_tracks = parse_tracks(&response.body, "/data/info");
                             page_tracks.reverse();
                             if append {
-                                this.tracks.extend(page_tracks);
+                                this.tracks.extend(page_tracks.into_iter().map(Arc::new));
                             } else {
-                                this.tracks = page_tracks;
+                                this.tracks = page_tracks.into_iter().map(Arc::new).collect();
                             }
                             this.track_page = page;
                             this.has_more_tracks = page > 1;
@@ -645,13 +647,16 @@ impl KugouPlaylistsView {
     /// as the import modal's callbacks).
     fn render_track_row(
         &self,
-        track: &KugouTrackInfo,
+        track: &Arc<KugouTrackInfo>,
         index: usize,
         entity: &Entity<Self>,
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let liked = self.is_track_liked(&track.hash);
+        // The row closures must own their data ('static): capture Arc clones
+        // (refcount bump only) instead of three deep clones per visible row
+        // per redraw — a full clone re-allocates `hash: String` each time.
         let play = track.clone();
         let like = track.clone();
         let download = track.clone();
@@ -697,7 +702,7 @@ impl KugouPlaylistsView {
                 });
             },
             move |_, _, cx| {
-                crate::ui::kugou::download_track_ui(cx, download.clone());
+                crate::ui::kugou::download_track_ui(cx, (*download).clone());
             },
         )
     }

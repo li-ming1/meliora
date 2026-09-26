@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use cntp_i18n::{tr, trn};
 use gpui::{
-    App, AppContext, Context, DragMoveEvent, Entity, FontWeight, InteractiveElement, MouseButton,
-    ParentElement, Render, ScrollHandle, StatefulInteractiveElement, StyleRefinement, Styled,
-    Window, div, prelude::FluentBuilder, px, rgba,
+    App, AppContext, Context, DragMoveEvent, Entity, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px, rgba,
 };
 use tracing::error;
 
@@ -273,6 +273,10 @@ impl Render for PlaylistList {
             .when(allow_reorder, |this| {
                 this.on_drag_move::<DragData>(cx.listener(
                     move |this: &mut PlaylistList, event: &DragMoveEvent<DragData>, _, cx| {
+                        let before = {
+                            let manager = this.drag_drop_manager.read(cx);
+                            (manager.state.is_dragging, manager.state.drop_target)
+                        };
                         let scroll_handle: ScrollableHandle = this.scroll_handle.clone().into();
                         let reduced_motion = cx
                             .global::<SettingsGlobal>()
@@ -281,7 +285,7 @@ impl Render for PlaylistList {
                             .interface
                             .reduced_motion;
 
-                        handle_drag_move(
+                        let scrolled = handle_drag_move(
                             this.drag_drop_manager.clone(),
                             scroll_handle,
                             event,
@@ -290,7 +294,17 @@ impl Render for PlaylistList {
                             reduced_motion,
                         );
 
-                        cx.notify();
+                        // repaint only when something visible moved: drag move
+                        // fires at mouse report rate and an unconditional notify
+                        // re-rendered the whole sidebar on every move
+                        let changed = {
+                            let manager = this.drag_drop_manager.read(cx);
+                            scrolled
+                                || (manager.state.is_dragging, manager.state.drop_target) != before
+                        };
+                        if changed {
+                            cx.notify();
+                        }
                     },
                 ))
                 .on_drop(cx.listener(
@@ -356,10 +370,10 @@ impl Render for PlaylistList {
         for (idx, playlist) in self.playlists.iter().enumerate() {
             let pl_id = playlist.id;
 
-            let playlist_label: String = if playlist.is_liked_songs() {
-                tr!("LIKED_SONGS", "Liked Songs").to_string()
+            let playlist_label: SharedString = if playlist.is_liked_songs() {
+                tr!("LIKED_SONGS", "Liked Songs").into()
             } else {
-                playlist.name.0.to_string()
+                playlist.name.0.clone()
             };
 
             let item_state = DragDropItemState::for_index(self.drag_drop_manager.read(cx), idx);
@@ -373,7 +387,7 @@ impl Render for PlaylistList {
             );
 
             if collapsed {
-                item = item.collapsed().collapsed_label(&playlist_label);
+                item = item.collapsed().collapsed_label(playlist_label.clone());
             } else {
                 item = item
                     .child(
@@ -523,9 +537,16 @@ impl Render for PlaylistList {
                 ));
 
             let rename_open = self.rename_popover_playlist == Some(pl_id);
+            // snapshot for the lazy menu builder: it runs when the menu opens
+            // and captures this render's state (a re-render after the confirm
+            // click rebuilds the builder with the fresh value)
+            let pending_delete_open = self.pending_delete_playlist == Some(pl_id);
             let weak_self = weak_entity.clone();
             let weak_self2 = weak_entity.clone();
             let weak_context = weak_entity.clone();
+            // the lazy builder is a move closure rebuilt every render, so it
+            // gets its own refcount instead of consuming `weak_entity`
+            let menu_weak_entity = weak_entity.clone();
             let name = playlist.name.0.clone();
 
             main = main.child(
@@ -542,7 +563,11 @@ impl Render for PlaylistList {
                                     });
                                 }
                             })
-                            .child(
+                            // menu tree is built only when the menu opens, off
+                            // the per-item repaint path (same lazy pattern as
+                            // grid_item's context menu)
+                            .menu_on_open(move |_, cx| {
+                                let theme = cx.global::<Theme>();
                                 div().bg(theme.elevated_background).child(
                                     menu()
                                         .item(menu_item(
@@ -601,26 +626,34 @@ impl Render for PlaylistList {
                                                 "rename_playlist",
                                                 Some(PENCIL),
                                                 tr!("RENAME_PLAYLIST", "Rename playlist"),
-                                                move |_, window, cx| {
-                                                    if let Some(entity) = weak_self.upgrade() {
-                                                        let name = name.clone();
-                                                        entity.update(cx, move |this, cx| {
-                                                            this.rename_popover_playlist =
-                                                                Some(pl_id);
-                                                            this.rename_playlist_input
-                                                                .read(cx)
-                                                                .focus_handle()
-                                                                .focus(window, cx);
+                                                {
+                                                    // the lazy builder is an Fn (the menu can
+                                                    // open repeatedly): give the handler its own
+                                                    // refcounts instead of moving the builder's
+                                                    // captures out
+                                                    let weak_self = weak_self.clone();
+                                                    let name = name.clone();
+                                                    move |_, window, cx| {
+                                                        if let Some(entity) = weak_self.upgrade() {
+                                                            let name = name.clone();
+                                                            entity.update(cx, move |this, cx| {
+                                                                this.rename_popover_playlist =
+                                                                    Some(pl_id);
+                                                                this.rename_playlist_input
+                                                                    .read(cx)
+                                                                    .focus_handle()
+                                                                    .focus(window, cx);
 
-                                                            this.rename_playlist_input.update(
-                                                                cx,
-                                                                move |input, cx| {
-                                                                    input.set_value(cx, name);
-                                                                },
-                                                            );
+                                                                this.rename_playlist_input.update(
+                                                                    cx,
+                                                                    move |input, cx| {
+                                                                        input.set_value(cx, name);
+                                                                    },
+                                                                );
 
-                                                            cx.notify();
-                                                        });
+                                                                cx.notify();
+                                                            });
+                                                        }
                                                     }
                                                 },
                                             ))
@@ -630,6 +663,7 @@ impl Render for PlaylistList {
                                             Some(FILE_EXPORT),
                                             tr!("EXPORT_PLAYLIST", "Export to M3U"),
                                             {
+                                                let playlist_label = playlist_label.clone();
                                                 move |_, _, cx| {
                                                     if let Err(err) =
                                                         export_playlist(cx, pl_id, &playlist_label)
@@ -647,8 +681,8 @@ impl Render for PlaylistList {
                                             },
                                         ))
                                         .when(!is_system_playlist, |menu| {
-                                            if self.pending_delete_playlist == Some(pl_id) {
-                                                let weak_for_delete = weak_entity.clone();
+                                            if pending_delete_open {
+                                                let weak_for_delete = menu_weak_entity.clone();
                                                 menu.item(
                                                     menu_item(
                                                         "delete_playlist_confirm",
@@ -672,7 +706,7 @@ impl Render for PlaylistList {
                                                     .icon_color(theme.status_error),
                                                 )
                                             } else {
-                                                let weak_for_confirm = weak_entity.clone();
+                                                let weak_for_confirm = menu_weak_entity.clone();
                                                 menu.item(menu_item(
                                                     "delete_playlist",
                                                     Some(CROSS),
@@ -692,8 +726,9 @@ impl Render for PlaylistList {
                                                 ))
                                             }
                                         }),
-                                ),
-                            ),
+                                    )
+                                    .into_any_element()
+                            }),
                     )
                     .when(rename_open && !is_system_playlist, |this| {
                         this.child(

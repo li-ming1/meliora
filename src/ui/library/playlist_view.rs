@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use std::{
+    cell::Cell,
+    collections::VecDeque,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use cntp_i18n::tr;
 use gpui::{
@@ -52,6 +57,139 @@ actions!(playlist, [Export, Import]);
 // height + border
 const PLAYLIST_ITEM_HEIGHT: f32 = 40.0;
 
+/// Prefetch band: when the visible-row center moves more than half this many
+/// rows, the view batch-prefetches full rows for `center ± ROW_PREFETCH_PAD`
+/// on the async runtime into the view-local row cache, so newly built rows hit
+/// the cache instead of one UI-thread `block_on` DB hit per row.
+const ROW_PREFETCH_PAD: usize = 256;
+
+/// Upper bound of the row prefetch cache (simple FIFO, no LRU dependency): two
+/// full ±256-row prefetch windows plus slack.
+const ROW_CACHE_CAPACITY: usize = 1024;
+
+/// Prefetched playlist rows. `generation` invalidates in-flight prefetch
+/// tasks: `reload` clears the cache and bumps it, so a task started before the
+/// reload can never write pre-reload rows back. Same shape as the table's row
+/// cache in `library::types::table`, but view-local on purpose.
+struct PrefetchedRows {
+    generation: u64,
+    order: VecDeque<i64>,
+    rows: FxHashMap<i64, Arc<Track>>,
+}
+
+type PrefetchedRowsHandle = Arc<Mutex<PrefetchedRows>>;
+
+/// Cached row lookup; a short `Mutex` critical section.
+fn prefetched_track(cache: &PrefetchedRowsHandle, track_id: i64) -> Option<Arc<Track>> {
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .rows
+        .get(&track_id)
+        .cloned()
+}
+
+/// FIFO-bounded insert; returns false when the cache generation changed
+/// mid-prefetch (a reload cleared it), which tells the prefetch task to stop
+/// writing stale rows.
+fn insert_prefetched(cache: &PrefetchedRowsHandle, track: Arc<Track>, generation: u64) -> bool {
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.generation != generation {
+        return false;
+    }
+
+    if cache.rows.contains_key(&track.id) {
+        return true;
+    }
+
+    if cache.order.len() >= ROW_CACHE_CAPACITY
+        && let Some(oldest) = cache.order.pop_front()
+    {
+        cache.rows.remove(&oldest);
+    }
+    cache.order.push_back(track.id);
+    cache.rows.insert(track.id, track);
+    true
+}
+
+/// Same insert from the UI-thread fallback path: rendering and event handling
+/// run on the same thread and never interleave with a reload, so reading the
+/// current generation and inserting with it can never race the cache being
+/// cleared.
+fn insert_prefetched_current(cache: &PrefetchedRowsHandle, track: Arc<Track>) {
+    let generation = cache.lock().unwrap_or_else(|e| e.into_inner()).generation;
+    insert_prefetched(cache, track, generation);
+}
+
+/// Drops the prefetched rows and invalidates in-flight prefetch tasks. Runs on
+/// every reload: the track list (and with it every track_id) can change
+/// underneath the cached rows.
+fn clear_prefetched_rows(cache: &PrefetchedRowsHandle) {
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    cache.rows.clear();
+    cache.order.clear();
+    cache.generation = cache.generation.wrapping_add(1);
+}
+
+/// Schedules a background row prefetch when the visible center has moved half
+/// a prefetch band since the last one. `state` tracks (cache generation,
+/// center) so a stationary list costs one `Cell` read and one uncontended
+/// lock per frame. On schedule the full rows for `center ± ROW_PREFETCH_PAD`
+/// are fetched on the async runtime into the view's row cache (cleared on
+/// every reload), turning the per-row `cx.get_track_by_id` UI-thread
+/// `block_on` into a cache hit for rows past the keep-around band. Same shape
+/// as the table's `schedule_row_prefetch`.
+fn schedule_row_prefetch(
+    state: &Rc<Cell<(u64, usize)>>,
+    rows_cache: &PrefetchedRowsHandle,
+    items: &[PlaylistTrackRow],
+    center: usize,
+    cx: &App,
+) {
+    let generation = rows_cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .generation;
+    let (scheduled_generation, scheduled_center) = state.get();
+    if scheduled_generation == generation
+        && scheduled_center.abs_diff(center) <= ROW_PREFETCH_PAD / 2
+    {
+        return;
+    }
+    state.set((generation, center));
+
+    let start = center.saturating_sub(ROW_PREFETCH_PAD);
+    let end = (center + ROW_PREFETCH_PAD + 1).min(items.len());
+    if start >= end {
+        return;
+    }
+
+    let pool = cx.global::<Pool>().0.clone();
+    let track_ids: Vec<i64> = items[start..end].iter().map(|row| row.track_id).collect();
+    let rows_cache = rows_cache.clone();
+
+    // dropping the JoinHandle detaches the task
+    let _ = crate::RUNTIME.spawn(async move {
+        for track_id in track_ids {
+            // skip rows the cache already holds: overlapping windows stay cheap
+            if prefetched_track(&rows_cache, track_id).is_some() {
+                continue;
+            }
+            match db::get_track_by_id(&pool, track_id).await {
+                Ok(track) => {
+                    if !insert_prefetched(&rows_cache, track, generation) {
+                        // cache was cleared (reload): stop writing stale rows
+                        break;
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(track_id, error = %err, "playlist row prefetch missed");
+                }
+            }
+        }
+    });
+}
+
 fn sort_method_label(method: PlaylistTrackSortMethod) -> SharedString {
     match method {
         PlaylistTrackSortMethod::Custom => tr!("SORT_CUSTOM", "Custom Order").into(),
@@ -89,12 +227,10 @@ pub struct PlaylistTrackItem {
     playlist_item_id: i64,
     track_title: SharedString,
     drag_drop_manager: Entity<DragDropListManager>,
-    list_id: gpui::ElementId,
-    /// Track info for drag data
-    track_id: i64,
-    album_id: Option<i64>,
-    track_path: std::path::PathBuf,
-    drag_enabled: bool,
+    /// Drag payload prebuilt once; `on_drag` takes it by value every frame, so
+    /// render clones this small struct instead of re-running `from_track` (a
+    /// per-frame `PathBuf` allocation). `Some` only when reordering is enabled.
+    drag_data: Option<TrackDragData>,
 }
 
 impl PlaylistTrackItem {
@@ -118,17 +254,25 @@ impl PlaylistTrackItem {
             })
             .detach();
 
+            // drag payload prebuilt once: `on_drag` takes it by value every
+            // frame, so render clones this small struct instead of re-running
+            // `from_track` (a per-frame `PathBuf` allocation)
+            let drag_data = if drag_enabled {
+                Some(
+                    TrackDragData::from_track(track_id, album_id, track_path, track_title.clone())
+                        .with_reorder_info(list_id, idx),
+                )
+            } else {
+                None
+            };
+
             Self {
                 track_item,
                 idx,
                 playlist_item_id,
                 track_title,
                 drag_drop_manager,
-                list_id,
-                track_id,
-                album_id,
-                track_path,
-                drag_enabled,
+                drag_data,
             }
         })
     }
@@ -139,7 +283,6 @@ impl Render for PlaylistTrackItem {
         let theme = cx.global::<Theme>();
         let item_state = DragDropItemState::for_index(self.drag_drop_manager.read(cx), self.idx);
 
-        let idx = self.idx;
         let track_title = self.track_title.clone();
 
         let mut element = div()
@@ -155,15 +298,9 @@ impl Render for PlaylistTrackItem {
                 theme.button_primary,
             ));
 
-        if self.drag_enabled {
-            let drag_data = TrackDragData::from_track(
-                self.track_id,
-                self.album_id,
-                self.track_path.clone(),
-                self.track_title.clone(),
-            )
-            .with_reorder_info(self.list_id.clone(), idx);
-
+        // payload prebuilt at construction; `on_drag` takes it by value every
+        // frame, so render clones the small struct
+        if let Some(drag_data) = self.drag_data.clone() {
             element = element.on_drag(drag_data, move |_, _, _, cx| {
                 DragPreview::new(cx, track_title.clone())
             });
@@ -187,6 +324,13 @@ pub struct PlaylistView {
     drag_drop_manager: Entity<DragDropListManager>,
     list_id: gpui::ElementId,
     sort_method: PlaylistTrackSortMethod,
+    /// Prefetched full rows filled on the async runtime (see
+    /// `schedule_row_prefetch`); row creation reads this before falling back
+    /// to the per-row UI-thread `block_on` query. Cleared on every reload.
+    track_row_cache: PrefetchedRowsHandle,
+    /// Last scheduled row prefetch: (cache generation, visible center). See
+    /// `schedule_row_prefetch`.
+    prefetch_state: Rc<Cell<(u64, usize)>>,
 }
 
 /// Placeholder shown until the background load lands: the id is already
@@ -264,6 +408,12 @@ impl PlaylistView {
             let views = cx.new(|_| FxHashMap::default());
             let render_counter = cx.new(|_| 0);
             let scroll_handle = UniformListScrollHandle::new();
+            let track_row_cache: PrefetchedRowsHandle = Arc::new(Mutex::new(PrefetchedRows {
+                generation: 0,
+                order: VecDeque::new(),
+                rows: FxHashMap::default(),
+            }));
+            let prefetch_state = Rc::new(Cell::new((0, 0)));
 
             let mut this = Self {
                 playlist: Arc::new(placeholder_playlist(playlist_id)),
@@ -277,6 +427,8 @@ impl PlaylistView {
                 drag_drop_manager,
                 list_id,
                 sort_method,
+                track_row_cache,
+                prefetch_state,
             };
             // Opening the view loads the playlist header + its sorted track
             // list on the runtime (see reload); until it lands the view shows
@@ -325,6 +477,10 @@ impl PlaylistView {
                 }
                 this.views = cx.new(|_| FxHashMap::default());
                 this.render_counter = cx.new(|_| 0);
+                // cached rows must never outlive a reload: the track list (and
+                // with it every track_id) can change underneath them; the
+                // generation bump also invalidates in-flight prefetch tasks
+                clear_prefetched_rows(&this.track_row_cache);
                 cx.notify();
             });
         })
@@ -550,6 +706,8 @@ impl Render for PlaylistView {
         let scroll_handle = self.scroll_handle.clone();
         let drag_drop_manager = self.drag_drop_manager.clone();
         let list_id = self.list_id.clone();
+        let prefetch_state = self.prefetch_state.clone();
+        let track_row_cache = self.track_row_cache.clone();
         let item_count = items_clone.len();
         let playlist_id = self.playlist.id;
         let is_custom_sort = self.is_custom_sort();
@@ -954,6 +1112,17 @@ impl Render for PlaylistView {
                                 uniform_list("playlist-list", items_clone.len(), move |range, _, cx| {
                                     let start = range.start;
                                     let is_templ_render = range.start == 0 && range.end == 1;
+                                    let center = start + (range.end - range.start) / 2;
+
+                                    // keep the row prefetch one band ahead of the
+                                    // visible window so new rows hit the row cache
+                                    schedule_row_prefetch(
+                                        &prefetch_state,
+                                        &track_row_cache,
+                                        &items_clone,
+                                        center,
+                                        cx,
+                                    );
 
                                     let items = &items_clone[range];
 
@@ -969,6 +1138,7 @@ impl Render for PlaylistView {
 
                                             let drag_drop_manager = drag_drop_manager.clone();
                                             let list_id = list_id.clone();
+                                            let track_row_cache = track_row_cache.clone();
                                             let playlist_item_id = item.playlist_item_id;
                                             let track_id = item.track_id;
 
@@ -977,52 +1147,76 @@ impl Render for PlaylistView {
                                                     &views_model,
                                                     idx,
                                                     move |cx| {
-                                                        // The track vanished from the library between
-                                                        // the playlist snapshot and this view's
-                                                        // creation: render an empty placeholder row
-                                                        // (same height) instead of panicking.
-                                                        let Some(track) =
-                                                            cx.get_track_by_id(track_id).ok()
-                                                        else {
-                                                            let track_item = TrackItem::new(
-                                                                cx,
-                                                                Track {
-                                                                    id: 0,
-                                                                    title: DBString::default(),
-                                                                    album_id: None,
-                                                                    track_number: None,
-                                                                    disc_number: None,
-                                                                    duration: 0,
-                                                                    location: std::path::PathBuf::new(),
-                                                                    artist_names: None,
-                                                                    disc_subtitle: None,
-                                                                },
-                                                                false,
-                                                                ArtistNameVisibility::Always,
-                                                                TrackItemLeftField::Art,
-                                                                Some(TrackPlaylistInfo {
-                                                                    id: pl_id,
-                                                                    item_id: playlist_item_id,
-                                                                }),
-                                                                false, // vinyl_numbering - not applicable for playlists
-                                                                None, // max_track_num - not needed for Art left field
-                                                                None, // queue_context - playlist uses pl_id instead
-                                                                true, // show_go_to_album
-                                                                true, // show_go_to_artist
-                                                            );
-                                                            return PlaylistTrackItem::new(
-                                                                cx,
-                                                                track_item,
-                                                                idx,
-                                                                playlist_item_id,
-                                                                SharedString::default(),
-                                                                drag_drop_manager,
-                                                                list_id,
-                                                                track_id,
-                                                                None,
-                                                                std::path::PathBuf::new(),
-                                                                is_custom_sort,
-                                                            );
+                                                        // prefetched rows first: a hit avoids the
+                                                        // UI-thread `block_on` below (one per newly
+                                                        // built row past the keep-around band)
+                                                        let track = match prefetched_track(
+                                                            &track_row_cache,
+                                                            track_id,
+                                                        ) {
+                                                            Some(track) => track,
+                                                            None => {
+                                                                match cx.get_track_by_id(track_id) {
+                                                                    Ok(track) => {
+                                                                        // cache the fallback's
+                                                                        // result so re-entering rows
+                                                                        // hit the cache instead of
+                                                                        // re-running the blocking query
+                                                                        insert_prefetched_current(
+                                                                            &track_row_cache,
+                                                                            track.clone(),
+                                                                        );
+                                                                        track
+                                                                    }
+                                                                    // The track vanished from the
+                                                                    // library between the playlist
+                                                                    // snapshot and this view's
+                                                                    // creation: render an empty
+                                                                    // placeholder row (same height)
+                                                                    // instead of panicking.
+                                                                    Err(_) => {
+                                                                        let track_item = TrackItem::new(
+                                                                            cx,
+                                                                            Track {
+                                                                                id: 0,
+                                                                                title: DBString::default(),
+                                                                                album_id: None,
+                                                                                track_number: None,
+                                                                                disc_number: None,
+                                                                                duration: 0,
+                                                                                location: std::path::PathBuf::new(),
+                                                                                artist_names: None,
+                                                                                disc_subtitle: None,
+                                                                            },
+                                                                            false,
+                                                                            ArtistNameVisibility::Always,
+                                                                            TrackItemLeftField::Art,
+                                                                            Some(TrackPlaylistInfo {
+                                                                                id: pl_id,
+                                                                                item_id: playlist_item_id,
+                                                                            }),
+                                                                            false, // vinyl_numbering - not applicable for playlists
+                                                                            None, // max_track_num - not needed for Art left field
+                                                                            None, // queue_context - playlist uses pl_id instead
+                                                                            true, // show_go_to_album
+                                                                            true, // show_go_to_artist
+                                                                        );
+                                                                        return PlaylistTrackItem::new(
+                                                                            cx,
+                                                                            track_item,
+                                                                            idx,
+                                                                            playlist_item_id,
+                                                                            SharedString::default(),
+                                                                            drag_drop_manager,
+                                                                            list_id,
+                                                                            track_id,
+                                                                            None,
+                                                                            std::path::PathBuf::new(),
+                                                                            is_custom_sort,
+                                                                        );
+                                                                    }
+                                                                }
+                                                            }
                                                         };
                                                         let track_title: SharedString =
                                                             track.title.clone().0;

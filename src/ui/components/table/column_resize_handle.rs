@@ -34,7 +34,11 @@ where
         default_width: f32,
     ) -> Self {
         Self {
-            id: ElementId::Name(format!("column-resize-handle-{}", column_index).into()),
+            // Composite (name, index) id: zero per-frame allocation. The
+            // handle is built once per resizable column on every table frame
+            // (see `Table::render`'s header loop), so a `format!` id here was
+            // a per-frame string allocation per column.
+            id: ElementId::named_usize("column-resize-handle", column_index),
             column_index,
             columns,
             default_width,

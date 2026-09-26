@@ -2,7 +2,7 @@
 //! daily recommend playlist. Streams online tracks like the playlists page.
 //! Gated behind the `kugou` cargo feature.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
@@ -76,14 +76,16 @@ enum RecommendState {
     Idle,
     Loading,
     Failed(SharedString),
-    Ready(Vec<KugouTrackInfo>),
+    /// Arc-shared so the track-row closures capture refcounts, not deep
+    /// clones (every visible row re-clones its track every redraw).
+    Ready(Vec<Arc<KugouTrackInfo>>),
 }
 
 pub struct KugouRanksView {
     tab: Tab,
     ranks: RanksState,
     selected: Option<KugouRank>,
-    tracks: Vec<KugouTrackInfo>,
+    tracks: Vec<Arc<KugouTrackInfo>>,
     tracks_state: TracksState,
     track_page: i64,
     has_more_tracks: bool,
@@ -191,7 +193,7 @@ impl KugouRanksView {
                                     tr!("KUGOU_NO_RECOMMEND", "No recommendations today").into(),
                                 )
                             } else {
-                                RecommendState::Ready(tracks)
+                                RecommendState::Ready(tracks.into_iter().map(Arc::new).collect())
                             }
                         }
                         Ok(Err(err)) => RecommendState::Failed(err.to_string().into()),
@@ -251,7 +253,7 @@ impl KugouRanksView {
                                 .and_then(serde_json::Value::as_i64)
                                 .unwrap_or(0);
                             let page_tracks = parse_rank_tracks(&response.body);
-                            this.tracks.extend(page_tracks);
+                            this.tracks.extend(page_tracks.into_iter().map(Arc::new));
                             this.track_page = page;
                             this.has_more_tracks = this.tracks.len() < total as usize;
                             this.tracks_state = TracksState::Idle;
@@ -531,7 +533,7 @@ impl KugouRanksView {
     /// the daily-recommend list while that tab is showing. Both lists used to
     /// render from their own state; the container reads a single slice, so
     /// this picks the right one.
-    fn visible_tracks(&self) -> &[KugouTrackInfo] {
+    fn visible_tracks(&self) -> &[Arc<KugouTrackInfo>] {
         if self.selected.is_some() || self.tab != Tab::DailyRecommend {
             &self.tracks
         } else if let RecommendState::Ready(tracks) = &self.recommend {
@@ -543,13 +545,16 @@ impl KugouRanksView {
 
     fn render_track_row(
         &self,
-        track: &KugouTrackInfo,
+        track: &Arc<KugouTrackInfo>,
         index: usize,
         entity: &Entity<Self>,
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let liked = self.is_liked(&track.hash);
+        // The row closures must own their data ('static): capture Arc clones
+        // (refcount bump only) instead of three deep clones per visible row
+        // per redraw — a full clone re-allocates `hash: String` each time.
         let play = track.clone();
         let like = track.clone();
         let download = track.clone();
@@ -573,7 +578,7 @@ impl KugouRanksView {
                 view.update(cx, |this, cx| this.toggle_like(&like, cx));
             },
             move |_, _, cx| {
-                crate::ui::kugou::download_track_ui(cx, download.clone());
+                crate::ui::kugou::download_track_ui(cx, (*download).clone());
             },
         )
     }
