@@ -455,7 +455,12 @@ where
         }
 
         let injector = self.matcher.injector();
-        for item in &items[common..] {
+        // `restart` empties the matcher's item store, so a non-append-only
+        // change must re-inject EVERY item — pushing only the changed tail
+        // would drop the unchanged prefix (e.g. the whole local index) from
+        // matching for the rest of the panel session.
+        let start = if append_only { common } else { 0 };
+        for item in &items[start..] {
             let item = item.clone();
             let search_text = (get_item_display)(&item, cx);
             injector.push(item, move |_v, dest| {
