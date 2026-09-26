@@ -409,6 +409,11 @@ impl MediaStream for SymphoniaStream {
             .map(|c| c.count())
             .unwrap_or(2);
         let frame_capacity = audio_params.max_frames_per_packet.unwrap_or(8192) as usize;
+        // Advertise the worst-case packet size before the first decode: the
+        // pipeline sizes its decode ring from `frame_duration()` (see
+        // setup_pipeline) so one full large packet fits. The first decoded
+        // packet overwrites this with the decoder's real capacity.
+        self.current_duration = frame_capacity as u64;
 
         self.conversion_buffer = (0..channel_count)
             .map(|_| Vec::with_capacity(frame_capacity))

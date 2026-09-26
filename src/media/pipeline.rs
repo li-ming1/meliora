@@ -251,6 +251,12 @@ pub struct AudioPipeline {
     /// Capacity, in frames, of the `device_input` ring. Sized to hold a worst-case cycle's
     /// resampler output so a single write never overruns it.
     pub device_input_capacity: usize,
+    /// Capacity, in frames, of the `decoder_output` ring: sized to hold one
+    /// worst-case decode packet (the stream's `max_frames_per_packet`, floored
+    /// at [`DEFAULT_BUFFER_FRAMES`]) so a full packet always fits. Decode-side
+    /// per-cycle read caps must use this same value or a large packet leaves
+    /// residue in the ring that the next write cannot fit around.
+    pub decoder_buffer_frames: usize,
 }
 
 /// Upper bound on the frames one processing cycle can hand from the resampler
@@ -297,6 +303,7 @@ impl AudioPipeline {
             source_channel_count,
             device_channel_count,
             device_input_capacity,
+            decoder_buffer_frames: buffer_frames,
         }
     }
 

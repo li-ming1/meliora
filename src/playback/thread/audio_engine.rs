@@ -702,14 +702,14 @@ impl AudioEngine {
                     resampler.process_into(
                         &mut p.resampler_input,
                         &mut p.resampler_output,
-                        DEFAULT_BUFFER_FRAMES,
+                        p.decoder_buffer_frames,
                     );
                 }
                 None => {
                     Resampler::passthrough_direct(
                         &mut p.resampler_input,
                         &mut p.resampler_output,
-                        DEFAULT_BUFFER_FRAMES,
+                        p.decoder_buffer_frames,
                     );
                 }
             }
@@ -843,12 +843,25 @@ impl AudioEngine {
             .sample_rate()
             .unwrap_or(device_format.sample_rate);
 
+        // One worst-case decode packet must fit the decoder ring: streams
+        // with block sizes above the default (e.g. 24-bit/96 kHz FLAC with
+        // large blocks) otherwise lose audio on every packet, because the
+        // same-thread resampler cannot drain mid-write and the non-blocking
+        // packet write drops what does not fit. Ordinary streams keep the
+        // default size unchanged.
+        let buffer_frames = self
+            .media
+            .frame_duration()
+            .map(|d| d as usize)
+            .unwrap_or(DEFAULT_BUFFER_FRAMES)
+            .max(DEFAULT_BUFFER_FRAMES);
+
         let pipeline = AudioPipeline::new(
             source_channel_count,
             device_channel_count,
             source_rate,
             device_format.sample_rate,
-            DEFAULT_BUFFER_FRAMES,
+            buffer_frames,
             self.pipeline_capacity_floor,
         );
         // Raise the floor to what this track actually needs, so later tracks
@@ -856,7 +869,7 @@ impl AudioEngine {
         self.pipeline_capacity_floor = self.pipeline_capacity_floor.max(output_frame_bound(
             source_rate,
             device_format.sample_rate,
-            DEFAULT_BUFFER_FRAMES,
+            buffer_frames,
         ));
 
         if channels_match {
@@ -868,7 +881,7 @@ impl AudioEngine {
                 mixer.ensure_output_capacity(output_frame_bound(
                     source_rate,
                     device_format.sample_rate,
-                    DEFAULT_BUFFER_FRAMES,
+                    buffer_frames,
                 ));
                 self.mixer = Some(mixer);
             } else {
@@ -1000,7 +1013,7 @@ impl AudioEngine {
                         };
                         // a cycle can push several blocks through the resampler, so make sure the
                         // handoff buffer can absorb the worst case without reallocating later
-                        let blocks = DEFAULT_BUFFER_FRAMES.div_ceil(duration.max(1) as usize);
+                        let blocks = p.decoder_buffer_frames.div_ceil(duration.max(1) as usize);
                         p.ensure_resampler_output_capacity(blocks * resampler.output_frames_max());
                         self.resampler = Some(resampler);
                     }
@@ -1010,19 +1023,22 @@ impl AudioEngine {
             }
         }
 
+        // Read up to a full decoder ring per cycle: a large packet was written
+        // whole and must drain whole, or the residue shrinks the free space the
+        // next packet write needs. Equals the old default for ordinary streams.
         match &mut self.resampler {
             Some(resampler) => {
                 resampler.process_into(
                     &mut p.resampler_input,
                     &mut p.resampler_output,
-                    DEFAULT_BUFFER_FRAMES,
+                    p.decoder_buffer_frames,
                 );
             }
             None => {
                 Resampler::passthrough_direct(
                     &mut p.resampler_input,
                     &mut p.resampler_output,
-                    DEFAULT_BUFFER_FRAMES,
+                    p.decoder_buffer_frames,
                 );
             }
         }
