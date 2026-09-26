@@ -136,17 +136,28 @@ fn strip_verbatim(path: &str) -> Cow<'_, str> {
     }
 }
 
-/// Case-insensitive prefix check without calling [`fold_path`] (avoids a Unix stat).
-pub fn starts_with_folded(key: &Utf8Path, folded_prefix: &Utf8Path) -> bool {
-    let key = strip_verbatim(key.as_str()).to_lowercase();
-    let mut key_chars = key.chars();
-    for expected in folded_prefix.as_str().chars() {
+/// Fold a path the way [`starts_with_folded`] folds its key: strip `\\?\` and
+/// lowercase unconditionally. [`fold_path`] is the case-sensitivity-aware variant.
+pub fn fold_key(path: &Utf8Path) -> String {
+    strip_verbatim(path.as_str()).to_lowercase()
+}
+
+/// [`starts_with_folded`] for a key already folded by [`fold_key`] - lets callers
+/// fold once and match against many prefixes.
+pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
+    let mut key_chars = folded_key.chars();
+    for expected in folded_prefix.chars() {
         if key_chars.next() != Some(expected) {
             return false;
         }
     }
     // prefix must end on a path component boundary
     key_chars.next().is_none_or(|c| c == '/' || c == '\\')
+}
+
+/// Case-insensitive prefix check without calling [`fold_path`] (avoids a Unix stat).
+pub fn starts_with_folded(key: &Utf8Path, folded_prefix: &Utf8Path) -> bool {
+    folded_starts_with(&fold_key(key), folded_prefix.as_str())
 }
 
 /// Build a comparison key - strip \\?\ and fold case on case-insensitive volumes.

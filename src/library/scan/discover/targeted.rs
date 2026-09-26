@@ -21,7 +21,7 @@ use crate::library::scan::{
         canonicalize_or_keep, classify, delete_tracks, fold_excluded_roots, is_missing,
         is_under_excluded, missing_paths, schedule_directory_read,
     },
-    fs_case::{fold_path, starts_with_folded},
+    fs_case::{fold_key, fold_path, folded_starts_with},
     record::ScanRecord,
 };
 
@@ -49,8 +49,10 @@ fn index_records_under(
 ) -> FoldedIndex {
     let mut index = FoldedIndex::default();
     'records: for (key, ts) in records {
+        // fold the key once instead of once per target
+        let folded_key = fold_key(key);
         for target in folded_targets {
-            if starts_with_folded(key, target) {
+            if folded_starts_with(&folded_key, target.as_str()) {
                 index
                     .entry(fold_path(key))
                     .or_default()
