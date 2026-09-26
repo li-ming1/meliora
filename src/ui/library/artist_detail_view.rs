@@ -35,7 +35,7 @@ use crate::{
         },
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
-        util::{create_or_retrieve_view, prune_views},
+        util::prune_views,
     },
 };
 
@@ -776,11 +776,23 @@ impl Render for ArtistDetailView {
 
                                                 let item_id = album_ids[idx].clone();
 
-                                                let view = create_or_retrieve_view(
-                                                    &grid_views_model,
-                                                    idx,
-                                                    |cx| {
-                                                        GridItem::<Album, AlbumColumn>::new(
+                                                // Fallible equivalent of
+                                                // `create_or_retrieve_view`: an album
+                                                // can vanish between
+                                                // list_albums_by_artist and this
+                                                // frame (a cleanup pass deleted it,
+                                                // or its query failed), and the old
+                                                // `.unwrap` here panicked the whole
+                                                // app off a stale album_ids snapshot.
+                                                let cached_view =
+                                                    grid_views_model.read(cx).get(&idx).cloned();
+                                                let view = match cached_view {
+                                                    Some(view) => div()
+                                                        .size_full()
+                                                        .child(view)
+                                                        .into_any_element(),
+                                                    None => {
+                                                        match GridItem::<Album, AlbumColumn>::new(
                                                             cx,
                                                             item_id,
                                                             handler.clone(),
@@ -788,13 +800,29 @@ impl Render for ArtistDetailView {
                                                                 show_go_to_artist: false,
                                                             },
                                                             GridContext::Standalone,
-                                                        )
-                                                        .unwrap()
-                                                    },
-                                                    cx,
-                                                );
+                                                        ) {
+                                                            Some(view) => {
+                                                                grid_views_model.update(
+                                                                    cx,
+                                                                    |m, _| {
+                                                                        m.insert(idx, view.clone());
+                                                                    },
+                                                                );
+                                                                div()
+                                                                    .size_full()
+                                                                    .child(view)
+                                                                    .into_any_element()
+                                                            }
+                                                            // Album is gone: render a blank
+                                                            // cell for this frame; the
+                                                            // reload already in flight
+                                                            // replaces the stale snapshot.
+                                                            None => div().into_any_element(),
+                                                        }
+                                                    }
+                                                };
 
-                                                div().size_full().child(view).into_any_element()
+                                                view
                                             },
                                         )
                                         .min_item_width(px(grid_min_item_width))
