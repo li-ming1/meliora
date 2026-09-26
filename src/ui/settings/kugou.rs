@@ -74,7 +74,7 @@ impl KugouSettings {
             let request = crate::RUNTIME
                 .spawn(async move { client.user_profile().await })
                 .await;
-            let _ = crate::RUNTIME
+            let vip_refreshed = crate::RUNTIME
                 .spawn(async move { detail_client.refresh_vip_detail().await })
                 .await;
 
@@ -87,8 +87,13 @@ impl KugouSettings {
                     _ => this.profile_failed = true,
                 }
                 // refresh_vip_detail cached the response on the session, so the
-                // VIP line can now be rendered from it.
-                this.vip_line = Some(crate::ui::kugou::vip_status_line());
+                // VIP line can now be rendered from it - unless the fetch
+                // itself failed, which must not read as "No VIP".
+                this.vip_line = Some(match vip_refreshed {
+                    Ok(Ok(())) => crate::ui::kugou::vip_status_line(),
+                    _ => tr!("KUGOU_VIP_STATUS_FETCH_FAILED", "Could not fetch VIP status")
+                        .into(),
+                });
                 cx.notify();
             })
             .ok();
@@ -101,6 +106,9 @@ impl KugouSettings {
         self.logged_in = false;
         self.nickname = None;
         self.profile_failed = false;
+        // logout() drops the cached VIP detail; reflect that immediately
+        // instead of leaving the previous account's status line up.
+        self.vip_line = Some(crate::ui::kugou::vip_status_line());
         self.qr.close();
         cx.notify();
     }

@@ -447,5 +447,9 @@
   "PLAYBACK_NETEASE_QUALITY_SUBTEXT": "仅影响网易云在线播放；高音质通常需要网易云音乐 VIP。",
   "NETEASE_DOWNLOAD_DIR": "网易云下载目录",
   "NETEASE_DOWNLOAD_DIR_SUBTEXT": "网易云歌曲保存的位置。留空使用系统默认下载目录。",
-  "NETEASE_SELECT_DOWNLOAD_DIR": "选择下载目录..."
+  "NETEASE_SELECT_DOWNLOAD_DIR": "选择下载目录...",
+  "KUGOU_LOGIN_EXPIRED": "酷狗登录已过期，请在 设置 → 酷狗音乐 重新登录。",
+  "KUGOU_VIP_STATUS_FETCH_FAILED": "无法获取会员状态",
+  "KUGOU_VIP_CLAIMED": "今日会员已领取",
+  "KUGOU_VIP_CLAIM_FAILED": "每日会员领取失败"
 }

@@ -356,6 +356,7 @@ pub fn claim_daily_vip_async() {
         match client.ensure_daily_vip().await {
             VipClaimOutcome::Claimed => {
                 tracing::info!("kugou: daily VIP claimed");
+                emit_toast(Toast::success(tr!("KUGOU_VIP_CLAIMED", "Daily VIP claimed")));
             }
             VipClaimOutcome::AlreadyClaimed => {
                 tracing::debug!("kugou: VIP already claimed for today");
@@ -365,6 +366,13 @@ pub fn claim_daily_vip_async() {
             }
             VipClaimOutcome::Failed { reason } => {
                 tracing::warn!("kugou: daily VIP claim failed: {reason}");
+                // The daily claim is what keeps membership alive; its failing
+                // (usually an expired login) is exactly what the user needs to
+                // know about instead of discovering a dead VIP line later.
+                emit_toast(Toast::warning(tr!(
+                    "KUGOU_VIP_CLAIM_FAILED",
+                    "Daily VIP claim failed"
+                )));
             }
         }
     });

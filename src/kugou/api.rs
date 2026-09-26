@@ -591,11 +591,12 @@ impl KugouClient {
     }
 
     /// Fetches VIP entitlement detail and caches it on the session so the
-    /// settings page can display it later. Best-effort.
-    pub async fn refresh_vip_detail(&self) {
-        if let Ok(response) = self.user_vip_detail().await {
-            self.store_vip_detail(response.body);
-        }
+    /// settings page can display it later. Returns the error so callers can
+    /// tell "fetch failed" apart from "the server says no active VIP".
+    pub async fn refresh_vip_detail(&self) -> Result<(), KugouError> {
+        let response = self.user_vip_detail().await?;
+        self.store_vip_detail(response.body);
+        Ok(())
     }
 
     /// Ensures this account has VIP for today, but never hits the claim

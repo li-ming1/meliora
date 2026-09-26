@@ -4,15 +4,51 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Mutex,
-    time::Duration,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
+use cntp_i18n::tr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zed_reqwest::{Client, Method, header::HeaderMap, header::HeaderName, header::HeaderValue};
 
+use crate::toasts::{Toast, emit_toast};
 use super::{crypto, sign};
+
+/// Payload error_code that empirically accompanies requests made with an
+/// expired KuGou login (playlists, VIP detail, ...): the same session sees
+/// these while stream URLs signed for the old token return 403.
+const KUGOU_ERR_LOGIN_EXPIRED: i64 = 20017;
+
+/// How long between "login expired" toasts: the reminder must not re-fire on
+/// every failing request, but should re-appear if a later window also fails.
+const LOGIN_EXPIRED_TOAST_THROTTLE: Duration = Duration::from_secs(30 * 60);
+
+fn login_expired_toast_state() -> &'static Mutex<Option<Instant>> {
+    static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+fn notify_login_expired() {
+    let last = login_expired_toast_state();
+    let mut guard = last.lock().unwrap();
+    if let Some(at) = *guard
+        && at.elapsed() < LOGIN_EXPIRED_TOAST_THROTTLE
+    {
+        return;
+    }
+    *guard = Some(Instant::now());
+    drop(guard);
+    emit_toast(Toast::warning(tr!(
+        "KUGOU_LOGIN_EXPIRED",
+        "Kugou login expired - sign in again in Settings - KuGou Music."
+    )));
+}
+
+fn reset_login_expired_toast() {
+    *login_expired_toast_state().lock().unwrap() = None;
+}
 
 pub const GATEWAY: &str = "https://gateway.kugou.com";
 pub const APPID: i64 = 3116;
@@ -256,7 +292,12 @@ impl KugouClient {
         session.t1 = extra.t1.or(session.t1.take());
         session.vip_type = extra.vip_type;
         session.vip_token = extra.vip_token;
+        // VIP detail belongs to the previous login: drop it so the settings
+        // page shows the fresh account's status (fetch_profile refreshes it).
+        session.vip_detail = None;
         session.save(&self.session_path);
+        // A fresh login may outlive the previous throttle window's start.
+        reset_login_expired_toast();
     }
 
     pub fn logout(&self) {
@@ -268,6 +309,7 @@ impl KugouClient {
         session.vip_token = None;
         session.nickname = None;
         session.avatar_url = None;
+        session.vip_detail = None;
         session.save(&self.session_path);
     }
 
@@ -440,7 +482,12 @@ impl KugouClient {
             .ok()
             .or_else(|| parse_jsonp(&bytes))
             .unwrap_or(Value::Null);
-        check_payload_status(&body)?;
+        if let Err(err) = check_payload_status(&body) {
+            if is_login_expired(&err) {
+                notify_login_expired();
+            }
+            return Err(err);
+        }
         Ok(KugouResponse { body })
     }
 }
@@ -484,6 +531,16 @@ fn check_payload_status(body: &Value) -> Result<(), KugouError> {
         });
     }
     Ok(())
+}
+
+/// Whether the payload error is the login-expired signature.
+fn is_login_expired(err: &KugouError) -> bool {
+    match err {
+        KugouError::Api { msg, .. } => {
+            msg.contains(&format!("error_code=Some({KUGOU_ERR_LOGIN_EXPIRED})"))
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

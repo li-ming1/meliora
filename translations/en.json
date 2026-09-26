@@ -163,6 +163,7 @@
   "KUGOU_LOAD_MORE": "Load More",
   "KUGOU_LOGGED_IN": "Logged in",
   "KUGOU_LOGIN": "Log In with QR Code",
+  "KUGOU_LOGIN_EXPIRED": "Kugou login expired - sign in again in Settings - KuGou Music.",
   "KUGOU_LOGIN_REQUIRED": "Log in to KuGou in Settings to see your playlists.",
   "KUGOU_LOGOUT": "Log Out",
   "KUGOU_NICKNAME_UNAVAILABLE": "Logged in (profile unavailable)",
@@ -192,6 +193,9 @@
     "other": "{{count}} tracks"
   },
   "KUGOU_UNLIKE_TASK_FAILED": "Unlike request failed: {{err}}",
+  "KUGOU_VIP_CLAIMED": "Daily VIP claimed",
+  "KUGOU_VIP_CLAIM_FAILED": "Daily VIP claim failed",
+  "KUGOU_VIP_STATUS_FETCH_FAILED": "Could not fetch VIP status",
   "LANGUAGE": "Language",
   "LANGUAGE_SUBTEXT": "Select your preferred language for the application. Changes to the language will take effect after restarting the application.",
   "LANGUAGE_SYSTEM_DEFAULT": "System Default",
