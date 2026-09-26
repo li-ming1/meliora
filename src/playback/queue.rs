@@ -7,10 +7,11 @@ use futures::TryFutureExt as _;
 use gpui::{App, AppContext, Entity, SharedString};
 use tracing::{error, trace_span};
 
-use crate::library::db::LibraryAccess;
+use crate::library::db;
 use crate::media::{
     lookup_table::try_open_media, metadata::Metadata, traits::MediaProviderFeatures,
 };
+use crate::ui::app::Pool;
 
 /// Sentinel for "length not known yet" in [`QueueItemData`]'s duration slot.
 pub const UNKNOWN_DURATION: i64 = i64::MIN;
@@ -371,26 +372,11 @@ impl QueueItemData {
 
             // if the database ids are known we can get the data from the database
             if let (Some(track_id), Some(album_id)) = (track_id, album_id) {
-                let album = cx.get_album_by_id(album_id);
-                let track = cx.get_track_by_id(track_id);
-
-                if let (Ok(track), Ok(album)) = (track, album) {
-                    m.as_mut().unwrap().name = Some(track.title.clone().0);
-                    m.as_mut().unwrap().album_id = Some(album.id);
-                    m.as_mut().unwrap().duration = Some(track.duration);
-                    duration.store(track.duration, Ordering::Relaxed);
-
-                    if let Some(artist_name) = track.artist_names.clone() {
-                        m.as_mut().unwrap().artist_name = Some(artist_name.0);
-                    } else if let Some(artist_name) = album.artist_display_override.clone() {
-                        m.as_mut().unwrap().artist_name = Some(artist_name.0);
-                    }
-                }
-
+                // the two library queries left the UI thread (doctrine
+                // §2.3/§14): the placeholder renders until the background load
+                // backfills, exactly like the disk-metadata path below
                 cx.notify();
-            }
-
-            if m.as_ref().unwrap().artist_name.is_some() {
+                spawn_library_load(track_id, album_id, path, cx.entity(), duration.clone(), cx);
                 return;
             }
 
@@ -506,6 +492,64 @@ pub fn spawn_metadata_load(
                 cx.notify();
             });
         }
+    })
+    .detach();
+}
+
+/// Background-loads a queue item's display metadata from the library database
+/// (one track row plus one album row), filling `entity` when done. Mirrors
+/// [`spawn_metadata_load`]: the synchronous `LibraryAccess` calls this replaces
+/// parked the UI thread on two `RUNTIME.block_on`s per queue row's first
+/// render (doctrine §2.3/§14). A row that vanished from the library, or one
+/// whose artist stays blank after the load, falls back to the disk metadata
+/// load exactly as the previous inline path did.
+fn spawn_library_load(
+    track_id: i64,
+    album_id: i64,
+    path: PathBuf,
+    entity: Entity<Option<QueueItemUIData>>,
+    duration: Arc<AtomicI64>,
+    cx: &mut App,
+) {
+    let pool = cx.global::<Pool>().0.clone();
+    let task = crate::RUNTIME.spawn(async move {
+        let track = db::get_track_by_id(&pool, track_id).await;
+        let album = db::get_album_by_id(&pool, album_id).await;
+        (track.ok(), album.ok())
+    });
+    cx.spawn(async move |cx| {
+        let Ok((track, album)) = task.await else {
+            return; // the load task panicked: the placeholder stays
+        };
+        entity.update(cx, |m, cx| {
+            let (Some(track), Some(album)) = (track, album) else {
+                spawn_metadata_load(path, cx.entity(), duration, cx);
+                return;
+            };
+
+            let Some(data) = m.as_mut() else {
+                // the entity was dropped meanwhile; nothing to fill
+                return;
+            };
+            data.name = Some(track.title.clone().0);
+            data.album_id = Some(album.id);
+            data.duration = Some(track.duration);
+            duration.store(track.duration, Ordering::Relaxed);
+
+            if let Some(artist_name) = track.artist_names.clone() {
+                data.artist_name = Some(artist_name.0);
+            } else if let Some(artist_name) = album.artist_display_override.clone() {
+                data.artist_name = Some(artist_name.0);
+            }
+
+            cx.notify();
+
+            // artist information left blank, try retrieving the metadata from
+            // disk (the fallback the old inline path ran)
+            if data.artist_name.is_none() {
+                spawn_metadata_load(path, cx.entity(), duration.clone(), cx);
+            }
+        });
     })
     .detach();
 }
