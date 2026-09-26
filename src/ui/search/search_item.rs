@@ -28,23 +28,34 @@ pub enum SearchPaletteItem {
         artist: String,
         artists: String,
         available: bool,
+        /// Precomputed fuzzy-match text, built once at construction so the
+        /// palette matcher never formats strings on the UI thread.
+        search_text: Arc<str>,
     },
     Artist {
         id: i64,
         name: String,
+        search_text: Arc<str>,
     },
     Track {
         id: i64,
         title: String,
         artists: String,
         album_id: Option<i64>,
+        search_text: Arc<str>,
     },
     /// Online track streamed from KuGou (kugou feature only).
     #[cfg(feature = "kugou")]
-    KugouTrack(crate::ui::kugou::KugouTrackInfo),
+    KugouTrack {
+        track: crate::ui::kugou::KugouTrackInfo,
+        search_text: Arc<str>,
+    },
     /// Online track streamed from NetEase (netease feature only).
     #[cfg(feature = "netease")]
-    NeteaseTrack(crate::ui::netease::NeteaseTrackInfo),
+    NeteaseTrack {
+        track: crate::ui::netease::NeteaseTrackInfo,
+        search_text: Arc<str>,
+    },
 }
 
 impl SearchPaletteItem {
@@ -52,6 +63,10 @@ impl SearchPaletteItem {
         format!("!db://album/{}/thumb", album_id)
     }
 
+    /// Builds the local (library) items. The fuzzy-match text each item is
+    /// found by is precomputed here — off the UI thread, once per item — so
+    /// the palette matcher only clones it instead of re-formatting per item
+    /// on every index injection.
     pub fn from_search_results(
         albums: Vec<(i64, String, Option<String>, String, bool)>,
         artists: Vec<(i64, String)>,
@@ -60,25 +75,35 @@ impl SearchPaletteItem {
         let mut items: Vec<Arc<SearchPaletteItem>> = Vec::new();
 
         for (id, name) in artists {
-            items.push(Arc::new(SearchPaletteItem::Artist { id, name }));
+            let search_text: Arc<str> = name.clone().into();
+            items.push(Arc::new(SearchPaletteItem::Artist {
+                id,
+                name,
+                search_text,
+            }));
         }
 
         for (id, title, artist_override, artists, available) in albums {
+            let artist = artist_override.unwrap_or_else(|| artists.clone());
+            let search_text: Arc<str> = format!("{} {} {}", title, artist, artists).into();
             items.push(Arc::new(SearchPaletteItem::Album {
                 id,
                 title,
-                artist: artist_override.unwrap_or_else(|| artists.clone()),
+                artist,
                 artists,
                 available,
+                search_text,
             }));
         }
 
         for (id, title, artists, album_id) in tracks {
+            let search_text: Arc<str> = format!("{} {}", title, artists).into();
             items.push(Arc::new(SearchPaletteItem::Track {
                 id,
                 title,
                 artists,
                 album_id,
+                search_text,
             }));
         }
 
@@ -103,9 +128,9 @@ impl PaletteItem for SearchPaletteItem {
                 }
             }
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack(_) => Some(FinderItemLeft::Icon(DISC.into())),
+            SearchPaletteItem::KugouTrack { .. } => Some(FinderItemLeft::Icon(DISC.into())),
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack(_) => Some(FinderItemLeft::Icon(DISC.into())),
+            SearchPaletteItem::NeteaseTrack { .. } => Some(FinderItemLeft::Icon(DISC.into())),
         }
     }
 
@@ -115,7 +140,7 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Artist { name, .. } => name.clone().into(),
             SearchPaletteItem::Track { title, .. } => title.clone().into(),
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack(track) => {
+            SearchPaletteItem::KugouTrack { track, .. } => {
                 if track.title.is_empty() {
                     tr!("UNKNOWN_TRACK").into()
                 } else {
@@ -123,7 +148,7 @@ impl PaletteItem for SearchPaletteItem {
                 }
             }
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack(track) => {
+            SearchPaletteItem::NeteaseTrack { track, .. } => {
                 if track.title.is_empty() {
                     tr!("UNKNOWN_TRACK").into()
                 } else {
@@ -139,9 +164,9 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Track { artists, .. } => Some(artists.clone().into()),
             SearchPaletteItem::Artist { .. } => None,
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack(track) => Some(track.detail_label()),
+            SearchPaletteItem::KugouTrack { track, .. } => Some(track.detail_label()),
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack(track) => Some(track.detail_label()),
+            SearchPaletteItem::NeteaseTrack { track, .. } => Some(track.detail_label()),
         }
     }
 
@@ -151,9 +176,22 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Artist { .. } => true,
             SearchPaletteItem::Track { album_id, .. } => album_id.is_some(),
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack(_) => true,
+            SearchPaletteItem::KugouTrack { .. } => true,
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack(_) => true,
+            SearchPaletteItem::NeteaseTrack { .. } => true,
+        }
+    }
+
+    /// Online results are replaced wholesale on every query change; keeping
+    /// them out of the finder's nucleo index (see `PaletteItem::is_volatile`)
+    /// means refreshing them never rebuilds the whole-library index.
+    fn is_volatile(&self) -> bool {
+        match self {
+            #[cfg(feature = "kugou")]
+            SearchPaletteItem::KugouTrack { .. } => true,
+            #[cfg(feature = "netease")]
+            SearchPaletteItem::NeteaseTrack { .. } => true,
+            _ => false,
         }
     }
 
@@ -163,9 +201,11 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Album { .. } => tr!("ALBUMS"),
             SearchPaletteItem::Track { .. } => tr!("TRACKS"),
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack(_) => tr!("KUGOU_ONLINE_RESULTS", "Online · KuGou"),
+            SearchPaletteItem::KugouTrack { .. } => tr!("KUGOU_ONLINE_RESULTS", "Online · KuGou"),
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack(_) => tr!("NETEASE_ONLINE_RESULTS", "Online · NetEase"),
+            SearchPaletteItem::NeteaseTrack { .. } => {
+                tr!("NETEASE_ONLINE_RESULTS", "Online · NetEase")
+            }
         })
     }
 
@@ -187,11 +227,11 @@ impl PaletteItem for SearchPaletteItem {
                 }
             }
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack(track) => {
+            SearchPaletteItem::KugouTrack { track, .. } => {
                 crate::ui::kugou::queue_track(cx, track);
             }
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack(track) => {
+            SearchPaletteItem::NeteaseTrack { track, .. } => {
                 crate::ui::netease::queue_track(cx, track);
             }
         }

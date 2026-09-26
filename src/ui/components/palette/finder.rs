@@ -8,8 +8,8 @@ use gpui::{
     px,
 };
 use nucleo::{
-    Config, Nucleo, Utf32String,
-    pattern::{CaseMatching, Normalization},
+    Config, Matcher, Nucleo, Utf32String,
+    pattern::{CaseMatching, Normalization, Pattern},
 };
 use rustc_hash::FxHashMap;
 use tokio::sync::mpsc::channel;
@@ -35,6 +35,14 @@ pub trait PaletteItem {
     fn right_content(&self, cx: &mut App) -> Option<SharedString>;
     fn is_enabled(&self, _cx: &App) -> bool {
         true
+    }
+    /// Whether this item belongs to a set that is replaced wholesale on every
+    /// query change (e.g. online search results). Volatile items are kept out
+    /// of the nucleo index — injecting them would rebuild the whole index on
+    /// every refresh — and are instead matched against the live query when
+    /// matches are collected (`Finder::get_matches`).
+    fn is_volatile(&self) -> bool {
+        false
     }
     fn category(&self) -> Option<I18nString> {
         None
@@ -99,10 +107,18 @@ where
     views_model: ViewsModel<T, MatcherFunc, OnAccept>,
     render_counter: Entity<usize>,
     last_match: Vec<Arc<T>>,
-    /// Items currently injected into the matcher, used to reconcile updates:
-    /// an append-only change (online results landing behind the local index)
-    /// pushes only the new tail instead of rebuilding the whole matcher.
+    /// Stable items currently injected into the matcher, used to reconcile
+    /// updates: an append-only change pushes only the new tail instead of
+    /// rebuilding the whole matcher (see `set_items`).
     injected: Vec<Arc<T>>,
+    /// Volatile items (`PaletteItem::is_volatile`, e.g. online search
+    /// results) paired with their search text: kept out of the matcher index
+    /// and matched against the live query in `get_matches`, so a results
+    /// refresh never restarts the index.
+    dynamic_items: Vec<(Arc<T>, Utf32String)>,
+    /// Scoring matcher for `dynamic_items`, kept around because
+    /// `Matcher::new` eagerly allocates a large slab.
+    dynamic_matcher: Matcher,
     // Arc-wrapped so the per-frame render clone is a refcount bump; rebuilt
     // only by `regenerate_list_state` / `recompute_extra_items`.
     display_list: Arc<Vec<DisplayEntry<T>>>,
@@ -140,16 +156,26 @@ where
             let views_model = cx.new(|_| FxHashMap::default());
             let render_counter = cx.new(|_| 0);
 
+            let dynamic_matcher = Matcher::new(config.clone());
             let matcher = Nucleo::new(config, notify.clone(), None, 1);
             let injector = matcher.injector();
 
+            // Stable items are injected into the matcher index; volatile ones
+            // (e.g. online search results) are matched against the live query
+            // instead — see `set_items`.
+            let mut injected = Vec::with_capacity(items.len());
+            let mut dynamic_items = Vec::new();
             for item in &items {
-                let item_clone = item.clone();
-                let search_text = (get_item_display)(&item_clone, cx);
-                trace!("Injecting item with search text: '{search_text}'");
-                injector.push(item_clone, move |_v, dest| {
-                    dest[0] = search_text;
-                });
+                let search_text = (get_item_display)(item, cx);
+                if item.is_volatile() {
+                    dynamic_items.push((item.clone(), search_text));
+                } else {
+                    trace!("Injecting item with search text: '{search_text}'");
+                    injector.push(item.clone(), move |_v, dest| {
+                        dest[0] = search_text;
+                    });
+                    injected.push(item.clone());
+                }
             }
 
             let weak_self = cx.weak_entity();
@@ -267,7 +293,9 @@ where
                 matcher,
                 views_model,
                 last_match: Vec::new(),
-                injected: items,
+                injected,
+                dynamic_items,
+                dynamic_matcher,
                 display_list: Arc::new(Vec::new()),
                 extra_providers: Vec::new(),
                 extra_items: Arc::new(Vec::new()),
@@ -436,19 +464,40 @@ where
         self.matcher.tick(iterations as u64);
     }
 
-    /// Reconcile the matcher with a new item list. When the new list only
-    /// appends behind the currently injected one (online search results landing
-    /// behind the unchanged local index), just push the new tail — nucleo is
-    /// append-only, so any other change (local index reload, online results
-    /// replaced by a newer query) needs a full `restart` + re-inject.
+    /// Reconcile the matcher with a new item list. Stable items are injected
+    /// into nucleo, which stays append-only across updates: only a change
+    /// inside the stable set (local index reload, library rescan) triggers a
+    /// full `restart` + re-inject. Volatile items (e.g. online search results,
+    /// replaced wholesale on every query change) never enter the index — they
+    /// are stored here with their search text and scored against the live
+    /// query in `get_matches`, so refreshing them costs O(volatile count)
+    /// instead of an index rebuild.
     fn set_items(&mut self, items: &[Arc<T>], get_item_display: &MatcherFunc, cx: &mut App) {
-        let common = self
-            .injected
-            .iter()
-            .zip(items.iter())
-            .take_while(|(a, b)| Arc::ptr_eq(a, b))
-            .count();
-        let append_only = common == self.injected.len();
+        self.dynamic_items.clear();
+        for item in items {
+            if item.is_volatile() {
+                let search_text = (get_item_display)(item, cx);
+                self.dynamic_items.push((item.clone(), search_text));
+            }
+        }
+
+        // How much of the currently injected prefix the new stable items
+        // reproduce (same `Arc`s, same relative order, volatile items skipped).
+        let mut common = 0usize;
+        let mut append_only = true;
+        for item in items {
+            if item.is_volatile() {
+                continue;
+            }
+            match self.injected.get(common) {
+                Some(injected_item) if Arc::ptr_eq(injected_item, item) => common += 1,
+                _ => {
+                    append_only = false;
+                    break;
+                }
+            }
+        }
+        let append_only = append_only && common == self.injected.len();
 
         if !append_only {
             self.matcher.restart(false);
@@ -456,11 +505,19 @@ where
 
         let injector = self.matcher.injector();
         // `restart` empties the matcher's item store, so a non-append-only
-        // change must re-inject EVERY item — pushing only the changed tail
-        // would drop the unchanged prefix (e.g. the whole local index) from
-        // matching for the rest of the panel session.
-        let start = if append_only { common } else { 0 };
-        for item in &items[start..] {
+        // change must re-inject EVERY stable item — pushing only the changed
+        // tail would drop the unchanged prefix (e.g. the whole local index)
+        // from matching for the rest of the panel session.
+        let mut stable_idx = 0usize;
+        for item in items {
+            if item.is_volatile() {
+                continue;
+            }
+            let skip = append_only && stable_idx < common;
+            stable_idx += 1;
+            if skip {
+                continue;
+            }
             let item = item.clone();
             let search_text = (get_item_display)(&item, cx);
             injector.push(item, move |_v, dest| {
@@ -469,18 +526,40 @@ where
         }
 
         self.injected.clear();
-        self.injected.extend_from_slice(items);
+        self.injected
+            .extend(items.iter().filter(|item| !item.is_volatile()).cloned());
     }
 
-    fn get_matches(&self) -> Vec<Arc<T>> {
+    fn get_matches(&mut self) -> Vec<Arc<T>> {
         let snapshot = self.matcher.snapshot();
         let count = snapshot.matched_item_count();
         let limit = 100.min(count);
 
-        snapshot
+        let mut matches: Vec<Arc<T>> = snapshot
             .matched_items(..limit)
             .map(|item| item.data.clone())
-            .collect()
+            .collect();
+
+        if self.dynamic_items.is_empty() {
+            return matches;
+        }
+
+        // Volatile items never entered the matcher index, so they are scored
+        // against the live query here. Their count is a page of results per
+        // provider, keeping this microsecond-scale even while the index
+        // itself is still re-matching in the background.
+        let pattern = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
+        let mut dynamic: Vec<(u32, Arc<T>)> = Vec::with_capacity(self.dynamic_items.len());
+        for (item, text) in &self.dynamic_items {
+            if let Some(score) = pattern.score(text.slice(..), &mut self.dynamic_matcher) {
+                dynamic.push((score, item.clone()));
+            }
+        }
+        // Stable sort: equal scores keep the provider's own result order.
+        dynamic.sort_by(|a, b| b.0.cmp(&a.0));
+        matches.extend(dynamic.into_iter().map(|(_, item)| item));
+
+        matches
     }
 
     pub fn regenerate_list_state(&mut self, cx: &mut Context<Self>) {

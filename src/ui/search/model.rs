@@ -105,25 +105,19 @@ impl SearchModel {
 
             let weak_self = cx.weak_entity();
 
-            let matcher: MatcherFunc = Box::new(|item, _| match item.as_ref() {
-                SearchPaletteItem::Album {
-                    title,
-                    artist,
-                    artists,
-                    ..
-                } => Utf32String::from(format!("{} {} {}", title, artist, artists)),
-                SearchPaletteItem::Artist { name, .. } => Utf32String::from(name.as_str()),
-                SearchPaletteItem::Track { title, artists, .. } => {
-                    Utf32String::from(format!("{} {}", title, artists))
-                }
-                #[cfg(feature = "kugou")]
-                SearchPaletteItem::KugouTrack(track) => {
-                    Utf32String::from(format!("{} {}", track.title, track.artist))
-                }
-                #[cfg(feature = "netease")]
-                SearchPaletteItem::NeteaseTrack(track) => {
-                    Utf32String::from(format!("{} {}", track.title, track.artist))
-                }
+            // Search text is precomputed on every item at construction (see
+            // `SearchPaletteItem::from_search_results` and the online query
+            // handlers below), so index injection never formats per item.
+            let matcher: MatcherFunc = Box::new(|item, _| {
+                Utf32String::from(match item.as_ref() {
+                    SearchPaletteItem::Album { search_text, .. }
+                    | SearchPaletteItem::Artist { search_text, .. }
+                    | SearchPaletteItem::Track { search_text, .. } => search_text.as_ref(),
+                    #[cfg(feature = "kugou")]
+                    SearchPaletteItem::KugouTrack { search_text, .. } => search_text.as_ref(),
+                    #[cfg(feature = "netease")]
+                    SearchPaletteItem::NeteaseTrack { search_text, .. } => search_text.as_ref(),
+                })
             });
 
             let on_accept: OnAccept = Box::new(move |item, cx| {
@@ -136,12 +130,12 @@ impl SearchModel {
                         .as_ref()
                         .map(|album_id| ViewSwitchMessage::Release(*album_id, Some(*id))),
                     #[cfg(feature = "kugou")]
-                    SearchPaletteItem::KugouTrack(track) => {
+                    SearchPaletteItem::KugouTrack { track, .. } => {
                         crate::ui::kugou::play_track_now(cx, track);
                         None
                     }
                     #[cfg(feature = "netease")]
-                    SearchPaletteItem::NeteaseTrack(track) => {
+                    SearchPaletteItem::NeteaseTrack { track, .. } => {
                         crate::ui::netease::play_track_now(cx, track);
                         None
                     }
@@ -358,7 +352,11 @@ impl SearchModel {
                         this.kugou_items =
                             crate::ui::kugou::parse_tracks(&response.body, "/data/lists")
                                 .into_iter()
-                                .map(|track| Arc::new(SearchPaletteItem::KugouTrack(track)))
+                                .map(|track| {
+                                    let search_text: Arc<str> =
+                                        format!("{} {}", track.title, track.artist).into();
+                                    Arc::new(SearchPaletteItem::KugouTrack { track, search_text })
+                                })
                                 .collect();
                         this.emit_merged_items(cx);
                     }
@@ -428,7 +426,11 @@ impl SearchModel {
                         this.netease_items =
                             crate::ui::netease::parse_tracks(&response.body, "/result/songs")
                                 .into_iter()
-                                .map(|track| Arc::new(SearchPaletteItem::NeteaseTrack(track)))
+                                .map(|track| {
+                                    let search_text: Arc<str> =
+                                        format!("{} {}", track.title, track.artist).into();
+                                    Arc::new(SearchPaletteItem::NeteaseTrack { track, search_text })
+                                })
                                 .collect();
                         this.emit_merged_items(cx);
                     }
