@@ -889,37 +889,37 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1032",
+    "definedIn": "src/ui/kugou.rs:1035",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1044",
+    "definedIn": "src/ui/kugou.rs:1047",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1271",
+    "definedIn": "src/ui/kugou.rs:1274",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1276",
+    "definedIn": "src/ui/kugou.rs:1279",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1058",
+    "definedIn": "src/ui/kugou.rs:1061",
     "plural": false,
     "description": null
   },
   "KUGOU_LOADING": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:223",
+    "definedIn": "src/ui/settings/kugou.rs:226",
     "plural": false,
     "description": null
   },
@@ -937,13 +937,13 @@
   },
   "KUGOU_LOGGED_IN": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:212",
+    "definedIn": "src/ui/settings/kugou.rs:215",
     "plural": false,
     "description": null
   },
   "KUGOU_LOGIN": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:252",
+    "definedIn": "src/ui/settings/kugou.rs:255",
     "plural": false,
     "description": null
   },
@@ -961,13 +961,13 @@
   },
   "KUGOU_LOGOUT": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:235",
+    "definedIn": "src/ui/settings/kugou.rs:238",
     "plural": false,
     "description": null
   },
   "KUGOU_NICKNAME_UNAVAILABLE": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:219",
+    "definedIn": "src/ui/settings/kugou.rs:222",
     "plural": false,
     "description": null
   },
@@ -991,7 +991,7 @@
   },
   "KUGOU_NO_URL": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:893",
+    "definedIn": "src/ui/kugou.rs:896",
     "plural": false,
     "description": null
   },
@@ -1021,55 +1021,55 @@
   },
   "KUGOU_QR_CANCEL": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:353",
+    "definedIn": "src/ui/settings/kugou.rs:356",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_EXPIRED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:174",
+    "definedIn": "src/ui/settings/kugou.rs:177",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:163",
+    "definedIn": "src/ui/settings/kugou.rs:166",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_HINT": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:351",
+    "definedIn": "src/ui/settings/kugou.rs:354",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_LOADING": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:171",
+    "definedIn": "src/ui/settings/kugou.rs:174",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_REGENERATE": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:352",
+    "definedIn": "src/ui/settings/kugou.rs:355",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_SCANNED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:173",
+    "definedIn": "src/ui/settings/kugou.rs:176",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_TITLE": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:350",
+    "definedIn": "src/ui/settings/kugou.rs:353",
     "plural": false,
     "description": null
   },
   "KUGOU_QR_WAITING": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:172",
+    "definedIn": "src/ui/settings/kugou.rs:175",
     "plural": false,
     "description": null
   },
@@ -1093,7 +1093,7 @@
   },
   "KUGOU_SETTINGS_INTRO": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:244",
+    "definedIn": "src/ui/settings/kugou.rs:247",
     "plural": false,
     "description": null
   },
@@ -1105,25 +1105,25 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:1281",
+    "definedIn": "src/ui/kugou.rs:1284",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_CLAIMED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:359",
+    "definedIn": "src/ui/kugou.rs:360",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_CLAIM_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:373",
+    "definedIn": "src/ui/kugou.rs:376",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_STATUS_FETCH_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:94",
+    "definedIn": "src/ui/settings/kugou.rs:95",
     "plural": false,
     "description": null
   },
@@ -1525,31 +1525,31 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:612",
+    "definedIn": "src/ui/lyrics.rs:613",
     "plural": false,
     "description": null
   },
   "ONLINE_QUALITY_128": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:278",
+    "definedIn": "src/ui/settings/kugou.rs:281",
     "plural": false,
     "description": null
   },
   "ONLINE_QUALITY_320": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:283",
+    "definedIn": "src/ui/settings/kugou.rs:286",
     "plural": false,
     "description": null
   },
   "ONLINE_QUALITY_FLAC": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:288",
+    "definedIn": "src/ui/settings/kugou.rs:291",
     "plural": false,
     "description": null
   },
   "ONLINE_QUALITY_HIRES": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:293",
+    "definedIn": "src/ui/settings/kugou.rs:296",
     "plural": false,
     "description": null
   },
@@ -1615,13 +1615,13 @@
   },
   "PLAYBACK_DOWNLOAD_DIR": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:320",
+    "definedIn": "src/ui/settings/kugou.rs:323",
     "plural": false,
     "description": null
   },
   "PLAYBACK_DOWNLOAD_DIR_SUBTEXT": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:323",
+    "definedIn": "src/ui/settings/kugou.rs:326",
     "plural": false,
     "description": null
   },
@@ -1651,13 +1651,13 @@
   },
   "PLAYBACK_ONLINE_QUALITY": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:266",
+    "definedIn": "src/ui/settings/kugou.rs:269",
     "plural": false,
     "description": null
   },
   "PLAYBACK_ONLINE_QUALITY_SUBTEXT": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:269",
+    "definedIn": "src/ui/settings/kugou.rs:272",
     "plural": false,
     "description": null
   },
@@ -2089,7 +2089,7 @@
   },
   "SELECT_DOWNLOAD_DIR": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/settings/kugou.rs:120",
+    "definedIn": "src/ui/settings/kugou.rs:123",
     "plural": false,
     "description": null
   },

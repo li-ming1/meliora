@@ -356,7 +356,10 @@ pub fn claim_daily_vip_async() {
         match client.ensure_daily_vip().await {
             VipClaimOutcome::Claimed => {
                 tracing::info!("kugou: daily VIP claimed");
-                emit_toast(Toast::success(tr!("KUGOU_VIP_CLAIMED", "Daily VIP claimed")));
+                emit_toast(Toast::success(tr!(
+                    "KUGOU_VIP_CLAIMED",
+                    "Daily VIP claimed"
+                )));
             }
             VipClaimOutcome::AlreadyClaimed => {
                 tracing::debug!("kugou: VIP already claimed for today");

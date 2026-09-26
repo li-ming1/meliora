@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zed_reqwest::{Client, Method, header::HeaderMap, header::HeaderName, header::HeaderValue};
 
-use crate::toasts::{Toast, emit_toast};
 use super::{crypto, sign};
+use crate::toasts::{Toast, emit_toast};
 
 /// Payload error_code that empirically accompanies requests made with an
 /// expired KuGou login (playlists, VIP detail, ...): the same session sees

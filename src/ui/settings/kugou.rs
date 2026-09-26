@@ -91,8 +91,11 @@ impl KugouSettings {
                 // itself failed, which must not read as "No VIP".
                 this.vip_line = Some(match vip_refreshed {
                     Ok(Ok(())) => crate::ui::kugou::vip_status_line(),
-                    _ => tr!("KUGOU_VIP_STATUS_FETCH_FAILED", "Could not fetch VIP status")
-                        .into(),
+                    _ => tr!(
+                        "KUGOU_VIP_STATUS_FETCH_FAILED",
+                        "Could not fetch VIP status"
+                    )
+                    .into(),
                 });
                 cx.notify();
             })

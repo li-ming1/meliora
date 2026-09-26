@@ -132,13 +132,17 @@ fn report_row_build_query_costs() {
     summarize("get_track_by_id", || {
         let id = track_ids[idx % track_ids.len()];
         idx += 1;
-        let _ = crate::RUNTIME.block_on(db::get_track_by_id(&pool, id)).unwrap();
+        let _ = crate::RUNTIME
+            .block_on(db::get_track_by_id(&pool, id))
+            .unwrap();
     });
     let mut idx = 0usize;
     summarize("get_album_by_id", || {
         let id = album_ids[idx % album_ids.len()];
         idx += 1;
-        let _ = crate::RUNTIME.block_on(db::get_album_by_id(&pool, id)).unwrap();
+        let _ = crate::RUNTIME
+            .block_on(db::get_album_by_id(&pool, id))
+            .unwrap();
     });
     let mut idx = 0usize;
     summarize("get_artist_with_counts", || {
@@ -152,7 +156,8 @@ fn report_row_build_query_costs() {
     summarize("get_all_tracks_by_artist", || {
         let id = artist_ids[idx % artist_ids.len()];
         idx += 1;
-        let _: Arc<Vec<_>> =
-            crate::RUNTIME.block_on(db::get_all_tracks_by_artist(&pool, id)).unwrap();
+        let _: Arc<Vec<_>> = crate::RUNTIME
+            .block_on(db::get_all_tracks_by_artist(&pool, id))
+            .unwrap();
     });
 }

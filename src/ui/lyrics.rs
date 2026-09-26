@@ -391,7 +391,8 @@ impl Lyrics {
         // so the scrollbar is approximately right before the first paint
         // converges it. `reset` also returns the view to the top, which is
         // the pre-existing per-track scroll behavior.
-        self.list_state.reset_with_uniform_height(line_count, px(60.0));
+        self.list_state
+            .reset_with_uniform_height(line_count, px(60.0));
         if self.parsed.is_none() {
             // plain-text fallback branch still scrolls via `scroll_handle`
             self.scroll_handle.set_offset(gpui::Point {
@@ -920,8 +921,7 @@ impl Lyrics {
         // to content space before aiming for the viewport center. (The old
         // ScrollHandle layout reported unscrolled content coordinates, which
         // is why the pre-virtualization formula had no current-scroll term.)
-        let item_content_y =
-            current_scroll_top + (item_bounds.origin.y - viewport.origin.y);
+        let item_content_y = current_scroll_top + (item_bounds.origin.y - viewport.origin.y);
         let target_scroll_top = (item_content_y + item_bounds.size.height / 2.0
             - viewport.size.height / 2.0)
             .max(px(0.0))

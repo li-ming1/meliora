@@ -20,10 +20,14 @@ use crate::ui::theme::Theme;
 #[derive(Clone)]
 pub enum ScrollableHandle {
     Regular(ScrollHandle),
-    UniformList { handle: UniformListScrollHandle },
+    UniformList {
+        handle: UniformListScrollHandle,
+    },
     /// A variable-height virtualized `gpui::list`; offsets follow the same
     /// negative-y scrollbar convention as `Regular`.
-    List { state: ListState },
+    List {
+        state: ListState,
+    },
 }
 
 impl ScrollableHandle {
