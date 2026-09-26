@@ -997,7 +997,7 @@
   },
   "KUGOU_ONLINE_RESULTS": {
     "context": "search_item.rs",
-    "definedIn": "src/ui/search/search_item.rs:166",
+    "definedIn": "src/ui/search/search_item.rs:204",
     "plural": false,
     "description": null
   },
@@ -1369,7 +1369,7 @@
   },
   "NETEASE_ONLINE_RESULTS": {
     "context": "search_item.rs",
-    "definedIn": "src/ui/search/search_item.rs:168",
+    "definedIn": "src/ui/search/search_item.rs:207",
     "plural": false,
     "description": null
   },
@@ -1567,7 +1567,7 @@
   },
   "PALETTE_SHOW_MORE": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:759",
+    "definedIn": "src/ui/components/palette/finder.rs:838",
     "plural": true,
     "description": null
   },
