@@ -10,13 +10,14 @@ use crate::ui::components::drag_drop::{DragPreview, TrackDragData};
 use crate::ui::components::icons::{STAR, STAR_FILLED, icon};
 use crate::ui::library::context_menus::play_track_next;
 use crate::ui::library::context_menus::track::TrackContextMenu;
-use crate::ui::models::{HasLikedState, subscribe_liked_updates, toggle_like};
+use crate::ui::models::{
+    HasLikedState, is_track_available_snapshot, subscribe_liked_updates, toggle_like,
+};
 use crate::ui::util::format_duration;
 
 use crate::library::types::{DBString, Track};
 use crate::ui::design::ICON_SM;
 use crate::ui::{
-    availability::is_track_available,
     components::context::context,
     library::context_menus::{PlaylistMenuInfo, TrackContextMenuContext, play_from_track_listing},
     models::PlaybackInfo,
@@ -137,7 +138,7 @@ impl TrackItem {
                     Some(album_id) => format!("!db://album/{album_id}/thumb").into(),
                     None => format!("!db://track/{}/thumb", track.id).into(),
                 }),
-                is_available: is_track_available(&track),
+                is_available: is_track_available_snapshot(cx, &track),
                 track: Rc::new(track),
                 is_start,
                 artist_name_visibility: anv,

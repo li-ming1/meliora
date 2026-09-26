@@ -15,7 +15,6 @@ use crate::{
     },
     playback::thread::PlaybackState,
     ui::{
-        availability::is_track_available,
         caching::meliora_cache,
         components::{
             button::{ButtonSize, button},
@@ -35,7 +34,10 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
         },
-        models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent, toggle_album_like},
+        models::{
+            LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent, toggle_album_like,
+            is_track_available_snapshot,
+        },
         scroll_follow::SmoothScrollFollow,
         theme::Theme,
     },
@@ -218,13 +220,13 @@ impl ReleaseView {
             let pending_scroll = target_track_id.and_then(|track_id| {
                 tracks
                     .iter()
-                    .position(|track| track.id == track_id && is_track_available(track))
+                    .position(|track| track.id == track_id && is_track_available_snapshot(cx, track))
             });
 
             let tracks_available: Arc<Vec<bool>> = Arc::new(
                 tracks
                     .iter()
-                    .map(|track| is_track_available(track))
+                    .map(|track| is_track_available_snapshot(cx, track))
                     .collect(),
             );
 

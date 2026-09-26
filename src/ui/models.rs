@@ -16,7 +16,7 @@ use crate::{
     library::{
         db::{self, LibraryAccess, LikedTrackSortMethod, PlaylistTrackSortMethod},
         scan::ScanEvent,
-        types::Album,
+        types::{Album, Track},
     },
     media::metadata::Metadata,
     playback::{events::RepeatState, queue::QueueItemData, thread::PlaybackState},
@@ -31,7 +31,7 @@ use crate::{
     ui::{
         app::Pool,
         assets::db::clear_shrunk_thumb_cache,
-        availability::compute_availability,
+        availability::{compute_availability, is_track_available},
         library::{NavigationHistory, ViewSwitchMessage},
     },
 };
@@ -685,6 +685,20 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
 pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     let cached = cx.global::<Models>().liked_ids.read(cx).clone();
     cached.and_then(|set| set.contains(&track_id).then_some(track_id))
+}
+
+/// Track availability from the background snapshot (reloaded at startup and
+/// on scan completion, same pass as the album/artist sets): lets view
+/// construction answer "is this track's file still there" without one
+/// `path.exists()` syscall per track on the UI thread. `None` (snapshot not
+/// loaded yet) falls back to the exact pre-snapshot behavior so the startup
+/// window never reads as unavailable — the same contract as the table rows
+/// (`types/table.rs`).
+pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
+    match cx.global::<Models>().available_tracks.read(cx).clone() {
+        Some(set) => set.contains(&track.id),
+        None => is_track_available(track),
+    }
 }
 
 /// (Re)loads the album-, artist- and track-availability snapshots on the async

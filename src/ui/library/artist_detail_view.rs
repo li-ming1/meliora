@@ -13,7 +13,6 @@ use crate::{
     playback::thread::PlaybackState,
     ui::{
         app::Pool,
-        availability::is_track_available,
         caching::meliora_cache,
         components::{
             button::{ButtonSize, button},
@@ -33,7 +32,7 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
         },
-        models::{Models, PlaybackInfo, PlaylistEvent},
+        models::{Models, PlaybackInfo, PlaylistEvent, is_track_available_snapshot},
         theme::Theme,
         util::prune_views,
     },
@@ -44,13 +43,16 @@ use crate::ui::design::ICON_MD;
 
 type GridHandler = dyn Fn(&mut App, &(u32, String)) + 'static;
 
-/// Per-track `is_track_available` results, computed once per track-list load:
-/// re-statting every file on every render frame is far too expensive.
-fn availability_map(tracks: &[Track]) -> Arc<Vec<bool>> {
+/// Per-track availability, computed once per track-list load from the
+/// background snapshot: re-statting every file on every render frame is far
+/// too expensive, and one `path.exists()` per track at load time is a syscall
+/// on the UI thread — both replaced by the `available_tracks` set that
+/// `reload_availability` maintains off-thread.
+fn availability_map(cx: &App, tracks: &[Track]) -> Arc<Vec<bool>> {
     Arc::new(
         tracks
             .iter()
-            .map(|track| is_track_available(track))
+            .map(|track| is_track_available_snapshot(cx, track))
             .collect(),
     )
 }
@@ -106,14 +108,14 @@ impl ArtistDetailView {
             let all_tracks = cx
                 .get_all_tracks_by_artist(artist_id)
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
-            let all_tracks_available = availability_map(&all_tracks);
+            let all_tracks_available = availability_map(cx, &all_tracks);
 
             let liked_sort = *cx.global::<Models>().liked_tracks_sort_method.read(cx);
 
             let liked_tracks = cx
                 .get_liked_tracks_by_artist(artist_id, liked_sort)
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
-            let liked_tracks_available = availability_map(&liked_tracks);
+            let liked_tracks_available = availability_map(cx, &liked_tracks);
 
             let liked_track_items: Vec<Entity<TrackItem>> = liked_tracks
                 .iter()
@@ -139,7 +141,7 @@ impl ArtistDetailView {
             let standalone_tracks = cx
                 .get_standalone_tracks_by_artist(artist_id, standalone_sort)
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
-            let standalone_tracks_available = availability_map(&standalone_tracks);
+            let standalone_tracks_available = availability_map(cx, &standalone_tracks);
 
             let standalone_track_items: Vec<Entity<TrackItem>> = standalone_tracks
                 .iter()
@@ -249,7 +251,7 @@ impl ArtistDetailView {
 
     fn set_liked_tracks(&mut self, liked_tracks: Arc<Vec<Track>>, cx: &mut Context<Self>) {
         self.liked_tracks = liked_tracks;
-        self.liked_tracks_available = availability_map(&self.liked_tracks);
+        self.liked_tracks_available = availability_map(cx, &self.liked_tracks);
 
         self.liked_track_items = self
             .liked_tracks
@@ -307,7 +309,7 @@ impl ArtistDetailView {
         cx: &mut Context<Self>,
     ) {
         self.standalone_tracks = standalone_tracks;
-        self.standalone_tracks_available = availability_map(&self.standalone_tracks);
+        self.standalone_tracks_available = availability_map(cx, &self.standalone_tracks);
 
         self.standalone_track_items = self
             .standalone_tracks
