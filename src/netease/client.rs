@@ -99,7 +99,18 @@ impl NeteaseSession {
     }
 
     fn load(path: &Path) -> Option<Self> {
-        let contents = std::fs::read_to_string(path).ok()?;
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            // Missing credentials is the normal first-run path; stay quiet.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(%err, "no netease session on disk yet");
+                return None;
+            }
+            Err(err) => {
+                tracing::warn!(%err, path = %path.display(), "failed to read netease session");
+                return None;
+            }
+        };
         serde_json::from_str(&contents)
             .map_err(|err| tracing::warn!(%err, "failed to decode netease session"))
             .ok()
@@ -112,13 +123,27 @@ impl NeteaseSession {
             tracing::warn!(%err, "failed to create netease session dir");
             return;
         }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(err) = std::fs::write(path, json) {
-                    tracing::warn!(%err, "failed to persist netease session");
-                }
+        let json = match serde_json::to_string_pretty(self) {
+            Ok(json) => json,
+            Err(err) => {
+                tracing::warn!(%err, "failed to serialize netease session");
+                return;
             }
-            Err(err) => tracing::warn!(%err, "failed to serialize netease session"),
+        };
+        // Write to a temporary file and rename it into place (same pattern as
+        // `playback/session_storage.rs`): an in-place truncate+rewrite can
+        // leave a truncated session file behind when the process dies mid-write.
+        // `fs::rename` replaces an existing target on Windows, so the swap is
+        // atomic on every supported platform.
+        let tmp = path.with_extension("json.tmp");
+        if let Err(err) = std::fs::write(&tmp, json) {
+            tracing::warn!(%err, "failed to write netease session temp file");
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        if let Err(err) = std::fs::rename(&tmp, path) {
+            tracing::warn!(%err, "failed to persist netease session");
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 }
