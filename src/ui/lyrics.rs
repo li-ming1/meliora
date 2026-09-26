@@ -1025,11 +1025,16 @@ impl Lyrics {
             .is_some_and(|at| at.elapsed() < LYRICS_USER_INTERACTION_TIMEOUT)
     }
 
+    // During the interaction window the wheel/click events drive the
+    // repaints themselves and `scroll_follow` is cancelled, so a pending
+    // re-follow must not keep the frame loop alive: it is consumed by the
+    // first frame after the window expires (the next line change or
+    // karaoke position tick), and counting it unconditionally here would
+    // idle-spin the loop for the whole 2s window after every interaction.
     fn needs_animation_frame(&self) -> bool {
         self.line_emphasis_started_at.is_some()
-            || self.follow_pending
+            || (self.follow_pending && !self.has_recent_user_interaction())
             || self.scroll_follow.is_active()
-            || self.has_recent_user_interaction()
     }
 }
 
