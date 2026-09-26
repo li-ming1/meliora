@@ -136,14 +136,15 @@ fn strip_verbatim(path: &str) -> Cow<'_, str> {
     }
 }
 
-/// Fold a path the way [`starts_with_folded`] folds its key: strip `\\?\` and
-/// lowercase unconditionally. [`fold_path`] is the case-sensitivity-aware variant.
+/// Fold a record key for folded prefix matching: strip `\\?\` and lowercase
+/// unconditionally. [`fold_path`] is the case-sensitivity-aware variant.
 pub fn fold_key(path: &Utf8Path) -> String {
     strip_verbatim(path.as_str()).to_lowercase()
 }
 
-/// [`starts_with_folded`] for a key already folded by [`fold_key`] - lets callers
-/// fold once and match against many prefixes.
+/// Prefix match for a key already folded by [`fold_key`] against a
+/// already-folded prefix - lets callers fold once and match against many
+/// prefixes.
 pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
     let mut key_chars = folded_key.chars();
     for expected in folded_prefix.chars() {
@@ -153,11 +154,6 @@ pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
     }
     // prefix must end on a path component boundary
     key_chars.next().is_none_or(|c| c == '/' || c == '\\')
-}
-
-/// Case-insensitive prefix check without calling [`fold_path`] (avoids a Unix stat).
-pub fn starts_with_folded(key: &Utf8Path, folded_prefix: &Utf8Path) -> bool {
-    folded_starts_with(&fold_key(key), folded_prefix.as_str())
 }
 
 /// Build a comparison key - strip \\?\ and fold case on case-insensitive volumes.
@@ -258,45 +254,51 @@ mod tests {
     }
 
     #[test]
-    fn starts_with_folded_matches_on_component_boundaries_only() {
-        let prefix = Utf8Path::new("/music/artist");
-        assert!(starts_with_folded(
-            Utf8Path::new("/Music/Artist/album/track.flac"),
-            prefix
+    fn folded_starts_with_matches_on_component_boundaries_only() {
+        let prefix = fold_key(Utf8Path::new("/music/artist"));
+        assert!(folded_starts_with(
+            &fold_key(Utf8Path::new("/Music/Artist/album/track.flac")),
+            &prefix
         ));
-        assert!(starts_with_folded(Utf8Path::new("/music/artist"), prefix));
-        assert!(!starts_with_folded(
-            Utf8Path::new("/Music/Artist2/track.flac"),
-            prefix
+        assert!(folded_starts_with(
+            &fold_key(Utf8Path::new("/music/artist")),
+            &prefix
         ));
-        assert!(!starts_with_folded(
-            Utf8Path::new("/music-other/track.flac"),
-            Utf8Path::new("/music")
+        assert!(!folded_starts_with(
+            &fold_key(Utf8Path::new("/Music/Artist2/track.flac")),
+            &prefix
         ));
-        assert!(!starts_with_folded(Utf8Path::new("/music"), prefix));
-    }
-
-    #[test]
-    fn starts_with_folded_folds_unicode_like_fold_path() {
-        let prefix = Utf8Path::new("/müsik/straße");
-        assert!(starts_with_folded(
-            Utf8Path::new("/MÜSIK/STRAßE/track.flac"),
-            prefix
+        assert!(!folded_starts_with(
+            &fold_key(Utf8Path::new("/music-other/track.flac")),
+            &fold_key(Utf8Path::new("/music"))
         ));
-        assert!(!starts_with_folded(
-            Utf8Path::new("/MUSIK/STRASSE/track.flac"),
-            prefix
+        assert!(!folded_starts_with(
+            &fold_key(Utf8Path::new("/music")),
+            &prefix
         ));
     }
 
     #[test]
-    fn starts_with_folded_folds_final_sigma_like_fold_path() {
+    fn folded_starts_with_folds_unicode_like_fold_path() {
+        let prefix = fold_key(Utf8Path::new("/müsik/straße"));
+        assert!(folded_starts_with(
+            &fold_key(Utf8Path::new("/MÜSIK/STRAßE/track.flac")),
+            &prefix
+        ));
+        assert!(!folded_starts_with(
+            &fold_key(Utf8Path::new("/MUSIK/STRASSE/track.flac")),
+            &prefix
+        ));
+    }
+
+    #[test]
+    fn folded_starts_with_folds_final_sigma_like_fold_path() {
         // str::to_lowercase maps word-final Σ to ς, char::to_lowercase does not
         let prefix = "/music/AΣ".to_lowercase();
         assert_eq!(prefix, "/music/aς");
-        assert!(starts_with_folded(
-            Utf8Path::new("/music/AΣ/track.flac"),
-            Utf8Path::new(&prefix)
+        assert!(folded_starts_with(
+            &fold_key(Utf8Path::new("/music/AΣ/track.flac")),
+            &prefix
         ));
     }
 
