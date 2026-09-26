@@ -914,10 +914,18 @@ impl Lyrics {
         };
 
         let max_scroll_top = self.list_state.max_offset_for_scrollbar().y.max(px(0.0));
-        let raw_offset_y = viewport.origin.y - item_bounds.origin.y + viewport.size.height / 2.0
-            - item_bounds.size.height / 2.0;
-        let target_scroll_top = (-raw_offset_y).max(px(0.0)).min(max_scroll_top);
         let current_scroll_top = -self.list_state.scroll_px_offset_for_scrollbar().y;
+        // ListState reports window coordinates, so the item's on-screen
+        // position is already shifted by the current scroll: convert it back
+        // to content space before aiming for the viewport center. (The old
+        // ScrollHandle layout reported unscrolled content coordinates, which
+        // is why the pre-virtualization formula had no current-scroll term.)
+        let item_content_y =
+            current_scroll_top + (item_bounds.origin.y - viewport.origin.y);
+        let target_scroll_top = (item_content_y + item_bounds.size.height / 2.0
+            - viewport.size.height / 2.0)
+            .max(px(0.0))
+            .min(max_scroll_top);
 
         if (target_scroll_top - current_scroll_top).abs() <= px(0.1) {
             FollowTarget::NoScrollNeeded
