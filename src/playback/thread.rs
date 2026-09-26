@@ -9,7 +9,6 @@ use std::{
     thread::sleep,
 };
 
-use itertools::Itertools as _;
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     watch,
@@ -1060,7 +1059,14 @@ impl PlaybackThread {
 
     /// Replace the current queue with the given paths.
     fn replace_queue(&mut self, paths: Vec<QueueItemData>) {
-        debug!("Replacing queue with: '{}'", paths.iter().format(":"));
+        debug!(
+            "Replacing queue with: '{}'",
+            paths
+                .iter()
+                .map(|path| path.to_string())
+                .collect::<Vec<_>>()
+                .join(":")
+        );
         self.set_stop_after_current(false);
 
         match self.queue.replace_queue(paths) {

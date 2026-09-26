@@ -61,7 +61,6 @@ gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "ae7c41157fe
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 indexmap = { version = "2", features = ["serde"] }
 intx = "0.1"
-itertools = "0.15"
 lofty = "0.25"
 md-5 = { version = "0.10", optional = true }
 rsa = { version = "0.9", optional = true, default-features = false, features = ["std", "pem"] }
@@ -104,7 +103,10 @@ symphonia = { version = "0.6", default-features = false, features = [
 ] }
 symphonia-adapter-libopus = "0.3"
 symphonia-adapter-fdk-aac = "0.2"
-sysinfo = "0.39"
+# Only System/CPU/memory (troubleshooting, memory probe) and Disks (drive
+# probing in the scanner) have call sites; component/network/user do not, and
+# component alone drags WMI/OLE/RPC windows subsystems into the Windows build.
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 thiserror = "2"
 # fs/io-util are declared explicitly: the code calls tokio::fs and the
 # tokio::io extension traits directly (scan record, session storage,
@@ -169,12 +171,8 @@ vergen = { version = "10", features = ["build"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
-    "Devices_Enumeration",
     "Foundation_Collections",
     "Media",
-    "Media_Audio",
-    "Media_MediaProperties",
-    "Media_Render",
     "Storage_Search",
     "Storage_Streams",
     "Win32_Foundation",
@@ -183,6 +181,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_System_IO",
     "Win32_System_Ioctl",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
     "Win32_System_WinRT",
     "Win32_System_Power",
     "Win32_System_Recovery"
