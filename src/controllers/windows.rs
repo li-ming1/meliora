@@ -39,7 +39,16 @@ pub struct WindowsController {
     /// background sessions leaked a few MB per track (matches the [mem]
     /// probe's per-track climb). One long-lived stream keeps the shell's
     /// reference stable and the artwork byte count bounded.
-    album_art_stream: Option<(InMemoryRandomAccessStream, DataWriter)>,
+    ///
+    /// Only the stream is kept; the DataWriter is rebuilt per update. Its
+    /// write position survives StoreAsync and this binding exposes no
+    /// reset, so a reused writer appended each track's artwork past the
+    /// truncated end and the backing stream grew by the artwork size per
+    /// track — the same per-track climb, resurfacing after the stream was
+    /// made persistent. A fresh writer always starts at position 0, and
+    /// the SetSize after the store pins the stream to exactly the artwork
+    /// length.
+    album_art_stream: Option<InMemoryRandomAccessStream>,
 }
 
 impl WindowsController {
@@ -265,25 +274,27 @@ impl PlaybackController for WindowsController {
             return Ok(());
         }
         // Overwrite the persistent thumbnail stream in place instead of
-        // building a fresh InMemoryRandomAccessStream + DataWriter per track.
-        // The old chain stored two copies of the artwork per track and left
-        // the replaced stream to delayed COM reclamation, leaking a few MB
-        // per track during long background sessions.
-        if self.album_art_stream.is_none() {
-            let stream = InMemoryRandomAccessStream::new()
-                .map_err(|_| anyhow::anyhow!("could not create RAS"))?;
-            let writer = DataWriter::CreateDataWriter(&stream)?;
-            self.album_art_stream = Some((stream, writer));
-        }
-        let Some((stream, writer)) = self.album_art_stream.as_ref() else {
-            anyhow::bail!("thumbnail stream unavailable");
+        // building a fresh InMemoryRandomAccessStream per track: the shell's
+        // reference stays stable and the artwork byte count bounded. The
+        // DataWriter is rebuilt per update (see the field comment) and
+        // dropped right after the store; SetSize pins the stream to exactly
+        // the artwork length so no stale tail can survive either.
+        let stream = match self.album_art_stream.as_ref() {
+            Some(stream) => stream.clone(),
+            None => {
+                let stream = InMemoryRandomAccessStream::new()
+                    .map_err(|_| anyhow::anyhow!("could not create RAS"))?;
+                self.album_art_stream = Some(stream.clone());
+                stream
+            }
         };
-
         stream.SetSize(0)?;
         stream.Seek(0)?;
+        let writer = DataWriter::CreateDataWriter(&stream)?;
         writer.WriteBytes(album_art)?;
         writer.StoreAsync()?.await?;
-        let reference = RandomAccessStreamReference::CreateFromStream(stream)?;
+        stream.SetSize(album_art.len() as u64)?;
+        let reference = RandomAccessStreamReference::CreateFromStream(&stream)?;
 
         self.display.SetThumbnail(&reference)?;
         self.display.Update()?;

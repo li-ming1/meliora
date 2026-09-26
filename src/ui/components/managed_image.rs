@@ -857,6 +857,16 @@ impl Element for ManagedImage {
                     Ok(Some(image)) => {
                         if this
                             .update(cx, |this: &mut ManagedImageState, cx| {
+                                // keyed state 被同一元素位置跨内容复用时（如
+                                // 正在播放栏逐曲换封面），被覆盖的旧图必须进
+                                // 回收漏斗：普通 Drop 不会释放图集瓦片。推送
+                                // 本身是安全的——drain 的"批外持有者 == 0"判
+                                // 定会拦下仍被绘制或缓存持有的图。
+                                if let Some(old) = this.image.take()
+                                    && !Arc::ptr_eq(&old, &image)
+                                {
+                                    queue_orphan_tile_drop(old);
+                                }
                                 this.image = Some(image.clone());
                                 this.bridge = None;
                                 cx.notify();
