@@ -600,12 +600,14 @@ impl KugouClient {
     }
 
     /// Ensures this account has VIP for today, but never hits the claim
-    /// endpoints more than once per calendar day.
+    /// endpoints more than once per calendar day while VIP is actually
+    /// active.
     ///
-    /// Loop protection: the local claim date is persisted the first time we
-    /// attempt it, so a failed claim is NOT retried just because the user quit
-    /// and relaunched the app on the same day. The claim is re-attempted only
-    /// when that local marker rolls over to a new day.
+    /// Loop protection: the attempt marker is persisted on the first try so
+    /// concurrent startup/login triggers don't double-claim. The skip guard
+    /// additionally requires today's VIP to actually be active in the cached
+    /// detail; a failed attempt retries on the next app start or fresh login,
+    /// which is what keeps membership alive across login-expiry windows.
     pub async fn ensure_daily_vip(&self) -> VipClaimOutcome {
         if !self.logged_in() {
             return VipClaimOutcome::NotLoggedIn;
@@ -613,14 +615,19 @@ impl KugouClient {
 
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-        // Same-day guard: if we already tried today (success or failure),
-        // don't hit the claim endpoints again — even across restarts.
-        if self.last_claim_day().as_deref() == Some(today.as_str()) {
+        // Same-day guard: skip only when today's attempt actually secured
+        // VIP. A failed attempt (e.g. one made while the login was expired,
+        // failing at get_vip_record with 51002) must not consume the day -
+        // without this the marker poisons the claim and it never retries
+        // even after the user signs in again. Retry frequency stays bounded:
+        // ensure_daily_vip only runs at app startup and after a fresh login.
+        if self.last_claim_day().as_deref() == Some(today.as_str()) && self.has_active_vip() {
             return VipClaimOutcome::AlreadyClaimed;
         }
 
-        // Record that we attempted it NOW so a mid-flow failure still counts
-        // as "tried today" and won't be re-run on the next launch.
+        // Mark the attempt now so startup and login triggers racing in the
+        // same session don't double-claim; the guard reads real VIP state,
+        // so a failed attempt still retries on the next launch.
         self.mark_claim_attempted();
 
         let record = match self.get_vip_record().await {
