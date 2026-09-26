@@ -38,7 +38,14 @@ bitflags = "2"
 camino = { version = "1", features = ["serde1"] }
 cbc = { version = "0.1", optional = true, features = ["alloc"] }
 chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
+# CLI surface is one optional positional arg + --version/--about: the default
+# color/suggestions machinery (and its anstream/strsim chains) is dead weight.
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+] }
 cntp_i18n = { version = "0.3", features = ["gpui"] }
 console-subscriber = { version = "0.5", optional = true }
 cpal = { version = "0.18.2", features = ["pipewire"] }
@@ -49,7 +56,6 @@ ecb = { version = "0.1", optional = true, features = ["alloc"] }
 file-rotate = "0.8.0"
 flate2 = "1"
 futures = "0.3"
-globwalk = "0.9"
 gpui = { package = "gpui-unofficial", path = "vendor/gpui-unofficial-shim" }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "ae7c41157feb180ce096cd1afdb2d6b48850b539", features = ["wayland", "x11", "font-kit"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
@@ -100,7 +106,18 @@ symphonia-adapter-libopus = "0.3"
 symphonia-adapter-fdk-aac = "0.2"
 sysinfo = "0.39"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# fs/io-util are declared explicitly: the code calls tokio::fs and the
+# tokio::io extension traits directly (scan record, session storage,
+# playlist persistence) and must not depend on other crates' feature
+# unification to expose them.
+tokio = { version = "1", features = [
+    "fs",
+    "io-util",
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "sync",
+] }
 tokio-stream = { version = "0.1", features = ["io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -161,8 +178,6 @@ windows = { version = "0.62", features = [
     "Win32_System_Power",
     "Win32_System_Recovery"
 ] }
-windows-future = "0.3"
-windows-result = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

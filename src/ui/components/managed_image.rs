@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use globwalk::GlobWalkerBuilder;
 #[cfg(feature = "online_sources")]
 use gpui::SharedString;
 use gpui::{
@@ -25,18 +24,35 @@ use crate::{
     ui::app::Pool,
 };
 
+/// Cover file names accepted for a track's sibling art lookup: three stems ×
+/// three extensions, matched case-insensitively within a single directory
+/// level. Plain `read_dir` + name compare replaces the former `globwalk`
+/// glob — same candidates, same readdir order, no glob compiled per lookup.
+const ART_FILE_NAMES: [&str; 9] = [
+    "folder.jpg",
+    "folder.jpeg",
+    "folder.png",
+    "cover.jpg",
+    "cover.jpeg",
+    "cover.png",
+    "front.jpg",
+    "front.jpeg",
+    "front.png",
+];
+
 fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
     let parent = path.parent()?;
 
-    let mut glob =
-        GlobWalkerBuilder::from_patterns(parent, &["{folder,cover,front}.{jpg,jpeg,png}"])
-            .case_insensitive(true)
-            .max_depth(1)
-            .build()
-            .expect("Failed to build album art glob")
-            .filter_map(|e| e.ok());
-
-    glob.next().map(|e| Arc::from(e.path()))
+    std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .find(|entry| {
+            let name = entry.file_name();
+            ART_FILE_NAMES
+                .iter()
+                .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        })
+        .map(|entry| Arc::from(entry.path()))
 }
 
 /// Caps concurrent cover decodes across all `ManagedImage` elements: each
