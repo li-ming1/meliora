@@ -191,11 +191,10 @@ fn lerp_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
     )
 }
 
-pub struct StatsSettings {
-    loaded: bool,
-    has_data: bool,
-    daily: BTreeMap<NaiveDate, i64>,
-    max_day_secs: i64,
+/// 小时图子实体：只接管 `hover_hour` 状态与小时图元素。悬停列的 `cx.notify`
+/// 落在本实体上，重绘仅限本图；热力图与 Top-10 留在 `StatsSettings`，
+/// 不再因鼠标扫过 24 个悬停列而整页重建。
+struct HoursChart {
     hours: [i64; 24],
     hours_max: i64,
     /// Precomputed hour-bar tooltips and element ids.
@@ -203,6 +202,27 @@ pub struct StatsSettings {
     hours_ids: [SharedString; 24],
     /// Hour currently hovered (drives the chart crosshair), `None` = none.
     hover_hour: Option<usize>,
+}
+
+impl HoursChart {
+    /// Pushes a fresh hour histogram (data arrival / 30 s refresh tick).
+    fn apply_hours(&mut self, hours: [i64; 24], cx: &mut Context<Self>) {
+        self.hours_max = hours.iter().copied().max().unwrap_or(0);
+        self.hours = hours;
+        self.hours_labels = std::array::from_fn(|hour| {
+            let secs = hours[hour];
+            (secs > 0).then(|| SharedString::from(format!("{hour:02}:00 · {}", fmt_duration(secs))))
+        });
+        cx.notify();
+    }
+}
+
+pub struct StatsSettings {
+    loaded: bool,
+    has_data: bool,
+    daily: BTreeMap<NaiveDate, i64>,
+    max_day_secs: i64,
+    hours_chart: Entity<HoursChart>,
     /// 7 rows (Mon..Sun) × 53 week columns; per-day seconds, `None` = future.
     heat_weeks: Vec<HeatWeek>,
     /// First day of the heat-map window; day dates derive from it at render.
@@ -226,16 +246,18 @@ pub struct StatsSettings {
 
 impl StatsSettings {
     pub fn new(cx: &mut App) -> Entity<Self> {
-        let entity = cx.new(|_| Self {
+        let entity = cx.new(|cx| Self {
             loaded: false,
             has_data: false,
             daily: BTreeMap::new(),
             max_day_secs: 0,
-            hours: [0; 24],
-            hours_max: 0,
-            hours_labels: std::array::from_fn(|_| None),
-            hours_ids: std::array::from_fn(|h| SharedString::from(format!("hb-{h}"))),
-            hover_hour: None,
+            hours_chart: cx.new(|_| HoursChart {
+                hours: [0; 24],
+                hours_max: 0,
+                hours_labels: std::array::from_fn(|_| None),
+                hours_ids: std::array::from_fn(|h| SharedString::from(format!("hb-{h}"))),
+                hover_hour: None,
+            }),
             heat_weeks: Vec::new(),
             heat_window_start: Local::now().date_naive(),
             heat_year: Local::now().year(),
@@ -311,7 +333,7 @@ impl StatsSettings {
         .detach();
     }
 
-    fn apply_base(&mut self, daily: Vec<(String, i64)>, hours: [i64; 24], _cx: &mut Context<Self>) {
+    fn apply_base(&mut self, daily: Vec<(String, i64)>, hours: [i64; 24], cx: &mut Context<Self>) {
         let mut map = BTreeMap::new();
         for (day, total) in daily {
             if let Ok(date) = NaiveDate::parse_from_str(&day, "%Y-%m-%d") {
@@ -322,12 +344,8 @@ impl StatsSettings {
         self.max_day_secs = map.values().copied().max().unwrap_or(0);
         self.daily = map;
 
-        self.hours_max = hours.iter().copied().max().unwrap_or(0);
-        self.hours = hours;
-        self.hours_labels = std::array::from_fn(|hour| {
-            let secs = hours[hour];
-            (secs > 0).then(|| SharedString::from(format!("{hour:02}:00 · {}", fmt_duration(secs))))
-        });
+        self.hours_chart
+            .update(cx, |chart, cx| chart.apply_hours(hours, cx));
 
         // Overview numbers are derived from the daily map (single source of
         // truth for daily_sums and the heat map alike).
@@ -779,7 +797,154 @@ impl StatsSettings {
             .child(glyph)
     }
 
-    fn render_hours(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_top(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut tab_row = div().flex().flex_row().gap(px(4.0));
+        for tab in [TopTab::Tracks, TopTab::Artists, TopTab::Albums] {
+            let active = self.top_tab == tab;
+            tab_row = tab_row.child(
+                self.pill(tab.id(), tab.label(), active, theme)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx))),
+            );
+        }
+        let mut range_row = div().flex().flex_row().gap(px(4.0));
+        for range in [TopRange::Week, TopRange::Month, TopRange::All] {
+            let active = self.top_range == range;
+            range_row = range_row.child(
+                self.pill(range.id(), range.label(), active, theme)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_range(range, cx))),
+            );
+        }
+
+        let mut rows = div().flex().flex_col().w_full();
+        // Same guaranteed-contrast tint as the hour bars: menu_item_hover is
+        // invisible on this page's background in light mode.
+        let row_hover = lerp_rgba(theme.background_secondary, theme.text, 0.045);
+        for (i, item) in self.top_items.iter().enumerate() {
+            // Stateful rows: hover styles only repaint on elements carrying an
+            // id (element state drives the enter/leave notify).
+            let mut row = div()
+                .id(SharedString::from(format!("top-row-{}", i)))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .w_full()
+                .h(px(26.0))
+                .rounded(px(4.0))
+                .hover(move |s| s.bg(row_hover))
+                .child(
+                    div()
+                        .w(px(16.0))
+                        .flex_shrink_0()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_secondary)
+                        .child(RANKS[i]),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(12.0))
+                        .text_color(theme.text)
+                        .text_ellipsis()
+                        .child(item.label.clone()),
+                );
+            if let Some(sub) = &item.sub {
+                row = row.child(
+                    div()
+                        .w(px(120.0))
+                        .flex_shrink_0()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_secondary)
+                        .text_ellipsis()
+                        .child(sub.clone()),
+                );
+            }
+            row = row
+                .child(
+                    div()
+                        .w(px(80.0))
+                        .h(px(4.0))
+                        .flex_shrink_0()
+                        .rounded(px(2.0))
+                        .bg(theme.background_tertiary)
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded(px(2.0))
+                                .bg(theme.button_primary)
+                                .w(relative(item.pct)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(56.0))
+                        .flex_shrink_0()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_secondary)
+                        .child(item.duration.clone()),
+                );
+            rows = rows.child(row);
+        }
+        if self.top_items.is_empty() {
+            rows = rows.child(
+                div()
+                    .pt(px(4.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_disabled)
+                    .child(tr!("STATS_EMPTY")),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .w_full()
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_secondary)
+                    .child(tr!("STATS_TOP_TITLE", "Top 10")),
+            )
+            .child(tab_row)
+            .child(range_row)
+            .child(rows)
+    }
+
+    fn pill(
+        &self,
+        id: &'static str,
+        label: SharedString,
+        active: bool,
+        theme: &Theme,
+    ) -> Stateful<Div> {
+        let (bg, fg) = if active {
+            (theme.background_tertiary, theme.text)
+        } else {
+            (theme.background_secondary, theme.text_secondary)
+        };
+        let hover_bg = theme.menu_item_hover;
+        div()
+            .id(id)
+            .px(px(10.0))
+            .py(px(3.0))
+            .rounded(px(theme.radius_sm))
+            .bg(bg)
+            .border_1()
+            .border_color(theme.border_color)
+            .text_size(px(11.0))
+            .text_color(fg)
+            .hover(move |s| s.bg(hover_bg))
+            .child(label)
+    }
+}
+
+impl Render for HoursChart {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Theme-derived colors resolve per frame: caching them leaked the
+        // light palette into the dark theme after a live theme switch.
+        let theme = cx.global::<Theme>();
         let max = self.hours_max.max(1) as f32;
 
         // Normalized polyline points, one per hour (x, y in 0..1 of the box).
@@ -936,148 +1101,6 @@ impl StatsSettings {
             )
             .child(labels)
     }
-
-    fn render_top(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut tab_row = div().flex().flex_row().gap(px(4.0));
-        for tab in [TopTab::Tracks, TopTab::Artists, TopTab::Albums] {
-            let active = self.top_tab == tab;
-            tab_row = tab_row.child(
-                self.pill(tab.id(), tab.label(), active, theme)
-                    .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx))),
-            );
-        }
-        let mut range_row = div().flex().flex_row().gap(px(4.0));
-        for range in [TopRange::Week, TopRange::Month, TopRange::All] {
-            let active = self.top_range == range;
-            range_row = range_row.child(
-                self.pill(range.id(), range.label(), active, theme)
-                    .on_click(cx.listener(move |this, _, _, cx| this.switch_range(range, cx))),
-            );
-        }
-
-        let mut rows = div().flex().flex_col().w_full();
-        // Same guaranteed-contrast tint as the hour bars: menu_item_hover is
-        // invisible on this page's background in light mode.
-        let row_hover = lerp_rgba(theme.background_secondary, theme.text, 0.045);
-        for (i, item) in self.top_items.iter().enumerate() {
-            // Stateful rows: hover styles only repaint on elements carrying an
-            // id (element state drives the enter/leave notify).
-            let mut row = div()
-                .id(SharedString::from(format!("top-row-{}", i)))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .w_full()
-                .h(px(26.0))
-                .rounded(px(4.0))
-                .hover(move |s| s.bg(row_hover))
-                .child(
-                    div()
-                        .w(px(16.0))
-                        .flex_shrink_0()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_secondary)
-                        .child(RANKS[i]),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(px(12.0))
-                        .text_color(theme.text)
-                        .text_ellipsis()
-                        .child(item.label.clone()),
-                );
-            if let Some(sub) = &item.sub {
-                row = row.child(
-                    div()
-                        .w(px(120.0))
-                        .flex_shrink_0()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_secondary)
-                        .text_ellipsis()
-                        .child(sub.clone()),
-                );
-            }
-            row = row
-                .child(
-                    div()
-                        .w(px(80.0))
-                        .h(px(4.0))
-                        .flex_shrink_0()
-                        .rounded(px(2.0))
-                        .bg(theme.background_tertiary)
-                        .child(
-                            div()
-                                .h_full()
-                                .rounded(px(2.0))
-                                .bg(theme.button_primary)
-                                .w(relative(item.pct)),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(56.0))
-                        .flex_shrink_0()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_secondary)
-                        .child(item.duration.clone()),
-                );
-            rows = rows.child(row);
-        }
-        if self.top_items.is_empty() {
-            rows = rows.child(
-                div()
-                    .pt(px(4.0))
-                    .text_size(px(12.0))
-                    .text_color(theme.text_disabled)
-                    .child(tr!("STATS_EMPTY")),
-            );
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .w_full()
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(theme.text_secondary)
-                    .child(tr!("STATS_TOP_TITLE", "Top 10")),
-            )
-            .child(tab_row)
-            .child(range_row)
-            .child(rows)
-    }
-
-    fn pill(
-        &self,
-        id: &'static str,
-        label: SharedString,
-        active: bool,
-        theme: &Theme,
-    ) -> Stateful<Div> {
-        let (bg, fg) = if active {
-            (theme.background_tertiary, theme.text)
-        } else {
-            (theme.background_secondary, theme.text_secondary)
-        };
-        let hover_bg = theme.menu_item_hover;
-        div()
-            .id(id)
-            .px(px(10.0))
-            .py(px(3.0))
-            .rounded(px(theme.radius_sm))
-            .bg(bg)
-            .border_1()
-            .border_color(theme.border_color)
-            .text_size(px(11.0))
-            .text_color(fg)
-            .hover(move |s| s.bg(hover_bg))
-            .child(label)
-    }
 }
 
 impl Render for StatsSettings {
@@ -1109,7 +1132,7 @@ impl Render for StatsSettings {
             section = section
                 .child(self.render_overview(&theme))
                 .child(self.render_heatmap(&theme, cx))
-                .child(self.render_hours(&theme, cx))
+                .child(self.hours_chart.clone())
                 .child(self.render_top(&theme, cx));
         }
         section
