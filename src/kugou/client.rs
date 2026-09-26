@@ -295,6 +295,11 @@ impl KugouClient {
         // VIP detail belongs to the previous login: drop it so the settings
         // page shows the fresh account's status (fetch_profile refreshes it).
         session.vip_detail = None;
+        // A claim attempt made under the previous (possibly expired) login
+        // must not consume today's attempt for the fresh session: an expired
+        // login fails the claim at get_vip_record and would otherwise block
+        // retrying until tomorrow even though the user just signed in again.
+        session.last_claim_day = None;
         session.save(&self.session_path);
         // A fresh login may outlive the previous throttle window's start.
         reset_login_expired_toast();
