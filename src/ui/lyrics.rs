@@ -898,8 +898,15 @@ impl Lyrics {
             return FollowTarget::PendingLayout;
         };
         if above || below {
+            // Jump most of the distance (reveal aligns the line to the
+            // viewport edge), then keep following: once the line is inside
+            // the viewport and measured, the next frame takes the smooth
+            // path below and settles it exactly at the center. Settling for
+            // `NoScrollNeeded` here would leave the active line pinned to
+            // the edge forever - the next line would then be wholly outside
+            // the viewport again and reveal right back.
             self.list_state.scroll_to_reveal_item(active_line);
-            return FollowTarget::NoScrollNeeded;
+            return FollowTarget::PendingLayout;
         }
 
         let Some(item_bounds) = self.list_state.bounds_for_item(active_line) else {
