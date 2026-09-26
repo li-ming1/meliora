@@ -166,12 +166,17 @@ impl WindowsController {
 
         let hwnd = match handle {
             Some(RawWindowHandle::Win32(handle)) => handle,
-            _ => panic!("non-Win32 window handle/invalid window handle during creation of SMTC"),
+            // A failure here must surface as an error, not a panic: init runs
+            // inside the startup `main_window.update` on the main thread, and
+            // the caller degrades to "no desktop integration" on Err.
+            _ => anyhow::bail!(
+                "non-Win32 window handle/invalid window handle during creation of SMTC"
+            ),
         };
 
         let controls: SystemMediaTransportControls = unsafe {
             let pointer = hwnd.hwnd.get() as *mut c_void;
-            interop.GetForWindow(HWND(pointer)).unwrap()
+            interop.GetForWindow(HWND(pointer))?
         };
 
         let display = controls.DisplayUpdater()?;
