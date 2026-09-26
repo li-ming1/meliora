@@ -77,18 +77,23 @@ pub fn compute_available_albums(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
     available_ids(rows, &mut PathExistence::default())
 }
 
-/// Album and artist availability from the same rows in one pass, sharing a
-/// single stat cache. Album rows and artist rows describe the same track paths,
-/// so computing the two sets separately statted every path twice — and on a
-/// large library that pass is the expensive part of startup.
+/// Album, artist and track availability from the same pass, sharing a single
+/// stat cache. Album rows and artist rows describe the same track paths, so
+/// computing the sets separately statted every path twice — and on a large
+/// library that pass is the expensive part of startup. The track rows come
+/// from `get_all_tracks` (every track, album-less ones included — the
+/// album-availability rows filter those out); each track id appears once, so
+/// its slot in the result means exactly "this track's file still exists".
 pub fn compute_availability(
     album_rows: Vec<(i64, String)>,
     artist_rows: Vec<(i64, String)>,
-) -> (FxHashSet<i64>, FxHashSet<i64>) {
+    track_rows: Vec<(i64, String)>,
+) -> (FxHashSet<i64>, FxHashSet<i64>, FxHashSet<i64>) {
     let mut paths = PathExistence::default();
     let albums = available_ids(album_rows, &mut paths);
     let artists = available_ids(artist_rows, &mut paths);
-    (albums, artists)
+    let tracks = available_ids(track_rows, &mut paths);
+    (albums, artists, tracks)
 }
 
 #[cfg(test)]
@@ -138,7 +143,7 @@ mod tests {
             (12_i64, present),
         ];
 
-        let (_, available) = compute_availability(Vec::new(), rows);
+        let (_, available, _) = compute_availability(Vec::new(), rows, Vec::new());
 
         assert!(available.contains(&10), "artist with a file that exists");
         assert!(!available.contains(&11), "artist with only missing files");
@@ -183,7 +188,7 @@ mod tests {
             .unwrap();
 
         let rows = db::list_artist_availability(&pool).await.unwrap();
-        let (_, available) = compute_availability(Vec::new(), rows);
+        let (_, available, _) = compute_availability(Vec::new(), rows, Vec::new());
 
         assert!(
             available.contains(&artist_id),

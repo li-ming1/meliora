@@ -15,7 +15,7 @@ use super::{
 use crate::{
     library::db::{self, AlbumSortMethod, ArtistSortMethod, LibraryAccess, TrackSortMethod},
     ui::{
-        availability::is_track_available,
+        availability::is_online_path,
         components::{
             drag_drop::{AlbumDragData, TrackDragData},
             managed_image::ManagedImageKey,
@@ -73,68 +73,104 @@ fn format_album_release_date(
     format_album_release_date_with(release_date, format, length)
 }
 
-/// Upper bound of the track row prefetch cache (simple FIFO, no LRU
-/// dependency): two full ±256-row prefetch windows plus slack.
-const TRACK_ROW_CACHE_CAPACITY: usize = 1024;
+/// Upper bound of a row prefetch cache (simple FIFO, no LRU dependency): two
+/// full ±256-row prefetch windows plus slack.
+const ROW_CACHE_CAPACITY: usize = 1024;
 
-/// Track row prefetch cache: past the keep-around band every newly built row
-/// resolves itself through `TableData::get_row`, which is one UI-thread
-/// `RUNTIME.block_on` DB hit per row (`cx.get_track_by_id`). The table
-/// component batch-prefetches the visible window ± 256 rows on the async
-/// runtime into this cache whenever the window moves; `get_row` reads it
-/// first and only falls back to the blocking path on a miss.
+/// Row prefetch cache shared by every table type: past the keep-around band
+/// each newly built row resolves itself through `TableData::get_row`, which is
+/// one UI-thread `RUNTIME.block_on` DB hit per row (`cx.get_track_by_id` and
+/// friends). The table component batch-prefetches the visible window ± 256
+/// rows on the async runtime into the type's cache whenever the window moves;
+/// `get_row` reads it first and only falls back to the blocking path on a
+/// miss.
 ///
 /// `generation` invalidates in-flight prefetch tasks: `clear_row_cache` runs
 /// on every table reload (sort change, scan completion) and bumps it, so a
 /// task started before the reload can never write pre-rescan rows back.
-struct TrackRowCache {
+struct RowCache<Id, Row> {
     generation: u64,
-    order: VecDeque<i64>,
-    rows: FxHashMap<i64, Arc<Track>>,
+    order: VecDeque<Id>,
+    rows: FxHashMap<Id, Arc<Row>>,
 }
 
-static TRACK_ROW_CACHE: OnceLock<Mutex<TrackRowCache>> = OnceLock::new();
-
-fn track_row_cache() -> &'static Mutex<TrackRowCache> {
-    TRACK_ROW_CACHE.get_or_init(|| {
-        Mutex::new(TrackRowCache {
+impl<Id: Eq + std::hash::Hash, Row> RowCache<Id, Row> {
+    fn empty() -> Self {
+        Self {
             generation: 0,
             order: VecDeque::new(),
             rows: FxHashMap::default(),
-        })
-    })
+        }
+    }
 }
 
 /// Cached row lookup; a short `Mutex` critical section, per doctrine §18.
-fn cached_track(track_id: i64) -> Option<Arc<Track>> {
-    track_row_cache()
+fn cached_row<Id: Eq + std::hash::Hash, Row>(
+    cache: &Mutex<RowCache<Id, Row>>,
+    id: Id,
+) -> Option<Arc<Row>> {
+    cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .rows
-        .get(&track_id)
+        .get(&id)
         .cloned()
 }
 
 /// FIFO-bounded insert; returns false when the cache was cleared mid-prefetch
 /// (stale generation), which tells the prefetch task to stop early.
-fn insert_cached_track(track: Arc<Track>, generation: u64) -> bool {
-    let mut cache = track_row_cache().lock().unwrap_or_else(|e| e.into_inner());
+fn insert_cached_row<Id: Eq + std::hash::Hash + Clone, Row>(
+    cache: &Mutex<RowCache<Id, Row>>,
+    id: Id,
+    row: Arc<Row>,
+    generation: u64,
+) -> bool {
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
     if cache.generation != generation {
         return false;
     }
 
-    if cache.rows.contains_key(&track.id) {
+    if cache.rows.contains_key(&id) {
         return true;
     }
 
-    if cache.order.len() >= TRACK_ROW_CACHE_CAPACITY
+    if cache.order.len() >= ROW_CACHE_CAPACITY
         && let Some(oldest) = cache.order.pop_front()
     {
         cache.rows.remove(&oldest);
     }
-    cache.order.push_back(track.id);
-    cache.rows.insert(track.id, track);
+    cache.order.push_back(id.clone());
+    cache.rows.insert(id, row);
     true
+}
+
+/// Drops a row cache's contents and invalidates in-flight prefetch tasks.
+fn clear_row_cache<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) {
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    cache.rows.clear();
+    cache.order.clear();
+    cache.generation = cache.generation.wrapping_add(1);
+}
+
+/// Generation snapshot read once before a prefetch loop, so inserts can
+/// detect a mid-flight clear.
+fn row_cache_generation<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) -> u64 {
+    cache.lock().unwrap_or_else(|e| e.into_inner()).generation
+}
+
+fn track_row_cache() -> &'static Mutex<RowCache<i64, Track>> {
+    static CACHE: OnceLock<Mutex<RowCache<i64, Track>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(RowCache::empty()))
+}
+
+fn album_row_cache() -> &'static Mutex<RowCache<i64, Album>> {
+    static CACHE: OnceLock<Mutex<RowCache<i64, Album>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(RowCache::empty()))
+}
+
+fn artist_row_cache() -> &'static Mutex<RowCache<i64, ArtistWithCounts>> {
+    static CACHE: OnceLock<Mutex<RowCache<i64, ArtistWithCounts>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(RowCache::empty()))
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -232,7 +268,48 @@ impl TableData<AlbumColumn> for Album {
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
+        // prefetch cache first: a hit avoids the UI-thread `block_on` below
+        // (one per newly built row after scrolling past the keep-around band)
+        if let Some(album) = cached_row(album_row_cache(), id.0 as i64) {
+            return Ok(Some(album));
+        }
+
         Ok(cx.get_album_by_id(id.0 as i64).ok())
+    }
+
+    fn prefetch_rows(
+        pool: sqlx::SqlitePool,
+        ids: &[Self::Identifier],
+    ) -> Option<BoxFuture<'static, ()>> {
+        let ids: Vec<i64> = ids.iter().map(|id| id.0 as i64).collect();
+        if ids.is_empty() {
+            return None;
+        }
+
+        Some(Box::pin(async move {
+            let generation = row_cache_generation(album_row_cache());
+            for album_id in ids {
+                // skip rows the cache already holds: overlapping windows stay cheap
+                if cached_row(album_row_cache(), album_id).is_some() {
+                    continue;
+                }
+                match db::get_album_by_id(&pool, album_id).await {
+                    Ok(album) => {
+                        if !insert_cached_row(album_row_cache(), album_id, album, generation) {
+                            // cache was cleared (reload): stop writing stale rows
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(album_id, error = %err, "album row prefetch missed");
+                    }
+                }
+            }
+        }))
+    }
+
+    fn clear_row_cache() {
+        clear_row_cache(album_row_cache());
     }
 
     fn get_column(&self, _cx: &mut App, column: AlbumColumn) -> Option<SharedString> {
@@ -479,7 +556,7 @@ impl TableData<TrackColumn> for Track {
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
         // prefetch cache first: a hit avoids the UI-thread `block_on` below
         // (one per newly built row after scrolling past the keep-around band)
-        if let Some(track) = cached_track(id.0) {
+        if let Some(track) = cached_row(track_row_cache(), id.0) {
             return Ok(Some(track));
         }
 
@@ -583,8 +660,25 @@ impl TableData<TrackColumn> for Track {
         )))
     }
 
-    fn is_available(&self, _cx: &mut App) -> bool {
-        is_track_available(self)
+    fn is_available(&self, cx: &mut App) -> bool {
+        // HTTP(S) streams have no file on disk and the availability snapshot
+        // only knows local paths: online tracks must short-circuit to
+        // available exactly like is_track_path_available does
+        if is_online_path(&self.location) {
+            return true;
+        }
+
+        // cached availability snapshot (reloaded at startup and on scan
+        // completion, same pass as the album/artist sets): the per-row
+        // `path.exists()` stat stalled row construction on every scroll.
+        // Until the first reload lands, though, fall back to the exact
+        // pre-snapshot behavior — `None` must not read as "unavailable",
+        // because rows built in that startup window capture the verdict
+        // once and stay greyed-out/unclickable until a full table reload.
+        match cx.global::<Models>().available_tracks.read(cx).as_ref() {
+            Some(set) => set.contains(&self.id),
+            None => self.location.exists(),
+        }
     }
 
     fn get_context_menu(
@@ -636,18 +730,15 @@ impl TableData<TrackColumn> for Track {
         }
 
         Some(Box::pin(async move {
-            let generation = track_row_cache()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .generation;
+            let generation = row_cache_generation(track_row_cache());
             for track_id in ids {
                 // skip rows the cache already holds: overlapping windows stay cheap
-                if cached_track(track_id).is_some() {
+                if cached_row(track_row_cache(), track_id).is_some() {
                     continue;
                 }
                 match db::get_track_by_id(&pool, track_id).await {
                     Ok(track) => {
-                        if !insert_cached_track(track, generation) {
+                        if !insert_cached_row(track_row_cache(), track_id, track, generation) {
                             // cache was cleared (reload): stop writing stale rows
                             break;
                         }
@@ -661,10 +752,7 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn clear_row_cache() {
-        let mut cache = track_row_cache().lock().unwrap_or_else(|e| e.into_inner());
-        cache.rows.clear();
-        cache.order.clear();
-        cache.generation = cache.generation.wrapping_add(1);
+        clear_row_cache(track_row_cache());
     }
 
     fn handle_middle_mouse(
@@ -750,7 +838,48 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
+        // prefetch cache first: a hit avoids the UI-thread `block_on` below
+        // (one per newly built row after scrolling past the keep-around band)
+        if let Some(artist) = cached_row(artist_row_cache(), id) {
+            return Ok(Some(artist));
+        }
+
         Ok(cx.get_artist_with_counts(id).ok())
+    }
+
+    fn prefetch_rows(
+        pool: sqlx::SqlitePool,
+        ids: &[Self::Identifier],
+    ) -> Option<BoxFuture<'static, ()>> {
+        let ids: Vec<i64> = ids.to_vec();
+        if ids.is_empty() {
+            return None;
+        }
+
+        Some(Box::pin(async move {
+            let generation = row_cache_generation(artist_row_cache());
+            for artist_id in ids {
+                // skip rows the cache already holds: overlapping windows stay cheap
+                if cached_row(artist_row_cache(), artist_id).is_some() {
+                    continue;
+                }
+                match db::get_artist_with_counts(&pool, artist_id).await {
+                    Ok(artist) => {
+                        if !insert_cached_row(artist_row_cache(), artist_id, artist, generation) {
+                            // cache was cleared (reload): stop writing stale rows
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(artist_id, error = %err, "artist row prefetch missed");
+                    }
+                }
+            }
+        }))
+    }
+
+    fn clear_row_cache() {
+        clear_row_cache(artist_row_cache());
     }
 
     fn get_column(&self, _cx: &mut App, column: ArtistColumn) -> Option<SharedString> {

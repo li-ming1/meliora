@@ -79,6 +79,12 @@ pub struct Models {
     /// availability without a per-row `get_all_tracks_by_artist` query plus a
     /// stat per track.
     pub available_artists: Entity<Option<Arc<FxHashSet<i64>>>>,
+    /// Cached set of track ids whose file still exists on disk, computed in
+    /// the same availability pass as the album/artist sets (startup and scan
+    /// completion). Lets track rows test availability without one
+    /// `path.exists()` stat per newly built row on the UI thread. Online
+    /// (http/https) tracks short-circuit to available before consulting this.
+    pub available_tracks: Entity<Option<Arc<FxHashSet<i64>>>>,
     /// Album metadata for row construction: rebuilding a track row needed up
     /// to three `get_album_by_id` block_on queries (vinyl numbering, album
     /// title, artist override). A scan is the only writer of album metadata,
@@ -199,6 +205,7 @@ pub fn build_models(
     let liked_ids: Entity<Option<Arc<HashSet<i64>>>> = cx.new(|_| None);
     let available_albums: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
     let available_artists: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
+    let available_tracks: Entity<Option<Arc<FxHashSet<i64>>>> = cx.new(|_| None);
     let album_cache: Entity<FxHashMap<i64, Arc<Album>>> = cx.new(|_| FxHashMap::default());
 
     let startup_setting = cx
@@ -284,6 +291,7 @@ pub fn build_models(
         liked_ids,
         available_albums,
         available_artists,
+        available_tracks,
         album_cache,
         queue,
         scan_state,
@@ -357,10 +365,10 @@ pub fn build_models(
     })
     .detach();
 
-    // Album/artist availability snapshots: loaded at startup and refreshed
-    // whenever a scan completes. A scan is also the only writer of album
-    // metadata, so the row-construction album cache is dropped at the same
-    // point.
+    // Album/artist/track availability snapshots: loaded at startup and
+    // refreshed whenever a scan completes. A scan is also the only writer of
+    // album metadata, so the row-construction album cache is dropped at the
+    // same point.
     reload_availability(cx);
     let scan_state = cx.global::<Models>().scan_state.clone();
     cx.observe(&scan_state, |scan_event, cx| {
@@ -679,14 +687,15 @@ pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     cached.and_then(|set| set.contains(&track_id).then_some(track_id))
 }
 
-/// (Re)loads the album- and artist-availability snapshots on the async runtime:
-/// two queries for the `(id, location)` pairs, then a single blocking pass that
-/// stats each distinct track path once for both sets. Startup and scan
-/// completion only.
+/// (Re)loads the album-, artist- and track-availability snapshots on the async
+/// runtime: two `(id, location)` queries plus one full `(location, id)` scan,
+/// then a single blocking pass that stats each distinct track path once for
+/// all three sets. Startup and scan completion only.
 pub(crate) fn reload_availability(cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
     let albums = cx.global::<Models>().available_albums.clone();
     let artists = cx.global::<Models>().available_artists.clone();
+    let tracks = cx.global::<Models>().available_tracks.clone();
     cx.spawn(async move |cx| {
         let album_rows = crate::RUNTIME
             .spawn({
@@ -697,12 +706,29 @@ pub(crate) fn reload_availability(cx: &mut App) {
             .map(|result| result.unwrap_or_default())
             .unwrap_or(vec![]);
         let artist_rows = crate::RUNTIME
-            .spawn(async move { db::list_artist_availability(&pool).await })
+            .spawn({
+                let pool = pool.clone();
+                async move { db::list_artist_availability(&pool).await }
+            })
             .await
             .map(|result| result.unwrap_or_default())
             .unwrap_or(vec![]);
-        let (album_set, artist_set) = crate::RUNTIME
-            .spawn_blocking(move || compute_availability(album_rows, artist_rows))
+        // `get_all_tracks` (not the album rows) is the only complete source:
+        // `find_album_availability` filters album-less tracks out, and those
+        // must not grey out in the tracks table
+        let track_rows = crate::RUNTIME
+            .spawn(async move {
+                db::get_all_tracks(&pool).await.map(|rows| {
+                    rows.into_iter()
+                        .map(|(location, id, _)| (id, location))
+                        .collect()
+                })
+            })
+            .await
+            .map(|result| result.unwrap_or_default())
+            .unwrap_or(vec![]);
+        let (album_set, artist_set, track_set) = crate::RUNTIME
+            .spawn_blocking(move || compute_availability(album_rows, artist_rows, track_rows))
             .await
             .unwrap_or_default();
         albums.update(cx, |slot, cx| {
@@ -711,6 +737,10 @@ pub(crate) fn reload_availability(cx: &mut App) {
         });
         artists.update(cx, |slot, cx| {
             *slot = Some(Arc::new(artist_set));
+            cx.notify();
+        });
+        tracks.update(cx, |slot, cx| {
+            *slot = Some(Arc::new(track_set));
             cx.notify();
         });
     })
