@@ -23,7 +23,6 @@ use crate::{
         save_settings,
     },
     ui::command_palette::OpenPalette,
-    ui::design::{SPACE_LG, SPACE_SM},
     ui::components::{
         button::{ButtonIntent, ButtonStyle, button},
         checkbox::checkbox,
@@ -32,6 +31,7 @@ use crate::{
         labeled_slider::labeled_slider,
         section_header::section_header,
     },
+    ui::design::{SPACE_LG, SPACE_SM},
     ui::global_actions::OpenThemeFolder,
     ui::theme::{ThemeOption, ThemeOptionsGlobal, resolve_theme_relative_path},
 };
