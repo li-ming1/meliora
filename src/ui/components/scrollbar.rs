@@ -8,9 +8,10 @@ use std::{
 use gpui::{
     AbsoluteLength, App, Background, BorderStyle, Bounds, Corners, CursorStyle, DispatchPhase,
     Edges, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Refineable, RenderOnce, ScrollHandle, ScrollWheelEvent, Style,
-    StyleRefinement, Styled, UniformListScrollHandle, Window, black, div, px, quad, rgb, white,
+    InteractiveElement, IntoElement, LayoutId, ListState, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Refineable, RenderOnce, ScrollHandle, ScrollWheelEvent,
+    Style, StyleRefinement, Styled, UniformListScrollHandle, Window, black, div, px, quad, rgb,
+    white,
 };
 
 use crate::settings::SettingsGlobal;
@@ -20,6 +21,9 @@ use crate::ui::theme::Theme;
 pub enum ScrollableHandle {
     Regular(ScrollHandle),
     UniformList { handle: UniformListScrollHandle },
+    /// A variable-height virtualized `gpui::list`; offsets follow the same
+    /// negative-y scrollbar convention as `Regular`.
+    List { state: ListState },
 }
 
 impl ScrollableHandle {
@@ -27,6 +31,7 @@ impl ScrollableHandle {
         match self {
             ScrollableHandle::Regular(h) => h.bounds(),
             ScrollableHandle::UniformList { handle, .. } => handle.0.borrow().base_handle.bounds(),
+            ScrollableHandle::List { state } => state.viewport_bounds(),
         }
     }
 
@@ -35,6 +40,7 @@ impl ScrollableHandle {
         match self {
             ScrollableHandle::Regular(h) => h.offset(),
             ScrollableHandle::UniformList { handle, .. } => handle.0.borrow().base_handle.offset(),
+            ScrollableHandle::List { state } => state.scroll_px_offset_for_scrollbar(),
         }
     }
 
@@ -45,6 +51,7 @@ impl ScrollableHandle {
             ScrollableHandle::UniformList { handle, .. } => {
                 handle.0.borrow().base_handle.max_offset()
             }
+            ScrollableHandle::List { state } => state.max_offset_for_scrollbar(),
         }
     }
 
@@ -55,6 +62,7 @@ impl ScrollableHandle {
             ScrollableHandle::UniformList { handle, .. } => {
                 handle.0.borrow().base_handle.set_offset(offset);
             }
+            ScrollableHandle::List { state } => state.set_offset_from_scrollbar(offset),
         }
     }
 
@@ -65,6 +73,11 @@ impl ScrollableHandle {
                 let handle = &handle.0.borrow().base_handle;
 
                 (handle.bounds().size.height + handle.max_offset().y).into()
+            }
+            ScrollableHandle::List { state } => {
+                let viewport = state.viewport_bounds();
+
+                (viewport.size.height + state.max_offset_for_scrollbar().y).into()
             }
         }
     }
@@ -77,6 +90,7 @@ impl ScrollableHandle {
 
                 (handle.bounds().size.width + handle.max_offset().x).into()
             }
+            ScrollableHandle::List { state } => state.viewport_bounds().size.width.into(),
         }
     }
 
@@ -102,6 +116,12 @@ impl ScrollableHandle {
 impl From<ScrollHandle> for ScrollableHandle {
     fn from(handle: ScrollHandle) -> Self {
         ScrollableHandle::Regular(handle)
+    }
+}
+
+impl From<ListState> for ScrollableHandle {
+    fn from(state: ListState) -> Self {
+        ScrollableHandle::List { state }
     }
 }
 

@@ -69,6 +69,12 @@ pub struct Lyrics {
     /// observer; drives per-word karaoke progress.
     position_ms: u64,
     scroll_handle: ScrollHandle,
+    /// Virtualized variable-height list state for the LRC branch: only
+    /// visible+overdraw lines are built and measured per frame (doctrine §10
+    /// — off-screen lyrics must not pay render cost). Reset per track in
+    /// `apply_loaded_lyrics`. The plain-text fallback branch keeps
+    /// `scroll_handle` instead.
+    list_state: ListState,
     follow_pending: bool,
     follow_frame_scheduled: bool,
     scroll_follow: SmoothScrollFollow,
@@ -111,12 +117,7 @@ impl Lyrics {
                     if this.load_generation != 0 {
                         return;
                     }
-                    this.content = loaded.0;
-                    this.parsed = loaded.1;
-                    let line_count = this.parsed.as_ref().map_or(0, Vec::len);
-                    this.line_emphasis_start_values = vec![0.0; line_count];
-                    this.line_emphasis_target_values = vec![0.0; line_count];
-                    cx.notify();
+                    this.apply_loaded_lyrics(loaded.0, loaded.1, cx);
                 })
                 .ok();
             })
@@ -224,6 +225,13 @@ impl Lyrics {
                     let idx = parsed.partition_point(|l| l.time_ms <= pos_ms);
                     let new_line = if idx == 0 { None } else { Some(idx - 1) };
                     if new_line != this.last_active_line {
+                        // The deactivated line keeps its last measured height
+                        // in the list's SumTree once it scrolls out of the
+                        // overdraw band; remeasure it so the total height (and
+                        // the scrollbar) doesn't drift by one emphasis delta.
+                        if let Some(prev) = this.last_active_line {
+                            this.list_state.remeasure_items(prev..prev + 1);
+                        }
                         let reduced_motion = cx
                             .global::<SettingsGlobal>()
                             .model
@@ -296,6 +304,7 @@ impl Lyrics {
                 last_active_line: None,
                 position_ms: *position.read(cx),
                 scroll_handle: ScrollHandle::new(),
+                list_state: ListState::new(0, ListAlignment::Top, px(400.0)),
                 follow_pending: false,
                 follow_frame_scheduled: false,
                 scroll_follow: SmoothScrollFollow::new(LYRICS_FOLLOW_ANIMATION_DURATION),
@@ -378,10 +387,18 @@ impl Lyrics {
         self.scroll_follow.cancel();
         self.line_emphasis_start_values = vec![0.0; line_count];
         self.line_emphasis_target_values = vec![0.0; line_count];
-        self.scroll_handle.set_offset(gpui::Point {
-            x: px(0.0),
-            y: px(0.0),
-        });
+        // A track change is a fresh list: rebuilt with a uniform height hint
+        // so the scrollbar is approximately right before the first paint
+        // converges it. `reset` also returns the view to the top, which is
+        // the pre-existing per-track scroll behavior.
+        self.list_state.reset_with_uniform_height(line_count, px(60.0));
+        if self.parsed.is_none() {
+            // plain-text fallback branch still scrolls via `scroll_handle`
+            self.scroll_handle.set_offset(gpui::Point {
+                x: px(0.0),
+                y: px(0.0),
+            });
+        }
         cx.notify();
     }
 
@@ -596,13 +613,22 @@ impl Render for Lyrics {
                 )
                 .into_any_element()
         // LRC
-        } else if let Some(parsed) = &self.parsed {
-            let active_line = self.last_active_line;
-            let scroll_handle = self.scroll_handle.clone();
+        } else if self.parsed.is_some() {
             let lyrics = cx.entity().downgrade();
+            let this_entity = cx.entity();
             let (fade_top, fade_bottom) = fade_masks();
 
-            let items = parsed.iter().enumerate().map(|(idx, line)| {
+            // Virtualized variable-height list: `render_item` runs only for
+            // the visible + overdraw lines, so a full-track lyric no longer
+            // rebuilds every row element at karaoke repaint rate (doctrine
+            // §10). View state is read through the entity handle - by the
+            // time the list lays items out (paint phase) the render lease on
+            // this view is already released.
+            let lyrics_list = list(self.list_state.clone(), move |idx, _window, cx| {
+                let this = this_entity.read(cx);
+                let Some(line) = this.parsed.as_ref().and_then(|parsed| parsed.get(idx)) else {
+                    return div().into_any_element();
+                };
                 let time_ms = line.time_ms;
                 if line.text.is_empty() {
                     // blank interlude lines are clickable too, so seeking to
@@ -618,8 +644,8 @@ impl Render for Lyrics {
                         .w_full()
                         .into_any_element()
                 } else {
-                    let emphasis = self.line_emphasis_for(idx);
-                    let is_active = emphasis > 0.0 || Some(idx) == active_line;
+                    let emphasis = this.line_emphasis_for(idx);
+                    let is_active = emphasis > 0.0 || Some(idx) == this.last_active_line;
                     let text_color = lerp_color(muted, normal, emphasis);
                     let font_size = lerp(LYRICS_BASE_TEXT_SIZE, LYRICS_ACTIVE_TEXT_SIZE, emphasis);
                     let width = (font_size / LYRICS_ACTIVE_TEXT_SIZE) * queue;
@@ -666,7 +692,7 @@ impl Render for Lyrics {
                                             let color = lerp_color(
                                                 muted,
                                                 text_color,
-                                                word_progress(word, self.position_ms),
+                                                word_progress(word, this.position_ms),
                                             );
                                             div().text_color(color).child(word.text.clone())
                                         }))
@@ -709,24 +735,15 @@ impl Render for Lyrics {
                     }
                     cx.notify();
                 }))
-                .child(
-                    div()
-                        .id("lyrics-scroll")
-                        .h_full()
-                        .w_full()
-                        .py(px(9.0))
-                        .flex()
-                        .flex_col()
-                        .overflow_y_scroll()
-                        .track_scroll(&scroll_handle)
-                        .children(items),
-                )
+                .child(lyrics_list.flex().flex_col().w_full().h_full().py(px(9.0)))
                 .child(fade_top)
                 .child(fade_bottom)
                 .child(
                     floating_scrollbar(
                         "lyrics-scrollbar",
-                        ScrollableHandle::Regular(scroll_handle),
+                        ScrollableHandle::List {
+                            state: self.list_state.clone(),
+                        },
                     )
                     .right(px(4.0))
                     .on_interaction(move |_, cx| {
@@ -840,7 +857,7 @@ impl Lyrics {
                     return false;
                 }
                 FollowTarget::Target(target_scroll_top) => {
-                    let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
+                    let scroll_handle: ScrollableHandle = self.list_state.clone().into();
                     if reduced_motion {
                         self.scroll_follow
                             .jump_to(&scroll_handle, target_scroll_top);
@@ -853,7 +870,7 @@ impl Lyrics {
             }
         }
 
-        let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
+        let scroll_handle: ScrollableHandle = self.list_state.clone().into();
         if reduced_motion {
             return self.scroll_follow.snap(&scroll_handle);
         }
@@ -866,20 +883,34 @@ impl Lyrics {
             return FollowTarget::NoScrollNeeded;
         };
 
-        let viewport = self.scroll_handle.bounds();
+        let viewport = self.list_state.viewport_bounds();
         if viewport.size.height <= px(0.0) {
             return FollowTarget::PendingLayout;
         }
 
-        let Some(item_bounds) = self.scroll_handle.bounds_for_item(active_line) else {
+        // `bounds_for_item` is None for lines above the scroll top, so a
+        // newly active line the user has scrolled past would pend forever:
+        // reveal it immediately instead of animating in from off-screen.
+        let (Some(above), Some(below)) = (
+            self.list_state.item_is_above_viewport(active_line),
+            self.list_state.item_is_below_viewport(active_line),
+        ) else {
+            return FollowTarget::PendingLayout;
+        };
+        if above || below {
+            self.list_state.scroll_to_reveal_item(active_line);
+            return FollowTarget::NoScrollNeeded;
+        }
+
+        let Some(item_bounds) = self.list_state.bounds_for_item(active_line) else {
             return FollowTarget::PendingLayout;
         };
 
-        let max_scroll_top = self.scroll_handle.max_offset().y.max(px(0.0));
+        let max_scroll_top = self.list_state.max_offset_for_scrollbar().y.max(px(0.0));
         let raw_offset_y = viewport.origin.y - item_bounds.origin.y + viewport.size.height / 2.0
             - item_bounds.size.height / 2.0;
         let target_scroll_top = (-raw_offset_y).max(px(0.0)).min(max_scroll_top);
-        let current_scroll_top = -self.scroll_handle.offset().y;
+        let current_scroll_top = -self.list_state.scroll_px_offset_for_scrollbar().y;
 
         if (target_scroll_top - current_scroll_top).abs() <= px(0.1) {
             FollowTarget::NoScrollNeeded
