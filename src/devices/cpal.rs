@@ -52,6 +52,50 @@ const RING_BUFFER_TARGET: Duration = Duration::from_millis(250);
 /// beats guessing at the cause of a bare `underran` line.
 const PRODUCER_STALL_REPORT_MS: u64 = 100;
 
+/// Capacity of the fixed error-message slot the realtime error callback writes
+/// into. Longer backend messages are truncated.
+const DEVICE_ERROR_MESSAGE_CAP: usize = 256;
+
+/// Latest cpal error, written by the realtime error callback and drained
+/// (logged) by the producer. The callback copies bytes only — no allocation on
+/// the realtime thread; text is rebuilt here on the producer side.
+struct DeviceErrorMessage {
+    /// Error category, used when the backend attached no message (its
+    /// `Display` is a static description).
+    kind: cpal::ErrorKind,
+    /// Bytes of the backend message, when one was attached.
+    len: usize,
+    bytes: [u8; DEVICE_ERROR_MESSAGE_CAP],
+}
+
+impl DeviceErrorMessage {
+    fn record(err: &cpal::Error) -> Self {
+        let mut slot = Self {
+            kind: err.kind(),
+            len: 0,
+            bytes: [0; DEVICE_ERROR_MESSAGE_CAP],
+        };
+        if let Some(message) = err.message() {
+            let n = message.len().min(slot.bytes.len());
+            // byte slice on purpose: a str slice panics when the truncation
+            // point lands mid-char, and this runs on the realtime callback
+            // thread; the producer side rebuilds text lossily (`text`)
+            slot.bytes[..n].copy_from_slice(&message.as_bytes()[..n]);
+            slot.len = n;
+        }
+        slot
+    }
+
+    /// Rebuild the human-readable text on the (non-realtime) producer side.
+    fn text(&self) -> std::borrow::Cow<'_, str> {
+        if self.len > 0 {
+            String::from_utf8_lossy(&self.bytes[..self.len])
+        } else {
+            std::borrow::Cow::Owned(self.kind.to_string())
+        }
+    }
+}
+
 pub struct CpalProvider {
     host: Host,
 }
@@ -141,7 +185,7 @@ fn create_stream_internal<T: CpalSample>(
     target_gain: Arc<AtomicF64>,
     underruns: Arc<AtomicU64>,
     primed: Arc<AtomicBool>,
-    device_error_message: Arc<Mutex<Option<String>>>,
+    device_error_message: Arc<Mutex<Option<DeviceErrorMessage>>>,
 ) -> Result<(cpal::Stream, Producer<T>, Arc<AtomicBool>), OpenError> {
     let (prod, mut cons) = RingBuffer::<T>::new(buffer_size);
     let channels = config.channels as usize;
@@ -173,16 +217,17 @@ fn create_stream_internal<T: CpalSample>(
             ramp.apply(data, channels, target);
         },
         move |err| {
-            // Realtime thread: record the message only. Logging (file IO)
-            // happens on the producer side when it observes the flag.
+            // Realtime thread: record the error only. Logging (file IO and
+            // text formatting) happens on the producer side when it observes
+            // the flag. The slot copy is byte-for-byte — no allocation here.
             //
             // `try_lock`, not `lock`: the producer drains this same mutex, and
             // a realtime thread must never block on it. If the producer is
-            // draining concurrently this message's text is dropped — during an
+            // draining concurrently this message is dropped — during an
             // error storm dropping messages is acceptable, and the flag below
             // still trips the producer-side error path either way.
             if let Ok(mut slot) = device_error_message.try_lock() {
-                *slot = Some(err.to_string());
+                *slot = Some(DeviceErrorMessage::record(&err));
             }
             error_flag.store(true, Ordering::Relaxed);
         },
@@ -214,7 +259,7 @@ impl CpalDevice {
         let target_gain = Arc::new(AtomicF64::new(1.0));
         let underruns = Arc::new(AtomicU64::new(0));
         let primed = Arc::new(AtomicBool::new(false));
-        let device_error_message = Arc::new(Mutex::new(None::<String>));
+        let device_error_message = Arc::new(Mutex::new(None::<DeviceErrorMessage>));
         let (stream, prod, device_errored) = create_stream_internal::<T>(
             &self.device,
             config,
@@ -326,9 +371,10 @@ where
     idle_since: Option<Instant>,
     logged_first_submit: bool,
     device_errored: Arc<AtomicBool>,
-    /// Latest cpal error message, written by the realtime error callback and
-    /// drained (logged) by the producer. Keeps logging off the audio thread.
-    device_error_message: Arc<Mutex<Option<String>>>,
+    /// Latest cpal error, written by the realtime error callback and drained
+    /// (logged) by the producer. Fixed-capacity byte slot: keeps both the
+    /// allocation and the logging off the audio thread.
+    device_error_message: Arc<Mutex<Option<DeviceErrorMessage>>>,
     /// Indicates that the stream is currently fading out and needs to be paused by the specified
     /// time.
     pause_at: Option<Instant>,
@@ -440,7 +486,7 @@ where
                 .unwrap_or_else(|e| e.into_inner())
                 .take();
             if let Some(msg) = message {
-                warn!("cpal stream error: {msg}");
+                warn!("cpal stream error: {}", msg.text());
             }
             return Err(SubmissionError::DeviceError);
         }
