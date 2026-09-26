@@ -74,6 +74,8 @@ impl ScanMode {
     }
 }
 
+/// Sends commands to the scanner. Commands are idempotent requests, so a full
+/// channel drops them (logged) instead of blocking the UI thread on send.
 pub struct ScanInterface {
     cmd_tx: Sender<ScanCommand>,
 }
@@ -84,13 +86,13 @@ impl ScanInterface {
     }
 
     pub fn scan(&self) {
-        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::Scan) {
+        if let Err(err) = self.cmd_tx.try_send(ScanCommand::Scan) {
             error!("could not send scan start command: {err}");
         }
     }
 
     pub fn force_scan(&self) {
-        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::ForceScan) {
+        if let Err(err) = self.cmd_tx.try_send(ScanCommand::ForceScan) {
             error!("could not send force re-scan start command: {err}");
         }
     }
@@ -99,7 +101,7 @@ impl ScanInterface {
         if paths.is_empty() {
             return;
         }
-        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::RescanPaths {
+        if let Err(err) = self.cmd_tx.try_send(ScanCommand::RescanPaths {
             paths,
             respect_record: false,
             recursive: false,
@@ -109,16 +111,13 @@ impl ScanInterface {
     }
 
     pub fn stop(&self) {
-        if let Err(err) = self.cmd_tx.blocking_send(ScanCommand::Stop) {
+        if let Err(err) = self.cmd_tx.try_send(ScanCommand::Stop) {
             error!("could not send scan stop command: {err}");
         }
     }
 
     pub fn update_settings(&self, settings: ScanSettings) {
-        if let Err(err) = self
-            .cmd_tx
-            .blocking_send(ScanCommand::UpdateSettings(settings))
-        {
+        if let Err(err) = self.cmd_tx.try_send(ScanCommand::UpdateSettings(settings)) {
             error!("could not send scan settings update command: {err}");
         }
     }
@@ -126,7 +125,7 @@ impl ScanInterface {
     pub fn resolve_missing_folders(&self, decision: MissingFolderDecision) {
         if let Err(err) = self
             .cmd_tx
-            .blocking_send(ScanCommand::ResolveMissingFolders(decision))
+            .try_send(ScanCommand::ResolveMissingFolders(decision))
         {
             error!("could not send missing folder resolution: {err}");
         }
