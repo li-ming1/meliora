@@ -656,7 +656,27 @@ impl Render for Lyrics {
                     let emphasis = this.line_emphasis_for(idx);
                     let is_active = emphasis > 0.0 || Some(idx) == this.last_active_line;
                     let text_color = lerp_color(muted, normal, emphasis);
-                    let font_size = lerp(LYRICS_BASE_TEXT_SIZE, LYRICS_ACTIVE_TEXT_SIZE, emphasis);
+                    // Geometry (font size, line height, padding) must move on
+                    // a discrete grid: glyph atlas tiles are keyed by the
+                    // exact f32 font size AND the glyph origin's fractional
+                    // subpixel phase (RenderGlyphParams), and glyph tiles are
+                    // never evicted. A continuous emphasis interpolation used
+                    // to rasterize every intermediate size of every visible
+                    // line onto fresh 4 MB subpixel pages that stayed resident
+                    // forever — the 6.5 h session leak of 2026-09-27 (non_heap
+                    // +2.5 MB/min while the lyrics panel was active, all of it
+                    // glyph pages; same-day probe: 510 → 12 213 sub tiles in
+                    // minutes). Quantized geometry repeats the same glyph
+                    // origins, so the tile set stays bounded by the charset ×
+                    // grid levels. Color, scroll timing and opacity still
+                    // animate continuously.
+                    let snapped_emphasis = (emphasis * 3.0).round() / 3.0;
+                    let font_size = lerp(
+                        LYRICS_BASE_TEXT_SIZE,
+                        LYRICS_ACTIVE_TEXT_SIZE,
+                        snapped_emphasis,
+                    )
+                    .round();
                     let width = (font_size / LYRICS_ACTIVE_TEXT_SIZE) * queue;
 
                     div()
@@ -673,13 +693,13 @@ impl Render for Lyrics {
                         .py(px(lerp(
                             LYRICS_BASE_VERTICAL_PADDING,
                             LYRICS_ACTIVE_VERTICAL_PADDING,
-                            emphasis,
+                            snapped_emphasis,
                         )))
                         .text_size(px(font_size))
                         .line_height(rems(lerp(
                             LYRICS_BASE_LINE_HEIGHT,
                             LYRICS_ACTIVE_LINE_HEIGHT,
-                            emphasis,
+                            snapped_emphasis,
                         )))
                         .font_weight(if is_active {
                             FontWeight::EXTRA_BOLD

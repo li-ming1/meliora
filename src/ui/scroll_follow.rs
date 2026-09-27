@@ -102,9 +102,15 @@ impl SmoothScrollFollow {
         let current_scroll_top = animation.start_scroll_top
             + (animation.target_scroll_top - animation.start_scroll_top) * eased_progress;
 
+        // Snap the tween to whole CSS pixels. The glyph atlas keys tiles by
+        // the glyph origin's fractional subpixel phase, and tiles are never
+        // evicted: an unsnapped tween sweeps every visible glyph through all
+        // subpixel phases each run, permanently stranding 4 MB subpixel pages
+        // per animation (2026-09-27 atlas leak, see `lyrics.rs` font_size).
+        // 1 px steps at 60 fps read as a smooth glide for 22 px text.
         scroll_handle.set_offset(gpui::Point {
             x: current_offset.x,
-            y: -current_scroll_top,
+            y: -current_scroll_top.round(),
         });
 
         if progress >= 1.0 {
