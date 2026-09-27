@@ -20,8 +20,6 @@ mod lyrics;
 pub mod models;
 #[cfg(feature = "netease")]
 mod netease;
-#[cfg(feature = "online_sources")]
-pub mod online;
 mod queue;
 mod right_sidebar;
 mod scroll_follow;

@@ -260,3 +260,45 @@ pub async fn refresh_restored_url(
     remember_online_track(url.clone(), track);
     Some(url)
 }
+
+/// The NetEase entry in the compile-time provider registry (A-1 step ②); the
+/// body delegates to the free functions above.
+pub struct NeteaseSource;
+
+#[async_trait::async_trait]
+impl super::OnlineSourceProvider for NeteaseSource {
+    fn handles(&self, identity: &super::OnlineIdentity) -> bool {
+        matches!(identity, super::OnlineIdentity::Netease { .. })
+    }
+
+    fn identify_path(&self, path: &Path) -> Option<super::OnlineTrackMatch> {
+        let track = online_track_matching_path(path)?;
+        Some(super::OnlineTrackMatch {
+            identity: super::OnlineIdentity::Netease { id: track.id },
+            title: track.title.to_string(),
+            artist: track.artist.to_string(),
+            album: track.album.to_string(),
+        })
+    }
+
+    async fn refresh_url(
+        &self,
+        identity: &super::OnlineIdentity,
+        ctx: &super::RefreshContext<'_>,
+    ) -> Option<String> {
+        // Registry routing guarantees the NetEase variant; the fallthrough is
+        // type exhaustiveness only.
+        let super::OnlineIdentity::Netease { id } = identity else {
+            return None;
+        };
+        refresh_restored_url(
+            *id,
+            ctx.netease_quality,
+            ctx.display.0.clone(),
+            ctx.display.1.clone(),
+            ctx.display.2.clone(),
+            ctx.display.3.clone(),
+        )
+        .await
+    }
+}

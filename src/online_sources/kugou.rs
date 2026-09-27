@@ -368,3 +368,77 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
     *liked_fileids().write().unwrap_or_else(|e| e.into_inner()) = fileids;
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
+
+/// The KuGou entry in the compile-time provider registry (A-1 step ②); the
+/// bodies delegate to the free functions above.
+pub struct KugouSource;
+
+#[async_trait::async_trait]
+impl super::OnlineSourceProvider for KugouSource {
+    fn handles(&self, identity: &super::OnlineIdentity) -> bool {
+        matches!(identity, super::OnlineIdentity::Kugou { .. })
+    }
+
+    fn identify_path(&self, path: &Path) -> Option<super::OnlineTrackMatch> {
+        let track = online_track_matching_path(path)?;
+        Some(super::OnlineTrackMatch {
+            identity: super::OnlineIdentity::Kugou {
+                hash: track.hash.clone(),
+                mix_song_id: track.mix_song_id,
+                album_id: track.album_id,
+            },
+            title: track.title.to_string(),
+            artist: track.artist.to_string(),
+            album: track.album.to_string(),
+        })
+    }
+
+    async fn refresh_url(
+        &self,
+        identity: &super::OnlineIdentity,
+        ctx: &super::RefreshContext<'_>,
+    ) -> Option<String> {
+        // Registry routing guarantees the KuGou variant; the fallthrough is
+        // type exhaustiveness only.
+        let super::OnlineIdentity::Kugou {
+            hash,
+            mix_song_id,
+            album_id,
+        } = identity
+        else {
+            return None;
+        };
+
+        let client = crate::kugou::shared_client();
+        let hash = hash.clone();
+        let mix_song_id = *mix_song_id;
+        let album_id = *album_id;
+        let kugou_quality = ctx.kugou_quality.to_string();
+        let url = {
+            let hash = hash.clone();
+            crate::RUNTIME
+                .spawn(async move {
+                    fetch_stream_url(&client, &hash, mix_song_id, album_id, &kugou_quality).await
+                })
+                .await
+                .ok()
+                .flatten()
+        }?;
+
+        let (name, artist, duration, cover) = ctx.display.clone();
+        remember_online_track(
+            url.clone(),
+            KugouTrackInfo {
+                title: name.unwrap_or_default().into(),
+                artist: artist.unwrap_or_default().into(),
+                album: gpui::SharedString::default(),
+                duration: duration.unwrap_or(0),
+                hash,
+                mix_song_id,
+                album_id,
+                cover_url: cover.unwrap_or_default().into(),
+            },
+        );
+        Some(url)
+    }
+}

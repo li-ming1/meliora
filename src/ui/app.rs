@@ -724,15 +724,14 @@ fn refresh_restored_online_urls(
             // provider's stream registry (lyrics / like / download resolve by
             // that registry, so a refreshed URL must be re-registered or those
             // break once the refreshed stream comes up in rotation).
-            let url = crate::ui::online::refresh_online_url(
-                &identity,
+            let ctx = crate::online_sources::RefreshContext {
                 #[cfg(feature = "kugou")]
-                kugou_quality.as_str(),
+                kugou_quality: kugou_quality.as_str(),
                 #[cfg(feature = "netease")]
-                netease_quality.as_str(),
+                netease_quality: netease_quality.as_str(),
                 display,
-            )
-            .await;
+            };
+            let url = crate::online_sources::refresh_online_url(&identity, &ctx).await;
 
             let Some(url) = url else { continue };
 

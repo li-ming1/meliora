@@ -363,28 +363,14 @@ impl PlaybackThread {
     /// provider identity, updates the queue item, and returns the new path.
     #[cfg(feature = "online_sources")]
     fn refresh_expired_online_url(&mut self) -> Option<PathBuf> {
-        use crate::playback::queue::OnlineIdentity;
-
         let identity = self.queue.current_online_identity().or_else(|| {
             // Playlist items persist only the plain stream URL, without the
-            // provider identity. KuGou URLs embed a `mx{mixsongid}` token, so
-            // the persisted stream map can still recover the full track and
-            // give us a fresh URL; NetEase playlist links carry no id at all.
-            #[cfg(feature = "kugou")]
-            {
-                let path = self.queue.current_path()?;
-                crate::online_sources::kugou::online_track_matching_path(&path).map(|track| {
-                    OnlineIdentity::Kugou {
-                        hash: track.hash.clone(),
-                        mix_song_id: track.mix_song_id,
-                        album_id: track.album_id,
-                    }
-                })
-            }
-            #[cfg(not(feature = "kugou"))]
-            {
-                None
-            }
+            // provider identity. Every provider's stream registry remembers
+            // the tracks behind those URLs (KuGou embeds a `mx{mixsongid}`
+            // token; NetEase entries are keyed by URL), so the compile-time
+            // registry recovers the full identity for a fresh fetch.
+            let path = self.queue.current_path()?;
+            crate::online_sources::identify_path(&path).map(|m| m.identity)
         })?;
         let display = self
             .queue
@@ -394,19 +380,19 @@ impl PlaybackThread {
         let kugou_quality = self.playback_settings.online_quality.as_str();
         #[cfg(feature = "netease")]
         let netease_quality = self.playback_settings.netease_quality.as_str();
+        let ctx = crate::online_sources::RefreshContext {
+            #[cfg(feature = "kugou")]
+            kugou_quality,
+            #[cfg(feature = "netease")]
+            netease_quality,
+            display,
+        };
 
         let url = crate::RUNTIME
             .block_on(async {
                 tokio::time::timeout(
                     STREAM_REFRESH_TIMEOUT,
-                    crate::online_sources::refresh_online_url(
-                        &identity,
-                        #[cfg(feature = "kugou")]
-                        kugou_quality,
-                        #[cfg(feature = "netease")]
-                        netease_quality,
-                        display,
-                    ),
+                    crate::online_sources::refresh_online_url(&identity, &ctx),
                 )
                 .await
                 .ok()

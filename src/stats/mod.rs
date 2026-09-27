@@ -90,24 +90,14 @@ pub fn song_info(
         };
 
         let mut meta = None;
-        #[cfg(feature = "kugou")]
-        if matches!(identity, Some(OnlineIdentity::Kugou { .. }))
-            && let Some(track) = crate::online_sources::kugou::online_track_matching_path(path)
-        {
+        // The compile-time registry consults every compiled-in provider's
+        // stream map; a hit implies the identity (the URL only lives in the
+        // map of the service that produced it).
+        if let Some(m) = crate::online_sources::identify_path(path) {
             meta = Some(TrackMeta {
-                title: track.title.to_string(),
-                artist: track.artist.to_string(),
-                album: track.album.to_string(),
-            });
-        }
-        #[cfg(feature = "netease")]
-        if matches!(identity, Some(OnlineIdentity::Netease { .. }))
-            && let Some(track) = crate::online_sources::netease::online_track_matching_path(path)
-        {
-            meta = Some(TrackMeta {
-                title: track.title.to_string(),
-                artist: track.artist.to_string(),
-                album: track.album.to_string(),
+                title: m.title,
+                artist: m.artist,
+                album: m.album,
             });
         }
         if meta.is_none()
