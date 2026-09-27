@@ -15,7 +15,6 @@ use lofty::{
     prelude::ItemKey,
     tag::{Accessor, ItemValue, Tag, TagExt, TagItem, TagType},
 };
-use serde_json::Value;
 
 use crate::{
     kugou::KugouClient,
@@ -25,7 +24,7 @@ use crate::{
 };
 use zed_reqwest::header::{HeaderValue, USER_AGENT};
 
-use super::extract_song_url;
+use super::{extract_song_url, first_lyric_candidate, lyric_search_keyword};
 
 /// 同时进行的曲目下载数上限（每个下载几十 MB 音频 + 写盘 + 标签嵌入）。
 static DOWNLOAD_PERMITS: LazyLock<tokio::sync::Semaphore> =
@@ -113,7 +112,6 @@ async fn resolve_best_url(
     .to_string())
 }
 
-/// Fetches the plain LRC text for `track`, or `None` when the service has none.
 /// Fetches the lyrics for `track` from the same search candidate in both
 /// formats: the plain line-timed `.lrc` text and the decrypted word-level
 /// KRC text (karaoke). Either may be absent.
@@ -121,27 +119,12 @@ async fn fetch_lyrics(
     client: &KugouClient,
     track: &KugouTrackInfo,
 ) -> Result<(Option<String>, Option<String>), String> {
-    let keyword = if track.artist.is_empty() {
-        track.title.to_string()
-    } else {
-        format!("{} {}", track.title, track.artist)
-    };
+    let keyword = lyric_search_keyword(track);
     let search = client
         .search_lyric(&track.hash, &keyword, track.duration)
         .await
         .map_err(|err| err.to_string())?;
-    let Some((id, accesskey)) = search
-        .body
-        .pointer("/candidates")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find_map(|candidate| {
-                let id = candidate.get("id").and_then(Value::as_str)?;
-                let accesskey = candidate.get("accesskey").and_then(Value::as_str)?;
-                Some((id.to_string(), accesskey.to_string()))
-            })
-        })
-    else {
+    let Some((id, accesskey)) = first_lyric_candidate(&search.body) else {
         return Ok((None, None));
     };
     let lrc = client

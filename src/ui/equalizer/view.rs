@@ -50,6 +50,14 @@ struct PopoverAnchor {
     point: Point<Pixels>,
 }
 
+/// Working copy of the equalizer settings: capped at MAX_EQ_BANDS and sanitized.
+fn synced_config(settings: &Settings) -> EqualizerSettings {
+    let mut config = settings.playback.equalizer.clone();
+    config.bands.truncate(MAX_EQ_BANDS);
+    config.sanitize();
+    config
+}
+
 pub struct EqualizerView {
     settings: Entity<Settings>,
     config: EqualizerSettings,
@@ -78,24 +86,18 @@ impl EqualizerView {
     pub fn new(cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let settings = cx.global::<SettingsGlobal>().model.clone();
-            let mut config = settings.read(cx).playback.equalizer.clone();
-            config.bands.truncate(MAX_EQ_BANDS);
-            config.sanitize();
+            let config = synced_config(settings.read(cx));
 
             // hot-reloads and external edits sync in, held back while a drag owns the state
             cx.observe(&settings, |this: &mut Self, settings, cx| {
-                let mut config = settings.read(cx).playback.equalizer.clone();
-                config.bands.truncate(MAX_EQ_BANDS);
-                config.sanitize();
+                let config = synced_config(settings.read(cx));
                 if this.dragging {
                     this.pending_reload = Some(config);
                     return;
                 }
                 if config != this.config {
                     this.config = config;
-                    if this.selected.is_some_and(|i| i >= this.config.bands.len()) {
-                        this.selected = None;
-                    }
+                    this.drop_stale_selection();
                     cx.notify();
                 }
             })
@@ -185,6 +187,13 @@ impl EqualizerView {
             Some(selected) if selected == index => self.selected = None,
             Some(selected) if selected > index => self.selected = Some(selected - 1),
             _ => {}
+        }
+    }
+
+    /// Drops the selection when it points past the (shortened) band list.
+    fn drop_stale_selection(&mut self) {
+        if self.selected.is_some_and(|i| i >= self.config.bands.len()) {
+            self.selected = None;
         }
     }
 
@@ -453,9 +462,7 @@ impl Render for EqualizerView {
                                 && config != this.config
                             {
                                 this.config = config;
-                                if this.selected.is_some_and(|i| i >= this.config.bands.len()) {
-                                    this.selected = None;
-                                }
+                                this.drop_stale_selection();
                                 this.push_config(cx);
                             }
                         }

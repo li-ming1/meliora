@@ -254,6 +254,43 @@ fn delete_playlist_and_refresh(pl_id: i64, cx: &mut App) {
     })
 }
 
+/// Adds a batch of tracks to a playlist on the background runtime (rows
+/// already present are skipped) and broadcasts PlaylistUpdated on success;
+/// fire-and-forget. `what` only feeds the log wording ("tracks" / "album
+/// tracks").
+fn spawn_add_missing_tracks(
+    pl_id: i64,
+    track_ids: Vec<i64>,
+    what: &'static str,
+    cx: &mut Context<PlaylistList>,
+) {
+    let pool = cx.global::<Pool>().0.clone();
+    let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+
+    cx.spawn(async move |_, cx| {
+        let task = crate::RUNTIME.spawn(async move {
+            db::add_tracks_to_playlist_if_missing(&pool, pl_id, &track_ids).await
+        });
+
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                error!("could not add {what} to playlist: {err:?}");
+                return;
+            }
+            Err(err) => {
+                error!("add {what} to playlist task panicked: {err:?}");
+                return;
+            }
+        }
+
+        playlist_tracker.update(cx, |_, cx| {
+            cx.emit(PlaylistEvent::PlaylistUpdated(pl_id));
+        });
+    })
+    .detach();
+}
+
 impl Render for PlaylistList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         check_drag_cancelled(self.drag_drop_manager.clone(), cx);
@@ -466,32 +503,7 @@ impl Render for PlaylistList {
                             return;
                         }
 
-                        let pool = cx.global::<Pool>().0.clone();
-                        let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-
-                        cx.spawn(async move |_, cx| {
-                            let task = crate::RUNTIME.spawn(async move {
-                                db::add_tracks_to_playlist_if_missing(&pool, pl_id, &track_ids)
-                                    .await
-                            });
-
-                            match task.await {
-                                Ok(Ok(())) => {}
-                                Ok(Err(err)) => {
-                                    error!("could not add tracks to playlist: {err:?}");
-                                    return;
-                                }
-                                Err(err) => {
-                                    error!("add tracks to playlist task panicked: {err:?}");
-                                    return;
-                                }
-                            }
-
-                            playlist_tracker.update(cx, |_, cx| {
-                                cx.emit(PlaylistEvent::PlaylistUpdated(pl_id));
-                            });
-                        })
-                        .detach();
+                        spawn_add_missing_tracks(pl_id, track_ids, "tracks", cx);
                     },
                 ))
                 .on_drop(cx.listener(
@@ -507,32 +519,7 @@ impl Render for PlaylistList {
                             return;
                         }
 
-                        let pool = cx.global::<Pool>().0.clone();
-                        let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-
-                        cx.spawn(async move |_, cx| {
-                            let task = crate::RUNTIME.spawn(async move {
-                                db::add_tracks_to_playlist_if_missing(&pool, pl_id, &track_ids)
-                                    .await
-                            });
-
-                            match task.await {
-                                Ok(Ok(())) => {}
-                                Ok(Err(err)) => {
-                                    error!("could not add album tracks to playlist: {err:?}");
-                                    return;
-                                }
-                                Err(err) => {
-                                    error!("add album tracks to playlist task panicked: {err:?}");
-                                    return;
-                                }
-                            }
-
-                            playlist_tracker.update(cx, |_, cx| {
-                                cx.emit(PlaylistEvent::PlaylistUpdated(pl_id));
-                            });
-                        })
-                        .detach();
+                        spawn_add_missing_tracks(pl_id, track_ids, "album tracks", cx);
                     },
                 ));
 

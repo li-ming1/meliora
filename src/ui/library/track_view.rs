@@ -14,6 +14,20 @@ use crate::{
         models::Models,
     },
 };
+/// Builds the play queue from table rows. Shared by the double-click handler
+/// and the context menu's "play from here" action below.
+fn queue_items_from_rows(
+    cx: &mut App,
+    items: &[(i64, String, Option<i64>, String)],
+) -> Vec<QueueItemData> {
+    items
+        .iter()
+        .map(|(id, _, album_id, path)| {
+            QueueItemData::new(cx, PathBuf::from(path), Some(*id), *album_id)
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct TrackView {
     table_view_header: Entity<TableViewHeader<Track, TrackColumn>>,
@@ -38,44 +52,36 @@ impl TrackView {
 
             let handler = Rc::new(
                 move |cx: &mut App, id: &(i64, String, Option<i64>, String)| {
-                    if let Some(table) = table_ref_clone.borrow().as_ref().and_then(|w| w.upgrade())
-                    {
-                        let items = table.read(cx).get_items();
-                        if let Some(items) = items {
-                            // no per-track `Path::exists` probe here: filtering
-                            // the whole table stat'd one file per track (10k
-                            // syscalls per double-click on a large library)
-                            // before anything could start. Missing files are
-                            // skipped by the playback engine instead, and row
-                            // availability is already greyed from the row data.
-                            if items.is_empty() {
-                                return;
-                            }
+                    let Some(table) = table_ref_clone.borrow().as_ref().and_then(|w| w.upgrade())
+                    else {
+                        return;
+                    };
+                    let Some(items) = table.read(cx).get_items() else {
+                        return;
+                    };
 
-                            // The clicked row's index falls out of the item scan
-                            // directly — no second pass over the built queue.
-                            let index = items
-                                .iter()
-                                .position(|(row_id, _, _, _)| *row_id == id.0)
-                                .unwrap_or(0);
-
-                            let queue_items: Vec<QueueItemData> = items
-                                .iter()
-                                .map(|(id, _, album_id, path)| {
-                                    QueueItemData::new(
-                                        cx,
-                                        PathBuf::from(path),
-                                        Some(*id),
-                                        *album_id,
-                                    )
-                                })
-                                .collect();
-
-                            let playback = cx.global::<PlaybackInterface>();
-                            playback.replace_queue_with_index(queue_items, index);
-                            playback.play();
-                        }
+                    // no per-track `Path::exists` probe here: filtering
+                    // the whole table stat'd one file per track (10k
+                    // syscalls per double-click on a large library)
+                    // before anything could start. Missing files are
+                    // skipped by the playback engine instead, and row
+                    // availability is already greyed from the row data.
+                    if items.is_empty() {
+                        return;
                     }
+
+                    // The clicked row's index falls out of the item scan
+                    // directly — no second pass over the built queue.
+                    let index = items
+                        .iter()
+                        .position(|(row_id, _, _, _)| *row_id == id.0)
+                        .unwrap_or(0);
+
+                    let queue_items = queue_items_from_rows(cx, &items);
+
+                    let playback = cx.global::<PlaybackInterface>();
+                    playback.replace_queue_with_index(queue_items, index);
+                    playback.play();
                 },
             );
 
@@ -85,8 +91,8 @@ impl TrackView {
                 play_from_here: Some(Rc::new({
                     let table_ref = table_ref.clone();
                     move |cx, track| {
-                        let table_ref_read = table_ref.borrow();
-                        let Some(table) = table_ref_read.as_ref().and_then(|w| w.upgrade()) else {
+                        let Some(table) = table_ref.borrow().as_ref().and_then(|w| w.upgrade())
+                        else {
                             return;
                         };
                         let Some(items) = table.read(cx).get_items() else {
@@ -96,12 +102,7 @@ impl TrackView {
                         // no per-track exists() probe (same reason as the
                         // double-click handler above); playback skips files
                         // that went missing
-                        let queue_items = items
-                            .iter()
-                            .map(|(id, _, album_id, path)| {
-                                QueueItemData::new(cx, PathBuf::from(path), Some(*id), *album_id)
-                            })
-                            .collect::<Vec<_>>();
+                        let queue_items = queue_items_from_rows(cx, &items);
 
                         play_from_track(cx, track, queue_items);
                     }

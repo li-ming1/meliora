@@ -29,6 +29,8 @@ actions!(
     ]
 );
 
+/// A themed select-like dropdown: a button that opens an anchored,
+/// keyboard-navigable option list and reports the choice via `on_change`.
 #[derive(IntoElement)]
 pub struct Dropdown<T: Clone + PartialEq + 'static> {
     id: ElementId,
@@ -58,6 +60,19 @@ impl<T: Clone + PartialEq + 'static> Dropdown<T> {
 impl<T: Clone + PartialEq + 'static> Styled for Dropdown<T> {
     fn style(&mut self) -> &mut StyleRefinement {
         self.div.style()
+    }
+}
+
+/// Keyboard navigation of the highlighted option: one step forward or
+/// backward with wrap-around; `None` (nothing highlighted yet) enters at the
+/// respective end of the list.
+fn cycled_highlight(current: Option<usize>, option_count: usize, forward: bool) -> Option<usize> {
+    let last = option_count.saturating_sub(1);
+    match (current, forward) {
+        (Some(index), true) => Some(if index < last { index + 1 } else { 0 }),
+        (Some(index), false) => Some(if index > 0 { index - 1 } else { last }),
+        (None, true) => Some(0),
+        (None, false) => Some(last),
     }
 }
 
@@ -173,16 +188,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                     let options = options.clone();
                     move |_: &SelectNext, _, cx| {
                         highlighted.update(cx, |v, cx| {
-                            if let Some(v) = v {
-                                if *v < options.len().saturating_sub(1) {
-                                    *v += 1;
-                                } else {
-                                    *v = 0;
-                                }
-                            } else {
-                                *v = Some(0);
-                            }
-
+                            *v = cycled_highlight(*v, options.len(), true);
                             cx.notify();
                         });
                     }
@@ -192,16 +198,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                     let options = options.clone();
                     move |_: &SelectPrev, _, cx| {
                         highlighted.update(cx, |v, cx| {
-                            if let Some(v) = v {
-                                if *v > 0 {
-                                    *v -= 1;
-                                } else {
-                                    *v = options.len().saturating_sub(1);
-                                }
-                            } else {
-                                *v = Some(options.len().saturating_sub(1));
-                            }
-
+                            *v = cycled_highlight(*v, options.len(), false);
                             cx.notify();
                         });
                     }
@@ -254,12 +251,11 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                         .items_center()
                         .gap(px(7.0))
                         .text_sm()
+                        .border_1()
                         .when(is_highlighted, |this| {
                             this.bg(theme.menu_item_hover)
-                                .border_1()
                                 .border_color(theme.menu_item_border_hover)
                         })
-                        .when(!is_highlighted, |this| this.border_1())
                         .child(
                             div()
                                 .w(px(18.0))

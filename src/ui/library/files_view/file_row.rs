@@ -259,15 +259,17 @@ impl HasLikedState for FileRowItem {
 impl Render for FileRowItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Arc refcount bump; the row is cloned out of the shared flat list
-        let path = self.flat_row.path.clone();
-        let name = self.flat_row.name.clone();
-        let depth = self.flat_row.depth;
-        let is_dir = self.flat_row.is_dir;
-        let is_audio = self.flat_row.is_audio;
-        let expanded = self.flat_row.expanded;
-        let loading = self.flat_row.loading;
-        let has_children = self.flat_row.has_children;
-        let track_ref = self.flat_row.track.clone();
+        let FlatRow {
+            path,
+            name,
+            depth,
+            is_dir,
+            is_audio,
+            expanded,
+            loading,
+            has_children,
+            track: track_ref,
+        } = self.flat_row.clone();
 
         // 行只在 FilesView 存活期间被渲染；upgrade 失败 = 视图正在释放，
         // 渲染一个无选中态的朴素行即可。
@@ -332,7 +334,7 @@ impl Render for FileRowItem {
             None
         };
 
-        let batch_menu_state = (batch_items, self.show_add_to.clone());
+        let show_add_to = self.show_add_to.clone();
         let entity_for_menu = cx.entity();
         let is_liked = self.is_liked;
         // Resolved when the menu opens (see menu_on_open below), not per row.
@@ -482,16 +484,14 @@ impl Render for FileRowItem {
             .w_full()
             .with(row_content)
             .menu_on_open(move |window, cx| {
-                let menu = if let Some((audio_items, track_ids)) = batch_menu_state
-                    .0
-                    .clone()
-                    .filter(|(items, _)| !items.is_empty())
+                let menu = if let Some((audio_items, track_ids)) =
+                    batch_items.clone().filter(|(items, _)| !items.is_empty())
                 {
                     Self::render_batch_menu(
                         &audio_items,
                         &track_ids,
                         entity_for_menu.clone(),
-                        batch_menu_state.1.clone(),
+                        show_add_to.clone(),
                         cx,
                     )
                 } else if let Some(track_id) = menu_track_id {
@@ -501,7 +501,7 @@ impl Render for FileRowItem {
                     let is_file_available = is_track_path_available(&path_for_menu);
 
                     if let Ok(track) = cx.get_track_by_id(track_id) {
-                        let (show_add_to, _) =
+                        let (menu_show_add_to, _) =
                             add_to_playlist_state("files-track-menu", track.id, window, cx);
 
                         let play_from_here = Rc::new({
@@ -524,7 +524,7 @@ impl Render for FileRowItem {
                                 play_from_here: Some(play_from_here),
                             },
                             None,
-                            show_add_to,
+                            menu_show_add_to,
                         )
                         .into_any_element()
                     } else {

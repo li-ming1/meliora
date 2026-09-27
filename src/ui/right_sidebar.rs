@@ -13,6 +13,17 @@ use crate::{
 
 // ─── RightSidebar component ───────────────────────────────────────────────────
 
+/// Queue pane width limits (px), clamped by the left-edge resize handle.
+const QUEUE_MIN_WIDTH: f32 = 225.0;
+const QUEUE_MAX_WIDTH: f32 = 800.0;
+/// Lyrics pane height limits (fraction of the sidebar), clamped by the
+/// top-edge resize handle in `percent_mode`.
+const LYRICS_MIN_FRACTION: f32 = 0.10;
+const LYRICS_MAX_FRACTION: f32 = 0.85;
+
+/// Queue + lyrics column: the queue pane is width-resizable from its left
+/// edge; the lyrics pane sits at the bottom, height-resizable from its top
+/// edge when the queue is shown.
 pub struct RightSidebar {
     queue: Entity<Queue>,
     lyrics: Entity<Lyrics>,
@@ -26,6 +37,8 @@ impl RightSidebar {
         Self { queue, lyrics }
     }
 
+    /// Renders the width-resizable queue pane; the lyrics pane sits below it,
+    /// or fills the whole column when the queue is hidden.
     pub fn render(&self, cx: &mut App, show_queue: bool, show_lyrics: bool) -> impl IntoElement {
         let queue_width = cx.global::<Models>().queue_width.clone();
         let lyrics_height_entity = cx.global::<Models>().lyrics_height.clone();
@@ -34,8 +47,8 @@ impl RightSidebar {
             AnyView::from(self.queue.clone()).cached(StyleRefinement::default().size_full());
 
         resizable("queue-resizable", queue_width, ResizeEdge::Left)
-            .min_size(px(225.0))
-            .max_size(px(800.0))
+            .min_size(px(QUEUE_MIN_WIDTH))
+            .max_size(px(QUEUE_MAX_WIDTH))
             .default_size(DEFAULT_QUEUE_WIDTH)
             .h_full()
             .child(
@@ -57,6 +70,9 @@ impl RightSidebar {
                     .when(show_lyrics, |outer: Div| {
                         let lyrics = AnyView::from(self.lyrics.clone())
                             .cached(StyleRefinement::default().size_full());
+                        // Same clipped pane whether the top edge is resizable
+                        // (queue shown) or fixed (queue hidden).
+                        let lyrics_pane = div().h_full().overflow_hidden().child(lyrics);
                         if show_queue {
                             outer.child(
                                 resizable(
@@ -65,15 +81,15 @@ impl RightSidebar {
                                     ResizeEdge::Top,
                                 )
                                 .percent_mode()
-                                .min_size(px(0.10))
-                                .max_size(px(0.85))
+                                .min_size(px(LYRICS_MIN_FRACTION))
+                                .max_size(px(LYRICS_MAX_FRACTION))
                                 .default_size(DEFAULT_LYRICS_FRACTION)
                                 .flex_shrink(1.0)
                                 .w_full()
-                                .child(div().h_full().overflow_hidden().child(lyrics)),
+                                .child(lyrics_pane),
                             )
                         } else {
-                            outer.child(div().h_full().overflow_hidden().child(lyrics))
+                            outer.child(lyrics_pane)
                         }
                     }),
             )

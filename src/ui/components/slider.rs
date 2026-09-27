@@ -42,6 +42,19 @@ const ECHO_GRACE: Duration = Duration::from_millis(600);
 /// Echo within this fraction of the drag target counts as caught up (0.5% of
 /// the bar ≈ 1.5 s on a 5-minute track).
 const ECHO_EPSILON: f32 = 0.005;
+/// Emit interval used when no `change_interval` was set: at most one
+/// `on_change` per millisecond of dragging.
+const DEFAULT_CHANGE_INTERVAL: Duration = Duration::from_millis(1);
+/// Hitbox padding above and below the bar, so drags stay live while the
+/// cursor slips a few pixels off the thin track.
+const HITBOX_VERTICAL_PAD: Pixels = px(4.0);
+
+/// Normalized `[0, 1]` slider value for a mouse position within `bounds`.
+fn normalized_value(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f32 {
+    let x: f32 = (position - bounds.origin).x.into();
+    let width: f32 = bounds.size.width.into();
+    (x / width).clamp(0.0, 1.0)
+}
 
 pub struct Slider {
     pub(self) id: Option<ElementId>,
@@ -128,8 +141,8 @@ impl Element for Slider {
         _: &mut App,
     ) -> Self::PrepaintState {
         let hitbox_bounds = bounds.extend(Edges {
-            top: px(4.0),
-            bottom: px(4.0),
+            top: HITBOX_VERTICAL_PAD,
+            bottom: HITBOX_VERTICAL_PAD,
             ..Default::default()
         });
 
@@ -229,7 +242,7 @@ impl Element for Slider {
 
         let on_double_click = self.on_double_click.clone();
         let change_interval = self.change_interval;
-        let min_interval = change_interval.unwrap_or(Duration::from_millis(1));
+        let min_interval = change_interval.unwrap_or(DEFAULT_CHANGE_INTERVAL);
 
         let drag_state_down = drag_entity.clone();
         let hitbox = hitbox.clone();
@@ -251,10 +264,7 @@ impl Element for Slider {
                 return;
             }
 
-            let relative = ev.position - bounds.origin;
-            let relative_x: f32 = relative.x.into();
-            let width: f32 = bounds.size.width.into();
-            let value = (relative_x / width).clamp(0.0, 1.0);
+            let value = normalized_value(ev.position, bounds);
 
             (func_down.borrow_mut())(value, window, cx);
             drag_state_down.update(cx, |state, _| {
@@ -274,11 +284,7 @@ impl Element for Slider {
                     return None;
                 }
 
-                let relative = ev.position - bounds.origin;
-                let relative_x: f32 = relative.x.into();
-                let width: f32 = bounds.size.width.into();
-                let value = (relative_x / width).clamp(0.0, 1.0);
-
+                let value = normalized_value(ev.position, bounds);
                 state.drag_value = value;
 
                 let now = Instant::now();

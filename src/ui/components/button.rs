@@ -2,6 +2,9 @@ use gpui::*;
 
 use crate::ui::theme::Theme;
 
+/// Extension trait for [`Styled`] elements: multiplies the alpha channel of
+/// an existing background fill (`background_opacity(0.5)` halves it).
+/// Elements without a background fill are left untouched.
 pub trait AdditionalStyleUtil {
     fn background_opacity(self, opacity: f32) -> Self;
 }
@@ -38,6 +41,8 @@ pub enum ButtonIntent {
     Danger,
 }
 
+/// Visual treatment: `Regular` draws a bordered, elevated surface;
+/// `Minimal` is transparent until hovered or pressed.
 #[derive(Clone, Copy)]
 pub enum ButtonStyle {
     Regular,
@@ -189,6 +194,9 @@ impl ButtonIntent {
     }
 }
 
+/// A non-interactive button: carries styling and children only. Call
+/// [`Button::id`] to obtain an [`InteractiveButton`], which can hold click,
+/// mouse-down and tooltip handlers.
 #[derive(IntoElement)]
 pub struct Button {
     pub(self) div: Div,
@@ -253,6 +261,8 @@ impl RenderOnce for Button {
     }
 }
 
+/// The stateful variant produced by [`Button::id`]: an element with an ID
+/// that supports pointer handlers and tooltips.
 #[derive(IntoElement)]
 pub struct InteractiveButton {
     pub(self) div: Stateful<Div>,

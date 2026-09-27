@@ -85,39 +85,34 @@ impl RenderOnce for LabeledSlider {
         let max_text = (formatter)(high);
         let current_text = (formatter)(clamped);
 
+        // Maps a 0..1 track position back onto the [low, high] value range.
+        let denormalize = move |t: f32| (low + (high - low) * t).clamp(low, high);
+
         let on_change = self.on_change.clone();
         let default_value = self.default_value;
         let slider_id = self
             .slider_id
             .clone()
             .unwrap_or_else(|| "labeled-slider-track".into());
-        let slider = match on_change {
-            Some(on_change) => {
-                let on_change_click = on_change.clone();
-                let on_change_double = on_change;
-
-                slider()
-                    .id(slider_id)
-                    .w_full()
-                    .h(px(8.0))
-                    .rounded(px(theme.radius_sm))
-                    .value(normalized)
-                    .on_change(move |v, window, cx| {
-                        let value = (low + ((high - low) * v)).clamp(low, high);
-                        (on_change_click.borrow_mut())(value, window, cx);
-                    })
-                    .on_double_click(move |window, cx| {
-                        let fallback = low + ((high - low) * 0.5);
-                        let reset_value = default_value.unwrap_or(fallback).clamp(low, high);
-                        (on_change_double.borrow_mut())(reset_value, window, cx);
-                    })
-            }
-            None => slider()
-                .id(slider_id)
-                .w_full()
-                .h(px(8.0))
-                .rounded(px(theme.radius_sm))
-                .value(normalized),
+        let track = slider()
+            .id(slider_id)
+            .w_full()
+            .h(px(8.0))
+            .rounded(px(theme.radius_sm))
+            .value(normalized);
+        let slider = if let Some(on_change) = on_change {
+            let on_change_click = on_change.clone();
+            track
+                .on_change(move |v, window, cx| {
+                    (on_change_click.borrow_mut())(denormalize(v), window, cx);
+                })
+                .on_double_click(move |window, cx| {
+                    let fallback = denormalize(0.5);
+                    let reset_value = default_value.unwrap_or(fallback).clamp(low, high);
+                    (on_change.borrow_mut())(reset_value, window, cx);
+                })
+        } else {
+            track
         };
 
         self.div

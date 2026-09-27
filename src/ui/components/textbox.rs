@@ -10,6 +10,7 @@ use crate::ui::{
     theme::Theme,
 };
 
+/// A themed single-line text input wrapping [`TextInput`].
 pub struct Textbox {
     input: Entity<TextInput>,
     handle: FocusHandle,
@@ -17,6 +18,8 @@ pub struct Textbox {
 }
 
 impl Textbox {
+    /// Creates a textbox that calls `on_submit` when the user accepts the
+    /// input (Enter), without handing over the text.
     pub fn new_with_submit(
         cx: &mut App,
         style: StyleRefinement,
@@ -42,6 +45,8 @@ impl Textbox {
         })
     }
 
+    /// Creates a textbox that calls `on_submit` with the current input
+    /// content when the user accepts the input (Enter).
     pub fn new_with_value_submit(
         cx: &mut App,
         style: StyleRefinement,
@@ -82,18 +87,22 @@ impl Textbox {
         })
     }
 
+    /// Returns the focus handle of the input.
     pub fn focus_handle(&self) -> FocusHandle {
         self.handle.clone()
     }
 
+    /// Clears the input's content and selection state.
     pub fn reset(&self, cx: &mut App) {
         self.input.update(cx, |input, _| input.reset());
     }
 
+    /// Returns the current text content.
     pub fn value(&self, cx: &App) -> SharedString {
         self.input.read(cx).content.clone()
     }
 
+    /// Replaces the content with `value` and moves the cursor to the end.
     pub fn set_value(&self, cx: &mut App, value: SharedString) {
         self.input.update(cx, |input, cx| {
             input.set_value(cx, value);
@@ -101,6 +110,7 @@ impl Textbox {
         });
     }
 
+    /// Selects the entire content.
     pub fn select_all(&self, cx: &mut App) {
         self.input.update(cx, |input, cx| input.select_all_text(cx));
     }

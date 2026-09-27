@@ -79,23 +79,25 @@ impl UpdatePlaylist {
 
             let matcher: MatcherFunc = Box::new(|playlist, _| playlist.name.0.to_string().into());
 
-            let show_clone = show.clone();
+            // Accepting an existing playlist starts the M3U import into it
+            // (via `import_playlist`) and closes the dialog.
+            let show_on_accept = show.clone();
 
             let on_accept: OnAccept = Box::new(move |playlist, cx| {
                 import_playlist(cx, playlist.id);
-                show_clone.write(cx, false);
+                show_on_accept.write(cx, false);
             });
 
-            let items = match cx.get_all_playlists() {
-                Ok(playlists) => (*playlists).clone(),
-                Err(e) => {
+            let items = cx
+                .get_all_playlists()
+                .map(|playlists| (*playlists).clone())
+                .unwrap_or_else(|e| {
                     error!("Failed to load playlists for the update dialog: {}", e);
                     Vec::new()
-                }
-            }
-            .into_iter()
-            .map(Arc::new)
-            .collect();
+                })
+                .into_iter()
+                .map(Arc::new)
+                .collect();
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 
@@ -114,7 +116,9 @@ impl UpdatePlaylist {
                     name = name
                 );
 
-                let show_clone2 = show_for_create.clone();
+                // A fresh clone per invocation: every returned extra item
+                // owns its own handle so accepting it closes the dialog.
+                let show_on_create = show_for_create.clone();
 
                 vec![ExtraItem {
                     left: Some(FinderItemLeft::Icon(PLAYLIST_ADD.into())),
@@ -131,7 +135,7 @@ impl UpdatePlaylist {
 
                         import_playlist(cx, playlist_id);
 
-                        show_clone2.write(cx, false);
+                        show_on_create.write(cx, false);
                     }),
                 }]
             });
@@ -149,9 +153,8 @@ impl Render for UpdatePlaylist {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let show = self.show.clone();
         let palette = self.palette.clone();
-        let show_read = *self.show.read(cx);
 
-        if show_read {
+        if *self.show.read(cx) {
             cx.update_entity(&palette, |palette, cx| {
                 palette.focus(window, cx);
             });

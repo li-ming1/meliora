@@ -28,7 +28,7 @@ impl ArtistPickerView {
             .detach();
 
             // a background scan can delete or rename the listed artists, drop the picker
-            let picker = cx.global::<Models>().artist_picker_model.clone();
+            let picker = model.clone();
             let scan_state = cx.global::<Models>().scan_state.clone();
             cx.observe(&scan_state, move |_, state, cx| {
                 if matches!(
@@ -76,13 +76,12 @@ impl Render for ArtistPickerView {
         }
 
         let mut items = menu();
-        for (id, name) in artists.iter() {
-            let id = *id;
+        for (id, name) in artists {
             items = items.item(
                 menu_item(
                     ("artist", id as usize),
                     None::<SharedString>,
-                    name.clone(),
+                    name,
                     move |_, _, cx| {
                         navigate_to_artist(cx, id);
                         close(cx);

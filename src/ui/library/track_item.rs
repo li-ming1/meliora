@@ -8,10 +8,10 @@ use std::{rc::Rc, sync::Arc};
 
 use crate::ui::components::drag_drop::{DragPreview, TrackDragData};
 use crate::ui::components::icons::{STAR, STAR_FILLED, icon};
-use crate::ui::library::context_menus::play_track_next;
 use crate::ui::library::context_menus::track::TrackContextMenu;
+use crate::ui::library::context_menus::{add_to_playlist_state, play_track_next};
 use crate::ui::models::{
-    HasLikedState, is_track_available_snapshot, subscribe_liked_updates, toggle_like,
+    HasLikedState, is_song_liked, is_track_available_snapshot, subscribe_liked_updates, toggle_like,
 };
 use crate::ui::util::format_duration;
 
@@ -133,7 +133,7 @@ impl TrackItem {
                 track_number_label,
                 duration_text,
                 drag_data,
-                is_liked: crate::ui::models::is_song_liked(&**cx, track.id),
+                is_liked: is_song_liked(&**cx, track.id),
                 album_art: Some(match track.album_id {
                     Some(album_id) => format!("!db://album/{album_id}/thumb").into(),
                     None => format!("!db://track/{}/thumb", track.id).into(),
@@ -157,12 +157,7 @@ impl TrackItem {
 impl Render for TrackItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let track_id = self.track.id;
-        let (show_add_to, add_to) = crate::ui::library::context_menus::add_to_playlist_state(
-            "track-menu-state",
-            track_id,
-            window,
-            cx,
-        );
+        let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track_id, window, cx);
 
         let theme = cx.global::<Theme>();
 
@@ -180,6 +175,7 @@ impl Render for TrackItem {
             .as_ref()
             .is_some_and(|current| *current == self.track.location);
         let is_available = self.is_available;
+        let is_liked = self.is_liked.is_some();
 
         let show_artist_name = match &self.artist_name_visibility {
             ArtistNameVisibility::Always => true,
@@ -374,17 +370,13 @@ impl Render for TrackItem {
                                             .ml(px(10.0))
                                             .p(px(4.0))
                                             .child(
-                                                icon(if self.is_liked.is_some() {
-                                                    STAR_FILLED
-                                                } else {
-                                                    STAR
-                                                })
-                                                .size(ICON_SM)
-                                                .text_color(if self.is_liked.is_some() {
-                                                    theme.liked_song
-                                                } else {
-                                                    theme.text_secondary
-                                                }),
+                                                icon(if is_liked { STAR_FILLED } else { STAR })
+                                                    .size(ICON_SM)
+                                                    .text_color(if is_liked {
+                                                        theme.liked_song
+                                                    } else {
+                                                        theme.text_secondary
+                                                    }),
                                             )
                                             .group(self.hover_group.clone())
                                             .when(is_available, |this| {

@@ -9,10 +9,7 @@ use crate::{
     ui::{
         availability::is_track_path_available,
         components::{
-            icons::{
-                DISC, FOLDER_SEARCH, PLAY, PLAYLIST_ADD, PLAYLIST_REMOVE, PLUS, STAR, STAR_FILLED,
-                USERS,
-            },
+            icons::{DISC, FOLDER_SEARCH, PLAY, PLAYLIST_ADD, PLAYLIST_REMOVE, PLUS, USERS},
             menu::{menu, menu_item, menu_separator},
         },
         models::{Models, toggle_like_by_id},
@@ -21,9 +18,9 @@ use crate::{
 };
 
 use super::{
-    PlaylistMenuInfo, TrackContextMenuContext, navigate_to_track_album, navigate_to_track_artist,
-    play_track_next, play_track_now, queue_track, remove_from_playlist, rescan_track,
-    track_show_in_file_manager_label,
+    PlaylistMenuInfo, TrackContextMenuContext, like_toggle_icon_and_label, navigate_to_track_album,
+    navigate_to_track_artist, play_track_next, play_track_now, queue_track, remove_from_playlist,
+    rescan_track, track_show_in_file_manager_label,
 };
 use crate::ui::app::Pool;
 
@@ -79,6 +76,7 @@ impl RenderOnce for TrackContextMenu {
         let is_available = self.is_available;
         let is_liked = self.is_liked;
         let like_track_id = self.track.id;
+        let (like_icon, like_label) = like_toggle_icon_and_label(is_liked);
 
         menu()
             .item(
@@ -99,7 +97,6 @@ impl RenderOnce for TrackContextMenu {
                 .disabled(!is_available),
             )
             .when_some(play_from_here, |menu, play_from_here| {
-                let track = track.clone();
                 menu.item(
                     menu_item(
                         "track_play_from_here",
@@ -153,11 +150,8 @@ impl RenderOnce for TrackContextMenu {
                     "track_show_in_file_manager",
                     Some(FOLDER_SEARCH),
                     track_show_in_file_manager_label(),
-                    {
-                        let track_for_reveal = track_for_reveal.clone();
-                        move |_, _, cx| {
-                            reveal_path_for_file_manager(track_for_reveal.location.as_path(), cx);
-                        }
+                    move |_, _, cx| {
+                        reveal_path_for_file_manager(track_for_reveal.location.as_path(), cx);
                     },
                 )
                 .disabled(!can_reveal_track),
@@ -174,16 +168,8 @@ impl RenderOnce for TrackContextMenu {
             .item(
                 menu_item(
                     "track_toggle_like",
-                    Some(if is_liked.is_some() {
-                        STAR_FILLED
-                    } else {
-                        STAR
-                    }),
-                    if is_liked.is_some() {
-                        tr!("UNLIKE")
-                    } else {
-                        tr!("LIKE")
-                    },
+                    Some(like_icon),
+                    like_label,
                     move |_, _, cx| {
                         toggle_like_by_id(like_track_id, is_liked, cx);
                     },

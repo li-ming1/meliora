@@ -42,6 +42,8 @@ const COAST_AFTER_FRAMES: u32 = 8;
 const CLIP_HOLD: Duration = Duration::from_secs(1);
 /// Latch threshold, about 1 dB over full scale, resampler overshoot stays below it.
 const CLIP_THRESHOLD: f32 = 1.122;
+/// Assumed device rate while playback hasn't reported one.
+const DEFAULT_RATE_HZ: f32 = 48_000.0;
 
 /// Latest smoothed curves for the graph, empty vecs mean nothing to paint.
 #[derive(Default)]
@@ -252,17 +254,20 @@ impl Analyzer {
         let clipping = self.clip_until.is_some_and(|until| until > now);
         if pre_fresh || post_fresh {
             self.empty_frames = 0;
+        } else if self.idle {
+            return None;
         } else {
-            if self.idle {
-                return None;
-            }
             self.empty_frames = self.empty_frames.saturating_add(1);
             // between engine pushes the windowed audio is unchanged, hold the curve still
             if self.empty_frames < COAST_AFTER_FRAMES {
                 return None;
             }
         }
-        let rate = if rate == 0 { 48_000.0 } else { rate as f32 };
+        let rate = if rate == 0 {
+            DEFAULT_RATE_HZ
+        } else {
+            rate as f32
+        };
 
         let coasting = self.empty_frames >= COAST_AFTER_FRAMES;
         let mut live = false;
@@ -303,6 +308,7 @@ impl Analyzer {
     }
 }
 
+/// Moves whatever the ring holds into the tap's window; true when anything arrived.
 fn drain(tap: &mut TapAnalyzer) -> bool {
     let available = tap.ring.slots();
     if available == 0 {
@@ -318,7 +324,7 @@ fn drain(tap: &mut TapAnalyzer) -> bool {
     true
 }
 
-// EMA toward the floor while no new audio arrives, returns false once fully floored
+/// EMA toward the floor while no new audio arrives, returns false once fully floored.
 fn coast(display: &mut [f32], alpha: f32) -> bool {
     let mut moving = false;
     for db in display {

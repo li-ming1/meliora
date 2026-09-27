@@ -17,12 +17,19 @@ type ValueParser = dyn Fn(&str) -> Option<f32>;
 const WIDTH: f32 = 56.0;
 const LABEL_HEIGHT: f32 = 16.0;
 const DIAMETER: f32 = 40.0;
+/// Vertical gap between the label, the knob body and the readout row.
+const LABEL_GAP: f32 = 2.0;
 const ARC_RADIUS: f32 = 17.5;
 const READOUT_HEIGHT: f32 = 28.0;
-const READOUT_OFFSET: f32 = LABEL_HEIGHT + 2.0 + DIAMETER + 2.0;
+const READOUT_OFFSET: f32 = LABEL_HEIGHT + LABEL_GAP + DIAMETER + LABEL_GAP;
 const HEIGHT: f32 = READOUT_OFFSET + READOUT_HEIGHT;
 const DRAG_PIXELS: f32 = 200.0;
+/// Fine-adjustment scale applied to drag/scroll displacement while shift is held.
+const SHIFT_SCALE: f32 = 0.1;
 const SCROLL_STEP: f32 = 0.01;
+/// Stroke width of the track and value arcs, and of the position tick.
+const ARC_STROKE_WIDTH: f32 = 2.5;
+const TICK_STROKE_WIDTH: f32 = 2.0;
 const ERROR_FLASH: Duration = Duration::from_millis(600);
 
 // Arc runs clockwise from 7 o'clock to 5 o'clock, straight up is zero
@@ -72,6 +79,48 @@ pub(crate) fn arc_path(
     }
 }
 
+/// Builds and strokes one path; a path that fails to tessellate is dropped.
+fn paint_stroked_path(
+    window: &mut Window,
+    color: Rgba,
+    width: f32,
+    build: impl FnOnce(&mut PathBuilder),
+) {
+    let mut builder = PathBuilder::stroke(px(width));
+    build(&mut builder);
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// Paints a pre-shaped caption horizontally centered within `bounds`, at the
+/// given top edge, logging under `what` on failure.
+fn paint_centered_caption(
+    caption: ShapedLine,
+    bounds: Bounds<Pixels>,
+    top: Pixels,
+    what: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let x = bounds.origin.x + (bounds.size.width - caption.width) / 2.0;
+    if let Err(e) = caption.paint(point(x, top), px(14.0), TextAlign::Left, None, window, cx) {
+        error!("Failed to paint knob {what}: {:?}", e);
+    }
+}
+
+/// Drag/scroll displacement scale: full sensitivity, or [`SHIFT_SCALE`] while
+/// shift is held for fine adjustment.
+fn drag_scale(fine: bool) -> f32 {
+    if fine { SHIFT_SCALE } else { 1.0 }
+}
+
+/// Maps a vertical drag displacement onto the 0..1 knob position.
+fn drag_position(start_position: f32, start_y: Pixels, current_y: Pixels, scale: f32) -> f32 {
+    let dy: f32 = (start_y - current_y).into();
+    (start_position + dy / DRAG_PIXELS * scale).clamp(0.0, 1.0)
+}
+
 fn shape_caption(window: &mut Window, text: SharedString, color: Hsla) -> ShapedLine {
     let run = TextRun {
         len: text.len(),
@@ -90,7 +139,7 @@ fn shape_caption(window: &mut Window, text: SharedString, color: Hsla) -> Shaped
 fn arc_center(bounds: Bounds<Pixels>) -> Point<Pixels> {
     point(
         bounds.origin.x + bounds.size.width / 2.0,
-        bounds.origin.y + px(LABEL_HEIGHT + 2.0 + DIAMETER / 2.0),
+        bounds.origin.y + px(LABEL_HEIGHT + LABEL_GAP + DIAMETER / 2.0),
     )
 }
 
@@ -244,10 +293,9 @@ impl Element for Knob {
 
         // cancel typed entry once the editor loses focus
         let mut textbox = state.borrow().textbox.clone();
-        let stale = match &textbox {
-            Some(textbox) => !textbox.read(cx).focus_handle().is_focused(window),
-            None => false,
-        };
+        let stale = textbox
+            .as_ref()
+            .is_some_and(|textbox| !textbox.read(cx).focus_handle().is_focused(window));
         if stale {
             let mut state = state.borrow_mut();
             state.textbox = None;
@@ -341,66 +389,44 @@ impl Element for Knob {
         let position = self.value.clamp(0.0, 1.0);
         let from = if self.bipolar { 0.5 } else { 0.0 };
 
-        let mut track = PathBuilder::stroke(px(2.5));
-        arc_path(
-            &mut track,
-            center,
-            ARC_RADIUS,
-            ARC_START,
-            ARC_START + ARC_SWEEP,
-        );
-        if let Ok(path) = track.build() {
-            window.paint_path(path, track_color);
-        }
-
-        let mut value_arc = PathBuilder::stroke(px(2.5));
-        arc_path(
-            &mut value_arc,
-            center,
-            ARC_RADIUS,
-            angle(from),
-            angle(position),
-        );
-        if let Ok(path) = value_arc.build() {
-            window.paint_path(path, value_color);
-        }
-
-        let mut tick = PathBuilder::stroke(px(2.0));
-        tick.move_to(arc_point(center, ARC_RADIUS - 4.0, angle(position)));
-        tick.line_to(arc_point(center, ARC_RADIUS + 3.0, angle(position)));
-        if let Ok(path) = tick.build() {
-            window.paint_path(path, tick_color);
-        }
+        paint_stroked_path(window, track_color, ARC_STROKE_WIDTH, |builder| {
+            arc_path(
+                builder,
+                center,
+                ARC_RADIUS,
+                ARC_START,
+                ARC_START + ARC_SWEEP,
+            );
+        });
+        paint_stroked_path(window, value_color, ARC_STROKE_WIDTH, |builder| {
+            arc_path(builder, center, ARC_RADIUS, angle(from), angle(position));
+        });
+        paint_stroked_path(window, tick_color, TICK_STROKE_WIDTH, |builder| {
+            builder.move_to(arc_point(center, ARC_RADIUS - 4.0, angle(position)));
+            builder.line_to(arc_point(center, ARC_RADIUS + 3.0, angle(position)));
+        });
 
         if let Some(label) = prepaint.label.take() {
-            let x = bounds.origin.x + (bounds.size.width - label.width) / 2.0;
-            let result = label.paint(
-                point(x, bounds.origin.y + px(1.0)),
-                px(14.0),
-                TextAlign::Left,
-                None,
+            paint_centered_caption(
+                label,
+                bounds,
+                bounds.origin.y + px(1.0),
+                "label",
                 window,
                 cx,
             );
-            if let Err(e) = result {
-                error!("Failed to paint knob label: {:?}", e);
-            }
         }
 
-        let readout_top = bounds.origin.y + px(READOUT_OFFSET);
         if let Some(readout) = prepaint.readout.take() {
-            let x = bounds.origin.x + (bounds.size.width - readout.width) / 2.0;
-            let result = readout.paint(
-                point(x, readout_top + px(3.5)),
-                px(14.0),
-                TextAlign::Left,
-                None,
+            let readout_top = bounds.origin.y + px(READOUT_OFFSET);
+            paint_centered_caption(
+                readout,
+                bounds,
+                readout_top + px(3.5),
+                "readout",
                 window,
                 cx,
             );
-            if let Err(e) = result {
-                error!("Failed to paint knob readout: {:?}", e);
-            }
         }
 
         if let Some(textbox) = prepaint.textbox.as_mut() {
@@ -531,17 +557,19 @@ impl Element for Knob {
                     // shift toggled mid-drag, rebase so the value holds and the new scale applies
                     // only to displacement from here on
                     let (start_y, start_position) = if shift != start_shift {
-                        let scale = if start_shift { 0.1 } else { 1.0 };
-                        let dy: f32 = (start_y - ev.position.y).into();
-                        let current = (start_position + dy / DRAG_PIXELS * scale).clamp(0.0, 1.0);
+                        let current = drag_position(
+                            start_position,
+                            start_y,
+                            ev.position.y,
+                            drag_scale(start_shift),
+                        );
                         state.borrow_mut().drag = Some((ev.position.y, current, shift));
                         (ev.position.y, current)
                     } else {
                         (start_y, start_position)
                     };
-                    let dy: f32 = (start_y - ev.position.y).into();
-                    let scale = if shift { 0.1 } else { 1.0 };
-                    let position = (start_position + dy / DRAG_PIXELS * scale).clamp(0.0, 1.0);
+                    let position =
+                        drag_position(start_position, start_y, ev.position.y, drag_scale(shift));
                     (on_change.borrow_mut())(position, cx);
                 });
             }

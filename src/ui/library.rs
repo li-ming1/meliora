@@ -6,23 +6,13 @@ use artist_view::ArtistView;
 use cntp_i18n::tr;
 use files_view::FilesView;
 use gpui::{prelude::FluentBuilder, *};
-
-use crate::library::scan::ScanEvent;
 use release_view::ReleaseView;
 use tracing::debug;
 use track_view::TrackView;
 
-#[derive(Clone, Default)]
-struct ScrollStateStorage {
-    album_view_scroll: Option<f32>,
-    track_view_scroll: Option<f32>,
-    artist_view_scroll: Option<f32>,
-    files_view_scroll: Option<f32>,
-    files_expanded: Vec<PathBuf>,
-}
-
+use super::models::Models;
 use crate::{
-    library::db::LibraryAccess,
+    library::{db::LibraryAccess, scan::ScanEvent},
     settings::storage::DEFAULT_SPLIT_FRACTION,
     ui::{
         command_palette::{CommandCategory, CommandManager, CommandSpec},
@@ -37,7 +27,14 @@ use crate::{
     },
 };
 
-use super::models::Models;
+#[derive(Clone, Default)]
+struct ScrollStateStorage {
+    album_view_scroll: Option<f32>,
+    track_view_scroll: Option<f32>,
+    artist_view_scroll: Option<f32>,
+    files_view_scroll: Option<f32>,
+    files_expanded: Vec<PathBuf>,
+}
 
 pub mod add_to_playlist;
 mod album_view;
@@ -484,6 +481,20 @@ fn make_view(
     }
 }
 
+/// Runs one history step (`go_back`/`go_forward`) on the shared history
+/// entity and returns the destination, if the cursor could move.
+fn step_history(
+    history: &Entity<NavigationHistory>,
+    cx: &mut App,
+    step: fn(&mut NavigationHistory) -> Option<ViewSwitchMessage>,
+) -> Option<ViewSwitchMessage> {
+    history.update(cx, |history, cx| {
+        let destination = step(history);
+        cx.notify();
+        destination
+    })
+}
+
 fn library_section_from_history(history: &NavigationHistory) -> LibrarySection {
     LibrarySection::from_message(&history.current())
         .or_else(|| {
@@ -495,6 +506,29 @@ fn library_section_from_history(history: &NavigationHistory) -> LibrarySection {
 }
 
 impl Library {
+    /// Snapshots the outgoing view's scroll position (plus the files view's
+    /// expanded set) into `scroll_state`, so a rebuilt view can restore the
+    /// reader's place.
+    fn save_scroll_state(view: &LibraryView, scroll_state: &mut ScrollStateStorage, cx: &App) {
+        match view {
+            LibraryView::Album(view) => {
+                scroll_state.album_view_scroll = Some(view.read(cx).get_scroll_offset(cx));
+            }
+            LibraryView::Tracks(view) => {
+                scroll_state.track_view_scroll = Some(view.read(cx).get_scroll_offset(cx));
+            }
+            LibraryView::Artists(view) => {
+                scroll_state.artist_view_scroll = Some(view.read(cx).get_scroll_offset(cx));
+            }
+            LibraryView::Files(view) => {
+                let view = view.read(cx);
+                scroll_state.files_view_scroll = Some(view.get_scroll_offset());
+                scroll_state.files_expanded = view.expanded_paths();
+            }
+            _ => {}
+        }
+    }
+
     fn sync_visible_views(&mut self, model: &Entity<NavigationHistory>, cx: &mut App) {
         let history = model.read(cx);
         let current_msg = history.current();
@@ -551,20 +585,7 @@ impl Library {
             cx.subscribe(
                 &switcher_model,
                 move |this: &mut Library, m, message, cx| {
-                    if let LibraryView::Album(album_view) = &this.view {
-                        let scroll_pos = album_view.read(cx).get_scroll_offset(cx);
-                        this.scroll_state.album_view_scroll = Some(scroll_pos);
-                    } else if let LibraryView::Tracks(track_view) = &this.view {
-                        let scroll_pos = track_view.read(cx).get_scroll_offset(cx);
-                        this.scroll_state.track_view_scroll = Some(scroll_pos);
-                    } else if let LibraryView::Artists(artist_view) = &this.view {
-                        let scroll_pos = artist_view.read(cx).get_scroll_offset(cx);
-                        this.scroll_state.artist_view_scroll = Some(scroll_pos);
-                    } else if let LibraryView::Files(files_view) = &this.view {
-                        let fv = files_view.read(cx);
-                        this.scroll_state.files_view_scroll = Some(fv.get_scroll_offset());
-                        this.scroll_state.files_expanded = fv.expanded_paths();
-                    }
+                    Self::save_scroll_state(&this.view, &mut this.scroll_state, cx);
 
                     // if we're navigating away from a view that stole focus (e.g. PlaylistView),
                     // schedule a focus reclaim so the Library div retakes focus on next render.
@@ -574,14 +595,7 @@ impl Library {
 
                     this.view = match message {
                         ViewSwitchMessage::Back => {
-                            let destination =
-                                m.update(cx, |history: &mut NavigationHistory, cx| {
-                                    let result = history.go_back();
-                                    cx.notify();
-                                    result
-                                });
-
-                            if let Some(dest) = destination {
+                            if let Some(dest) = step_history(&m, cx, NavigationHistory::go_back) {
                                 debug!("back → {:?}", dest);
                                 make_view(&dest, cx, &m, &this.scroll_state)
                             } else {
@@ -590,14 +604,8 @@ impl Library {
                         }
 
                         ViewSwitchMessage::Forward => {
-                            let destination =
-                                m.update(cx, |history: &mut NavigationHistory, cx| {
-                                    let result = history.go_forward();
-                                    cx.notify();
-                                    result
-                                });
-
-                            if let Some(dest) = destination {
+                            if let Some(dest) = step_history(&m, cx, NavigationHistory::go_forward)
+                            {
                                 debug!("forward → {:?}", dest);
                                 make_view(&dest, cx, &m, &this.scroll_state)
                             } else {

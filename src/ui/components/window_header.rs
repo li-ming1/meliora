@@ -1,4 +1,4 @@
-use crate::ui::design::ICON_SM;
+use crate::ui::design::{ICON_SM, SPACE_SM};
 use gpui::{prelude::FluentBuilder, *};
 use smallvec::SmallVec;
 
@@ -7,6 +7,15 @@ use crate::ui::{
     constants::{TITLEBAR_LEFT_PAD_BOTTOM, TITLEBAR_LEFT_PAD_TOP, TITLEBAR_LEFT_PAD_X},
     theme::Theme,
 };
+
+/// Height of the titlebar and of each window button (the buttons fill it).
+const TITLEBAR_HEIGHT: Pixels = px(37.0);
+
+/// Width of a titlebar window button (close / minimize / maximize).
+const WINDOW_BUTTON_WIDTH: Pixels = px(36.0);
+
+/// Spacer clearing the macOS traffic lights at the titlebar's left edge.
+const MACOS_TRAFFIC_LIGHT_SPACER: Pixels = px(72.0);
 
 #[derive(IntoElement)]
 pub struct WindowHeader {
@@ -52,7 +61,7 @@ impl RenderOnce for WindowHeader {
             .pt(TITLEBAR_LEFT_PAD_TOP)
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(SPACE_SM)
             .children(self.left);
 
         self.div
@@ -60,8 +69,8 @@ impl RenderOnce for WindowHeader {
             .items_center()
             .w_full()
             .text_sm()
-            .min_h(px(37.0))
-            .max_h(px(37.0))
+            .min_h(TITLEBAR_HEIGHT)
+            .max_h(TITLEBAR_HEIGHT)
             .bg(theme.background_secondary)
             .border_b_1()
             .id("titlebar")
@@ -90,7 +99,7 @@ impl RenderOnce for WindowHeader {
                     }),
             })
             .when(cfg!(target_os = "macos"), |this| {
-                this.child(div().w(px(72.0)))
+                this.child(div().w(MACOS_TRAFFIC_LIGHT_SPACER))
             })
             .child(left_container)
             .when(cfg!(not(target_os = "macos")), |this| {
@@ -121,8 +130,9 @@ pub enum WindowButton {
 impl RenderOnce for WindowButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.global::<Theme>();
+        let is_close = matches!(self, WindowButton::Close(_));
 
-        let (bg, hover, active) = if matches!(self, WindowButton::Close(_)) {
+        let (bg, hover, active) = if is_close {
             (
                 theme.close_button,
                 theme.close_button_hover,
@@ -136,45 +146,35 @@ impl RenderOnce for WindowButton {
             )
         };
 
+        let (id, control_area, glyph) = match self {
+            WindowButton::Close(_) => ("close", WindowControlArea::Close, CROSS),
+            WindowButton::Minimize => ("minimize", WindowControlArea::Min, MINUS),
+            WindowButton::Maximize => {
+                let glyph = if window.is_maximized() {
+                    MINIMIZE
+                } else {
+                    MAXIMIZE
+                };
+                ("maximize", WindowControlArea::Max, glyph)
+            }
+        };
+
         div()
             .flex()
-            .w(px(36.0))
-            .h(px(37.0))
+            .w(WINDOW_BUTTON_WIDTH)
+            .h(TITLEBAR_HEIGHT)
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .id(match self {
-                WindowButton::Close(_) => "close",
-                WindowButton::Minimize => "minimize",
-                WindowButton::Maximize => "maximize",
-            })
+            .id(id)
             .bg(bg)
             .hover(|this| this.bg(hover))
             .active(|this| this.bg(active))
-            .window_control_area(match self {
-                WindowButton::Close(_) => WindowControlArea::Close,
-                WindowButton::Minimize => WindowControlArea::Min,
-                WindowButton::Maximize => WindowControlArea::Max,
-            })
+            .window_control_area(control_area)
             .text_size(px(12.0))
             .occlude()
-            .child(
-                icon(match self {
-                    WindowButton::Close(_) => CROSS,
-                    WindowButton::Minimize => MINUS,
-                    WindowButton::Maximize => {
-                        if window.is_maximized() {
-                            MINIMIZE
-                        } else {
-                            MAXIMIZE
-                        }
-                    }
-                })
-                .size(ICON_SM),
-            )
-            .when(matches!(self, WindowButton::Close(_)), |this| {
-                this.rounded_tr(px(theme.radius_md))
-            })
+            .child(icon(glyph).size(ICON_SM))
+            .when(is_close, |this| this.rounded_tr(px(theme.radius_md)))
             .on_click(move |_, window, cx| match self {
                 WindowButton::Close(false) => window.remove_window(),
                 WindowButton::Close(true) => cx.quit(),

@@ -6,7 +6,7 @@ use std::{
 
 use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Pixels, Point, RenderImage,
-    SharedString, Size,
+    SharedString, Size, px,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -24,8 +24,8 @@ use crate::{
         SettingsGlobal,
         interface::StartupLibraryView,
         storage::{
-            DEFAULT_LYRICS_FRACTION, DEFAULT_QUEUE_WIDTH, DEFAULT_SIDEBAR_WIDTH, StorageData,
-            TableSettings,
+            DEFAULT_CONTROLS_LEFT_WIDTH, DEFAULT_CONTROLS_RIGHT_WIDTH, DEFAULT_LYRICS_FRACTION,
+            DEFAULT_QUEUE_WIDTH, DEFAULT_SIDEBAR_WIDTH, StorageData, TableSettings,
         },
     },
     ui::{
@@ -188,6 +188,13 @@ fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
     }
 }
 
+/// A stored width/height of 0 means "never saved" (historical storage
+/// contract): fall back to the compiled default instead of collapsing the
+/// pane. Every dimension entity rebuilt from `StorageData` goes through this.
+fn stored_dimension(stored: Pixels, default: Pixels) -> Pixels {
+    if stored > px(0.0) { stored } else { default }
+}
+
 pub fn build_models(
     cx: &mut App,
     queue: Queue,
@@ -230,28 +237,13 @@ pub fn build_models(
     let switcher_for_startup = switcher_model.clone();
     let artist_picker_model = cx.new(|_| None);
 
-    let sidebar_width: Entity<Pixels> = cx.new(|_| {
-        if storage_data.sidebar_width > 0.0 {
-            storage_data.sidebar_width()
-        } else {
-            DEFAULT_SIDEBAR_WIDTH
-        }
-    });
+    let sidebar_width: Entity<Pixels> =
+        cx.new(|_| stored_dimension(storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH));
     // Rendered sidebar width, tweened toward `sidebar_width` / collapsed by the sidebar view.
-    let animated_sidebar_width: Entity<Pixels> = cx.new(|_| {
-        if storage_data.sidebar_width > 0.0 {
-            storage_data.sidebar_width()
-        } else {
-            DEFAULT_SIDEBAR_WIDTH
-        }
-    });
-    let queue_width: Entity<Pixels> = cx.new(|_| {
-        if storage_data.queue_width > 0.0 {
-            storage_data.queue_width()
-        } else {
-            DEFAULT_QUEUE_WIDTH
-        }
-    });
+    let animated_sidebar_width: Entity<Pixels> =
+        cx.new(|_| stored_dimension(storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH));
+    let queue_width: Entity<Pixels> =
+        cx.new(|_| stored_dimension(storage_data.queue_width(), DEFAULT_QUEUE_WIDTH));
     let show_queue: Entity<bool> = cx.new(|_| storage_data.show_queue);
     let show_lyrics: Entity<bool> = cx.new(|_| storage_data.show_lyrics);
     let split_widths: std::collections::HashMap<String, Entity<Pixels>> = {
@@ -269,26 +261,19 @@ pub fn build_models(
     let liked_tracks_sort_method = cx.new(|_| storage_data.liked_tracks_sort_method);
     let playlist_sort_methods = cx.new(|_| storage_data.playlist_sort_methods.clone());
     let sidebar_collapsed: Entity<bool> = cx.new(|_| storage_data.sidebar_collapsed);
-    let lyrics_height: Entity<Pixels> = cx.new(|_| {
-        if storage_data.lyrics_fraction > 0.0 {
-            storage_data.lyrics_fraction()
-        } else {
-            DEFAULT_LYRICS_FRACTION
-        }
-    });
+    let lyrics_height: Entity<Pixels> =
+        cx.new(|_| stored_dimension(storage_data.lyrics_fraction(), DEFAULT_LYRICS_FRACTION));
     let controls_left_width: Entity<Pixels> = cx.new(|_| {
-        if storage_data.controls_left_width > 0.0 {
-            storage_data.controls_left_width()
-        } else {
-            crate::settings::storage::DEFAULT_CONTROLS_LEFT_WIDTH
-        }
+        stored_dimension(
+            storage_data.controls_left_width(),
+            DEFAULT_CONTROLS_LEFT_WIDTH,
+        )
     });
     let controls_right_width: Entity<Pixels> = cx.new(|_| {
-        if storage_data.controls_right_width > 0.0 {
-            storage_data.controls_right_width()
-        } else {
-            crate::settings::storage::DEFAULT_CONTROLS_RIGHT_WIDTH
-        }
+        stored_dimension(
+            storage_data.controls_right_width(),
+            DEFAULT_CONTROLS_RIGHT_WIDTH,
+        )
     });
 
     let window_information = cx.new(|_| None);
@@ -440,6 +425,27 @@ pub(crate) trait HasLikedState {
     fn set_liked(&mut self, item_id: Option<i64>);
 }
 
+/// Shared outcome handling for the background like/unlike DB tasks: returns
+/// true on success; on a failed query or a panicked task logs the caller's
+/// message and returns false (the caller then skips its follow-up notify).
+fn like_task_succeeded<T, E: std::fmt::Debug>(
+    result: Result<sqlx::Result<T>, E>,
+    failure_log: &str,
+    panic_log: &str,
+) -> bool {
+    match result {
+        Ok(Ok(_)) => true,
+        Ok(Err(err)) => {
+            tracing::error!("{failure_log}: {err:?}");
+            false
+        }
+        Err(err) => {
+            tracing::error!("{panic_log}: {err:?}");
+            false
+        }
+    }
+}
+
 pub(crate) async fn like_track<E: HasLikedState + 'static>(
     track_id: i64,
     entity: Entity<E>,
@@ -451,17 +457,9 @@ pub(crate) async fn like_track<E: HasLikedState + 'static>(
         db::add_playlist_item(&pool, LIKED_SONGS_PLAYLIST_ID, track_id).await
     });
 
-    match task.await {
-        Ok(Ok(_)) => {}
-        Ok(Err(err)) => {
-            tracing::error!("could not like song: {err:?}");
-            return;
-        }
-        Err(err) => {
-            tracing::error!("like task panicked: {err:?}");
-            return;
-        }
-    };
+    if !like_task_succeeded(task.await, "could not like song", "like task panicked") {
+        return;
+    }
 
     entity.update(cx, |this, cx| {
         this.set_liked(Some(track_id));
@@ -571,16 +569,12 @@ pub(crate) fn toggle_like_by_id(track_id: i64, is_liked: Option<i64>, cx: &mut A
             }
         });
 
-        match task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                tracing::error!("could not toggle like: {err:?}");
-                return;
-            }
-            Err(err) => {
-                tracing::error!("like/unlike task panicked: {err:?}");
-                return;
-            }
+        if !like_task_succeeded(
+            task.await,
+            "could not toggle like",
+            "like/unlike task panicked",
+        ) {
+            return;
         }
 
         playlist_tracker.update(cx, |_, cx| {
@@ -608,16 +602,12 @@ pub(crate) fn toggle_album_like(track_ids: Vec<i64>, all_liked: bool, cx: &mut A
             }
         });
 
-        match task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                tracing::error!("could not toggle album like: {err:?}");
-                return;
-            }
-            Err(err) => {
-                tracing::error!("album like task panicked: {err:?}");
-                return;
-            }
+        if !like_task_succeeded(
+            task.await,
+            "could not toggle album like",
+            "album like task panicked",
+        ) {
+            return;
         }
 
         playlist_tracker.update(cx, |_, cx| {

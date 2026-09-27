@@ -105,6 +105,8 @@ enum SelectionDragMode {
     All,
 }
 
+/// An action forwarded to the optional enriched-input handler passed to
+/// [`TextInput::new`].
 #[derive(Copy, Clone)]
 pub enum EnrichedInputAction {
     Next,
@@ -184,6 +186,7 @@ impl TextInput {
         self.select_all_text(cx);
     }
 
+    /// Selects the entire content.
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx);
@@ -211,13 +214,11 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_range.is_empty() {
-            self.select_to(
-                previous_word_boundary(&self.content, self.cursor_offset()),
-                cx,
-            );
-        }
-        self.replace_text_in_range(None, "", window, cx);
+        self.delete_to(
+            previous_word_boundary(&self.content, self.cursor_offset()),
+            window,
+            cx,
+        );
     }
 
     fn delete_word_forward(
@@ -226,10 +227,11 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_range.is_empty() {
-            self.select_to(next_word_boundary(&self.content, self.cursor_offset()), cx);
-        }
-        self.replace_text_in_range(None, "", window, cx);
+        self.delete_to(
+            next_word_boundary(&self.content, self.cursor_offset()),
+            window,
+            cx,
+        );
     }
 
     fn delete_to_beginning_of_line(
@@ -238,10 +240,7 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_range.is_empty() {
-            self.select_to(0, cx);
-        }
-        self.replace_text_in_range(None, "", window, cx);
+        self.delete_to(0, window, cx);
     }
 
     fn delete_to_end_of_line(
@@ -250,24 +249,24 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.delete_to(self.content.len(), window, cx);
+    }
+
+    /// Delete the current selection; when the selection is empty, first move
+    /// the cursor to `target` so exactly that span is deleted.
+    fn delete_to(&mut self, target: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
-            self.select_to(self.content.len(), cx);
+            self.select_to(target, cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
+        self.delete_to(self.previous_boundary(self.cursor_offset()), window, cx);
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
+        self.delete_to(self.next_boundary(self.cursor_offset()), window, cx);
     }
 
     fn on_mouse_down(
@@ -470,6 +469,15 @@ impl TextInput {
         self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
     }
 
+    /// Resolve the range an edit applies to: the given UTF-16 range if
+    /// present, else the IME marked range, else the current selection.
+    fn resolve_edit_range(&self, range_utf16: Option<&Range<usize>>) -> Range<usize> {
+        range_utf16
+            .map(|range| self.range_from_utf16(range))
+            .or(self.marked_range.clone())
+            .unwrap_or(self.selected_range.clone())
+    }
+
     fn previous_boundary(&self, offset: usize) -> usize {
         self.content
             .grapheme_indices(true)
@@ -489,6 +497,7 @@ impl TextInput {
         word_range_for_offset(&self.content, offset)
     }
 
+    /// Clears the content, selection, IME, drag and layout state.
     pub fn reset(&mut self) {
         self.content = "".into();
         self.selected_range = 0..0;
@@ -502,31 +511,38 @@ impl TextInput {
         self.word_drag_anchor_range = 0..0;
     }
 
+    /// The global "space" keybinding fires `PlayPause` (keybinds.json); in a
+    /// focused input it must type a literal space instead of toggling playback.
     fn space(&mut self, _: &PlayPause, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_text_in_range(None, " ", window, cx)
     }
 
+    /// Forward `action` to the enriched-input handler passed to
+    /// [`TextInput::new`], if one was installed.
+    fn dispatch_enriched_action(
+        &mut self,
+        action: EnrichedInputAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(handler) = self.enriched_input_handler.as_mut() {
+            handler(action, window, cx);
+        }
+    }
+
     pub fn next(&mut self, _: &Next, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(handler) = self.enriched_input_handler.as_mut() else {
-            return;
-        };
-        handler(EnrichedInputAction::Next, window, cx);
+        self.dispatch_enriched_action(EnrichedInputAction::Next, window, cx);
     }
 
     pub fn previous(&mut self, _: &Previous, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(handler) = self.enriched_input_handler.as_mut() else {
-            return;
-        };
-        handler(EnrichedInputAction::Previous, window, cx);
+        self.dispatch_enriched_action(EnrichedInputAction::Previous, window, cx);
     }
 
     pub fn accept(&mut self, _: &Accept, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(handler) = self.enriched_input_handler.as_mut() else {
-            return;
-        };
-        handler(EnrichedInputAction::Accept, window, cx);
+        self.dispatch_enriched_action(EnrichedInputAction::Accept, window, cx);
     }
 
+    /// Replaces the content and moves the cursor to the end of the new text.
     pub fn set_value(&mut self, cx: &mut Context<Self>, value: SharedString) {
         self.content = value;
         self.move_to(self.content.len(), cx);
@@ -579,11 +595,7 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+        let range = self.resolve_edit_range(range_utf16.as_ref());
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -603,11 +615,7 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+        let range = self.resolve_edit_range(range_utf16.as_ref());
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])

@@ -90,6 +90,27 @@ fn existing_item_id(track_list: &TrackList, playlist: &Playlist, cx: &mut App) -
         .flatten()
 }
 
+/// Awaits a spawned playlist DB task and logs its two failure modes with the
+/// call site's message; yields the payload only when the task fully
+/// succeeded, so callers can gate the follow-up event on it.
+async fn await_playlist_task<T>(
+    task: tokio::task::JoinHandle<Result<T, sqlx::Error>>,
+    failure_log: &'static str,
+    panic_log: &'static str,
+) -> Option<T> {
+    match task.await {
+        Ok(Ok(payload)) => Some(payload),
+        Ok(Err(err)) => {
+            error!("{}: {err:?}", failure_log);
+            None
+        }
+        Err(err) => {
+            error!("{}: {err:?}", panic_log);
+            None
+        }
+    }
+}
+
 impl PaletteItem for PlaylistEntry {
     fn left_content(&self, cx: &mut App) -> Option<FinderItemLeft> {
         self.1.left_content(cx)
@@ -176,12 +197,12 @@ impl AddToPlaylist {
                 let track_ids = track_list_for_accept.borrow().ids().to_vec();
                 let playlist_id = playlist.1.id;
 
+                let pool = cx.global::<Pool>().0.clone();
+                let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+
                 if track_ids.len() == 1 {
                     let track_id = track_ids[0];
                     let has_track = cx.playlist_has_track(playlist_id, track_id).ok().flatten();
-
-                    let pool = cx.global::<Pool>().0.clone();
-                    let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
                     cx.spawn(async move |cx| {
                         let task = if let Some(id) = has_track {
@@ -195,27 +216,21 @@ impl AddToPlaylist {
                             })
                         };
 
-                        match task.await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(err)) => {
-                                error!("could not remove/add track from playlist: {err:?}");
-                                return;
-                            }
-                            Err(err) => {
-                                error!("remove/add from playlist task panicked: {err:?}");
-                                return;
-                            }
+                        if await_playlist_task(
+                            task,
+                            "could not remove/add track from playlist",
+                            "remove/add from playlist task panicked",
+                        )
+                        .await
+                        .is_some()
+                        {
+                            playlist_tracker.update(cx, |_, cx| {
+                                cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
+                            });
                         }
-
-                        playlist_tracker.update(cx, |_, cx| {
-                            cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-                        });
                     })
                     .detach();
                 } else {
-                    let pool = cx.global::<Pool>().0.clone();
-                    let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-
                     cx.spawn(async move |cx| {
                         let task = crate::RUNTIME.spawn(async move {
                             for track_id in &track_ids {
@@ -224,21 +239,18 @@ impl AddToPlaylist {
                             Ok::<(), sqlx::Error>(())
                         });
 
-                        match task.await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(err)) => {
-                                error!("could not add tracks to playlist: {err:?}");
-                                return;
-                            }
-                            Err(err) => {
-                                error!("add tracks to playlist task panicked: {err:?}");
-                                return;
-                            }
+                        if await_playlist_task(
+                            task,
+                            "could not add tracks to playlist",
+                            "add tracks to playlist task panicked",
+                        )
+                        .await
+                        .is_some()
+                        {
+                            playlist_tracker.update(cx, |_, cx| {
+                                cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
+                            });
                         }
-
-                        playlist_tracker.update(cx, |_, cx| {
-                            cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-                        });
                     })
                     .detach();
                 }
@@ -295,18 +307,14 @@ impl AddToPlaylist {
                                 Ok::<i64, sqlx::Error>(playlist_id)
                             });
 
-                            let playlist_id = match task.await {
-                                Ok(Ok(id)) => id,
-                                Ok(Err(err)) => {
-                                    tracing::error!(
-                                        "could not create playlist and add track: {err:?}"
-                                    );
-                                    return;
-                                }
-                                Err(err) => {
-                                    tracing::error!("create playlist task panicked: {err:?}");
-                                    return;
-                                }
+                            let Some(playlist_id) = await_playlist_task(
+                                task,
+                                "could not create playlist and add track",
+                                "create playlist task panicked",
+                            )
+                            .await
+                            else {
+                                return;
                             };
 
                             playlist_tracker.update(cx, |_, cx| {

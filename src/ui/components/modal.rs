@@ -53,17 +53,17 @@ impl RenderOnce for Modal {
         match decorations {
             Decorations::Server => (),
             Decorations::Client { tiling } => {
-                if !(tiling.top) {
-                    size = size - gpui::size(px(0.0), shadow_size);
+                if !tiling.top {
+                    size.height -= shadow_size;
                 }
-                if !(tiling.bottom) {
-                    size = size - gpui::size(px(0.0), shadow_size);
+                if !tiling.bottom {
+                    size.height -= shadow_size;
                 }
-                if !(tiling.left) {
-                    size = size - gpui::size(shadow_size, px(0.0));
+                if !tiling.left {
+                    size.width -= shadow_size;
                 }
-                if !(tiling.right) {
-                    size = size - gpui::size(shadow_size, px(0.0));
+                if !tiling.right {
+                    size.width -= shadow_size;
                 }
             }
         }

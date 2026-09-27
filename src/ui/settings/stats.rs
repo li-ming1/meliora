@@ -97,6 +97,8 @@ enum TopRows {
 /// One precomputed Top-10 row: all strings are built when data arrives so the
 /// render path never formats or allocates.
 struct TopItem {
+    /// `top-row-{index}` element id, built with the rest of the row data.
+    row_id: SharedString,
     label: SharedString,
     sub: Option<SharedString>,
     duration: SharedString,
@@ -401,7 +403,9 @@ impl StatsSettings {
         fn to_items(rows: Vec<(String, Option<String>, i64)>) -> Vec<TopItem> {
             let max = rows.iter().map(|r| r.2).max().unwrap_or(0);
             rows.into_iter()
-                .map(|(label, sub, secs)| TopItem {
+                .enumerate()
+                .map(|(i, (label, sub, secs))| TopItem {
+                    row_id: SharedString::from(format!("top-row-{i}")),
                     label: label.into(),
                     sub: sub.filter(|s| !s.is_empty()).map(Into::into),
                     duration: fmt_duration(secs).into(),
@@ -416,12 +420,8 @@ impl StatsSettings {
                     .map(|(title, artist, secs)| (title, Some(artist), secs))
                     .collect(),
             ),
-            TopRows::Artists(rows) => to_items(
-                rows.into_iter()
-                    .map(|(name, secs)| (name, None, secs))
-                    .collect(),
-            ),
-            TopRows::Albums(rows) => to_items(
+            // Artists and Albums render identically: a name, no sub-line.
+            TopRows::Artists(rows) | TopRows::Albums(rows) => to_items(
                 rows.into_iter()
                     .map(|(name, secs)| (name, None, secs))
                     .collect(),
@@ -439,11 +439,10 @@ impl StatsSettings {
         let year = today.year() - self.heat_year_offset as i32;
         // A year outside chrono's supported range can't build a heatmap;
         // keep the current one instead of panicking.
-        let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else {
-            tracing::warn!("invalid heatmap year {year}, keeping current heatmap");
-            return;
-        };
-        let Some(last_day) = NaiveDate::from_ymd_opt(year, 12, 31) else {
+        let (Some(year_start), Some(last_day)) = (
+            NaiveDate::from_ymd_opt(year, 1, 1),
+            NaiveDate::from_ymd_opt(year, 12, 31),
+        ) else {
             tracing::warn!("invalid heatmap year {year}, keeping current heatmap");
             return;
         };
@@ -598,18 +597,18 @@ impl StatsSettings {
         // Labels are absolutely positioned above their month's first week
         // column (flex spacers can't measure text width and drift a label per
         // month). x offset = weekday label column + its margin.
-        let mut month_row = div().relative().h(px(12.0));
-        for (x, label) in &self.month_items {
-            month_row = month_row.child(
+        let month_row = div()
+            .relative()
+            .h(px(12.0))
+            .children(self.month_items.iter().map(|(x, label)| {
                 div()
                     .absolute()
                     .left(px(HEAT_WD_W_PX + HEAT_GAP_PX + *x))
                     .top(px(0.0))
                     .text_size(px(9.0))
                     .text_color(theme.text_secondary)
-                    .child(label.clone()),
-            );
-        }
+                    .child(label.clone())
+            }));
 
         let weekday_labels: [Option<SharedString>; HEAT_ROWS] = [
             Some(tr!("STATS_WD_MON", "Mon").into()),
@@ -622,28 +621,28 @@ impl StatsSettings {
         ];
 
         // Weekday label column sits left of the week columns.
-        let mut wd_col = div()
+        let wd_col = div()
             .flex()
             .flex_col()
             .gap(px(HEAT_GAP_PX))
             .flex_shrink_0()
-            .mr(px(HEAT_GAP_PX));
-        for label in &weekday_labels {
-            let mut slot = div()
-                .w(px(HEAT_WD_W_PX))
-                .h(px(HEAT_CELL_PX))
-                .flex()
-                .items_center();
-            if let Some(l) = label {
-                slot = slot.child(
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(theme.text_secondary)
-                        .child(l.clone()),
-                );
-            }
-            wd_col = wd_col.child(slot);
-        }
+            .mr(px(HEAT_GAP_PX))
+            .children(weekday_labels.map(|label| {
+                let mut slot = div()
+                    .w(px(HEAT_WD_W_PX))
+                    .h(px(HEAT_CELL_PX))
+                    .flex()
+                    .items_center();
+                if let Some(l) = label {
+                    slot = slot.child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(theme.text_secondary)
+                            .child(l),
+                    );
+                }
+                slot
+            }));
 
         // The window pads to whole Mon..Sun weeks: days outside the shown
         // year (previous December / next January) keep their grid slot for
@@ -798,22 +797,18 @@ impl StatsSettings {
     }
 
     fn render_top(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut tab_row = div().flex().flex_row().gap(px(4.0));
-        for tab in [TopTab::Tracks, TopTab::Artists, TopTab::Albums] {
-            let active = self.top_tab == tab;
-            tab_row = tab_row.child(
-                self.pill(tab.id(), tab.label(), active, theme)
-                    .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx))),
-            );
-        }
-        let mut range_row = div().flex().flex_row().gap(px(4.0));
-        for range in [TopRange::Week, TopRange::Month, TopRange::All] {
-            let active = self.top_range == range;
-            range_row = range_row.child(
-                self.pill(range.id(), range.label(), active, theme)
-                    .on_click(cx.listener(move |this, _, _, cx| this.switch_range(range, cx))),
-            );
-        }
+        let tab_row = div().flex().flex_row().gap(px(4.0)).children(
+            [TopTab::Tracks, TopTab::Artists, TopTab::Albums].map(|tab| {
+                self.pill(tab.id(), tab.label(), self.top_tab == tab, theme)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx)))
+            }),
+        );
+        let range_row = div().flex().flex_row().gap(px(4.0)).children(
+            [TopRange::Week, TopRange::Month, TopRange::All].map(|range| {
+                self.pill(range.id(), range.label(), self.top_range == range, theme)
+                    .on_click(cx.listener(move |this, _, _, cx| this.switch_range(range, cx)))
+            }),
+        );
 
         let mut rows = div().flex().flex_col().w_full();
         // Same guaranteed-contrast tint as the hour bars: menu_item_hover is
@@ -823,7 +818,7 @@ impl StatsSettings {
             // Stateful rows: hover styles only repaint on elements carrying an
             // id (element state drives the enter/leave notify).
             let mut row = div()
-                .id(SharedString::from(format!("top-row-{}", i)))
+                .id(item.row_id.clone())
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1066,19 +1061,22 @@ impl Render for HoursChart {
         .size_full();
 
         // Hour labels under the chart.
-        let mut labels = div().flex().flex_row().mt(px(2.0));
-        for hour in 0..24 {
-            let mut slot = div().flex_1().min_w_0().flex().justify_center();
-            if hour % 6 == 0 {
-                slot = slot.child(
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(theme.text_secondary)
-                        .child(HOUR_LABELS[hour / 6]),
-                );
-            }
-            labels = labels.child(slot);
-        }
+        let labels = div()
+            .flex()
+            .flex_row()
+            .mt(px(2.0))
+            .children((0..24).map(|hour| {
+                let mut slot = div().flex_1().min_w_0().flex().justify_center();
+                if hour % 6 == 0 {
+                    slot = slot.child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(theme.text_secondary)
+                            .child(HOUR_LABELS[hour / 6]),
+                    );
+                }
+                slot
+            }));
 
         div()
             .flex()

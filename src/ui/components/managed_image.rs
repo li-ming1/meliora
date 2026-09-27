@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -15,7 +15,7 @@ use gpui::{
 };
 use image::{Frame, Pixel};
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
+use smallvec::smallvec;
 use sqlx::SqlitePool;
 use tracing::error;
 
@@ -74,9 +74,7 @@ pub(crate) fn rgb_to_bgr(image: &mut image::RgbaImage) {
 
 fn decode_rgba_to_render_image(mut image: image::RgbaImage) -> anyhow::Result<Arc<RenderImage>> {
     rgb_to_bgr(&mut image);
-    let mut frames: SmallVec<[_; 1]> = SmallVec::new();
-    frames.push(Frame::new(image));
-    Ok(Arc::new(RenderImage::new(frames)))
+    Ok(Arc::new(RenderImage::new(smallvec![Frame::new(image)])))
 }
 
 /// Longest side of the BMP thumbnail the scanner stores in the `thumb`
@@ -204,6 +202,30 @@ struct RenderCache {
     bytes: u64,
 }
 
+/// Locks `RENDER_CACHE`, initializing it on first use.
+fn lock_render_cache() -> MutexGuard<'static, RenderCache> {
+    RENDER_CACHE
+        .get_or_init(|| {
+            Mutex::new(RenderCache {
+                cache: FxHashMap::default(),
+                usage: VecDeque::new(),
+                bytes: 0,
+            })
+        })
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Locks `RENDER_CACHE` without initializing it: `None` until the first
+/// [`lock_render_cache`] call has created it.
+fn try_lock_render_cache() -> Option<MutexGuard<'static, RenderCache>> {
+    RENDER_CACHE.get().map(|cache| {
+        cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    })
+}
+
 /// Estimated RGBA footprint in bytes of a decoded cover.
 pub(crate) fn image_bytes(image: &RenderImage) -> u64 {
     let size = image.size(0);
@@ -213,12 +235,9 @@ pub(crate) fn image_bytes(image: &RenderImage) -> u64 {
 /// Live foot print of the decoded-cover LRU, in MiB. Reported by the [mem]
 /// periodic probe.
 pub fn render_cache_mb() -> u64 {
-    let Some(cache) = RENDER_CACHE.get() else {
+    let Some(cache) = try_lock_render_cache() else {
         return 0;
     };
-    let cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.bytes / (1024 * 1024)
 }
 
@@ -226,14 +245,10 @@ pub fn render_cache_mb() -> u64 {
 /// so the [mem] probe can tell a growing entry set (per-track cache churn)
 /// from a growing per-entry size.
 pub fn render_cache_entries() -> usize {
-    let Some(cache) = RENDER_CACHE.get() else {
+    let Some(cache) = try_lock_render_cache() else {
         return 0;
     };
-    cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .cache
-        .len()
+    cache.cache.len()
 }
 
 /// Covers whose atlas tiles still need dropping, tagged with their cache key.
@@ -349,12 +364,9 @@ pub(crate) fn queue_orphan_tile_drop(image: Arc<RenderImage>) {
 /// Whether the cache still owns `image` under `key` (same allocation). Used
 /// by the drain to leave tiles alone that a live cache entry still serves.
 fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
-    let Some(cache) = RENDER_CACHE.get() else {
+    let Some(cache) = try_lock_render_cache() else {
         return false;
     };
-    let cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache
         .cache
         .get(key)
@@ -451,38 +463,32 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
         let (ready, young) = partition_ready(queue.drain(..).collect(), now);
         (ready, young)
     };
-    if ready.is_empty() {
-        // 未到期条目必须先回队再返回：drain 挂在播放事件循环上，几乎每秒
-        // 都会执行，一张刚入队的图（60s 年龄门未到）若在这里被丢弃，它的
-        // 最后一份 Arc 就地消失，瓦片永远无人回收——pushed 持续增长而其余
-        // 计数恒为零的 [mem] 曲线（2026-09-26 两个会话）正是这条路径。
-        if !young.is_empty() {
-            queue
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .extend(young);
+
+    if !ready.is_empty() {
+        let batch: Vec<(RenderCacheKey, Arc<RenderImage>)> = ready
+            .into_iter()
+            .map(|entry| (entry.key, entry.image))
+            .collect();
+        let plan = plan_tile_reclaims(batch, |key, image| render_cache_holds(key, image));
+        let stats = &TILE_DROP_STATS;
+        stats
+            .reclaimed
+            .fetch_add(plan.reclaim.len() as u64, Ordering::Relaxed);
+        stats
+            .kept_by_cache
+            .fetch_add(plan.kept_by_cache as u64, Ordering::Relaxed);
+        stats
+            .kept_by_holders
+            .fetch_add(plan.kept_by_holders as u64, Ordering::Relaxed);
+        if !plan.reclaim.is_empty() {
+            crate::ui::util::reclaim_images_from_app(cx, plan.reclaim);
         }
-        return;
     }
 
-    let batch: Vec<(RenderCacheKey, Arc<RenderImage>)> = ready
-        .into_iter()
-        .map(|entry| (entry.key, entry.image))
-        .collect();
-    let plan = plan_tile_reclaims(batch, |key, image| render_cache_holds(key, image));
-    let stats = &TILE_DROP_STATS;
-    stats
-        .reclaimed
-        .fetch_add(plan.reclaim.len() as u64, Ordering::Relaxed);
-    stats
-        .kept_by_cache
-        .fetch_add(plan.kept_by_cache as u64, Ordering::Relaxed);
-    stats
-        .kept_by_holders
-        .fetch_add(plan.kept_by_holders as u64, Ordering::Relaxed);
-    if !plan.reclaim.is_empty() {
-        crate::ui::util::reclaim_images_from_app(cx, plan.reclaim);
-    }
+    // 未到期条目必须先回队再返回：drain 挂在播放事件循环上，几乎每秒
+    // 都会执行，一张刚入队的图（60s 年龄门未到）若在这里被丢弃，它的
+    // 最后一份 Arc 就地消失，瓦片永远无人回收——pushed 持续增长而其余
+    // 计数恒为零的 [mem] 曲线（2026-09-26 两个会话）正是这条路径。
     // Re-queue the not-yet-due entries only after the reclaim decision, so a
     // young entry's Arc never dilutes the strong_count test of a ready one.
     if !young.is_empty() {
@@ -503,16 +509,7 @@ fn partition_ready(
     entries: Vec<PendingTileDrop>,
     now: Instant,
 ) -> (Vec<PendingTileDrop>, Vec<PendingTileDrop>) {
-    let mut ready = Vec::new();
-    let mut young = Vec::new();
-    for entry in entries {
-        if entry.due <= now {
-            ready.push(entry);
-        } else {
-            young.push(entry);
-        }
-    }
-    (ready, young)
+    entries.into_iter().partition(|entry| entry.due <= now)
 }
 
 fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderImage>> {
@@ -521,16 +518,7 @@ fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderIm
         thumb,
     };
 
-    let cache = RENDER_CACHE.get_or_init(|| {
-        Mutex::new(RenderCache {
-            cache: FxHashMap::default(),
-            usage: VecDeque::new(),
-            bytes: 0,
-        })
-    });
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = lock_render_cache();
 
     let hit = cache
         .cache
@@ -549,16 +537,7 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
     let cache_key = RenderCacheKey { key, thumb };
     let new_bytes = image_bytes(&image);
 
-    let cache = RENDER_CACHE.get_or_init(|| {
-        Mutex::new(RenderCache {
-            cache: FxHashMap::default(),
-            usage: VecDeque::new(),
-            bytes: 0,
-        })
-    });
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = lock_render_cache();
 
     // Replace an existing entry (possibly decoded by a concurrent element) or
     // evict the least-recently-used slot once the budget is full. Both paths
@@ -595,18 +574,13 @@ impl ManagedImageKey {
         thumb_size: u32,
         use_cache: bool,
     ) -> anyhow::Result<Option<Arc<RenderImage>>> {
-        if use_cache
-            && thumb_size > 0
-            && let Some(image) = render_cache_lookup(self, thumb_size)
-        {
+        let cacheable = use_cache && thumb_size > 0;
+        if cacheable && let Some(image) = render_cache_lookup(self, thumb_size) {
             return Ok(Some(image));
         }
 
         let decoded = self.retrieve_uncached(pool, thumb_size).await?;
-        if use_cache
-            && thumb_size > 0
-            && let Some(image) = &decoded
-        {
+        if cacheable && let Some(image) = &decoded {
             render_cache_insert(self.clone(), thumb_size, image.clone());
         }
         Ok(decoded)

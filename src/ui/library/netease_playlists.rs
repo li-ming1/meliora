@@ -9,8 +9,8 @@ use std::sync::Arc;
 use cntp_i18n::{tr, trn};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
@@ -443,6 +443,25 @@ fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
         .into()
 }
 
+/// Muted placeholder line for the loading and empty states of both the
+/// overview and the track list.
+fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(theme.text_secondary)
+        .py(px(24.0))
+        .child(text)
+}
+
+/// Error placeholder line; the caller pairs it with a retry button.
+fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(theme.status_error)
+        .py(px(12.0))
+        .child(message)
+}
+
 /// Localized "{count} track(s)" label. Single place where the plural string is
 /// defined so the i18n generator doesn't see duplicate definitions.
 fn netease_track_count(count: i64) -> cntp_i18n::I18nString {
@@ -470,40 +489,23 @@ impl Render for NeteasePlaylistsView {
             // track list of the open playlist
             match &self.tracks_state {
                 TracksState::Loading if self.tracks.is_empty() => {
-                    content = content.child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .py(px(24.0))
-                            .child(tr!("NETEASE_LOADING")),
-                    );
+                    content = content.child(muted_line(tr!("NETEASE_LOADING"), &theme));
                 }
                 TracksState::Failed(message) if self.tracks.is_empty() => {
-                    content = content
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.status_error)
-                                .py(px(12.0))
-                                .child(message.clone()),
-                        )
-                        .child(
-                            button()
-                                .id("netease-retry-tracks")
-                                .child(tr!("NETEASE_RETRY"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.load_tracks_page(1, cx);
-                                })),
-                        );
+                    content = content.child(error_line(message.clone(), &theme)).child(
+                        button()
+                            .id("netease-retry-tracks")
+                            .child(tr!("NETEASE_RETRY"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.load_tracks_page(1, cx);
+                            })),
+                    );
                 }
                 _ if self.tracks.is_empty() => {
-                    content = content.child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .py(px(24.0))
-                            .child(tr!("NETEASE_PLAYLIST_EMPTY", "This playlist is empty")),
-                    );
+                    content = content.child(muted_line(
+                        tr!("NETEASE_PLAYLIST_EMPTY", "This playlist is empty"),
+                        &theme,
+                    ));
                 }
                 // loaded tracks are rendered by the virtualized uniform_list
                 // in the scroll branch below, not by page-flow content
@@ -541,41 +543,24 @@ impl Render for NeteasePlaylistsView {
                     );
                 }
                 PlaylistsState::Loading => {
-                    content = content.child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .py(px(24.0))
-                            .child(tr!("NETEASE_LOADING")),
-                    );
+                    content = content.child(muted_line(tr!("NETEASE_LOADING"), &theme));
                 }
                 PlaylistsState::Failed(message) => {
-                    content = content
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.status_error)
-                                .py(px(12.0))
-                                .child(message.clone()),
-                        )
-                        .child(
-                            button()
-                                .id("netease-retry-playlists")
-                                .child(tr!("NETEASE_RETRY"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.load_playlists(cx);
-                                })),
-                        );
+                    content = content.child(error_line(message.clone(), &theme)).child(
+                        button()
+                            .id("netease-retry-playlists")
+                            .child(tr!("NETEASE_RETRY"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.load_playlists(cx);
+                            })),
+                    );
                 }
                 PlaylistsState::Ready(playlists) => {
                     if playlists.is_empty() {
-                        content = content.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_secondary)
-                                .py(px(24.0))
-                                .child(tr!("NETEASE_NO_PLAYLISTS", "No playlists found")),
-                        );
+                        content = content.child(muted_line(
+                            tr!("NETEASE_NO_PLAYLISTS", "No playlists found"),
+                            &theme,
+                        ));
                     } else {
                         for (index, playlist) in playlists.iter().enumerate() {
                             content = content.child(self.render_playlist_row(index, playlist, cx));

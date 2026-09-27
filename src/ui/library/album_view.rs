@@ -77,14 +77,7 @@ impl Render for AlbumView {
             .w_full()
             .h_full()
             .when(!full_width, |this: Div| this.max_w(px(TABLE_MAX_WIDTH)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .h_full()
-                    .child(self.table_view_header.clone())
-                    .child(self.table.clone()),
-            )
+            .child(self.table_view_header.clone())
+            .child(self.table.clone())
     }
 }

@@ -22,18 +22,24 @@ pub fn copy_troubleshooting_info(_: &CopyTroubleshootingInfo, cx: &mut App) {
     });
 }
 
+/// The GPU-less troubleshooting header shared by every platform: version,
+/// architecture, OS, CPU and total memory, one `Key: value` per line.
+fn base_system_info() -> String {
+    format!(
+        "Meliora {}\nArchitecture: {}\nOperating System: {}\nCPU: {}\nMemory: {}",
+        crate::VERSION_STRING,
+        std::env::consts::ARCH,
+        operating_system_label(),
+        cpu_label(),
+        formatted_total_memory(),
+    )
+}
+
 fn copy_troubleshooting_info_inner(_window: Option<&mut Window>, cx: &mut App) {
     // GPUI only supports fetching GPU info on Linux
     #[cfg(target_os = "linux")]
     let info = {
-        let mut info = format!(
-            "Meliora {}\nArchitecture: {}\nOperating System: {}\nCPU: {}\nMemory: {}",
-            crate::VERSION_STRING,
-            std::env::consts::ARCH,
-            operating_system_label(),
-            cpu_label(),
-            formatted_total_memory(),
-        );
+        let mut info = base_system_info();
 
         if let Some(window) = _window {
             info.push_str("\nGPU: ");
@@ -44,14 +50,7 @@ fn copy_troubleshooting_info_inner(_window: Option<&mut Window>, cx: &mut App) {
     };
 
     #[cfg(not(target_os = "linux"))]
-    let info = format!(
-        "Meliora {}\nArchitecture: {}\nOperating System: {}\nCPU: {}\nMemory: {}",
-        crate::VERSION_STRING,
-        std::env::consts::ARCH,
-        operating_system_label(),
-        cpu_label(),
-        formatted_total_memory(),
-    );
+    let info = base_system_info();
 
     cx.write_to_clipboard(ClipboardItem::new_string(info));
 }

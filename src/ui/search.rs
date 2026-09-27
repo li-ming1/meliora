@@ -13,6 +13,9 @@ use super::{
     models::Models,
 };
 
+/// The search modal view: hosts the library search palette, forwards its
+/// navigation events to the main view switcher, and won't open while another
+/// modal is active.
 pub struct SearchView {
     show: Entity<bool>,
     search: Entity<SearchModel>,
@@ -31,7 +34,8 @@ impl SearchView {
                     return;
                 }
 
-                // the artist picker would sit open underneath the modal
+                // Close the artist picker first, or it would sit open
+                // underneath the search modal.
                 super::artist_picker::close(cx);
 
                 show_clone.update(cx, |m, cx| {
@@ -79,11 +83,11 @@ impl SearchView {
 impl Render for SearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let show = self.show.clone();
-        let show_read = show.read(cx);
+        let is_open = show.read(cx);
         let weak = cx.weak_entity();
 
-        if *show_read {
-            // Focus the search palette instead of our own handle
+        if *is_open {
+            // Focus the palette's input, not the search view itself.
             cx.update_entity(&self.search, |search, cx| {
                 search.focus(window, cx);
             });

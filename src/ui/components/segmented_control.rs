@@ -127,17 +127,18 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
                     }
                 });
 
-            let text_color = if is_selected {
-                theme.button_primary_text
-            } else {
-                theme.text_secondary
-            };
-
             let segment = match content {
                 SegmentContent::Label(label) => segment.child(label.clone()),
-                SegmentContent::Icon { path, tooltip } => segment
-                    .child(icon(path.clone()).size(ICON_MD).text_color(text_color))
-                    .tooltip(build_tooltip(tooltip.clone())),
+                SegmentContent::Icon { path, tooltip } => {
+                    let text_color = if is_selected {
+                        theme.button_primary_text
+                    } else {
+                        theme.text_secondary
+                    };
+                    segment
+                        .child(icon(path.clone()).size(ICON_MD).text_color(text_color))
+                        .tooltip(build_tooltip(tooltip.clone()))
+                }
             };
 
             row = row.child(segment);

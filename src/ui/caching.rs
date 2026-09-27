@@ -30,6 +30,8 @@ pub fn image_cache_stats() -> (u64, u64) {
     )
 }
 
+/// Creates the bounded per-view image cache used by `image_cache(...)`
+/// call sites, holding at most `max_items` entries.
 pub fn meliora_cache(id: impl Into<ElementId>, max_items: usize) -> MelioraImageCacheProvider {
     MelioraImageCacheProvider {
         id: id.into(),
@@ -37,6 +39,8 @@ pub fn meliora_cache(id: impl Into<ElementId>, max_items: usize) -> MelioraImage
     }
 }
 
+/// gpui [`ImageCacheProvider`] that reuses one [`MelioraImageCache`] per
+/// element id (kept in the window's element state across frames).
 pub struct MelioraImageCacheProvider {
     id: ElementId,
     max_items: usize,
@@ -56,6 +60,9 @@ impl ImageCacheProvider for MelioraImageCacheProvider {
     }
 }
 
+/// A bounded LRU image cache for one view. Evicted images and whole-cache
+/// releases go through the orphan-tile reclaim funnel instead of being
+/// dropped inline (see `queue_orphan_tile_drop`).
 pub struct MelioraImageCache {
     max_items: usize,
     usage_list: VecDeque<u64>,
@@ -70,11 +77,11 @@ impl MelioraImageCache {
             trace!("Creating MelioraImageCache");
             cx.on_release(|this: &mut Self, cx| {
                 let entries = this.cache.len() as u64;
-                for (idx, (mut image, resource, recorded)) in take(&mut this.cache) {
+                for (idx, (mut item, resource, recorded)) in take(&mut this.cache) {
                     IMAGE_CACHE_BYTES.fetch_sub(recorded, Ordering::Relaxed);
-                    if let Some(Ok(image)) = image.get() {
+                    if let Some(Ok(render_image)) = item.get() {
                         trace!("Dropping image {idx}");
-                        queue_orphan_tile_drop(image);
+                        queue_orphan_tile_drop(render_image);
                     }
 
                     ImageSource::Resource(resource).remove_asset(cx);
@@ -137,22 +144,22 @@ impl ImageCache for MelioraImageCache {
             trace!("Image cache is full, evicting oldest item");
 
             let oldest = self.usage_list.pop_back().unwrap();
-            let mut image = self
+            let mut entry = self
                 .cache
                 .remove(&oldest)
                 .expect("usage_list has an item cache doesn't");
 
-            if let Some(Ok(image)) = image.0.get() {
+            if let Some(Ok(render_image)) = entry.0.get() {
                 trace!("requesting image to be dropped");
                 // 驱逐发生在 img 的 request_layout/paint 调用栈内：直接
                 // drop_image 会在同帧释放图集页（sprite 已记录）并可能踩
                 // etagere 断言。推进回收漏斗，由事件循环的 drain 帧间释放。
-                queue_orphan_tile_drop(image);
+                queue_orphan_tile_drop(render_image);
             }
 
             IMAGE_CACHE_ENTRIES.fetch_sub(1, Ordering::Relaxed);
-            IMAGE_CACHE_BYTES.fetch_sub(image.2, Ordering::Relaxed);
-            ImageSource::Resource(image.1).remove_asset(cx);
+            IMAGE_CACHE_BYTES.fetch_sub(entry.2, Ordering::Relaxed);
+            ImageSource::Resource(entry.1).remove_asset(cx);
         }
 
         self.cache.insert(

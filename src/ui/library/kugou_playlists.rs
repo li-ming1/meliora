@@ -7,8 +7,8 @@ use std::{collections::HashSet, sync::Arc};
 use cntp_i18n::{tr, trn};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
@@ -33,6 +33,12 @@ use crate::{
 
 /// How many tracks to fetch per page.
 const TRACKS_PER_PAGE: i64 = 100;
+
+/// How many user playlists to fetch per page (playlist overview).
+const PLAYLISTS_PER_PAGE: i64 = 100;
+
+/// Songs are uploaded into the new playlist in chunks of this size.
+const PLAYLIST_ADD_CHUNK: usize = 100;
 
 /// uniform_list strides rows by one fixed height measured from the first
 /// row, so track rows are pinned to their natural height: 8px vertical
@@ -177,7 +183,7 @@ impl KugouPlaylistsView {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let request = crate::RUNTIME
-                .spawn(async move { client.user_playlists(1, 100).await })
+                .spawn(async move { client.user_playlists(1, PLAYLISTS_PER_PAGE).await })
                 .await;
 
             let _ = this
@@ -260,7 +266,7 @@ impl KugouPlaylistsView {
                     // the last page is fetched directly; the page-1 probe is
                     // only the fallback for lists that came back without one.
                     if count > 0 {
-                        let total_pages = (selected.count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE;
+                        let total_pages = page_count(selected.count);
                         let response = client
                             .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
                             .await?;
@@ -272,11 +278,7 @@ impl KugouPlaylistsView {
                             .pointer("/data/count")
                             .and_then(|v| v.as_i64())
                             .unwrap_or(0);
-                        let total_pages = if count > 0 {
-                            (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE
-                        } else {
-                            1
-                        };
+                        let total_pages = if count > 0 { page_count(count) } else { 1 };
 
                         let response = if total_pages <= 1 {
                             probe
@@ -563,8 +565,10 @@ impl KugouPlaylistsView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let header = view_header(tr!("KUGOU_PLAYLISTS").to_string());
+
         if let Some(selected) = &self.selected {
-            view_header(tr!("KUGOU_PLAYLISTS").to_string())
+            header
                 .left(nav_button("kugou-back", ARROW_LEFT).on_click(cx.listener(
                     |this, _, _, cx| {
                         this.close_playlist(cx);
@@ -576,7 +580,7 @@ impl KugouPlaylistsView {
                     kugou_track_count(self.tracks.len() as i64)
                 ))
         } else {
-            view_header(tr!("KUGOU_PLAYLISTS").to_string()).right(
+            header.right(
                 button()
                     .id("kugou-import")
                     .child(tr!("KUGOU_IMPORT_PLAYLIST", "Import playlist (NetEase/QQ)"))
@@ -718,6 +722,30 @@ fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
     .into()
 }
 
+/// Muted placeholder line for the loading and empty states of both the
+/// overview and the track list.
+fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(theme.text_secondary)
+        .py(px(24.0))
+        .child(text)
+}
+
+/// Error placeholder line; the caller pairs it with a retry button.
+fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(theme.status_error)
+        .py(px(12.0))
+        .child(message)
+}
+
+/// Total 1-based page count for `count` items at `TRACKS_PER_PAGE` per page.
+fn page_count(count: i64) -> i64 {
+    (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE
+}
+
 /// Localized "{count} track(s)" label. Single place where the plural string is
 /// defined so the i18n generator doesn't see duplicate definitions.
 fn kugou_track_count(count: i64) -> cntp_i18n::I18nString {
@@ -745,40 +773,23 @@ impl Render for KugouPlaylistsView {
             // track list of the open playlist
             match &self.tracks_state {
                 TracksState::Loading if self.tracks.is_empty() => {
-                    content = content.child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .py(px(24.0))
-                            .child(tr!("KUGOU_LOADING")),
-                    );
+                    content = content.child(muted_line(tr!("KUGOU_LOADING"), &theme));
                 }
                 TracksState::Failed(message) if self.tracks.is_empty() => {
-                    content = content
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.status_error)
-                                .py(px(12.0))
-                                .child(message.clone()),
-                        )
-                        .child(
-                            button()
-                                .id("kugou-retry-tracks")
-                                .child(tr!("KUGOU_RETRY", "Retry"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.retry_tracks(cx);
-                                })),
-                        );
+                    content = content.child(error_line(message.clone(), &theme)).child(
+                        button()
+                            .id("kugou-retry-tracks")
+                            .child(tr!("KUGOU_RETRY", "Retry"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.retry_tracks(cx);
+                            })),
+                    );
                 }
                 _ if self.tracks.is_empty() => {
-                    content = content.child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .py(px(24.0))
-                            .child(tr!("KUGOU_PLAYLIST_EMPTY", "This playlist is empty")),
-                    );
+                    content = content.child(muted_line(
+                        tr!("KUGOU_PLAYLIST_EMPTY", "This playlist is empty"),
+                        &theme,
+                    ));
                 }
                 // loaded tracks are rendered by the virtualized uniform_list
                 // in the scroll branch below, not by page-flow content
@@ -813,41 +824,24 @@ impl Render for KugouPlaylistsView {
                         );
                 }
                 PlaylistsState::Loading => {
-                    content = content.child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_secondary)
-                            .py(px(24.0))
-                            .child(tr!("KUGOU_LOADING")),
-                    );
+                    content = content.child(muted_line(tr!("KUGOU_LOADING"), &theme));
                 }
                 PlaylistsState::Failed(message) => {
-                    content = content
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.status_error)
-                                .py(px(12.0))
-                                .child(message.clone()),
-                        )
-                        .child(
-                            button()
-                                .id("kugou-retry-playlists")
-                                .child(tr!("KUGOU_RETRY"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.refresh_playlists(cx);
-                                })),
-                        );
+                    content = content.child(error_line(message.clone(), &theme)).child(
+                        button()
+                            .id("kugou-retry-playlists")
+                            .child(tr!("KUGOU_RETRY"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_playlists(cx);
+                            })),
+                    );
                 }
                 PlaylistsState::Ready(playlists) => {
                     if playlists.is_empty() {
-                        content = content.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_secondary)
-                                .py(px(24.0))
-                                .child(tr!("KUGOU_NO_PLAYLISTS", "No playlists found")),
-                        );
+                        content = content.child(muted_line(
+                            tr!("KUGOU_NO_PLAYLISTS", "No playlists found"),
+                            &theme,
+                        ));
                     } else {
                         for (index, playlist) in playlists.iter().enumerate() {
                             content = content.child(self.render_playlist_row(index, playlist, cx));
@@ -1072,7 +1066,7 @@ async fn kugou_match(
 /// Must run on the Tokio runtime (network calls + sleep).
 async fn find_playlist_id(client: &kugou::KugouClient, name: &str) -> Option<i64> {
     for attempt in 0..3 {
-        if let Ok(resp) = client.user_playlists(1, 100).await
+        if let Ok(resp) = client.user_playlists(1, PLAYLISTS_PER_PAGE).await
             && let Some(pl) = parse_playlists(&resp.body)
                 .into_iter()
                 .find(|p| p.name.as_ref() == name)
@@ -1123,7 +1117,7 @@ async fn run_import(text: String, default_name: String) -> ImportOutcome {
         return ImportOutcome::NoMatch;
     }
 
-    for chunk in matched.chunks(100) {
+    for chunk in matched.chunks(PLAYLIST_ADD_CHUNK) {
         let _ = client.playlist_add_songs(listid, chunk).await;
     }
 

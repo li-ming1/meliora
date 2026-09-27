@@ -1,14 +1,17 @@
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use futures::future::BoxFuture;
-use gpui::{AnyElement, App, ElementId, SharedString, Window};
+use gpui::{
+    AnyElement, App, ElementId, InteractiveElement, SharedString, StatefulInteractiveElement,
+    Styled, Window,
+};
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 
 pub use crate::ui::components::context::ContextMenuBuilder;
 
 use crate::ui::components::{
-    drag_drop::{AlbumDragData, TrackDragData},
+    drag_drop::{AlbumDragData, DragPreview, TrackDragData},
     managed_image::ManagedImageKey,
 };
 
@@ -16,6 +19,39 @@ use crate::ui::components::{
 pub enum TableDragData {
     Track(TrackDragData),
     Album(AlbumDragData),
+}
+
+/// Attaches the drag payload's source and drag-over highlight handlers to a
+/// row container (table row or grid item; stateful, i.e. carrying an `.id`).
+/// Both renderers wire identical handlers, so the logic lives here next to
+/// [`TableDragData`].
+pub fn with_drag_handlers<E>(container: E, drag_data: Option<TableDragData>) -> E
+where
+    E: InteractiveElement + StatefulInteractiveElement,
+{
+    match drag_data {
+        Some(TableDragData::Track(track_data)) => {
+            let display_name = track_data.display_name.clone();
+            container
+                .on_drag(track_data, move |_, _, _, cx| {
+                    DragPreview::new(cx, display_name.clone())
+                })
+                .drag_over::<TrackDragData>(|style, _, _, _| {
+                    style.bg(gpui::rgba(DRAG_OVER_HIGHLIGHT))
+                })
+        }
+        Some(TableDragData::Album(album_data)) => {
+            let display_name = album_data.display_name.clone();
+            container
+                .on_drag(album_data, move |_, _, _, cx| {
+                    DragPreview::new(cx, display_name.clone())
+                })
+                .drag_over::<AlbumDragData>(|style, _, _, _| {
+                    style.bg(gpui::rgba(DRAG_OVER_HIGHLIGHT))
+                })
+        }
+        None => container,
+    }
 }
 
 /// Drag payload for column header reordering.
@@ -32,6 +68,14 @@ pub const TABLE_HEADER_HEIGHT: f32 = 36.0;
 /// Columns compress proportionally when the pane narrows, but never below
 /// this; past the combined floor the table scrolls horizontally instead.
 pub const MIN_COLUMN_WIDTH: f32 = 48.0;
+
+/// Width used for a column that has neither a saved width nor an entry in
+/// the table's default column map.
+pub const DEFAULT_COLUMN_WIDTH: f32 = 100.0;
+
+/// Translucent highlight painted on a row/grid cell while a compatible drag
+/// hovers over it (see [`with_drag_handlers`]).
+pub const DRAG_OVER_HIGHLIGHT: u32 = 0x88888822;
 
 // column resize constants
 pub const COLUMN_MIN_WIDTH: f32 = 50.0;

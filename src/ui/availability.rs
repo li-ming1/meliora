@@ -4,11 +4,21 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::library::types::Track;
 
+/// True when `path` is an HTTP(S) stream URL. Without the `online_sources`
+/// feature no online tracks exist, so every path is local.
+#[cfg_attr(not(feature = "online_sources"), allow(unused_variables))]
+fn is_http(path: &Path) -> bool {
+    #[cfg(feature = "online_sources")]
+    if crate::media::is_http_path(path) {
+        return true;
+    }
+    false
+}
+
 pub fn is_track_path_available(path: &Path) -> bool {
     // remote HTTP(S) streams (kugou et al.) don't exist on disk; treat any
     // http/https path as available so it can be selected and played
-    #[cfg(feature = "online_sources")]
-    if crate::media::is_http_path(path) {
+    if is_http(path) {
         return true;
     }
     path.exists()
@@ -17,13 +27,8 @@ pub fn is_track_path_available(path: &Path) -> bool {
 /// True when `path` is an HTTP(S) stream URL (an online track). Such paths
 /// report "available" for playback, but no file exists on disk, so actions
 /// like "show in file manager" must not be offered for them.
-#[cfg_attr(not(feature = "online_sources"), allow(unused_variables))]
 pub fn is_online_path(path: &Path) -> bool {
-    #[cfg(feature = "online_sources")]
-    if crate::media::is_http_path(path) {
-        return true;
-    }
-    false
+    is_http(path)
 }
 
 pub fn is_track_available(track: &Track) -> bool {

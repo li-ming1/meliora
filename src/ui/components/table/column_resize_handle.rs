@@ -4,7 +4,10 @@ use gpui::*;
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 
-use super::table_data::{COLUMN_MIN_WIDTH, COLUMN_RESIZE_HANDLE_WIDTH, Column, TABLE_HEADER_GROUP};
+use super::table_data::{
+    COLUMN_MIN_WIDTH, COLUMN_RESIZE_HANDLE_WIDTH, Column, DEFAULT_COLUMN_WIDTH, TABLE_HEADER_GROUP,
+    TABLE_HEADER_HEIGHT,
+};
 use crate::ui::theme::Theme;
 
 #[derive(Default)]
@@ -84,7 +87,7 @@ where
         let mut element = div()
             .id(self.id.clone())
             .w(px(COLUMN_RESIZE_HANDLE_WIDTH))
-            .h(px(36.0)) // Match header height
+            .h(px(TABLE_HEADER_HEIGHT))
             .flex_shrink_0()
             .cursor_col_resize()
             .ml(px(-COLUMN_RESIZE_HANDLE_WIDTH / 2.0))
@@ -176,7 +179,7 @@ where
                         .read(cx)
                         .get_index(column_index)
                         .map(|(_, w)| *w)
-                        .unwrap_or(100.0);
+                        .unwrap_or(DEFAULT_COLUMN_WIDTH);
 
                     let mut state = state_down.borrow_mut();
                     state.is_dragging = true;
@@ -193,11 +196,8 @@ where
                         return;
                     }
 
-                    let current_x = ev.position.x;
-                    let delta_x: f32 = (current_x - state_ref.start_x).into();
-                    let new_width = state_ref.start_width + delta_x;
-
-                    let clamped_width = new_width.max(COLUMN_MIN_WIDTH);
+                    let delta_x: f32 = (ev.position.x - state_ref.start_x).into();
+                    let new_width = (state_ref.start_width + delta_x).max(COLUMN_MIN_WIDTH);
 
                     drop(state_ref);
 
@@ -205,7 +205,7 @@ where
                         // should be cheap
                         let mut new_columns = (**columns).clone();
                         if let Some((_, width)) = new_columns.get_index_mut(column_index) {
-                            *width = clamped_width;
+                            *width = new_width;
                         }
                         *columns = Arc::new(new_columns);
                         cx.notify();

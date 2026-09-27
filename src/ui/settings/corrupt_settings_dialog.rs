@@ -25,7 +25,6 @@ impl Render for CorruptSettingsDialog {
             SettingsHealth::Corrupt { path } => path,
             SettingsHealth::Ok => return div().into_any_element(),
         };
-        let path_for_reveal = path.clone();
         let path_display = path.display().to_string();
 
         ActionDialog::new(
@@ -48,7 +47,7 @@ impl Render for CorruptSettingsDialog {
                 FOLDER_SEARCH,
                 tr!("SETTINGS_CORRUPT_DIALOG_SHOW", "Show settings file"),
                 ButtonIntent::Secondary,
-                move |_, _, cx| reveal_path_for_file_manager(path_for_reveal.as_path(), cx),
+                move |_, _, cx| reveal_path_for_file_manager(path.as_path(), cx),
             )
             .subtitle(tr!(
                 "SETTINGS_CORRUPT_DIALOG_SHOW_SUBTITLE",

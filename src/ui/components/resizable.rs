@@ -20,6 +20,10 @@ pub enum SizeMode {
 }
 
 const HANDLE_SIZE: Pixels = px(6.0);
+/// Builder defaults: usable bounds for a docked panel.
+const DEFAULT_MIN_SIZE: Pixels = px(150.0);
+const DEFAULT_MAX_SIZE: Pixels = px(500.0);
+const DEFAULT_START_SIZE: Pixels = px(225.0);
 
 pub struct Resizable {
     id: ElementId,
@@ -42,9 +46,9 @@ impl Resizable {
             children: SmallVec::new(),
             size,
             edge,
-            min_size: px(150.0),
-            max_size: px(500.0),
-            default_size: px(225.0),
+            min_size: DEFAULT_MIN_SIZE,
+            max_size: DEFAULT_MAX_SIZE,
+            default_size: DEFAULT_START_SIZE,
             border_width: px(1.0),
             size_mode: SizeMode::default(),
         }
@@ -113,6 +117,8 @@ impl Default for ResizeState {
             is_dragging: false,
             start_position: Pixels::default(),
             start_size: Pixels::default(),
+            // 1.0 avoids a zero divisor in percent-mode math before the first
+            // paint records the real container size.
             container_size: px(1.0),
         }
     }
@@ -186,7 +192,7 @@ impl Element for Resizable {
         }
 
         window.insert_hitbox(
-            handle_bounds(bounds, self.edge, HANDLE_SIZE),
+            edge_strip_bounds(bounds, self.edge, HANDLE_SIZE),
             HitboxBehavior::Normal,
         )
     }
@@ -255,7 +261,7 @@ impl Element for Resizable {
                 } else {
                     self.border_width
                 };
-                let line_bounds = divider_bounds(bounds, edge, line_width);
+                let line_bounds = edge_strip_bounds(bounds, edge, line_width);
                 cx.paint_quad(quad(
                     line_bounds,
                     Corners::default(),
@@ -272,7 +278,7 @@ impl Element for Resizable {
                         return;
                     }
 
-                    if !handle_bounds(bounds, edge, HANDLE_SIZE).contains(&ev.position) {
+                    if !edge_strip_bounds(bounds, edge, HANDLE_SIZE).contains(&ev.position) {
                         return;
                     }
 
@@ -302,26 +308,18 @@ impl Element for Resizable {
                         return;
                     }
 
+                    // Left/top edges invert the pointer delta: there the panel
+                    // grows as the pointer moves outward.
+                    let delta = axis_position(edge, ev.position) - drag_state.start_position;
+                    let signed_delta = match edge {
+                        ResizeEdge::Right => delta,
+                        ResizeEdge::Left | ResizeEdge::Top => -delta,
+                    };
                     let new_size = match size_mode {
-                        SizeMode::Pixels => {
-                            let delta =
-                                axis_position(edge, ev.position) - drag_state.start_position;
-                            match edge {
-                                ResizeEdge::Left | ResizeEdge::Top => drag_state.start_size - delta,
-                                ResizeEdge::Right => drag_state.start_size + delta,
-                            }
-                        }
+                        SizeMode::Pixels => drag_state.start_size + signed_delta,
                         SizeMode::Percent => {
-                            let delta_px =
-                                axis_position(edge, ev.position) - drag_state.start_position;
                             let container = f32::from(drag_state.container_size);
-                            let delta_frac = px(f32::from(delta_px) / container);
-                            match edge {
-                                ResizeEdge::Left | ResizeEdge::Top => {
-                                    drag_state.start_size - delta_frac
-                                }
-                                ResizeEdge::Right => drag_state.start_size + delta_frac,
-                            }
+                            drag_state.start_size + px(f32::from(signed_delta) / container)
                         }
                     };
                     let clamped_size = new_size.clamp(min_size, max_size);
@@ -359,22 +357,29 @@ fn axis_position(edge: ResizeEdge, position: Point<Pixels>) -> Pixels {
     }
 }
 
-fn handle_bounds(bounds: Bounds<Pixels>, edge: ResizeEdge, handle_size: Pixels) -> Bounds<Pixels> {
+/// Strip along `edge` of `bounds` with the given thickness, hugging the
+/// corresponding edge. Serves both the grab-handle hitbox and the painted
+/// divider line.
+fn edge_strip_bounds(
+    bounds: Bounds<Pixels>,
+    edge: ResizeEdge,
+    thickness: Pixels,
+) -> Bounds<Pixels> {
     match edge {
         ResizeEdge::Left => Bounds {
             origin: bounds.origin,
             size: Size {
-                width: handle_size,
+                width: thickness,
                 height: bounds.size.height,
             },
         },
         ResizeEdge::Right => Bounds {
             origin: Point {
-                x: bounds.origin.x + bounds.size.width - handle_size,
+                x: bounds.origin.x + bounds.size.width - thickness,
                 y: bounds.origin.y,
             },
             size: Size {
-                width: handle_size,
+                width: thickness,
                 height: bounds.size.height,
             },
         },
@@ -382,36 +387,7 @@ fn handle_bounds(bounds: Bounds<Pixels>, edge: ResizeEdge, handle_size: Pixels) 
             origin: bounds.origin,
             size: Size {
                 width: bounds.size.width,
-                height: handle_size,
-            },
-        },
-    }
-}
-
-fn divider_bounds(bounds: Bounds<Pixels>, edge: ResizeEdge, line_width: Pixels) -> Bounds<Pixels> {
-    match edge {
-        ResizeEdge::Left => Bounds {
-            origin: bounds.origin,
-            size: Size {
-                width: line_width,
-                height: bounds.size.height,
-            },
-        },
-        ResizeEdge::Right => Bounds {
-            origin: Point {
-                x: bounds.origin.x + bounds.size.width - line_width,
-                y: bounds.origin.y,
-            },
-            size: Size {
-                width: line_width,
-                height: bounds.size.height,
-            },
-        },
-        ResizeEdge::Top => Bounds {
-            origin: bounds.origin,
-            size: Size {
-                width: bounds.size.width,
-                height: line_width,
+                height: thickness,
             },
         },
     }

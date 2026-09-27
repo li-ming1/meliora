@@ -1,7 +1,7 @@
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, GlobalElementId,
     Hitbox, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId, Overflow,
-    Pixels, Point, StatefulInteractiveElement, UniformListScrollHandle, Window, point, px,
+    Pixels, Point, Size, StatefulInteractiveElement, UniformListScrollHandle, Window, point, px,
     relative, size,
 };
 use smallvec::SmallVec;
@@ -12,6 +12,61 @@ const DEFAULT_ITEM_EXTRA_HEIGHT: f32 = 50.0;
 const DEFAULT_OVERSCAN_ROWS: usize = 1;
 
 type RenderItemCallback = Rc<dyn Fn(usize, &mut Window, &mut App) -> AnyElement>;
+
+/// Column layout for a viewport `width` pixels wide: fit as many
+/// `min_item_width` columns (plus gaps) as possible, then stretch them to
+/// fill the leftover space. A free function because the measured-layout
+/// callback in `request_layout` cannot reach `&self`.
+fn grid_metrics(
+    viewport_width: Pixels,
+    item_count: usize,
+    min_item_width: Pixels,
+    gap: Pixels,
+    item_extra_height: Pixels,
+) -> GridMetrics {
+    let width = viewport_width.max(px(0.0));
+    let gap = gap.max(px(0.0));
+    let min_item_width = min_item_width.max(px(1.0));
+
+    let columns = (((width + gap) / (min_item_width + gap)).floor().max(1.0)) as usize;
+    let item_width = if columns > 1 {
+        (width - (columns.saturating_sub(1) as f32) * gap) / columns as f32
+    } else {
+        width
+    }
+    .max(px(0.0));
+
+    let item_height = item_width + item_extra_height;
+    GridMetrics {
+        columns,
+        item_width,
+        item_height,
+        row_stride: item_height + gap,
+        row_count: item_count.div_ceil(columns.max(1)),
+    }
+}
+
+/// Lays out one grid item as a layout root at `origin` and records it in
+/// `frame_state` so `paint` can draw it.
+fn paint_grid_item(
+    render_item: &RenderItemCallback,
+    frame_state: &mut UniformGridFrameState,
+    idx: usize,
+    origin: Point<Pixels>,
+    item_size: Size<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut item = (render_item)(idx, window, cx);
+    let available_space = size(
+        AvailableSpace::Definite(item_size.width),
+        AvailableSpace::Definite(item_size.height),
+    );
+
+    item.layout_as_root(available_space, window, cx);
+    item.prepaint_at(origin, window, cx);
+    frame_state.items.push(item);
+}
 
 pub struct UniformGrid {
     item_count: usize,
@@ -99,32 +154,16 @@ impl UniformGrid {
     }
 
     fn compute_metrics(&self, viewport_width: Pixels) -> GridMetrics {
-        let width = viewport_width.max(px(0.0));
-        let gap = self.gap.max(px(0.0));
-        let min_item_width = self.min_item_width.max(px(1.0));
-
-        let columns = (((width + gap) / (min_item_width + gap)).floor().max(1.0)) as usize;
-        let item_width = if columns > 1 {
-            (width - (columns.saturating_sub(1) as f32) * gap) / columns as f32
-        } else {
-            width
-        }
-        .max(px(0.0));
-
-        let item_height = item_width + self.item_extra_height;
-        let row_stride = item_height + gap;
-        let row_count = self.item_count.div_ceil(columns.max(1));
-
-        GridMetrics {
-            columns,
-            item_width,
-            item_height,
-            row_stride,
-            row_count,
-        }
+        grid_metrics(
+            viewport_width,
+            self.item_count,
+            self.min_item_width,
+            self.gap,
+            self.item_extra_height,
+        )
     }
 
-    fn content_size_for(&self, bounds: Bounds<Pixels>) -> gpui::Size<Pixels> {
+    fn content_size_for(&self, bounds: Bounds<Pixels>) -> Size<Pixels> {
         let metrics = self.compute_metrics(bounds.size.width);
         size(
             bounds.size.width,
@@ -177,8 +216,7 @@ impl Element for UniformGrid {
             inspector_id,
             window,
             cx,
-            |style, window, _cx| {
-                let mut style = style;
+            |mut style, window, _cx| {
                 style.size.width = relative(1.).into();
 
                 if auto_height {
@@ -186,25 +224,17 @@ impl Element for UniformGrid {
                     style.flex_shrink = 0.0;
 
                     window.request_measured_layout(style, move |_known, available, _window, _cx| {
-                        let w = match available.width {
-                            AvailableSpace::Definite(w) => w,
+                        let width = match available.width {
+                            AvailableSpace::Definite(width) => width,
                             _ => px(0.0),
                         };
-                        let w = w.max(px(0.0));
-                        let g = gap.max(px(0.0));
-                        let min_w = min_item_width.max(px(1.0));
-                        let cols = (((w + g) / (min_w + g)).floor().max(1.0)) as usize;
-                        let item_w = if cols > 1 {
-                            (w - (cols.saturating_sub(1) as f32) * g) / cols as f32
-                        } else {
-                            w
-                        }
-                        .max(px(0.0));
-                        let item_h = item_w + item_extra_height;
-                        let row_stride = item_h + g;
-                        let row_count = item_count.div_ceil(cols.max(1));
-                        let content_h = row_stride * row_count + top_padding + bottom_padding;
-                        size(w, content_h)
+                        let width = width.max(px(0.0));
+                        let metrics =
+                            grid_metrics(width, item_count, min_item_width, gap, item_extra_height);
+                        size(
+                            width,
+                            metrics.row_stride * metrics.row_count + top_padding + bottom_padding,
+                        )
                     })
                 } else {
                     style.size.height = relative(1.).into();
@@ -246,7 +276,8 @@ impl Element for UniformGrid {
         let render_item = self.render_item.clone();
         let content_size = self.content_size_for(bounds);
         let scroll_handle = self.scroll_handle.clone();
-        let metrics_for_bounds = self.compute_metrics(bounds.size.width);
+        let metrics = self.compute_metrics(bounds.size.width);
+        let item_size = size(metrics.item_width, metrics.item_height);
         let auto_height = self.auto_height;
 
         self.interactivity.prepaint(
@@ -257,8 +288,6 @@ impl Element for UniformGrid {
             window,
             cx,
             move |_, mut scroll_offset, hitbox, window, cx| {
-                let metrics = metrics_for_bounds;
-
                 if let Some(ref scroll_handle) = scroll_handle {
                     let mut state = scroll_handle.0.borrow_mut();
                     state.last_item_size = Some(gpui::ItemSize {
@@ -295,15 +324,15 @@ impl Element for UniformGrid {
                                     row_y,
                                 );
 
-                                let mut item = (render_item)(idx, window, cx);
-                                let available_space = size(
-                                    AvailableSpace::Definite(metrics.item_width),
-                                    AvailableSpace::Definite(metrics.item_height),
+                                paint_grid_item(
+                                    &render_item,
+                                    frame_state,
+                                    idx,
+                                    origin,
+                                    item_size,
+                                    window,
+                                    cx,
                                 );
-
-                                item.layout_as_root(available_space, window, cx);
-                                item.prepaint_at(origin, window, cx);
-                                frame_state.items.push(item);
                             }
                         }
                     });
@@ -311,14 +340,11 @@ impl Element for UniformGrid {
                     return hitbox;
                 }
 
+                // Keep the offset inside [content_height - viewport, 0] so
+                // the last row is reachable but nothing scrolls past either
+                // end.
                 let min_vertical_scroll_offset = bounds.size.height - content_size.height;
-                if scroll_offset.y < min_vertical_scroll_offset {
-                    scroll_offset.y = min_vertical_scroll_offset;
-                }
-
-                if scroll_offset.y > px(0.0) {
-                    scroll_offset.y = px(0.0);
-                }
+                scroll_offset.y = scroll_offset.y.max(min_vertical_scroll_offset).min(px(0.0));
 
                 if let Some(ref scroll_handle) = scroll_handle {
                     scroll_handle
@@ -359,15 +385,15 @@ impl Element for UniformGrid {
                                 row_y,
                             );
 
-                            let mut item = (render_item)(idx, window, cx);
-                            let available_space = size(
-                                AvailableSpace::Definite(metrics.item_width),
-                                AvailableSpace::Definite(metrics.item_height),
+                            paint_grid_item(
+                                &render_item,
+                                frame_state,
+                                idx,
+                                origin,
+                                item_size,
+                                window,
+                                cx,
                             );
-
-                            item.layout_as_root(available_space, window, cx);
-                            item.prepaint_at(origin, window, cx);
-                            frame_state.items.push(item);
                         }
                     }
                 });

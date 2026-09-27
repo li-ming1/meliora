@@ -15,11 +15,9 @@ use url::Url;
 /// is not logged as "asset not found" on every re-render (and does not
 /// re-query the DB each time). Visually identical: the row's background block
 /// shows through the transparent image.
-fn placeholder_png() -> std::borrow::Cow<'static, [u8]> {
-    use std::sync::OnceLock;
-
+fn placeholder_png() -> Cow<'static, [u8]> {
     static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
-    std::borrow::Cow::Borrowed(BYTES.get_or_init(|| {
+    Cow::Borrowed(BYTES.get_or_init(|| {
         let image = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
         let mut png = Vec::new();
         PngEncoder::new(&mut png)
@@ -29,72 +27,81 @@ fn placeholder_png() -> std::borrow::Cow<'static, [u8]> {
     }))
 }
 
+/// Loads a `!db://<table>/<id>/<thumb|full>` artwork asset, where `table` is
+/// `album` or `track`. Resolves to the transparent placeholder when the row
+/// has no artwork, and to `Ok(None)` for any other host.
 pub fn load(pool: &SqlitePool, url: Url) -> gpui::Result<Option<Cow<'static, [u8]>>> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("missing table name"))?;
     match host {
-        "album" | "track" => {
-            let mut segments = url.path_segments().ok_or_else(|| anyhow!("missing path"))?;
-            let id: i64 = segments
-                .next()
-                .ok_or_else(|| anyhow!("missing id"))?
-                .parse()?;
-            let image_type = segments
-                .next()
-                .ok_or_else(|| anyhow!("missing image type"))?;
-
-            let table: &'static str = if host == "album" { "album" } else { "track" };
-
-            // 缩略图缓存命中：连数据库都不用查，也就不再有 gpui 后台
-            // 线程上的 block_on 等待。
-            if image_type == "thumb"
-                && let Some(bytes) = thumb_cache_get(table, id)
-            {
-                return Ok(Some(Cow::Owned(bytes)));
-            }
-
-            let query = match (host, image_type) {
-                ("album", "thumb") => include_str!("../../../queries/assets/find_album_thumb.sql"),
-                ("album", "full") => include_str!("../../../queries/assets/find_album_art.sql"),
-                ("track", "thumb") => {
-                    include_str!("../../../queries/assets/find_track_thumb.sql")
-                }
-                ("track", "full") => include_str!("../../../queries/assets/find_track_art.sql"),
-                // unknown image type = no asset
-                _ => return Ok(Some(placeholder_png())),
-            };
-
-            // gpui 的资产加载器在本函数的调用点运行在后台线程上
-            // （img.rs 的 ImageAssetLoader 被 spawn 到 background_executor），
-            // 而 `AssetSource::load` 是同步接口：调用线程必须等结果，无法
-            // 把整个加载改成 async（那需要改 assets.rs 的调用方签名）。
-            // sqlx-sqlite 的实际查询工作在其连接线程上执行，这里的
-            // block_on 只是等待；配合上面的缓存，热路径上的重复等待已被
-            // 消除。
-            let row: Option<(Option<Vec<u8>>,)> =
-                crate::RUNTIME.block_on(sqlx::query_as(query).bind(id).fetch_optional(pool))?;
-
-            match row {
-                Some((Some(image),)) if !image.is_empty() => {
-                    if image_type == "thumb" {
-                        // Thumbnails are rendered at list/grid sizes (≤ ~200px)
-                        // yet stored full-ish, so decoding them at full size
-                        // leaves multi-hundred-KB RGBA buffers stuck in every
-                        // bounded image cache slot (tables cache 200 items,
-                        // the global cache 12). Shrink before returning so the
-                        // caches stay small.
-                        if let Some(shrunken) = shrink_thumb_cached(table, id, &image) {
-                            return Ok(Some(Cow::Owned(shrunken)));
-                        }
-                    }
-                    Ok(Some(Cow::Owned(image)))
-                }
-                // no artwork stored → transparent placeholder, not `None`
-                _ => Ok(Some(placeholder_png())),
-            }
-        }
+        "album" => load_table_asset(pool, "album", url),
+        "track" => load_table_asset(pool, "track", url),
+        // other tables carry no artwork
         _ => Ok(None),
+    }
+}
+
+/// Loads artwork for one of the two tables that store it. `table` keys both
+/// the thumb cache and the queries below.
+fn load_table_asset(
+    pool: &SqlitePool,
+    table: &'static str,
+    url: Url,
+) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+    let mut segments = url.path_segments().ok_or_else(|| anyhow!("missing path"))?;
+    let id: i64 = segments
+        .next()
+        .ok_or_else(|| anyhow!("missing id"))?
+        .parse()?;
+    let image_type = segments
+        .next()
+        .ok_or_else(|| anyhow!("missing image type"))?;
+
+    // 缩略图缓存命中：连数据库都不用查，也就不再有 gpui 后台
+    // 线程上的 block_on 等待。
+    if image_type == "thumb"
+        && let Some(bytes) = thumb_cache_get(table, id)
+    {
+        return Ok(Some(Cow::Owned(bytes)));
+    }
+
+    let query = match (table, image_type) {
+        ("album", "thumb") => include_str!("../../../queries/assets/find_album_thumb.sql"),
+        ("album", "full") => include_str!("../../../queries/assets/find_album_art.sql"),
+        ("track", "thumb") => include_str!("../../../queries/assets/find_track_thumb.sql"),
+        ("track", "full") => include_str!("../../../queries/assets/find_track_art.sql"),
+        // unknown image type = no asset
+        _ => return Ok(Some(placeholder_png())),
+    };
+
+    // gpui 的资产加载器在本函数的调用点运行在后台线程上
+    // （img.rs 的 ImageAssetLoader 被 spawn 到 background_executor），
+    // 而 `AssetSource::load` 是同步接口：调用线程必须等结果，无法
+    // 把整个加载改成 async（那需要改 assets.rs 的调用方签名）。
+    // sqlx-sqlite 的实际查询工作在其连接线程上执行，这里的
+    // block_on 只是等待；配合上面的缓存，热路径上的重复等待已被
+    // 消除。
+    let row: Option<(Option<Vec<u8>>,)> =
+        crate::RUNTIME.block_on(sqlx::query_as(query).bind(id).fetch_optional(pool))?;
+
+    match row {
+        Some((Some(image),)) if !image.is_empty() => {
+            if image_type == "thumb" {
+                // Thumbnails are rendered at list/grid sizes (≤ ~200px)
+                // yet stored full-ish, so decoding them at full size
+                // leaves multi-hundred-KB RGBA buffers stuck in every
+                // bounded image cache slot (tables cache 200 items,
+                // the global cache 12). Shrink before returning so the
+                // caches stay small.
+                if let Some(shrunken) = shrink_thumb_cached(table, id, &image) {
+                    return Ok(Some(Cow::Owned(shrunken)));
+                }
+            }
+            Ok(Some(Cow::Owned(image)))
+        }
+        // no artwork stored → transparent placeholder, not `None`
+        _ => Ok(Some(placeholder_png())),
     }
 }
 
@@ -131,33 +138,33 @@ fn shrunk_thumbs() -> &'static Mutex<ShrunkThumbCache> {
     })
 }
 
-/// 读缓存；临界区无 await（本函数是同步接口，运行在 gpui 后台线程）。
-fn thumb_cache_get(table: &'static str, id: i64) -> Option<Vec<u8>> {
+type ThumbCacheGuard = std::sync::MutexGuard<'static, ShrunkThumbCache>;
+
+/// 锁定缓存；中毒时直接恢复守卫数据——它只是纯内存缓存，无值得传播
+/// panic 的不变量。
+fn lock_thumb_cache() -> ThumbCacheGuard {
     shrunk_thumbs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .entries
-        .get(&(table, id))
-        .cloned()
+}
+
+/// 读缓存；临界区无 await（本函数是同步接口，运行在 gpui 后台线程）。
+fn thumb_cache_get(table: &'static str, id: i64) -> Option<Vec<u8>> {
+    lock_thumb_cache().entries.get(&(table, id)).cloned()
 }
 
 /// 写缓存；超出上限时按插入顺序淘汰最旧条目（纯内存操作，无 IO）。
 fn thumb_cache_put(table: &'static str, id: i64, bytes: Vec<u8>) {
-    let mut cache = shrunk_thumbs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = lock_thumb_cache();
     if cache.entries.contains_key(&(table, id)) {
         return;
     }
     cache.entries.insert((table, id), bytes);
     cache.order.push_back((table, id));
-    while cache.entries.len() > SHRUNK_THUMB_CACHE_MAX {
-        match cache.order.pop_front() {
-            Some(oldest) => {
-                cache.entries.remove(&oldest);
-            }
-            None => break,
-        }
+    while cache.entries.len() > SHRUNK_THUMB_CACHE_MAX
+        && let Some(oldest) = cache.order.pop_front()
+    {
+        cache.entries.remove(&oldest);
     }
 }
 
@@ -165,9 +172,7 @@ fn thumb_cache_put(table: &'static str, id: i64, bytes: Vec<u8>) {
 /// （总量至多几 MB）是最便宜且最正确的失效方式；否则先期占满缓存的旧
 /// 资产会把后续新资产永久挡在 DB 慢路径上。
 pub(crate) fn clear_shrunk_thumb_cache() {
-    let mut cache = shrunk_thumbs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = lock_thumb_cache();
     cache.entries.clear();
     cache.order.clear();
 }

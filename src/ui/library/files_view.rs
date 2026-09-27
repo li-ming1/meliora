@@ -44,8 +44,30 @@ use tree::{ChildState, FileNode, FileTree, collect_expanded_paths};
 /// rebuilding (or deep-cloning) the whole batch.
 type BatchItems = (Rc<Vec<(Arc<Path>, Option<TrackRef>)>>, Rc<Vec<i64>>);
 
-// this is all done in a somewhat awkward way to balance memory consumption and UX
-// it could be simplified but I think it would make it use more memory when you leave the tab
+/// Root paths currently configured for scanning in settings.
+fn configured_root_paths(cx: &App) -> Vec<PathBuf> {
+    cx.global::<SettingsGlobal>()
+        .model
+        .read(cx)
+        .scanning
+        .paths
+        .iter()
+        .map(|p| p.as_std_path().to_path_buf())
+        .collect()
+}
+
+/// Scrolls the uniform list so its top sits `top` pixels below the list start
+/// (scroll handles encode that as a negative y offset).
+fn set_scroll_top(handle: &UniformListScrollHandle, top: f32) {
+    handle.0.borrow().base_handle.set_offset(Point {
+        x: px(0.0),
+        y: px(-top),
+    });
+}
+
+// This is all deliberately awkward: it balances memory consumption against
+// UX. It could be simplified, but that would use more memory once you leave
+// the tab.
 pub struct FilesView {
     tree: FileTree,
     flat: Arc<Vec<FlatRow>>,
@@ -72,15 +94,7 @@ impl FilesView {
         initial_scroll: Option<f32>,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let root_paths: Vec<PathBuf> = cx
-                .global::<SettingsGlobal>()
-                .model
-                .read(cx)
-                .scanning
-                .paths
-                .iter()
-                .map(|p| p.as_std_path().to_path_buf())
-                .collect();
+            let root_paths = configured_root_paths(cx);
 
             let tree = FileTree::new(root_paths);
             let flat = tree.flatten();
@@ -90,10 +104,7 @@ impl FilesView {
 
             let pending_scroll = if restore_set.is_empty() {
                 if let Some(offset) = initial_scroll {
-                    scroll_handle.0.borrow().base_handle.set_offset(Point {
-                        x: px(0.0),
-                        y: px(-offset),
-                    });
+                    set_scroll_top(&scroll_handle, offset);
                 }
                 None
             } else {
@@ -216,12 +227,11 @@ impl FilesView {
     }
 
     pub fn play_folder(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let parent = match path.parent() {
-            Some(p) => p.to_path_buf(),
-            None => return,
+        let Some(parent) = path.parent() else {
+            return;
         };
 
-        let Some(parent_node) = self.tree.find_node(&parent) else {
+        let Some(parent_node) = self.tree.find_node(parent) else {
             return;
         };
 
@@ -290,15 +300,7 @@ impl FilesView {
     }
 
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
-        let root_paths: Vec<PathBuf> = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .scanning
-            .paths
-            .iter()
-            .map(|p| p.as_std_path().to_path_buf())
-            .collect();
+        let root_paths = configured_root_paths(cx);
 
         self.tree = FileTree::new(root_paths);
         self.pending.clear();
@@ -334,12 +336,11 @@ impl FilesView {
     }
 
     fn start_loading(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if let Some(node) = self.tree.find_node_mut(&path) {
-            node.children = ChildState::Loading;
-            node.expanded = true;
-        } else {
+        let Some(node) = self.tree.find_node_mut(&path) else {
             return;
-        }
+        };
+        node.children = ChildState::Loading;
+        node.expanded = true;
 
         let bridge: DirBridge = Arc::new(OnceLock::new());
         let bridge_clone = bridge.clone();
@@ -378,11 +379,10 @@ impl FilesView {
         let children: Vec<FileNode> = entries.into_iter().map(FileNode::from_raw).collect();
         let count = children.len();
 
-        if let Some(node) = self.tree.find_node_mut(&path) {
-            node.children = ChildState::Loaded(children);
-        } else {
+        let Some(node) = self.tree.find_node_mut(&path) else {
             return;
-        }
+        };
+        node.children = ChildState::Loaded(children);
 
         self.touch_lru(path.clone());
         self.dir_child_counts.insert(path.clone(), count);
@@ -394,10 +394,7 @@ impl FilesView {
         if self.restore_expanded.is_empty() {
             self.evict_lru();
             if let Some(offset) = self.pending_scroll.take() {
-                self.scroll_handle.0.borrow().base_handle.set_offset(Point {
-                    x: px(0.0),
-                    y: px(-offset),
-                });
+                set_scroll_top(&self.scroll_handle, offset);
             }
         }
 
@@ -408,44 +405,33 @@ impl FilesView {
         if !self.restore_expanded.is_empty() && self.pending.is_empty() {
             self.restore_expanded.clear();
             if let Some(offset) = self.pending_scroll.take() {
-                self.scroll_handle.0.borrow().base_handle.set_offset(Point {
-                    x: px(0.0),
-                    y: px(-offset),
-                });
+                set_scroll_top(&self.scroll_handle, offset);
             }
         }
     }
 
-    fn continue_restore_cascade(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+    fn continue_restore_cascade(&mut self, path: &Path, cx: &mut Context<Self>) {
         if !self.restore_expanded.remove(path) {
             return;
         }
 
-        if let Some(node) = self.tree.find_node_mut(path) {
-            node.expanded = true;
-        }
+        let Some(node) = self.tree.find_node_mut(path) else {
+            return;
+        };
+        node.expanded = true;
 
-        let children_to_load: SmallVec<[PathBuf; 8]> = self
-            .tree
-            .find_node(path)
-            .and_then(|n| {
-                if let ChildState::Loaded(children) = &n.children {
-                    Some(
-                        children
-                            .iter()
-                            .filter(|c| {
-                                c.entry.is_dir
-                                    && self.restore_expanded.contains(&c.entry.path)
-                                    && matches!(c.children, ChildState::Unloaded)
-                            })
-                            .map(|c| c.entry.path.clone())
-                            .collect::<SmallVec<[PathBuf; 8]>>(),
-                    )
-                } else {
-                    None
-                }
+        let ChildState::Loaded(children) = &node.children else {
+            return;
+        };
+        let children_to_load: SmallVec<[PathBuf; 8]> = children
+            .iter()
+            .filter(|c| {
+                c.entry.is_dir
+                    && self.restore_expanded.contains(&c.entry.path)
+                    && matches!(c.children, ChildState::Unloaded)
             })
-            .unwrap_or_default();
+            .map(|c| c.entry.path.clone())
+            .collect();
 
         for child_path in children_to_load {
             self.start_loading(child_path, cx);

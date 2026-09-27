@@ -4,6 +4,9 @@ use gpui::*;
 
 use crate::ui::theme::Theme;
 
+/// Maximum width of a plain text tooltip before it wraps.
+const TOOLTIP_MAX_WIDTH: f32 = 260.0;
+
 /// Shared styling for all tooltip containers.
 pub fn tooltip_container(theme: &Theme) -> Div {
     div()
@@ -20,6 +23,7 @@ pub fn tooltip_container(theme: &Theme) -> Div {
         .pb(px(5.0))
 }
 
+/// A plain text tooltip view; built by [`build_tooltip`].
 pub struct TooltipContent {
     text: SharedString,
 }
@@ -28,7 +32,7 @@ impl Render for TooltipContent {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         tooltip_container(theme)
-            .max_w(px(260.0))
+            .max_w(px(TOOLTIP_MAX_WIDTH))
             .child(self.text.clone())
     }
 }
@@ -44,6 +48,8 @@ pub fn build_tooltip(
 
 type ComplexTooltipBuildFn = Rc<dyn Fn(&mut Window, &mut App) -> Div + 'static>;
 
+/// A tooltip view whose children are produced by a caller-supplied builder
+/// each time it renders; built by [`build_complex_tooltip`].
 pub struct ComplexTooltipContent {
     build_children: ComplexTooltipBuildFn,
 }
@@ -55,6 +61,9 @@ impl Render for ComplexTooltipContent {
     }
 }
 
+/// Returns a closure suitable for passing to GPUI's `.tooltip()` method.
+/// Unlike [`build_tooltip`], the children are produced by `children` each
+/// time the tooltip renders, allowing rich multi-element content.
 pub fn build_complex_tooltip(
     children: impl Fn(&mut Window, &mut App) -> Div + 'static,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {

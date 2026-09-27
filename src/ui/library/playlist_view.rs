@@ -1021,8 +1021,7 @@ impl Render for PlaylistView {
                                     let is_internal = drag_data
                                         .source_list_id
                                         .as_ref()
-                                        .map(|id| *id == this.list_id)
-                                        .unwrap_or(false);
+                                        .is_some_and(|id| *id == this.list_id);
 
                                     if is_internal && this.is_custom_sort() {
                                         let playlist_track_ids = this.playlist_track_ids.clone();
@@ -1147,6 +1146,46 @@ impl Render for PlaylistView {
                                                     &views_model,
                                                     idx,
                                                     move |cx| {
+                                                        // both row paths below wire up the same
+                                                        // TrackItem/PlaylistTrackItem pair and
+                                                        // differ only in the data they carry
+                                                        let make_row = |cx: &mut App,
+                                                                        track: Track,
+                                                                        track_title: SharedString,
+                                                                        album_id: Option<i64>,
+                                                                        track_path: std::path::PathBuf| {
+                                                            let track_item = TrackItem::new(
+                                                                cx,
+                                                                track,
+                                                                false,
+                                                                ArtistNameVisibility::Always,
+                                                                TrackItemLeftField::Art,
+                                                                Some(TrackPlaylistInfo {
+                                                                    id: pl_id,
+                                                                    item_id: playlist_item_id,
+                                                                }),
+                                                                false, // vinyl_numbering - not applicable for playlists
+                                                                None, // max_track_num - not needed for Art left field
+                                                                None, // queue_context - playlist uses pl_id instead
+                                                                true, // show_go_to_album
+                                                                true, // show_go_to_artist
+                                                            );
+
+                                                            PlaylistTrackItem::new(
+                                                                cx,
+                                                                track_item,
+                                                                idx,
+                                                                playlist_item_id,
+                                                                track_title,
+                                                                drag_drop_manager.clone(),
+                                                                list_id.clone(),
+                                                                track_id,
+                                                                album_id,
+                                                                track_path,
+                                                                is_custom_sort,
+                                                            )
+                                                        };
+
                                                         // prefetched rows first: a hit avoids the
                                                         // UI-thread `block_on` below (one per newly
                                                         // built row past the keep-around band)
@@ -1175,7 +1214,7 @@ impl Render for PlaylistView {
                                                                     // placeholder row (same height)
                                                                     // instead of panicking.
                                                                     Err(_) => {
-                                                                        let track_item = TrackItem::new(
+                                                                        return make_row(
                                                                             cx,
                                                                             Track {
                                                                                 id: 0,
@@ -1188,31 +1227,9 @@ impl Render for PlaylistView {
                                                                                 artist_names: None,
                                                                                 disc_subtitle: None,
                                                                             },
-                                                                            false,
-                                                                            ArtistNameVisibility::Always,
-                                                                            TrackItemLeftField::Art,
-                                                                            Some(TrackPlaylistInfo {
-                                                                                id: pl_id,
-                                                                                item_id: playlist_item_id,
-                                                                            }),
-                                                                            false, // vinyl_numbering - not applicable for playlists
-                                                                            None, // max_track_num - not needed for Art left field
-                                                                            None, // queue_context - playlist uses pl_id instead
-                                                                            true, // show_go_to_album
-                                                                            true, // show_go_to_artist
-                                                                        );
-                                                                        return PlaylistTrackItem::new(
-                                                                            cx,
-                                                                            track_item,
-                                                                            idx,
-                                                                            playlist_item_id,
                                                                             SharedString::default(),
-                                                                            drag_drop_manager,
-                                                                            list_id,
-                                                                            track_id,
                                                                             None,
                                                                             std::path::PathBuf::new(),
-                                                                            is_custom_sort,
                                                                         );
                                                                     }
                                                                 }
@@ -1223,35 +1240,12 @@ impl Render for PlaylistView {
                                                         let track_path = track.location.clone();
                                                         let album_id = track.album_id;
 
-                                                        let track_item = TrackItem::new(
+                                                        make_row(
                                                             cx,
                                                             (*track).clone(),
-                                                            false,
-                                                            ArtistNameVisibility::Always,
-                                                            TrackItemLeftField::Art,
-                                                            Some(TrackPlaylistInfo {
-                                                                id: pl_id,
-                                                                item_id: playlist_item_id,
-                                                            }),
-                                                            false, // vinyl_numbering - not applicable for playlists
-                                                            None, // max_track_num - not needed for Art left field
-                                                            None, // queue_context - playlist uses pl_id instead
-                                                            true, // show_go_to_album
-                                                            true, // show_go_to_artist
-                                                        );
-
-                                                        PlaylistTrackItem::new(
-                                                            cx,
-                                                            track_item,
-                                                            idx,
-                                                            playlist_item_id,
                                                             track_title,
-                                                            drag_drop_manager,
-                                                            list_id,
-                                                            track_id,
                                                             album_id,
                                                             track_path,
-                                                            is_custom_sort,
                                                         )
                                                     },
                                                     cx,

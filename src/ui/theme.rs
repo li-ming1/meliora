@@ -965,7 +965,9 @@ impl Theme {
     }
 }
 
+/// Legacy single-file theme read from the data directory root.
 pub const LEGACY_THEME_PATH: &str = "theme.json";
+/// Data-directory subdirectory holding one `<name>.json` theme per file.
 pub const THEMES_DIR_NAME: &str = "themes";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1101,27 +1103,23 @@ fn theme_relative_path_for_event(data_dir: &Path, path: &Path) -> Option<String>
 }
 
 /// Checks if any of the paths in a filesystem event affect the currently selected theme.
+///
+/// A plain string compare against the selected id suffices:
+/// `resolve_theme_relative_path` either echoes the selected id back or
+/// returns `None`, so resolving it here adds nothing.
 fn event_affects_selected_theme(
     data_dir: &Path,
     selected_theme: Option<&str>,
     event_paths: &[PathBuf],
 ) -> bool {
-    let active_theme = resolve_theme_relative_path(data_dir, selected_theme);
+    let Some(selected_theme) = selected_theme else {
+        return false;
+    };
 
     event_paths
         .iter()
         .filter_map(|path| theme_relative_path_for_event(data_dir, path))
-        .any(|changed_path| {
-            if let Some(active_theme) = active_theme.as_deref() {
-                return changed_path == active_theme;
-            }
-
-            if let Some(selected_theme) = selected_theme {
-                return changed_path == selected_theme;
-            }
-
-            false
-        })
+        .any(|changed_path| changed_path == selected_theme)
 }
 
 /// Checks whether a filesystem event changes the set of available theme choices.

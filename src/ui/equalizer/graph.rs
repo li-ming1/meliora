@@ -28,9 +28,16 @@ type AddHandler = dyn FnMut(f64, f64, &mut App) -> usize;
 type DragActiveHandler = dyn FnMut(bool, &mut App);
 
 const DOT_RADIUS: f32 = 8.0;
+/// Gap between a dot and its hover ring.
+const DOT_RING_PAD: f32 = 3.0;
 const DOT_HIT_RADIUS: f32 = 16.0;
 const CURVE_HIT_DISTANCE: f32 = 8.0;
 const Q_FLASH_MS: u128 = 600;
+/// Pointer travel before a press counts as a drag rather than a click.
+const DRAG_START_THRESHOLD_PX: f32 = 3.0;
+/// A click this soon after an add is the double-click's second press landing
+/// on the new dot, not a toggle.
+const ADD_ECHO_MS: u128 = 500;
 
 const GRID_FREQS: [f32; 13] = [
     20.0, 30.0, 50.0, 100.0, 200.0, 300.0, 500.0, 1_000.0, 2_000.0, 3_000.0, 5_000.0, 10_000.0,
@@ -126,7 +133,8 @@ struct GraphState {
     paths: Option<PathCache>,
 }
 
-// Bypass ignored so the curve stays visible for editing while the EQ is off
+/// Summed response of the enabled bands. Bypass ignored so the curve stays
+/// visible for editing while the EQ is off.
 fn composite_db(config: &EqualizerSettings, rate: f64, frequency: f64) -> f64 {
     config
         .bands
@@ -148,6 +156,15 @@ pub(crate) fn dot_position(band: &EqBandSettings, plot: Bounds<Pixels>) -> Point
     point(plot.origin.x + px(x), plot.origin.y + px(y))
 }
 
+/// `freq_to_x` without the axis clamp: a band nudged off-axis starts its drag
+/// outside the plot, and the delta must stay relative to that real spot.
+fn freq_to_x_unclamped(freq: f32, width: f32) -> f32 {
+    let t = (freq.log10() - MIN_FREQ.log10()) / (MAX_FREQ.log10() - MIN_FREQ.log10());
+    t * width
+}
+
+/// Nearest dot within reach of the cursor, else the composite curve when its
+/// edge passes close enough.
 fn hit_test(
     config: &EqualizerSettings,
     rate: f64,
@@ -182,7 +199,7 @@ fn hit_test(
     }
 }
 
-// One sample per 2 physical pixels, dense enough that segments read as a smooth curve
+/// One sample per 2 physical pixels, dense enough that segments read as a smooth curve.
 fn sample_curve(width: f32, scale: f32, db_at: impl Fn(f64) -> f64) -> Rc<Vec<f32>> {
     let columns = ((width * scale) / 2.0).ceil().max(1.0) as usize;
     (0..columns)
@@ -206,7 +223,7 @@ fn curve_path(builder: &mut PathBuilder, samples: &[f32], plot: Bounds<Pixels>, 
     }
 }
 
-// Top edge of a spectrum curve as a Catmull-Rom spline, points spread evenly across the width
+/// Top edge of a spectrum curve as a Catmull-Rom spline, points spread evenly across the width.
 fn spectrum_path(builder: &mut PathBuilder, points: &[f32], plot: Bounds<Pixels>) {
     let width: f32 = plot.size.width.into();
     let height: f32 = plot.size.height.into();
@@ -235,6 +252,20 @@ fn spectrum_path(builder: &mut PathBuilder, points: &[f32], plot: Bounds<Pixels>
     }
 }
 
+/// Fill under a spectrum curve down to the plot's bottom edge, None for empty data.
+fn spectrum_fill_path(points: &[f32], plot: Bounds<Pixels>) -> Option<Path<Pixels>> {
+    if points.is_empty() {
+        return None;
+    }
+    let right = plot.origin.x + plot.size.width;
+    let bottom_y = plot.origin.y + plot.size.height;
+    let mut fill = PathBuilder::fill();
+    spectrum_path(&mut fill, points, plot);
+    fill.line_to(point(right, bottom_y));
+    fill.line_to(point(plot.origin.x, bottom_y));
+    fill.build().ok()
+}
+
 /// Tessellates the six paintable paths from the cached curves and the latest
 /// spectrum data. Same shapes the paint path used to build per frame.
 fn build_paths(
@@ -246,24 +277,12 @@ fn build_paths(
 ) -> EqGraphPaths {
     let plot_height: f32 = plot.size.height.into();
     let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
-    let bottom_y = plot.origin.y + plot.size.height;
     let right = plot.origin.x + plot.size.width;
     let mut paths = EqGraphPaths::default();
 
-    if !spectrum_pre.is_empty() {
-        let mut fill = PathBuilder::fill();
-        spectrum_path(&mut fill, spectrum_pre, plot);
-        fill.line_to(point(right, bottom_y));
-        fill.line_to(point(plot.origin.x, bottom_y));
-        paths.spectrum_pre_fill = fill.build().ok();
-    }
+    paths.spectrum_pre_fill = spectrum_fill_path(spectrum_pre, plot);
+    paths.spectrum_post_fill = spectrum_fill_path(spectrum_post, plot);
     if !spectrum_post.is_empty() {
-        let mut fill = PathBuilder::fill();
-        spectrum_path(&mut fill, spectrum_post, plot);
-        fill.line_to(point(right, bottom_y));
-        fill.line_to(point(plot.origin.x, bottom_y));
-        paths.spectrum_post_fill = fill.build().ok();
-
         let mut edge = PathBuilder::stroke(px(1.5));
         spectrum_path(&mut edge, spectrum_post, plot);
         paths.spectrum_post_stroke = edge.build().ok();
@@ -288,8 +307,8 @@ fn build_paths(
     paths
 }
 
-// Full-bleed plot: the axis labels are drawn inside it, so no gutter is
-// reserved. Only the panel's 1px top border stays outside the plot.
+/// Full-bleed plot: the axis labels are drawn inside it, so no gutter is
+/// reserved. Only the panel's 1px top border stays outside the plot.
 fn plot_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds::new(
         point(bounds.origin.x, bounds.origin.y + px(1.0)),
@@ -348,7 +367,7 @@ fn shape_axis_labels(
     labels
 }
 
-// Small readout pill anchored above a dot, clamped into the plot horizontally
+/// Small readout pill anchored above a dot, clamped into the plot horizontally.
 fn readout_pill(
     window: &mut Window,
     text: SharedString,
@@ -539,17 +558,14 @@ impl Element for EqGraph {
                 let state: Rc<RefCell<GraphState>> = v.flatten().unwrap_or_default();
                 {
                     let mut state_ref = state.borrow_mut();
-                    let stale = match &state_ref.cache {
-                        Some(cache) => {
-                            cache.config != *config
-                                || cache.selected != selected
-                                || cache.width != plot_width
-                                || cache.height != plot_height
-                                || cache.scale != scale
-                                || cache.rate != rate
-                        }
-                        None => true,
-                    };
+                    let stale = state_ref.cache.as_ref().is_none_or(|cache| {
+                        cache.config != *config
+                            || cache.selected != selected
+                            || cache.width != plot_width
+                            || cache.height != plot_height
+                            || cache.scale != scale
+                            || cache.rate != rate
+                    });
                     if stale {
                         // one Biquad per enabled band, evaluated across all columns
                         let biquads: Vec<Biquad> = config
@@ -597,16 +613,13 @@ impl Element for EqGraph {
                 let font = window.text_style().font();
                 let labels = {
                     let mut state_ref = state.borrow_mut();
-                    let stale = match &state_ref.label_cache {
-                        Some(cache) => {
-                            cache.font != font
-                                || cache.color != label_color
-                                || cache.scale != scale
-                                || cache.origin != plot.origin
-                                || cache.size != plot.size
-                        }
-                        None => true,
-                    };
+                    let stale = state_ref.label_cache.as_ref().is_none_or(|cache| {
+                        cache.font != font
+                            || cache.color != label_color
+                            || cache.scale != scale
+                            || cache.origin != plot.origin
+                            || cache.size != plot.size
+                    });
                     if stale {
                         let lines = Rc::new(shape_axis_labels(window, label_color, plot));
                         state_ref.label_cache = Some(LabelCache {
@@ -630,19 +643,16 @@ impl Element for EqGraph {
                 // spectrum data or the plot geometry moved
                 let paths = {
                     let mut state_ref = state.borrow_mut();
-                    let stale = match &state_ref.paths {
-                        Some(cache) => {
-                            cache.config != *config
-                                || cache.selected != selected
-                                || cache.origin != plot.origin
-                                || cache.size != plot.size
-                                || cache.scale != scale
-                                || cache.rate != rate
-                                || !Rc::ptr_eq(&cache.spectrum_pre, &self.spectrum_pre)
-                                || !Rc::ptr_eq(&cache.spectrum_post, &self.spectrum_post)
-                        }
-                        None => true,
-                    };
+                    let stale = state_ref.paths.as_ref().is_none_or(|cache| {
+                        cache.config != *config
+                            || cache.selected != selected
+                            || cache.origin != plot.origin
+                            || cache.size != plot.size
+                            || cache.scale != scale
+                            || cache.rate != rate
+                            || !Rc::ptr_eq(&cache.spectrum_pre, &self.spectrum_pre)
+                            || !Rc::ptr_eq(&cache.spectrum_post, &self.spectrum_post)
+                    });
                     if stale {
                         let cache = &state_ref.cache.as_ref().expect("curve cache fresh");
                         let paths = build_paths(
@@ -868,12 +878,13 @@ impl Element for EqGraph {
             let fill = if is_selected { color } else { rgba(0x00000000) };
 
             if prepaint.hover == Some(Hover::Dot(index)) && prepaint.drag.is_none() {
+                let ring = DOT_RADIUS + DOT_RING_PAD;
                 window.paint_quad(quad(
                     Bounds::new(
-                        point(dot.x - px(DOT_RADIUS + 3.0), dot.y - px(DOT_RADIUS + 3.0)),
-                        size(px((DOT_RADIUS + 3.0) * 2.0), px((DOT_RADIUS + 3.0) * 2.0)),
+                        point(dot.x - px(ring), dot.y - px(ring)),
+                        size(px(ring * 2.0), px(ring * 2.0)),
                     ),
-                    Corners::all(px(DOT_RADIUS + 3.0)),
+                    Corners::all(px(ring)),
                     rgba(0x00000000),
                     Edges::all(px(1.0)),
                     color,
@@ -1012,7 +1023,7 @@ impl Element for EqGraph {
                                     // the second click of an add lands on the new dot, skip it
                                     let fresh =
                                         state.borrow().last_add.is_some_and(|(at, band)| {
-                                            band == index && at.elapsed().as_millis() < 500
+                                            band == index && at.elapsed().as_millis() < ADD_ECHO_MS
                                         });
                                     if !fresh {
                                         if let Some(toggle) = &on_toggle_enabled {
@@ -1119,18 +1130,16 @@ impl Element for EqGraph {
                         let width: f32 = plot.size.width.into();
                         let dx: f32 = (ev.position.x - drag.start.x).into();
                         let dy: f32 = (ev.position.y - drag.start.y).into();
-                        if !drag.moved && dx.abs() + dy.abs() > 3.0 {
+                        if !drag.moved && dx.abs() + dy.abs() > DRAG_START_THRESHOLD_PX {
                             drag.moved = true;
                             state.borrow_mut().drag = Some(drag);
                         }
                         if !drag.moved {
                             return;
                         }
-                        // the start frequency can sit off-axis after an arrow-key nudge, map it
-                        // unclamped so the delta stays relative to the real spot
-                        let start_x = ((drag.start_frequency as f32).log10() - MIN_FREQ.log10())
-                            / (MAX_FREQ.log10() - MIN_FREQ.log10())
-                            * width;
+                        // the start frequency can sit off-axis after an arrow-key nudge,
+                        // map it unclamped so the delta stays relative to the real spot
+                        let start_x = freq_to_x_unclamped(drag.start_frequency as f32, width);
                         let frequency = x_to_freq(start_x + dx * scale, width) as f64;
                         let gain_db = if band.kind.has_gain() {
                             let height: f32 = plot.size.height.into();
@@ -1228,7 +1237,9 @@ impl Element for EqGraph {
                         Some(Hover::Dot(index)) => Some(index),
                         _ => selected,
                     };
-                    let Some(band) = target.and_then(|i| config.bands.get(i)) else {
+                    let Some((target, band)) =
+                        target.and_then(|i| config.bands.get(i).map(|band| (i, band)))
+                    else {
                         return;
                     };
 
@@ -1241,12 +1252,8 @@ impl Element for EqGraph {
                     } else {
                         ev.delta.pixel_delta(px(1.0)).y.into()
                     };
-                    (on_scroll_q.borrow_mut())(
-                        target.unwrap(),
-                        scroll_q(band.q, f64::from(notches)),
-                        cx,
-                    );
-                    state.borrow_mut().q_flash = Some((Instant::now(), target.unwrap()));
+                    (on_scroll_q.borrow_mut())(target, scroll_q(band.q, f64::from(notches)), cx);
+                    state.borrow_mut().q_flash = Some((Instant::now(), target));
                     window.refresh();
                 });
             }

@@ -8,23 +8,6 @@ use gpui::{
 };
 use tracing::warn;
 
-/// Adds new scan paths while ignoring duplicates.
-fn merge_scan_paths(
-    paths: &mut Vec<Utf8PathBuf>,
-    new_paths: impl IntoIterator<Item = Utf8PathBuf>,
-) -> bool {
-    let mut updated = false;
-
-    for path in new_paths {
-        if !paths.contains(&path) {
-            paths.push(path);
-            updated = true;
-        }
-    }
-
-    updated
-}
-
 use crate::{
     library::scan::ScanInterface,
     settings::{Settings, SettingsGlobal, save_settings, scan::MissingFolderPolicy},
@@ -43,6 +26,23 @@ use crate::{
         theme::Theme,
     },
 };
+
+/// Adds new scan paths while ignoring duplicates.
+fn merge_scan_paths(
+    paths: &mut Vec<Utf8PathBuf>,
+    new_paths: impl IntoIterator<Item = Utf8PathBuf>,
+) -> bool {
+    let mut updated = false;
+
+    for path in new_paths {
+        if !paths.contains(&path) {
+            paths.push(path);
+            updated = true;
+        }
+    }
+
+    updated
+}
 
 pub struct LibrarySettings {
     settings: Entity<Settings>,
@@ -153,11 +153,7 @@ impl Render for LibrarySettings {
             let rows = paths.iter().enumerate().map(|(idx, path)| {
                 let path_clone = path.clone();
                 let settings = self.settings.clone();
-                let path_text: SharedString = path
-                    .to_string()
-                    .trim_start_matches("\\\\?\\")
-                    .to_string()
-                    .into();
+                let path_text: SharedString = path.as_str().trim_start_matches("\\\\?\\").into();
 
                 div()
                     .id(format!("library-scan-path-{idx}"))

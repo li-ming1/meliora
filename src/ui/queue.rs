@@ -10,7 +10,7 @@ use crate::{
             context::context,
             drag_drop::{
                 AlbumDragData, DragDropItemState, DragDropListConfig, DragDropListManager,
-                DragPreview, DropIndicator, TrackDragData, check_drag_cancelled,
+                DragPreview, DropIndicator, DropPosition, TrackDragData, check_drag_cancelled,
                 handle_external_drag_move, handle_track_drag_move, handle_track_drop_multi,
                 request_edge_scroll,
             },
@@ -141,9 +141,7 @@ impl QueueSelection {
         self.selected.clear();
         let start = anchor.min(index);
         let end = anchor.max(index);
-        for i in start..=end {
-            self.selected.insert(i);
-        }
+        self.selected.extend(start..=end);
         self.resync_sorted();
         cx.notify();
     }
@@ -254,6 +252,21 @@ impl QueueItem {
 
     pub fn update_idx(&mut self, idx: usize) {
         self.idx = idx;
+    }
+
+    /// Opens (creating on first use) the row's add-to-playlist palette over
+    /// `track_ids`; shared by the single-row and multi-select context menus.
+    fn open_add_to_palette(&mut self, track_ids: Vec<i64>, cx: &mut Context<Self>) {
+        let show = self
+            .show_add_to
+            .get_or_insert_with(|| cx.new(|_| false))
+            .clone();
+        match &self.add_to {
+            Some(add_to) => add_to.read(cx).set_track_ids(track_ids),
+            None => self.add_to = Some(AddToPlaylist::new(cx, show.clone(), track_ids)),
+        }
+        show.write(cx, true);
+        cx.notify();
     }
 }
 
@@ -574,26 +587,7 @@ impl Render for QueueItem {
                                     tr!("ADD_TO_PLAYLIST"),
                                     move |_, _, cx| {
                                         entity_for_add.update(cx, |item, cx| {
-                                            let show = item
-                                                .show_add_to
-                                                .get_or_insert_with(|| cx.new(|_| false))
-                                                .clone();
-                                            match &item.add_to {
-                                                Some(add_to) => {
-                                                    add_to
-                                                        .read(cx)
-                                                        .set_track_ids(add_to_ids.clone());
-                                                }
-                                                None => {
-                                                    item.add_to = Some(AddToPlaylist::new(
-                                                        cx,
-                                                        show.clone(),
-                                                        add_to_ids.clone(),
-                                                    ));
-                                                }
-                                            }
-                                            show.write(cx, true);
-                                            cx.notify();
+                                            item.open_add_to_palette(add_to_ids.clone(), cx);
                                         });
                                     },
                                 ))
@@ -719,26 +713,7 @@ impl Render for QueueItem {
                                     move |_, _, cx| {
                                         if let Some(track_id) = single_track_id {
                                             entity_for_add.update(cx, |item, cx| {
-                                                let show = item
-                                                    .show_add_to
-                                                    .get_or_insert_with(|| cx.new(|_| false))
-                                                    .clone();
-                                                match &item.add_to {
-                                                    Some(add_to) => {
-                                                        add_to
-                                                            .read(cx)
-                                                            .set_track_ids(vec![track_id]);
-                                                    }
-                                                    None => {
-                                                        item.add_to = Some(AddToPlaylist::new(
-                                                            cx,
-                                                            show.clone(),
-                                                            vec![track_id],
-                                                        ));
-                                                    }
-                                                }
-                                                show.write(cx, true);
-                                                cx.notify();
+                                                item.open_add_to_palette(vec![track_id], cx);
                                             });
                                         }
                                     },
@@ -808,6 +783,15 @@ fn emit_stale_remove_toast() {
         "QUEUE_REMOVE_CANCELLED_STALE",
         "Queue changed — removal cancelled"
     )));
+}
+
+/// The `interface.reduced_motion` setting, read through the settings entity.
+fn reduced_motion_enabled(cx: &App) -> bool {
+    cx.global::<SettingsGlobal>()
+        .model
+        .read(cx)
+        .interface
+        .reduced_motion
 }
 
 /// True if the live queue still holds the content captured for `index` when
@@ -1005,12 +989,7 @@ impl Render for Queue {
         let item_scroll_handle = scroll_handle.clone();
         let drag_drop_manager = self.drag_drop_manager.clone();
         let selection = self.selection.clone();
-        let reduced_motion = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .reduced_motion;
+        let reduced_motion = reduced_motion_enabled(cx);
         let is_dragging = self.drag_drop_manager.read(cx).state.is_dragging;
 
         if self.scroll_follow.is_active() && (self.queue_hovered || is_dragging) {
@@ -1122,46 +1101,15 @@ impl Render for Queue {
                                 (manager.state.is_dragging, manager.state.drop_target)
                             };
                             let scroll_handle: ScrollableHandle = this.scroll_handle.clone().into();
-
-                            let reduced_motion = cx
-                                .global::<SettingsGlobal>()
-                                .model
-                                .read(cx)
-                                .interface
-                                .reduced_motion;
                             let scrolled = handle_track_drag_move(
                                 this.drag_drop_manager.clone(),
                                 scroll_handle,
                                 event,
                                 queue_len,
                                 cx,
-                                reduced_motion,
+                                reduced_motion_enabled(cx),
                             );
-
-                            if scrolled {
-                                // guarded, at most one pending frame chain
-                                // (per-event scheduling used to accumulate
-                                // chains: scroll speed multiplied with the
-                                // mouse report rate)
-                                request_edge_scroll(
-                                    this.drag_drop_manager.clone(),
-                                    this.scroll_handle.clone().into(),
-                                    window,
-                                    cx,
-                                );
-                            }
-
-                            // repaint only when something visible moved (same
-                            // gating as the playlist view handlers)
-                            let changed = {
-                                let manager = this.drag_drop_manager.read(cx);
-                                scrolled
-                                    || (manager.state.is_dragging, manager.state.drop_target)
-                                        != before
-                            };
-                            if changed {
-                                cx.notify();
-                            }
+                            this.finish_drag_move(before, scrolled, window, cx);
                         },
                     ))
                     .on_drag_move::<AlbumDragData>(cx.listener(
@@ -1176,13 +1124,6 @@ impl Render for Queue {
                             let scroll_handle: ScrollableHandle = this.scroll_handle.clone().into();
                             let mouse_pos = event.event.position;
                             let container_bounds = event.bounds;
-
-                            let reduced_motion = cx
-                                .global::<SettingsGlobal>()
-                                .model
-                                .read(cx)
-                                .interface
-                                .reduced_motion;
                             let scrolled = handle_external_drag_move(
                                 this.drag_drop_manager.clone(),
                                 scroll_handle,
@@ -1190,34 +1131,13 @@ impl Render for Queue {
                                 container_bounds,
                                 queue_len,
                                 cx,
-                                reduced_motion,
+                                reduced_motion_enabled(cx),
                             );
-
-                            if scrolled {
-                                request_edge_scroll(
-                                    this.drag_drop_manager.clone(),
-                                    this.scroll_handle.clone().into(),
-                                    window,
-                                    cx,
-                                );
-                            }
-
-                            // same gating as the track handler above
-                            let changed = {
-                                let manager = this.drag_drop_manager.read(cx);
-                                scrolled
-                                    || (manager.state.is_dragging, manager.state.drop_target)
-                                        != before
-                            };
-                            if changed {
-                                cx.notify();
-                            }
+                            this.finish_drag_move(before, scrolled, window, cx);
                         },
                     ))
                     .on_drop(cx.listener(
                         move |this: &mut Queue, drag_data: &TrackDragData, _, cx| {
-                            use crate::ui::components::drag_drop::DropPosition;
-
                             let is_internal = drag_data
                                 .source_list_id
                                 .as_ref()
@@ -1279,7 +1199,6 @@ impl Render for Queue {
                     .on_drop(cx.listener(
                         move |this: &mut Queue, drag_data: &AlbumDragData, _, cx| {
                             use crate::library::db::LibraryAccess;
-                            use crate::ui::components::drag_drop::DropPosition;
 
                             if let Ok(tracks) = cx.list_tracks_in_album(drag_data.album_id) {
                                 let queue_items: Vec<QueueItemData> = tracks
@@ -1442,6 +1361,36 @@ impl Render for Queue {
 }
 
 impl Queue {
+    /// Shared tail of both drag-move handlers: schedules the edge auto-scroll
+    /// when the move scrolled the list — guarded, at most one pending frame
+    /// chain (per-event scheduling used to accumulate chains: scroll speed
+    /// multiplied with the mouse report rate) — and repaints only when
+    /// something visible moved (same gating as the playlist view handlers).
+    fn finish_drag_move(
+        &mut self,
+        before: (bool, Option<(usize, DropPosition)>),
+        scrolled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if scrolled {
+            request_edge_scroll(
+                self.drag_drop_manager.clone(),
+                self.scroll_handle.clone().into(),
+                window,
+                cx,
+            );
+        }
+
+        let changed = {
+            let manager = self.drag_drop_manager.read(cx);
+            scrolled || (manager.state.is_dragging, manager.state.drop_target) != before
+        };
+        if changed {
+            cx.notify();
+        }
+    }
+
     fn schedule_follow_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.follow_frame_scheduled {
             return;
@@ -1450,12 +1399,7 @@ impl Queue {
         self.follow_frame_scheduled = true;
         cx.on_next_frame(window, |this, window, cx| {
             this.follow_frame_scheduled = false;
-            let reduced_motion = cx
-                .global::<SettingsGlobal>()
-                .model
-                .read(cx)
-                .interface
-                .reduced_motion;
+            let reduced_motion = reduced_motion_enabled(cx);
             this.advance_follow_animation(window, cx, reduced_motion);
         });
     }

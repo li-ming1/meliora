@@ -103,15 +103,7 @@ impl Lyrics {
             // the same generation guard so a fast track switch discards a
             // stale startup load.
             cx.spawn(async move |this, cx| {
-                let loaded = crate::RUNTIME
-                    .spawn(async move {
-                        match initial_track_path {
-                            Some(path) => Self::load_lyrics_off_thread(&pool, path).await,
-                            None => (None, None),
-                        }
-                    })
-                    .await
-                    .unwrap_or((None, None));
+                let loaded = Self::load_lyrics_via_runtime(pool, initial_track_path).await;
 
                 this.update(cx, |this: &mut Self, cx| {
                     if this.load_generation != 0 {
@@ -189,15 +181,7 @@ impl Lyrics {
                 let cache_key = track_path.clone();
 
                 cx.spawn(async move |this, cx| {
-                    let loaded = crate::RUNTIME
-                        .spawn(async move {
-                            match track_path {
-                                Some(path) => Self::load_lyrics_off_thread(&pool, path).await,
-                                None => (None, None),
-                            }
-                        })
-                        .await
-                        .unwrap_or((None, None));
+                    let loaded = Self::load_lyrics_via_runtime(pool, track_path).await;
 
                     this.update(cx, |this, cx| {
                         if this.load_generation != generation {
@@ -354,6 +338,25 @@ impl Lyrics {
         (content, parsed)
     }
 
+    /// Runs [`Self::load_lyrics_off_thread`] on the shared runtime and joins
+    /// the result (shared by the startup and track-change paths). A `None`
+    /// path (no current track) short-circuits to the empty pair, and so does
+    /// a panicked or failed join — the UI then stays in the empty state.
+    async fn load_lyrics_via_runtime(
+        pool: sqlx::SqlitePool,
+        path: Option<PathBuf>,
+    ) -> (Option<String>, Option<Vec<LrcLine>>) {
+        crate::RUNTIME
+            .spawn(async move {
+                match path {
+                    Some(path) => Self::load_lyrics_off_thread(&pool, path).await,
+                    None => (None, None),
+                }
+            })
+            .await
+            .unwrap_or((None, None))
+    }
+
     /// Resets lyric display state for a newly selected track.
     #[cfg_attr(not(any(feature = "kugou", feature = "netease")), allow(dead_code))]
     fn reset_track_state(&mut self) {
@@ -423,6 +426,37 @@ impl Lyrics {
         }
     }
 
+    /// Path string of the track the playback mirror says is playing now: the
+    /// online fetch paths compare it against the path they were dispatched
+    /// with, so a stale response for a track the user already left behind is
+    /// dropped instead of overwriting the current lyric.
+    #[cfg_attr(not(any(feature = "kugou", feature = "netease")), allow(dead_code))]
+    fn current_track_path(cx: &App) -> Option<String> {
+        cx.global::<PlaybackInfo>()
+            .current_track
+            .read(cx)
+            .as_ref()
+            .map(|t| t.get_path().to_string_lossy().into_owned())
+    }
+
+    /// Applies a fetched online lyric to the current track and files it in
+    /// the per-track cache. The caller has already confirmed via
+    /// [`Self::current_track_path`] that the user hasn't switched tracks;
+    /// `expected` is the path the fetch was started for.
+    #[cfg_attr(not(any(feature = "kugou", feature = "netease")), allow(dead_code))]
+    fn apply_online_lyrics(
+        &mut self,
+        expected: Option<&str>,
+        loaded: (Option<String>, Option<Vec<LrcLine>>),
+        cx: &mut Context<Self>,
+    ) {
+        self.reset_track_state();
+        self.apply_loaded_lyrics(loaded.0.clone(), loaded.1.clone(), cx);
+        if let Some(key) = expected.map(PathBuf::from) {
+            self.cache_lyrics(key, loaded);
+        }
+    }
+
     /// Fetches lyrics for the online (KuGou) track currently playing at `path`
     /// and swaps them in. Guarded so a stale response for a previous track
     /// doesn't overwrite the current one.
@@ -431,10 +465,7 @@ impl Lyrics {
         // Bounded per-track cache: a back-and-forth switch to a recently
         // played track skips the search + fetch network round-trips (the
         // stream-map lookup below only feeds that fetch).
-        if let Some((content, parsed)) = path
-            .map(Path::to_path_buf)
-            .and_then(|key| self.lyric_cache.get(&key).cloned())
-        {
+        if let Some((content, parsed)) = path.and_then(|key| self.lyric_cache.get(key).cloned()) {
             self.apply_loaded_lyrics(content, parsed, cx);
             return;
         }
@@ -467,21 +498,11 @@ impl Lyrics {
 
             this.update(cx, |this, cx| {
                 // ignore the result if the user has already switched tracks
-                let current_path = cx
-                    .global::<PlaybackInfo>()
-                    .current_track
-                    .read(cx)
-                    .as_ref()
-                    .map(|t| t.get_path().to_string_lossy().into_owned());
-                if current_path != expected {
+                if Self::current_track_path(cx) != expected {
                     return;
                 }
 
-                this.reset_track_state();
-                this.apply_loaded_lyrics(content.clone(), parsed.clone(), cx);
-                if let Some(key) = expected.clone().map(PathBuf::from) {
-                    this.cache_lyrics(key, (content, parsed));
-                }
+                this.apply_online_lyrics(expected.as_deref(), (content, parsed), cx);
             })
             .ok();
         })
@@ -496,10 +517,7 @@ impl Lyrics {
         // Bounded per-track cache: a back-and-forth switch to a recently
         // played track skips the network request (the stream-map lookup
         // below only feeds that fetch).
-        if let Some((content, parsed)) = path
-            .map(Path::to_path_buf)
-            .and_then(|key| self.lyric_cache.get(&key).cloned())
-        {
+        if let Some((content, parsed)) = path.and_then(|key| self.lyric_cache.get(key).cloned()) {
             self.apply_loaded_lyrics(content, parsed, cx);
             return;
         }
@@ -515,23 +533,13 @@ impl Lyrics {
 
             this.update(cx, |this, cx| {
                 // ignore the result if the user has already switched tracks
-                let current_path = cx
-                    .global::<PlaybackInfo>()
-                    .current_track
-                    .read(cx)
-                    .as_ref()
-                    .map(|t| t.get_path().to_string_lossy().into_owned());
-                if current_path != expected {
+                if Self::current_track_path(cx) != expected {
                     return;
                 }
 
                 let parsed = lyric.as_ref().map(|lyric| lyric.lines.clone());
                 let content = lyric.as_ref().map(|lyric| lyric.content.clone());
-                this.reset_track_state();
-                this.apply_loaded_lyrics(content.clone(), parsed.clone(), cx);
-                if let Some(key) = expected.clone().map(PathBuf::from) {
-                    this.cache_lyrics(key, (content, parsed));
-                }
+                this.apply_online_lyrics(expected.as_deref(), (content, parsed), cx);
             })
             .ok();
         })
@@ -951,11 +959,7 @@ impl Lyrics {
             self.line_emphasis_target_values[active_line] = 1.0;
         }
 
-        let has_change = self
-            .line_emphasis_start_values
-            .iter()
-            .zip(self.line_emphasis_target_values.iter())
-            .any(|(start, target)| (start - target).abs() > f32::EPSILON);
+        let has_change = self.line_emphasis_has_change();
 
         if reduced_motion {
             self.line_emphasis_start_values = self.line_emphasis_target_values.clone();
@@ -967,12 +971,8 @@ impl Lyrics {
 
     fn advance_line_emphasis_animation(&mut self, reduced_motion: bool) -> bool {
         if reduced_motion {
-            let changed = self
-                .line_emphasis_start_values
-                .iter()
-                .zip(self.line_emphasis_target_values.iter())
-                .any(|(start, target)| (start - target).abs() > f32::EPSILON)
-                || self.line_emphasis_started_at.is_some();
+            let changed =
+                self.line_emphasis_has_change() || self.line_emphasis_started_at.is_some();
             self.line_emphasis_start_values = self.line_emphasis_target_values.clone();
             self.line_emphasis_started_at = None;
             return changed;
@@ -989,6 +989,15 @@ impl Lyrics {
         self.line_emphasis_start_values = self.line_emphasis_target_values.clone();
         self.line_emphasis_started_at = None;
         true
+    }
+
+    /// Whether any line's emphasis start value still differs from its
+    /// target: decides whether the frame loop must keep repainting.
+    fn line_emphasis_has_change(&self) -> bool {
+        self.line_emphasis_start_values
+            .iter()
+            .zip(self.line_emphasis_target_values.iter())
+            .any(|(start, target)| (start - target).abs() > f32::EPSILON)
     }
 
     fn line_emphasis_for(&self, idx: usize) -> f32 {

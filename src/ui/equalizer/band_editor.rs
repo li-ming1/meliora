@@ -38,6 +38,9 @@ type EditHandler = dyn Fn(BandEdit, &mut App);
 type RemoveHandler = dyn Fn(&mut App);
 type DismissHandler = dyn Fn(&mut Window, &mut App);
 
+/// Frequency a band defaults to, also the freq knob's reset point.
+const DEFAULT_BAND_FREQ_HZ: f64 = 1_000.0;
+
 const FREQ_SPAN: f64 = MAX_FREQ as f64 / MIN_FREQ as f64;
 const Q_SPAN: f64 = MAX_Q / MIN_Q;
 
@@ -105,8 +108,7 @@ impl RenderOnce for BandEditor {
         let band = self.band;
         let on_edit = self.on_edit;
 
-        let mut types = segmented_control("eq-band-kind").selected(band.kind);
-        for (kind, icon, tooltip) in [
+        let types = [
             (EqBandKind::Bell, FILTER_BELL, tr!("EQ_FILTER_BELL", "Bell")),
             (
                 EqBandKind::LowPass,
@@ -128,10 +130,13 @@ impl RenderOnce for BandEditor {
                 FILTER_NOTCH,
                 tr!("EQ_FILTER_NOTCH", "Notch"),
             ),
-        ] {
-            types = types.option_icon(kind, icon, tooltip);
-        }
-        let types = types.on_change({
+        ]
+        .into_iter()
+        .fold(
+            segmented_control("eq-band-kind").selected(band.kind),
+            |types, (kind, icon, tooltip)| types.option_icon(kind, icon, tooltip),
+        )
+        .on_change({
             let on_edit = on_edit.clone();
             move |kind, _, cx| on_edit(BandEdit::Kind(*kind), cx)
         });
@@ -141,7 +146,7 @@ impl RenderOnce for BandEditor {
         let freq_knob = knob(format!("eq-band-freq-{index}"))
             .label(tr!("EQ_BAND_FREQ", "Freq"))
             .value(freq_to_norm(band.frequency))
-            .default_value(freq_to_norm(1_000.0))
+            .default_value(freq_to_norm(DEFAULT_BAND_FREQ_HZ))
             // typed input covers the full DSP range, the drag stays axis-bound
             .parse_range(freq_to_norm(MIN_FREQUENCY), freq_to_norm(MAX_FREQUENCY))
             .format(|v| format_hz(norm_to_freq(v)).into())

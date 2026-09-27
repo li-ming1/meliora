@@ -121,7 +121,8 @@ pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
 pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
     #[cfg(windows)]
     {
-        // this is some crazy garbage but it has to be this way because of windows wonkyness
+        // Windows quirk: paths can arrive with a `\\?\` extended-length prefix,
+        // which must be stripped before handing them to the file manager.
         let path_for_reveal = match path.to_string_lossy().strip_prefix("\\\\?\\") {
             Some(stripped) => PathBuf::from(stripped),
             None => path.to_path_buf(),
@@ -136,6 +137,8 @@ pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
     }
 }
 
+/// Splits a second count into (hours, minutes, seconds); negative inputs
+/// clamp to zero.
 fn split_duration(secs: i64) -> (i64, i64, i64) {
     let secs = secs.max(0);
     (secs / 3_600, (secs % 3_600) / 60, secs % 60)
@@ -147,6 +150,8 @@ pub fn format_duration_compact(secs: i64) -> String {
     format_duration(secs, false)
 }
 
+/// 时长格式：达到 1 小时为 "h:mm:ss"；不足 1 小时为 "m:ss"，`pad_minutes` 为
+/// true 时分钟补零成 "mm:ss"。
 pub fn format_duration(secs: i64, pad_minutes: bool) -> String {
     let (hours, minutes, seconds) = split_duration(secs);
 

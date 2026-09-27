@@ -8,13 +8,13 @@ use super::{
     OnSelectHandler,
     table_data::{
         Column, GridContext, MIN_COLUMN_WIDTH, TABLE_IMAGE_COLUMN_WIDTH, TableData, TableDragData,
+        with_drag_handlers,
     },
 };
-use crate::ui::{
-    components::context::context,
-    components::drag_drop::{AlbumDragData, DragPreview, TrackDragData},
-    theme::Theme,
-};
+use crate::ui::{components::context::context, theme::Theme};
+
+/// Fixed height of every row cell; matches the table header height.
+const ROW_HEIGHT: f32 = 36.0;
 
 #[derive(Clone)]
 pub struct TableItem<T, C>
@@ -53,11 +53,9 @@ where
 
         let columns_read = columns.read(cx).clone();
 
-        let data = row.clone().map(|row| {
-            let keys = columns_read.keys();
-
-            keys.into_iter().map(|v| row.get_column(cx, *v)).collect()
-        });
+        let data = row
+            .clone()
+            .map(|row| Self::snapshot_cells(&row, &columns_read, cx));
 
         let image_path = row.as_ref().and_then(|row| row.get_image_path());
         let is_available = row.as_ref().is_some_and(|row| row.is_available(cx));
@@ -66,11 +64,10 @@ where
             cx.observe(columns, |this: &mut TableItem<T, C>, m, cx| {
                 this.columns = m.read(cx).clone();
 
-                this.data = this.row.clone().map(|row| {
-                    let keys = this.columns.keys();
-
-                    keys.into_iter().map(|v| row.get_column(cx, *v)).collect()
-                });
+                this.data = this
+                    .row
+                    .clone()
+                    .map(|row| Self::snapshot_cells(&row, &this.columns, cx));
 
                 cx.notify();
             })
@@ -88,6 +85,19 @@ where
                 drag_data,
             }
         })
+    }
+
+    /// Snapshots the visible columns' cell values for `row`, in column order.
+    /// Re-run whenever the column set changes (see the observer in `new`).
+    fn snapshot_cells(
+        row: &Arc<T>,
+        columns: &IndexMap<C, f32, FxBuildHasher>,
+        cx: &mut App,
+    ) -> Vec<Option<SharedString>> {
+        columns
+            .keys()
+            .map(|column| row.get_column(cx, *column))
+            .collect()
     }
 }
 
@@ -155,35 +165,18 @@ where
                 }
             });
 
-        row = match drag_data {
-            Some(TableDragData::Track(track_data)) => {
-                let display_name = track_data.display_name.clone();
-                row.on_drag(track_data, move |_, _, _, cx| {
-                    DragPreview::new(cx, display_name.clone())
-                })
-                .drag_over::<TrackDragData>(|style, _, _, _| style.bg(gpui::rgba(0x88888822)))
-            }
-            Some(TableDragData::Album(album_data)) => {
-                let display_name = album_data.display_name.clone();
-                row.on_drag(album_data, move |_, _, _, cx| {
-                    DragPreview::new(cx, display_name.clone())
-                })
-                .drag_over::<AlbumDragData>(|style, _, _, _| style.bg(gpui::rgba(0x88888822)))
-            }
-            None => row,
-        };
+        row = with_drag_handlers(row, drag_data);
 
         if T::has_images() {
             row = row.child(
                 div()
                     .w(px(TABLE_IMAGE_COLUMN_WIDTH))
-                    .h(px(36.0))
+                    .h(px(ROW_HEIGHT))
                     .text_sm()
                     .pl(px(11.0))
                     .flex_shrink_0()
                     .text_ellipsis()
                     //.border_r_1()
-                    .border_color(theme.border_color)
                     .border_b_1()
                     .border_color(theme.border_color)
                     .flex()
@@ -207,28 +200,25 @@ where
         }
 
         if let Some(data) = self.data.as_ref() {
-            let column_count = self.columns.len();
-
             for (i, column_data) in data.iter().enumerate() {
                 // columns can shrink between the data snapshot and this
                 // render; skip the stale column instead of panicking the frame
                 let Some((column, width)) = self.columns.get_index(i) else {
                     continue;
                 };
-                let _is_last = i == column_count - 1;
-                let base_width = *width;
-                let monospace = T::column_monospace(*column);
                 row = row.child(
                     div()
                         // fluid column, matching the header's grow weights
-                        .flex_grow(base_width.max(1.0))
+                        .flex_grow(width.max(1.0))
                         .flex_basis(px(0.0))
                         .min_w(px(MIN_COLUMN_WIDTH))
-                        .h(px(36.0))
+                        .h(px(ROW_HEIGHT))
                         .px(px(12.0))
                         .py(px(6.0))
                         .when(!T::has_images() && i == 0, |div| div.pl(px(17.0)))
-                        .when(monospace, |div| div.font_family("Roboto Mono"))
+                        .when(T::column_monospace(*column), |div| {
+                            div.font_family("Roboto Mono")
+                        })
                         .text_sm()
                         .overflow_hidden()
                         .text_ellipsis()

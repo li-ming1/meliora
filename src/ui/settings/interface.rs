@@ -27,7 +27,7 @@ use crate::{
         button::{ButtonIntent, ButtonStyle, button},
         checkbox::checkbox,
         dropdown::dropdown,
-        label::label,
+        label::{Label, label},
         labeled_slider::labeled_slider,
         section_header::section_header,
     },
@@ -97,6 +97,44 @@ fn available_languages() -> &'static [LanguageOption] {
     })
 }
 
+/// Applies `update` to `settings.interface`, then persists the settings
+/// file and notifies. Toggles and dropdown writes go through here; the
+/// grid-width slider writes directly instead so a drag does not save or
+/// repaint per tick (see its `on_change`).
+fn update_interface_settings(
+    settings: &Entity<crate::settings::Settings>,
+    cx: &mut App,
+    update: impl FnOnce(&mut crate::settings::interface::InterfaceSettings),
+) {
+    settings.update(cx, move |settings, cx| {
+        update(&mut settings.interface);
+        save_settings(cx, settings);
+        cx.notify();
+    });
+}
+
+/// One checkbox row: clicking the label toggles one `bool` field of
+/// `InterfaceSettings` via `update_interface`. The checkbox id is passed
+/// explicitly so both ids of the row pair stay greppable.
+fn toggle_row(
+    cx: &Context<InterfaceSettings>,
+    label_id: &'static str,
+    check_id: &'static str,
+    title: impl Into<SharedString>,
+    subtext: impl Into<SharedString>,
+    checked: bool,
+    toggle: fn(&mut crate::settings::interface::InterfaceSettings),
+) -> Label {
+    label(label_id, title)
+        .subtext(subtext)
+        .cursor_pointer()
+        .w_full()
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.update_interface(cx, toggle);
+        }))
+        .child(checkbox(check_id, checked))
+}
+
 pub struct InterfaceSettings {
     settings: Entity<crate::settings::Settings>,
     data_dir: PathBuf,
@@ -131,18 +169,19 @@ impl InterfaceSettings {
         })
     }
 
+    /// Applies `update` to the interface section, re-clamps the grid item
+    /// width, then persists and notifies. Toggles route through here; the
+    /// dropdowns that never touch the grid go through
+    /// [`update_interface_settings`] directly.
     fn update_interface(
         &self,
         cx: &mut App,
         update: impl FnOnce(&mut crate::settings::interface::InterfaceSettings),
     ) {
-        self.settings.update(cx, move |settings, cx| {
-            update(&mut settings.interface);
-            settings.interface.grid_min_item_width =
-                clamp_grid_min_item_width(settings.interface.grid_min_item_width);
-
-            save_settings(cx, settings);
-            cx.notify();
+        update_interface_settings(&self.settings, cx, |interface| {
+            update(interface);
+            interface.grid_min_item_width =
+                clamp_grid_min_item_width(interface.grid_min_item_width);
         });
     }
 
@@ -188,11 +227,7 @@ impl Render for InterfaceSettings {
                 .w(px(250.0))
                 .selected(interface.language.clone())
                 .on_change(move |code, _, cx| {
-                    settings_c.update(cx, |s, cx| {
-                        s.interface.language = code.clone();
-                        save_settings(cx, s);
-                        cx.notify();
-                    });
+                    update_interface_settings(&settings_c, cx, |s| s.language = code.clone());
                 });
             for lang in available_languages() {
                 dd = dd.option(lang.code.to_string(), lang.display_name.clone());
@@ -207,11 +242,7 @@ impl Render for InterfaceSettings {
                 .w(px(250.0))
                 .selected(resolved)
                 .on_change(move |id, _, cx| {
-                    settings_c.update(cx, |s, cx| {
-                        s.interface.theme = id.clone();
-                        save_settings(cx, s);
-                        cx.notify();
-                    });
+                    update_interface_settings(&settings_c, cx, |s| s.theme = id.clone());
                 });
             for theme in self.theme_options.read(cx).iter() {
                 let label: SharedString = if theme.id.is_none() {
@@ -235,11 +266,7 @@ impl Render for InterfaceSettings {
                 .option(StartupLibraryView::LikedSongs, tr!("LIKED_SONGS"))
                 .option(StartupLibraryView::Files, tr!("FILES"))
                 .on_change(move |view, _, cx| {
-                    settings_c.update(cx, |s, cx| {
-                        s.interface.startup_library_view = *view;
-                        save_settings(cx, s);
-                        cx.notify();
-                    });
+                    update_interface_settings(&settings_c, cx, |s| s.startup_library_view = *view);
                 })
         };
 
@@ -319,27 +346,18 @@ impl Render for InterfaceSettings {
                     }))
                 }
             })
-            .child(
-                label(
-                    "interface-two-column-library",
-                    tr!("INTERFACE_TWO_COLUMN_LIBRARY", "Two-column library"),
-                )
-                .subtext(tr!(
+            .child(toggle_row(
+                cx,
+                "interface-two-column-library",
+                "interface-two-column-library-check",
+                tr!("INTERFACE_TWO_COLUMN_LIBRARY", "Two-column library"),
+                tr!(
                     "INTERFACE_TWO_COLUMN_LIBRARY_SUBTEXT",
                     "Show navigation pages (like Artists) and content pages (like an album) side by side."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.update_interface(cx, |interface| {
-                        interface.two_column_library = !interface.two_column_library;
-                    });
-                }))
-                .child(checkbox(
-                    "interface-two-column-library-check",
-                    interface.two_column_library,
-                )),
-            )
+                ),
+                interface.two_column_library,
+                |interface| interface.two_column_library = !interface.two_column_library,
+            ))
             .child(
                 label(
                     "interface-grid-min-item-width",
@@ -383,90 +401,54 @@ impl Render for InterfaceSettings {
                         }),
                 ),
             )
-            .child(
-                label(
-                    "interface-reduced-motion",
-                    tr!("INTERFACE_REDUCED_MOTION", "Reduced motion"),
-                )
-                .subtext(tr!(
+            .child(toggle_row(
+                cx,
+                "interface-reduced-motion",
+                "interface-reduced-motion-check",
+                tr!("INTERFACE_REDUCED_MOTION", "Reduced motion"),
+                tr!(
                     "INTERFACE_REDUCED_MOTION_SUBTEXT",
                     "Disables smooth scrolling, fades, and other motion-heavy UI animations."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.update_interface(cx, |interface| {
-                        interface.reduced_motion = !interface.reduced_motion;
-                    });
-                }))
-                .child(checkbox(
-                    "interface-reduced-motion-check",
-                    interface.reduced_motion,
-                )),
-            )
-            .child(
-                label(
-                    "interface-always-show-scrollbars",
-                    tr!("INTERFACE_ALWAYS_SHOW_SCROLLBARS", "Always show scrollbars"),
-                )
-                .subtext(tr!(
+                ),
+                interface.reduced_motion,
+                |interface| interface.reduced_motion = !interface.reduced_motion,
+            ))
+            .child(toggle_row(
+                cx,
+                "interface-always-show-scrollbars",
+                "interface-always-show-scrollbars-check",
+                tr!("INTERFACE_ALWAYS_SHOW_SCROLLBARS", "Always show scrollbars"),
+                tr!(
                     "INTERFACE_ALWAYS_SHOW_SCROLLBARS_SUBTEXT",
                     "Keeps scrollbars visible instead of hiding them automatically."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.update_interface(cx, |interface| {
-                        interface.always_show_scrollbars = !interface.always_show_scrollbars;
-                    });
-                }))
-                .child(checkbox(
-                    "interface-always-show-scrollbars-check",
-                    interface.always_show_scrollbars,
-                )),
-            )
-            .child(
-                label(
-                    "interface-slim-scrollbars",
-                    tr!("INTERFACE_SLIM_SCROLLBARS", "Slim scrollbars"),
-                )
-                .subtext(tr!(
+                ),
+                interface.always_show_scrollbars,
+                |interface| interface.always_show_scrollbars = !interface.always_show_scrollbars,
+            ))
+            .child(toggle_row(
+                cx,
+                "interface-slim-scrollbars",
+                "interface-slim-scrollbars-check",
+                tr!("INTERFACE_SLIM_SCROLLBARS", "Slim scrollbars"),
+                tr!(
                     "INTERFACE_SLIM_SCROLLBARS_SUBTEXT",
                     "Use slimmer scrollbars for a cleaner visual style."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.update_interface(cx, |interface| {
-                        interface.slim_scrollbars = !interface.slim_scrollbars;
-                    });
-                }))
-                .child(checkbox(
-                    "interface-slim-scrollbars-check",
-                    interface.slim_scrollbars,
-                )),
-            )
-            .child(
-                label(
-                    "interface-queue-select-on-click",
-                    tr!("INTERFACE_QUEUE_SELECT_ON_CLICK", "Clicking on queue selects tracks"),
-                )
-                .subtext(tr!(
+                ),
+                interface.slim_scrollbars,
+                |interface| interface.slim_scrollbars = !interface.slim_scrollbars,
+            ))
+            .child(toggle_row(
+                cx,
+                "interface-queue-select-on-click",
+                "interface-queue-select-on-click-check",
+                tr!("INTERFACE_QUEUE_SELECT_ON_CLICK", "Clicking on queue selects tracks"),
+                tr!(
                     "INTERFACE_QUEUE_SELECT_ON_CLICK_SUBTEXT",
                     "Clicking on a queue item selects it, double clicking plays it."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.update_interface(cx, |interface| {
-                        interface.queue_select_on_click = !interface.queue_select_on_click;
-                    });
-                }))
-                .child(checkbox(
-                    "interface-queue-select-on-click-check",
-                    interface.queue_select_on_click,
-                )),
-            );
+                ),
+                interface.queue_select_on_click,
+                |interface| interface.queue_select_on_click = !interface.queue_select_on_click,
+            ));
 
         let body = body.child(
             label(

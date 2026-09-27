@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::{
-    netease::{self, api::QrStatus},
+    netease::{self, api::QrStatus, client::UserProfile},
     settings::{Settings, SettingsGlobal, playback::NeteaseQuality},
     toasts::Toast,
     ui::{
@@ -61,15 +61,21 @@ impl NeteaseSettings {
                 // Seed from the persisted session so the nickname/avatar show
                 // instantly, then refresh over the network.
                 if let Some(profile) = client.cached_user_profile() {
-                    this.nickname = Some(profile.nickname.into());
-                    this.avatar_url = (!profile.avatar_url.is_empty())
-                        .then(|| SharedString::from(profile.avatar_url));
+                    this.apply_profile(profile);
                 }
                 this.fetch_profile(cx);
             }
 
             this
         })
+    }
+
+    /// Mirrors a fetched profile into the page state; an empty avatar URL
+    /// means the account has no avatar.
+    fn apply_profile(&mut self, profile: UserProfile) {
+        self.nickname = Some(profile.nickname.into());
+        self.avatar_url =
+            (!profile.avatar_url.is_empty()).then(|| SharedString::from(profile.avatar_url));
     }
 
     fn fetch_profile(&mut self, cx: &mut Context<Self>) {
@@ -81,9 +87,7 @@ impl NeteaseSettings {
 
             this.update(cx, |this, cx| {
                 if let Ok(Ok(Some(profile))) = request {
-                    this.nickname = Some(profile.nickname.into());
-                    this.avatar_url = (!profile.avatar_url.is_empty())
-                        .then(|| SharedString::from(profile.avatar_url));
+                    this.apply_profile(profile);
                 }
                 cx.notify();
             })

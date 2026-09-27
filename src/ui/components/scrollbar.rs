@@ -17,6 +17,11 @@ use gpui::{
 use crate::settings::SettingsGlobal;
 use crate::ui::theme::Theme;
 
+/// Lower bound on the drawn thumb length.
+const MIN_THUMB_LENGTH: Pixels = px(20.0);
+/// Tolerance around the thumb accepted as a grab on mousedown.
+const THUMB_GRAB_EXPANSION: Pixels = px(4.0);
+
 #[derive(Clone)]
 pub enum ScrollableHandle {
     Regular(ScrollHandle),
@@ -289,11 +294,7 @@ impl Element for Scrollbar {
             ScrollbarAxis::Horizontal => handle.max_offset().x,
         };
 
-        let max_offset = if handle_max_offset > px(0.0) {
-            handle_max_offset
-        } else {
-            px(0.0)
-        };
+        let max_offset = handle_max_offset.max(px(0.0));
 
         // dont show if there's nothing to scroll
         let should_draw = match axis {
@@ -322,7 +323,6 @@ impl Element for Scrollbar {
             ScrollbarAxis::Horizontal => handle.total_content_width(),
         };
         let thumb_ratio = viewport_size / total_content_size;
-        let min_thumb_length = px(20.0);
         let primary_axis_size = match axis {
             ScrollbarAxis::Vertical => inner_bounds.size.height,
             ScrollbarAxis::Horizontal => inner_bounds.size.width,
@@ -331,7 +331,7 @@ impl Element for Scrollbar {
             ScrollbarAxis::Vertical => inner_bounds.size.width,
             ScrollbarAxis::Horizontal => inner_bounds.size.height,
         };
-        let thumb_length = (primary_axis_size * thumb_ratio).max(min_thumb_length);
+        let thumb_length = (primary_axis_size * thumb_ratio).max(MIN_THUMB_LENGTH);
 
         let scroll_ratio = if max_offset > px(0.0) {
             (scroll_position / max_offset).clamp(0.0, 1.0)
@@ -603,6 +603,9 @@ impl Element for Scrollbar {
 
                     if hitbox_scroll.is_hovered(window) {
                         let delta = ev.delta.pixel_delta(window.line_height());
+                        // Horizontal axis prefers a real x delta and falls
+                        // back to y (e.g. a plain vertical wheel above a
+                        // horizontal scrollbar).
                         let axis_delta = match axis {
                             ScrollbarAxis::Vertical => delta.y,
                             ScrollbarAxis::Horizontal if delta.x != px(0.0) => delta.x,
@@ -660,22 +663,22 @@ impl Element for Scrollbar {
                     let expanded_thumb_bounds = match axis {
                         ScrollbarAxis::Vertical => Bounds {
                             origin: gpui::Point {
-                                x: thumb_bounds_down.origin.x - px(4.0),
+                                x: thumb_bounds_down.origin.x - THUMB_GRAB_EXPANSION,
                                 y: thumb_bounds_down.origin.y,
                             },
                             size: gpui::Size {
-                                width: thumb_bounds_down.size.width + px(8.0),
+                                width: thumb_bounds_down.size.width + THUMB_GRAB_EXPANSION * 2.0,
                                 height: thumb_bounds_down.size.height,
                             },
                         },
                         ScrollbarAxis::Horizontal => Bounds {
                             origin: gpui::Point {
                                 x: thumb_bounds_down.origin.x,
-                                y: thumb_bounds_down.origin.y - px(4.0),
+                                y: thumb_bounds_down.origin.y - THUMB_GRAB_EXPANSION,
                             },
                             size: gpui::Size {
                                 width: thumb_bounds_down.size.width,
-                                height: thumb_bounds_down.size.height + px(8.0),
+                                height: thumb_bounds_down.size.height + THUMB_GRAB_EXPANSION * 2.0,
                             },
                         },
                     };

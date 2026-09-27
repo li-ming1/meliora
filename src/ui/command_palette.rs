@@ -99,13 +99,15 @@ impl CommandAction {
                 let mut slot = cached.lock().expect("poisoned command palette action");
                 let mut guard = slot.take();
                 if guard.is_none() {
-                    match cx.build_action(name, None) {
-                        Ok(action) => guard = Some(action),
+                    // A failed build leaves the slot empty, so the next call
+                    // retries instead of memoizing the failure.
+                    guard = Some(match cx.build_action(name, None) {
+                        Ok(action) => action,
                         Err(err) => {
                             error!("Failed to build command palette action {name}: {err}");
                             return None;
                         }
-                    }
+                    });
                 }
                 let result = guard.as_deref().map(|action| f(cx, action));
                 *slot = guard;
@@ -282,6 +284,9 @@ fn load_builtin_commands(cx: &mut App) -> Vec<CommandSpec> {
                     .unwrap()
                     .lookup(&e.name_key, &[], env!("CARGO_PKG_NAME"), None);
 
+            // The id and action name key `items` for the process lifetime and
+            // `build_action` wants `&'static str`, so leak the one-shot,
+            // built-in command strings deliberately.
             let id: &'static str = Box::leak(e.id.into_boxed_str());
             let action: &'static str = Box::leak(e.action.into_boxed_str());
             CommandSpec::named((id, 0), Some(e.category), name, action, built)

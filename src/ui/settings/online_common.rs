@@ -67,16 +67,24 @@ impl QrLogin {
         }
     }
 
+    /// Pushes the QR image currently held in `state` onto the tile-reclaim
+    /// funnel and clears the state. `ImageSource::Render` tiles are only
+    /// freed by an explicit `drop_image`, so every point that discards a QR
+    /// image must route through here.
+    fn recycle_current(&mut self) {
+        if let Some(state) = self.state.take()
+            && let Some(image) = state.image
+        {
+            queue_orphan_tile_drop(image);
+        }
+    }
+
     /// Arms the modal for a fresh login; returns the new generation.
     fn begin(&mut self) -> u64 {
         self.generation += 1;
         // "重新生成"会直接替换旧 state：旧二维码若已上传进图集，这里的
         // plain-drop 会泄漏瓦片——与 close() 一样推入回收漏斗。
-        if let Some(old) = self.state.take()
-            && let Some(image) = old.image
-        {
-            queue_orphan_tile_drop(image);
-        }
+        self.recycle_current();
         self.state = Some(QrLoginState {
             image: None,
             phase: QrPhase::Generating,
@@ -89,11 +97,7 @@ impl QrLogin {
         self.generation += 1;
         // `ImageSource::Render` 的图不经过任何缓存，瓦片只有显式
         // drop_image 才会回收——把还挂着的二维码推入回收漏斗。
-        if let Some(state) = self.state.take()
-            && let Some(image) = state.image
-        {
-            queue_orphan_tile_drop(image);
-        }
+        self.recycle_current();
     }
 
     pub(crate) fn state(&self) -> Option<&QrLoginState> {
@@ -118,11 +122,7 @@ impl Drop for QrLogin {
         // （侧栏切换分节、设置窗口关闭）没有任何 close() 回调：还挂在
         // state 上的二维码瓦片会随实体静默消失。`ImageSource::Render`
         // 的瓦片只有显式 drop_image 才回收，所以这里必须走同一漏斗。
-        if let Some(state) = self.state.take()
-            && let Some(image) = state.image
-        {
-            queue_orphan_tile_drop(image);
-        }
+        self.recycle_current();
     }
 }
 
@@ -162,6 +162,19 @@ pub(crate) trait QrLoginHost: 'static + Sized {
     }
 }
 
+/// Awaits a Tokio task and flattens the runtime's `Result` wrapper into the
+/// provider's `Result<T, String>`: the inner error is already a string, and
+/// a cancelled or panicked task degrades to the `JoinError`'s message.
+async fn flatten_task_result<T>(
+    task: tokio::task::JoinHandle<Result<T, String>>,
+) -> Result<T, String> {
+    match task.await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 /// Drives one QR login: request a key, render the image, then poll until
 /// success, expiry or the failure cap. Provider specifics come from `H`.
 fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
@@ -172,15 +185,8 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
         };
 
         // step 1: request a fresh key and render it as a QR image
-        let key = match crate::RUNTIME
-            .spawn(async move { H::create_key().await })
-            .await
-        {
-            Ok(Ok(key)) => Ok(key),
-            Ok(Err(err)) => Err(err),
-            Err(err) => Err(err.to_string()),
-        };
-        let key = match key {
+        let key_task = crate::RUNTIME.spawn(async move { H::create_key().await });
+        let key = match flatten_task_result(key_task).await {
             Ok(key) => key,
             Err(err) => {
                 emit_toast(H::failed_toast(err));
@@ -196,14 +202,8 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
         };
 
         let key_for_qr = key.clone();
-        let image = match crate::RUNTIME
-            .spawn_blocking(move || H::build_qr(&key_for_qr))
-            .await
-        {
-            Ok(Ok(image)) => Ok(image),
-            Ok(Err(err)) => Err(err),
-            Err(err) => Err(err.to_string()),
-        };
+        let image_task = crate::RUNTIME.spawn_blocking(move || H::build_qr(&key_for_qr));
+        let image = flatten_task_result(image_task).await;
         let start_polling = this
             .update(cx, |this, cx| {
                 if this.qr_login().stale(generation) {
@@ -240,14 +240,8 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
             cx.background_executor().timer(H::POLL_INTERVAL).await;
 
             let poll_key = key.clone();
-            let check = crate::RUNTIME
-                .spawn(async move { H::poll(poll_key).await })
-                .await;
-            let check = match check {
-                Ok(Ok(poll)) => Ok(poll),
-                Ok(Err(err)) => Err(err),
-                Err(err) => Err(err.to_string()),
-            };
+            let poll_task = crate::RUNTIME.spawn(async move { H::poll(poll_key).await });
+            let check = flatten_task_result(poll_task).await;
 
             let keep_going = this
                 .update(cx, |this, cx| {
@@ -404,25 +398,26 @@ impl DownloadDirField {
     /// Lazily-created download directory textbox. Submitting an empty value
     /// resets to the platform default downloads folder.
     pub(crate) fn input(&mut self, cx: &mut App) -> Entity<Textbox> {
-        if self.input.is_none() {
-            let current = cx
-                .global::<SettingsGlobal>()
-                .model
-                .read(cx)
-                .playback
-                .effective_download_dir()
-                .display()
-                .to_string();
-            let input = Textbox::new_with_value_submit(cx, Default::default(), |value, cx| {
-                let trimmed = value.trim().to_string();
-                set_download_dir(cx, (!trimmed.is_empty()).then_some(trimmed));
-            });
-            input.update(cx, |textbox, cx| {
-                textbox.set_value(cx, SharedString::from(current));
-            });
-            self.input = Some(input);
-        }
-        self.input.clone().unwrap()
+        self.input
+            .get_or_insert_with(|| {
+                let current = cx
+                    .global::<SettingsGlobal>()
+                    .model
+                    .read(cx)
+                    .playback
+                    .effective_download_dir()
+                    .display()
+                    .to_string();
+                let input = Textbox::new_with_value_submit(cx, Default::default(), |value, cx| {
+                    let trimmed = value.trim().to_string();
+                    set_download_dir(cx, (!trimmed.is_empty()).then_some(trimmed));
+                });
+                input.update(cx, |textbox, cx| {
+                    textbox.set_value(cx, SharedString::from(current));
+                });
+                input
+            })
+            .clone()
     }
 
     /// Opens the native folder picker; the chosen folder is written into the

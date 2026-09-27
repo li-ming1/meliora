@@ -80,15 +80,11 @@ pub fn format_hz(hz: f64) -> String {
 /// Inverse of `format_hz`, accepts "1240", "1.24k", "1.24 kHz" and friends.
 pub fn parse_hz(text: &str) -> Option<f64> {
     let text = text.trim().to_lowercase();
-    let (text, multiplier) = match text.strip_suffix("hz") {
-        Some(text) => match text.trim_end().strip_suffix("k") {
-            Some(text) => (text, 1_000.0),
-            None => (text, 1.0),
-        },
-        None => match text.strip_suffix("k") {
-            Some(text) => (text, 1_000.0),
-            None => (text.as_str(), 1.0),
-        },
+    let text = text.strip_suffix("hz").unwrap_or(&text);
+    let text = text.trim_end();
+    let (text, multiplier) = match text.strip_suffix("k") {
+        Some(text) => (text, 1_000.0),
+        None => (text, 1.0),
     };
     text.trim()
         .parse::<f64>()

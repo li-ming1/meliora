@@ -17,6 +17,10 @@ use crate::ui::{
 
 type OnClickHandler = dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static;
 
+/// Windows extended-length path prefix (`\\?\`), stripped from detail items
+/// so it never shows up as noise in the dialog.
+const WINDOWS_EXTENDED_PATH_PREFIX: &str = "\\\\?\\";
+
 /// Visual severity for the dialog's icon badge. Drives the default icon choice and the tint of
 /// the icon circle. Extend with `Info`/`Success` once the theme grows matching palettes.
 #[derive(Clone, Copy, Default)]
@@ -49,6 +53,7 @@ impl Severity {
     }
 }
 
+/// One button in an [`ActionDialog`]'s stacked action list.
 pub struct ActionDialogAction {
     id: &'static str,
     icon: &'static str,
@@ -177,6 +182,8 @@ impl RenderOnce for CheckboxFooter {
     }
 }
 
+/// A modal confirmation dialog: severity-tinted icon, title, body, optional
+/// detail list, stacked action buttons and an optional footer.
 #[derive(IntoElement)]
 pub struct ActionDialog {
     severity: Severity,
@@ -214,10 +221,11 @@ impl ActionDialog {
         I: IntoIterator<Item = S>,
         S: Into<SharedString>,
     {
-        // hide windows nonsense
+        // Strip the Windows extended-length prefix so overly long paths
+        // still read cleanly.
         let items = paths.into_iter().map(|p| {
             let s: SharedString = p.into();
-            match s.strip_prefix("\\\\?\\") {
+            match s.strip_prefix(WINDOWS_EXTENDED_PATH_PREFIX) {
                 Some(rest) => SharedString::from(rest.to_owned()),
                 None => s,
             }
@@ -333,10 +341,8 @@ impl RenderOnce for ActionDialog {
         let (circle_bg, circle_border, icon_color) = self.severity.circle_colors(theme);
         let resolved_icon = self.severity.default_icon();
 
-        let has_details = self.details.is_some();
         let has_actions = !self.actions.is_empty();
-        let show_divider = has_details && has_actions;
-        let divider_color = theme.border_color;
+        let show_divider = self.details.is_some() && has_actions;
 
         let dialog = modal::modal();
 
@@ -396,7 +402,12 @@ impl RenderOnce for ActionDialog {
                         }),
                 )
                 .when(show_divider, |this| {
-                    this.child(div().my(px(12.0)).border_b_1().border_color(divider_color))
+                    this.child(
+                        div()
+                            .my(px(12.0))
+                            .border_b_1()
+                            .border_color(theme.border_color),
+                    )
                 })
                 .when(has_actions, |this| {
                     this.child(

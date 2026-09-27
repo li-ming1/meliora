@@ -21,6 +21,8 @@ use crate::ui::{
 };
 
 const MAX_VISIBLE_PER_CATEGORY: usize = 5;
+/// Upper bound on matcher hits collected per query refresh (`get_matches`).
+const MAX_MATCHES: usize = 100;
 
 /// Pointer-equality check for item lists: same `Arc`s in the same order means
 /// the same items, avoiding deep `PartialEq` walks (per-item String compares)
@@ -86,6 +88,8 @@ pub enum DisplayEntry<T> {
     ShowMore(I18nString, usize),
 }
 
+// Manual `Clone`: `Arc<T>` clones regardless of `T`, while a derive would
+// wrongly require `T: Clone`.
 impl<T> Clone for DisplayEntry<T> {
     fn clone(&self) -> Self {
         match self {
@@ -157,7 +161,7 @@ where
             let render_counter = cx.new(|_| 0);
 
             let dynamic_matcher = Matcher::new(config.clone());
-            let matcher = Nucleo::new(config, notify.clone(), None, 1);
+            let matcher = Nucleo::new(config, notify, None, 1);
             let injector = matcher.injector();
 
             // Stable items are injected into the matcher index; volatile ones
@@ -228,27 +232,11 @@ where
                 move |this, _, ev: &EnrichedInputAction, cx| match ev {
                     EnrichedInputAction::Previous => {
                         let idx = *this.current_selection.read(cx);
-                        if let Some(prev_idx) = this.prev_enabled_index(idx, cx) {
-                            this.current_selection.update(cx, |sel, cx| {
-                                *sel = prev_idx;
-                                cx.notify();
-                            });
-                        }
-
-                        let idx = *this.current_selection.read(cx);
-                        this.list_state.scroll_to_reveal_item(idx);
+                        this.move_selection(this.prev_enabled_index(idx, cx), cx);
                     }
                     EnrichedInputAction::Next => {
                         let idx = *this.current_selection.read(cx);
-                        if let Some(next_idx) = this.next_enabled_index(idx, cx) {
-                            this.current_selection.update(cx, |sel, cx| {
-                                *sel = next_idx;
-                                cx.notify();
-                            });
-                        }
-
-                        let idx = *this.current_selection.read(cx);
-                        this.list_state.scroll_to_reveal_item(idx);
+                        this.move_selection(this.next_enabled_index(idx, cx), cx);
                     }
                     EnrichedInputAction::Accept => {
                         let idx = *this.current_selection.read(cx);
@@ -257,11 +245,9 @@ where
                         }
 
                         if idx < this.extra_items.len() {
-                            if let Some(extra) = this.extra_items.get(idx) {
-                                (extra.on_accept)(cx);
-                            }
+                            (this.extra_items[idx].on_accept)(cx);
                         } else {
-                            let display_idx = idx.saturating_sub(this.extra_items.len());
+                            let display_idx = idx - this.extra_items.len();
                             match this.display_list.get(display_idx) {
                                 Some(DisplayEntry::Item(item)) => {
                                     on_accept_clone(item, cx);
@@ -392,15 +378,12 @@ where
 
     fn index_is_enabled(&self, idx: usize, cx: &App) -> bool {
         if idx < self.extra_items.len() {
-            true
-        } else {
-            let display_idx = idx.saturating_sub(self.extra_items.len());
-            match self.display_list.get(display_idx) {
-                Some(DisplayEntry::Header(_)) => false,
-                Some(DisplayEntry::Item(item)) => item.is_enabled(cx),
-                Some(DisplayEntry::ShowMore(_, _)) => true,
-                None => false,
-            }
+            return true;
+        }
+        match self.display_list.get(idx - self.extra_items.len()) {
+            Some(DisplayEntry::Item(item)) => item.is_enabled(cx),
+            Some(DisplayEntry::ShowMore(..)) => true,
+            Some(DisplayEntry::Header(_)) | None => false,
         }
     }
 
@@ -418,13 +401,27 @@ where
         (0..self.total_items()).find(|idx| self.index_is_enabled(*idx, cx))
     }
 
-    fn recompute_extra_items(&mut self) {
-        let mut new_items: Vec<ExtraItem> = Vec::new();
-        for provider in &self.extra_providers {
-            let mut provided = (provider)(&self.query);
-            new_items.append(&mut provided);
+    /// Move the selection to `target` when there is one, then keep the list
+    /// scrolled to the (possibly unchanged) selection.
+    fn move_selection(&mut self, target: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(idx) = target {
+            self.current_selection.update(cx, |sel, cx| {
+                *sel = idx;
+                cx.notify();
+            });
         }
-        self.extra_items = Arc::new(new_items);
+
+        let idx = *self.current_selection.read(cx);
+        self.list_state.scroll_to_reveal_item(idx);
+    }
+
+    fn recompute_extra_items(&mut self) {
+        self.extra_items = Arc::new(
+            self.extra_providers
+                .iter()
+                .flat_map(|provider| (provider)(&self.query))
+                .collect(),
+        );
     }
 
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -474,12 +471,12 @@ where
     /// instead of an index rebuild.
     fn set_items(&mut self, items: &[Arc<T>], get_item_display: &MatcherFunc, cx: &mut App) {
         self.dynamic_items.clear();
-        for item in items {
-            if item.is_volatile() {
-                let search_text = (get_item_display)(item, cx);
-                self.dynamic_items.push((item.clone(), search_text));
-            }
-        }
+        self.dynamic_items.extend(
+            items
+                .iter()
+                .filter(|item| item.is_volatile())
+                .map(|item| (item.clone(), (get_item_display)(item, cx))),
+        );
 
         // How much of the currently injected prefix the new stable items
         // reproduce (same `Arc`s, same relative order, volatile items skipped).
@@ -508,14 +505,8 @@ where
         // change must re-inject EVERY stable item — pushing only the changed
         // tail would drop the unchanged prefix (e.g. the whole local index)
         // from matching for the rest of the panel session.
-        let mut stable_idx = 0usize;
-        for item in items {
-            if item.is_volatile() {
-                continue;
-            }
-            let skip = append_only && stable_idx < common;
-            stable_idx += 1;
-            if skip {
+        for (stable_idx, item) in items.iter().filter(|item| !item.is_volatile()).enumerate() {
+            if append_only && stable_idx < common {
                 continue;
             }
             let item = item.clone();
@@ -533,7 +524,7 @@ where
     fn get_matches(&mut self) -> Vec<Arc<T>> {
         let snapshot = self.matcher.snapshot();
         let count = snapshot.matched_item_count();
-        let limit = 100.min(count);
+        let limit = MAX_MATCHES.min(count as usize) as u32;
 
         let mut matches: Vec<Arc<T>> = snapshot
             .matched_items(..limit)
@@ -575,7 +566,7 @@ where
         self.views_model = cx.new(|_| FxHashMap::default());
         self.render_counter = cx.new(|_| 0);
 
-        let total = self.display_list.len() + self.extra_items.len();
+        let total = self.total_items();
         self.list_state = Self::make_list_state(Some(total));
         self.list_state.scroll_to(curr_scroll);
     }
@@ -1001,20 +992,20 @@ where
                         return;
                     }
 
-                    if let Some(override_fn) = on_accept_override.clone() {
+                    if let Some(override_fn) = on_accept_override.as_deref() {
                         override_fn(cx);
                     } else if let Some(parent) = weak_parent.upgrade()
-                        && let Some(item) = item_data.clone()
+                        && let Some(item) = item_data.as_ref()
                     {
                         parent.update(cx, |finder, cx| {
-                            (finder.on_accept)(&item, cx);
+                            (finder.on_accept)(item, cx);
                         });
                     }
                 }
             }))
             .on_aux_click(move |ev, _, cx| {
                 if ev.is_middle_click()
-                    && let Some(item) = item_data.clone()
+                    && let Some(item) = item_data.as_ref()
                 {
                     item.on_middle_click(cx);
                 }

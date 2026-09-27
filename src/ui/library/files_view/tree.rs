@@ -210,6 +210,11 @@ fn collect_loaded_dirs(node: &FileNode, out: &mut FxHashSet<PathBuf>) {
     }
 }
 
+/// Collects the directories that must survive LRU eviction (see `evict_lru`
+/// in `cache.rs`): loaded dirs that are expanded themselves or lie on the
+/// path to an expanded descendant. Returns whether the subtree rooted at
+/// `node` contains an expanded dir, so callers can keep their own ancestors
+/// protected without being expanded themselves.
 fn collect_protected_loaded_dirs(node: &FileNode, out: &mut FxHashSet<PathBuf>) -> bool {
     let ChildState::Loaded(children) = &node.children else {
         return node.entry.is_dir && node.expanded;

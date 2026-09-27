@@ -43,7 +43,9 @@ fn pending_downloads() -> &'static RwLock<HashSet<i64>> {
 /// wins. Trial clips (`freeTrialInfo`) are never saved.
 const QUALITY_LADDER: [&str; 5] = ["hires", "lossless", "exhigh", "higher", "standard"];
 
-/// Strips characters that are illegal in Windows file names.
+/// Replaces characters that are illegal in Windows file names, trims stray
+/// whitespace and leading/trailing dots, and falls back to `track` when
+/// nothing remains.
 fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
@@ -53,11 +55,7 @@ fn sanitize_filename(raw: &str) -> String {
         })
         .collect();
     let trimmed = cleaned.trim().trim_matches('.');
-    if trimmed.is_empty() {
-        "track".into()
-    } else {
-        trimmed.to_string()
-    }
+    if trimmed.is_empty() { "track" } else { trimmed }.to_string()
 }
 
 /// Fetches `url` into memory (audio files are a few tens of MB, fine to hold).
@@ -188,6 +186,7 @@ fn embed_tags(
         ));
     }
     if let Some(bytes) = cover {
+        // JPEG magic bytes; anything else is assumed to be PNG.
         let mime = if bytes.len() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
             MimeType::Jpeg
         } else {
@@ -220,19 +219,19 @@ pub async fn download_track(
 
     std::fs::create_dir_all(dir).map_err(|err| format!("create download dir: {err}"))?;
 
-    let stem = sanitize_filename(&format!(
-        "{}{}",
-        if track.artist.is_empty() {
-            String::new()
-        } else {
-            format!("{} - ", track.artist)
-        },
-        if track.title.is_empty() {
-            format!("netease-{}", track.id)
-        } else {
-            track.title.to_string()
-        }
-    ));
+    // File name stem: "artist - title", with the track id standing in for a
+    // missing title. The audio file and the lyric sidecars below share it.
+    let title = if track.title.is_empty() {
+        format!("netease-{}", track.id)
+    } else {
+        track.title.to_string()
+    };
+    let artist_prefix = if track.artist.is_empty() {
+        String::new()
+    } else {
+        format!("{} - ", track.artist)
+    };
+    let stem = sanitize_filename(&format!("{artist_prefix}{title}"));
     let audio_path = dir.join(format!("{stem}.{ext}"));
 
     let bytes = http_get_bytes(&url).await?;

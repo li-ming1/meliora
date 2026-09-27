@@ -16,10 +16,38 @@ use crate::{
     power::PowerManager,
     settings::{Settings, SettingsGlobal, save_settings},
     ui::components::{
-        checkbox::checkbox, label::label, labeled_slider::labeled_slider,
+        checkbox::checkbox,
+        label::{Label, label},
+        labeled_slider::labeled_slider,
         section_header::section_header,
     },
 };
+
+/// One checkbox row: clicking the label toggles one `bool` field of
+/// `settings.playback` via `update_playback_settings`. The checkbox id is
+/// passed explicitly so both ids of the row pair stay greppable. Rows whose
+/// click does more than flip the field (prevent-idle also pushes the value
+/// to the `PowerManager`) build inline instead.
+fn toggle_row(
+    cx: &Context<PlaybackSettings>,
+    label_id: &'static str,
+    check_id: &'static str,
+    title: impl Into<SharedString>,
+    subtext: Option<SharedString>,
+    checked: bool,
+    toggle: fn(&mut crate::settings::playback::PlaybackSettings),
+) -> Label {
+    let mut row = label(label_id, title);
+    if let Some(subtext) = subtext {
+        row = row.subtext(subtext);
+    }
+    row.cursor_pointer()
+        .w_full()
+        .on_click(cx.listener(move |this, _, _, cx| {
+            super::update_playback_settings(&this.settings, cx, toggle);
+        }))
+        .child(checkbox(check_id, checked))
+}
 
 pub struct PlaybackSettings {
     settings: Entity<Settings>,
@@ -81,88 +109,69 @@ impl Render for PlaybackSettings {
             .flex_col()
             .gap(px(12.0))
             .child(section_header(tr!("PLAYBACK")))
-            .child(
-                label(
-                    "playback-always-repeat",
-                    tr!("PLAYBACK_ALWAYS_REPEAT", "Always repeat"),
-                )
-                .subtext(tr!(
-                    "PLAYBACK_ALWAYS_REPEAT_SUBTEXT",
-                    "Disables the \"Off\" repeat mode."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    super::update_playback_settings(&this.settings, cx, |playback| {
-                        playback.always_repeat = !playback.always_repeat;
-                    });
-                }))
-                .child(checkbox(
-                    "playback-always-repeat-check",
-                    playback.always_repeat,
-                )),
-            )
-            .child(
-                label(
-                    "playback-prev-track-jump-first",
+            .child(toggle_row(
+                cx,
+                "playback-always-repeat",
+                "playback-always-repeat-check",
+                tr!("PLAYBACK_ALWAYS_REPEAT", "Always repeat"),
+                Some(
                     tr!(
-                        "PLAYBACK_PREVIOUS_JUMPS",
-                        "Previous button jumps to the beginning of the track if \
-                        more than 5 seconds has elapsed"
-                    ),
-                )
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    super::update_playback_settings(&this.settings, cx, |playback| {
-                        playback.prev_track_jump_first = !playback.prev_track_jump_first;
-                    });
-                }))
-                .child(checkbox(
-                    "playback-prev-track-jump-first-check",
-                    playback.prev_track_jump_first,
-                )),
-            )
-            .child(
-                label(
-                    "playback-keep-current-on-clear",
+                        "PLAYBACK_ALWAYS_REPEAT_SUBTEXT",
+                        "Disables the \"Off\" repeat mode."
+                    )
+                    .into(),
+                ),
+                playback.always_repeat,
+                |playback| playback.always_repeat = !playback.always_repeat,
+            ))
+            .child(toggle_row(
+                cx,
+                "playback-prev-track-jump-first",
+                "playback-prev-track-jump-first-check",
+                tr!(
+                    "PLAYBACK_PREVIOUS_JUMPS",
+                    "Previous button jumps to the beginning of the track if \
+                    more than 5 seconds has elapsed"
+                ),
+                None,
+                playback.prev_track_jump_first,
+                |playback| playback.prev_track_jump_first = !playback.prev_track_jump_first,
+            ))
+            .child(toggle_row(
+                cx,
+                "playback-keep-current-on-clear",
+                "playback-keep-current-on-clear-check",
+                tr!(
+                    "PLAYBACK_KEEP_CURRENT_ON_CLEAR",
+                    "Keep current track when clearing queue"
+                ),
+                Some(
                     tr!(
-                        "PLAYBACK_KEEP_CURRENT_ON_CLEAR",
-                        "Keep current track when clearing queue"
-                    ),
-                )
-                .subtext(tr!(
-                    "PLAYBACK_KEEP_CURRENT_ON_CLEAR_SUBTEXT",
-                    "Preserves the currently playing song instead of removing all tracks."
-                ))
-                .cursor_pointer()
-                .w_full()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    super::update_playback_settings(&this.settings, cx, |playback| {
-                        playback.keep_current_on_queue_clear =
-                            !playback.keep_current_on_queue_clear;
-                    });
-                }))
-                .child(checkbox(
-                    "playback-keep-current-on-clear-check",
-                    playback.keep_current_on_queue_clear,
-                )),
-            )
-            .child(
-                label("playback-consume", tr!("PLAYBACK_CONSUME", "Consume mode"))
-                    .subtext(tr!(
+                        "PLAYBACK_KEEP_CURRENT_ON_CLEAR_SUBTEXT",
+                        "Preserves the currently playing song instead of removing all tracks."
+                    )
+                    .into(),
+                ),
+                playback.keep_current_on_queue_clear,
+                |playback| {
+                    playback.keep_current_on_queue_clear = !playback.keep_current_on_queue_clear;
+                },
+            ))
+            .child(toggle_row(
+                cx,
+                "playback-consume",
+                "playback-consume-check",
+                tr!("PLAYBACK_CONSUME", "Consume mode"),
+                Some(
+                    tr!(
                         "PLAYBACK_CONSUME_SUBTEXT",
                         "Removes songs from the queue after they finish playing."
-                    ))
-                    .cursor_pointer()
-                    .w_full()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        super::update_playback_settings(&this.settings, cx, |playback| {
-                            playback.consume = !playback.consume;
-                        });
-                    }))
-                    .child(checkbox("playback-consume-check", playback.consume)),
-            )
+                    )
+                    .into(),
+                ),
+                playback.consume,
+                |playback| playback.consume = !playback.consume,
+            ))
             .child({
                 let settings = self.settings.clone();
                 label(

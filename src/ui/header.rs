@@ -1,4 +1,8 @@
-use super::{library::ViewSwitchMessage, models::Models, theme::Theme};
+use super::{
+    library::{NavigationHistory, ViewSwitchMessage},
+    models::Models,
+    theme::Theme,
+};
 use crate::ui::design::ICON_SM;
 use crate::{
     library::scan::ScanEvent,
@@ -6,7 +10,7 @@ use crate::{
     ui::{
         components::{
             icons::{ARROW_LEFT, ARROW_RIGHT, FOLDER_BOLT, FOLDER_SEARCH, SEARCH, icon},
-            nav_button::nav_button,
+            nav_button::{NavButton, nav_button},
             tooltip::build_complex_tooltip,
             window_header::header,
         },
@@ -18,6 +22,22 @@ use cntp_i18n::tr;
 use gpui::{prelude::FluentBuilder, *};
 
 // ─── 导航按钮（后退/前进） ───────────────────────────────────────────────
+
+/// One back/forward arrow wired to emit its message into the navigation history.
+fn nav_switch_button(
+    id: &'static str,
+    icon: &'static str,
+    message: ViewSwitchMessage,
+    can_go: bool,
+    vsm: &Entity<NavigationHistory>,
+) -> NavButton {
+    nav_button(id, icon).disabled(!can_go).on_click({
+        let vsm = vsm.clone();
+        move |_, _, cx| {
+            vsm.update(cx, |_, cx| cx.emit(message));
+        }
+    })
+}
 
 #[derive(IntoElement)]
 pub struct NavButtons {}
@@ -34,30 +54,20 @@ impl RenderOnce for NavButtons {
             .mt(px(1.0))
             .mr(px(6.0))
             .gap(px(2.0))
-            .child(
-                nav_button("back", ARROW_LEFT)
-                    .disabled(!can_go_back)
-                    .on_click({
-                        let vsm = vsm.clone();
-                        move |_, _, cx| {
-                            vsm.update(cx, |_, cx| {
-                                cx.emit(ViewSwitchMessage::Back);
-                            })
-                        }
-                    }),
-            )
-            .child(
-                nav_button("forward", ARROW_RIGHT)
-                    .disabled(!can_go_forward)
-                    .on_click({
-                        let vsm = vsm.clone();
-                        move |_, _, cx| {
-                            vsm.update(cx, |_, cx| {
-                                cx.emit(ViewSwitchMessage::Forward);
-                            })
-                        }
-                    }),
-            )
+            .child(nav_switch_button(
+                "back",
+                ARROW_LEFT,
+                ViewSwitchMessage::Back,
+                can_go_back,
+                &vsm,
+            ))
+            .child(nav_switch_button(
+                "forward",
+                ARROW_RIGHT,
+                ViewSwitchMessage::Forward,
+                can_go_forward,
+                &vsm,
+            ))
     }
 }
 
@@ -183,34 +193,29 @@ impl Render for ScanStatus {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let status = self.scan_model.read(cx);
+        // None while idle-ish, so the icon only renders while a scan is doing something
+        let scan_icon = match status {
+            ScanEvent::Cleaning
+            | ScanEvent::PlaylistsUpdated(_)
+            | ScanEvent::ScanProgress { .. }
+            | ScanEvent::WaitingForMissingFolderDecision { .. } => Some(FOLDER_SEARCH),
+            ScanEvent::ScanCompleteWatching => Some(FOLDER_BOLT),
+            ScanEvent::ScanCompleteIdle | ScanEvent::TargetedRescanComplete => None,
+        };
 
         div()
             .id("scan-status")
             .flex()
             .text_sm()
-            .when(
-                !matches!(
-                    status,
-                    ScanEvent::ScanCompleteIdle | ScanEvent::TargetedRescanComplete
-                ),
-                |this| {
-                    this.child(
-                        div().mr(px(8.0)).pt(px(5.0)).h_full().child(
-                            icon(match status {
-                                ScanEvent::Cleaning
-                                | ScanEvent::PlaylistsUpdated(_)
-                                | ScanEvent::ScanProgress { .. }
-                                | ScanEvent::WaitingForMissingFolderDecision { .. } => {
-                                    FOLDER_SEARCH
-                                }
-                                ScanEvent::ScanCompleteWatching => FOLDER_BOLT,
-                                _ => unreachable!(),
-                            })
-                            .size(ICON_SM),
-                        ),
-                    )
-                },
-            )
+            .when_some(scan_icon, |this, scan_icon| {
+                this.child(
+                    div()
+                        .mr(px(8.0))
+                        .pt(px(5.0))
+                        .h_full()
+                        .child(icon(scan_icon).size(ICON_SM)),
+                )
+            })
             .tooltip(build_complex_tooltip(|_, cx| {
                 let theme = cx.global::<Theme>();
                 div()
@@ -242,7 +247,9 @@ impl Render for ScanStatus {
             .child(match status {
                 ScanEvent::ScanCompleteIdle
                 | ScanEvent::ScanCompleteWatching
-                | ScanEvent::TargetedRescanComplete => SharedString::from(""),
+                | ScanEvent::TargetedRescanComplete
+                | ScanEvent::Cleaning
+                | ScanEvent::PlaylistsUpdated(_) => SharedString::from(""),
                 ScanEvent::ScanProgress { current, total } => {
                     if *total == u64::MAX {
                         // Total unknown (discovery still ongoing)
@@ -262,8 +269,6 @@ impl Render for ScanStatus {
                         .into()
                     }
                 }
-                ScanEvent::Cleaning => SharedString::from(""),
-                ScanEvent::PlaylistsUpdated(_) => SharedString::from(""),
                 ScanEvent::WaitingForMissingFolderDecision { .. } => {
                     tr!("SCANNING_MISSING_DIALOG_TITLE").into()
                 }

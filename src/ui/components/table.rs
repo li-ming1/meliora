@@ -35,8 +35,8 @@ use gpui::{prelude::FluentBuilder, *};
 use indexmap::IndexMap;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use table_data::{
-    Column, ColumnReorderDrag, GridContext, MIN_COLUMN_WIDTH, TABLE_HEADER_GROUP,
-    TABLE_IMAGE_COLUMN_WIDTH, TableData, TableSort,
+    Column, ColumnReorderDrag, DEFAULT_COLUMN_WIDTH, GridContext, MIN_COLUMN_WIDTH,
+    TABLE_HEADER_GROUP, TABLE_IMAGE_COLUMN_WIDTH, TableData, TableSort,
 };
 use table_item::TableItem;
 
@@ -187,10 +187,7 @@ where
                             "table rows loaded"
                         );
                         this.items = Some(Arc::new(items));
-                        this.views = cx.new(|_| FxHashMap::default());
-                        this.render_counter = cx.new(|_| 0);
-                        this.grid_views = cx.new(|_| FxHashMap::default());
-                        this.grid_render_counter = cx.new(|_| 0);
+                        this.clear_row_views(cx);
                     }
                     Ok(Err(err)) => {
                         tracing::warn!(
@@ -247,24 +244,15 @@ where
             let horizontal_scroll_id =
                 SharedString::from(format!("{}-horizontal-scroll", T::get_table_name()));
 
+            let restore_scroll_offset = |handle: &UniformListScrollHandle, offset: f32| {
+                handle.0.borrow().base_handle.set_offset(gpui::Point {
+                    x: px(0.0),
+                    y: px(-offset),
+                });
+            };
             if let Some(offset) = initial_scroll_offset {
-                list_vertical_scroll_handle
-                    .0
-                    .borrow()
-                    .base_handle
-                    .set_offset(gpui::Point {
-                        x: px(0.0),
-                        y: px(-offset),
-                    });
-
-                grid_scroll_handle
-                    .0
-                    .borrow()
-                    .base_handle
-                    .set_offset(gpui::Point {
-                        x: px(0.0),
-                        y: px(-offset),
-                    });
+                restore_scroll_offset(&list_vertical_scroll_handle, offset);
+                restore_scroll_offset(&grid_scroll_handle, offset);
             }
 
             cx.observe(&sort_method, |this: &mut Table<T, C>, _, cx| {
@@ -273,27 +261,15 @@ where
             .detach();
 
             cx.observe(&columns, |this: &mut Table<T, C>, _, cx| {
-                this.views = cx.new(|_| FxHashMap::default());
-                this.render_counter = cx.new(|_| 0);
-                this.grid_views = cx.new(|_| FxHashMap::default());
-                this.grid_render_counter = cx.new(|_| 0);
-
-                let settings = this.get_settings(cx);
-                let table_settings_model = cx.global::<Models>().table_settings.clone();
-                table_settings_model.update(cx, |map, _| {
-                    map.insert(T::get_table_name().to_string(), settings);
-                });
+                this.clear_row_views(cx);
+                this.persist_settings(cx);
 
                 cx.notify();
             })
             .detach();
 
             cx.observe(&view_mode, |this: &mut Table<T, C>, _, cx| {
-                let settings = this.get_settings(cx);
-                let table_settings_model = cx.global::<Models>().table_settings.clone();
-                table_settings_model.update(cx, |map, _| {
-                    map.insert(T::get_table_name().to_string(), settings);
-                });
+                this.persist_settings(cx);
 
                 cx.notify();
             })
@@ -358,6 +334,40 @@ where
         self.items.clone()
     }
 
+    /// Drops all cached row views, list and grid alike; called on reload and
+    /// when the column set changes.
+    fn clear_row_views(&mut self, cx: &mut Context<Self>) {
+        self.views = cx.new(|_| FxHashMap::default());
+        self.render_counter = cx.new(|_| 0);
+        self.grid_views = cx.new(|_| FxHashMap::default());
+        self.grid_render_counter = cx.new(|_| 0);
+    }
+
+    /// Writes the current column set/widths and view mode into the shared
+    /// table-settings model, keyed by table name.
+    fn persist_settings(&self, cx: &mut Context<Self>) {
+        let settings = self.get_settings(cx);
+        let table_settings_model = cx.global::<Models>().table_settings.clone();
+        table_settings_model.update(cx, |map, _| {
+            map.insert(T::get_table_name().to_string(), settings);
+        });
+    }
+
+    /// Copy-on-write update of the visible column map: clones the shared map,
+    /// lets `apply` mutate the copy, then publishes it and notifies.
+    fn update_columns(
+        &self,
+        cx: &mut App,
+        apply: impl FnOnce(&mut IndexMap<C, f32, FxBuildHasher>),
+    ) {
+        self.columns.update(cx, |cols, cx| {
+            let mut new_cols = (**cols).clone();
+            apply(&mut new_cols);
+            *cols = Arc::new(new_cols);
+            cx.notify();
+        });
+    }
+
     pub fn toggle_column(&mut self, column: C, cx: &mut App) {
         if self.columns.read(cx).contains_key(&column) {
             self.hide_column(column, cx);
@@ -378,11 +388,8 @@ where
             });
         }
 
-        self.columns.update(cx, |cols, cx| {
-            let mut new_cols = (**cols).clone();
-            new_cols.shift_remove(&column);
-            *cols = Arc::new(new_cols);
-            cx.notify();
+        self.update_columns(cx, |cols| {
+            cols.shift_remove(&column);
         });
     }
 
@@ -395,17 +402,15 @@ where
             .get(&column)
             .copied()
             .or_else(|| default_columns.get(&column).copied())
-            .unwrap_or(100.0);
+            .unwrap_or(DEFAULT_COLUMN_WIDTH);
 
         // insert based on default column positions
         let default_order: Vec<C> = default_columns.keys().copied().collect();
         let target_idx = default_order.iter().position(|c| *c == column).unwrap_or(0);
 
-        self.columns.update(cx, |cols, cx| {
-            let mut new_cols = (**cols).clone();
-
+        self.update_columns(cx, |cols| {
             let mut insert_idx = 0;
-            for (idx, key) in new_cols.keys().enumerate() {
+            for (idx, key) in cols.keys().enumerate() {
                 if let Some(pos) = default_order.iter().position(|c| c == key)
                     && pos < target_idx
                 {
@@ -413,9 +418,7 @@ where
                 }
             }
 
-            new_cols.shift_insert(insert_idx, column, width);
-            *cols = Arc::new(new_cols);
-            cx.notify();
+            cols.shift_insert(insert_idx, column, width);
         });
 
         self.hidden_column_widths.update(cx, |map, _| {
@@ -593,7 +596,6 @@ where
                     .text_sm()
                     .flex_shrink_0()
                     .text_ellipsis()
-                    .border_color(theme.border_color)
                     .border_b_1()
                     .border_color(theme.border_color),
             );
@@ -793,7 +795,6 @@ where
             });
 
         let grid_canvas = {
-            let gap = 0.0;
             let grid_padding = 10.0;
 
             div()
@@ -823,45 +824,41 @@ where
                                     cx,
                                 );
 
-                                let item_id = items[idx].clone();
-
                                 // Fallible equivalent of `create_or_retrieve_view`: a row can
                                 // vanish between get_rows and this frame (a rescan deleted it,
                                 // or its query failed), and the old `.expect` here panicked the
-                                // whole app off a stale items snapshot.
-                                let cached_view = grid_views_model.read(cx).get(&idx).cloned();
-                                let view = match cached_view {
-                                    Some(view) => div().size_full().child(view).into_any_element(),
-                                    None => {
-                                        match grid_item::GridItem::new(
-                                            cx,
-                                            item_id,
-                                            grid_handler.clone(),
-                                            grid_context_menu_context.clone(),
-                                            GridContext::Table,
-                                        ) {
-                                            Some(view) => {
-                                                grid_views_model.update(cx, |m, _| {
-                                                    m.insert(idx, view.clone());
-                                                });
-                                                div().size_full().child(view).into_any_element()
-                                            }
-                                            // Row is gone: render a blank cell for this frame;
-                                            // the reload already in flight replaces the stale
-                                            // snapshot.
-                                            None => div().into_any_element(),
-                                        }
+                                // whole app off a stale items snapshot. The lookup result is
+                                // bound before matching so the entity's read guard is gone
+                                // before the `update` below re-borrows it.
+                                let mut view = grid_views_model.read(cx).get(&idx).cloned();
+                                if view.is_none() {
+                                    view = grid_item::GridItem::new(
+                                        cx,
+                                        items[idx].clone(),
+                                        grid_handler.clone(),
+                                        grid_context_menu_context.clone(),
+                                        GridContext::Table,
+                                    );
+                                    if let Some(built) = view.clone() {
+                                        grid_views_model.update(cx, |m, _| {
+                                            m.insert(idx, built);
+                                        });
                                     }
-                                };
+                                }
 
-                                // no per-item image_cache here: GridItem draws its
-                                // artwork through managed_image, which never touches
-                                // the gpui image cache the wrapper would feed
-                                view
+                                // A vanished row renders as a blank cell for this frame; the
+                                // reload already in flight replaces the stale snapshot. No
+                                // per-item image_cache here either: GridItem draws its artwork
+                                // through managed_image, which never touches the gpui image
+                                // cache the wrapper would feed.
+                                match view {
+                                    Some(view) => div().size_full().child(view).into_any_element(),
+                                    None => div().into_any_element(),
+                                }
                             },
                         )
                         .min_item_width(px(grid_min_item_width))
-                        .gap(px(gap))
+                        .gap(px(0.0))
                         .py(px(grid_padding)),
                     )
                     .child(floating_scrollbar("grid-scrollbar", grid_scroll_handle).right(px(4.0)))

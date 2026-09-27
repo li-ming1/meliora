@@ -134,15 +134,8 @@ fn play_pause(_: &PlayPause, cx: &mut App) {
     let state = cx.global::<PlaybackInfo>().playback_state.read(cx);
     let interface = cx.global::<PlaybackInterface>();
     match state {
-        PlaybackState::Stopped => {
-            interface.play();
-        }
-        PlaybackState::Playing => {
-            interface.pause();
-        }
-        PlaybackState::Paused => {
-            interface.play();
-        }
+        PlaybackState::Playing => interface.pause(),
+        PlaybackState::Stopped | PlaybackState::Paused => interface.play(),
     }
 }
 

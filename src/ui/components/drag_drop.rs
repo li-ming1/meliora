@@ -257,6 +257,24 @@ impl DropIndicator {
     }
 }
 
+/// A 2px horizontal line pinned to one horizontal edge of the item: the top
+/// edge when `bottom` is false (drop goes before this item), the bottom edge
+/// when it is true (drop goes after).
+fn edge_line(bottom: bool, color: Hsla) -> Div {
+    let mut line = div()
+        .absolute()
+        .left(px(0.0))
+        .right(px(0.0))
+        .h(px(2.0))
+        .bg(color);
+    if bottom {
+        line = line.bottom(px(0.0));
+    } else {
+        line = line.top(px(0.0));
+    }
+    line
+}
+
 impl RenderOnce for DropIndicator {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let show_before = self.show_before;
@@ -269,28 +287,8 @@ impl RenderOnce for DropIndicator {
             .left(px(0.0))
             .right(px(0.0))
             .bottom(px(0.0))
-            .when(show_before, |this: Div| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top(px(0.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        .h(px(2.0))
-                        .bg(color),
-                )
-            })
-            .when(show_after, |this: Div| {
-                this.child(
-                    div()
-                        .absolute()
-                        .bottom(px(0.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        .h(px(2.0))
-                        .bg(color),
-                )
-            })
+            .when(show_before, |this: Div| this.child(edge_line(false, color)))
+            .when(show_after, |this: Div| this.child(edge_line(true, color)))
     }
 }
 
@@ -382,19 +380,19 @@ pub fn calculate_drop_target(
     let relative_y = mouse_pos.y - container_bounds.origin.y - scroll_offset_y;
     let item_index = (relative_y / item_height).floor() as usize;
 
-    if item_index < item_count {
-        let item_top =
-            container_bounds.origin.y + (item_height * item_index as f32) + scroll_offset_y;
-        let item_bounds = Bounds {
-            origin: point(container_bounds.origin.x, item_top),
-            size: size(container_bounds.size.width, item_height),
-        };
-        let drop_position = calculate_drop_position(mouse_pos.y, item_bounds);
-
-        Some((item_index, drop_position))
-    } else {
-        None
+    if item_index >= item_count {
+        return None;
     }
+
+    let item_top = container_bounds.origin.y + (item_height * item_index as f32) + scroll_offset_y;
+    let item_bounds = Bounds {
+        origin: point(container_bounds.origin.x, item_top),
+        size: size(container_bounds.size.width, item_height),
+    };
+    Some((
+        item_index,
+        calculate_drop_position(mouse_pos.y, item_bounds),
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,6 +455,75 @@ pub fn perform_edge_scroll(
     }
 }
 
+/// Shared tail of the drag-move handlers: edge scroll, drop-target
+/// computation and one coalesced manager update. Returns whether scrolling
+/// occurred; callers then schedule the edge-scroll loop via
+/// [`request_edge_scroll`].
+///
+/// Everything here is gated on the pointer actually being inside the
+/// container: `DragMoveEvent` fires for every mouse move in the window while
+/// a drag is active, not only over this element, so otherwise edge scroll
+/// runs (and chains get scheduled) while the pointer is anywhere else on the
+/// same row, and a stale in-zone mouse_y keeps a scheduled chain scrolling
+/// after the pointer left.
+fn update_drag_move_state<V: 'static>(
+    manager: &Entity<DragDropListManager>,
+    scroll_handle: &ScrollableHandle,
+    config: &DragDropListConfig,
+    mouse_pos: Point<Pixels>,
+    container_bounds: Bounds<Pixels>,
+    item_count: usize,
+    dragging_indices: Vec<usize>,
+    reduced_motion: bool,
+    cx: &mut Context<V>,
+) -> bool {
+    let contains = container_bounds.contains(&mouse_pos);
+
+    let direction = if contains {
+        get_edge_scroll_direction(mouse_pos.y, container_bounds, &config.scroll_config)
+    } else {
+        EdgeScrollDirection::None
+    };
+    let scrolled = if contains && !reduced_motion {
+        perform_edge_scroll(scroll_handle, direction, &config.scroll_config)
+    } else {
+        false
+    };
+
+    let drop_target = if contains {
+        calculate_drop_target(
+            mouse_pos,
+            container_bounds,
+            scroll_handle.offset().y,
+            config.item_height,
+            item_count,
+        )
+    } else {
+        None
+    };
+
+    // Single update: every `manager.update` notifies all row observers of
+    // this list, so all state changes are coalesced into one.
+    manager.update(cx, |m, _| {
+        m.state.is_dragging = true;
+        m.state.dragging_indices = dragging_indices;
+        if contains {
+            m.state.set_mouse_y(mouse_pos.y);
+        } else {
+            // stop any pending edge-scroll chain from a stale in-zone mouse_y
+            m.state.drag_mouse_y = None;
+        }
+        m.container_bounds = Some(container_bounds);
+        if let Some((item_index, drop_position)) = drop_target {
+            m.state.update_drop_target(item_index, drop_position);
+        } else {
+            m.state.clear_drop_target();
+        }
+    });
+
+    scrolled
+}
+
 /// Handle a drag move event for a drag-drop list.
 ///
 /// Returns `true` if scrolling occurred. If scrolling occurred, the caller should schedule the
@@ -476,61 +543,17 @@ pub fn handle_drag_move<V: 'static>(
         return false;
     }
 
-    let source_index = drag_data.source_index;
-    let mouse_pos = event.event.position;
-    let container_bounds = event.bounds;
-
-    // DragMoveEvent fires for every mouse move in the window while a drag is
-    // active, not only over this element: everything below must be gated on
-    // the pointer actually being inside the container, otherwise edge scroll
-    // runs (and chains get scheduled) while the pointer is anywhere else on
-    // the same row, and a stale in-zone mouse_y keeps a scheduled chain
-    // scrolling after the pointer left.
-    let contains = container_bounds.contains(&mouse_pos);
-
-    let direction = if contains {
-        get_edge_scroll_direction(mouse_pos.y, container_bounds, &config.scroll_config)
-    } else {
-        EdgeScrollDirection::None
-    };
-    let scrolled = if contains && !reduced_motion {
-        perform_edge_scroll(&scroll_handle, direction, &config.scroll_config)
-    } else {
-        false
-    };
-
-    let drop_target = if contains {
-        calculate_drop_target(
-            mouse_pos,
-            container_bounds,
-            scroll_handle.offset().y,
-            config.item_height,
-            item_count,
-        )
-    } else {
-        None
-    };
-
-    // Single update: every `manager.update` notifies all row observers of this
-    // list, so the two former updates are coalesced into one.
-    manager.update(cx, |m, _| {
-        m.state.is_dragging = true;
-        m.state.dragging_indices = vec![source_index];
-        if contains {
-            m.state.set_mouse_y(mouse_pos.y);
-        } else {
-            // stop any pending edge-scroll chain from a stale in-zone mouse_y
-            m.state.drag_mouse_y = None;
-        }
-        m.container_bounds = Some(container_bounds);
-        if let Some((item_index, drop_position)) = drop_target {
-            m.state.update_drop_target(item_index, drop_position);
-        } else {
-            m.state.clear_drop_target();
-        }
-    });
-
-    scrolled
+    update_drag_move_state(
+        &manager,
+        &scroll_handle,
+        &config,
+        event.event.position,
+        event.bounds,
+        item_count,
+        vec![drag_data.source_index],
+        reduced_motion,
+        cx,
+    )
 }
 
 /// Handle a drag move event for TrackDragData in a list.
@@ -556,63 +579,23 @@ pub fn handle_track_drag_move<V: 'static>(
         .map(|id| *id == config.list_id)
         .unwrap_or(false);
 
-    let mouse_pos = event.event.position;
-    let container_bounds = event.bounds;
-
-    // DragMoveEvent fires for every mouse move in the window while a drag is
-    // active (see `handle_drag_move`): gate scroll and target computation on
-    // the pointer actually being inside the container.
-    let contains = container_bounds.contains(&mouse_pos);
-
     let dragging_indices = if is_internal {
         drag_data.all_indices()
     } else {
         Vec::new()
     };
 
-    let direction = if contains {
-        get_edge_scroll_direction(mouse_pos.y, container_bounds, &config.scroll_config)
-    } else {
-        EdgeScrollDirection::None
-    };
-    let scrolled = if contains && !reduced_motion {
-        perform_edge_scroll(&scroll_handle, direction, &config.scroll_config)
-    } else {
-        false
-    };
-
-    let drop_target = if contains {
-        calculate_drop_target(
-            mouse_pos,
-            container_bounds,
-            scroll_handle.offset().y,
-            config.item_height,
-            item_count,
-        )
-    } else {
-        None
-    };
-
-    // Single update: every `manager.update` notifies all row observers of this
-    // list, so the two former updates are coalesced into one.
-    manager.update(cx, |m, _| {
-        m.state.is_dragging = true;
-        m.state.dragging_indices = dragging_indices;
-        if contains {
-            m.state.set_mouse_y(mouse_pos.y);
-        } else {
-            // stop any pending edge-scroll chain from a stale in-zone mouse_y
-            m.state.drag_mouse_y = None;
-        }
-        m.container_bounds = Some(container_bounds);
-        if let Some((item_index, drop_position)) = drop_target {
-            m.state.update_drop_target(item_index, drop_position);
-        } else {
-            m.state.clear_drop_target();
-        }
-    });
-
-    scrolled
+    update_drag_move_state(
+        &manager,
+        &scroll_handle,
+        &config,
+        event.event.position,
+        event.bounds,
+        item_count,
+        dragging_indices,
+        reduced_motion,
+        cx,
+    )
 }
 
 pub fn handle_drop<V: 'static, F>(
@@ -749,51 +732,17 @@ pub fn handle_external_drag_move<V: 'static>(
 ) -> bool {
     let config = manager.read(cx).config.clone();
 
-    // Gate on the pointer being inside the container (see `handle_drag_move`):
-    // the event fires window-wide during a drag.
-    let contains = container_bounds.contains(&mouse_pos);
-
-    let direction = if contains {
-        get_edge_scroll_direction(mouse_pos.y, container_bounds, &config.scroll_config)
-    } else {
-        EdgeScrollDirection::None
-    };
-    let scrolled = if contains && !reduced_motion {
-        perform_edge_scroll(&scroll_handle, direction, &config.scroll_config)
-    } else {
-        false
-    };
-
-    let drop_target = if contains {
-        calculate_drop_target(
-            mouse_pos,
-            container_bounds,
-            scroll_handle.offset().y,
-            config.item_height,
-            item_count,
-        )
-    } else {
-        None
-    };
-
-    manager.update(cx, |m, _| {
-        m.state.is_dragging = true;
-        m.state.dragging_indices.clear();
-        if contains {
-            m.state.set_mouse_y(mouse_pos.y);
-        } else {
-            // stop any pending edge-scroll chain from a stale in-zone mouse_y
-            m.state.drag_mouse_y = None;
-        }
-        m.container_bounds = Some(container_bounds);
-        if let Some((item_index, drop_position)) = drop_target {
-            m.state.update_drop_target(item_index, drop_position);
-        } else {
-            m.state.clear_drop_target();
-        }
-    });
-
-    scrolled
+    update_drag_move_state(
+        &manager,
+        &scroll_handle,
+        &config,
+        mouse_pos,
+        container_bounds,
+        item_count,
+        Vec::new(),
+        reduced_motion,
+        cx,
+    )
 }
 
 pub fn check_drag_cancelled<V: 'static>(

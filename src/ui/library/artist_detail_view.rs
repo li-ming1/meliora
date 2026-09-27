@@ -1,4 +1,4 @@
-use std::{rc::Rc, sync::Arc};
+use std::{path::Path, rc::Rc, sync::Arc};
 
 use cntp_i18n::tr;
 use gpui::*;
@@ -55,6 +55,50 @@ fn availability_map(cx: &App, tracks: &[Track]) -> Arc<Vec<bool>> {
             .map(|track| is_track_available_snapshot(cx, track))
             .collect(),
     )
+}
+
+/// Builds one `TrackItem` row per track. Every row carries its full source
+/// list (for queue context) and hides the artist name when it matches the
+/// track's own; the remaining flags are identical for both artist track
+/// lists.
+fn track_items(
+    cx: &mut App,
+    tracks: &Arc<Vec<Track>>,
+    artist_name: Option<&DBString>,
+) -> Vec<Entity<TrackItem>> {
+    tracks
+        .iter()
+        .map(|track| {
+            TrackItem::new(
+                cx,
+                track.clone(),
+                false,
+                ArtistNameVisibility::OnlyIfDifferent(artist_name.cloned()),
+                TrackItemLeftField::Art,
+                None,
+                false,
+                None,
+                Some(tracks.clone()),
+                false,
+                false,
+            )
+        })
+        .collect()
+}
+
+/// True when the currently playing path is one of `tracks` (rows whose
+/// availability snapshot says unavailable don't count as playing).
+fn contains_current_track(
+    current_path: Option<&Path>,
+    tracks: &[Track],
+    available: &[bool],
+) -> bool {
+    current_path.is_some_and(|current| {
+        tracks
+            .iter()
+            .zip(available.iter())
+            .any(|(track, &is_available)| is_available && current == track.location.as_path())
+    })
 }
 
 /// uniform_list needs one fixed row height; 40px is what the non-virtualized
@@ -117,24 +161,7 @@ impl ArtistDetailView {
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
             let liked_tracks_available = availability_map(cx, &liked_tracks);
 
-            let liked_track_items: Vec<Entity<TrackItem>> = liked_tracks
-                .iter()
-                .map(|track| {
-                    TrackItem::new(
-                        cx,
-                        track.clone(),
-                        false,
-                        ArtistNameVisibility::OnlyIfDifferent(artist_name.clone()),
-                        TrackItemLeftField::Art,
-                        None,
-                        false,
-                        None,
-                        Some(liked_tracks.clone()),
-                        false,
-                        false,
-                    )
-                })
-                .collect();
+            let liked_track_items = track_items(cx, &liked_tracks, artist_name.as_ref());
 
             let standalone_sort = LikedTrackSortMethod::ReleaseOrder;
 
@@ -143,24 +170,7 @@ impl ArtistDetailView {
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
             let standalone_tracks_available = availability_map(cx, &standalone_tracks);
 
-            let standalone_track_items: Vec<Entity<TrackItem>> = standalone_tracks
-                .iter()
-                .map(|track| {
-                    TrackItem::new(
-                        cx,
-                        track.clone(),
-                        false,
-                        ArtistNameVisibility::OnlyIfDifferent(artist_name.clone()),
-                        TrackItemLeftField::Art,
-                        None,
-                        false,
-                        None,
-                        Some(standalone_tracks.clone()),
-                        false,
-                        false,
-                    )
-                })
-                .collect();
+            let standalone_track_items = track_items(cx, &standalone_tracks, artist_name.as_ref());
 
             let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
@@ -252,26 +262,7 @@ impl ArtistDetailView {
     fn set_liked_tracks(&mut self, liked_tracks: Arc<Vec<Track>>, cx: &mut Context<Self>) {
         self.liked_tracks = liked_tracks;
         self.liked_tracks_available = availability_map(cx, &self.liked_tracks);
-
-        self.liked_track_items = self
-            .liked_tracks
-            .iter()
-            .map(|track: &Track| {
-                TrackItem::new(
-                    cx,
-                    track.clone(),
-                    false,
-                    ArtistNameVisibility::OnlyIfDifferent(self.artist_name.clone()),
-                    TrackItemLeftField::Art,
-                    None,
-                    false,
-                    None,
-                    Some(self.liked_tracks.clone()),
-                    false,
-                    false,
-                )
-            })
-            .collect();
+        self.liked_track_items = track_items(cx, &self.liked_tracks, self.artist_name.as_ref());
 
         cx.notify();
     }
@@ -310,26 +301,8 @@ impl ArtistDetailView {
     ) {
         self.standalone_tracks = standalone_tracks;
         self.standalone_tracks_available = availability_map(cx, &self.standalone_tracks);
-
-        self.standalone_track_items = self
-            .standalone_tracks
-            .iter()
-            .map(|track: &Track| {
-                TrackItem::new(
-                    cx,
-                    track.clone(),
-                    false,
-                    ArtistNameVisibility::OnlyIfDifferent(self.artist_name.clone()),
-                    TrackItemLeftField::Art,
-                    None,
-                    false,
-                    None,
-                    Some(self.standalone_tracks.clone()),
-                    false,
-                    false,
-                )
-            })
-            .collect();
+        self.standalone_track_items =
+            track_items(cx, &self.standalone_tracks, self.artist_name.as_ref());
 
         cx.notify();
     }
@@ -449,28 +422,22 @@ impl Render for ArtistDetailView {
             .as_ref()
             .map(|current| current.get_path().as_path());
 
-        let current_track_in_artist = current_path.is_some_and(|current| {
-            self.all_tracks
-                .iter()
-                .zip(self.all_tracks_available.iter())
-                .any(|(track, &available)| available && current == track.location.as_path())
-        });
+        let current_track_in_artist =
+            contains_current_track(current_path, &self.all_tracks, &self.all_tracks_available);
         let has_available_artist_tracks = self.all_tracks_available.iter().any(|&a| a);
 
-        let current_track_in_liked = current_path.is_some_and(|current| {
-            self.liked_tracks
-                .iter()
-                .zip(self.liked_tracks_available.iter())
-                .any(|(track, &available)| available && current == track.location.as_path())
-        });
+        let current_track_in_liked = contains_current_track(
+            current_path,
+            &self.liked_tracks,
+            &self.liked_tracks_available,
+        );
         let has_available_liked_tracks = self.liked_tracks_available.iter().any(|&a| a);
 
-        let current_track_in_standalone = current_path.is_some_and(|current| {
-            self.standalone_tracks
-                .iter()
-                .zip(self.standalone_tracks_available.iter())
-                .any(|(track, &available)| available && current == track.location.as_path())
-        });
+        let current_track_in_standalone = contains_current_track(
+            current_path,
+            &self.standalone_tracks,
+            &self.standalone_tracks_available,
+        );
         let has_available_standalone_tracks = self.standalone_tracks_available.iter().any(|&a| a);
 
         let liked_track_header =

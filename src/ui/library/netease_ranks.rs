@@ -40,6 +40,10 @@ const TRACK_ROW_HEIGHT: f32 = 60.0;
 /// update back.
 const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How often the like/unlike watcher polls the global liked-set for the
+/// outcome while waiting.
+const LIKE_WATCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {
     Ranks,
@@ -50,10 +54,6 @@ enum RanksState {
     Loading,
     Failed(SharedString),
     Ready(Vec<NeteaseRank>),
-}
-
-fn rows_ready(ranks: &RanksState) -> bool {
-    matches!(ranks, RanksState::Ready(_))
 }
 
 /// Grid geometry for the virtualized rank-card grid. Five cards fill the
@@ -287,26 +287,25 @@ impl NeteaseRanksView {
                     let still_current = this.selected.as_ref().is_some_and(|r| r.id == rank.id)
                         && this.track_generation == generation;
 
-                    match request {
-                        Ok(Ok((ids, response))) if still_current => {
-                            this.track_ids = Some(ids);
-                            let page_tracks = parse_tracks(&response.body, "/songs");
-                            // the song-detail response carries no total, so a full
-                            // page is the "maybe more" signal
-                            this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
-                            this.tracks.extend(page_tracks.into_iter().map(Arc::new));
-                            this.track_page = page;
-                            this.tracks_state = TracksState::Idle;
+                    if still_current {
+                        match request {
+                            Ok(Ok((ids, response))) => {
+                                this.track_ids = Some(ids);
+                                let page_tracks = parse_tracks(&response.body, "/songs");
+                                // the song-detail response carries no total, so a full
+                                // page is the "maybe more" signal
+                                this.has_more_tracks = page_tracks.len() as i64 >= TRACKS_PER_PAGE;
+                                this.tracks.extend(page_tracks.into_iter().map(Arc::new));
+                                this.track_page = page;
+                                this.tracks_state = TracksState::Idle;
+                            }
+                            Ok(Err(err)) => {
+                                this.tracks_state = TracksState::Failed(err.to_string().into());
+                            }
+                            Err(err) => {
+                                this.tracks_state = TracksState::Failed(err.to_string().into());
+                            }
                         }
-                        Ok(Ok(_)) => {}
-                        Ok(Err(err)) if still_current => {
-                            this.tracks_state = TracksState::Failed(err.to_string().into());
-                        }
-                        Ok(Err(_)) => {}
-                        Err(err) if still_current => {
-                            this.tracks_state = TracksState::Failed(err.to_string().into());
-                        }
-                        Err(_) => {}
                     }
                     cx.notify();
                 })
@@ -387,7 +386,7 @@ impl NeteaseRanksView {
             let deadline = std::time::Instant::now() + LIKE_WATCH_TIMEOUT;
             loop {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(250))
+                    .timer(LIKE_WATCH_POLL_INTERVAL)
                     .await;
                 if crate::ui::netease::liked_set_contains(id) == want_liked {
                     // landed: release the dedup marker, nothing to roll back
@@ -781,8 +780,9 @@ impl Render for NeteaseRanksView {
         // the rank-card grid is a uniform_list too: like the track lists it
         // must be the scroll container itself, not a child of the page
         // scroller, or the virtualization culls nothing
-        let grid_ready =
-            self.selected.is_none() && self.tab == Tab::Ranks && rows_ready(&self.ranks);
+        let grid_ready = self.selected.is_none()
+            && self.tab == Tab::Ranks
+            && matches!(self.ranks, RanksState::Ready(_));
 
         let mut root = div()
             .id("netease-ranks-view")

@@ -9,6 +9,8 @@ use url::Url;
 
 use crate::ui::assets::bundled::BundledAssets;
 
+/// gpui 的 `AssetSource` 实现，按 URL scheme 分发：`!db://` 资产查库表，
+/// `!bundled://` 资产取自编译期内嵌资源；其余 scheme 一律视为资产缺失。
 pub struct MelioraAssetSource {
     pool: SqlitePool,
 }

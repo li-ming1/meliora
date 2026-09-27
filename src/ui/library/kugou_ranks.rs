@@ -7,7 +7,7 @@ use std::{collections::HashSet, sync::Arc};
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
+    AnyElement, App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
 };
@@ -51,10 +51,6 @@ enum RanksState {
     Loading,
     Failed(SharedString),
     Ready(Vec<KugouRank>),
-}
-
-fn rows_ready(ranks: &RanksState) -> bool {
-    matches!(ranks, RanksState::Ready(_))
 }
 
 /// Grid geometry for the virtualized rank-card grid. Five cards fill the
@@ -525,10 +521,6 @@ impl KugouRanksView {
             .child(name)
     }
 
-    /// Rows are built from inside the uniform_list render closure where only
-    /// `&App` is available, so there is no `cx.listener` here: the like
-    /// handler reaches the view through a weak handle instead (same pattern
-    /// as kugou_playlists).
     /// The rows the virtualized container renders: the open rank's tracks, or
     /// the daily-recommend list while that tab is showing. Both lists used to
     /// render from their own state; the container reads a single slice, so
@@ -543,6 +535,10 @@ impl KugouRanksView {
         }
     }
 
+    /// Rows are built from inside the uniform_list render closure where only
+    /// `&App` is available, so there is no `cx.listener` here: the like
+    /// handler reaches the view through a weak handle instead (same pattern
+    /// as kugou_playlists).
     fn render_track_row(
         &self,
         track: &Arc<KugouTrackInfo>,
@@ -601,36 +597,22 @@ impl KugouRanksView {
 
         match self.tab {
             Tab::Ranks => match &self.ranks {
-                RanksState::Loading => div()
-                    .text_sm()
-                    .text_color(theme.text_secondary)
-                    .py(px(24.0))
-                    .child(tr!("KUGOU_LOADING"))
-                    .into_any_element(),
-                RanksState::Failed(message) => div()
-                    .text_sm()
-                    .text_color(theme.status_error)
-                    .py(px(12.0))
-                    .child(message.clone())
-                    .into_any_element(),
+                RanksState::Loading => muted_line(tr!("KUGOU_LOADING"), &theme).into_any_element(),
+                RanksState::Failed(message) => {
+                    error_line(message.clone(), &theme).into_any_element()
+                }
                 // unreachable in practice: Render::render routes a Ready rank
                 // grid to the virtualized container below; this arm only
                 // keeps the match exhaustive
                 RanksState::Ready(_) => div().into_any_element(),
             },
             Tab::DailyRecommend => match &self.recommend {
-                RecommendState::Idle | RecommendState::Loading => div()
-                    .text_sm()
-                    .text_color(theme.text_secondary)
-                    .py(px(24.0))
-                    .child(tr!("KUGOU_LOADING"))
-                    .into_any_element(),
-                RecommendState::Failed(message) => div()
-                    .text_sm()
-                    .text_color(theme.status_error)
-                    .py(px(12.0))
-                    .child(message.clone())
-                    .into_any_element(),
+                RecommendState::Idle | RecommendState::Loading => {
+                    muted_line(tr!("KUGOU_LOADING"), &theme).into_any_element()
+                }
+                RecommendState::Failed(message) => {
+                    error_line(message.clone(), &theme).into_any_element()
+                }
                 RecommendState::Ready(tracks) => {
                     // unreachable in practice: Render::render routes a Ready
                     // daily-recommend to the virtualized container below; this
@@ -648,6 +630,25 @@ impl KugouRanksView {
             },
         }
     }
+}
+
+/// Muted placeholder line for the loading and empty states of both the rank
+/// grid and the track lists.
+fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(theme.text_secondary)
+        .py(px(24.0))
+        .child(text)
+}
+
+/// Error placeholder line; the caller pairs it with a retry button.
+fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(theme.status_error)
+        .py(px(12.0))
+        .child(message)
 }
 
 impl Render for KugouRanksView {
@@ -669,8 +670,9 @@ impl Render for KugouRanksView {
         // the rank-card grid is a uniform_list too: like the track lists it
         // must be the scroll container itself, not a child of the page
         // scroller, or the virtualization culls nothing
-        let grid_ready =
-            self.selected.is_none() && self.tab == Tab::Ranks && rows_ready(&self.ranks);
+        let grid_ready = self.selected.is_none()
+            && self.tab == Tab::Ranks
+            && matches!(self.ranks, RanksState::Ready(_));
 
         let mut root = div()
             .id("kugou-ranks-view")
@@ -762,20 +764,14 @@ impl Render for KugouRanksView {
         } else if grid_ready {
             root = root.child(self.render_ranks_grid(cx));
         } else {
-            let content: AnyElement = if let Some(_rank) = self.selected.as_ref() {
+            let content: AnyElement = if self.selected.is_some() {
                 match &self.tracks_state {
-                    TracksState::Loading if self.tracks.is_empty() => div()
-                        .text_sm()
-                        .text_color(theme.text_secondary)
-                        .py(px(24.0))
-                        .child(tr!("KUGOU_LOADING"))
-                        .into_any_element(),
-                    TracksState::Failed(message) if self.tracks.is_empty() => div()
-                        .text_sm()
-                        .text_color(theme.status_error)
-                        .py(px(12.0))
-                        .child(message.clone())
-                        .into_any_element(),
+                    TracksState::Loading if self.tracks.is_empty() => {
+                        muted_line(tr!("KUGOU_LOADING"), &theme).into_any_element()
+                    }
+                    TracksState::Failed(message) if self.tracks.is_empty() => {
+                        error_line(message.clone(), &theme).into_any_element()
+                    }
                     // unreachable while tracks_ready routes non-empty lists to
                     // the virtualized container; kept exhaustive for the compiler
                     _ => div().into_any_element(),

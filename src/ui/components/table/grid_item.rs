@@ -4,12 +4,11 @@ use gpui::{prelude::FluentBuilder, *};
 
 use super::{
     OnSelectHandler,
-    table_data::{Column, GridContext, TableData, TableDragData},
+    table_data::{Column, GridContext, TableData, TableDragData, with_drag_handlers},
 };
 use crate::ui::{
     components::{
         context::context,
-        drag_drop::{AlbumDragData, DragPreview, TrackDragData},
         managed_image::{ManagedImageKey, managed_image},
     },
     theme::Theme,
@@ -77,7 +76,6 @@ where
     C: Column + 'static,
 {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        let row_data = self.row.clone();
         let is_available = self.is_available;
         // shared-row variant: the menu builder holds an `Arc` refcount and
         // deep-clones the row only when the menu opens, not every frame
@@ -125,7 +123,7 @@ where
                 this.opacity(0.5)
             })
             .on_aux_click({
-                let row_data = row_data.clone();
+                let row_data = self.row.clone();
                 move |ev, window, cx| {
                     if ev.is_middle_click() {
                         row_data.handle_middle_mouse(window, cx, GridContext::Table);
@@ -133,25 +131,7 @@ where
                 }
             });
 
-        container = match drag_data {
-            Some(TableDragData::Track(track_data)) => {
-                let display_name = track_data.display_name.clone();
-                container
-                    .on_drag(track_data, move |_, _, _, cx| {
-                        DragPreview::new(cx, display_name.clone())
-                    })
-                    .drag_over::<TrackDragData>(|style, _, _, _| style.bg(gpui::rgba(0x88888822)))
-            }
-            Some(TableDragData::Album(album_data)) => {
-                let display_name = album_data.display_name.clone();
-                container
-                    .on_drag(album_data, move |_, _, _, cx| {
-                        DragPreview::new(cx, display_name.clone())
-                    })
-                    .drag_over::<AlbumDragData>(|style, _, _, _| style.bg(gpui::rgba(0x88888822)))
-            }
-            None => container,
-        };
+        container = with_drag_handlers(container, drag_data);
 
         let mut img_container = div()
             .w_full()

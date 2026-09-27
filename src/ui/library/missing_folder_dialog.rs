@@ -1,3 +1,7 @@
+//! Modal shown when a scan finds library folders that no longer exist: the
+//! user chooses whether to keep or delete the items inside, optionally
+//! remembering the choice as the default policy in Settings.
+
 use cntp_i18n::tr;
 use gpui::{App, AppContext, Context, Entity, IntoElement, Render, Window};
 
@@ -25,6 +29,9 @@ impl MissingFolderDialog {
         })
     }
 
+    /// Persists `policy` to settings when the user checked "don't ask
+    /// again"; the checkbox resets either way so the next dialog starts
+    /// unchecked.
     fn maybe_persist_policy(&mut self, policy: MissingFolderPolicy, cx: &mut Context<Self>) {
         if self.remember_choice {
             let settings = cx.global::<SettingsGlobal>().model.clone();

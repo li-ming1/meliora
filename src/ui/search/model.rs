@@ -55,40 +55,35 @@ async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchP
             .await
             .unwrap_or_default();
 
-    let albums = match db::list_albums_search(&pool).await {
-        Ok(album_data) => album_data
-            .into_iter()
-            .map(|(id, title, artist_override, artists)| {
-                (
-                    id,
-                    title,
-                    artist_override,
-                    artists,
-                    available_albums.contains(&id),
-                )
-            })
-            .collect(),
-        Err(e) => {
+    let albums = db::list_albums_search(&pool)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(id, title, artist_override, artists)| {
+                    (
+                        id,
+                        title,
+                        artist_override,
+                        artists,
+                        available_albums.contains(&id),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_else(|e| {
             debug!("Failed to load albums for search: {:?}", e);
             Vec::new()
-        }
-    };
+        });
 
-    let artists = match db::list_artists_search(&pool).await {
-        Ok(data) => data,
-        Err(e) => {
-            debug!("Failed to load artists for search: {:?}", e);
-            Vec::new()
-        }
-    };
+    let artists = db::list_artists_search(&pool).await.unwrap_or_else(|e| {
+        debug!("Failed to load artists for search: {:?}", e);
+        Vec::new()
+    });
 
-    let tracks = match db::list_tracks_search(&pool).await {
-        Ok(data) => data,
-        Err(e) => {
-            debug!("Failed to load tracks for search: {:?}", e);
-            Vec::new()
-        }
-    };
+    let tracks = db::list_tracks_search(&pool).await.unwrap_or_else(|e| {
+        debug!("Failed to load tracks for search: {:?}", e);
+        Vec::new()
+    });
 
     SearchPaletteItem::from_search_results(albums, artists, tracks)
 }
@@ -96,13 +91,6 @@ async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchP
 impl SearchModel {
     pub fn new(cx: &mut App, show: &Entity<bool>) -> Entity<SearchModel> {
         cx.new(|cx| {
-            // Do not build the whole-library index here: SearchView is created
-            // with the main window, and three full-table queries plus an
-            // availability pass would block the first frame for a large
-            // library. The first palette open (observer below) loads it, and
-            // scan completions refresh it.
-            let items = Vec::new();
-
             let weak_self = cx.weak_entity();
 
             // Search text is precomputed on every item at construction (see
@@ -152,13 +140,16 @@ impl SearchModel {
                 }
             });
 
-            let local_items = items.clone();
-
-            let palette = Palette::new(cx, items, matcher, on_accept, show);
+            // Do not build the whole-library index here: SearchView is created
+            // with the main window, and three full-table queries plus an
+            // availability pass would block the first frame for a large
+            // library. The first palette open (observer below) loads it, and
+            // scan completions refresh it.
+            let palette = Palette::new(cx, Vec::new(), matcher, on_accept, show);
 
             let search_model = SearchModel {
                 palette,
-                local_items,
+                local_items: Vec::new(),
                 load_generation: 0,
                 local_items_loaded: false,
                 #[cfg(feature = "kugou")]
@@ -204,10 +195,12 @@ impl SearchModel {
             cx.observe(&scan_status, move |this, scan_event, cx| {
                 let state = scan_event.read(cx);
 
-                if *state == ScanEvent::ScanCompleteIdle
-                    || *state == ScanEvent::ScanCompleteWatching
-                    || *state == ScanEvent::TargetedRescanComplete
-                {
+                if matches!(
+                    *state,
+                    ScanEvent::ScanCompleteIdle
+                        | ScanEvent::ScanCompleteWatching
+                        | ScanEvent::TargetedRescanComplete
+                ) {
                     debug!("Scan complete, refreshing search items");
 
                     // File-watcher rescans fire even while the palette is

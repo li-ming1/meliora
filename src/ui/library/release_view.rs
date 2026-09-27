@@ -45,6 +45,9 @@ use crate::{
 
 const RELEASE_SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(250);
 
+/// Fixed size of the album cover box and its image in the release header.
+const COVER_SIZE_PX: f32 = 160.0;
+
 fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
     if tracks.is_empty() {
         return false;
@@ -195,27 +198,19 @@ impl ReleaseView {
                 tracks.iter().map(|track| track.duration).sum(),
             );
 
-            let release_info = {
-                let mut info = String::default();
-
-                if let Some(label) = &album.label {
-                    info += label.0.as_str();
-                }
-
-                if album.label.is_some() && album.catalog_number.is_some() {
-                    info += " • ";
-                }
-
-                if let Some(catalog_number) = &album.catalog_number {
-                    info += catalog_number.0.as_str();
-                }
-
-                if !info.is_empty() {
-                    Some(SharedString::from(info))
-                } else {
-                    None
-                }
-            };
+            let release_info = match (&album.label, &album.catalog_number) {
+                (Some(label), Some(catalog_number)) => Some(format!(
+                    "{} • {}",
+                    label.0.as_str(),
+                    catalog_number.0.as_str()
+                )),
+                (Some(label), None) => Some(label.0.to_string()),
+                (None, Some(catalog_number)) => Some(catalog_number.0.to_string()),
+                (None, None) => None,
+            }
+            // an empty result (e.g. a blank label) renders no footer line
+            .filter(|info| !info.is_empty())
+            .map(SharedString::from);
 
             let pending_scroll = target_track_id.and_then(|track_id| {
                 tracks.iter().position(|track| {
@@ -293,16 +288,16 @@ impl ReleaseView {
                     .rounded(px(theme.radius_lg))
                     .bg(theme.album_art_background)
                     .shadow_sm()
-                    .w(px(160.0))
-                    .h(px(160.0))
+                    .w(px(COVER_SIZE_PX))
+                    .h(px(COVER_SIZE_PX))
                     .flex_shrink_0()
                     .overflow_hidden()
                     .child(
                         img(self.img_path.clone())
-                            .min_w(px(160.0))
-                            .min_h(px(160.0))
-                            .max_w(px(160.0))
-                            .max_h(px(160.0))
+                            .min_w(px(COVER_SIZE_PX))
+                            .min_h(px(COVER_SIZE_PX))
+                            .max_w(px(COVER_SIZE_PX))
+                            .max_h(px(COVER_SIZE_PX))
                             .overflow_hidden()
                             .flex()
                             // TODO: Ideally this should be ObjectFit::Cover, but this
@@ -636,6 +631,8 @@ impl Render for ReleaseView {
             .model
             .read(cx);
         let reduced_motion = settings.interface.reduced_motion;
+        let full_width = settings.interface.effective_full_width();
+        let two_column = settings.interface.two_column_library;
         if self.pending_scroll.is_some() || self.scroll_follow.is_active() {
             if reduced_motion {
                 // Reduced motion still needs one pass to resolve pending layout and snap any
@@ -669,12 +666,6 @@ impl Render for ReleaseView {
         let has_available_tracks = self.tracks_available.iter().any(|&a| a);
 
         let scroll_handle = self.scroll_handle.clone();
-        let settings = cx
-            .global::<crate::settings::SettingsGlobal>()
-            .model
-            .read(cx);
-        let full_width = settings.interface.effective_full_width();
-        let two_column = settings.interface.two_column_library;
 
         div()
             .image_cache(meliora_cache(("release", self.album.id as u64), 1))

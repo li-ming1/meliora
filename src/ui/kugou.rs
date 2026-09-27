@@ -91,6 +91,31 @@ pub struct KugouRank {
     pub cover_url: SharedString,
 }
 
+/// Search keyword for the lyrics service: "title artist", or just the title
+/// when the track has no artist.
+fn lyric_search_keyword(track: &KugouTrackInfo) -> String {
+    if track.artist.is_empty() {
+        track.title.to_string()
+    } else {
+        format!("{} {}", track.title, track.artist)
+    }
+}
+
+/// `(id, accesskey)` of the first `/candidates` entry that carries both
+/// fields, or `None` when the service has no usable candidate.
+fn first_lyric_candidate(search_body: &Value) -> Option<(String, String)> {
+    search_body
+        .pointer("/candidates")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|candidate| {
+                let id = candidate.get("id").and_then(Value::as_str)?;
+                let accesskey = candidate.get("accesskey").and_then(Value::as_str)?;
+                Some((id.to_string(), accesskey.to_string()))
+            })
+        })
+}
+
 /// Fetches the eligible lyric for an online track via `search_lyric` →
 /// `lyric_krc` (karaoke, with per-word timing and translations), falling back
 /// to `lyric_lrc` when the karaoke payload is missing or decrypts to nothing.
@@ -107,11 +132,7 @@ pub async fn fetch_online_lyric(track: &KugouTrackInfo) -> Result<Option<OnlineL
 
     crate::RUNTIME
         .spawn(async move {
-            let keyword = if track.artist.is_empty() {
-                track.title.to_string()
-            } else {
-                format!("{} {}", track.title, track.artist)
-            };
+            let keyword = lyric_search_keyword(&track);
 
             // search the lyrics service for a candidate
             let search = client
@@ -119,19 +140,7 @@ pub async fn fetch_online_lyric(track: &KugouTrackInfo) -> Result<Option<OnlineL
                 .await
                 .map_err(|err| err.to_string())?;
 
-            let candidate = search
-                .body
-                .pointer("/candidates")
-                .and_then(Value::as_array)
-                .and_then(|items| {
-                    items.iter().find_map(|candidate| {
-                        let id = candidate.get("id").and_then(Value::as_str)?;
-                        let accesskey = candidate.get("accesskey").and_then(Value::as_str)?;
-                        Some((id.to_string(), accesskey.to_string()))
-                    })
-                });
-
-            let Some((id, accesskey)) = candidate else {
+            let Some((id, accesskey)) = first_lyric_candidate(&search.body) else {
                 return Ok(None);
             };
 
@@ -226,25 +235,23 @@ pub fn vip_status_line() -> SharedString {
         .cloned()
         .unwrap_or_default();
 
-    let mut active = products
+    let active: Vec<_> = products
         .iter()
         .filter(|item| item.get("is_vip").and_then(Value::as_i64) == Some(1))
-        .collect::<Vec<_>>();
+        .collect();
     if active.is_empty() {
         return "No VIP".into();
     }
 
     // Prefer the "concept" (svip) product for the expiry date, falling back
     // to the first active one.
-    active.sort_by(|a, b| {
-        let a_svip = a.get("product_type").and_then(Value::as_str) == Some("svip");
-        let b_svip = b.get("product_type").and_then(Value::as_str) == Some("svip");
-        b_svip.cmp(&a_svip)
-    });
-
-    let end = active
-        .first()
-        .and_then(|item| item.get("vip_end_time").and_then(Value::as_str))
+    let preferred = active
+        .iter()
+        .find(|item| item.get("product_type").and_then(Value::as_str) == Some("svip"))
+        .unwrap_or(&active[0]);
+    let end = preferred
+        .get("vip_end_time")
+        .and_then(Value::as_str)
         .map(str::to_string);
 
     match end {
@@ -355,12 +362,19 @@ fn cover_url_field(value: &Value) -> SharedString {
     if raw.is_empty() {
         return SharedString::default();
     }
-    let sized = raw.replace("{size}", "256");
-    if sized == raw {
-        return SharedString::from(sized);
-    }
-    SharedString::from(sized)
+    SharedString::from(raw.replace("{size}", "256"))
 }
+
+/// Candidate key spellings of the mix-song id across the search, playlist and
+/// rank endpoints (PascalCase legacy vs snake_case JSON).
+const MIX_SONG_ID_KEYS: &[&str] = &[
+    "MixSongID",
+    "mixsong_id",
+    "album_audio_id",
+    "SongID",
+    "mixsongid",
+];
+const ALBUM_ID_KEYS: &[&str] = &["AlbumID", "album_id"];
 
 /// Parses the track arrays of the search (`/data/lists`) and playlist
 /// (`/data/songs`) endpoints. Entries without a hash are skipped.
@@ -381,17 +395,8 @@ pub fn parse_tracks(body: &Value, list_pointer: &str) -> Vec<KugouTrackInfo> {
                         album: SharedString::from(album_field(item)),
                         duration: duration_field(item),
                         hash,
-                        mix_song_id: i64_field(
-                            item,
-                            &[
-                                "MixSongID",
-                                "mixsong_id",
-                                "album_audio_id",
-                                "SongID",
-                                "mixsongid",
-                            ],
-                        ),
-                        album_id: i64_field(item, &["AlbumID", "album_id"]),
+                        mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
+                        album_id: i64_field(item, ALBUM_ID_KEYS),
                         cover_url: cover_url_field(item),
                     })
                 })
@@ -484,17 +489,8 @@ fn parse_track(item: &Value) -> KugouTrackInfo {
         album: SharedString::from(album_field(item)),
         duration,
         hash: string_field(&audio, &["FileHash", "hash"]),
-        mix_song_id: i64_field(
-            item,
-            &[
-                "MixSongID",
-                "mixsong_id",
-                "album_audio_id",
-                "SongID",
-                "mixsongid",
-            ],
-        ),
-        album_id: i64_field(item, &["AlbumID", "album_id"]),
+        mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
+        album_id: i64_field(item, ALBUM_ID_KEYS),
         cover_url: if album_cover.is_empty() {
             cover_url_field(&audio)
         } else {
@@ -892,14 +888,11 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
             .copied()
         {
             Some(fid) => Some(fid),
-            None => match fetch_liked_entries().await {
-                Some(entries) => {
-                    let found = entries.iter().find(|(h, _)| *h == hash).map(|(_, f)| *f);
-                    store_liked_entries(entries);
-                    found
-                }
-                None => None,
-            },
+            None => fetch_liked_entries().await.and_then(|entries| {
+                let found = entries.iter().find(|(h, _)| *h == hash).map(|(_, f)| *f);
+                store_liked_entries(entries);
+                found
+            }),
         };
 
         let request = match fileid {

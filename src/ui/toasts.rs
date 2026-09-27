@@ -1,8 +1,8 @@
 use crate::ui::design::{ICON_LG, ICON_SM};
 use gpui::{
     Anchor, Animation, AnimationExt, App, AppContext, Context, ElementId, Entity,
-    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Window, anchored, deferred, div, point, prelude::FluentBuilder, px, relative,
+    InteractiveElement, IntoElement, ParentElement, Render, Rgba, StatefulInteractiveElement,
+    Styled, Window, anchored, deferred, div, point, prelude::FluentBuilder, px, relative,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -19,6 +19,10 @@ use crate::{
 };
 
 const MAX_VISIBLE: usize = 4;
+
+/// Action buttons pack `(toast id, action index)` into one integer element
+/// id: the index lives in the low bits, the toast id above it.
+const ACTION_INDEX_SHIFT: u32 = 16;
 
 struct ActiveToast {
     id: u64,
@@ -111,45 +115,10 @@ impl Render for ToastLayer {
 
         let mut column = div().flex().flex_col().gap(px(8.0)).w(px(360.0));
         for toast in &self.toasts {
-            let theme = cx.global::<Theme>();
-
-            let (bg, border, text, track) = match toast.toast.severity {
-                Severity::Info => (
-                    theme.toast_info_background,
-                    theme.toast_info_border,
-                    theme.toast_info_text,
-                    theme.toast_info_track,
-                ),
-                Severity::Success => (
-                    theme.toast_success_background,
-                    theme.toast_success_border,
-                    theme.toast_success_text,
-                    theme.toast_success_track,
-                ),
-                Severity::Warning => (
-                    theme.toast_warning_background,
-                    theme.toast_warning_border,
-                    theme.toast_warning_text,
-                    theme.toast_warning_track,
-                ),
-                Severity::Error => (
-                    theme.toast_error_background,
-                    theme.toast_error_border,
-                    theme.toast_error_text,
-                    theme.toast_error_track,
-                ),
-            };
-
-            column = column.child(render_toast(
-                toast,
-                bg,
-                border,
-                text,
-                track,
-                reduced_motion,
-                radius_md,
-                cx,
-            ));
+            // Per-toast theme lookup: the borrowed &Theme must not outlive the
+            // statement, since render_toast below re-borrows cx mutably.
+            let colors = toast_colors(cx.global::<Theme>(), toast.toast.severity);
+            column = column.child(render_toast(toast, colors, reduced_motion, radius_md, cx));
         }
 
         anchored()
@@ -161,12 +130,47 @@ impl Render for ToastLayer {
     }
 }
 
+/// The four theme colors a toast paints with, resolved per severity.
+struct ToastColors {
+    background: Rgba,
+    border: Rgba,
+    text: Rgba,
+    /// Color of the auto-dismiss progress bar.
+    track: Rgba,
+}
+
+fn toast_colors(theme: &Theme, severity: Severity) -> ToastColors {
+    match severity {
+        Severity::Info => ToastColors {
+            background: theme.toast_info_background,
+            border: theme.toast_info_border,
+            text: theme.toast_info_text,
+            track: theme.toast_info_track,
+        },
+        Severity::Success => ToastColors {
+            background: theme.toast_success_background,
+            border: theme.toast_success_border,
+            text: theme.toast_success_text,
+            track: theme.toast_success_track,
+        },
+        Severity::Warning => ToastColors {
+            background: theme.toast_warning_background,
+            border: theme.toast_warning_border,
+            text: theme.toast_warning_text,
+            track: theme.toast_warning_track,
+        },
+        Severity::Error => ToastColors {
+            background: theme.toast_error_background,
+            border: theme.toast_error_border,
+            text: theme.toast_error_text,
+            track: theme.toast_error_track,
+        },
+    }
+}
+
 fn render_toast(
     active: &ActiveToast,
-    bg: gpui::Rgba,
-    border: gpui::Rgba,
-    text: gpui::Rgba,
-    track: gpui::Rgba,
+    colors: ToastColors,
     reduced_motion: bool,
     radius_md: gpui::Pixels,
     cx: &mut Context<ToastLayer>,
@@ -182,7 +186,10 @@ fn render_toast(
     for (idx, action) in toast.actions.iter().enumerate() {
         actions_row = actions_row.child(
             button()
-                .id(ElementId::from(("toast-action", (id << 16) | idx as u64)))
+                .id(ElementId::from((
+                    "toast-action",
+                    (id << ACTION_INDEX_SHIFT) | idx as u64,
+                )))
                 .style(ButtonStyle::Regular)
                 .size(ButtonSize::Regular)
                 .intent(match toast.severity {
@@ -208,7 +215,7 @@ fn render_toast(
                 .items_center()
                 .border_r_1()
                 .p(px(10.0))
-                .border_color(border)
+                .border_color(colors.border)
                 .child(icon(icon_path).size(ICON_LG)),
         )
         .child(
@@ -247,7 +254,7 @@ fn render_toast(
         );
 
     let progress_bar = toast.duration.filter(|_| !reduced_motion).map(|duration| {
-        div().h(px(2.0)).w_full().bg(track).with_animation(
+        div().h(px(2.0)).w_full().bg(colors.track).with_animation(
             ElementId::from(("toast-progress", id)),
             Animation::new(duration),
             |this, delta| this.w(relative(1.0 - delta)),
@@ -257,10 +264,10 @@ fn render_toast(
     div()
         .occlude()
         .rounded(radius_md)
-        .bg(bg)
+        .bg(colors.background)
         .border_1()
-        .border_color(border)
-        .text_color(text)
+        .border_color(colors.border)
+        .text_color(colors.text)
         .overflow_hidden()
         .shadow_md()
         .flex()

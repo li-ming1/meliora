@@ -235,16 +235,15 @@ fn focus_main_window(window: WindowHandle<MainWindow>, cx: &mut App) {
 }
 
 fn main_window_bounds(cx: &mut App) -> WindowBounds {
-    let window_information = cx.global::<Models>().window_information.read(cx).clone();
+    let Some(window_information) = cx.global::<Models>().window_information.read(cx).clone() else {
+        return WindowBounds::Maximized(Bounds::centered(None, size(px(1024.0), px(700.0)), cx));
+    };
 
-    if let Some(window_information) = window_information {
-        if window_information.maximized {
-            WindowBounds::Maximized(Bounds::centered(None, window_information.size, cx))
-        } else {
-            WindowBounds::Windowed(Bounds::centered(None, window_information.size, cx))
-        }
+    let bounds = Bounds::centered(None, window_information.size, cx);
+    if window_information.maximized {
+        WindowBounds::Maximized(bounds)
     } else {
-        WindowBounds::Maximized(Bounds::centered(None, size(px(1024.0), px(700.0)), cx))
+        WindowBounds::Windowed(bounds)
     }
 }
 
@@ -659,7 +658,7 @@ fn refresh_restored_online_urls(
 ) {
     use crate::playback::queue::OnlineIdentity;
 
-    let stale: Vec<(usize, OnlineIdentity)> = queue
+    let mut stale: Vec<(usize, OnlineIdentity)> = queue
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
@@ -694,7 +693,6 @@ fn refresh_restored_online_urls(
     // the current one first, cap the startup burst, let the fallback handle
     // the tail instead of burning a serial HTTP round trip per queued track.
     const STARTUP_REFRESH_CAP: usize = 8;
-    let mut stale = stale;
     if let Some(current) = current_track_path.as_ref()
         && let Some(pos) = stale.iter().position(|(idx, _)| {
             queue
@@ -707,9 +705,6 @@ fn refresh_restored_online_urls(
         stale.swap(0, pos);
     }
     stale.truncate(STARTUP_REFRESH_CAP);
-    if stale.is_empty() {
-        return;
-    }
 
     cx.spawn(async move |cx| {
         for (idx, identity) in stale {

@@ -9,7 +9,7 @@ use crate::{
     ui::{
         availability::{is_online_path, is_track_path_available},
         components::{
-            icons::{DISC, DOWNLOAD, FOLDER_SEARCH, PLAYLIST_ADD, STAR, STAR_FILLED, USERS},
+            icons::{DISC, DOWNLOAD, FOLDER_SEARCH, PLAYLIST_ADD, USERS},
             menu::{menu, menu_item, menu_separator},
         },
         models::toggle_like_by_id,
@@ -17,7 +17,10 @@ use crate::{
     },
 };
 
-use super::{navigate_to_track_album, navigate_to_track_artist, track_show_in_file_manager_label};
+use super::{
+    like_toggle_icon_and_label, navigate_to_track_album, navigate_to_track_artist,
+    track_show_in_file_manager_label,
+};
 
 #[derive(IntoElement)]
 pub struct InfoSectionContextMenu {
@@ -52,13 +55,9 @@ impl InfoSectionContextMenu {
 impl RenderOnce for InfoSectionContextMenu {
     fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
         let reveal_path = self.current_path;
-        let is_online = reveal_path
-            .as_ref()
-            .is_some_and(|path| is_online_path(path));
-        let can_reveal_track = !is_online
-            && reveal_path
-                .as_ref()
-                .is_some_and(|path| is_track_path_available(path.as_path()));
+        let is_online = reveal_path.as_deref().is_some_and(is_online_path);
+        let can_reveal_track =
+            !is_online && reveal_path.as_deref().is_some_and(is_track_path_available);
         let track = self.track;
 
         menu()
@@ -116,18 +115,11 @@ impl RenderOnce for InfoSectionContextMenu {
             .when_some(track.clone(), |menu, track_for_like| {
                 let is_liked = self.is_liked;
                 let track_id = track_for_like.id;
+                let (like_icon, like_label) = like_toggle_icon_and_label(is_liked);
                 menu.item(menu_separator()).item(menu_item(
                     "info_section_toggle_like",
-                    Some(if is_liked.is_some() {
-                        STAR_FILLED
-                    } else {
-                        STAR
-                    }),
-                    if is_liked.is_some() {
-                        tr!("UNLIKE")
-                    } else {
-                        tr!("LIKE")
-                    },
+                    Some(like_icon),
+                    like_label,
                     move |_, _, cx| {
                         toggle_like_by_id(track_id, is_liked, cx);
                     },

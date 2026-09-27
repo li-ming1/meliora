@@ -75,6 +75,8 @@ impl RenderOnce for PlaybackControls {
         let is_current = self.current_track_in_listing;
         let is_playing = self.is_playing;
         let show_add_to_queue = self.show_add_to_queue;
+        // The main button pauses only while the listing's current track plays.
+        let show_pause = is_current && is_playing;
 
         div()
             .gap(px(10.0))
@@ -98,15 +100,11 @@ impl RenderOnce for PlaybackControls {
                     })
                     .when(!has_tracks, |this| this.opacity(0.5).cursor_default())
                     .child(
-                        icon(if is_current && is_playing {
-                            PAUSE
-                        } else {
-                            PLAY
-                        })
-                        .size(ICON_MD)
-                        .my_auto(),
+                        icon(if show_pause { PAUSE } else { PLAY })
+                            .size(ICON_MD)
+                            .my_auto(),
                     )
-                    .child(div().child(if is_current && is_playing {
+                    .child(div().child(if show_pause {
                         tr!("PAUSE", "Pause")
                     } else {
                         tr!("PLAY", "Play")

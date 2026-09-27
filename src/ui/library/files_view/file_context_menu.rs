@@ -1,7 +1,12 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use cntp_i18n::tr;
-use gpui::{App, Entity, IntoElement, RenderOnce, SharedString, Window, prelude::FluentBuilder};
+use gpui::{
+    App, ClickEvent, Context, Entity, IntoElement, RenderOnce, Window, prelude::FluentBuilder,
+};
 
 use crate::{
     playback::queue::QueueItemData,
@@ -18,6 +23,29 @@ use crate::{
 };
 
 use super::FilesView;
+
+/// Menu action for a file entry: queues the file as an id-less queue item
+/// (path only, no DB row behind it) and runs `op` on it — the shared body of
+/// the play / play-next / add-to-queue items.
+fn file_menu_action(
+    path: Arc<Path>,
+    op: fn(&mut App, QueueItemData),
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| {
+        let data = QueueItemData::new(cx, path.to_path_buf(), None, None);
+        op(cx, data);
+    }
+}
+
+/// Menu action for a folder entry: runs a `FilesView` folder operation on
+/// `path`.
+fn folder_menu_action(
+    path: Arc<Path>,
+    files_view: Entity<FilesView>,
+    op: fn(&mut FilesView, PathBuf, &mut Context<FilesView>),
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| files_view.update(cx, |view, cx| op(view, path.to_path_buf(), cx))
+}
 
 #[derive(IntoElement)]
 pub struct FileContextMenu {
@@ -56,38 +84,35 @@ impl RenderOnce for FileContextMenu {
         let is_available = self.is_available;
         let files_view = self.files_view;
 
-        let reveal_label: SharedString = track_show_in_file_manager_label();
+        let reveal_label = track_show_in_file_manager_label();
 
         menu()
             .when(is_audio, |m| {
                 m.item(
-                    menu_item("file_play", Some(PLAY), tr!("PLAY"), {
-                        let path = path.clone();
-                        move |_, _, cx| {
-                            let data = QueueItemData::new(cx, path.to_path_buf(), None, None);
-                            play_now(cx, data);
-                        }
-                    })
+                    menu_item(
+                        "file_play",
+                        Some(PLAY),
+                        tr!("PLAY"),
+                        file_menu_action(path.clone(), play_now),
+                    )
                     .disabled(!is_available),
                 )
                 .item(
-                    menu_item("file_play_next", None::<&'static str>, tr!("PLAY_NEXT"), {
-                        let path = path.clone();
-                        move |_, _, cx| {
-                            let data = QueueItemData::new(cx, path.to_path_buf(), None, None);
-                            play_next(cx, data);
-                        }
-                    })
+                    menu_item(
+                        "file_play_next",
+                        None::<&'static str>,
+                        tr!("PLAY_NEXT"),
+                        file_menu_action(path.clone(), play_next),
+                    )
                     .disabled(!is_available),
                 )
                 .item(
-                    menu_item("file_queue", None::<&'static str>, tr!("ADD_TO_QUEUE"), {
-                        let path = path.clone();
-                        move |_, _, cx| {
-                            let data = QueueItemData::new(cx, path.to_path_buf(), None, None);
-                            queue_item(cx, data);
-                        }
-                    })
+                    menu_item(
+                        "file_queue",
+                        None::<&'static str>,
+                        tr!("ADD_TO_QUEUE"),
+                        file_menu_action(path.clone(), queue_item),
+                    )
                     .disabled(!is_available),
                 )
                 .item(menu_separator())
@@ -97,43 +122,28 @@ impl RenderOnce for FileContextMenu {
                     "folder_play",
                     Some(PLAY),
                     tr!("PLAY_FOLDER", "Play folder"),
-                    {
-                        let path = path.clone();
-                        let files_view = files_view.clone();
-                        move |_, _, cx| {
-                            files_view.update(cx, |view, cx| {
-                                view.play_folder_recursive(path.to_path_buf(), cx)
-                            });
-                        }
-                    },
+                    folder_menu_action(
+                        path.clone(),
+                        files_view.clone(),
+                        FilesView::play_folder_recursive,
+                    ),
                 ))
                 .item(menu_item(
                     "folder_queue",
                     None::<&'static str>,
                     tr!("ADD_FOLDER_TO_QUEUE", "Add folder to queue"),
-                    {
-                        let path = path.clone();
-                        let files_view = files_view.clone();
-                        move |_, _, cx| {
-                            files_view.update(cx, |view, cx| {
-                                view.queue_folder_recursive(path.to_path_buf(), cx)
-                            });
-                        }
-                    },
+                    folder_menu_action(
+                        path.clone(),
+                        files_view.clone(),
+                        FilesView::queue_folder_recursive,
+                    ),
                 ))
                 .item(menu_separator())
                 .item(menu_item(
                     "folder_refresh",
                     Some(REFRESH),
                     tr!("REFRESH_FOLDER", "Refresh"),
-                    {
-                        let path = path.clone();
-                        let files_view = files_view.clone();
-                        move |_, _, cx| {
-                            files_view
-                                .update(cx, |view, cx| view.refresh_dir(path.to_path_buf(), cx));
-                        }
-                    },
+                    folder_menu_action(path.clone(), files_view.clone(), FilesView::refresh_dir),
                 ))
                 .item(menu_separator())
             })
@@ -141,10 +151,7 @@ impl RenderOnce for FileContextMenu {
                 "file_reveal",
                 None::<&'static str>,
                 reveal_label,
-                {
-                    let path = path.clone();
-                    move |_, _, cx| reveal_path_for_file_manager(&path, cx)
-                },
+                move |_, _, cx| reveal_path_for_file_manager(&path, cx),
             ))
     }
 }

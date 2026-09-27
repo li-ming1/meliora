@@ -14,6 +14,28 @@ type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 /// runs on the per-row repaint path.
 pub type ContextMenuBuilder = MenuBuilder;
 
+/// Notify the optional close handler, then hide the menu by clearing the
+/// stored open position. Shared by all three dismissal paths: clicking the
+/// menu, clicking outside it, and the `CloseContextMenu` action.
+fn dismiss_menu(
+    on_close: &Option<CloseHandler>,
+    state: &Entity<Option<Point<Pixels>>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(on_close) = on_close {
+        on_close(window, cx);
+    }
+    state.update(cx, |pos, cx| {
+        *pos = None;
+        cx.notify();
+    });
+}
+
+/// A right-click context menu attached to `div`. The menu body is built
+/// lazily on first open (see [`ContextMenuBuilder`]) and shown as an
+/// anchored overlay until dismissed by clicking the menu, clicking outside
+/// it, or the `CloseContextMenu` action.
 #[derive(IntoElement)]
 pub struct ContextMenu {
     pub(self) id: ElementId,
@@ -95,31 +117,13 @@ impl RenderOnce for ContextMenu {
                         .id("menu")
                         .track_focus(&focus_handle)
                         .on_click(move |_, window, cx| {
-                            if let Some(on_close) = &on_click_close {
-                                on_close(window, cx);
-                            }
-                            state_click.update(cx, |pos, cx| {
-                                *pos = None;
-                                cx.notify();
-                            });
+                            dismiss_menu(&on_click_close, &state_click, window, cx);
                         })
                         .on_mouse_down_out(move |_, window, cx| {
-                            if let Some(on_close) = &on_out_close {
-                                on_close(window, cx);
-                            }
-                            state_out.update(cx, |pos, cx| {
-                                *pos = None;
-                                cx.notify();
-                            });
+                            dismiss_menu(&on_out_close, &state_out, window, cx);
                         })
                         .on_action(move |_: &CloseContextMenu, window, cx| {
-                            if let Some(on_close) = &on_esc_close {
-                                on_close(window, cx);
-                            }
-                            state_esc.update(cx, |pos, cx| {
-                                *pos = None;
-                                cx.notify();
-                            });
+                            dismiss_menu(&on_esc_close, &state_esc, window, cx);
                         }),
                 )),
             )

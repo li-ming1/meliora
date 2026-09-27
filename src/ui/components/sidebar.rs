@@ -10,6 +10,8 @@ use crate::{
     ui::{components::icons::icon, design::ICON_MD, theme::Theme},
 };
 
+/// A `T` that optionally carries interactive state: the plain variant until
+/// something (e.g. `Sidebar::id`) needs a stateful element, `Stateful` after.
 pub enum MaybeStateful<T> {
     Stateful(Stateful<T>),
     NotStateful(T),
@@ -176,10 +178,7 @@ impl ParentElement for Sidebar {
 
 impl RenderOnce for Sidebar {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let width: Pixels = match self.width {
-            Some(w) => w,
-            None => DEFAULT_SIDEBAR_WIDTH,
-        };
+        let width = self.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH);
         self.div.w(width).flex().gap(px(2.0)).flex_col()
     }
 }
@@ -314,7 +313,7 @@ impl RenderOnce for SidebarItem {
         if self.collapsed
             && let Some(label_text) = self.label
         {
-            let ref_hover = *state.read(cx);
+            let is_hovered = *state.read(cx);
 
             div()
                 .relative()
@@ -326,7 +325,7 @@ impl RenderOnce for SidebarItem {
                         state.write(cx, *hover);
                     }
                 })
-                .when(ref_hover, |this| {
+                .when(is_hovered, |this| {
                     this.child(deferred(
                         div()
                             .absolute()

@@ -59,8 +59,20 @@ pub enum SearchPaletteItem {
 }
 
 impl SearchPaletteItem {
+    /// Image-cache URI for an album's thumbnail.
     fn thumbnail_path(album_id: i64) -> String {
         format!("!db://album/{}/thumb", album_id)
+    }
+
+    /// Online track titles fall back to the localized UNKNOWN_TRACK label
+    /// when the source provides none.
+    #[cfg(any(feature = "kugou", feature = "netease"))]
+    fn online_title(title: &str) -> SharedString {
+        if title.is_empty() {
+            tr!("UNKNOWN_TRACK").into()
+        } else {
+            title.to_owned().into()
+        }
     }
 
     /// Builds the local (library) items. The fuzzy-match text each item is
@@ -140,21 +152,9 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Artist { name, .. } => name.clone().into(),
             SearchPaletteItem::Track { title, .. } => title.clone().into(),
             #[cfg(feature = "kugou")]
-            SearchPaletteItem::KugouTrack { track, .. } => {
-                if track.title.is_empty() {
-                    tr!("UNKNOWN_TRACK").into()
-                } else {
-                    track.title.clone()
-                }
-            }
+            SearchPaletteItem::KugouTrack { track, .. } => Self::online_title(&track.title),
             #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { track, .. } => {
-                if track.title.is_empty() {
-                    tr!("UNKNOWN_TRACK").into()
-                } else {
-                    track.title.clone()
-                }
-            }
+            SearchPaletteItem::NeteaseTrack { track, .. } => Self::online_title(&track.title),
         }
     }
 
@@ -213,16 +213,12 @@ impl PaletteItem for SearchPaletteItem {
         match self {
             SearchPaletteItem::Artist { .. } => {}
             SearchPaletteItem::Album { id, .. } => {
-                let album = cx.get_album_by_id(*id);
-
-                if let Ok(album) = album {
+                if let Ok(album) = cx.get_album_by_id(*id) {
                     play_album_next(cx, &album);
                 }
             }
             SearchPaletteItem::Track { id, .. } => {
-                let track = cx.get_track_by_id(*id);
-
-                if let Ok(track) = track {
+                if let Ok(track) = cx.get_track_by_id(*id) {
                     play_track_next(cx, &track);
                 }
             }

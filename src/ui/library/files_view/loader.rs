@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 
@@ -48,49 +48,44 @@ pub(super) fn queue_items_from_entries(
 
 pub(super) async fn load_dir_entries(path: PathBuf, pool: sqlx::SqlitePool) -> Vec<RawEntry> {
     let mut raw = crate::RUNTIME
-        .spawn_blocking({
-            let path = path.clone();
-            move || -> Vec<RawEntry> {
-                let Ok(rd) = std::fs::read_dir(&path) else {
-                    return Vec::new();
-                };
+        .spawn_blocking(move || -> Vec<RawEntry> {
+            let Ok(rd) = std::fs::read_dir(&path) else {
+                return Vec::new();
+            };
 
-                let mut entries: Vec<RawEntry> = rd
-                    .flatten()
-                    .map(|e| {
-                        let entry_path = e.path();
-                        let name: SharedString =
-                            e.file_name().to_string_lossy().into_owned().into();
-                        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                        let is_audio = if is_dir {
-                            false
-                        } else {
-                            can_be_read(&entry_path, MediaProviderFeatures::ALLOWS_INDEXING)
-                                .unwrap_or(false)
-                        };
-                        RawEntry {
-                            name,
-                            path: entry_path,
-                            is_dir,
-                            is_audio,
-                            track: None,
-                        }
-                    })
-                    .collect();
+            let mut entries: Vec<RawEntry> = rd
+                .flatten()
+                .map(|e| {
+                    let entry_path = e.path();
+                    let name: SharedString = e.file_name().to_string_lossy().into_owned().into();
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    let is_audio = if is_dir {
+                        false
+                    } else {
+                        can_be_read(&entry_path, MediaProviderFeatures::ALLOWS_INDEXING)
+                            .unwrap_or(false)
+                    };
+                    RawEntry {
+                        name,
+                        path: entry_path,
+                        is_dir,
+                        is_audio,
+                        track: None,
+                    }
+                })
+                .collect();
 
-                sort_entries(&mut entries);
-                entries
-            }
+            sort_entries(&mut entries);
+            entries
         })
         .await
         .unwrap_or_default();
 
-    let mut audio_locs = Vec::with_capacity(raw.len());
-    for entry in &raw {
-        if entry.is_audio {
-            audio_locs.push(entry.path.to_string_lossy().into_owned());
-        }
-    }
+    let audio_locs: Vec<String> = raw
+        .iter()
+        .filter(|entry| entry.is_audio)
+        .map(|entry| entry.path.to_string_lossy().into_owned())
+        .collect();
 
     let mut track_map = lookup_tracks(&audio_locs, &pool).await;
 
@@ -105,17 +100,13 @@ pub(super) async fn load_dir_entries(path: PathBuf, pool: sqlx::SqlitePool) -> V
 }
 
 async fn lookup_tracks(locs: &[String], pool: &sqlx::SqlitePool) -> FxHashMap<String, TrackRef> {
+    // Locations are bound in chunks so one statement never exceeds the
+    // backend's host-parameter limit.
     const SQL_BIND_CHUNK: usize = 900;
 
     let mut track_map: FxHashMap<String, TrackRef> = FxHashMap::default();
     for chunk in locs.chunks(SQL_BIND_CHUNK) {
-        let mut placeholders = String::with_capacity(chunk.len().saturating_mul(2));
-        for idx in 0..chunk.len() {
-            if idx > 0 {
-                placeholders.push(',');
-            }
-            placeholders.push('?');
-        }
+        let placeholders = vec!["?"; chunk.len()].join(",");
         let sql = format!(
             include_str!("../../../../queries/library/find_tracks_by_locations.sql"),
             placeholders
@@ -148,7 +139,7 @@ pub(super) async fn collect_audio_recursive(
     path: PathBuf,
     pool: sqlx::SqlitePool,
 ) -> Vec<(PathBuf, Option<TrackRef>)> {
-    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         if out.len() >= RECURSIVE_COLLECT_CAP {
             return;
         }
@@ -192,10 +183,10 @@ pub(super) async fn collect_audio_recursive(
         .await
         .unwrap_or_default();
 
-    let mut locs = Vec::with_capacity(files.len());
-    for path in &files {
-        locs.push(path.to_string_lossy().into_owned());
-    }
+    let locs: Vec<String> = files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     let mut track_map = lookup_tracks(&locs, &pool).await;
 
     files

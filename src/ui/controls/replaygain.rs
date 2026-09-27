@@ -11,6 +11,7 @@ use crate::{
 use cntp_i18n::tr;
 use gpui::{prelude::FluentBuilder, *};
 
+use super::{observe_notify, playback_toggle_button};
 use crate::ui::design::ICON_SM;
 use crate::ui::theme::Theme;
 
@@ -23,11 +24,7 @@ impl ReplayGainButton {
     pub fn new(cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let settings = cx.global::<SettingsGlobal>().model.clone();
-
-            cx.observe(&settings, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
+            observe_notify(cx, &settings);
 
             Self {
                 settings,
@@ -53,21 +50,8 @@ impl Render for ReplayGainButton {
         div()
             .relative()
             .child(
-                div()
-                    .rounded(px(theme.radius_sm))
-                    .w(px(25.0))
-                    .h(px(25.0))
-                    .mt(px(2.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .border_color(theme.playback_button_border)
-                    .id("rg-button")
-                    .cursor_pointer()
+                playback_toggle_button(div().id("rg-button"), theme)
                     .tooltip(build_tooltip(tr!("REPLAY_GAIN", "ReplayGain")))
-                    .bg(theme.playback_button)
-                    .hover(|this| this.bg(theme.playback_button_hover))
-                    .active(|this| this.bg(theme.playback_button_active))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
@@ -88,7 +72,7 @@ impl Render for ReplayGainButton {
             )
             .when(show_popover, |this| {
                 let entity = cx.entity().downgrade();
-                let entity2 = entity.clone();
+                let click_away_entity = entity.clone();
                 this.child(
                     popover()
                         .position(PopoverPosition::TopRight)
@@ -98,7 +82,9 @@ impl Render for ReplayGainButton {
                         })
                         .min_w(px(200.0))
                         .on_mouse_down_out(move |_, _, cx| {
-                            entity2.update(cx, |this, cx| this.close_popover(cx)).ok();
+                            click_away_entity
+                                .update(cx, |this, cx| this.close_popover(cx))
+                                .ok();
                         })
                         .child(
                             div()
@@ -107,84 +93,79 @@ impl Render for ReplayGainButton {
                                 .gap(px(10.0))
                                 .p(px(4.0))
                                 .pb(px(8.0))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .mb(px(5.0))
-                                                .text_xs()
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(theme.text_secondary)
-                                                .child(tr!("RG_MODE_LABEL", "ReplayGain Mode")),
-                                        )
-                                        .child({
-                                            let settings = settings.clone();
-                                            segmented_control("rg-mode")
-                                                .fit_content()
-                                                .option(ReplayGainMode::Off, tr!("RG_OFF", "Off"))
-                                                .option(
-                                                    ReplayGainMode::Auto,
-                                                    tr!("RG_AUTO", "Auto"),
-                                                )
-                                                .option(
-                                                    ReplayGainMode::Track,
-                                                    tr!("RG_TRACK", "Track"),
-                                                )
-                                                .option(
-                                                    ReplayGainMode::Album,
-                                                    tr!("RG_ALBUM", "Album"),
-                                                )
-                                                .selected(rg_mode)
-                                                .on_change(move |mode, _, cx| {
-                                                    settings.update(cx, |settings, cx| {
-                                                        settings.playback.replaygain.mode = *mode;
-                                                        save_settings(cx, settings);
-                                                        cx.notify();
-                                                    });
-                                                })
-                                        }),
-                                )
+                                .child(replaygain_mode_section(settings.clone(), rg_mode, theme))
                                 .when(rg_mode != ReplayGainMode::Off, |this| {
-                                    this.child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(theme.text_secondary)
-                                                    .mb(px(1.0))
-                                                    .child(tr!("RG_PREAMP_LABEL", "Pre-amp")),
-                                            )
-                                            .child({
-                                                let settings = settings.clone();
-                                                labeled_slider("rg-preamp")
-                                                    .slider_id("rg-preamp-track")
-                                                    .min(-6.0)
-                                                    .max(6.0)
-                                                    .value(rg_settings.preamp_db as f32)
-                                                    .default_value(0.0)
-                                                    .format_value(|v| {
-                                                        format!("{:+.1} dB", v).into()
-                                                    })
-                                                    .on_change(move |v, _, cx| {
-                                                        settings.update(cx, |settings, cx| {
-                                                            settings
-                                                                .playback
-                                                                .replaygain
-                                                                .preamp_db = v as f64;
-                                                            save_settings(cx, settings);
-                                                            cx.notify();
-                                                        });
-                                                    })
-                                            }),
-                                    )
+                                    this.child(replaygain_preamp_section(
+                                        settings.clone(),
+                                        rg_settings.preamp_db,
+                                        theme,
+                                    ))
                                 }),
                         ),
                 )
             })
     }
+}
+
+/// The "ReplayGain Mode" label and segmented control; writes the chosen mode
+/// straight through to settings.
+fn replaygain_mode_section(settings: Entity<Settings>, mode: ReplayGainMode, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .mb(px(5.0))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_secondary)
+                .child(tr!("RG_MODE_LABEL", "ReplayGain Mode")),
+        )
+        .child(
+            segmented_control("rg-mode")
+                .fit_content()
+                .option(ReplayGainMode::Off, tr!("RG_OFF", "Off"))
+                .option(ReplayGainMode::Auto, tr!("RG_AUTO", "Auto"))
+                .option(ReplayGainMode::Track, tr!("RG_TRACK", "Track"))
+                .option(ReplayGainMode::Album, tr!("RG_ALBUM", "Album"))
+                .selected(mode)
+                .on_change(move |mode, _, cx| {
+                    settings.update(cx, |settings, cx| {
+                        settings.playback.replaygain.mode = *mode;
+                        save_settings(cx, settings);
+                        cx.notify();
+                    });
+                }),
+        )
+}
+
+/// The pre-amp label and slider; writes the gain straight through to settings.
+fn replaygain_preamp_section(settings: Entity<Settings>, preamp_db: f64, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_secondary)
+                .mb(px(1.0))
+                .child(tr!("RG_PREAMP_LABEL", "Pre-amp")),
+        )
+        .child(
+            labeled_slider("rg-preamp")
+                .slider_id("rg-preamp-track")
+                .min(-6.0)
+                .max(6.0)
+                .value(preamp_db as f32)
+                .default_value(0.0)
+                .format_value(|v| format!("{:+.1} dB", v).into())
+                .on_change(move |v, _, cx| {
+                    settings.update(cx, |settings, cx| {
+                        settings.playback.replaygain.preamp_db = v as f64;
+                        save_settings(cx, settings);
+                        cx.notify();
+                    });
+                }),
+        )
 }

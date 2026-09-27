@@ -17,7 +17,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
-        Arc, OnceLock, RwLock,
+        Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -33,7 +33,6 @@ use serde_json::Value;
 use smallvec::SmallVec;
 
 use crate::{
-    netease,
     playback::queue::{DataSource, OnlineIdentity, QueueItemData, QueueItemUIData},
     settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
@@ -290,14 +289,6 @@ enum PlayIntent {
     Queue,
 }
 
-async fn fetch_play_url(
-    client: &netease::NeteaseClient,
-    track: &NeteaseTrackInfo,
-    quality: &str,
-) -> Option<String> {
-    fetch_stream_url(client, track.id, quality).await
-}
-
 /// Song ids whose play-URL fetch is currently in flight, plus ids whose
 /// fetch recently succeeded (tagged with the intent it served). Concurrent
 /// clicks on the same song coalesce into the first fetch so the track can't
@@ -325,6 +316,12 @@ fn pending_fetches() -> &'static RwLock<PlayFetchDedup> {
     })
 }
 
+/// Poison-recovering write lock for the fetch dedup table: a panicking
+/// holder must not wedge every later click behind a poisoned lock.
+fn write_pending_fetches() -> RwLockWriteGuard<'static, PlayFetchDedup> {
+    pending_fetches().write().unwrap_or_else(|e| e.into_inner())
+}
+
 fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
     let quality = cx
         .global::<SettingsGlobal>()
@@ -343,7 +340,7 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
         // queue-add of the same song.
         let intent_key = matches!(intent, PlayIntent::Now) as u8;
         {
-            let mut dedup = pending_fetches().write().unwrap_or_else(|e| e.into_inner());
+            let mut dedup = write_pending_fetches();
             dedup.recent.retain(|_, (_, at)| at.elapsed() < FETCH_COOLDOWN);
             let duplicate = dedup
                 .recent
@@ -359,17 +356,13 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
         let client = crate::netease::shared_client();
         let fetch_track = track.clone();
         let request = crate::RUNTIME
-            .spawn(async move { fetch_play_url(&client, &fetch_track, &quality).await })
+            .spawn(async move { fetch_stream_url(&client, fetch_track.id, &quality).await })
             .await;
 
         let Some(url) = request.ok().flatten() else {
             // Clear the in-flight tag only: a failed fetch must stay
             // retryable on the next click.
-            pending_fetches()
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .in_flight
-                .remove(&track.id);
+            write_pending_fetches().in_flight.remove(&track.id);
             tracing::warn!(id = track.id, "netease play_track: no playable URL in response");
             emit_toast(Toast::warning(tr!(
                 "NETEASE_NO_URL",
@@ -441,7 +434,7 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
         });
 
         {
-            let mut dedup = pending_fetches().write().unwrap_or_else(|e| e.into_inner());
+            let mut dedup = write_pending_fetches();
             dedup.in_flight.remove(&track.id);
             dedup.recent.insert(track.id, (intent_key, Instant::now()));
         }
@@ -491,12 +484,20 @@ fn liked_ids() -> &'static RwLock<HashSet<i64>> {
     LIKED_IDS.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
+/// Poison-recovering locks for the liked-id set, same rationale as
+/// `write_pending_fetches`: a panicking holder must not wedge every later
+/// liked-state query or update behind a poisoned lock.
+fn write_liked_ids() -> RwLockWriteGuard<'static, HashSet<i64>> {
+    liked_ids().write().unwrap_or_else(|e| e.into_inner())
+}
+
+fn read_liked_ids() -> RwLockReadGuard<'static, HashSet<i64>> {
+    liked_ids().read().unwrap_or_else(|e| e.into_inner())
+}
+
 /// True when the cache holds `id` as liked.
 pub fn liked_set_contains(id: i64) -> bool {
-    liked_ids()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(&id)
+    read_liked_ids().contains(&id)
 }
 
 /// Serializes the initial liked-list load so concurrent `online_track_is_liked`
@@ -524,7 +525,7 @@ async fn refresh_liked_set_from_service() {
     else {
         return;
     };
-    *liked_ids().write().unwrap_or_else(|e| e.into_inner()) = ids.into_iter().collect();
+    *write_liked_ids() = ids.into_iter().collect();
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
@@ -581,10 +582,7 @@ pub fn like_track(cx: &mut App, track: &NeteaseTrackInfo) {
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
-                liked_ids()
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(id);
+                write_liked_ids().insert(id);
                 emit_toast(Toast::success(tr!(
                     "NETEASE_LIKE_ADDED",
                     "Added to your NetEase liked songs"
@@ -625,10 +623,7 @@ pub fn unlike_track(cx: &mut App, track: &NeteaseTrackInfo) {
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
-                liked_ids()
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&id);
+                write_liked_ids().remove(&id);
                 emit_toast(Toast::success(tr!(
                     "NETEASE_LIKE_REMOVED",
                     "Removed from your NetEase liked songs"
@@ -666,6 +661,11 @@ pub struct NeteaseLyric {
     pub lines: Vec<LrcLine>,
 }
 
+/// Timestamp tolerance (ms) for pairing a `tlyric` line with a body line: a
+/// translation pairs with the nearest body line whose timestamp is within
+/// this window; anything farther away never pairs.
+const TRANSLATION_MATCH_WINDOW_MS: u64 = 500;
+
 /// Merges line-timed translations into `lines` by nearest timestamp.
 fn merge_translation(lines: &mut [LrcLine], translation: &str) {
     if translation.trim().is_empty() {
@@ -677,7 +677,9 @@ fn merge_translation(lines: &mut [LrcLine], translation: &str) {
     for line in lines.iter_mut() {
         let best = translated
             .iter()
-            .filter(|candidate| candidate.time_ms.abs_diff(line.time_ms) <= 500)
+            .filter(|candidate| {
+                candidate.time_ms.abs_diff(line.time_ms) <= TRANSLATION_MATCH_WINDOW_MS
+            })
             .min_by_key(|candidate| candidate.time_ms.abs_diff(line.time_ms));
         if let Some(best) = best
             && !best.text.is_empty()
@@ -685,6 +687,15 @@ fn merge_translation(lines: &mut [LrcLine], translation: &str) {
             line.translation = Some(best.text.clone());
         }
     }
+}
+
+/// Text at the `"/<kind>/lyric"` JSON pointer of a `lyric_new` body; a
+/// missing or non-string field comes back as an empty string.
+fn lyric_pointer_text(body: &Value, kind: &str) -> String {
+    body.pointer(&format!("/{kind}/lyric"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Fetches the lyric for an online track via `lyric_new`: prefers the
@@ -705,24 +716,9 @@ pub async fn fetch_online_lyric(track: &NeteaseTrackInfo) -> Result<Option<Netea
                 .await
                 .map_err(|err| err.to_string())?;
 
-            let yrc = response
-                .body
-                .pointer("/yrc/lyric")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let lrc = response
-                .body
-                .pointer("/lrc/lyric")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let tlyric = response
-                .body
-                .pointer("/tlyric/lyric")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            let yrc = lyric_pointer_text(&response.body, "yrc");
+            let lrc = lyric_pointer_text(&response.body, "lrc");
+            let tlyric = lyric_pointer_text(&response.body, "tlyric");
 
             if !yrc.trim().is_empty() {
                 let mut lines = crate::ui::lyrics::yrc::parse_yrc(&yrc).unwrap_or_default();

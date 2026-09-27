@@ -13,11 +13,13 @@ use crate::ui::netease::{
     unlike_track as netease_unlike_track,
 };
 use crate::{
+    library::types::Track,
     playback::{
         events::RepeatState, interface::PlaybackInterface, queue::QueueItemUIData,
         thread::PlaybackState,
     },
     settings::SettingsGlobal,
+    settings::storage::{DEFAULT_CONTROLS_LEFT_WIDTH, DEFAULT_CONTROLS_RIGHT_WIDTH},
     ui::{
         components::{
             context::context,
@@ -27,19 +29,116 @@ use crate::{
             },
             managed_image::{ManagedImageKey, managed_image},
             menu::{menu, menu_check_item, menu_item},
+            resizable::{ResizeEdge, resizable},
+            slider::slider,
             tooltip::{build_tooltip, tooltip_container},
-            transition::TransitionExt,
+            transition::{HoverTransition, TransitionExt},
         },
+        design::{ICON_MD, ICON_SM},
+        global_actions::{Next, PlayPause, Previous, StopAfterCurrent},
         library::context_menus::{
             info_section::InfoSectionContextMenu, navigate_to_track_album_and_reveal,
             navigate_to_track_artist,
         },
         models::{
-            CurrentTrack, HasLikedState, LIKED_SONGS_PLAYLIST_ID, subscribe_liked_updates,
-            toggle_like,
+            CurrentTrack, HasLikedState, LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo,
+            subscribe_liked_updates, toggle_like,
         },
+        theme::Theme,
+        util::format_duration,
     },
 };
+use cntp_i18n::tr;
+use gpui::{InteractiveElement, prelude::FluentBuilder, *};
+use std::{path::PathBuf, rc::Rc, time::Duration};
+
+use self::replaygain::ReplayGainButton;
+
+/// Re-renders whenever `entity` changes; the default wiring for global model
+/// mirrors that carry no extra state of their own.
+fn observe_notify<O: 'static, T: 'static>(cx: &mut Context<O>, entity: &Entity<T>) {
+    cx.observe(entity, |_, _, cx| {
+        cx.notify();
+    })
+    .detach();
+}
+
+/// Shared press handler for the transport buttons: stops propagation and
+/// suppresses default handling, leaving the action to the click handler.
+fn swallow_press(_: &MouseDownEvent, window: &mut Window, cx: &mut App) {
+    cx.stop_propagation();
+    window.prevent_default();
+}
+
+/// Which transport action a prev/next button dispatches.
+#[derive(Clone, Copy)]
+enum TransportAction {
+    Previous,
+    Next,
+}
+
+impl TransportAction {
+    fn dispatch(self, window: &mut Window, cx: &mut App) {
+        match self {
+            TransportAction::Previous => window.dispatch_action(Box::new(Previous), cx),
+            TransportAction::Next => window.dispatch_action(Box::new(Next), cx),
+        }
+    }
+}
+
+/// One end cap of the prev/play/next cluster: a 30×28 button that dispatches
+/// its action on click, swallows presses, and hover-fades its background.
+/// The caller adds the outer-corner rounding.
+fn transport_button(
+    id: &'static str,
+    icon_path: &'static str,
+    tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    action: TransportAction,
+    theme: &Theme,
+) -> HoverTransition {
+    div()
+        .w(px(30.0))
+        .h(px(28.0))
+        .bg(theme.playback_button)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .id(id)
+        .active(|style| style.bg(theme.playback_button_active))
+        .on_mouse_down(MouseButton::Left, swallow_press)
+        .on_click(move |_, window, cx| action.dispatch(window, cx))
+        .child(icon(icon_path).size(ICON_MD))
+        .tooltip(tooltip)
+        .into_transition(theme.playback_button, theme.playback_button_hover)
+}
+
+/// Shared chrome for the play bar's 25×25 square toggles (volume, queue,
+/// lyrics, ReplayGain): rounded square with the standard playback-button
+/// background, hover and active tints. Callers pass a stateful div and layer
+/// icon, tooltip and handlers on top.
+fn playback_toggle_button<D>(button: D, theme: &Theme) -> D
+where
+    D: Styled + StatefulInteractiveElement,
+{
+    button
+        .rounded(px(theme.radius_sm))
+        .w(px(25.0))
+        .h(px(25.0))
+        .mt(px(2.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .border_color(theme.playback_button_border)
+        .bg(theme.playback_button)
+        .cursor_pointer()
+        .hover(|this| this.bg(theme.playback_button_hover))
+        .active(|this| this.bg(theme.playback_button_active))
+}
+
+/// Debounce for slider change events: without it, every mouse move during a
+/// drag would send a command down the playback channel (SetVolume / seek).
+const SLIDER_CHANGE_INTERVAL: Duration = Duration::from_millis(33);
 
 /// The currently playing online track, if any: the running stream URL is
 /// mapped back to its source through the per-source registries.
@@ -69,26 +168,6 @@ impl OnlinePlayingTrack {
         self.identity() == identity
     }
 }
-use cntp_i18n::tr;
-use gpui::{InteractiveElement, *};
-use prelude::FluentBuilder;
-use std::{path::PathBuf, rc::Rc, time::Duration};
-
-use self::replaygain::ReplayGainButton;
-use super::{
-    components::{
-        resizable::{ResizeEdge, resizable},
-        slider::slider,
-    },
-    global_actions::{Next, PlayPause, Previous, StopAfterCurrent},
-    models::{Models, PlaybackInfo},
-    theme::Theme,
-};
-
-use crate::library::types::Track;
-use crate::settings::storage::{DEFAULT_CONTROLS_LEFT_WIDTH, DEFAULT_CONTROLS_RIGHT_WIDTH};
-use crate::ui::design::{ICON_MD, ICON_SM};
-use crate::ui::util::format_duration;
 
 pub struct Controls {
     info_section: Entity<InfoSection>,
@@ -202,87 +281,6 @@ impl HasLikedState for InfoSection {
     }
 }
 
-fn update_track_metadata(this: &mut InfoSection, metadata: &crate::media::metadata::Metadata) {
-    // Only overwrite with values the stream actually provides: an online file
-    // can carry tags (or just cover art / ReplayGain frames) without a usable
-    // title/artist, and wiping the queue-item-derived names for those left
-    // the play bar on "Unknown Track" until the next track change.
-    if let Some(name) = metadata.name.clone() {
-        this.track_name = Some(SharedString::from(name));
-    }
-    if let Some(artist) = metadata.artist.clone().or(metadata.album_artist.clone()) {
-        this.artist_name = Some(SharedString::from(artist));
-    }
-}
-
-fn resolve_queue_item_metadata(this: &mut InfoSection, cx: &mut Context<InfoSection>) {
-    // Dropping cancels the subscription; detaching kept a live observer on the
-    // old queue-item entity for the rest of the session (and let it fire).
-    drop(this.queue_item_subscription.take());
-    this.queue_item_data = None;
-
-    let queue = cx.global::<Models>().queue.read(cx);
-    let position = queue.position;
-    let item = queue
-        .data
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(position)
-        .cloned();
-
-    let Some(item) = item else { return };
-
-    // The queue position is the single source of truth for "what is playing";
-    // keying off `current_track_path` here breaks cover art whenever the path
-    // lags the queue (e.g. an online URL refreshed after a session restore),
-    // leaving the info-section thumbnail blank while the queue item shows art.
-    let data = item.get_data(cx);
-    this.queue_item_data = Some(data.clone());
-
-    // SongChanged is broadcast before QueuePositionChanged, so this can run
-    // while the UI position still points at the previous track. Only fill the
-    // names from a slot that actually holds the track that just started -
-    // filling from a stale slot latches the wrong track's names (the
-    // fill-if-none policy then blocks the position-change resolve from
-    // correcting them).
-    let slot_is_current = this
-        .current_track_path
-        .as_ref()
-        .is_some_and(|path| path == item.get_path());
-
-    let item_path = item.get_path().clone();
-    let subscription = cx.observe(&data, move |this: &mut InfoSection, data, cx| {
-        let data = data.read(cx).clone();
-        if let Some(data) = data {
-            if this
-                .current_track_path
-                .as_ref()
-                .is_some_and(|path| *path == item_path)
-            {
-                if this.track_name.is_none() {
-                    this.track_name = data.name;
-                }
-                if this.artist_name.is_none() {
-                    this.artist_name = data.artist_name;
-                }
-                cx.notify();
-            }
-        }
-    });
-    this.queue_item_subscription = Some(subscription);
-
-    let data = data.read(cx).clone();
-    if slot_is_current && let Some(data) = data {
-        if this.track_name.is_none() {
-            this.track_name = data.name;
-        }
-        if this.artist_name.is_none() {
-            this.artist_name = data.artist_name;
-        }
-        cx.notify();
-    }
-}
-
 impl InfoSection {
     pub fn new(cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
@@ -291,13 +289,10 @@ impl InfoSection {
             let current_track_model = playback_info.current_track.clone();
             let queue_model = cx.global::<Models>().queue.clone();
 
-            cx.observe(&playback_info.playback_state, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
+            observe_notify(cx, &playback_info.playback_state);
 
             cx.observe(&metadata_model, |this: &mut Self, m, cx| {
-                update_track_metadata(this, m.read(cx));
+                this.update_track_metadata(m.read(cx));
                 cx.notify();
             })
             .detach();
@@ -305,7 +300,7 @@ impl InfoSection {
             // SongChanged is broadcast before QueuePositionChanged, so re-resolve once the queue
             // position has caught up with a track switch
             cx.observe(&queue_model, |this: &mut Self, _, cx| {
-                resolve_queue_item_metadata(this, cx);
+                this.resolve_queue_item_metadata(cx);
             })
             .detach();
 
@@ -313,12 +308,12 @@ impl InfoSection {
                 &current_track_model,
                 |this: &mut Self, current_track, cx| {
                     let current_track = current_track.read(cx).clone();
-                    update_current_track_state(this, current_track.as_ref(), cx);
+                    this.update_current_track_state(current_track.as_ref(), cx);
                     #[cfg(any(feature = "kugou", feature = "netease"))]
                     this.detect_online_track();
                     #[cfg(any(feature = "kugou", feature = "netease"))]
                     this.schedule_online_liked_query(cx);
-                    resolve_queue_item_metadata(this, cx);
+                    this.resolve_queue_item_metadata(cx);
                     cx.notify();
                 },
             )
@@ -356,16 +351,100 @@ impl InfoSection {
                 queue_item_data: None,
                 queue_item_subscription: None,
             };
-            update_track_metadata(&mut info_section, &initial_metadata);
+            info_section.update_track_metadata(&initial_metadata);
             #[cfg(any(feature = "kugou", feature = "netease"))]
             info_section.detect_online_track();
             #[cfg(any(feature = "kugou", feature = "netease"))]
             info_section.schedule_online_liked_query(cx);
-            resolve_queue_item_metadata(&mut info_section, cx);
-            spawn_library_resolve(&mut info_section, cx);
+            info_section.resolve_queue_item_metadata(cx);
+            info_section.spawn_library_resolve(cx);
 
             info_section
         })
+    }
+
+    /// Overwrites the display names with stream metadata. Only values the
+    /// stream actually provides are taken: an online file can carry tags (or
+    /// just cover art / ReplayGain frames) without a usable title/artist, and
+    /// wiping the queue-item-derived names for those left the play bar on
+    /// "Unknown Track" until the next track change.
+    fn update_track_metadata(&mut self, metadata: &crate::media::metadata::Metadata) {
+        if let Some(name) = metadata.name.clone() {
+            self.track_name = Some(SharedString::from(name));
+        }
+        if let Some(artist) = metadata.artist.clone().or(metadata.album_artist.clone()) {
+            self.artist_name = Some(SharedString::from(artist));
+        }
+    }
+
+    /// Adopts the queue item's display names only where the section has none:
+    /// names already provided by stream metadata must not be clobbered.
+    fn fill_missing_names(&mut self, data: QueueItemUIData) {
+        if self.track_name.is_none() {
+            self.track_name = data.name;
+        }
+        if self.artist_name.is_none() {
+            self.artist_name = data.artist_name;
+        }
+    }
+
+    /// Re-wires the queue-item subscription to the item at the current queue
+    /// position and adopts whatever display data it already holds.
+    fn resolve_queue_item_metadata(&mut self, cx: &mut Context<Self>) {
+        // Dropping cancels the subscription; detaching kept a live observer on the
+        // old queue-item entity for the rest of the session (and let it fire).
+        drop(self.queue_item_subscription.take());
+        self.queue_item_data = None;
+
+        let queue = cx.global::<Models>().queue.read(cx);
+        let position = queue.position;
+        let item = queue
+            .data
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(position)
+            .cloned();
+
+        let Some(item) = item else { return };
+
+        // The queue position is the single source of truth for "what is playing";
+        // keying off `current_track_path` here breaks cover art whenever the path
+        // lags the queue (e.g. an online URL refreshed after a session restore),
+        // leaving the info-section thumbnail blank while the queue item shows art.
+        let data = item.get_data(cx);
+        self.queue_item_data = Some(data.clone());
+
+        // SongChanged is broadcast before QueuePositionChanged, so this can run
+        // while the UI position still points at the previous track. Only fill the
+        // names from a slot that actually holds the track that just started -
+        // filling from a stale slot latches the wrong track's names (the
+        // fill-if-none policy then blocks the position-change resolve from
+        // correcting them).
+        let slot_is_current = self
+            .current_track_path
+            .as_ref()
+            .is_some_and(|path| path == item.get_path());
+
+        let item_path = item.get_path().clone();
+        let subscription = cx.observe(&data, move |this: &mut Self, data, cx| {
+            let data = data.read(cx).clone();
+            if let Some(data) = data
+                && this
+                    .current_track_path
+                    .as_ref()
+                    .is_some_and(|path| *path == item_path)
+            {
+                this.fill_missing_names(data);
+                cx.notify();
+            }
+        });
+        self.queue_item_subscription = Some(subscription);
+
+        let data = data.read(cx).clone();
+        if slot_is_current && let Some(data) = data {
+            self.fill_missing_names(data);
+            cx.notify();
+        }
     }
 
     /// Re-resolves the current playback position as an online (KuGou/NetEase)
@@ -428,6 +507,158 @@ impl InfoSection {
                 {
                     this.is_online_liked = liked;
                     cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The star button at the right edge of the section: filled while the
+    /// track is liked (library row or online source), toggling whichever
+    /// like-state applies to the current track.
+    fn like_button(&self, cx: &Context<Self>, is_liked_filled: bool, track_id: Option<i64>) -> Div {
+        let theme = cx.global::<Theme>();
+
+        div().pb(px(6.0)).h_full().flex().ml_auto().child(
+            div()
+                .id("info-like")
+                .my_auto()
+                .rounded_sm()
+                .p(px(4.0))
+                .cursor_pointer()
+                .hover(|this| this.bg(theme.button_secondary_hover))
+                .active(|this| this.bg(theme.button_secondary_active))
+                .child(
+                    icon(if is_liked_filled { STAR_FILLED } else { STAR })
+                        .size(ICON_SM)
+                        .text_color(if is_liked_filled {
+                            theme.liked_song
+                        } else {
+                            theme.text_secondary
+                        }),
+                )
+                .when(is_liked_filled, |this| {
+                    this.tooltip(build_tooltip(tr!("UNLIKE", "Unlike")))
+                })
+                .when(!is_liked_filled, |this| {
+                    this.tooltip(build_tooltip(tr!("LIKE", "Like")))
+                })
+                .on_click(cx.listener(move |_this, _, _, cx| {
+                    if let Some(track_id) = track_id {
+                        toggle_like(track_id, cx.entity().clone(), cx);
+                        return;
+                    }
+                    #[cfg(any(feature = "kugou", feature = "netease"))]
+                    let this = _this;
+                    #[cfg(any(feature = "kugou", feature = "netease"))]
+                    if let Some(online) = this.online_track.clone() {
+                        match &online {
+                            #[cfg(feature = "kugou")]
+                            OnlinePlayingTrack::Kugou(track) => {
+                                if this.is_online_liked {
+                                    kugou_unlike_track(cx, track);
+                                } else {
+                                    kugou_like_track(cx, track);
+                                }
+                            }
+                            #[cfg(feature = "netease")]
+                            OnlinePlayingTrack::Netease(track) => {
+                                if this.is_online_liked {
+                                    netease_unlike_track(cx, track);
+                                } else {
+                                    netease_like_track(cx, track);
+                                }
+                            }
+                        }
+                        this.is_online_liked = !this.is_online_liked;
+                        cx.notify();
+                    }
+                })),
+        )
+    }
+
+    /// Clears all track-derived state and starts a fresh library resolve.
+    /// Name/artist come from the metadata model or the queue item; DB-derived
+    /// state lands when the background resolve completes.
+    fn update_current_track_state(
+        &mut self,
+        current_track: Option<&CurrentTrack>,
+        cx: &mut Context<Self>,
+    ) {
+        self.current_track_path = current_track.map(|track| track.get_path().clone());
+        self.track_name = None;
+        self.artist_name = None;
+        self.current_library_track = None;
+        self.can_navigate_to_album = false;
+        self.can_navigate_to_artist = false;
+        self.is_liked = None;
+        self.image_element_key = self.image_element_key.wrapping_add(1);
+
+        self.spawn_library_resolve(cx);
+    }
+
+    /// Resolves the current track's library row, artist navigability and liked
+    /// state on the runtime — three DB queries per resolve that used to park the
+    /// UI thread. The generation guard drops results from a track that has
+    /// already been switched away from; until it lands the section keeps showing
+    /// the already-known metadata (name/artist/cover) without library actions.
+    fn spawn_library_resolve(&mut self, cx: &mut Context<Self>) {
+        let Some(track_path) = self.current_track_path.clone() else {
+            return;
+        };
+        self.library_resolve_generation += 1;
+        let generation = self.library_resolve_generation;
+        let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let resolved = crate::RUNTIME
+                .spawn(async move {
+                    let track = crate::library::db::get_track_by_path(&pool, &track_path)
+                        .await
+                        .ok()
+                        .flatten();
+                    let Some(track) = track else {
+                        return None;
+                    };
+                    let can_navigate_to_artist = match track.album_id {
+                        Some(album_id) => crate::library::db::artist_ids_for_album(&pool, album_id)
+                            .await
+                            .map(|v| !v.is_empty())
+                            .unwrap_or(false),
+                        None => false,
+                    };
+                    let is_liked = crate::library::db::playlist_has_track(
+                        &pool,
+                        LIKED_SONGS_PLAYLIST_ID,
+                        track.id,
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+
+                    Some(((*track).clone(), can_navigate_to_artist, is_liked))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                if this.library_resolve_generation != generation {
+                    return;
+                }
+                match resolved {
+                    Ok(Some((track, can_navigate_to_artist, is_liked))) => {
+                        this.current_library_track = Some(Rc::new(track));
+                        this.can_navigate_to_album = this
+                            .current_library_track
+                            .as_ref()
+                            .is_some_and(|t| t.album_id.is_some());
+                        this.can_navigate_to_artist = can_navigate_to_artist;
+                        this.is_liked = is_liked;
+                        cx.notify();
+                    }
+                    // A query error or a non-library (online) path just leaves the
+                    // cleared state in place - same as the sync path's None result.
+                    _ => {}
                 }
             })
             .ok();
@@ -626,64 +857,7 @@ impl Render for InfoSection {
                                 ),
                         )
                         .when(has_track, |e| {
-                            e.child(
-                                div().pb(px(6.0)).h_full().flex().ml_auto().child(
-                                    div()
-                                        .id("info-like")
-                                        .my_auto()
-                                        .rounded_sm()
-                                        .p(px(4.0))
-                                        .cursor_pointer()
-                                        .hover(|this| this.bg(theme.button_secondary_hover))
-                                        .active(|this| this.bg(theme.button_secondary_active))
-                                        .child(
-                                            icon(if is_liked_filled { STAR_FILLED } else { STAR })
-                                                .size(ICON_SM)
-                                                .text_color(if is_liked_filled {
-                                                    theme.liked_song
-                                                } else {
-                                                    theme.text_secondary
-                                                }),
-                                        )
-                                        .when(is_liked_filled, |this| {
-                                            this.tooltip(build_tooltip(tr!("UNLIKE", "Unlike")))
-                                        })
-                                        .when(!is_liked_filled, |this| {
-                                            this.tooltip(build_tooltip(tr!("LIKE", "Like")))
-                                        })
-                                        .on_click(cx.listener(move |_this, _, _, cx| {
-                                            if let Some(track_id) = track_id {
-                                                toggle_like(track_id, cx.entity().clone(), cx);
-                                                return;
-                                            }
-                                            #[cfg(any(feature = "kugou", feature = "netease"))]
-                                            let this = _this;
-                                            #[cfg(any(feature = "kugou", feature = "netease"))]
-                                            if let Some(online) = this.online_track.clone() {
-                                                match &online {
-                                                    #[cfg(feature = "kugou")]
-                                                    OnlinePlayingTrack::Kugou(track) => {
-                                                        if this.is_online_liked {
-                                                            kugou_unlike_track(cx, track);
-                                                        } else {
-                                                            kugou_like_track(cx, track);
-                                                        }
-                                                    }
-                                                    #[cfg(feature = "netease")]
-                                                    OnlinePlayingTrack::Netease(track) => {
-                                                        if this.is_online_liked {
-                                                            netease_unlike_track(cx, track);
-                                                        } else {
-                                                            netease_like_track(cx, track);
-                                                        }
-                                                    }
-                                                }
-                                                this.is_online_liked = !this.is_online_liked;
-                                                cx.notify();
-                                            }
-                                        })),
-                                ),
-                            )
+                            e.child(self.like_button(cx, is_liked_filled, track_id))
                         })
                     }),
             );
@@ -745,93 +919,6 @@ impl Render for InfoSection {
     }
 }
 
-fn update_current_track_state(
-    this: &mut InfoSection,
-    current_track: Option<&CurrentTrack>,
-    cx: &mut Context<InfoSection>,
-) {
-    this.current_track_path = current_track.map(|track| track.get_path().clone());
-    // Name/artist come from the metadata model or the queue item; DB-derived
-    // state below lands when the background resolve completes.
-    this.track_name = None;
-    this.artist_name = None;
-    this.current_library_track = None;
-    this.can_navigate_to_album = false;
-    this.can_navigate_to_artist = false;
-    this.is_liked = None;
-    this.image_element_key = this.image_element_key.wrapping_add(1);
-
-    spawn_library_resolve(this, cx);
-}
-
-/// Resolves the current track's library row, artist navigability and liked
-/// state on the runtime — three DB queries per resolve that used to park the
-/// UI thread. The generation guard drops results from a track that has
-/// already been switched away from; until it lands the section keeps showing
-/// the already-known metadata (name/artist/cover) without library actions.
-fn spawn_library_resolve(this: &mut InfoSection, cx: &mut Context<InfoSection>) {
-    let Some(track_path) = this.current_track_path.clone() else {
-        return;
-    };
-    this.library_resolve_generation += 1;
-    let generation = this.library_resolve_generation;
-    let pool = cx.global::<crate::ui::app::Pool>().0.clone();
-
-    cx.spawn(async move |this, cx| {
-        let resolved = crate::RUNTIME
-            .spawn(async move {
-                let track = crate::library::db::get_track_by_path(&pool, &track_path)
-                    .await
-                    .ok()
-                    .flatten();
-                let Some(track) = track else {
-                    return None;
-                };
-                let can_navigate_to_artist = match track.album_id {
-                    Some(album_id) => crate::library::db::artist_ids_for_album(&pool, album_id)
-                        .await
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(false),
-                    None => false,
-                };
-                let is_liked = crate::library::db::playlist_has_track(
-                    &pool,
-                    LIKED_SONGS_PLAYLIST_ID,
-                    track.id,
-                )
-                .await
-                .ok()
-                .flatten();
-
-                Some(((*track).clone(), can_navigate_to_artist, is_liked))
-            })
-            .await;
-
-        this.update(cx, |this, cx| {
-            if this.library_resolve_generation != generation {
-                return;
-            }
-            match resolved {
-                Ok(Some((track, can_navigate_to_artist, is_liked))) => {
-                    this.current_library_track = Some(Rc::new(track));
-                    this.can_navigate_to_album = this
-                        .current_library_track
-                        .as_ref()
-                        .is_some_and(|t| t.album_id.is_some());
-                    this.can_navigate_to_artist = can_navigate_to_artist;
-                    this.is_liked = is_liked;
-                    cx.notify();
-                }
-                // A query error or a non-library (online) path just leaves the
-                // cleared state in place - same as the sync path's None result.
-                _ => {}
-            }
-        })
-        .ok();
-    })
-    .detach();
-}
-
 pub struct PlaybackSection {
     info: PlaybackInfo,
 }
@@ -840,30 +927,10 @@ impl PlaybackSection {
     pub fn new(cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let info = cx.global::<PlaybackInfo>().clone();
-            let state = info.playback_state.clone();
-            let shuffling = info.shuffling.clone();
-            let repeating = info.repeating.clone();
-            let stop_after_current = info.stop_after_current.clone();
-
-            cx.observe(&state, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
-            cx.observe(&shuffling, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
-            cx.observe(&repeating, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
-            cx.observe(&stop_after_current, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
+            observe_notify(cx, &info.playback_state);
+            observe_notify(cx, &info.shuffling);
+            observe_notify(cx, &info.repeating);
+            observe_notify(cx, &info.stop_after_current);
 
             Self { info }
         })
@@ -911,10 +978,7 @@ impl Render for PlaybackSection {
                     .hover(|style| style.bg(theme.playback_button_hover).cursor_pointer())
                     .id("header-shuffle-button")
                     .active(|style| style.bg(theme.playback_button_active))
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        cx.stop_propagation();
-                        window.prevent_default();
-                    })
+                    .on_mouse_down(MouseButton::Left, swallow_press)
                     .on_click(|_, _, cx| {
                         cx.global::<PlaybackInterface>().toggle_shuffle();
                     })
@@ -934,27 +998,14 @@ impl Render for PlaybackSection {
                     .border_1()
                     .flex()
                     .child(
-                        div()
-                            .w(px(30.0))
-                            .h(px(28.0))
-                            .rounded_l(px(theme.radius_sm))
-                            .bg(theme.playback_button)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .id("header-prev-button")
-                            .active(|style| style.bg(theme.playback_button_active))
-                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                cx.stop_propagation();
-                                window.prevent_default();
-                            })
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(Previous), cx);
-                            })
-                            .child(icon(PREV_TRACK).size(ICON_MD))
-                            .tooltip(build_tooltip(tr!("PREVIOUS_TRACK", "Previous Track")))
-                            .into_transition(theme.playback_button, theme.playback_button_hover),
+                        transport_button(
+                            "header-prev-button",
+                            PREV_TRACK,
+                            build_tooltip(tr!("PREVIOUS_TRACK", "Previous Track")),
+                            TransportAction::Previous,
+                            theme,
+                        )
+                        .rounded_l(px(theme.radius_sm)),
                     )
                     .child(
                         context("header-play-button-context")
@@ -973,10 +1024,7 @@ impl Render for PlaybackSection {
                                     .cursor_pointer()
                                     .id("header-play-button")
                                     .active(|style| style.bg(theme.playback_button_active))
-                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                        cx.stop_propagation();
-                                        window.prevent_default();
-                                    })
+                                    .on_mouse_down(MouseButton::Left, swallow_press)
                                     .on_click(|_, window, cx| {
                                         window.dispatch_action(Box::new(PlayPause), cx);
                                     })
@@ -1019,27 +1067,14 @@ impl Render for PlaybackSection {
                             ))),
                     )
                     .child(
-                        div()
-                            .w(px(30.0))
-                            .h(px(28.0))
-                            .rounded_r(px(theme.radius_sm))
-                            .bg(theme.playback_button)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .id("header-next-button")
-                            .active(|style| style.bg(theme.playback_button_active))
-                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                cx.stop_propagation();
-                                window.prevent_default();
-                            })
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(Next), cx);
-                            })
-                            .child(icon(NEXT_TRACK).size(ICON_MD))
-                            .tooltip(build_tooltip(tr!("NEXT_TRACK", "Next Track")))
-                            .into_transition(theme.playback_button, theme.playback_button_hover),
+                        transport_button(
+                            "header-next-button",
+                            NEXT_TRACK,
+                            build_tooltip(tr!("NEXT_TRACK", "Next Track")),
+                            TransportAction::Next,
+                            theme,
+                        )
+                        .rounded_r(px(theme.radius_sm)),
                     ),
             )
             .child(
@@ -1061,10 +1096,7 @@ impl Render for PlaybackSection {
                                 })
                                 .id("header-repeat-button")
                                 .active(|style| style.bg(theme.playback_button_active))
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                })
+                                .on_mouse_down(MouseButton::Left, swallow_press)
                                 .on_click(move |_, _, cx| match repeating {
                                     RepeatState::NotRepeating => cx
                                         .global::<PlaybackInterface>()
@@ -1139,14 +1171,22 @@ impl Render for PlaybackSection {
     }
 }
 
+/// Cached label texts keyed by whole-second (position, duration): the
+/// labels only change once per second, but render runs at ~33Hz while
+/// playing. Invalidated by any second-boundary change.
+struct TimeLabels {
+    position_secs: u64,
+    duration_secs: u64,
+    position_text: SharedString,
+    duration_text: SharedString,
+    remaining_text: SharedString,
+}
+
 pub struct Scrubber {
     position: Entity<u64>,
     duration: Entity<u64>,
     playback_section: Entity<PlaybackSection>,
-    /// Cached label texts keyed by whole-second (position, duration): the
-    /// labels only change once per second, but render runs at ~33Hz while
-    /// playing. Invalidated by any second-boundary change.
-    time_labels: (u64, u64, SharedString, SharedString, SharedString),
+    time_labels: TimeLabels,
 }
 
 impl Scrubber {
@@ -1154,29 +1194,21 @@ impl Scrubber {
         cx.new(|cx| {
             let position_model = cx.global::<PlaybackInfo>().position.clone();
             let duration_model = cx.global::<PlaybackInfo>().duration.clone();
-
-            cx.observe(&position_model, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
-            cx.observe(&duration_model, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
+            observe_notify(cx, &position_model);
+            observe_notify(cx, &duration_model);
 
             Self {
                 position: position_model,
                 duration: duration_model,
                 playback_section: PlaybackSection::new(cx),
                 // u64::MAX never matches a real second count: forces first build
-                time_labels: (
-                    u64::MAX,
-                    u64::MAX,
-                    SharedString::default(),
-                    SharedString::default(),
-                    SharedString::default(),
-                ),
+                time_labels: TimeLabels {
+                    position_secs: u64::MAX,
+                    duration_secs: u64::MAX,
+                    position_text: SharedString::default(),
+                    duration_text: SharedString::default(),
+                    remaining_text: SharedString::default(),
+                },
             }
         })
     }
@@ -1192,24 +1224,29 @@ impl Render for Scrubber {
         let remaining_secs = duration_secs.saturating_sub(position_secs);
 
         // reuse the formatted labels while the whole-second key is unchanged
-        let (position_text, duration_text, remaining_text) = if self.time_labels.0 == position_secs
-            && self.time_labels.1 == duration_secs
+        let (position_text, duration_text, remaining_text) = if self.time_labels.position_secs
+            == position_secs
+            && self.time_labels.duration_secs == duration_secs
         {
-            let (_, _, p, d, r) = &self.time_labels;
-            (p.clone(), d.clone(), r.clone())
+            let labels = &self.time_labels;
+            (
+                labels.position_text.clone(),
+                labels.duration_text.clone(),
+                labels.remaining_text.clone(),
+            )
         } else {
-            let p = SharedString::from(format_duration(position_secs as i64, true));
-            let d = SharedString::from(format_duration(duration_secs as i64, true));
-            let r =
+            let position_text = SharedString::from(format_duration(position_secs as i64, true));
+            let duration_text = SharedString::from(format_duration(duration_secs as i64, true));
+            let remaining_text =
                 SharedString::from(format!("-{}", format_duration(remaining_secs as i64, true)));
-            self.time_labels = (
+            self.time_labels = TimeLabels {
                 position_secs,
                 duration_secs,
-                p.clone(),
-                d.clone(),
-                r.clone(),
-            );
-            (p, d, r)
+                position_text: position_text.clone(),
+                duration_text: duration_text.clone(),
+                remaining_text: remaining_text.clone(),
+            };
+            (position_text, duration_text, remaining_text)
         };
 
         let window_width = window.viewport_size().width;
@@ -1265,7 +1302,7 @@ impl Render for Scrubber {
                     .h(px(6.0))
                     .rounded(px(theme.radius_sm))
                     .id("scrubber-back")
-                    .change_interval(Duration::from_millis(33))
+                    .change_interval(SLIDER_CHANGE_INTERVAL)
                     .value(if duration_ms > 0 {
                         position_ms as f32 / duration_ms as f32
                     } else {
@@ -1315,19 +1352,7 @@ impl RenderOnce for SidebarToggleButton {
             theme.text
         };
 
-        self.div
-            .rounded(px(theme.radius_sm))
-            .w(px(25.0))
-            .h(px(25.0))
-            .mt(px(2.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .border_color(theme.playback_button_border)
-            .bg(theme.playback_button)
-            .cursor_pointer()
-            .hover(|this| this.bg(theme.playback_button_hover))
-            .active(|this| this.bg(theme.playback_button_active))
+        playback_toggle_button(self.div, theme)
             .child(icon(self.icon_path).size(ICON_SM).text_color(icon_color))
     }
 }
@@ -1355,12 +1380,7 @@ impl SecondaryControls {
     pub fn new(cx: &mut App, show_queue: Entity<bool>, show_lyrics: Entity<bool>) -> Entity<Self> {
         cx.new(|cx| {
             let info = cx.global::<PlaybackInfo>().clone();
-            let volume = info.volume.clone();
-
-            cx.observe(&volume, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
+            observe_notify(cx, &info.volume);
 
             Self {
                 info,
@@ -1390,20 +1410,7 @@ impl Render for SecondaryControls {
                 .my_auto()
                 .pb(px(2.0))
                 .child(
-                    div()
-                        .rounded(px(theme.radius_sm))
-                        .w(px(25.0))
-                        .h(px(25.0))
-                        .mt(px(2.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_color(theme.playback_button_border)
-                        .id("volume-button")
-                        .cursor_pointer()
-                        .bg(theme.playback_button)
-                        .hover(|this| this.bg(theme.playback_button_hover))
-                        .active(|this| this.bg(theme.playback_button_active))
+                    playback_toggle_button(div().id("volume-button"), theme)
                         .when(volume <= 0.0, |div| {
                             div.child(icon(VOLUME_OFF).size(ICON_SM))
                                 .on_click(move |_, _, cx| {
@@ -1414,7 +1421,7 @@ impl Render for SecondaryControls {
                         .when(volume > 0.0, |div| {
                             div.child(icon(VOLUME).size(ICON_SM))
                                 .on_click(move |_, _, cx| {
-                                    cx.global::<PlaybackInterface>().set_volume(0 as f64);
+                                    cx.global::<PlaybackInterface>().set_volume(0.0);
                                 })
                                 .tooltip(build_tooltip(tr!("MUTE", "Mute")))
                         }),
@@ -1433,19 +1440,21 @@ impl Render for SecondaryControls {
                                 .mt(px(11.0))
                                 .rounded(px(theme.radius_sm))
                                 .id("volume")
-                                // match the scrubber: without this every mouse
-                                // move sends a SetVolume command down the
-                                // playback channel during a drag
-                                .change_interval(Duration::from_millis(33))
-                                .value((volume) as f32)
+                                .change_interval(SLIDER_CHANGE_INTERVAL)
+                                .value(volume as f32)
                                 .on_double_click(|_, cx| {
-                                    cx.global::<PlaybackInterface>().set_volume(1.0_f64);
+                                    cx.global::<PlaybackInterface>().set_volume(1.0);
                                 })
                                 .on_change(move |v, _, cx| {
                                     cx.global::<PlaybackInterface>().set_volume(v as f64);
                                 }),
                         )
                         .on_scroll_wheel(move |ev, _, cx| {
+                            // Both branches reduce to the same scale factor
+                            // (0.01666666 ≈ 1/60 of full volume per wheel
+                            // line): precise deltas arrive as pixels and are
+                            // multiplied directly, line deltas are converted
+                            // by treating one line as 0.01666666 px.
                             let delta: f64 = if ev.delta.precise() {
                                 f64::from(ev.delta.pixel_delta(px(1.0)).y) * 0.01666666
                             } else {
@@ -1509,10 +1518,7 @@ pub struct VolumeTooltip {
 
 impl VolumeTooltip {
     pub fn new(volume: Entity<f64>, cx: &mut Context<Self>) -> Self {
-        cx.observe(&volume, |_, _, cx| {
-            cx.notify();
-        })
-        .detach();
+        observe_notify(cx, &volume);
 
         Self { volume }
     }

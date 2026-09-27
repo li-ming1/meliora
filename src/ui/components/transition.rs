@@ -8,6 +8,10 @@ use crate::ui::scroll_follow::ease_out_cubic;
 /// Duration of hover/active background transitions.
 const HOVER_DURATION: Duration = Duration::from_millis(120);
 
+/// Deltas below this count as "already at the target": starting a transition
+/// for them would schedule frames for no visible change.
+const SETTLE_EPSILON: f32 = 0.001;
+
 #[derive(Clone, Copy, Default)]
 struct HoverState {
     /// Current interpolated value, 0 = base, 1 = hover.
@@ -83,7 +87,7 @@ impl RenderOnce for HoverTransition {
                 // `window.request_animation_frame()` is not (empty current_view).
                 state.update(cx, |s, cx| {
                     let target = if *hovered { 1.0 } else { 0.0 };
-                    if (s.value - target).abs() > 0.001 {
+                    if (s.value - target).abs() > SETTLE_EPSILON {
                         s.target = target;
                         s.animating = Some((Instant::now(), s.value));
                         cx.notify();

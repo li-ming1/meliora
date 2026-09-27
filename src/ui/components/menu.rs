@@ -25,8 +25,8 @@ fn icon_container() -> Div {
 
 /// Shared base for all menu item variants.
 ///
-/// This is intentionally not a usable component. Do not use it directly *ever*. Always use a proper
-/// menu item component - never ever use this.
+/// Deliberately not a component: never render it directly — always go through
+/// a concrete menu item type such as [`MenuItem`] or [`CheckMenuItem`].
 struct BaseMenuItem {
     id: ElementId,
     name: SharedString,
@@ -70,7 +70,6 @@ impl BaseMenuItem {
         icon_slot: impl IntoElement,
         right_element: Option<AnyElement>,
     ) -> impl IntoElement {
-        let has_tooltip = self.tooltip.is_some();
         let text_color = if self.disabled {
             Some(theme.text_disabled)
         } else {
@@ -101,8 +100,7 @@ impl BaseMenuItem {
             .when_some(right_element, |this, el| {
                 this.child(div().ml(px(12.0)).child(el))
             })
-            .when_some(self.tooltip, |this, text| this.tooltip(build_tooltip(text)))
-            .when(has_tooltip, |this| {
+            .when_some(self.tooltip, |this, text| {
                 // Transition-gated repaint (scrollbar.rs pattern): entering does
                 // not need one - the tooltip machinery refreshes the window when
                 // the tooltip actually shows, and the built-in hover styles
@@ -110,11 +108,12 @@ impl BaseMenuItem {
                 // because the pointer can exit the window without another
                 // MouseMove and this repaint is what lets the tooltip's
                 // prepaint check hide it.
-                this.on_hover(|hovered, window, _| {
-                    if !*hovered {
-                        window.refresh();
-                    }
-                })
+                this.tooltip(build_tooltip(text))
+                    .on_hover(|hovered, window, _| {
+                        if !*hovered {
+                            window.refresh();
+                        }
+                    })
             });
 
         if self.disabled || self.non_interactive {

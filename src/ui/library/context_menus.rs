@@ -9,7 +9,7 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
-use cntp_i18n::tr;
+use cntp_i18n::{I18nString, tr};
 use gpui::{AnyElement, App, AppContext, Entity, IntoElement, Pixels, Point, SharedString, Window};
 
 use crate::{
@@ -25,13 +25,16 @@ use crate::{
     ui::app::Pool,
     ui::{
         availability::is_track_available,
-        components::context::ContextMenuBuilder,
+        components::{
+            context::ContextMenuBuilder,
+            icons::{STAR, STAR_FILLED},
+        },
         library::{
             ViewSwitchMessage,
             add_to_playlist::AddToPlaylist,
             context_menus::{album::AlbumContextMenu, track::TrackContextMenu},
         },
-        models::{Models, PlaybackInfo, PlaylistEvent, is_song_liked},
+        models::{Models, PlaybackInfo, PlaylistEvent, PlaylistInfoTransfer, is_song_liked},
     },
 };
 
@@ -212,11 +215,7 @@ pub(crate) fn album_menu_for_table_shared(
 }
 
 pub fn play_from_track(cx: &mut App, track: &Track, queue_items: Vec<QueueItemData>) {
-    if !is_track_available(track) {
-        return;
-    }
-
-    if queue_items.is_empty() {
+    if !is_track_available(track) || queue_items.is_empty() {
         return;
     }
 
@@ -269,6 +268,16 @@ pub fn play_from_track_listing(
     play_from_track(cx, track, queue_items);
 }
 
+/// Star icon and localized label for a track's like/unlike toggle, keyed on
+/// its current liked state (the liked row id, or `None` when unliked).
+pub(crate) fn like_toggle_icon_and_label(is_liked: Option<i64>) -> (&'static str, I18nString) {
+    if is_liked.is_some() {
+        (STAR_FILLED, tr!("UNLIKE"))
+    } else {
+        (STAR, tr!("LIKE"))
+    }
+}
+
 pub fn track_show_in_file_manager_label() -> SharedString {
     if cfg!(target_os = "macos") {
         tr!("SHOW_IN_FINDER", "Show in Finder").into()
@@ -290,7 +299,7 @@ pub fn remove_from_playlist(
     item_id: i64,
     playlist_id: i64,
     pool: sqlx::SqlitePool,
-    playlist_tracker: Entity<crate::ui::models::PlaylistInfoTransfer>,
+    playlist_tracker: Entity<PlaylistInfoTransfer>,
     cx: &mut App,
 ) {
     cx.spawn(async move |cx| {
@@ -316,22 +325,32 @@ pub fn remove_from_playlist(
     .detach();
 }
 
-pub(crate) fn play_now(cx: &mut App, data: QueueItemData) {
-    let playback_interface = cx.global::<PlaybackInterface>();
-    let queue_length = cx
-        .global::<Models>()
+/// Length of the playback queue right now; tolerates a poisoned queue lock.
+fn current_queue_length(cx: &App) -> usize {
+    cx.global::<Models>()
         .queue
         .read(cx)
         .data
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .len();
+        .len()
+}
+
+/// Queue slot the "play next" insertion point occupies: one past the
+/// currently playing item.
+fn next_queue_position(cx: &App) -> usize {
+    cx.global::<Models>().queue.read(cx).position + 1
+}
+
+pub(crate) fn play_now(cx: &mut App, data: QueueItemData) {
+    let queue_length = current_queue_length(cx);
+    let playback_interface = cx.global::<PlaybackInterface>();
     playback_interface.queue(data);
     playback_interface.jump(queue_length);
 }
 
 pub(crate) fn play_next(cx: &mut App, data: QueueItemData) {
-    let queue_position = cx.global::<Models>().queue.read(cx).position + 1;
+    let queue_position = next_queue_position(cx);
     cx.global::<PlaybackInterface>()
         .insert_at(data, queue_position);
 }
@@ -346,15 +365,8 @@ pub(crate) fn play_items_now(cx: &mut App, items: impl IntoIterator<Item = Queue
     if items.peek().is_none() {
         return;
     }
+    let queue_length = current_queue_length(cx);
     let playback_interface = cx.global::<PlaybackInterface>();
-    let queue_length = cx
-        .global::<Models>()
-        .queue
-        .read(cx)
-        .data
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .len();
     for item in items {
         playback_interface.queue(item);
     }
@@ -363,7 +375,7 @@ pub(crate) fn play_items_now(cx: &mut App, items: impl IntoIterator<Item = Queue
 
 /// Insert `items` directly after the current queue position, in order.
 pub(crate) fn play_items_next(cx: &mut App, items: impl IntoIterator<Item = QueueItemData>) {
-    let queue_position = cx.global::<Models>().queue.read(cx).position + 1;
+    let queue_position = next_queue_position(cx);
     for (offset, item) in items.into_iter().enumerate() {
         cx.global::<PlaybackInterface>()
             .insert_at(item, queue_position + offset);
@@ -493,9 +505,8 @@ fn shuffle_album(cx: &mut App, album: &Album) {
 }
 
 fn queue_album(cx: &mut App, album: &Album) {
-    for item in available_album_queue_items(cx, album) {
-        cx.global::<PlaybackInterface>().queue(item);
-    }
+    let items = available_album_queue_items(cx, album);
+    queue_items(cx, items);
 }
 
 pub(crate) fn rescan_album(cx: &App, album: &Album) {

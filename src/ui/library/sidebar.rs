@@ -35,7 +35,7 @@ use crate::ui::{
         icons::{DISC, USERS},
         nav_button::nav_button,
         resizable::{ResizeEdge, resizable},
-        sidebar::{sidebar, sidebar_item, sidebar_separator},
+        sidebar::{SidebarItem, sidebar, sidebar_item, sidebar_separator},
     },
     library::{NavigationHistory, ViewSwitchMessage, sidebar::playlists::PlaylistList},
     models::Models,
@@ -173,6 +173,28 @@ impl Sidebar {
             }
         })
     }
+
+    /// 一个主导航条目：展开时显示文字、折叠时退化短标签；点击切换到对应
+    /// 视图，`active` 时高亮（如 Albums 同时覆盖唱片详情页）。
+    fn nav_entry(
+        cx: &mut Context<Self>,
+        collapsed: bool,
+        id: &'static str,
+        icon: &'static str,
+        label: impl Into<SharedString>,
+        message: ViewSwitchMessage,
+        active: bool,
+    ) -> SidebarItem {
+        let label = label.into();
+        sidebar_item(id)
+            .icon(icon)
+            .when(!collapsed, |this| this.child(label.clone()))
+            .when(collapsed, |this| this.collapsed().collapsed_label(label))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.nav_model.update(cx, |_, cx| cx.emit(message));
+            }))
+            .when(active, |this| this.active())
+    }
 }
 
 impl Render for Sidebar {
@@ -255,78 +277,48 @@ impl Render for Sidebar {
                     &theme,
                 ))
             })
-            .child(
-                sidebar_item("albums")
-                    .icon(DISC)
-                    .when(!collapsed, |this| this.child(tr!("ALBUMS", "Albums")))
-                    .when(collapsed, |this| {
-                        this.collapsed().collapsed_label(tr!("ALBUMS"))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.nav_model.update(cx, |_, cx| {
-                            cx.emit(ViewSwitchMessage::Albums);
-                        });
-                    }))
-                    .when(
-                        matches!(
-                            sidebar_view,
-                            ViewSwitchMessage::Albums | ViewSwitchMessage::Release(_, _)
-                        ),
-                        |this| this.active(),
-                    ),
-            )
-            .child(
-                sidebar_item("artists")
-                    .icon(USERS)
-                    .when(!collapsed, |this| this.child(tr!("ARTISTS", "Artists")))
-                    .when(collapsed, |this| {
-                        this.collapsed().collapsed_label(tr!("ARTISTS"))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.nav_model.update(cx, |_, cx| {
-                            cx.emit(ViewSwitchMessage::Artists);
-                        });
-                    }))
-                    .when(
-                        matches!(
-                            sidebar_view,
-                            ViewSwitchMessage::Artists | ViewSwitchMessage::Artist(_)
-                        ),
-                        |this| this.active(),
-                    ),
-            )
-            .child(
-                sidebar_item("tracks")
-                    .icon(MUSIC)
-                    .when(!collapsed, |this| this.child(tr!("TRACKS", "Tracks")))
-                    .when(collapsed, |this| {
-                        this.collapsed().collapsed_label(tr!("TRACKS"))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.nav_model.update(cx, |_, cx| {
-                            cx.emit(ViewSwitchMessage::Tracks);
-                        });
-                    }))
-                    .when(matches!(sidebar_view, ViewSwitchMessage::Tracks), |this| {
-                        this.active()
-                    }),
-            )
-            .child(
-                sidebar_item("files")
-                    .icon(FOLDER)
-                    .when(!collapsed, |this| this.child(tr!("FILES", "Files")))
-                    .when(collapsed, |this| {
-                        this.collapsed().collapsed_label(tr!("FILES"))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.nav_model.update(cx, |_, cx| {
-                            cx.emit(ViewSwitchMessage::Files);
-                        });
-                    }))
-                    .when(matches!(sidebar_view, ViewSwitchMessage::Files), |this| {
-                        this.active()
-                    }),
-            )
+            .child(Self::nav_entry(
+                cx,
+                collapsed,
+                "albums",
+                DISC,
+                tr!("ALBUMS", "Albums"),
+                ViewSwitchMessage::Albums,
+                matches!(
+                    sidebar_view,
+                    ViewSwitchMessage::Albums | ViewSwitchMessage::Release(_, _)
+                ),
+            ))
+            .child(Self::nav_entry(
+                cx,
+                collapsed,
+                "artists",
+                USERS,
+                tr!("ARTISTS", "Artists"),
+                ViewSwitchMessage::Artists,
+                matches!(
+                    sidebar_view,
+                    ViewSwitchMessage::Artists | ViewSwitchMessage::Artist(_)
+                ),
+            ))
+            .child(Self::nav_entry(
+                cx,
+                collapsed,
+                "tracks",
+                MUSIC,
+                tr!("TRACKS", "Tracks"),
+                ViewSwitchMessage::Tracks,
+                matches!(sidebar_view, ViewSwitchMessage::Tracks),
+            ))
+            .child(Self::nav_entry(
+                cx,
+                collapsed,
+                "files",
+                FOLDER,
+                tr!("FILES", "Files"),
+                ViewSwitchMessage::Files,
+                matches!(sidebar_view, ViewSwitchMessage::Files),
+            ))
             // 分组二：播放列表
             .child(sidebar_separator())
             .when(!collapsed, |this| {
@@ -345,44 +337,24 @@ impl Render for Sidebar {
                 div()
                     .flex()
                     .flex_col()
-                    .child(
-                        sidebar_item("kugou-playlists")
-                            .icon(KUGOU)
-                            .when(!collapsed, |this| {
-                                this.child(tr!("KUGOU_PLAYLISTS", "KuGou Playlists"))
-                            })
-                            .when(collapsed, |this| {
-                                this.collapsed().collapsed_label(tr!("KUGOU_PLAYLISTS"))
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.nav_model.update(cx, |_, cx| {
-                                    cx.emit(ViewSwitchMessage::KugouPlaylists);
-                                });
-                            }))
-                            .when(
-                                matches!(sidebar_view, ViewSwitchMessage::KugouPlaylists),
-                                |this| this.active(),
-                            ),
-                    )
-                    .child(
-                        sidebar_item("kugou-ranks")
-                            .icon(RANKING)
-                            .when(!collapsed, |this| {
-                                this.child(tr!("KUGOU_RANKS", "Rankings"))
-                            })
-                            .when(collapsed, |this| {
-                                this.collapsed().collapsed_label(tr!("KUGOU_RANKS"))
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.nav_model.update(cx, |_, cx| {
-                                    cx.emit(ViewSwitchMessage::KugouRanks);
-                                });
-                            }))
-                            .when(
-                                matches!(sidebar_view, ViewSwitchMessage::KugouRanks),
-                                |this| this.active(),
-                            ),
-                    ),
+                    .child(Self::nav_entry(
+                        cx,
+                        collapsed,
+                        "kugou-playlists",
+                        KUGOU,
+                        tr!("KUGOU_PLAYLISTS", "KuGou Playlists"),
+                        ViewSwitchMessage::KugouPlaylists,
+                        matches!(sidebar_view, ViewSwitchMessage::KugouPlaylists),
+                    ))
+                    .child(Self::nav_entry(
+                        cx,
+                        collapsed,
+                        "kugou-ranks",
+                        RANKING,
+                        tr!("KUGOU_RANKS", "Rankings"),
+                        ViewSwitchMessage::KugouRanks,
+                        matches!(sidebar_view, ViewSwitchMessage::KugouRanks),
+                    )),
             );
 
         // 分组四：网易云音乐（顺序在酷狗之后）
@@ -396,42 +368,26 @@ impl Render for Sidebar {
                 div()
                     .flex()
                     .flex_col()
-                    .child(
-                        sidebar_item("netease-playlists")
-                            .icon(NETEASE)
-                            // fallback for NETEASE_PLAYLISTS is defined by the
-                            // playlists page (single definition point)
-                            .when(!collapsed, |this| this.child(tr!("NETEASE_PLAYLISTS")))
-                            .when(collapsed, |this| {
-                                this.collapsed().collapsed_label(tr!("NETEASE_PLAYLISTS"))
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.nav_model.update(cx, |_, cx| {
-                                    cx.emit(ViewSwitchMessage::NeteasePlaylists);
-                                });
-                            }))
-                            .when(
-                                matches!(sidebar_view, ViewSwitchMessage::NeteasePlaylists),
-                                |this| this.active(),
-                            ),
-                    )
-                    .child(
-                        sidebar_item("netease-ranks")
-                            .icon(RANKING)
-                            .when(!collapsed, |this| this.child(tr!("NETEASE_RANKS")))
-                            .when(collapsed, |this| {
-                                this.collapsed().collapsed_label(tr!("NETEASE_RANKS"))
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.nav_model.update(cx, |_, cx| {
-                                    cx.emit(ViewSwitchMessage::NeteaseRanks);
-                                });
-                            }))
-                            .when(
-                                matches!(sidebar_view, ViewSwitchMessage::NeteaseRanks),
-                                |this| this.active(),
-                            ),
-                    ),
+                    .child(Self::nav_entry(
+                        cx,
+                        collapsed,
+                        "netease-playlists",
+                        NETEASE,
+                        // fallback for NETEASE_PLAYLISTS is defined by the
+                        // playlists page (single definition point)
+                        tr!("NETEASE_PLAYLISTS"),
+                        ViewSwitchMessage::NeteasePlaylists,
+                        matches!(sidebar_view, ViewSwitchMessage::NeteasePlaylists),
+                    ))
+                    .child(Self::nav_entry(
+                        cx,
+                        collapsed,
+                        "netease-ranks",
+                        RANKING,
+                        tr!("NETEASE_RANKS"),
+                        ViewSwitchMessage::NeteaseRanks,
+                        matches!(sidebar_view, ViewSwitchMessage::NeteaseRanks),
+                    )),
             );
 
         // 底部固定：酷狗账号卡片 + 设置 / 主题 / 折叠
@@ -538,22 +494,15 @@ impl Render for Sidebar {
         let kugou_pill = {
             let profile = shared_client().cached_user_profile();
             let logged_in = profile.as_ref().is_some_and(|p| !p.nickname.is_empty());
-            let label: SharedString = logged_in
+            let nickname = logged_in
                 .then(|| {
                     profile
                         .as_ref()
                         .map(|p| SharedString::from(p.nickname.clone()))
                 })
-                .flatten()
-                .unwrap_or_else(login_label);
-            let tooltip_text = logged_in
-                .then(|| {
-                    profile
-                        .as_ref()
-                        .map(|p| SharedString::from(p.nickname.clone()))
-                })
-                .flatten()
-                .unwrap_or_else(|| tr!("KUGOU_LOGIN").into());
+                .flatten();
+            let label: SharedString = nickname.clone().unwrap_or_else(login_label);
+            let tooltip_text = nickname.unwrap_or_else(|| tr!("KUGOU_LOGIN").into());
 
             account_pill(
                 "kugou-account",
@@ -578,22 +527,15 @@ impl Render for Sidebar {
         let netease_pill = {
             let profile = netease_shared_client().cached_user_profile();
             let logged_in = profile.as_ref().is_some_and(|p| !p.nickname.is_empty());
-            let label: SharedString = logged_in
+            let nickname = logged_in
                 .then(|| {
                     profile
                         .as_ref()
                         .map(|p| SharedString::from(p.nickname.clone()))
                 })
-                .flatten()
-                .unwrap_or_else(login_label);
-            let tooltip_text = logged_in
-                .then(|| {
-                    profile
-                        .as_ref()
-                        .map(|p| SharedString::from(p.nickname.clone()))
-                })
-                .flatten()
-                .unwrap_or_else(|| tr!("NETEASE_LOGIN").into());
+                .flatten();
+            let label: SharedString = nickname.clone().unwrap_or_else(login_label);
+            let tooltip_text = nickname.unwrap_or_else(|| tr!("NETEASE_LOGIN").into());
 
             account_pill(
                 "netease-account",
