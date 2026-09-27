@@ -20,10 +20,12 @@ pub struct ToastAction {
     pub callback: Box<dyn FnOnce(&mut gpui::App) + Send + 'static>,
 }
 
+/// A single toast notification queued for the overlay layer.
 pub struct Toast {
     pub severity: Severity,
     pub message: I18nString,
-    // we don't actually change this ever but if we need to it's just better to leave it like this
+    /// Always `Some(DEFAULT_DURATION)` today; left an `Option` so a future
+    /// caller can pin a custom lifetime without changing the constructors.
     pub duration: Option<Duration>,
     pub actions: Vec<ToastAction>,
 }

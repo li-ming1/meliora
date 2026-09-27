@@ -2,6 +2,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use gpui::{App, Pixels, px};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::{
     library::db::{LikedTrackSortMethod, PlaylistTrackSortMethod},
@@ -141,7 +142,7 @@ impl StorageData {
         let playback = cx.global::<PlaybackInfo>();
         let models = cx.global::<Models>();
 
-        let split_fractions: std::collections::HashMap<String, f32> = models
+        let split_fractions: HashMap<String, f32> = models
             .split_widths
             .iter()
             .map(|(key, width)| (key.clone(), f32::from(*width.read(cx))))
@@ -149,7 +150,7 @@ impl StorageData {
         let split_fraction = split_fractions
             .get("albums")
             .copied()
-            .unwrap_or(f32::from(crate::settings::storage::DEFAULT_SPLIT_FRACTION));
+            .unwrap_or(f32::from(DEFAULT_SPLIT_FRACTION));
 
         Self {
             current_track: playback.current_track.read(cx).clone(),
@@ -244,18 +245,17 @@ impl Storage {
 
     /// Save `StorageData` on file system
     pub fn save(&self, data: &StorageData) {
-        // save into file
-        let result = fs::File::create(self.path.clone())
+        let result = fs::File::create(&self.path)
             .and_then(|file| serde_json::to_writer(file, &data).map_err(|e| e.into()));
         // ignore error, but log it
         if let Err(e) = result {
-            tracing::warn!("could not save `AppState` {:?}", e);
-        };
+            warn!("could not save `AppState` {:?}", e);
+        }
     }
 
     /// Load `StorageData` from storage or use `StorageData::default` in case of any errors
     pub fn load_or_default(&self) -> StorageData {
-        std::fs::File::open(self.path.clone())
+        fs::File::open(&self.path)
             .and_then(|file| {
                 serde_json::from_reader(file)
                     .map_err(|e| e.into())

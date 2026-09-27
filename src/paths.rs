@@ -1,4 +1,8 @@
-use std::{ffi::OsStr, path::PathBuf, sync::OnceLock};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use directories::ProjectDirs;
 
@@ -28,13 +32,7 @@ pub fn log_dir() -> PathBuf {
 /// Rerunning is a no-op once the new directories exist, and the whole move is
 /// skipped when either source is missing.
 pub fn migrate_legacy_li_ming1_dirs() {
-    let legacy_data = dirs_for("li-ming1", "meliora").data_dir().to_path_buf();
-    let legacy_local = dirs_for("li-ming1", "meliora")
-        .data_local_dir()
-        .to_path_buf();
-
-    migrate_tree(&legacy_data, &data_dir());
-    migrate_tree(&legacy_local, &log_dir_for_current());
+    migrate_legacy_dirs_from("li-ming1", "meliora");
 }
 
 /// Moves the data and log directories left behind by the legacy
@@ -42,20 +40,22 @@ pub fn migrate_legacy_li_ming1_dirs() {
 /// Rerunning is a no-op once the new directories exist, and the whole move is
 /// skipped when either source is missing.
 pub fn migrate_legacy_dirs() {
-    let legacy_data = dirs_for("mailliw", "hummingbird").data_dir().to_path_buf();
-    let legacy_local = dirs_for("mailliw", "hummingbird")
-        .data_local_dir()
-        .to_path_buf();
+    migrate_legacy_dirs_from("mailliw", "hummingbird");
+}
 
-    migrate_tree(&legacy_data, &data_dir());
-    migrate_tree(&legacy_local, &log_dir_for_current());
+/// Shared body of the two legacy-directory migrations: moves `org/app`'s data
+/// and local-data directories under the current `meliora` ones.
+fn migrate_legacy_dirs_from(org: &str, app: &str) {
+    let legacy = dirs_for(org, app);
+    migrate_tree(legacy.data_dir(), &data_dir());
+    migrate_tree(legacy.data_local_dir(), &log_dir_for_current());
 }
 
 fn log_dir_for_current() -> PathBuf {
     log_dir_in(project_dirs(), None)
 }
 
-fn migrate_tree(old: &std::path::Path, new: &std::path::Path) {
+fn migrate_tree(old: &Path, new: &Path) {
     if !old.is_dir() || new.exists() {
         return;
     }
@@ -73,7 +73,7 @@ fn migrate_tree(old: &std::path::Path, new: &std::path::Path) {
     }
 }
 
-fn copy_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;

@@ -7,14 +7,14 @@ mod windows;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use async_trait::async_trait;
-use gpui::{App, Global, Window};
+use gpui::{App, Entity, Global, Window};
 use raw_window_handle::HasWindowHandle;
 use tokio::sync::mpsc::Sender;
-use tracing::{Instrument as _, debug, debug_span, error, trace_span, warn};
+use tracing::{Instrument as _, debug, debug_span, error, info, trace_span, warn};
 
 use crate::{
     media::metadata::Metadata,
@@ -38,7 +38,7 @@ use crate::{
 /// same data. Not all `PlaybackController`s must handle all events - if you wish not to handle
 /// a given event, simply implement the function by returning `Ok(())`.
 ///
-/// All implementations of this trait should be preceeded by `#[async_trait]`, from the
+/// All implementations of this trait should be preceded by `#[async_trait]`, from the
 /// [`async_trait`] crate.
 pub trait PlaybackController: Send {
     /// Indicates that the position in the current file has changed.
@@ -51,11 +51,11 @@ pub trait PlaybackController: Send {
     /// Indicates that the playback volume has changed.
     async fn volume_changed(&mut self, new_volume: f64) -> anyhow::Result<()>;
 
-    /// Indicates that new metadata has been recieved from the decoder. This may occur more than
+    /// Indicates that new metadata has been received from the decoder. This may occur more than
     /// once per track.
     async fn metadata_changed(&mut self, metadata: &Metadata) -> anyhow::Result<()>;
 
-    /// Indicates that new album art has been recieved from the decoder. This may occur more than
+    /// Indicates that new album art has been received from the decoder. This may occur more than
     /// once per track.
     async fn album_art_changed(&mut self, album_art: &[u8]) -> anyhow::Result<()>;
 
@@ -81,20 +81,22 @@ type ControllerList = Option<Box<dyn PlaybackController>>;
 
 // has to be held in memory
 #[allow(dead_code)]
-pub struct PbcHandle(
-    Sender<PbcEvent>,
-    tokio::task::JoinHandle<()>,
+pub struct PbcHandle {
+    /// Sender half that the observers below write playback-controller events into.
+    event_tx: Sender<PbcEvent>,
+    /// Handle of the task draining [`PbcEvent`]s into the playback controller.
+    task: tokio::task::JoinHandle<()>,
     /// `Arc` identity of the artwork last handed to the playback controller.
     /// The playback thread re-emits the same embedded cover for every track
     /// of an album; without this, each emission rebuilt the WinRT thumbnail
     /// (transient MB-scale allocations) over the whole background session.
-    Option<std::sync::Weak<[u8]>>,
+    last_art: Option<Weak<[u8]>>,
     /// Last position (seconds) sent to the controller. Position events fire
     /// at 30 Hz while a window is focused, but the value only changes once a
     /// second; forwarding each one makes the Windows controller perform two
     /// WinRT calls per event for nothing.
-    u64,
-);
+    last_position_secs: u64,
+}
 
 impl Global for PbcHandle {}
 
@@ -154,6 +156,21 @@ fn send_pbc_event(tx: &Sender<PbcEvent>, event: PbcEvent) {
     }
 }
 
+/// Observes `entity` and forwards every notification to the playback
+/// controller as the event built by `make_event`.
+fn forward_pbc_events<T: 'static>(
+    cx: &mut App,
+    entity: &Entity<T>,
+    make_event: impl Fn(&T) -> PbcEvent + 'static,
+) {
+    cx.observe(entity, move |e, cx| {
+        let event = make_event(e.read(cx));
+        let handle = cx.global::<PbcHandle>();
+        send_pbc_event(&handle.event_tx, event);
+    })
+    .detach();
+}
+
 pub fn register_pbc_event_handlers(cx: &mut App) {
     let models = cx.global::<Models>();
     let metadata = models.metadata.clone();
@@ -169,88 +186,57 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
     let shuffle = playback_info.shuffling.clone();
 
     cx.observe(&track, |e, cx| {
-        if let Some(track) = e.read(cx)
-            && let path = track.get_path().clone()
-        {
-            let PbcHandle(tx, _, last_art, _) = cx.global_mut::<PbcHandle>();
+        if let Some(track) = e.read(cx) {
+            let path = track.get_path().clone();
+            let handle = cx.global_mut::<PbcHandle>();
             // new_file clears the SMTC thumbnail, so the next artwork event
             // must re-send even if identical to what we sent before.
-            *last_art = None;
-            send_pbc_event(tx, PbcEvent::NewFile(path));
+            handle.last_art = None;
+            send_pbc_event(&handle.event_tx, PbcEvent::NewFile(path));
         }
     })
     .detach();
 
-    cx.observe(&metadata, |e, cx| {
-        let meta = e.read(cx).clone();
-        let PbcHandle(tx, ..) = cx.global();
-        send_pbc_event(tx, PbcEvent::MetadataChanged(Box::new(meta)));
-    })
-    .detach();
+    forward_pbc_events(cx, &metadata, |meta| {
+        PbcEvent::MetadataChanged(Box::new(meta.clone()))
+    });
+    forward_pbc_events(cx, &duration, |dur| PbcEvent::DurationChanged(*dur / 1_000));
+    forward_pbc_events(cx, &volume, |vol| PbcEvent::VolumeChanged(*vol));
+    forward_pbc_events(cx, &repeat, |repeat| PbcEvent::RepeatStateChanged(*repeat));
+    forward_pbc_events(cx, &state, |state| PbcEvent::PlaybackStateChanged(*state));
+    forward_pbc_events(cx, &shuffle, |shuffle| {
+        PbcEvent::ShuffleStateChanged(*shuffle)
+    });
 
     cx.subscribe(&albumart, |_, ImageEvent(img), cx| {
-        let PbcHandle(tx, _, last_art, _) = cx.global_mut::<PbcHandle>();
+        let handle = cx.global_mut::<PbcHandle>();
         // Deduplicate identical artwork: rebuilding the SMTC thumbnail for a
         // repeated emission is pure churn over a long background session.
-        let already_sent = last_art
+        let already_sent = handle
+            .last_art
             .as_ref()
             .and_then(|last| last.upgrade())
-            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, &img));
+            .is_some_and(|current| Arc::ptr_eq(&current, &img));
         if already_sent {
             return;
         }
-        *last_art = Some(std::sync::Arc::downgrade(&img));
-        send_pbc_event(tx, PbcEvent::AlbumArtChanged(img.clone()));
+        handle.last_art = Some(Arc::downgrade(&img));
+        send_pbc_event(&handle.event_tx, PbcEvent::AlbumArtChanged(img.clone()));
     })
     .detach();
 
     cx.observe(&position, |e, cx| {
         let &pos = e.read(cx);
         let secs = pos / 1_000;
-        let PbcHandle(tx, _, _, last_secs) = cx.global_mut::<PbcHandle>();
+        let handle = cx.global_mut::<PbcHandle>();
         // Position broadcasts arrive every 33-250 ms, but the second value
         // only changes once per second. Skip the hundreds of duplicate
         // forwards so the SMTC timeline isn't rebuilt at 4-30 Hz.
-        if *last_secs == secs {
+        if handle.last_position_secs == secs {
             return;
         }
-        *last_secs = secs;
-        send_pbc_event(tx, PbcEvent::PositionChanged(secs));
-    })
-    .detach();
-
-    cx.observe(&duration, |e, cx| {
-        let &dur = e.read(cx);
-        let PbcHandle(tx, ..) = cx.global();
-        send_pbc_event(tx, PbcEvent::DurationChanged(dur / 1_000));
-    })
-    .detach();
-
-    cx.observe(&volume, |e, cx| {
-        let &vol = e.read(cx);
-        let PbcHandle(tx, ..) = cx.global();
-        send_pbc_event(tx, PbcEvent::VolumeChanged(vol));
-    })
-    .detach();
-
-    cx.observe(&repeat, |e, cx| {
-        let &repeat = e.read(cx);
-        let PbcHandle(tx, ..) = cx.global();
-        send_pbc_event(tx, PbcEvent::RepeatStateChanged(repeat));
-    })
-    .detach();
-
-    cx.observe(&state, |e, cx| {
-        let &state = e.read(cx);
-        let PbcHandle(tx, ..) = cx.global();
-        send_pbc_event(tx, PbcEvent::PlaybackStateChanged(state));
-    })
-    .detach();
-
-    cx.observe(&shuffle, |e, cx| {
-        let &shuffle = e.read(cx);
-        let PbcHandle(tx, ..) = cx.global();
-        send_pbc_event(tx, PbcEvent::ShuffleStateChanged(shuffle));
+        handle.last_position_secs = secs;
+        send_pbc_event(&handle.event_tx, PbcEvent::PositionChanged(secs));
     })
     .detach();
 }
@@ -318,8 +304,13 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
             }
         }
 
-        tracing::info!("channel closed, ending task");
+        info!("channel closed, ending task");
     });
 
-    cx.set_global(PbcHandle(pbc_tx, task, None, 0));
+    cx.set_global(PbcHandle {
+        event_tx: pbc_tx,
+        task,
+        last_art: None,
+        last_position_secs: 0,
+    });
 }

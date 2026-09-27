@@ -23,6 +23,7 @@ use tracing::{info, warn};
 
 use crate::{library::scan::ScanInterface, playback::interface::PlaybackInterface};
 
+/// User preferences persisted to `settings.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -51,6 +52,18 @@ fn apply_legacy_theme_selection(path: &Path, settings: &mut Settings, has_theme_
     }
 }
 
+/// Defaults with the legacy `theme.json` migration applied; used whenever the
+/// settings file cannot be read or parsed. `has_theme_setting` is the raw
+/// [`has_stored_theme_setting`] verdict, or `false` when there is no file.
+fn fallback_settings(path: &Path, has_theme_setting: bool) -> Settings {
+    let mut settings = Settings::default();
+    apply_legacy_theme_selection(path, &mut settings, has_theme_setting);
+    settings
+}
+
+/// Result of reading `settings.json`: either the parsed [`Settings`], or
+/// defaults paired with the offending path so the UI can surface a corruption
+/// notice (see [`SettingsGlobal::initial_corrupt_path`]).
 #[derive(Debug)]
 pub enum SettingsLoadOutcome {
     Loaded(Settings),
@@ -58,6 +71,7 @@ pub enum SettingsLoadOutcome {
 }
 
 impl SettingsLoadOutcome {
+    /// The settings to run with, whether or not the file was corrupt.
     pub fn into_settings(self) -> Settings {
         match self {
             SettingsLoadOutcome::Loaded(settings) => settings,
@@ -66,21 +80,20 @@ impl SettingsLoadOutcome {
     }
 }
 
+/// Read the settings file at `path`, applying the legacy `theme.json`
+/// migration to the result. A missing file counts as `Loaded` defaults; a
+/// parse or deserialize failure yields `Corrupt` carrying the path.
 pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
     let Ok(contents) = fs::read_to_string(path) else {
-        let mut settings = Settings::default();
-        apply_legacy_theme_selection(path, &mut settings, false);
-        return SettingsLoadOutcome::Loaded(settings);
+        return SettingsLoadOutcome::Loaded(fallback_settings(path, false));
     };
 
     let value: serde_json::Value = match serde_json::from_str(&contents) {
         Ok(value) => value,
         Err(e) => {
             warn!("Failed to parse settings file ({e}), scanner will wait for recovery");
-            let mut settings = Settings::default();
-            apply_legacy_theme_selection(path, &mut settings, false);
             return SettingsLoadOutcome::Corrupt {
-                settings,
+                settings: fallback_settings(path, false),
                 path: path.clone(),
             };
         }
@@ -91,10 +104,8 @@ pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
         Ok(settings) => settings,
         Err(e) => {
             warn!("Failed to deserialize settings file ({e}), scanner will wait for recovery");
-            let mut defaults = Settings::default();
-            apply_legacy_theme_selection(path, &mut defaults, has_theme_setting);
             return SettingsLoadOutcome::Corrupt {
-                settings: defaults,
+                settings: fallback_settings(path, has_theme_setting),
                 path: path.clone(),
             };
         }
@@ -110,6 +121,8 @@ pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 static SETTINGS_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// Push `settings` onto the playback thread and the scanner immediately, then
+/// debounce the disk write (trailing edge, see [`SETTINGS_SAVE_DEBOUNCE`]).
 pub fn save_settings(cx: &mut App, settings: &Settings) {
     let playback = cx.global::<PlaybackInterface>();
     playback.update_settings(settings.playback.clone());
@@ -154,6 +167,8 @@ pub struct SettingsGlobal {
 
 impl Global for SettingsGlobal {}
 
+/// Load settings from `path`, publish [`SettingsGlobal`], and watch the
+/// containing directory so hand edits to `settings.json` are re-read live.
 pub fn setup_settings(cx: &mut App, path: PathBuf) {
     let outcome = create_settings(&path);
     let initial_corrupt_path = match &outcome {
@@ -197,19 +212,16 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
                             continue;
                         }
                         match v.kind {
-                            notify::EventKind::Create(_)
-                            | notify::EventKind::Modify(_)
-                            | notify::EventKind::Remove(_) => {
-                                if matches!(v.kind, notify::EventKind::Remove(_)) {
-                                    info!("Settings file removed, using default settings");
-                                }
-                                let outcome = create_settings(&path_for_watcher);
-                                settings_model.update(app, |v, cx| {
-                                    apply_settings_outcome(cx, v, outcome);
-                                });
+                            notify::EventKind::Remove(_) => {
+                                info!("Settings file removed, using default settings");
                             }
-                            _ => (),
+                            notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {}
+                            _ => continue,
                         }
+                        let outcome = create_settings(&path_for_watcher);
+                        settings_model.update(app, |v, cx| {
+                            apply_settings_outcome(cx, v, outcome);
+                        });
                     }
                     Err(e) => warn!("watch error: {:?}", e),
                 }

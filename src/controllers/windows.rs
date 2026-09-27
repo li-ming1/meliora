@@ -52,6 +52,7 @@ pub struct WindowsController {
 }
 
 impl WindowsController {
+    /// Registers the SMTC button, seek, shuffle, and repeat request handlers.
     pub fn connect_events(&mut self) -> anyhow::Result<()> {
         self.controls.SetIsEnabled(true)?;
         self.controls.SetIsNextEnabled(true)?;
@@ -241,19 +242,16 @@ impl PlaybackController for WindowsController {
             return Ok(());
         };
 
-        if let Some(title) = metadata.name.clone() {
-            let string = HSTRING::from(title);
-            music.SetTitle(&string)?;
+        if let Some(title) = &metadata.name {
+            music.SetTitle(&HSTRING::from(title))?;
         }
 
-        if let Some(artist) = metadata.artist.clone() {
-            let string = HSTRING::from(artist);
-            music.SetArtist(&string)?;
+        if let Some(artist) = &metadata.artist {
+            music.SetArtist(&HSTRING::from(artist))?;
         }
 
-        if let Some(album) = metadata.album.clone() {
-            let string = HSTRING::from(album);
-            music.SetAlbumTitle(&string)?;
+        if let Some(album) = &metadata.album {
+            music.SetAlbumTitle(&HSTRING::from(album))?;
         }
 
         if let Some(track_number) = metadata.track_current {

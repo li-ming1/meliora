@@ -108,6 +108,7 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
         use core::ffi::c_void;
 
         #[repr(C)]
+        #[derive(Default)]
         struct ProcessMemoryCounters {
             cb: u32,
             page_fault_count: u32,
@@ -132,18 +133,11 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
             ) -> i32;
         }
 
+        // `cb` must be set before the call; every counter is a pure out-param
+        // and starts zeroed
         let mut counters = ProcessMemoryCounters {
             cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
-            page_fault_count: 0,
-            peak_working_set_size: 0,
-            working_set_size: 0,
-            quota_peak_paged_pool_usage: 0,
-            quota_paged_pool_usage: 0,
-            quota_peak_nonpaged_pool_usage: 0,
-            quota_nonpaged_pool_usage: 0,
-            pagefile_usage: 0,
-            peak_pagefile_usage: 0,
-            private_usage: 0,
+            ..Default::default()
         };
         // SAFETY: buffer is the correct size and type; the pseudo-handle is
         // always valid for querying the current process.
@@ -266,9 +260,10 @@ fn spawn_memory_probe() {
     // Net committed growth over the last 10 minutes considered a "step".
     const STEP_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
     const STEP_MIN_MB: i64 = 20;
+    const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
     crate::RUNTIME.spawn(async {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut tick = tokio::time::interval(SAMPLE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut baseline: Option<(std::time::Instant, u64)> = None;
         let mut tick_count: u64 = 0;

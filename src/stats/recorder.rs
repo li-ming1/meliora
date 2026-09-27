@@ -49,6 +49,18 @@ struct ActiveTrack {
     row_ms: i64,
 }
 
+impl ActiveTrack {
+    /// The finished row for the `seconds` accumulated so far.
+    fn listen_row(&self, seconds: i64) -> ListenRow {
+        ListenRow {
+            ts: self.row_start_ts,
+            track_key: self.key.clone(),
+            seconds,
+            meta: self.meta.clone(),
+        }
+    }
+}
+
 impl StatsRecorder {
     pub fn new() -> Self {
         Self {
@@ -115,12 +127,7 @@ impl StatsRecorder {
         if let Some(mut cur) = self.current.take() {
             let secs = cur.row_ms / 1000;
             if secs > 0 {
-                self.pending.push(ListenRow {
-                    ts: cur.row_start_ts,
-                    track_key: cur.key.clone(),
-                    seconds: secs,
-                    meta: cur.meta.clone(),
-                });
+                self.pending.push(cur.listen_row(secs));
             }
             cur.row_ms = 0;
             cur.row_start_ts = ts;
@@ -151,12 +158,7 @@ impl StatsRecorder {
                 cur.row_ms += counted;
                 if cur.row_ms >= ROW_SECONDS * 1000 {
                     let secs = cur.row_ms / 1000;
-                    let row = ListenRow {
-                        ts: cur.row_start_ts,
-                        track_key: cur.key.clone(),
-                        seconds: secs,
-                        meta: cur.meta.clone(),
-                    };
+                    let row = cur.listen_row(secs);
                     cur.row_start_ts += secs;
                     cur.row_ms -= secs * 1000;
                     self.pending.push(row);

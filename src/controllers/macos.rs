@@ -10,7 +10,7 @@ use objc2_media_player::{
     MPChangePlaybackPositionCommandEvent, MPMediaItemArtwork, MPMediaItemPropertyAlbumTitle,
     MPMediaItemPropertyArtist, MPMediaItemPropertyArtwork, MPMediaItemPropertyPlaybackDuration,
     MPMediaItemPropertyTitle, MPNowPlayingInfoCenter, MPNowPlayingInfoPropertyElapsedPlaybackTime,
-    MPNowPlayingPlaybackState, MPRemoteCommandCenter, MPRemoteCommandEvent,
+    MPNowPlayingPlaybackState, MPRemoteCommand, MPRemoteCommandCenter, MPRemoteCommandEvent,
     MPRemoteCommandHandlerStatus,
 };
 use raw_window_handle::RawWindowHandle;
@@ -27,11 +27,36 @@ use crate::{
 
 use super::PlaybackController;
 
+/// Reports Meliora's playback state to the macOS Now Playing info center and
+/// forwards system remote-command events to the playback thread.
 pub struct MacMediaPlayerController {
     cmd_tx: UnboundedSender<PlaybackCommand>,
 }
 
 impl MacMediaPlayerController {
+    /// A fresh now-playing dictionary pre-populated from the currently
+    /// published one, so partial updates keep the remaining keys.
+    unsafe fn now_playing_with_previous() -> Retained<NSMutableDictionary<NSString>> {
+        unsafe {
+            let now_playing: Retained<NSMutableDictionary<NSString>> =
+                NSMutableDictionary::dictionary();
+
+            if let Some(prev_now_playing) = MPNowPlayingInfoCenter::defaultCenter().nowPlayingInfo()
+            {
+                now_playing.addEntriesFromDictionary(&prev_now_playing);
+            }
+
+            now_playing
+        }
+    }
+
+    /// Publishes the now-playing dictionary to the shared info center.
+    unsafe fn set_now_playing(now_playing: &NSMutableDictionary<NSString>) {
+        unsafe {
+            MPNowPlayingInfoCenter::defaultCenter().setNowPlayingInfo(Some(now_playing));
+        }
+    }
+
     unsafe fn new_file(&mut self, path: &Path) {
         unsafe {
             debug!("New file: {:?}", path);
@@ -42,7 +67,8 @@ impl MacMediaPlayerController {
             // Fall back to the full path and replace invalid UTF-8 instead.
             let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
 
-            let media_center = MPNowPlayingInfoCenter::defaultCenter();
+            // Starts from an empty dictionary on purpose: a new file resets
+            // the now-playing entry rather than updating it.
             let now_playing: Retained<NSMutableDictionary<NSString>> =
                 NSMutableDictionary::dictionary();
 
@@ -50,19 +76,13 @@ impl MacMediaPlayerController {
             now_playing
                 .setObject_forKey(&ns_name, ProtocolObject::from_ref(MPMediaItemPropertyTitle));
 
-            media_center.setNowPlayingInfo(Some(&*now_playing));
+            Self::set_now_playing(&now_playing);
         }
     }
 
     unsafe fn new_metadata(&mut self, metadata: &Metadata) {
         unsafe {
-            let media_center = MPNowPlayingInfoCenter::defaultCenter();
-            let now_playing: Retained<NSMutableDictionary<NSString>> =
-                NSMutableDictionary::dictionary();
-
-            if let Some(prev_now_playing) = media_center.nowPlayingInfo() {
-                now_playing.addEntriesFromDictionary(&prev_now_playing);
-            }
+            let now_playing = Self::now_playing_with_previous();
 
             if let Some(title) = &metadata.name {
                 debug!("Setting title: {}", title);
@@ -85,19 +105,13 @@ impl MacMediaPlayerController {
                     .setObject_forKey(&ns, ProtocolObject::from_ref(MPMediaItemPropertyAlbumTitle));
             }
 
-            media_center.setNowPlayingInfo(Some(&*now_playing));
+            Self::set_now_playing(&now_playing);
         }
     }
 
     unsafe fn new_duration(&mut self, duration: u64) {
         unsafe {
-            let media_center = MPNowPlayingInfoCenter::defaultCenter();
-            let now_playing: Retained<NSMutableDictionary<NSString>> =
-                NSMutableDictionary::dictionary();
-
-            if let Some(prev_now_playing) = media_center.nowPlayingInfo() {
-                now_playing.addEntriesFromDictionary(&prev_now_playing);
-            }
+            let now_playing = Self::now_playing_with_previous();
 
             let ns = NSNumber::numberWithUnsignedLong(duration);
             now_playing.setObject_forKey(
@@ -105,19 +119,13 @@ impl MacMediaPlayerController {
                 ProtocolObject::from_ref(MPMediaItemPropertyPlaybackDuration),
             );
 
-            media_center.setNowPlayingInfo(Some(&*now_playing));
+            Self::set_now_playing(&now_playing);
         }
     }
 
     unsafe fn new_position(&mut self, position: u64) {
         unsafe {
-            let media_center = MPNowPlayingInfoCenter::defaultCenter();
-            let now_playing: Retained<NSMutableDictionary<NSString>> =
-                NSMutableDictionary::dictionary();
-
-            if let Some(prev_now_playing) = media_center.nowPlayingInfo() {
-                now_playing.addEntriesFromDictionary(&prev_now_playing);
-            }
+            let now_playing = Self::now_playing_with_previous();
 
             let ns = NSNumber::numberWithUnsignedLong(position);
             now_playing.setObject_forKey(
@@ -125,7 +133,7 @@ impl MacMediaPlayerController {
                 ProtocolObject::from_ref(MPNowPlayingInfoPropertyElapsedPlaybackTime),
             );
 
-            media_center.setNowPlayingInfo(Some(&*now_playing));
+            Self::set_now_playing(&now_playing);
         }
     }
 
@@ -156,20 +164,13 @@ impl MacMediaPlayerController {
                 &request_handler,
             );
 
-            let media_center = MPNowPlayingInfoCenter::defaultCenter();
-            let now_playing: Retained<NSMutableDictionary<NSString>> =
-                NSMutableDictionary::dictionary();
-
-            if let Some(prev_now_playing) = media_center.nowPlayingInfo() {
-                now_playing.addEntriesFromDictionary(&prev_now_playing);
-            }
-
+            let now_playing = Self::now_playing_with_previous();
             now_playing.setObject_forKey(
                 &artwork,
                 ProtocolObject::from_ref(MPMediaItemPropertyArtwork),
             );
 
-            media_center.setNowPlayingInfo(Some(&*now_playing));
+            Self::set_now_playing(&now_playing);
         }
     }
 
@@ -185,64 +186,39 @@ impl MacMediaPlayerController {
         }
     }
 
+    /// Attaches a handler that forwards `action` to the playback thread each
+    /// time `command` is triggered from the system remote.
+    unsafe fn attach_command_handler(&self, command: &MPRemoteCommand, action: PlaybackCommand) {
+        unsafe {
+            let cmd_tx = self.cmd_tx.clone();
+            // Handler blocks are `Fn` (they may fire any number of times), so
+            // the command is cloned per invocation; the commands used here are
+            // unit variants, so the clone is free.
+            let handler = RcBlock::new(move |_| {
+                let _ = cmd_tx.send(action.clone());
+                MPRemoteCommandHandlerStatus::Success
+            });
+
+            command.setEnabled(true);
+            command.addTargetWithHandler(&handler);
+        }
+    }
+
     unsafe fn attach_command_handlers(&self) {
         unsafe {
             let command_center = MPRemoteCommandCenter::sharedCommandCenter();
 
-            // Play
-            let play_tx = self.cmd_tx.clone();
-            let play_handler = RcBlock::new(move |_| {
-                let _ = play_tx.send(PlaybackCommand::Play);
-                MPRemoteCommandHandlerStatus::Success
-            });
-
-            let cmd = command_center.playCommand();
-            cmd.setEnabled(true);
-            cmd.addTargetWithHandler(&play_handler);
-
-            // Pause
-            let pause_tx = self.cmd_tx.clone();
-            let pause_handler = RcBlock::new(move |_| {
-                let _ = pause_tx.send(PlaybackCommand::Pause);
-                MPRemoteCommandHandlerStatus::Success
-            });
-
-            let cmd = command_center.pauseCommand();
-            cmd.setEnabled(true);
-            cmd.addTargetWithHandler(&pause_handler);
-
-            // Toggle Play/Pause
-            let toggle_tx = self.cmd_tx.clone();
-            let toggle_handler = RcBlock::new(move |_| {
-                let _ = toggle_tx.send(PlaybackCommand::TogglePlayPause);
-                MPRemoteCommandHandlerStatus::Success
-            });
-
-            let cmd = command_center.togglePlayPauseCommand();
-            cmd.setEnabled(true);
-            cmd.addTargetWithHandler(&toggle_handler);
-
-            // Previous Track
-            let prev_tx = self.cmd_tx.clone();
-            let prev_handler = RcBlock::new(move |_| {
-                let _ = prev_tx.send(PlaybackCommand::Previous);
-                MPRemoteCommandHandlerStatus::Success
-            });
-
-            let cmd = command_center.previousTrackCommand();
-            cmd.setEnabled(true);
-            cmd.addTargetWithHandler(&prev_handler);
-
-            // Next Track
-            let next_tx = self.cmd_tx.clone();
-            let next_handler = RcBlock::new(move |_| {
-                let _ = next_tx.send(PlaybackCommand::Next);
-                MPRemoteCommandHandlerStatus::Success
-            });
-
-            let cmd = command_center.nextTrackCommand();
-            cmd.setEnabled(true);
-            cmd.addTargetWithHandler(&next_handler);
+            self.attach_command_handler(&command_center.playCommand(), PlaybackCommand::Play);
+            self.attach_command_handler(&command_center.pauseCommand(), PlaybackCommand::Pause);
+            self.attach_command_handler(
+                &command_center.togglePlayPauseCommand(),
+                PlaybackCommand::TogglePlayPause,
+            );
+            self.attach_command_handler(
+                &command_center.previousTrackCommand(),
+                PlaybackCommand::Previous,
+            );
+            self.attach_command_handler(&command_center.nextTrackCommand(), PlaybackCommand::Next);
 
             // Seek
             let seek_tx = self.cmd_tx.clone();

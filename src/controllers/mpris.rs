@@ -40,19 +40,24 @@ pub struct MprisControllerServer {
 }
 
 impl MprisControllerServer {
-    async fn can_play_int(&self) -> fdo::Result<bool> {
+    /// Whether the player can currently accept transport commands: a file is
+    /// loaded and playback has not stopped. `CanPlay`, `CanPause`, and
+    /// `CanSeek` all report this same predicate.
+    async fn can_control_playback_int(&self) -> fdo::Result<bool> {
         let data = self.data.read().await;
         Ok(data.last_playback_state != Some(PlaybackState::Stopped) && data.last_file.is_some())
+    }
+
+    async fn can_play_int(&self) -> fdo::Result<bool> {
+        self.can_control_playback_int().await
     }
 
     async fn can_pause_int(&self) -> fdo::Result<bool> {
-        let data = self.data.read().await;
-        Ok(data.last_playback_state != Some(PlaybackState::Stopped) && data.last_file.is_some())
+        self.can_control_playback_int().await
     }
 
     async fn can_seek_int(&self) -> fdo::Result<bool> {
-        let data = self.data.read().await;
-        Ok(data.last_playback_state != Some(PlaybackState::Stopped) && data.last_file.is_some())
+        self.can_control_playback_int().await
     }
 
     async fn metadata_int(&self) -> fdo::Result<mpris_server::Metadata> {
@@ -81,12 +86,11 @@ impl MprisControllerServer {
 
     async fn playback_status_int(&self) -> fdo::Result<PlaybackStatus> {
         let data = self.data.read().await;
-        match data.last_playback_state {
-            Some(PlaybackState::Playing) => Ok(PlaybackStatus::Playing),
-            Some(PlaybackState::Paused) => Ok(PlaybackStatus::Paused),
-            Some(PlaybackState::Stopped) => Ok(PlaybackStatus::Stopped),
-            None => Ok(PlaybackStatus::Stopped),
-        }
+        Ok(match data.last_playback_state {
+            Some(PlaybackState::Playing) => PlaybackStatus::Playing,
+            Some(PlaybackState::Paused) => PlaybackStatus::Paused,
+            Some(PlaybackState::Stopped) | None => PlaybackStatus::Stopped,
+        })
     }
 
     async fn position_int(&self) -> fdo::Result<Time> {
@@ -354,19 +358,18 @@ impl MprisController {
         let data = Arc::new(RwLock::new(MprisControllerData {
             last_mdata: None,
             last_file: None,
+            last_album_art: None,
             last_playback_state: None,
             last_repeat_state: None,
             last_position: None,
             last_duration: None,
             last_volume: None,
             last_shuffle: false,
-            last_album_art: None,
         }));
 
-        let server_data = data.clone();
         let server = MprisControllerServer {
             cmd_tx,
-            data: server_data,
+            data: data.clone(),
         };
 
         let server = crate::RUNTIME.block_on(Server::new("org.li-ming1.meliora", server))?;
@@ -385,6 +388,9 @@ impl PlaybackController for MprisController {
 
         if let Some(original_position) = original_position {
             let position_diff = new_position as i64 - original_position as i64;
+            // Position ticks arrive once per second during normal playback;
+            // any change other than +1 s means a seek, which MPRIS clients
+            // must be told about via the Seeked signal.
             if position_diff != 1 {
                 self.server
                     .emit(Signal::Seeked {

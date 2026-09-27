@@ -86,13 +86,11 @@ fn install_panic_hook() {
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "<unknown>".into());
-        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            (*s).to_string()
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "<non-string panic payload>".into()
-        };
+        // `payload_as_str` covers both `&'static str` and `String` payloads;
+        // anything else falls through to the non-textual placeholder
+        let payload = info
+            .payload_as_str()
+            .unwrap_or("<non-string panic payload>");
         let thread = std::thread::current();
         let name = thread.name().unwrap_or("<unnamed>").to_string();
         let backtrace = std::backtrace::Backtrace::force_capture();

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use gpui::{AsyncApp, Entity, Global};
 
 #[cfg(feature = "online_sources")]
-use crate::online_sources::OnlineIdentity;
+use crate::online_sources::{OnlineIdentity, identify_path};
 use crate::ui::models::Queue;
 
 pub use recorder::ListenRow;
@@ -89,27 +89,25 @@ pub fn song_info(
             None => return (format!("hash:{}", url_hash(path)), None),
         };
 
-        let mut meta = None;
         // The compile-time registry consults every compiled-in provider's
         // stream map; a hit implies the identity (the URL only lives in the
-        // map of the service that produced it).
-        if let Some(m) = crate::online_sources::identify_path(path) {
-            meta = Some(TrackMeta {
+        // map of the service that produced it). Fall back to the queue item's
+        // persisted display metadata when the registry doesn't know the URL.
+        let meta = identify_path(path)
+            .map(|m| TrackMeta {
                 title: m.title,
                 artist: m.artist,
                 album: m.album,
+            })
+            .or_else(|| {
+                item.as_ref().and_then(|item| item.persisted_display()).map(
+                    |(name, artist, _, _)| TrackMeta {
+                        title: name.unwrap_or_default(),
+                        artist: artist.unwrap_or_default(),
+                        album: String::new(),
+                    },
+                )
             });
-        }
-        if meta.is_none()
-            && let Some((name, artist, _, _)) =
-                item.as_ref().and_then(|item| item.persisted_display())
-        {
-            meta = Some(TrackMeta {
-                title: name.unwrap_or_default(),
-                artist: artist.unwrap_or_default(),
-                album: String::new(),
-            });
-        }
         (key, meta)
     }
 

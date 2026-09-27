@@ -129,6 +129,10 @@ extern "C" fn dump_out(msg: *const c_char, _arg: *mut c_void) {
     });
 }
 
+/// Per-process budget for the full stats dump, so a browsing session cannot
+/// spam the log (`dump_once` becomes a no-op once spent).
+const MAX_DUMPS: u32 = 3;
+
 /// Logs mimalloc's complete statistics table (per heap: peak / total /
 /// current per category plus the page counters). Called from the probe's
 /// `mem step` alert so the allocator state right after suspicious growth is
@@ -138,7 +142,7 @@ pub fn dump_once() {
     static DUMP_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     if DUMP_COUNT
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-            (n < 3).then_some(n + 1)
+            (n < MAX_DUMPS).then_some(n + 1)
         })
         .is_err()
     {
@@ -173,12 +177,14 @@ fn current(count: &mi_stat_count_t) -> u64 {
     count.current.max(0) as u64
 }
 
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
 /// The allocator's own committed-heap accounting, in MiB. `mi_process_info`
 /// returns the OS commit charge (see the comment in the probe), so this is
 /// the number to subtract from process-private bytes to get the driver/D3D
 /// share. `None` when the stats call or the pinned mirror fails.
 pub fn committed_mb() -> Option<u64> {
-    read().map(|snapshot| snapshot.committed_bytes / (1024 * 1024))
+    read().map(|snapshot| snapshot.committed_bytes / BYTES_PER_MIB)
 }
 
 /// Guards the one-time failure warn in `log_snapshot`.
@@ -248,7 +254,7 @@ pub fn log_snapshot(collect_reclaim_mb: Option<u64>) {
         }
         return;
     };
-    let mb = |bytes: u64| bytes / (1024 * 1024);
+    let mb = |bytes: u64| bytes / BYTES_PER_MIB;
     // Only the aggregated `committed` / thread counters are trusted here: the
     // malloc per-bin currents are not maintained by the linked build
     // (MI_STAT==1 gates their aggregation), so live/stranded attribution
