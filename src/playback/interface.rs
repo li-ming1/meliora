@@ -1,14 +1,12 @@
 use gpui::App;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use crate::library::Pool;
 use crate::{
     playback::{dsp::spectrum::SpectrumTapConsumer, events::RepeatState},
     power::PowerManager,
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
-    ui::{
-        app::Pool,
-        models::{CurrentTrack, ImageEvent, Models, PlaybackInfo},
-    },
+    ui::models::{CurrentTrack, ImageEvent, Models, PlaybackInfo},
 };
 
 use super::{

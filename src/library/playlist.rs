@@ -8,10 +8,8 @@ use sqlx::{Sqlite, SqlitePool};
 use tokio::{fs::File, io::BufWriter};
 use tracing::{Instrument as _, debug_span, error, info, warn};
 
-use crate::ui::{
-    app::Pool,
-    models::{Models, PlaylistEvent},
-};
+use crate::library::Pool;
+use crate::ui::models::{Models, PlaylistEvent};
 
 #[cfg(windows)]
 const LINE_ENDING: &str = "\r\n";

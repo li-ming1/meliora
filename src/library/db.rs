@@ -15,9 +15,9 @@ use sqlx::{
 };
 use tracing::debug;
 
-use crate::{
-    library::types::{ArtistWithCounts, Playlist, PlaylistItem},
-    ui::app::Pool,
+use crate::library::{
+    Pool,
+    types::{ArtistWithCounts, Playlist, PlaylistItem},
 };
 
 use super::types::{Album, Artist, Track};

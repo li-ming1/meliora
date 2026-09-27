@@ -14,7 +14,6 @@ use cntp_i18n::{I18N_MANAGER, Locale, tr};
 use gpui::*;
 use gpui_platform::current_platform;
 use prelude::FluentBuilder;
-use sqlx::SqlitePool;
 use tracing::{debug, info};
 
 use crate::{
@@ -212,9 +211,9 @@ pub fn find_fonts(cx: &mut App) -> gpui::Result<()> {
     results
 }
 
-pub struct Pool(pub SqlitePool);
-
-impl Global for Pool {}
+// Pool 本体下沉到 library 层（审计 A-3 第一批）：playback/stats/library 从
+// 此不再为拿连接池而依赖 crate::ui；此处再导出维持既有 `ui::app::Pool` 引用。
+pub use crate::library::Pool;
 
 fn find_main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
     cx.windows()
@@ -483,8 +482,21 @@ pub fn run() -> anyhow::Result<()> {
         cx.set_global(modal::ModalActive(AtomicBool::new(false)));
 
         let settings_model = cx.global::<SettingsGlobal>().model.clone();
-        cx.observe(&settings_model, |_, cx| cx.refresh_windows())
-            .detach();
+        // 定向 refresh 第一批（2026-09-26 审计 A-4）：观察回调改为内容级
+        // diff——序列化等价的写入（现有 save 守卫之外的任何后台写入方）不再
+        // 触发整窗重建；跳过是安全的，因为内容未变时渲染结果逐字节等价。
+        // 内容真正变化的写入仍全窗刷新；分区级细粒度（只刷受影响窗口）留
+        // 给 Settings Entity 拆分（路线图中期项）。
+        let mut rendered_settings = serde_json::to_value(settings_model.read(cx)).ok();
+        cx.observe(&settings_model, move |model, cx| {
+            let current = serde_json::to_value(model.read(cx)).ok();
+            if current == rendered_settings {
+                return;
+            }
+            rendered_settings = current;
+            cx.refresh_windows();
+        })
+        .detach();
 
         if !language.is_empty() {
             I18N_MANAGER

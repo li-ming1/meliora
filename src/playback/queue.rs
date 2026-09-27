@@ -7,11 +7,11 @@ use futures::TryFutureExt as _;
 use gpui::{App, AppContext, Entity, SharedString};
 use tracing::{error, trace_span};
 
+use crate::library::Pool;
 use crate::library::db;
 use crate::media::{
     lookup_table::try_open_media, metadata::Metadata, traits::MediaProviderFeatures,
 };
-use crate::ui::app::Pool;
 
 /// Sentinel for "length not known yet" in [`QueueItemData`]'s duration slot.
 pub const UNKNOWN_DURATION: i64 = i64::MIN;
@@ -45,20 +45,11 @@ pub struct QueueItemData {
     online_identity: Option<OnlineIdentity>,
 }
 
-/// Identifies which online service an HTTP queue item came from, enough to
-/// re-fetch a fresh (non-expired) stream URL for it after a restart.
+// ①步下沉：OnlineIdentity 的定义已整体搬至 `crate::online_sources`（A-1
+// 第①步，playback → online_sources 为允许的依赖方向），此处按原 cfg 门再
+// 导出，保持本模块与全部既有使用点不变；②步收编（trait 身份解析）时移除。
 #[cfg(feature = "online_sources")]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum OnlineIdentity {
-    /// KuGou: `song_url(hash, mix_song_id, album_id, quality, free_part)`.
-    Kugou {
-        hash: String,
-        mix_song_id: i64,
-        album_id: i64,
-    },
-    /// NetEase: `song_url(id, level)`.
-    Netease { id: i64 },
-}
+pub use crate::online_sources::OnlineIdentity;
 
 /// Serde-friendly copy of the display metadata that must survive a restart
 /// for online tracks (which have no library entry to re-derive it from).
