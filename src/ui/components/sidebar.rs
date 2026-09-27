@@ -152,7 +152,13 @@ impl Sidebar {
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.div = MaybeStateful::Stateful(match self.div {
             MaybeStateful::NotStateful(div) => div.id(id),
-            MaybeStateful::Stateful(div) => div,
+            // gpui's own `.id()` is last-writer-wins (it assigns the element
+            // id), so re-id-ing an already stateful sidebar replaces the id
+            // instead of silently dropping it.
+            MaybeStateful::Stateful(mut div) => {
+                div.interactivity().element_id = Some(id.into());
+                div
+            }
         });
 
         self
