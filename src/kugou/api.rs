@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::client::{
     APPID, CLIENTVER, GATEWAY, KugouClient, KugouError, KugouRequest, KugouResponse, SRCAPPID,
-    UserProfile, today_utc, unix_now_secs,
+    UserProfile, unix_now_secs,
 };
 use super::crypto;
 
