@@ -168,6 +168,33 @@ pub struct UserProfile {
     pub avatar_url: String,
 }
 
+/// Milliseconds since the Unix epoch (0 when the clock reads before it).
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// The persisted `NMTID` cookie, or a fresh random fallback for a session
+/// that has none yet (regenerated per launch, like the reference client).
+fn nmtid_or_fresh(session: &NeteaseSession) -> String {
+    session
+        .nmtid
+        .clone()
+        .unwrap_or_else(|| format!("00O{}", crypto::random_hex(38)))
+}
+
+/// Appends the login token to a cookie/header pair list: `MUSIC_U` when
+/// logged in, otherwise the guest `MUSIC_A`.
+fn push_login_token(pairs: &mut Vec<(String, String)>, session: &NeteaseSession) {
+    if let Some(music_u) = &session.music_u {
+        pairs.push(("MUSIC_U".into(), music_u.clone()));
+    } else if let Some(music_a) = &session.music_a {
+        pairs.push(("MUSIC_A".into(), music_a.clone()));
+    }
+}
+
 pub struct NeteaseClient {
     http: Client,
     session: Mutex<NeteaseSession>,
@@ -185,10 +212,7 @@ impl NeteaseClient {
         let letters: String = (0..6)
             .map(|_| (b'a' + rand::random_range(0..26u8)) as char)
             .collect();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+        let now_ms = unix_millis();
         Self {
             // same as the KuGou client: bound every request so a stalled
             // connection can't wedge pending fetches or login polling
@@ -426,16 +450,8 @@ impl NeteaseClient {
             ("channel".into(), CHANNEL.into()),
             ("appver".into(), APPVER.into()),
         ];
-        let nmtid = session
-            .nmtid
-            .clone()
-            .unwrap_or_else(|| format!("00O{}", crypto::random_hex(38)));
-        cookies.push(("NMTID".into(), nmtid));
-        if let Some(music_u) = &session.music_u {
-            cookies.push(("MUSIC_U".into(), music_u.clone()));
-        } else if let Some(music_a) = &session.music_a {
-            cookies.push(("MUSIC_A".into(), music_a.clone()));
-        }
+        cookies.push(("NMTID".into(), nmtid_or_fresh(session)));
+        push_login_token(&mut cookies, session);
         if let Some(csrf) = &session.csrf {
             cookies.push(("__csrf".into(), csrf.clone()));
         }
@@ -460,16 +476,8 @@ impl NeteaseClient {
             ("channel".into(), CHANNEL.into()),
             ("requestId".into(), request_id),
         ];
-        if let Some(music_u) = &session.music_u {
-            header.push(("MUSIC_U".into(), music_u.clone()));
-        } else if let Some(music_a) = &session.music_a {
-            header.push(("MUSIC_A".into(), music_a.clone()));
-        }
-        let nmtid = session
-            .nmtid
-            .clone()
-            .unwrap_or_else(|| format!("00O{}", crypto::random_hex(38)));
-        header.push(("NMTID".into(), nmtid));
+        push_login_token(&mut header, session);
+        header.push(("NMTID".into(), nmtid_or_fresh(session)));
         header
     }
 
@@ -516,10 +524,7 @@ impl NeteaseClient {
         mut data: Value,
     ) -> Result<NeteaseResponse, NeteaseError> {
         let session = self.session_guard().clone();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+        let now_ms = unix_millis();
 
         // `e_r: false` on every payload: responses come back as plain JSON
         // (the reference client also disables response encryption).

@@ -103,21 +103,17 @@ impl NeteaseClient {
     pub async fn refresh_user_profile(&self) -> Result<Option<UserProfile>, NeteaseError> {
         let response = self.login_status().await?;
         let profile = response.body.pointer("/profile");
-        let Some(user_id) = profile
-            .and_then(|profile| profile.get("userId"))
-            .and_then(Value::as_i64)
-        else {
+        let field = |name: &str| profile.and_then(|profile| profile.get(name));
+        let Some(user_id) = field("userId").and_then(Value::as_i64) else {
             return Ok(None);
         };
-        let nickname = profile
-            .and_then(|profile| profile.get("nickname"))
+        let nickname = field("nickname")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
         // NetEase CDN serves originals unless a `?param=WxH` size is appended;
         // the avatar renders at ~40px, so 128 covers it at high DPI.
-        let avatar_url = profile
-            .and_then(|profile| profile.get("avatarUrl"))
+        let avatar_url = field("avatarUrl")
             .and_then(Value::as_str)
             .unwrap_or_default();
         let avatar_url = if avatar_url.is_empty() || avatar_url.contains("?param=") {

@@ -219,12 +219,13 @@ pub async fn fetch_stream_url(
     id: i64,
     quality: &str,
 ) -> Option<String> {
-    let levels: [&str; 2] = if quality == "standard" {
-        [quality, ""]
+    // "standard" already is the lowest tier, so it gets no fallback level.
+    let fallback = if quality == "standard" {
+        None
     } else {
-        [quality, "standard"]
+        Some("standard")
     };
-    for &level in levels.iter().filter(|l| !l.is_empty()) {
+    for level in [Some(quality), fallback].into_iter().flatten() {
         if let Ok(resp) = client.song_url(id, level).await
             && let Some((url, _trial)) = extract_song_url(&resp.body)
         {
@@ -291,13 +292,14 @@ impl super::OnlineSourceProvider for NeteaseSource {
         let super::OnlineIdentity::Netease { id } = identity else {
             return None;
         };
+        let (name, artist, duration, cover_url) = &ctx.display;
         refresh_restored_url(
             *id,
             ctx.netease_quality,
-            ctx.display.0.clone(),
-            ctx.display.1.clone(),
-            ctx.display.2.clone(),
-            ctx.display.3.clone(),
+            name.clone(),
+            artist.clone(),
+            *duration,
+            cover_url.clone(),
         )
         .await
     }

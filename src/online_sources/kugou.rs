@@ -227,6 +227,10 @@ pub fn extract_song_url(body: &Value) -> Option<String> {
     }
 }
 
+/// Quality tier of the standard 128 kbps clip — the fallback when the
+/// requested tier is unavailable (e.g. no VIP).
+const FALLBACK_QUALITY: &str = "128";
+
 /// Fetches a playable URL for a KuGou track at the requested `quality`,
 /// falling back to the standard 128 kbps clip when the higher tier is
 /// unavailable (e.g. no VIP). Returns `None` when no playable URL comes back
@@ -246,9 +250,9 @@ pub async fn fetch_stream_url(
     {
         return Some(url);
     }
-    if quality != "128" {
+    if quality != FALLBACK_QUALITY {
         let Ok(resp) = client
-            .song_url(hash, mix_song_id, album_id, "128", free_part)
+            .song_url(hash, mix_song_id, album_id, FALLBACK_QUALITY, free_part)
             .await
         else {
             return None;
@@ -258,6 +262,13 @@ pub async fn fetch_stream_url(
     None
 }
 
+/// `listid` of the user's KuGou liked-songs list.
+const LIKED_LIST_ID: i64 = 2;
+/// Paged-fetch bounds for the liked list: at most these pages of
+/// [`LIKED_LIST_PAGE_SIZE`] entries each; a short page ends the walk.
+const LIKED_LIST_MAX_PAGES: i64 = 10;
+const LIKED_LIST_PAGE_SIZE: i64 = 100;
+
 /// Lists the `(hash, fileid)` pairs in the user's KuGou liked-songs list
 /// (`listid: 2`). Runs on the Tokio runtime; `None` when not logged in or on
 /// any error (best-effort) — a `None` result says nothing about the list, so
@@ -266,20 +277,27 @@ pub async fn fetch_stream_url(
 async fn liked_entries_raw() -> Option<Vec<(String, i64)>> {
     let client = kugou::shared_client();
     let mut out = Vec::new();
-    for page in 1..=10 {
-        match client.playlist_tracks(2, page, 100).await {
+    for page in 1..=LIKED_LIST_MAX_PAGES {
+        match client
+            .playlist_tracks(LIKED_LIST_ID, page, LIKED_LIST_PAGE_SIZE)
+            .await
+        {
             Ok(resp) => {
                 let Some(info) = resp.body.pointer("/data/info").and_then(Value::as_array) else {
                     break;
                 };
-                for item in info {
-                    let hash = item.get("hash").and_then(Value::as_str).unwrap_or("");
-                    let fileid = item.get("fileid").and_then(Value::as_i64).unwrap_or(0);
-                    if !hash.is_empty() && fileid != 0 {
-                        out.push((hash.to_string(), fileid));
-                    }
-                }
-                if info.len() < 100 {
+                out.extend(info.iter().filter_map(|item| {
+                    let hash = item
+                        .get("hash")
+                        .and_then(Value::as_str)
+                        .filter(|hash| !hash.is_empty())?;
+                    let fileid = item
+                        .get("fileid")
+                        .and_then(Value::as_i64)
+                        .filter(|fileid| *fileid != 0)?;
+                    Some((hash.to_string(), fileid))
+                }));
+                if info.len() < LIKED_LIST_PAGE_SIZE as usize {
                     break;
                 }
             }
@@ -409,21 +427,21 @@ impl super::OnlineSourceProvider for KugouSource {
             return None;
         };
 
-        let client = crate::kugou::shared_client();
+        let client = kugou::shared_client();
         let hash = hash.clone();
         let mix_song_id = *mix_song_id;
         let album_id = *album_id;
         let kugou_quality = ctx.kugou_quality.to_string();
-        let url = {
-            let hash = hash.clone();
-            crate::RUNTIME
-                .spawn(async move {
-                    fetch_stream_url(&client, &hash, mix_song_id, album_id, &kugou_quality).await
-                })
-                .await
-                .ok()
-                .flatten()
-        }?;
+        // One clone for the spawned fetch; the original goes into the
+        // registry record below.
+        let fetch_hash = hash.clone();
+        let url = crate::RUNTIME
+            .spawn(async move {
+                fetch_stream_url(&client, &fetch_hash, mix_song_id, album_id, &kugou_quality).await
+            })
+            .await
+            .ok()
+            .flatten()?;
 
         let (name, artist, duration, cover) = ctx.display.clone();
         remember_online_track(

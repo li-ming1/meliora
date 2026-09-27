@@ -5,9 +5,13 @@ use serde_json::Value;
 
 use super::client::{
     APPID, CLIENTVER, GATEWAY, KugouClient, KugouError, KugouRequest, KugouResponse, SRCAPPID,
-    UserProfile,
+    UserProfile, today_utc, unix_now_secs,
 };
 use super::crypto;
+
+/// The h5 login page that QR codes open in the mobile app; the poll request's
+/// `qrcode_txt` points at the same page.
+const QR_LOGIN_PAGE_URL: &str = "https://h5.kugou.com/apps/loginQRCode/html/index.html";
 
 /// QR login poll states, mirroring `login_qr_check.js`.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +24,7 @@ pub enum QrStatus {
 
 /// URL to encode into a QR code for the mobile app to scan.
 pub fn qr_login_url(key: &str) -> String {
-    format!("https://h5.kugou.com/apps/loginQRCode/html/index.html?qrcode={key}")
+    format!("{QR_LOGIN_PAGE_URL}?qrcode={key}")
 }
 
 impl KugouClient {
@@ -31,10 +35,7 @@ impl KugouClient {
             .param("appid", 1001)
             .param("type", 1)
             .param("plat", 4)
-            .param(
-                "qrcode_txt",
-                format!("https://h5.kugou.com/apps/loginQRCode/html/index.html?appid={APPID}&"),
-            )
+            .param("qrcode_txt", format!("{QR_LOGIN_PAGE_URL}?appid={APPID}&"))
             .param("srcappid", SRCAPPID);
         let response = self.request(spec).await?;
         response
@@ -127,10 +128,7 @@ impl KugouClient {
     /// Profile of the logged-in user (nickname, vip state...).
     pub async fn user_detail(&self) -> Result<KugouResponse, KugouError> {
         let session = self.session_snapshot();
-        let clienttime = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let clienttime = unix_now_secs();
         let pk = crypto::rsa_raw_encrypt(
             &serde_json::json!({
                 "token": session.token.clone().unwrap_or_default(),
@@ -170,15 +168,17 @@ impl KugouClient {
         pagesize: i64,
     ) -> Result<KugouResponse, KugouError> {
         let session = self.session_snapshot();
+        let userid = session.userid.unwrap_or(0);
+        let token = session.token.clone().unwrap_or_default();
         let spec = KugouRequest::new(GATEWAY, "/v7/get_all_list")
             .post()
             .router("cloudlist.service.kugou.com")
             .param("plat", 1)
-            .param("userid", session.userid.unwrap_or(0))
-            .param("token", session.token.clone().unwrap_or_default())
+            .param("userid", userid)
+            .param("token", token.clone())
             .json(serde_json::json!({
-                "userid": session.userid.unwrap_or(0),
-                "token": session.token.clone().unwrap_or_default(),
+                "userid": userid,
+                "token": token,
                 "total_ver": 979,
                 "type": 2,
                 "page": page,
@@ -233,10 +233,7 @@ impl KugouClient {
         let session = self.session_snapshot();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
-        let clienttime = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let clienttime = unix_now_secs();
 
         let data: Vec<Value> = songs
             .iter()
@@ -315,10 +312,7 @@ impl KugouClient {
         let session = self.session_snapshot();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
-        let clienttime = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let clienttime = unix_now_secs();
 
         let spec = KugouRequest::new(GATEWAY, "/cloudlist.service/v5/add_list")
             .post()
@@ -407,17 +401,27 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Lyric download. With `fmt = "lrc"` the content is plain base64 LRC
-    /// text, which this method decodes. Mirrors `lyric.js`.
-    pub async fn lyric_lrc(&self, id: &str, accesskey: &str) -> Result<String, KugouError> {
+    /// Shared `/download` request of the lyric endpoints; only `fmt` differs.
+    async fn lyric_download(
+        &self,
+        id: &str,
+        accesskey: &str,
+        fmt: &str,
+    ) -> Result<KugouResponse, KugouError> {
         let spec = KugouRequest::new("https://lyrics.kugou.com", "/download")
             .param("ver", 1)
             .param("client", "android")
             .param("id", id)
             .param("accesskey", accesskey)
-            .param("fmt", "lrc")
+            .param("fmt", fmt)
             .param("charset", "utf8");
-        let response = self.request(spec).await?;
+        self.request(spec).await
+    }
+
+    /// Lyric download. With `fmt = "lrc"` the content is plain base64 LRC
+    /// text, which this method decodes. Mirrors `lyric.js`.
+    pub async fn lyric_lrc(&self, id: &str, accesskey: &str) -> Result<String, KugouError> {
+        let response = self.lyric_download(id, accesskey, "lrc").await?;
         match response.body.get("content").and_then(Value::as_str) {
             Some(content) => {
                 use base64::Engine;
@@ -436,14 +440,7 @@ impl KugouClient {
     /// the raw base64 of an encrypted, zlib-compressed KRC document; decoding
     /// lives in `ui::lyrics::krc::decrypt_krc` so the text stays opaque here.
     pub async fn lyric_krc(&self, id: &str, accesskey: &str) -> Result<String, KugouError> {
-        let spec = KugouRequest::new("https://lyrics.kugou.com", "/download")
-            .param("ver", 1)
-            .param("client", "android")
-            .param("id", id)
-            .param("accesskey", accesskey)
-            .param("fmt", "krc")
-            .param("charset", "utf8");
-        let response = self.request(spec).await?;
+        let response = self.lyric_download(id, accesskey, "krc").await?;
         Ok(response
             .body
             .get("content")

@@ -16,6 +16,11 @@ pub fn random_string(len: usize) -> String {
         .collect()
 }
 
+/// Lowercase hex, two digits per byte.
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn uuid_v4() -> String {
     let mut b = [0u8; 16];
     for byte in &mut b {
@@ -23,14 +28,13 @@ pub fn uuid_v4() -> String {
     }
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
-    let hex = |slice: &[u8]| slice.iter().map(|b| format!("{b:02x}")).collect::<String>();
     format!(
         "{}-{}-{}-{}-{}",
-        hex(&b[0..4]),
-        hex(&b[4..6]),
-        hex(&b[6..8]),
-        hex(&b[8..10]),
-        hex(&b[10..16])
+        hex_lower(&b[0..4]),
+        hex_lower(&b[4..6]),
+        hex_lower(&b[6..8]),
+        hex_lower(&b[8..10]),
+        hex_lower(&b[10..16])
     )
 }
 
@@ -38,8 +42,7 @@ pub fn md5_hex(data: &str) -> String {
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();
     hasher.update(data.as_bytes());
-    let out = hasher.finalize();
-    out.iter().map(|b| format!("{b:02x}")).collect()
+    hex_lower(&hasher.finalize())
 }
 
 /// Device MID: the MD5 of the GUID interpreted as a 128-bit big-endian

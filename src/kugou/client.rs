@@ -56,6 +56,19 @@ pub const CLIENTVER: i64 = 11440;
 pub const SRCAPPID: i64 = 2919;
 const USER_AGENT: &str = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi";
 
+/// Seconds since the Unix epoch, or 0 if the clock is before it.
+pub(super) fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Today's UTC date as `yyyy-MM-dd`, used as the daily VIP-claim marker.
+pub(super) fn today_utc() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum KugouError {
     #[error("network error: {0}")]
@@ -373,7 +386,7 @@ impl KugouClient {
 
     /// Marks today's VIP claim as attempted and persists it.
     pub fn mark_claim_attempted(&self) {
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let today = today_utc();
         let mut session = self.session_guard();
         session.last_claim_day = Some(today);
         session.save(&self.session_path);
@@ -416,10 +429,7 @@ impl KugouClient {
         } else {
             session.dfid.clone()
         };
-        let clienttime = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let clienttime = unix_now_secs();
 
         let mut params = BTreeMap::new();
         // The lite client derives mid from the (usually random) dfid at

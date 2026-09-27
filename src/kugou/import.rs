@@ -35,13 +35,11 @@ fn http() -> &'static Client {
 
 fn browser_headers(referer: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    let set = |h: &mut HeaderMap, n: &str, v: &str| {
-        if let (Ok(n), Ok(v)) = (HeaderName::try_from(n), HeaderValue::try_from(v)) {
-            h.insert(n, v);
+    for (name, value) in [("User-Agent", BROWSER_UA), ("Referer", referer)] {
+        if let (Ok(name), Ok(value)) = (HeaderName::try_from(name), HeaderValue::try_from(value)) {
+            headers.insert(name, value);
         }
-    };
-    set(&mut headers, "User-Agent", BROWSER_UA);
-    set(&mut headers, "Referer", referer);
+    }
     headers
 }
 
@@ -207,44 +205,14 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
     Ok(ExternalPlaylist { name, songs })
 }
 
+/// Ids per `/api/v3/song/detail` request.
+const NETEASE_SONG_DETAIL_CHUNK: usize = 400;
+
 async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
     let mut out = Vec::new();
-    for (chunk_idx, chunk) in ids.chunks(400).enumerate() {
-        let mut payload = String::from("[");
-        for (i, id) in chunk.iter().enumerate() {
-            if i > 0 {
-                payload.push(',');
-            }
-            payload.push_str(&format!("{{\"id\":{id}}}"));
-        }
-        payload.push(']');
-
-        let resp = match http()
-            .post("https://music.163.com/api/v3/song/detail")
-            .headers(headers.clone())
-            .body(payload)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(err) => {
-                tracing::warn!(chunk = chunk_idx, %err, "netease song detail request failed");
-                continue;
-            }
-        };
-        let text = match resp.text().await {
-            Ok(text) => text,
-            Err(err) => {
-                tracing::warn!(chunk = chunk_idx, %err, "failed to read netease song detail body");
-                continue;
-            }
-        };
-        let body = match serde_json::from_str::<Value>(&text) {
-            Ok(body) => body,
-            Err(err) => {
-                tracing::warn!(chunk = chunk_idx, %err, "failed to parse netease song detail JSON");
-                continue;
-            }
+    for (chunk_idx, chunk) in ids.chunks(NETEASE_SONG_DETAIL_CHUNK).enumerate() {
+        let Some(body) = netease_song_detail(headers, chunk_idx, chunk).await else {
+            continue;
         };
         if let Some(songs) = body.get("songs").and_then(Value::as_array) {
             out.extend(songs.iter().filter_map(|s| {
@@ -262,6 +230,55 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
         }
     }
     out
+}
+
+/// One `/api/v3/song/detail` request for a chunk of ids. Every failure is
+/// logged with the chunk index and reported as `None`: a bad chunk costs at
+/// most its own songs, not the whole import.
+async fn netease_song_detail(
+    headers: &HeaderMap,
+    chunk_idx: usize,
+    chunk: &[i64],
+) -> Option<Value> {
+    let payload = format!(
+        "[{}]",
+        chunk
+            .iter()
+            .map(|id| format!("{{\"id\":{id}}}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let resp = http()
+        .post("https://music.163.com/api/v3/song/detail")
+        .headers(headers.clone())
+        .body(payload)
+        .send()
+        .await
+        .inspect_err(
+            |err| tracing::warn!(chunk = chunk_idx, %err, "netease song detail request failed"),
+        )
+        .ok()?;
+    let text = resp
+        .text()
+        .await
+        .inspect_err(|err| {
+            tracing::warn!(
+                chunk = chunk_idx,
+                %err,
+                "failed to read netease song detail body"
+            )
+        })
+        .ok()?;
+    serde_json::from_str(&text)
+        .inspect_err(|err| {
+            tracing::warn!(
+                chunk = chunk_idx,
+                %err,
+                "failed to parse netease song detail JSON"
+            )
+        })
+        .ok()
 }
 
 // ==== QQ Music ====
@@ -306,6 +323,11 @@ const QQ_PLATFORMS: [&str; 7] = [
     "windows",
 ];
 
+/// Songs requested per page when walking a QQ playlist (`song_num` param).
+const QQ_PAGE_SIZE: i64 = 30;
+/// Hard cap on the pagination cursor so a bogus `total` can't loop forever.
+const QQ_MAX_PAGE_BEGIN: i64 = 10_000;
+
 struct QqPage {
     name: String,
     total: Option<i64>,
@@ -321,7 +343,7 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
     let id = qq_id(&url).ok_or_else(|| "未在 QQ 音乐链接中解析到歌单ID".to_string())?;
     let headers = browser_headers("https://y.qq.com/");
 
-    let first = qq_page(&headers, id, 0, 30).await?;
+    let first = qq_page(&headers, id, 0, QQ_PAGE_SIZE).await?;
     let name = if first.name.is_empty() {
         "导入歌单".to_string()
     } else {
@@ -329,12 +351,12 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
     };
     let total = first.total.unwrap_or(first.songs.len() as i64);
     let mut songs = first.songs;
-    let mut begin = 30i64;
-    while (songs.len() as i64) < total && begin < 10_000 {
-        match qq_page(&headers, id, begin, 30).await {
+    let mut begin = QQ_PAGE_SIZE;
+    while (songs.len() as i64) < total && begin < QQ_MAX_PAGE_BEGIN {
+        match qq_page(&headers, id, begin, QQ_PAGE_SIZE).await {
             Ok(page) if !page.songs.is_empty() => {
                 songs.extend(page.songs);
-                begin += 30;
+                begin += QQ_PAGE_SIZE;
             }
             // empty page: legitimate end of the list, no log needed
             Ok(_) => break,
@@ -418,6 +440,10 @@ fn qq_body(id: i64, platform: &str, begin: i64, num: i64) -> String {
     )
 }
 
+/// `zzb` sign for the u6 gateway (`sign=` query param): picks characters out
+/// of the uppercase MD5, XOR-folds the hex bytes with `L1` and re-encodes
+/// them through the base64 table `T`. The constants, the index picks and the
+/// order of operations are the scheme itself — change nothing here.
 fn qq_sign(param: &str) -> String {
     const L1: [u8; 16] = [
         212, 45, 80, 68, 195, 163, 163, 203, 157, 220, 254, 91, 204, 79, 104, 6,

@@ -22,6 +22,15 @@ fn first_search_result(body: &serde_json::Value) -> Option<serde_json::Value> {
         .cloned()
 }
 
+/// Length of the `lyric` string under `key` (0 when absent).
+fn lyric_len(body: &serde_json::Value, key: &str) -> usize {
+    body.get(key)
+        .and_then(|v| v.get("lyric"))
+        .and_then(|v| v.as_str())
+        .map(str::len)
+        .unwrap_or(0)
+}
+
 #[test]
 #[ignore = "live network call against NetEase servers"]
 fn live_offline_flow() {
@@ -70,13 +79,7 @@ fn live_offline_flow() {
                 Ok(resp) => {
                     let keys = ["lrc", "tlyric", "yrc", "klyric"];
                     for key in keys {
-                        let present = resp
-                            .body
-                            .get(key)
-                            .and_then(|v| v.get("lyric"))
-                            .and_then(|v| v.as_str())
-                            .map(str::len)
-                            .unwrap_or(0);
+                        let present = lyric_len(&resp.body, key);
                         report.push_str(&format!("lyric[{key}]: {present} chars\n"));
                     }
                     report.push_str(&format!(
@@ -251,16 +254,13 @@ fn live_lyric_probe() {
                 let (tag, data) = variant;
                 match client.request(crate::netease::client::Crypto::Eapi, "/api/song/lyric/v1", data).await {
                     Ok(resp) => {
-                        let len = |key: &str| {
-                            resp.body.get(key)
-                                .and_then(|v| v.get("lyric"))
-                                .and_then(|v| v.as_str())
-                                .map(str::len)
-                                .unwrap_or(0)
-                        };
-                        println!("{name}({id}) [{tag}]: lrc={} tlyric={} yrc={} yrc_is_string={:?}",
-                            len("lrc"), len("tlyric"), len("yrc"),
-                            resp.body.get("yrc").map(|v| v.is_string()));
+                        println!(
+                            "{name}({id}) [{tag}]: lrc={} tlyric={} yrc={} yrc_is_string={:?}",
+                            lyric_len(&resp.body, "lrc"),
+                            lyric_len(&resp.body, "tlyric"),
+                            lyric_len(&resp.body, "yrc"),
+                            resp.body.get("yrc").map(|v| v.is_string())
+                        );
                         if tag == "yv0"
                             && let Some(yrc) = resp.body.pointer("/yrc/lyric").and_then(|v| v.as_str())
                         {

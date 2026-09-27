@@ -22,6 +22,30 @@ fn first_search_result(body: &serde_json::Value) -> Option<serde_json::Value> {
         .cloned()
 }
 
+/// First of the hash fields the search API is known to use (legacy
+/// `FileHash`, then `hash`).
+fn song_hash(song: &serde_json::Value) -> Option<&str> {
+    song.get("FileHash")
+        .or_else(|| song.get("hash"))
+        .and_then(|v| v.as_str())
+}
+
+/// (album_audio_id, album_id) for `song_url`, each defaulting to 0 when the
+/// search result lacks the field.
+fn song_ids(song: &serde_json::Value) -> (i64, i64) {
+    let album_audio_id = song
+        .get("MixSongID")
+        .or_else(|| song.get("SongID"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let album_id = song
+        .get("AlbumID")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    (album_audio_id, album_id)
+}
+
 #[test]
 #[ignore = "live network call against KuGou servers"]
 fn live_offline_flow() {
@@ -57,21 +81,8 @@ fn live_offline_flow() {
                 "first song: {}\n",
                 serde_json::to_string_pretty(song).unwrap_or_default()
             ));
-            let hash = song
-                .get("FileHash")
-                .or_else(|| song.get("hash"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let album_audio_id = song
-                .get("MixSongID")
-                .or_else(|| song.get("SongID"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let album_id = song
-                .get("AlbumID")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0);
+            let hash = song_hash(song).unwrap_or("");
+            let (album_audio_id, album_id) = song_ids(song);
 
             match client
                 .song_url(hash, album_audio_id, album_id, "128", true)
@@ -149,21 +160,8 @@ fn live_http_source_decodes_kugou_stream() {
     let (url, _time_length) = crate::RUNTIME.block_on(async {
         let resp = client.search("晴天 周杰伦", 1, 1).await.expect("search");
         let song = first_search_result(&resp.body).expect("search result");
-        let hash = song
-            .get("FileHash")
-            .or_else(|| song.get("hash"))
-            .and_then(|v| v.as_str())
-            .expect("hash");
-        let album_audio_id = song
-            .get("MixSongID")
-            .or_else(|| song.get("SongID"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let album_id = song
-            .get("AlbumID")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
+        let hash = song_hash(&song).expect("hash");
+        let (album_audio_id, album_id) = song_ids(&song);
 
         let url_resp = client
             .song_url(hash, album_audio_id, album_id, "128", true)
