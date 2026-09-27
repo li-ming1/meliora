@@ -1,4 +1,9 @@
-use std::{io::ErrorKind, path::Path, sync::Arc, time::SystemTime};
+use std::{
+    io::{Error, ErrorKind},
+    path::Path,
+    sync::Arc,
+    time::SystemTime,
+};
 
 use async_compression::tokio::bufread::ZlibDecoder;
 use async_compression::tokio::write::ZlibEncoder;
@@ -72,6 +77,15 @@ struct ScanRecordForWrite<'a> {
     directories: &'a [Utf8PathBuf],
 }
 
+/// Log one failed stage of an atomic record write, with the caller's
+/// user-facing hint. `stage` completes the message, e.g. `write <label>`.
+fn log_write_failure(stage: &str, error: &Error, failure_hint: Option<&'static str>) {
+    error!("Could not {stage}: {:?}", error);
+    if let Some(hint) = failure_hint {
+        error!("{hint}");
+    }
+}
+
 async fn write_record_atomic(
     path: &Path,
     data: Vec<u8>,
@@ -86,36 +100,25 @@ async fn write_record_atomic(
         .map(ZlibEncoder::new)
     {
         Ok(file) => file,
+        // nothing was created, so there is no temp file to clean up
         Err(e) => {
-            error!("Could not create {label} file: {:?}", e);
-            if let Some(hint) = failure_hint {
-                error!("{hint}");
-            }
+            log_write_failure(&format!("create {label} file"), &e, failure_hint);
             return;
         }
     };
 
     if let Err(e) = file.write_all(&data).await {
-        error!("Could not write {label}: {:?}", e);
-        if let Some(hint) = failure_hint {
-            error!("{hint}");
-        }
+        log_write_failure(&format!("write {label}"), &e, failure_hint);
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return;
     }
     if let Err(e) = file.shutdown().await {
-        error!("Could not close {label}: {:?}", e);
-        if let Some(hint) = failure_hint {
-            error!("{hint}");
-        }
+        log_write_failure(&format!("close {label}"), &e, failure_hint);
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return;
     }
     if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
-        error!("Could not rename {label} into place: {:?}", e);
-        if let Some(hint) = failure_hint {
-            error!("{hint}");
-        }
+        log_write_failure(&format!("rename {label} into place"), &e, failure_hint);
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return;
     }

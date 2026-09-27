@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
@@ -24,12 +25,7 @@ pub(crate) fn group_paths_by_disk(paths: &[Utf8PathBuf]) -> DiskGroups {
 
     // longest first so nested mounts match before their parents
     let mut mounts: Vec<&Path> = disks.iter().map(|d| d.mount_point()).collect();
-    mounts.sort_by(|a, b| {
-        b.as_os_str()
-            .as_encoded_bytes()
-            .len()
-            .cmp(&a.as_os_str().as_encoded_bytes().len())
-    });
+    mounts.sort_by_key(|mount| Reverse(mount.as_os_str().as_encoded_bytes().len()));
 
     let mount_to_physical: Vec<(Utf8PathBuf, String)> = mounts
         .iter()
@@ -54,15 +50,10 @@ pub(crate) fn group_paths_by_disk(paths: &[Utf8PathBuf]) -> DiskGroups {
             .map(|(_, id)| id.clone())
             .unwrap_or_default();
 
-        let channel = match physical_to_channel.get(&device_id).copied() {
-            Some(channel) => channel,
-            None => {
-                let channel = groups.len();
-                physical_to_channel.insert(device_id, channel);
-                groups.push(Vec::new());
-                channel
-            }
-        };
+        let channel = *physical_to_channel.entry(device_id).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
         groups[channel].push(path.clone());
     }
 
@@ -187,7 +178,7 @@ fn linux_physical_device_id(device: &str) -> Option<String> {
     // if the device cannot be resolved, use its full identifier instead of grouping by major alone
     device_name
         .map(|name| format!("linux:{name}"))
-        .or_else(|| Some(format!("linux:{device}")))
+        .unwrap_or_else(|| format!("linux:{device}"))
 }
 
 /// Physical drive number via IOCTL. None if the volume can't be opened or spans multiple disks.

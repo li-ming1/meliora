@@ -73,12 +73,13 @@ pub(super) async fn insert_album(
         false
     };
 
-    match (result, should_force) {
-        (Ok(v), false) => {
-            album_cache.insert(cache_key, v.0);
-            Ok(Some(v.0))
+    match result {
+        Ok((id,)) if !should_force => {
+            album_cache.insert(cache_key, id);
+            Ok(Some(id))
         }
-        (Err(sqlx::Error::RowNotFound), _) | (Ok(_), _) => {
+        // a force scan rebuilds an existing album from scratch, otherwise only a missing one is created
+        Ok(_) | Err(sqlx::Error::RowNotFound) => {
             let (release_date, date_precision) = bind_release_date(metadata);
 
             let result: (i64,) =
@@ -105,6 +106,6 @@ pub(super) async fn insert_album(
             album_cache.insert(cache_key, result.0);
             Ok(Some(result.0))
         }
-        (Err(e), _) => Err(e.into()),
+        Err(e) => Err(e.into()),
     }
 }

@@ -132,6 +132,7 @@ pub struct FileArt {
     pub representative: bool,
 }
 
+/// One scanned file: `(metadata, track length in seconds, artwork found so far)`.
 pub type FileInformation = (Metadata, u64, FileArt);
 
 /// How a failed file read updates the scan record.
@@ -243,24 +244,31 @@ impl SourceImage<'_> {
     }
 }
 
+/// Full-size artwork larger than this square gets rescaled; smaller stays as-is.
+const MAX_ART_DIMENSION: u32 = 1024;
+/// Side length of the square BMP thumbnail generated alongside the full image.
+const THUMBNAIL_SIZE: u32 = 70;
+/// JPEG quality for the rescaled full-size image (only used when it shrank).
+const RESIZED_JPEG_QUALITY: u8 = 70;
+
 fn process_source_image(image: SourceImage<'_>) -> anyhow::Result<(ProcessedImage, Vec<u8>)> {
     let decoded = image::ImageReader::new(Cursor::new(image.bytes()))
         .with_guessed_format()?
         .decode()?
         .into_rgb8();
 
-    let thumb_rgb = imageops::thumbnail(&decoded, 70, 70);
+    let thumb_rgb = imageops::thumbnail(&decoded, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
     let thumb_rgba = DynamicImage::ImageRgb8(thumb_rgb).into_rgba8();
 
     let mut thumb_buf: Vec<u8> = Vec::new();
     thumb_rgba.write_to(&mut Cursor::new(&mut thumb_buf), image::ImageFormat::Bmp)?;
 
     // leave small images alone, scale larger ones to fit in 1024x1024
-    let resized = if decoded.dimensions().0 <= 1024 && decoded.dimensions().1 <= 1024 {
+    let (w, h) = decoded.dimensions();
+    let resized = if w <= MAX_ART_DIMENSION && h <= MAX_ART_DIMENSION {
         image.into_processed()
     } else {
-        let (w, h) = decoded.dimensions();
-        let scale = 1024.0_f32 / (w.max(h) as f32);
+        let scale = MAX_ART_DIMENSION as f32 / (w.max(h) as f32);
         let new_w = (w as f32 * scale).round().max(1.0) as u32;
         let new_h = (h as f32 * scale).round().max(1.0) as u32;
 
@@ -270,18 +278,15 @@ fn process_source_image(image: SourceImage<'_>) -> anyhow::Result<(ProcessedImag
             new_h,
             image::imageops::FilterType::Lanczos3,
         );
-        let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-        let mut encoder = JpegEncoder::new_with_quality(&mut buf, 70);
-
-        encoder.encode(
+        let mut buf: Vec<u8> = Vec::new();
+        JpegEncoder::new_with_quality(&mut buf, RESIZED_JPEG_QUALITY).encode(
             resized_img.as_bytes(),
             resized_img.width(),
             resized_img.height(),
             image::ExtendedColorType::Rgb8,
         )?;
-        drop(encoder);
 
-        ProcessedImage::Owned(buf.into_inner())
+        ProcessedImage::Owned(buf)
     };
 
     Ok((resized, thumb_buf))
@@ -305,11 +310,9 @@ pub fn process_owned_album_art(image: RawArt) -> anyhow::Result<(ProcessedImage,
 pub fn read_metadata_for_path(path: &Utf8Path) -> Result<FileInformation, ScanReadError> {
     let (mut metadata, len, mut art) = scan_path(path)?;
 
-    let is_representative = metadata.track_current.is_none_or(|t| t == 1 || t == 0)
-        && metadata.disc_current.is_none_or(|d| d == 1 || d == 0);
-    if is_representative {
-        art.representative = true;
-    }
+    let is_representative = metadata.track_current.is_none_or(|t| matches!(t, 0 | 1))
+        && metadata.disc_current.is_none_or(|d| matches!(d, 0 | 1));
+    art.representative = is_representative;
 
     metadata.lyrics = resolve_lyrics(path, metadata.lyrics.take());
 

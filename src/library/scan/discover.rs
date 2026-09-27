@@ -72,6 +72,9 @@ impl FolderArtObservations {
             .clone()
     }
 
+    /// The last observation for `directory`. The outer `None` means the
+    /// directory hasn't been observed yet; the inner one that it was observed
+    /// but holds no folder art candidate.
     pub(crate) fn get(&self, directory: &Utf8Path) -> Option<Option<FolderArtCandidate>> {
         self.inner
             .lock()

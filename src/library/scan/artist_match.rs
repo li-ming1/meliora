@@ -71,9 +71,7 @@ impl ArtistMatcher {
     ) -> anyhow::Result<i64> {
         self.load(&mut *conn).await?;
 
-        let sort = sort_name
-            .and_then(|s| (!s.trim().is_empty()).then_some(s))
-            .unwrap_or(name);
+        let sort = sort_name.filter(|s| !s.trim().is_empty()).unwrap_or(name);
         let key = token_key(sort);
         let Some(&artist_id) = self.by_key.get(&key) else {
             return self.create(conn, name, sort, key).await;

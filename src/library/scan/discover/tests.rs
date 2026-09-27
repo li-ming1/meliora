@@ -9,14 +9,12 @@ use crate::library::scan::{
 };
 use crate::test_support::TestDir;
 
-fn folded_index(
-    records: &FxHashMap<Utf8PathBuf, SystemTime>,
-) -> FxHashMap<Utf8PathBuf, Vec<(Utf8PathBuf, SystemTime)>> {
-    let mut index = FxHashMap::default();
+fn folded_index(records: &FxHashMap<Utf8PathBuf, SystemTime>) -> FoldedIndex {
+    let mut index = FoldedIndex::default();
     for (path, timestamp) in records {
         index
             .entry(fold_path(path))
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((path.clone(), *timestamp));
     }
     index

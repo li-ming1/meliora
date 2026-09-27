@@ -74,10 +74,10 @@ pub async fn examine_folder_art(
             Some(candidate) => loader.load(candidate.clone()).await,
             None => None,
         };
-        if art.is_some() {
+        if let Some(folder) = art.take() {
             let mut file_art = FileArt {
                 embedded: None,
-                folder: art.take(),
+                folder: Some(folder),
                 representative: true,
             };
             processor.process_file_art(&mut file_art).await;

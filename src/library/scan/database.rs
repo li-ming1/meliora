@@ -15,7 +15,7 @@ use crate::{
             ArtIdCache, ArtworkData, FolderArtCandidates, consider_folder_art,
             get_or_create_artwork,
         },
-        decode::{ArtSource, FileArt},
+        decode::{ArtSource, FileArt, ScannedArt},
     },
     media::metadata::Metadata,
 };
@@ -52,6 +52,30 @@ pub(crate) struct WriteCaches {
     pub(crate) art_ids: ArtIdCache,
     /// Albums whose folders were checked for artwork this scan.
     pub(crate) examined_albums: FxHashSet<i64>,
+}
+
+/// Resolve a candidate's artwork row id, staging a new row the first time its hash is seen.
+async fn stage_artwork(
+    conn: &mut SqliteConnection,
+    caches: &mut WriteCaches,
+    candidate: &ScannedArt,
+) -> Option<i64> {
+    if let Some(&cached) = caches.art_ids.get(&candidate.hash) {
+        return cached;
+    }
+    let data = candidate
+        .processed
+        .as_deref()
+        .map(ArtworkData::Processed)
+        .or_else(|| {
+            candidate
+                .raw
+                .as_ref()
+                .map(|raw| ArtworkData::Raw(raw.as_ref()))
+        });
+    let id = get_or_create_artwork(conn, candidate.hash as i64, data).await;
+    caches.art_ids.insert(candidate.hash, id);
+    id
 }
 
 pub async fn update_metadata(
@@ -115,34 +139,17 @@ pub async fn update_metadata(
     }
 
     // process images now - end-of-scan pick only needs the staged rows
-    if let Some(album_id) = album_id {
+    if let Some(album_id) = album_id
         // a first-track read marks the folder checked even when no art was found
-        if art.representative {
-            caches.examined_albums.insert(album_id);
-        }
+        && art.representative
+    {
+        caches.examined_albums.insert(album_id);
     }
 
     let mut embedded_id: Option<i64> = None;
     let mut folder_id: Option<(i64, i64)> = None;
     for candidate in [&art.embedded, &art.folder].into_iter().flatten() {
-        let artwork_id = match caches.art_ids.get(&candidate.hash) {
-            Some(&cached) => cached,
-            None => {
-                let data = candidate
-                    .processed
-                    .as_deref()
-                    .map(ArtworkData::Processed)
-                    .or_else(|| {
-                        candidate
-                            .raw
-                            .as_ref()
-                            .map(|raw| ArtworkData::Raw(raw.as_ref()))
-                    });
-                let id = get_or_create_artwork(conn, candidate.hash as i64, data).await;
-                caches.art_ids.insert(candidate.hash, id);
-                id
-            }
-        };
+        let artwork_id = stage_artwork(conn, caches, candidate).await;
         let source = candidate.source.db_value();
         if let Some(album_id) = album_id
             && matches!(candidate.source, ArtSource::Folder(_))
@@ -191,7 +198,7 @@ pub async fn update_metadata(
     } else {
         caches.pending_tracks.insert(track_id);
     }
-    if let Some(Some(old_id)) = previous_album.map(|(id,)| id)
+    if let Some((Some(old_id),)) = previous_album
         && Some(old_id) != album_id
     {
         caches.pending_albums.insert(old_id);

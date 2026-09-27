@@ -15,14 +15,19 @@ use crate::library::scan::{
     discover::FolderArtCandidate,
 };
 
+/// A folder-art load in flight, shared by every requester of the same path.
 type FolderArtFuture = Shared<BoxFuture<'static, Option<Arc<Vec<u8>>>>>;
 
 /// Caps concurrent image decodes - each in-flight item holds a full-size JPEG and a thumbnail, so
 /// we limit the number of concurrent decodes to avoid excessive memory usage.
 const MAX_DECODE_WORKERS: usize = 4;
 
+/// Loader state for one folder-art path.
 enum FolderArtLoadState {
+    /// The load is running; requesters join it via the shared future.
     Loading(FolderArtFuture),
+    /// The load finished; bytes live only while some `Arc` still holds them,
+    /// and an expired weak handle simply triggers a fresh load.
     Ready(Weak<Vec<u8>>),
 }
 
@@ -89,11 +94,15 @@ impl FolderArtLoader {
     }
 }
 
+/// Decode state for one artwork hash.
 enum ArtworkState {
+    /// The artwork row already exists in the database; no buffers are kept.
     Existing,
+    /// A decode is in flight; requesters join it via the shared future.
     Processing(ArtworkFuture),
 }
 
+/// An artwork decode in flight, shared by every requester of the same hash.
 type ArtworkFuture = Shared<BoxFuture<'static, Option<Arc<ProcessedArt>>>>;
 
 /// Converts each new artwork hash once on Tokio's bounded blocking pool.
@@ -112,6 +121,7 @@ impl ArtworkProcessor {
                 .map(|hash| (hash, ArtworkState::Existing))
                 .collect(),
         ));
+        // Half the cores decode artwork, clamped so peak memory stays bounded.
         let concurrency = std::thread::available_parallelism()
             .map(|count| (count.get() / 2).clamp(1, MAX_DECODE_WORKERS))
             .unwrap_or(1);

@@ -76,37 +76,39 @@ async fn finalize_album(
         .get(&album_id)
         .map(|&(hash, source)| (hash as i64, source));
 
-    let (winner_hash, source) = if let Some((hash, source)) = folder {
-        (hash, source)
-    } else if !is_force && incumbent_source > 0 && !examined.contains(&album_id) {
-        // folder wasn't checked this scan - keep existing folder art, still fix track art
-        if let (Some(hash), Some(id)) = (incumbent_hash, incumbent_id) {
-            assign_track_art(conn, album_id, hash, id, art_cache).await?;
-        }
-        return Ok(());
-    } else {
-        // fall back to majority embedded art across the album
-        let majority: Option<(i64,)> = sqlx::query_as(include_str!(
-            "../../../../queries/scan/get_majority_art_hash.sql"
-        ))
-        .bind(album_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-
-        let Some((hash,)) = majority else {
-            // no art anywhere - clear the album and its tracks
-            sqlx::query(include_str!("../../../../queries/scan/clear_album_art.sql"))
-                .bind(album_id)
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query(include_str!("../../../../queries/scan/clear_track_art.sql"))
-                .bind(album_id)
-                .execute(&mut *conn)
-                .await?;
+    let (winner_hash, source) = match folder {
+        Some((hash, source)) => (hash, source),
+        None if !is_force && incumbent_source > 0 && !examined.contains(&album_id) => {
+            // folder wasn't checked this scan - keep existing folder art, still fix track art
+            if let (Some(hash), Some(id)) = (incumbent_hash, incumbent_id) {
+                assign_track_art(conn, album_id, hash, id, art_cache).await?;
+            }
             return Ok(());
-        };
+        }
+        None => {
+            // fall back to majority embedded art across the album
+            let majority: Option<(i64,)> = sqlx::query_as(include_str!(
+                "../../../../queries/scan/get_majority_art_hash.sql"
+            ))
+            .bind(album_id)
+            .fetch_optional(&mut *conn)
+            .await?;
 
-        (hash, 0)
+            let Some((hash,)) = majority else {
+                // no art anywhere - clear the album and its tracks
+                sqlx::query(include_str!("../../../../queries/scan/clear_album_art.sql"))
+                    .bind(album_id)
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query(include_str!("../../../../queries/scan/clear_track_art.sql"))
+                    .bind(album_id)
+                    .execute(&mut *conn)
+                    .await?;
+                return Ok(());
+            };
+
+            (hash, 0)
+        }
     };
 
     // hash unchanged - reuse the existing artwork row

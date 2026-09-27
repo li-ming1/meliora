@@ -13,9 +13,9 @@ use sqlx::SqlitePool;
 use tokio::{
     sync::{
         Mutex,
-        mpsc::{Receiver, Sender},
+        mpsc::{Receiver, Sender, channel},
     },
-    task::{JoinHandle, spawn_blocking},
+    task::{JoinHandle, spawn, spawn_blocking},
 };
 use tracing::{error, warn};
 
@@ -61,31 +61,31 @@ impl ActiveScan {
 
         let parallelism = std::thread::available_parallelism()
             .map(|count| count.get())
-            .unwrap_or(4);
+            .unwrap_or(FALLBACK_PARALLELISM);
         let num_workers = normal_worker_count(parallelism);
 
         let meta_capacity = if scan_settings.slow_disk_mode {
-            64
+            SLOW_DISK_META_CAPACITY
         } else {
-            num_workers * 8
+            num_workers * META_CAPACITY_PER_WORKER
         };
         let existing_art_ids = load_art_ids(pool).await;
         let artwork_processor = ArtworkProcessor::new(existing_art_ids.keys().copied());
         let folder_art_loader = FolderArtLoader::new(artwork_processor.concurrency());
         let folder_art_observations = FolderArtObservations::default();
-        let (meta_tx, meta_rx) = tokio::sync::mpsc::channel::<MetadataItem>(meta_capacity);
+        let (meta_tx, meta_rx) = channel::<MetadataItem>(meta_capacity);
         let (raw_meta_tx, raw_meta_rx) =
-            tokio::sync::mpsc::channel::<RawMetadataItem>(artwork_processor.concurrency() * 2);
-        let artwork_handle = tokio::spawn(run_artwork_pipeline(
+            channel::<RawMetadataItem>(artwork_processor.concurrency() * RAW_ITEMS_PER_WORKER);
+        let artwork_handle = spawn(run_artwork_pipeline(
             raw_meta_rx,
             meta_tx,
             artwork_processor.clone(),
             folder_art_loader.clone(),
         ));
         let (decode_fail_tx, decode_fail_rx) =
-            tokio::sync::mpsc::channel::<(Utf8PathBuf, SystemTime, ScanReadError)>(meta_capacity);
+            channel::<(Utf8PathBuf, SystemTime, ScanReadError)>(meta_capacity);
         // case-only renames found during discovery
-        let (relocate_tx, relocate_rx) = tokio::sync::mpsc::channel::<Relocation>(64);
+        let (relocate_tx, relocate_rx) = channel::<Relocation>(64);
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
@@ -102,18 +102,15 @@ impl ActiveScan {
                 ScanMode::Full { .. } => {
                     let mut settings = settings;
                     settings.paths = paths;
-                    tokio::spawn(async move {
-                        discover(
-                            settings,
-                            scan_record,
-                            path_tx,
-                            relocate_tx,
-                            cancel,
-                            read_policy,
-                            folder_art,
-                        )
-                        .await
-                    })
+                    spawn(discover(
+                        settings,
+                        scan_record,
+                        path_tx,
+                        relocate_tx,
+                        cancel,
+                        read_policy,
+                        folder_art,
+                    ))
                 }
                 ScanMode::Targeted {
                     paths,
@@ -123,19 +120,16 @@ impl ActiveScan {
                     let paths = paths.clone();
                     let recursive = *recursive;
                     let record = respect_record.then(|| scan_record.clone());
-                    tokio::spawn(async move {
-                        rescan_discover(
-                            paths,
-                            record,
-                            recursive,
-                            path_tx,
-                            relocate_tx,
-                            cancel,
-                            read_policy,
-                            folder_art,
-                        )
-                        .await
-                    })
+                    spawn(rescan_discover(
+                        paths,
+                        record,
+                        recursive,
+                        path_tx,
+                        relocate_tx,
+                        cancel,
+                        read_policy,
+                        folder_art,
+                    ))
                 }
             }
         };
@@ -156,15 +150,10 @@ impl ActiveScan {
                 num_disks,
             );
 
-            let mut disk_txs: Vec<Sender<DiscoveredPath>> = Vec::with_capacity(num_disks);
-            let mut disk_rxs: Vec<Receiver<DiscoveredPath>> = Vec::with_capacity(num_disks);
-            for _ in 0..num_disks {
-                let (tx, rx) = tokio::sync::mpsc::channel(64);
-                disk_txs.push(tx);
-                disk_rxs.push(rx);
-            }
+            let (disk_txs, disk_rxs): (Vec<_>, Vec<_>) =
+                (0..num_disks).map(|_| channel(64)).unzip();
 
-            let (path_tx, mut path_rx) = tokio::sync::mpsc::channel::<DiscoveredPath>(64);
+            let (path_tx, mut path_rx) = channel::<DiscoveredPath>(64);
 
             let cancel_for_discover = Arc::clone(&cancel_flag);
             let discover_task =
@@ -193,16 +182,16 @@ impl ActiveScan {
                                     .as_std_path()
                                     .starts_with(mount.as_std_path())
                             })?;
-                            let channel = match mount_to_channel.get(mount_point).copied() {
-                                Some(channel) => channel,
-                                None => {
+                            let channel = mount_to_channel
+                                .get(mount_point)
+                                .copied()
+                                .unwrap_or_else(|| {
                                     warn!(
                                         "no physical device ID for mount point {:?}, routing to fallback channel 0",
                                         mount_point
                                     );
                                     0
-                                }
-                            };
+                                });
                             if let Some(parent) = &parent {
                                 dir_cache.insert(parent.clone(), channel);
                             }
@@ -223,14 +212,18 @@ impl ActiveScan {
                 let raw_meta_tx = raw_meta_tx.clone();
                 let decode_fail_tx = decode_fail_tx.clone();
                 let cancel_flag = Arc::clone(&cancel_flag);
-                metadata_tasks.push(tokio::spawn(async move {
-                    run_metadata_pipeline(rx, raw_meta_tx, decode_fail_tx, cancel_flag, 1).await;
-                }));
+                metadata_tasks.push(spawn(run_metadata_pipeline(
+                    rx,
+                    raw_meta_tx,
+                    decode_fail_tx,
+                    cancel_flag,
+                    1,
+                )));
             }
 
             router
         } else {
-            let (path_tx, path_rx) = tokio::sync::mpsc::channel::<DiscoveredPath>(64);
+            let (path_tx, path_rx) = channel::<DiscoveredPath>(64);
 
             let cancel_for_discover = Arc::clone(&cancel_flag);
             let discover_handle = spawn_discover(
@@ -243,16 +236,13 @@ impl ActiveScan {
             let raw_meta_tx = raw_meta_tx.clone();
             let decode_fail_tx = decode_fail_tx.clone();
             let cancel_flag = Arc::clone(&cancel_flag);
-            metadata_tasks.push(tokio::spawn(async move {
-                run_metadata_pipeline(
-                    path_rx,
-                    raw_meta_tx,
-                    decode_fail_tx,
-                    cancel_flag,
-                    num_workers,
-                )
-                .await;
-            }));
+            metadata_tasks.push(spawn(run_metadata_pipeline(
+                path_rx,
+                raw_meta_tx,
+                decode_fail_tx,
+                cancel_flag,
+                num_workers,
+            )));
 
             discover_handle
         };
@@ -284,6 +274,20 @@ impl ActiveScan {
 
 /// Caps metadata readers so peak memory and disk contention stay bounded on many-core machines.
 const MAX_METADATA_WORKERS: usize = 16;
+
+/// Core count assumed when `available_parallelism` is unavailable.
+const FALLBACK_PARALLELISM: usize = 4;
+
+/// Metadata channel capacity in slow-disk mode, independent of worker count.
+const SLOW_DISK_META_CAPACITY: usize = 64;
+
+/// Metadata channel capacity added per metadata worker in normal mode.
+const META_CAPACITY_PER_WORKER: usize = 8;
+
+/// Raw (undecoded) artwork items buffered per artwork-decode worker; both the
+/// raw channel capacity in [`ActiveScan::start`] and the in-flight cap in
+/// [`run_artwork_pipeline`] derive from this.
+const RAW_ITEMS_PER_WORKER: usize = 2;
 
 pub(super) fn normal_worker_count(parallelism: usize) -> usize {
     parallelism.saturating_sub(1).clamp(1, MAX_METADATA_WORKERS)

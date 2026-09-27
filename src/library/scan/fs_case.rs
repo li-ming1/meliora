@@ -142,7 +142,7 @@ pub fn fold_key(path: &Utf8Path) -> String {
     strip_verbatim(path.as_str()).to_lowercase()
 }
 
-/// Prefix match for a key already folded by [`fold_key`] against a
+/// Prefix match for a key already folded by [`fold_key`] against an
 /// already-folded prefix - lets callers fold once and match against many
 /// prefixes.
 pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
@@ -166,6 +166,8 @@ pub fn fold_path(path: &Utf8Path) -> Utf8PathBuf {
     }
 }
 
+/// Path equality per [`fold_path`]: identical spellings match outright,
+/// otherwise the folded forms are compared.
 pub fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
     a == b || fold_path(a) == fold_path(b)
 }

@@ -9,6 +9,62 @@ use crate::library::scan::artist_match::ArtistMatcher;
 
 const UNKNOWN_ARTIST: &str = "Unknown Artist";
 
+/// Push every credited fallback name without a sort key.
+fn push_fallback_names(names: &mut Vec<(String, Option<String>)>, fallback: Vec<String>) {
+    for part in fallback {
+        push_album_artist_name(names, &part, None);
+    }
+}
+
+/// Resolve each claimed name to an artist id, keeping the first occurrence of each.
+async fn desired_artist_ids(
+    conn: &mut SqliteConnection,
+    matcher: &mut ArtistMatcher,
+    names: &[(String, Option<String>)],
+) -> anyhow::Result<Vec<i64>> {
+    let mut desired: Vec<i64> = Vec::new();
+    for (name, sort) in names {
+        let artist_id = matcher.resolve(conn, name, sort.as_deref()).await?;
+        if !desired.contains(&artist_id) {
+            desired.push(artist_id);
+        }
+    }
+    Ok(desired)
+}
+
+/// Add missing artist links and remove stale ones, evicting artists whose last link goes.
+async fn sync_artist_links(
+    conn: &mut SqliteConnection,
+    matcher: &mut ArtistMatcher,
+    owner_id: i64,
+    existing: &[i64],
+    desired: &[i64],
+    create_sql: &'static str,
+    delete_sql: &'static str,
+) -> anyhow::Result<()> {
+    for artist_id in desired {
+        if !existing.contains(artist_id) {
+            sqlx::query(create_sql)
+                .bind(owner_id)
+                .bind(artist_id)
+                .execute(&mut *conn)
+                .await?;
+        }
+    }
+    for artist_id in existing {
+        if !desired.contains(artist_id) {
+            sqlx::query(delete_sql)
+                .bind(owner_id)
+                .bind(artist_id)
+                .execute(&mut *conn)
+                .await?;
+            // the cleanup trigger can delete the artist when its last link goes
+            matcher.evict(*artist_id);
+        }
+    }
+    Ok(())
+}
+
 /// Rebuild album artist links from track tags, falling back to the display artist override.
 pub(crate) async fn recompute_album_artists(
     conn: &mut SqliteConnection,
@@ -29,18 +85,16 @@ pub(crate) async fn recompute_album_artists(
     let (mut names, fallback) = derive_claimed_artists(&rows);
 
     if names.is_empty() {
-        let (override_,): (Option<String>,) = sqlx::query_as(include_str!(
+        let (display_override,): (Option<String>,) = sqlx::query_as(include_str!(
             "../../../../queries/scan/get_album_display_override.sql"
         ))
         .bind(album_id)
         .fetch_one(&mut *conn)
         .await?;
-        let display = override_.filter(|d| !d.trim().is_empty());
+        let display = display_override.filter(|d| !d.trim().is_empty());
 
         if fallback.len() > 1 {
-            for part in fallback {
-                push_album_artist_name(&mut names, &part, None);
-            }
+            push_fallback_names(&mut names, fallback);
         } else if let Some(display) = display {
             let sort = if display_is_credited(&rows, &display) {
                 rows.iter().find_map(|row| row.artist_sort.clone())
@@ -51,9 +105,7 @@ pub(crate) async fn recompute_album_artists(
         } else if fallback.is_empty() {
             names.push((UNKNOWN_ARTIST.to_string(), None));
         } else {
-            for part in fallback {
-                push_album_artist_name(&mut names, &part, None);
-            }
+            push_fallback_names(&mut names, fallback);
         }
     }
 
@@ -64,38 +116,18 @@ pub(crate) async fn recompute_album_artists(
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut desired: Vec<i64> = Vec::new();
-    for (name, sort) in &names {
-        let artist_id = matcher.resolve(conn, name, sort.as_deref()).await?;
-        if !desired.contains(&artist_id) {
-            desired.push(artist_id);
-        }
-    }
+    let desired = desired_artist_ids(conn, matcher, &names).await?;
 
-    for artist_id in &desired {
-        if !existing.contains(artist_id) {
-            sqlx::query(include_str!(
-                "../../../../queries/scan/create_album_artist.sql"
-            ))
-            .bind(album_id)
-            .bind(artist_id)
-            .execute(&mut *conn)
-            .await?;
-        }
-    }
-    for artist_id in &existing {
-        if !desired.contains(artist_id) {
-            sqlx::query(include_str!(
-                "../../../../queries/scan/delete_album_artist.sql"
-            ))
-            .bind(album_id)
-            .bind(artist_id)
-            .execute(&mut *conn)
-            .await?;
-            // the cleanup trigger can delete the artist when its last link goes
-            matcher.evict(*artist_id);
-        }
-    }
+    sync_artist_links(
+        conn,
+        matcher,
+        album_id,
+        &existing,
+        &desired,
+        include_str!("../../../../queries/scan/create_album_artist.sql"),
+        include_str!("../../../../queries/scan/delete_album_artist.sql"),
+    )
+    .await?;
 
     sqlx::query(include_str!(
         "../../../../queries/scan/update_album_artist_sort.sql"
@@ -153,9 +185,7 @@ pub(crate) async fn recompute_track_artists(
         if let Some(display) = display {
             names.push((display.to_string(), row.artist_sort.clone()));
         } else {
-            for part in fallback {
-                push_album_artist_name(&mut names, &part, None);
-            }
+            push_fallback_names(&mut names, fallback);
         }
     }
 
@@ -166,38 +196,18 @@ pub(crate) async fn recompute_track_artists(
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut desired: Vec<i64> = Vec::new();
-    for (name, sort) in &names {
-        let artist_id = matcher.resolve(conn, name, sort.as_deref()).await?;
-        if !desired.contains(&artist_id) {
-            desired.push(artist_id);
-        }
-    }
+    let desired = desired_artist_ids(conn, matcher, &names).await?;
 
-    for artist_id in &desired {
-        if !existing.contains(artist_id) {
-            sqlx::query(include_str!(
-                "../../../../queries/scan/create_track_artist.sql"
-            ))
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(&mut *conn)
-            .await?;
-        }
-    }
-    for artist_id in &existing {
-        if !desired.contains(artist_id) {
-            sqlx::query(include_str!(
-                "../../../../queries/scan/delete_track_artist.sql"
-            ))
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(&mut *conn)
-            .await?;
-            // the cleanup trigger can delete the artist when its last link goes
-            matcher.evict(*artist_id);
-        }
-    }
+    sync_artist_links(
+        conn,
+        matcher,
+        track_id,
+        &existing,
+        &desired,
+        include_str!("../../../../queries/scan/create_track_artist.sql"),
+        include_str!("../../../../queries/scan/delete_track_artist.sql"),
+    )
+    .await?;
 
     Ok(())
 }

@@ -202,9 +202,7 @@ impl Scanner {
                 }
             }
             let added = checkpoint.records.len();
-            for (path, timestamp) in checkpoint.records {
-                scan_record.records.insert(path, timestamp);
-            }
+            scan_record.records.extend(checkpoint.records);
             if let Err(error) = tokio::fs::remove_file(&checkpoint_path).await {
                 warn!(
                     "Failed to delete scan record checkpoint after merging: {:?}",

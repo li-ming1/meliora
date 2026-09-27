@@ -77,6 +77,16 @@ async fn seed(pool: &SqlitePool) {
     tx.commit().await.unwrap();
 }
 
+/// Cycles through `ids` so consecutive probes hit different rows (and pages).
+fn cycler(ids: &[i64]) -> impl FnMut() -> i64 + '_ {
+    let mut idx = 0;
+    move || {
+        let id = ids[idx % ids.len()];
+        idx += 1;
+        id
+    }
+}
+
 /// Time `f` `ITERATIONS` times after `WARMUP` untimed runs, and print a
 /// min/p50/p90/p99/max/mean summary in microseconds.
 fn summarize(name: &str, mut f: impl FnMut()) {
@@ -114,8 +124,7 @@ fn report_row_build_query_costs() {
         (_dir, pool)
     });
 
-    let track_count = (ALBUMS * TRACKS_PER_ALBUM) as i64;
-    let mut track_ids: Vec<i64> = (0..track_count).collect();
+    let mut track_ids: Vec<i64> = (0..(ALBUMS * TRACKS_PER_ALBUM) as i64).collect();
     // Deterministic shuffle so consecutive probes hit different pages.
     for i in (1..track_ids.len()).rev() {
         track_ids.swap(i, (i * 7 + 3) % (i + 1));
@@ -128,36 +137,27 @@ fn report_row_build_query_costs() {
         ALBUMS * TRACKS_PER_ALBUM
     );
 
-    let mut idx = 0usize;
+    let mut next_track_id = cycler(&track_ids);
+    let mut next_album_id = cycler(&album_ids);
+    let mut next_artist_id = cycler(&artist_ids);
     summarize("get_track_by_id", || {
-        let id = track_ids[idx % track_ids.len()];
-        idx += 1;
         let _ = crate::RUNTIME
-            .block_on(db::get_track_by_id(&pool, id))
+            .block_on(db::get_track_by_id(&pool, next_track_id()))
             .unwrap();
     });
-    let mut idx = 0usize;
     summarize("get_album_by_id", || {
-        let id = album_ids[idx % album_ids.len()];
-        idx += 1;
         let _ = crate::RUNTIME
-            .block_on(db::get_album_by_id(&pool, id))
+            .block_on(db::get_album_by_id(&pool, next_album_id()))
             .unwrap();
     });
-    let mut idx = 0usize;
     summarize("get_artist_with_counts", || {
-        let id = artist_ids[idx % artist_ids.len()];
-        idx += 1;
         let _ = crate::RUNTIME
-            .block_on(db::get_artist_with_counts(&pool, id))
+            .block_on(db::get_artist_with_counts(&pool, next_artist_id()))
             .unwrap();
     });
-    let mut idx = 0usize;
     summarize("get_all_tracks_by_artist", || {
-        let id = artist_ids[idx % artist_ids.len()];
-        idx += 1;
         let _: Arc<Vec<_>> = crate::RUNTIME
-            .block_on(db::get_all_tracks_by_artist(&pool, id))
+            .block_on(db::get_all_tracks_by_artist(&pool, next_artist_id()))
             .unwrap();
     });
 }

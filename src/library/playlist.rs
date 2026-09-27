@@ -27,6 +27,7 @@ struct PlaylistEntry {
 }
 
 async fn write_m3u(mut w: BufWriter<File>, pool: &SqlitePool, pl_id: i64) -> anyhow::Result<()> {
+    use std::io::Write as _;
     use tokio::io::AsyncWriteExt as _;
 
     w.write_all(b"#EXTM3U").await?;
@@ -44,7 +45,6 @@ async fn write_m3u(mut w: BufWriter<File>, pool: &SqlitePool, pl_id: i64) -> any
             album_title,
         }) = entries.try_next().await?
         {
-            use std::io::Write as _;
             write!(
                 &mut buf,
                 "{LINE_ENDING}\

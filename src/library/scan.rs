@@ -24,6 +24,10 @@ use crate::{
 
 pub use control::{MissingFolderDecision, ScanEvent, ScanInterface};
 
+/// Capacity of the scanner command queue; sends beyond it wait for the
+/// scanner to catch up.
+const COMMAND_CHANNEL_CAPACITY: usize = 10;
+
 #[cfg(test)]
 use database::{flush_album_artists, flush_track_artists};
 
@@ -31,7 +35,7 @@ pub fn start_scanner(
     pool: SqlitePool,
     settings: ScanSettings,
 ) -> (ScanInterface, UnboundedReceiver<ScanEvent>) {
-    let (cmd_tx, command_rx) = channel(10);
+    let (cmd_tx, command_rx) = channel(COMMAND_CHANNEL_CAPACITY);
     let (event_tx, events_rx) = unbounded_channel();
 
     // The scanner is the only writer to the library database, and its handle

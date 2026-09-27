@@ -5,6 +5,11 @@ use tracing::warn;
 use super::ArtIdCache;
 use crate::library::scan::decode::{ProcessedArt, process_album_art};
 
+/// Logs a failed DB read under `context` and maps it to `None`.
+fn logged<T>(result: sqlx::Result<T>, context: &str) -> Option<T> {
+    result.map_err(|e| warn!("{context}: {:?}", e)).ok()
+}
+
 pub async fn load_art_ids(pool: &SqlitePool) -> ArtIdCache {
     match sqlx::query_as::<_, (i64, i64)>(include_str!(
         "../../../../queries/scan/list_artwork_ids.sql"
@@ -34,14 +39,15 @@ pub(crate) async fn get_or_create_artwork(
     hash: i64,
     data: Option<ArtworkData<'_>>,
 ) -> Option<i64> {
-    let existing: Option<(i64,)> = sqlx::query_as(include_str!(
-        "../../../../queries/scan/get_artwork_by_hash.sql"
-    ))
-    .bind(hash)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(|e| warn!("Failed to look up artwork: {:?}", e))
-    .ok()
+    let existing: Option<(i64,)> = logged(
+        sqlx::query_as(include_str!(
+            "../../../../queries/scan/get_artwork_by_hash.sql"
+        ))
+        .bind(hash)
+        .fetch_optional(&mut *conn)
+        .await,
+        "Failed to look up artwork",
+    )
     .flatten();
 
     if let Some((id,)) = existing {
@@ -64,14 +70,15 @@ pub(crate) async fn get_or_create_artwork(
         }
     };
 
-    let adopt: Option<(i64,)> = sqlx::query_as(include_str!(
-        "../../../../queries/scan/adopt_migrated_artwork.sql"
-    ))
-    .bind(image)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(|e| warn!("Failed to look up migrated artwork: {:?}", e))
-    .ok()
+    let adopt: Option<(i64,)> = logged(
+        sqlx::query_as(include_str!(
+            "../../../../queries/scan/adopt_migrated_artwork.sql"
+        ))
+        .bind(image)
+        .fetch_optional(&mut *conn)
+        .await,
+        "Failed to look up migrated artwork",
+    )
     .flatten();
 
     if let Some((id,)) = adopt {
@@ -88,15 +95,18 @@ pub(crate) async fn get_or_create_artwork(
         return Some(id);
     }
 
-    sqlx::query_as::<_, (i64,)>(include_str!("../../../../queries/scan/insert_artwork.sql"))
-        .bind(hash)
-        .bind(image)
-        .bind(thumb)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|e| warn!("Failed to insert artwork: {:?}", e))
-        .ok()
-        .map(|(id,)| id)
+    logged(
+        sqlx::query_as::<_, (i64,)>(include_str!("../../../../queries/scan/insert_artwork.sql"))
+            .bind(hash)
+            .bind(image)
+            .bind(thumb)
+            .fetch_one(&mut *conn)
+            .await,
+        "Failed to insert artwork",
+    )
+    .map(|(id,)| id)
 }
 
+/// Artwork row id (or `None` when it could not be created) per hash,
+/// memoized across the albums of one finalization pass.
 pub(super) type FinalizationArtCache = FxHashMap<i64, Option<i64>>;

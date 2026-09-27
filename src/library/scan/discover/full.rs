@@ -7,7 +7,7 @@ use std::{
     time::SystemTime,
 };
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use futures::{StreamExt, stream::FuturesUnordered};
 use rustc_hash::{FxHashMap, FxHashSet};
 use sqlx::SqlitePool;
@@ -86,7 +86,7 @@ pub async fn discover(
                 continue;
             }
         };
-        let directory_art = snapshot.folder_art.clone();
+        let directory_art = snapshot.folder_art;
         folder_art.record(directory, directory_art.clone());
 
         for entry in snapshot.entries {
@@ -106,15 +106,12 @@ pub async fn discover(
                 continue;
             }
 
-            let action = if let Some(timestamp) = entry.scan_timestamp {
-                let sr = scan_record.lock().await;
-                Some(classify(&path, timestamp, &sr.records, &folded_index))
-            } else {
-                None
-            };
-
             let mut rescan_ts = None;
-            if let Some((action, stale)) = action {
+            if let Some(timestamp) = entry.scan_timestamp {
+                let (action, stale) = {
+                    let sr = scan_record.lock().await;
+                    classify(&path, timestamp, &sr.records, &folded_index)
+                };
                 // drop other recorded paths for this same file
                 for (old, old_ts) in stale {
                     if same_file(&old, &path)
@@ -163,6 +160,14 @@ pub async fn discover(
 }
 
 const CLEANUP_PAGE_SIZE: i64 = 1000;
+
+/// True when `path` sits under a directory that is no longer configured.
+fn in_removed_directory(path: &Utf8Path, removed_dirs: &[Utf8PathBuf]) -> bool {
+    !removed_dirs.is_empty() && {
+        let folded = fold_path(path);
+        removed_dirs.iter().any(|dir| folded.starts_with(dir))
+    }
+}
 
 /// Remove missing or unconfigured tracks and return affected playlists.
 pub async fn cleanup_stale_tracks(
@@ -231,22 +236,17 @@ async fn cleanup_stale_tracks_paged(
 
         let mut existence_candidates: Vec<Utf8PathBuf> = Vec::with_capacity(page.len());
         for (id, location) in &page {
+            last_id = *id;
             let path = Utf8PathBuf::from(location);
             pending.remove(&path);
             if is_under_excluded(&path, &excluded) {
-                last_id = *id;
                 continue;
             }
-            let is_removed = !removed_dirs.is_empty() && {
-                let folded = fold_path(&path);
-                removed_dirs.iter().any(|dir| folded.starts_with(dir))
-            };
-            if is_removed {
+            if in_removed_directory(&path, &removed_dirs) {
                 to_delete.push(path);
             } else {
                 existence_candidates.push(path);
             }
-            last_id = *id;
         }
         to_delete.extend(missing_paths(existence_candidates));
 
@@ -260,11 +260,7 @@ async fn cleanup_stale_tracks_paged(
         if is_under_excluded(&path, &excluded) {
             continue;
         }
-        let is_removed = !removed_dirs.is_empty() && {
-            let folded = fold_path(&path);
-            removed_dirs.iter().any(|dir| folded.starts_with(dir))
-        };
-        if is_removed {
+        if in_removed_directory(&path, &removed_dirs) {
             to_delete.push(path);
         } else {
             existence_candidates.push(path);

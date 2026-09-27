@@ -21,9 +21,12 @@ use crate::{
     settings::scan::ScanSettings,
 };
 
+/// Filesystem activity coalesced into one debounced event batch.
 const DEBOUNCE_WINDOW: Duration = Duration::from_secs(2);
 /// If one event batch touches more dirs than this, do a full scan instead.
 const STORM_TARGET_CAP: usize = 200;
+/// How often the watcher state refreshes, retrying roots that could not be watched.
+const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 pub(super) struct LibraryWatcher {
     // kept so Drop stops the notify thread
@@ -295,8 +298,6 @@ fn is_album_art(path: &Path) -> bool {
         )
     })
 }
-
-const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Holds watcher state that persists between scans.
 #[derive(Default)]

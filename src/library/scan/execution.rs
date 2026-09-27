@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime},
@@ -173,10 +174,10 @@ pub(super) struct ScanExecution<'a> {
     checkpoint_handle: Option<JoinHandle<()>>,
     /// Last time a ScanProgress event was emitted; progress is throttled so a
     /// 100k-file scan doesn't flood the header with notify-per-5-files.
-    last_progress_report: std::cell::Cell<Option<Instant>>,
+    last_progress_report: Cell<Option<Instant>>,
     /// Last time a checkpoint write was spawned; clock-gated by
     /// CHECKPOINT_INTERVAL because each write serializes the whole record map.
-    last_checkpoint_write: std::cell::Cell<Option<Instant>>,
+    last_checkpoint_write: Cell<Option<Instant>>,
 }
 
 impl<'a> ScanExecution<'a> {
@@ -212,8 +213,8 @@ impl<'a> ScanExecution<'a> {
             pending_relocations: Vec::new(),
             scan_checkpoint: Arc::new(Mutex::new(FxHashMap::default())),
             checkpoint_handle: None,
-            last_progress_report: std::cell::Cell::new(None),
-            last_checkpoint_write: std::cell::Cell::new(None),
+            last_progress_report: Cell::new(None),
+            last_checkpoint_write: Cell::new(None),
         }
     }
 
@@ -398,12 +399,19 @@ impl<'a> ScanExecution<'a> {
         }
     }
 
+    /// Whether this scan still has uncommitted work: unflushed write caches,
+    /// items in the open transaction, or relocations waiting on the record.
+    /// The same condition guards the final commit on both the completed and
+    /// the cancelled path.
+    fn has_pending_writes(&self) -> bool {
+        !self.active.caches.pending_albums.is_empty()
+            || !self.active.caches.pending_tracks.is_empty()
+            || self.items_in_tx > 0
+            || !self.pending_relocations.is_empty()
+    }
+
     async fn commit_final_batch(&mut self) {
-        if self.active.caches.pending_albums.is_empty()
-            && self.active.caches.pending_tracks.is_empty()
-            && self.items_in_tx == 0
-            && self.pending_relocations.is_empty()
-        {
+        if !self.has_pending_writes() {
             return;
         }
 
@@ -553,11 +561,7 @@ impl<'a> ScanExecution<'a> {
     }
 
     async fn finish_cancelled(mut self) -> ScanRecord {
-        if !self.active.caches.pending_albums.is_empty()
-            || !self.active.caches.pending_tracks.is_empty()
-            || self.items_in_tx > 0
-            || !self.pending_relocations.is_empty()
-        {
+        if self.has_pending_writes() {
             commit_batch(
                 self.context.pool,
                 &mut self.tx,

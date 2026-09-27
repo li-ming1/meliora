@@ -25,6 +25,13 @@ use crate::library::scan::{
     record::ScanRecord,
 };
 
+/// Recorded tracks in the target folder itself (`folder` or `location` match).
+const RECONCILE_FOLDER_OR_LOCATION_SQL: &str =
+    include_str!("../../../../queries/scan/list_tracks_in_folder_or_location.sql");
+/// Recorded tracks anywhere under the target's path prefix.
+const RECONCILE_UNDER_PREFIX_SQL: &str =
+    include_str!("../../../../queries/scan/list_tracks_under_prefix.sql");
+
 struct RescanState {
     scan_record: Arc<Mutex<ScanRecord>>,
     folded_targets: FxHashSet<Utf8PathBuf>,
@@ -181,23 +188,9 @@ pub async fn rescan_discover(
             continue;
         }
 
-        let folder_candidate = if let Some(parent) = path.parent() {
-            match folder_art.get(parent) {
-                Some(candidate) => candidate,
-                None => match read_policy.read(parent.to_path_buf()).await {
-                    Ok(snapshot) => {
-                        let candidate = snapshot.folder_art;
-                        folder_art.record(parent.to_path_buf(), candidate.clone());
-                        candidate
-                    }
-                    Err(e) => {
-                        error!("Failed to read directory {:?}: {:?}", parent, e);
-                        None
-                    }
-                },
-            }
-        } else {
-            None
+        let folder_candidate = match path.parent() {
+            Some(parent) => folder_art_for_parent(parent, &read_policy, &folder_art).await,
+            None => None,
         };
 
         if emit_rescan_path(
@@ -280,6 +273,54 @@ async fn emit_rescan_path(
     Some(timestamp)
 }
 
+/// Folder art for a directly passed file's parent: reuse the walk's recorded
+/// observation, or read the directory now when it was never visited.
+async fn folder_art_for_parent(
+    parent: &Utf8Path,
+    read_policy: &DirectoryReadPolicy,
+    folder_art: &FolderArtObservations,
+) -> Option<FolderArtCandidate> {
+    if let Some(observed) = folder_art.get(parent) {
+        return observed;
+    }
+    match read_policy.read(parent.to_path_buf()).await {
+        Ok(snapshot) => {
+            let candidate = snapshot.folder_art;
+            folder_art.record(parent.to_path_buf(), candidate.clone());
+            candidate
+        }
+        Err(e) => {
+            error!("Failed to read directory {:?}: {:?}", parent, e);
+            None
+        }
+    }
+}
+
+/// Run one reconciliation lookup for `target`, returning its recorded location
+/// strings, or `None` after logging the failure. `lookup` completes the log
+/// message (e.g. `"query"` / `"prefix query"`).
+async fn fetch_reconciliation_locations(
+    pool: &SqlitePool,
+    query: &'static str,
+    target: &Utf8Path,
+    lookup: &str,
+) -> Option<Vec<String>> {
+    match sqlx::query_scalar::<_, String>(query)
+        .bind(target.as_str())
+        .fetch_all(pool)
+        .await
+    {
+        Ok(rows) => Some(rows),
+        Err(e) => {
+            error!(
+                "Rescan reconciliation {lookup} failed for {:?}: {:?}",
+                target, e
+            );
+            None
+        }
+    }
+}
+
 /// Delete missing tracks and record entries under the targets. Excluded roots are left alone.
 pub async fn reconcile_rescan_paths(
     pool: &SqlitePool,
@@ -294,40 +335,23 @@ pub async fn reconcile_rescan_paths(
 
     let mut candidates: FxHashSet<Utf8PathBuf> = FxHashSet::default();
     for target in &targets {
-        let rows = sqlx::query_scalar::<_, String>(include_str!(
-            "../../../../queries/scan/list_tracks_in_folder_or_location.sql"
-        ))
-        .bind(target.as_str())
-        .fetch_all(pool)
-        .await;
-
-        let mut rows = match rows {
-            Ok(rows) => rows,
-            Err(e) => {
-                error!(
-                    "Rescan reconciliation query failed for {:?}: {:?}",
-                    target, e
-                );
-                continue;
-            }
+        let Some(mut rows) =
+            fetch_reconciliation_locations(pool, RECONCILE_FOLDER_OR_LOCATION_SQL, target, "query")
+                .await
+        else {
+            continue;
         };
 
         if is_missing(target) {
-            let descendants = sqlx::query_scalar::<_, String>(include_str!(
-                "../../../../queries/scan/list_tracks_under_prefix.sql"
-            ))
-            .bind(target.as_str())
-            .fetch_all(pool)
-            .await;
-
-            match descendants {
-                Ok(descendants) => rows.extend(descendants),
-                Err(e) => {
-                    error!(
-                        "Rescan reconciliation prefix query failed for {:?}: {:?}",
-                        target, e
-                    );
-                }
+            if let Some(descendants) = fetch_reconciliation_locations(
+                pool,
+                RECONCILE_UNDER_PREFIX_SQL,
+                target,
+                "prefix query",
+            )
+            .await
+            {
+                rows.extend(descendants);
             }
         }
 

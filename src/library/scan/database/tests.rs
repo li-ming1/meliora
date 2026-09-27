@@ -1,4 +1,7 @@
 use super::*;
+use crate::test_support::{
+    TestDir, add_track_to_playlist, count_rows, create_test_pool, insert_metadata, track_metadata,
+};
 use chrono::{TimeZone, Utc};
 
 fn names(values: &[&str]) -> smallvec::SmallVec<[String; 2]> {
@@ -66,10 +69,6 @@ fn binds_full_release_dates() {
         )
     );
 }
-
-use crate::test_support::{
-    TestDir, add_track_to_playlist, count_rows, create_test_pool, insert_metadata, track_metadata,
-};
 
 #[tokio::test]
 async fn update_metadata_inserts_artist_album_track() {
@@ -151,13 +150,8 @@ async fn update_metadata_rejects_mixed_folder_for_same_album_disc() {
     let (dir, pool) = create_test_pool("db-test").await;
     let mut conn = pool.acquire().await.unwrap();
 
-    let folder_a = dir.join("disc1a");
-    let folder_b = dir.join("disc1b");
-    std::fs::create_dir_all(&folder_a).unwrap();
-    std::fs::create_dir_all(&folder_b).unwrap();
-
-    let path1 = Utf8PathBuf::from_path_buf(folder_a.join("track.flac")).unwrap();
-    let path2 = Utf8PathBuf::from_path_buf(folder_b.join("track.flac")).unwrap();
+    let path1 = track_path(&dir, "disc1a", "track.flac");
+    let path2 = track_path(&dir, "disc1b", "track.flac");
 
     let meta = track_metadata("Album", "Artist", "Track", 1);
     insert_metadata(&mut conn, &meta, &path1).await.unwrap();
@@ -282,16 +276,11 @@ async fn update_metadata_allows_same_album_different_disc_in_different_folder() 
     let (dir, pool) = create_test_pool("db-test").await;
     let mut conn = pool.acquire().await.unwrap();
 
-    let folder_a = dir.join("disc1");
-    let folder_b = dir.join("disc2");
-    std::fs::create_dir_all(&folder_a).unwrap();
-    std::fs::create_dir_all(&folder_b).unwrap();
-
-    let path1 = Utf8PathBuf::from_path_buf(folder_a.join("track.flac")).unwrap();
+    let path1 = track_path(&dir, "disc1", "track.flac");
     let mut meta1 = track_metadata("Album", "Artist", "Track 1", 1);
     meta1.disc_current = Some(1);
 
-    let path2 = Utf8PathBuf::from_path_buf(folder_b.join("track.flac")).unwrap();
+    let path2 = track_path(&dir, "disc2", "track.flac");
     let mut meta2 = track_metadata("Album", "Artist", "Track 2", 1);
     meta2.disc_current = Some(2);
 
@@ -603,6 +592,16 @@ async fn force_write(conn: &mut SqliteConnection, meta: &Metadata, path: &Utf8Pa
         .unwrap();
 }
 
+async fn assert_track_release_date(pool: &SqlitePool, date: &str, precision: Option<i32>) {
+    let (stored_date, stored_precision): (Option<String>, Option<i32>) =
+        sqlx::query_as("SELECT release_date, date_precision FROM track")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_date.as_deref(), Some(date));
+    assert_eq!(stored_precision, precision);
+}
+
 fn track_path(dir: &TestDir, folder: &str, file: &str) -> Utf8PathBuf {
     let folder = dir.join(folder);
     std::fs::create_dir_all(&folder).unwrap();
@@ -862,13 +861,7 @@ async fn update_metadata_stores_track_release_date() {
     meta.date = Some(Utc.with_ymd_and_hms(1995, 6, 24, 0, 0, 0).single().unwrap());
     write(&mut conn, &meta, &path, &mut WriteCaches::default()).await;
 
-    let (date, precision): (Option<String>, Option<i32>) =
-        sqlx::query_as("SELECT release_date, date_precision FROM track")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(date.as_deref(), Some("1995-06-24"));
-    assert_eq!(precision, Some(DATE_PRECISION_FULL_DATE));
+    assert_track_release_date(&pool, "1995-06-24", Some(DATE_PRECISION_FULL_DATE)).await;
 }
 
 #[tokio::test]
@@ -882,13 +875,7 @@ async fn update_metadata_stores_year_only_track_release_date() {
     meta.year = Some(1995);
     write(&mut conn, &meta, &path, &mut WriteCaches::default()).await;
 
-    let (date, precision): (Option<String>, Option<i32>) =
-        sqlx::query_as("SELECT release_date, date_precision FROM track")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(date.as_deref(), Some("1995-01-01"));
-    assert_eq!(precision, Some(DATE_PRECISION_YEAR));
+    assert_track_release_date(&pool, "1995-01-01", Some(DATE_PRECISION_YEAR)).await;
 }
 
 /// Write alias then canonical name, and the reverse. Both orders should yield one artist.

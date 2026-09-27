@@ -11,6 +11,8 @@ pub struct Artist {
     pub name: Option<DBString>,
 }
 
+/// A cheaply clonable string (`SharedString`) as read from and written to the
+/// library DB, directly usable as GPUI text.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct DBString(pub SharedString);
 
@@ -51,20 +53,23 @@ impl<'r, DB: Database> Decode<'r, DB> for DBString
 where
     String: Decode<'r, DB>,
 {
-    fn decode(value: <DB as Database>::ValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+    fn decode(value: <DB as Database>::ValueRef<'r>) -> Result<Self, BoxDynError> {
         let data = String::decode(value)?;
         Ok(Self::from(data))
     }
 }
 
-impl sqlx::Type<sqlx::Sqlite> for DBString {
+impl Type<Sqlite> for DBString {
     fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
         <String as Type<Sqlite>>::type_info()
     }
 }
 
+/// `Album::date_precision` value: only the year is known.
 pub const DATE_PRECISION_YEAR: i32 = 0;
+/// `Album::date_precision` value: a full `YYYY-MM-DD` date.
 pub const DATE_PRECISION_FULL_DATE: i32 = 1;
+/// `Album::date_precision` value: year and month (`YYYY-MM`).
 pub const DATE_PRECISION_YEAR_MONTH: i32 = 2;
 
 #[derive(sqlx::FromRow, Clone)]
@@ -128,6 +133,8 @@ pub struct Playlist {
 }
 
 impl Playlist {
+    /// The Liked Songs playlist is a singleton system playlist stored under
+    /// this fixed name; the UI renders it through the `LIKED_SONGS` translation.
     pub fn is_liked_songs(&self) -> bool {
         self.playlist_type == PlaylistType::System && self.name.0.as_str() == "Liked Songs"
     }

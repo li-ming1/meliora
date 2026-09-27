@@ -1,10 +1,6 @@
 use camino::Utf8PathBuf;
 use gpui::{App, Global};
-use tokio::sync::{
-    mpsc::UnboundedReceiver,
-    mpsc::UnboundedSender,
-    mpsc::{Receiver, Sender},
-};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tracing::error;
 
 use crate::{
@@ -85,50 +81,51 @@ impl ScanInterface {
         ScanInterface { cmd_tx }
     }
 
-    pub fn scan(&self) {
-        if let Err(err) = self.cmd_tx.try_send(ScanCommand::Scan) {
-            error!("could not send scan start command: {err}");
+    /// Sends a command, logging instead of failing when the channel is full or closed.
+    fn try_send(&self, command: ScanCommand, label: &str) {
+        if let Err(err) = self.cmd_tx.try_send(command) {
+            error!("could not send {label}: {err}");
         }
     }
 
+    pub fn scan(&self) {
+        self.try_send(ScanCommand::Scan, "scan start command");
+    }
+
     pub fn force_scan(&self) {
-        if let Err(err) = self.cmd_tx.try_send(ScanCommand::ForceScan) {
-            error!("could not send force re-scan start command: {err}");
-        }
+        self.try_send(ScanCommand::ForceScan, "force re-scan start command");
     }
 
     pub fn rescan_paths(&self, paths: Vec<Utf8PathBuf>) {
         if paths.is_empty() {
             return;
         }
-        if let Err(err) = self.cmd_tx.try_send(ScanCommand::RescanPaths {
-            paths,
-            respect_record: false,
-            recursive: false,
-        }) {
-            error!("could not send rescan-paths command: {err}");
-        }
+        self.try_send(
+            ScanCommand::RescanPaths {
+                paths,
+                respect_record: false,
+                recursive: false,
+            },
+            "rescan-paths command",
+        );
     }
 
     pub fn stop(&self) {
-        if let Err(err) = self.cmd_tx.try_send(ScanCommand::Stop) {
-            error!("could not send scan stop command: {err}");
-        }
+        self.try_send(ScanCommand::Stop, "scan stop command");
     }
 
     pub fn update_settings(&self, settings: ScanSettings) {
-        if let Err(err) = self.cmd_tx.try_send(ScanCommand::UpdateSettings(settings)) {
-            error!("could not send scan settings update command: {err}");
-        }
+        self.try_send(
+            ScanCommand::UpdateSettings(settings),
+            "scan settings update command",
+        );
     }
 
     pub fn resolve_missing_folders(&self, decision: MissingFolderDecision) {
-        if let Err(err) = self
-            .cmd_tx
-            .try_send(ScanCommand::ResolveMissingFolders(decision))
-        {
-            error!("could not send missing folder resolution: {err}");
-        }
+        self.try_send(
+            ScanCommand::ResolveMissingFolders(decision),
+            "missing folder resolution",
+        );
     }
 
     pub fn start_broadcast(&self, mut events_rx: UnboundedReceiver<ScanEvent>, cx: &mut App) {
@@ -202,54 +199,46 @@ pub(super) async fn resolve_missing_folder_action(
     pending_rescan: &mut Option<PendingRescan>,
 ) -> MissingFolderPolicy {
     match scan_settings.missing_folder_policy {
-        MissingFolderPolicy::KeepInLibrary => MissingFolderPolicy::KeepInLibrary,
-        MissingFolderPolicy::DeleteFromLibrary => MissingFolderPolicy::DeleteFromLibrary,
-        MissingFolderPolicy::Ask => {
-            let _ = event_tx.send(ScanEvent::WaitingForMissingFolderDecision {
-                paths: missing_paths,
-            });
+        MissingFolderPolicy::Ask => {}
+        already_decided => return already_decided,
+    }
 
-            loop {
-                match command_rx.recv().await {
-                    Some(ScanCommand::ResolveMissingFolders(
-                        MissingFolderDecision::KeepInLibrary,
-                    )) => {
-                        break MissingFolderPolicy::KeepInLibrary;
+    let _ = event_tx.send(ScanEvent::WaitingForMissingFolderDecision {
+        paths: missing_paths,
+    });
+
+    loop {
+        match command_rx.recv().await {
+            Some(ScanCommand::ResolveMissingFolders(decision)) => {
+                break match decision {
+                    MissingFolderDecision::KeepInLibrary => MissingFolderPolicy::KeepInLibrary,
+                    MissingFolderDecision::DeleteFromLibrary => {
+                        MissingFolderPolicy::DeleteFromLibrary
                     }
-                    Some(ScanCommand::ResolveMissingFolders(
-                        MissingFolderDecision::DeleteFromLibrary,
-                    )) => {
-                        break MissingFolderPolicy::DeleteFromLibrary;
-                    }
-                    Some(ScanCommand::UpdateSettings(s)) => {
-                        *scan_settings = s;
-                        match scan_settings.missing_folder_policy {
-                            MissingFolderPolicy::Ask => {}
-                            MissingFolderPolicy::KeepInLibrary => {
-                                break MissingFolderPolicy::KeepInLibrary;
-                            }
-                            MissingFolderPolicy::DeleteFromLibrary => {
-                                break MissingFolderPolicy::DeleteFromLibrary;
-                            }
-                        }
-                    }
-                    Some(ScanCommand::Stop) => break MissingFolderPolicy::KeepInLibrary,
-                    Some(ScanCommand::Scan) => {
-                        pending_start.get_or_insert(false);
-                    }
-                    Some(ScanCommand::ForceScan) => {
-                        *pending_start = Some(true);
-                    }
-                    Some(ScanCommand::RescanPaths {
-                        paths,
-                        respect_record,
-                        recursive,
-                    }) => {
-                        queue_pending_rescan(pending_rescan, paths, respect_record, recursive);
-                    }
-                    None => break MissingFolderPolicy::KeepInLibrary,
+                };
+            }
+            Some(ScanCommand::UpdateSettings(s)) => {
+                *scan_settings = s;
+                match scan_settings.missing_folder_policy {
+                    MissingFolderPolicy::Ask => {}
+                    decided => break decided,
                 }
             }
+            Some(ScanCommand::Stop) => break MissingFolderPolicy::KeepInLibrary,
+            Some(ScanCommand::Scan) => {
+                pending_start.get_or_insert(false);
+            }
+            Some(ScanCommand::ForceScan) => {
+                *pending_start = Some(true);
+            }
+            Some(ScanCommand::RescanPaths {
+                paths,
+                respect_record,
+                recursive,
+            }) => {
+                queue_pending_rescan(pending_rescan, paths, respect_record, recursive);
+            }
+            None => break MissingFolderPolicy::KeepInLibrary,
         }
     }
 }

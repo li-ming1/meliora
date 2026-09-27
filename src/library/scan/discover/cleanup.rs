@@ -63,24 +63,14 @@ pub(crate) fn missing_paths(
         };
 
         let mut names = FxHashSet::default();
-        for entry in entries {
-            match entry {
-                Ok(entry) => {
-                    names.insert(entry.file_name().to_string_lossy().into_owned());
-                }
-                Err(_) => continue,
-            }
+        for entry in entries.flatten() {
+            names.insert(entry.file_name().to_string_lossy().into_owned());
         }
 
         for path in paths {
-            let Some(name) = path.file_name() else {
-                if is_missing(&path) {
-                    missing.insert(path);
-                }
-                continue;
-            };
             // a stat is only needed for genuinely missing or stale-cased names
-            if !names.contains(name) && is_missing(&path) {
+            let absent_from_listing = path.file_name().is_none_or(|name| !names.contains(name));
+            if absent_from_listing && is_missing(&path) {
                 missing.insert(path);
             }
         }
@@ -172,59 +162,65 @@ pub(crate) async fn delete_tracks(
     updated_playlists
 }
 
+/// Map a cleanup query result to `None` on a database error, logging it as
+/// "Database error while {step}".
+fn cleanup_query<T>(step: &str, result: Result<T, sqlx::Error>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            error!("Database error while {}: {:?}", step, error);
+            None
+        }
+    }
+}
+
+/// Delete one stale track inside `tx`, collecting the playlists it was on and
+/// the album it belonged to. Returns `false` when a database error aborted the
+/// track's cleanup.
 async fn cleanup_track(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     path: &Utf8Path,
     updated_playlists: &mut FxHashSet<i64>,
     affected_albums: &mut FxHashSet<i64>,
 ) -> bool {
-    let album = sqlx::query_as(include_str!(
-        "../../../../queries/scan/get_album_id_at_location.sql"
-    ))
-    .bind(path.as_str())
-    .fetch_optional(&mut **tx)
-    .await;
-
-    let album = match album {
-        Ok(album) => album.map(|(id,)| id),
-        Err(error) => {
-            error!(
-                "Database error while reading track for cleanup: {:?}",
-                error
-            );
-            return false;
-        }
-    };
-
-    let affected_playlists = sqlx::query_scalar::<_, i64>(include_str!(
-        "../../../../queries/scan/list_playlist_ids_for_track.sql"
-    ))
-    .bind(path.as_str())
-    .fetch_all(&mut **tx)
-    .await;
-
-    let affected_playlists = match affected_playlists {
-        Ok(ids) => ids,
-        Err(error) => {
-            error!(
-                "Database error while listing affected playlists for track cleanup: {:?}",
-                error
-            );
-            return false;
-        }
-    };
-
-    let track_result = sqlx::query(include_str!("../../../../queries/scan/delete_track.sql"))
+    let album_id = match cleanup_query(
+        "reading track for cleanup",
+        sqlx::query_as(include_str!(
+            "../../../../queries/scan/get_album_id_at_location.sql"
+        ))
         .bind(path.as_str())
-        .execute(&mut **tx)
-        .await;
+        .fetch_optional(&mut **tx)
+        .await,
+    ) {
+        Some(album) => album.map(|(id,)| id),
+        None => return false,
+    };
 
-    if let Err(error) = track_result {
-        error!("Database error while deleting track: {:?}", error);
+    let Some(affected_playlists) = cleanup_query(
+        "listing affected playlists for track cleanup",
+        sqlx::query_scalar::<_, i64>(include_str!(
+            "../../../../queries/scan/list_playlist_ids_for_track.sql"
+        ))
+        .bind(path.as_str())
+        .fetch_all(&mut **tx)
+        .await,
+    ) else {
+        return false;
+    };
+
+    if cleanup_query(
+        "deleting track",
+        sqlx::query(include_str!("../../../../queries/scan/delete_track.sql"))
+            .bind(path.as_str())
+            .execute(&mut **tx)
+            .await,
+    )
+    .is_none()
+    {
         return false;
     }
 
-    if let Some(album_id) = album {
+    if let Some(album_id) = album_id {
         affected_albums.insert(album_id);
     }
     updated_playlists.extend(affected_playlists);

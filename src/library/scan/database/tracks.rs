@@ -6,6 +6,7 @@ use tracing::warn;
 use super::{albums::bind_release_date, artists::encode_artist_list};
 use crate::{library::scan::fs_case::paths_equal, media::metadata::Metadata};
 
+/// Key into the per-scan album-path cache: `(album id, disc number)`.
 pub type AlbumPathCacheKey = (i64, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,11 +81,11 @@ pub(super) async fn delete_lyrics(
 async fn handle_folder_mismatch(
     conn: &mut SqliteConnection,
     album_path_cache: &mut FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
-    ap_key: AlbumPathCacheKey,
+    album_path_key: AlbumPathCacheKey,
     claimed: &Utf8Path,
     parent: &Utf8Path,
 ) -> anyhow::Result<bool> {
-    let (album_id, disc_num) = ap_key;
+    let (album_id, disc_num) = album_path_key;
     if album_path_still_populated(conn, album_id, disc_num, claimed).await? {
         warn!(
             "Rejecting track in {:?}: album id {} disc {} is claimed by {:?} (duplicate copy of the album?)",
@@ -95,10 +96,15 @@ async fn handle_folder_mismatch(
 
     repair_album_path(conn, album_id, disc_num, parent).await?;
     // otherwise the cache keeps serving the old path for the rest of the scan
-    album_path_cache.insert(ap_key, parent.to_path_buf());
+    album_path_cache.insert(album_path_key, parent.to_path_buf());
     Ok(true)
 }
 
+/// Insert one scanned track row, returning the new track id.
+///
+/// Resolves the album-folder claim first: a folder mismatch either repairs the
+/// claim (old folder has no tracks left) or rejects the track as a duplicate
+/// copy of the album, which yields `Ok(None)`.
 pub(super) async fn insert_track(
     conn: &mut SqliteConnection,
     metadata: &Metadata,
@@ -112,21 +118,21 @@ pub(super) async fn insert_track(
     // instead of aborting the whole scan.
     let parent = path.parent().unwrap_or_else(|| Utf8Path::new(""));
 
-    if let Some(album_id_val) = album_id {
+    if let Some(album_id) = album_id {
         let disc_num = metadata.disc_current.map(|v| v as i64).unwrap_or(-1);
-        let ap_key = (album_id_val, disc_num);
+        let album_path_key = (album_id, disc_num);
 
-        if album_path_cache.get(&ap_key).is_none() {
-            let find_path: Result<(String,), _> =
+        if album_path_cache.get(&album_path_key).is_none() {
+            let recorded_folder: Option<(String,)> =
                 sqlx::query_as(include_str!("../../../../queries/scan/get_album_path.sql"))
                     .bind(album_id)
                     .bind(disc_num)
-                    .fetch_one(&mut *conn)
-                    .await;
+                    .fetch_optional(&mut *conn)
+                    .await?;
 
-            let resolved = match find_path {
-                Ok(found) => Utf8PathBuf::from(&found.0),
-                Err(sqlx::Error::RowNotFound) => {
+            let resolved = match recorded_folder {
+                Some((folder,)) => Utf8PathBuf::from(folder),
+                None => {
                     sqlx::query(include_str!(
                         "../../../../queries/scan/create_album_path.sql"
                     ))
@@ -137,17 +143,18 @@ pub(super) async fn insert_track(
                     .await?;
                     parent.to_path_buf()
                 }
-                Err(e) => return Err(e.into()),
             };
-            album_path_cache.insert(ap_key, resolved);
+            album_path_cache.insert(album_path_key, resolved);
         }
 
         let claimed = album_path_cache
-            .get(&ap_key)
+            .get(&album_path_key)
             .expect("album path cache populated above");
         if !paths_equal(claimed, parent) {
             let claimed = claimed.clone();
-            if !handle_folder_mismatch(conn, album_path_cache, ap_key, &claimed, parent).await? {
+            if !handle_folder_mismatch(conn, album_path_cache, album_path_key, &claimed, parent)
+                .await?
+            {
                 return Ok(None);
             }
         }

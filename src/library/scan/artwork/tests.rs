@@ -9,7 +9,7 @@ use crate::library::scan::{
     artist_match::ArtistMatcher,
     database::{WriteCaches, flush_album_artists, flush_track_artists, update_metadata},
     decode::{ArtSource, FileArt, RawArt, ScannedArt},
-    discover::{FolderArtCandidate, read_scan_directory},
+    discover::{FolderArtCandidate, FolderArtObservationMap, read_scan_directory},
 };
 use crate::media::metadata::Metadata;
 use crate::test_support::{TestDir, count_rows, create_test_pool, track_metadata};
@@ -116,12 +116,13 @@ async fn artwork_processor_skips_preexisting_hashes() {
     assert!(existing.processed.is_none());
 }
 
-async fn write_track(dir: &TestDir, pool: &SqlitePool, meta: &Metadata, name: &str, art: &FileArt) {
+/// Writes track `track_no` of the fixture album ("Album"/"Artist") as `t{track_no}.flac`.
+async fn write_album_track(dir: &TestDir, pool: &SqlitePool, track_no: u64, art: &FileArt) {
     write_track_cached(
         dir,
         pool,
-        meta,
-        name,
+        &track_metadata("Album", "Artist", &format!("Track {track_no}"), track_no),
+        &format!("t{track_no}.flac"),
         art,
         false,
         &mut WriteCaches::default(),
@@ -177,6 +178,45 @@ async fn finalize_with(
         .unwrap();
 }
 
+/// Runs the end-of-scan pick for the albums written through `caches` without persisting art.
+async fn finalize_from_caches(pool: &SqlitePool, is_force: bool, caches: &mut WriteCaches) {
+    let touched: FxHashSet<i64> = caches.albums.values().copied().collect();
+    finalize_scan_art(
+        pool,
+        is_force,
+        &touched,
+        &caches.examined_albums,
+        &mut caches.folder_art_candidates,
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+/// Runs one folder-art examine pass, returning what was staged.
+async fn examine_observations(
+    pool: &SqlitePool,
+    observations: &FolderArtObservationMap,
+) -> (FxHashSet<i64>, FolderArtCandidates, ArtIdCache) {
+    let processor = ArtworkProcessor::new([]);
+    let loader = FolderArtLoader::new(processor.concurrency());
+    let mut examined = FxHashSet::default();
+    let mut candidates = FolderArtCandidates::default();
+    let mut art_ids = ArtIdCache::default();
+    examine_folder_art(
+        pool,
+        observations,
+        &loader,
+        &processor,
+        &mut examined,
+        &mut candidates,
+        &mut art_ids,
+    )
+    .await
+    .unwrap();
+    (examined, candidates, art_ids)
+}
+
 async fn album_row(pool: &SqlitePool) -> (i64, Option<i64>, i64) {
     sqlx::query_as("SELECT id, artwork_id, artwork_source FROM album")
         .fetch_one(pool)
@@ -198,12 +238,11 @@ async fn track_art(pool: &SqlitePool) -> Vec<(Option<i64>, Option<i64>)> {
 }
 
 async fn artwork_id_for_hash(pool: &SqlitePool, bytes: &[u8]) -> Option<i64> {
-    sqlx::query_as::<_, (i64,)>("SELECT id FROM artwork WHERE hash = $1")
+    sqlx::query_scalar("SELECT id FROM artwork WHERE hash = $1")
         .bind(xxh3_64(bytes) as i64)
         .fetch_optional(pool)
         .await
         .unwrap()
-        .map(|(id,)| id)
 }
 
 #[tokio::test]
@@ -211,14 +250,7 @@ async fn update_metadata_processes_embedded_art_immediately() {
     let (dir, pool) = create_test_pool("artwork-stage-test").await;
     let a = red();
 
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &embedded_art(a.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &embedded_art(a.clone())).await;
 
     // track already points at the art row before finalization
     let (art_hash, track_art): (i64, Option<i64>) =
@@ -237,38 +269,17 @@ async fn album_gets_provisional_art_at_write_time() {
     let a = red();
     let b = green();
 
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &embedded_art(a.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &embedded_art(a.clone())).await;
 
     // album already points at the first track's art before finalization
     let a_id = artwork_id_for_hash(&pool, &a).await.unwrap();
     assert_album_art(&pool, Some(a_id), 0).await;
 
     // a later track's art must not replace that pick mid-scan
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 2", 2),
-        "t2.flac",
-        &embedded_art(b.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 2, &embedded_art(b.clone())).await;
     assert_album_art(&pool, Some(a_id), 0).await;
 
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 3", 3),
-        "t3.flac",
-        &embedded_art(b.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
 
     finalize(&pool, false).await;
     let b_id = artwork_id_for_hash(&pool, &b).await.unwrap();
@@ -282,14 +293,7 @@ async fn folder_art_is_the_provisional_pick() {
     let cover = blue();
 
     let representative = with_folder_art(a, cover.clone());
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &representative,
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &representative).await;
 
     let cover_id = artwork_id_for_hash(&pool, &cover).await.unwrap();
     assert_album_art(&pool, Some(cover_id), 1).await;
@@ -303,30 +307,9 @@ async fn folder_art_wins_and_differing_tracks_get_own_rows() {
     let cover = blue();
 
     let representative = with_folder_art(a.clone(), cover.clone());
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &representative,
-    )
-    .await;
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 2", 2),
-        "t2.flac",
-        &embedded_art(a.clone()),
-    )
-    .await;
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 3", 3),
-        "t3.flac",
-        &embedded_art(b.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &representative).await;
+    write_album_track(&dir, &pool, 2, &embedded_art(a.clone())).await;
+    write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
 
     finalize(&pool, false).await;
 
@@ -404,36 +387,15 @@ async fn partial_rescan_keeps_folder_incumbent_until_force_scan() {
     let cover = blue();
 
     let representative = with_folder_art(a.clone(), cover.clone());
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &representative,
-    )
-    .await;
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 2", 2),
-        "t2.flac",
-        &embedded_art(a.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &representative).await;
+    write_album_track(&dir, &pool, 2, &embedded_art(a.clone())).await;
     finalize(&pool, false).await;
 
     let cover_id = artwork_id_for_hash(&pool, &cover).await.unwrap();
     let a_id = artwork_id_for_hash(&pool, &a).await.unwrap();
 
     // targeted rescan of a non-first track stages no folder art - existing folder art stays
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 3", 3),
-        "t3.flac",
-        &embedded_art(b.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
     finalize(&pool, false).await;
     assert_album_art(&pool, Some(cover_id), 1).await;
 
@@ -448,14 +410,7 @@ async fn partial_rescan_keeps_folder_incumbent_until_force_scan() {
     );
 
     // force scan re-read with no folder art - embedded majority replaces existing folder art
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 3", 3),
-        "t3.flac",
-        &embedded_art(b.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
     finalize(&pool, true).await;
     assert_album_art(&pool, Some(a_id), 0).await;
     assert_eq!(
@@ -479,33 +434,13 @@ async fn rescan_without_art_clears_artwork() {
         let mut caches = WriteCaches::default();
         let a_art = embedded_art(a);
         write_album_cached(&dir, &pool, &[&a_art, &a_art], false, &mut caches).await;
-        let touched: FxHashSet<i64> = caches.albums.values().copied().collect();
-        finalize_scan_art(
-            &pool,
-            false,
-            &touched,
-            &caches.examined_albums,
-            &mut caches.folder_art_candidates,
-            false,
-        )
-        .await
-        .unwrap();
+        finalize_from_caches(&pool, false, &mut caches).await;
         assert_eq!(count_rows(&pool, "artwork").await, 1);
 
         // files lost their embedded art and were rescanned - no folder candidate remains
         let no_art = FileArt::default();
         write_album_cached(&dir, &pool, &[&no_art, &no_art], is_force, &mut caches).await;
-        let touched: FxHashSet<i64> = caches.albums.values().copied().collect();
-        finalize_scan_art(
-            &pool,
-            is_force,
-            &touched,
-            &caches.examined_albums,
-            &mut caches.folder_art_candidates,
-            false,
-        )
-        .await
-        .unwrap();
+        finalize_from_caches(&pool, is_force, &mut caches).await;
 
         assert_album_art(&pool, None, 0).await;
         assert_eq!(
@@ -522,22 +457,8 @@ async fn orphan_artwork_is_swept_after_track_deletion() {
     let a = red();
     let b = green();
 
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &embedded_art(a),
-    )
-    .await;
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 2", 2),
-        "t2.flac",
-        &embedded_art(b),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &embedded_art(a)).await;
+    write_album_track(&dir, &pool, 2, &embedded_art(b)).await;
     finalize(&pool, false).await;
     assert_eq!(count_rows(&pool, "artwork").await, 2);
 
@@ -598,22 +519,7 @@ async fn examine_and_finalize(dir: &TestDir, pool: &SqlitePool) {
         .unwrap()
         .unwrap();
     let observations = [(directory, snapshot.folder_art)].into_iter().collect();
-    let mut examined = FxHashSet::default();
-    let mut candidates = FolderArtCandidates::default();
-    let mut art_ids = ArtIdCache::default();
-    let processor = ArtworkProcessor::new([]);
-    let loader = FolderArtLoader::new(processor.concurrency());
-    examine_folder_art(
-        pool,
-        &observations,
-        &loader,
-        &processor,
-        &mut examined,
-        &mut candidates,
-        &mut art_ids,
-    )
-    .await
-    .unwrap();
+    let (examined, mut candidates, _) = examine_observations(pool, &observations).await;
     finalize_with(pool, false, &examined, &mut candidates).await;
 }
 
@@ -631,23 +537,7 @@ async fn examine_folder_art_does_not_store_art_without_an_album_claim() {
     )]
     .into_iter()
     .collect();
-    let processor = ArtworkProcessor::new([]);
-    let loader = FolderArtLoader::new(processor.concurrency());
-    let mut examined = FxHashSet::default();
-    let mut candidates = FolderArtCandidates::default();
-    let mut art_ids = ArtIdCache::default();
-
-    examine_folder_art(
-        &pool,
-        &observations,
-        &loader,
-        &processor,
-        &mut examined,
-        &mut candidates,
-        &mut art_ids,
-    )
-    .await
-    .unwrap();
+    let (examined, candidates, art_ids) = examine_observations(&pool, &observations).await;
 
     assert_eq!(count_rows(&pool, "artwork").await, 0);
     assert!(examined.is_empty());
@@ -688,22 +578,8 @@ async fn examine_folder_art_dethrones_incumbent_after_cover_deleted() {
 
     std::fs::write(dir.join("cover.jpg"), &cover).unwrap();
     let representative = with_folder_art(a.clone(), cover.clone());
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &representative,
-    )
-    .await;
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 2", 2),
-        "t2.flac",
-        &embedded_art(a.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &representative).await;
+    write_album_track(&dir, &pool, 2, &embedded_art(a.clone())).await;
     finalize(&pool, false).await;
 
     let cover_id = artwork_id_for_hash(&pool, &cover).await.unwrap();
@@ -729,22 +605,8 @@ async fn examine_folder_art_with_unchanged_cover_keeps_incumbent_stable() {
 
     std::fs::write(dir.join("cover.jpg"), &cover).unwrap();
     let representative = with_folder_art(a.clone(), cover.clone());
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 1", 1),
-        "t1.flac",
-        &representative,
-    )
-    .await;
-    write_track(
-        &dir,
-        &pool,
-        &track_metadata("Album", "Artist", "Track 2", 2),
-        "t2.flac",
-        &embedded_art(a.clone()),
-    )
-    .await;
+    write_album_track(&dir, &pool, 1, &representative).await;
+    write_album_track(&dir, &pool, 2, &embedded_art(a.clone())).await;
     finalize(&pool, false).await;
 
     let before = (album_row(&pool).await, track_art(&pool).await);

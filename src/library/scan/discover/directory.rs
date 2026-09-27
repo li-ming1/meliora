@@ -7,7 +7,10 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::{FutureExt, stream::FuturesUnordered};
 use rustc_hash::FxHashMap;
-use tokio::{sync::Semaphore, task::spawn_blocking};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::spawn_blocking,
+};
 use tracing::error;
 
 use super::FolderArtCandidate;
@@ -66,6 +69,14 @@ impl DirectoryReadPolicy {
             .min(self.semaphores.len() - 1)
     }
 
+    /// Acquire a permit on the channel serving `path` so its reads are throttled.
+    async fn permit_for(&self, path: &Utf8Path) -> OwnedSemaphorePermit {
+        Arc::clone(&self.semaphores[self.channel_for(path)])
+            .acquire_owned()
+            .await
+            .expect("directory semaphore closed")
+    }
+
     pub(crate) fn max_pending(&self) -> usize {
         self.max_pending
     }
@@ -74,22 +85,14 @@ impl DirectoryReadPolicy {
         &self,
         directory: Utf8PathBuf,
     ) -> std::io::Result<ScanDirectorySnapshot> {
-        let semaphore = Arc::clone(&self.semaphores[self.channel_for(&directory)]);
-        let _permit = semaphore
-            .acquire_owned()
-            .await
-            .expect("directory semaphore closed");
+        let _permit = self.permit_for(&directory).await;
         spawn_blocking(move || read_scan_directory(&directory))
             .await
             .expect("directory read task panicked")
     }
 
     pub(super) async fn inspect(&self, path: Utf8PathBuf) -> std::io::Result<PathInspection> {
-        let semaphore = Arc::clone(&self.semaphores[self.channel_for(&path)]);
-        let _permit = semaphore
-            .acquire_owned()
-            .await
-            .expect("directory semaphore closed");
+        let _permit = self.permit_for(&path).await;
         spawn_blocking(move || {
             let metadata = std::fs::metadata(&path)?;
             let scan_timestamp = metadata
@@ -200,6 +203,9 @@ struct PendingDirectoryEntry {
     is_symlink: bool,
 }
 
+/// Image extensions recognized as folder art, matched case-insensitively.
+const FOLDER_ART_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
+
 fn normalized_file_name(path: &Utf8Path, case_insensitive: bool) -> Option<String> {
     let name = path.file_name()?;
     Some(if case_insensitive {
@@ -296,15 +302,16 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
             lyrics_timestamps.insert(name, modified);
         }
 
-        let art_rank = raw_path
-            .extension()
-            .filter(|extension| {
-                ["jpg", "jpeg", "png"]
-                    .iter()
-                    .any(|supported| extension.eq_ignore_ascii_case(supported))
-            })
-            .and_then(|_| raw_path.file_stem())
-            .and_then(folder_art_rank);
+        let has_art_extension = raw_path.extension().is_some_and(|extension| {
+            FOLDER_ART_EXTENSIONS
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported))
+        });
+        let art_rank = if has_art_extension {
+            raw_path.file_stem().and_then(folder_art_rank)
+        } else {
+            None
+        };
         if metadata.is_file()
             && !is_hidden_file(raw_path.as_std_path())
             && let Some(rank) = art_rank
@@ -332,6 +339,8 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
     let entries = pending
         .into_iter()
         .map(|entry| {
+            // a symlink target may live outside this directory, so stat its
+            // sidecar directly instead of trusting this directory's listing
             let lyrics_timestamp = if entry.is_symlink {
                 sidecar_modified(&entry.path)
             } else {

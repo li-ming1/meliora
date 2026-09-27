@@ -173,6 +173,19 @@ fn artist_row_cache() -> &'static Mutex<RowCache<i64, ArtistWithCounts>> {
     CACHE.get_or_init(|| Mutex::new(RowCache::empty()))
 }
 
+/// Default per-column widths (logical pixels) in display order, shared by the
+/// `default_columns` impls below.
+fn default_column_widths<C>(
+    widths: impl IntoIterator<Item = (C, f32)>,
+) -> IndexMap<C, f32, FxBuildHasher>
+where
+    C: std::hash::Hash + Eq,
+{
+    let mut columns: IndexMap<C, f32, FxBuildHasher> = IndexMap::with_hasher(FxBuildHasher);
+    columns.extend(widths);
+    columns
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum AlbumColumn {
     Title,
@@ -221,47 +234,19 @@ impl TableData<AlbumColumn> for Album {
         sort: Option<TableSort<AlbumColumn>>,
     ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>> {
         let sort_method = match sort {
-            Some(TableSort {
-                column: AlbumColumn::Title,
-                ascending: true,
-            }) => AlbumSortMethod::TitleAsc,
-            Some(TableSort {
-                column: AlbumColumn::Title,
-                ascending: false,
-            }) => AlbumSortMethod::TitleDesc,
-            Some(TableSort {
-                column: AlbumColumn::Artist,
-                ascending: true,
-            }) => AlbumSortMethod::ArtistAsc,
-            Some(TableSort {
-                column: AlbumColumn::Artist,
-                ascending: false,
-            }) => AlbumSortMethod::ArtistDesc,
-            Some(TableSort {
-                column: AlbumColumn::Date,
-                ascending: true,
-            }) => AlbumSortMethod::ReleaseAsc,
-            Some(TableSort {
-                column: AlbumColumn::Date,
-                ascending: false,
-            }) => AlbumSortMethod::ReleaseDesc,
-            Some(TableSort {
-                column: AlbumColumn::Label,
-                ascending: true,
-            }) => AlbumSortMethod::LabelAsc,
-            Some(TableSort {
-                column: AlbumColumn::Label,
-                ascending: false,
-            }) => AlbumSortMethod::LabelDesc,
-            Some(TableSort {
-                column: AlbumColumn::CatalogNumber,
-                ascending: true,
-            }) => AlbumSortMethod::CatalogAsc,
-            Some(TableSort {
-                column: AlbumColumn::CatalogNumber,
-                ascending: false,
-            }) => AlbumSortMethod::CatalogDesc,
-            _ => AlbumSortMethod::ArtistAsc,
+            Some(TableSort { column, ascending }) => match (column, ascending) {
+                (AlbumColumn::Title, true) => AlbumSortMethod::TitleAsc,
+                (AlbumColumn::Title, false) => AlbumSortMethod::TitleDesc,
+                (AlbumColumn::Artist, true) => AlbumSortMethod::ArtistAsc,
+                (AlbumColumn::Artist, false) => AlbumSortMethod::ArtistDesc,
+                (AlbumColumn::Date, true) => AlbumSortMethod::ReleaseAsc,
+                (AlbumColumn::Date, false) => AlbumSortMethod::ReleaseDesc,
+                (AlbumColumn::Label, true) => AlbumSortMethod::LabelAsc,
+                (AlbumColumn::Label, false) => AlbumSortMethod::LabelDesc,
+                (AlbumColumn::CatalogNumber, true) => AlbumSortMethod::CatalogAsc,
+                (AlbumColumn::CatalogNumber, false) => AlbumSortMethod::CatalogDesc,
+            },
+            None => AlbumSortMethod::ArtistAsc,
         };
 
         Box::pin(async move { Ok(db::list_albums(&pool, sort_method).await?) })
@@ -349,15 +334,14 @@ impl TableData<AlbumColumn> for Album {
     }
 
     fn default_columns() -> IndexMap<AlbumColumn, f32, FxBuildHasher> {
-        let s = FxBuildHasher;
-        let mut columns: IndexMap<AlbumColumn, f32, FxBuildHasher> = IndexMap::with_hasher(s);
-        columns.insert(AlbumColumn::Title, 300.0);
-        columns.insert(AlbumColumn::Artist, 200.0);
-        columns.insert(AlbumColumn::Date, 125.0);
-        columns.insert(AlbumColumn::Label, 150.0);
-        // length is weird because the image column is 47.0
-        columns.insert(AlbumColumn::CatalogNumber, 178.0);
-        columns
+        default_column_widths([
+            (AlbumColumn::Title, 300.0),
+            (AlbumColumn::Artist, 200.0),
+            (AlbumColumn::Date, 125.0),
+            (AlbumColumn::Label, 150.0),
+            // length is weird because the image column is 47.0
+            (AlbumColumn::CatalogNumber, 178.0),
+        ])
     }
 
     fn get_drag_data(&self) -> Option<TableDragData> {
@@ -507,47 +491,19 @@ impl TableData<TrackColumn> for Track {
         sort: Option<TableSort<TrackColumn>>,
     ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>> {
         let sort_method = match sort {
-            Some(TableSort {
-                column: TrackColumn::Title,
-                ascending: true,
-            }) => TrackSortMethod::TitleAsc,
-            Some(TableSort {
-                column: TrackColumn::Title,
-                ascending: false,
-            }) => TrackSortMethod::TitleDesc,
-            Some(TableSort {
-                column: TrackColumn::Artist,
-                ascending: true,
-            }) => TrackSortMethod::ArtistAsc,
-            Some(TableSort {
-                column: TrackColumn::Artist,
-                ascending: false,
-            }) => TrackSortMethod::ArtistDesc,
-            Some(TableSort {
-                column: TrackColumn::Album,
-                ascending: true,
-            }) => TrackSortMethod::AlbumAsc,
-            Some(TableSort {
-                column: TrackColumn::Album,
-                ascending: false,
-            }) => TrackSortMethod::AlbumDesc,
-            Some(TableSort {
-                column: TrackColumn::Length,
-                ascending: true,
-            }) => TrackSortMethod::DurationAsc,
-            Some(TableSort {
-                column: TrackColumn::Length,
-                ascending: false,
-            }) => TrackSortMethod::DurationDesc,
-            Some(TableSort {
-                column: TrackColumn::TrackNumber,
-                ascending: true,
-            }) => TrackSortMethod::TrackNumberAsc,
-            Some(TableSort {
-                column: TrackColumn::TrackNumber,
-                ascending: false,
-            }) => TrackSortMethod::TrackNumberDesc,
-            _ => TrackSortMethod::ArtistAsc,
+            Some(TableSort { column, ascending }) => match (column, ascending) {
+                (TrackColumn::Title, true) => TrackSortMethod::TitleAsc,
+                (TrackColumn::Title, false) => TrackSortMethod::TitleDesc,
+                (TrackColumn::Artist, true) => TrackSortMethod::ArtistAsc,
+                (TrackColumn::Artist, false) => TrackSortMethod::ArtistDesc,
+                (TrackColumn::Album, true) => TrackSortMethod::AlbumAsc,
+                (TrackColumn::Album, false) => TrackSortMethod::AlbumDesc,
+                (TrackColumn::Length, true) => TrackSortMethod::DurationAsc,
+                (TrackColumn::Length, false) => TrackSortMethod::DurationDesc,
+                (TrackColumn::TrackNumber, true) => TrackSortMethod::TrackNumberAsc,
+                (TrackColumn::TrackNumber, false) => TrackSortMethod::TrackNumberDesc,
+            },
+            None => TrackSortMethod::ArtistAsc,
         };
 
         Box::pin(async move { Ok(db::list_tracks(&pool, sort_method).await?) })
@@ -641,14 +597,13 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn default_columns() -> IndexMap<TrackColumn, f32, FxBuildHasher> {
-        let s = FxBuildHasher;
-        let mut columns: IndexMap<TrackColumn, f32, FxBuildHasher> = IndexMap::with_hasher(s);
-        columns.insert(TrackColumn::TrackNumber, 75.0);
-        columns.insert(TrackColumn::Title, 350.0);
-        columns.insert(TrackColumn::Album, 250.0);
-        columns.insert(TrackColumn::Artist, 225.0);
-        columns.insert(TrackColumn::Length, 100.0);
-        columns
+        default_column_widths([
+            (TrackColumn::TrackNumber, 75.0),
+            (TrackColumn::Title, 350.0),
+            (TrackColumn::Album, 250.0),
+            (TrackColumn::Artist, 225.0),
+            (TrackColumn::Length, 100.0),
+        ])
     }
 
     fn get_drag_data(&self) -> Option<TableDragData> {
@@ -807,31 +762,15 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
         sort: Option<TableSort<ArtistColumn>>,
     ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>> {
         let sort_method = match sort {
-            Some(TableSort {
-                column: ArtistColumn::Name,
-                ascending: true,
-            }) => ArtistSortMethod::NameAsc,
-            Some(TableSort {
-                column: ArtistColumn::Name,
-                ascending: false,
-            }) => ArtistSortMethod::NameDesc,
-            Some(TableSort {
-                column: ArtistColumn::Albums,
-                ascending: true,
-            }) => ArtistSortMethod::AlbumsAsc,
-            Some(TableSort {
-                column: ArtistColumn::Albums,
-                ascending: false,
-            }) => ArtistSortMethod::AlbumsDesc,
-            Some(TableSort {
-                column: ArtistColumn::Tracks,
-                ascending: true,
-            }) => ArtistSortMethod::TracksAsc,
-            Some(TableSort {
-                column: ArtistColumn::Tracks,
-                ascending: false,
-            }) => ArtistSortMethod::TracksDesc,
-            _ => ArtistSortMethod::NameAsc,
+            Some(TableSort { column, ascending }) => match (column, ascending) {
+                (ArtistColumn::Name, true) => ArtistSortMethod::NameAsc,
+                (ArtistColumn::Name, false) => ArtistSortMethod::NameDesc,
+                (ArtistColumn::Albums, true) => ArtistSortMethod::AlbumsAsc,
+                (ArtistColumn::Albums, false) => ArtistSortMethod::AlbumsDesc,
+                (ArtistColumn::Tracks, true) => ArtistSortMethod::TracksAsc,
+                (ArtistColumn::Tracks, false) => ArtistSortMethod::TracksDesc,
+            },
+            None => ArtistSortMethod::NameAsc,
         };
 
         Box::pin(async move { Ok(db::list_artists(&pool, sort_method).await?) })
@@ -926,12 +865,11 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
     }
 
     fn default_columns() -> IndexMap<ArtistColumn, f32, FxBuildHasher> {
-        let s = FxBuildHasher;
-        let mut columns: IndexMap<ArtistColumn, f32, FxBuildHasher> = IndexMap::with_hasher(s);
-        columns.insert(ArtistColumn::Name, 400.0);
-        columns.insert(ArtistColumn::Albums, 150.0);
-        columns.insert(ArtistColumn::Tracks, 150.0);
-        columns
+        default_column_widths([
+            (ArtistColumn::Name, 400.0),
+            (ArtistColumn::Albums, 150.0),
+            (ArtistColumn::Tracks, 150.0),
+        ])
     }
 }
 
