@@ -9,7 +9,12 @@ pub fn parse_rg_float_str(value: &str) -> Option<f64> {
 
 pub fn parse_rg_gain_str(value: &str) -> Option<f64> {
     let s = value.trim();
-    let s = if s.len() >= 2 && s[s.len() - 2..].eq_ignore_ascii_case("db") {
+    // Probe the suffix as bytes: the byte check is safe on any input, and only
+    // once it matches is the str slice below guaranteed to sit on a char
+    // boundary — a tag ending in a multi-byte char parses as None instead of
+    // panicking (same contract as strip_quality_suffix).
+    let ends_in_db = s.len() >= 2 && s.as_bytes()[s.len() - 2..].eq_ignore_ascii_case(b"db");
+    let s = if ends_in_db {
         s[..s.len() - 2].trim()
     } else {
         s
@@ -433,7 +438,7 @@ pub fn parse_disc_number(value: &str) -> Option<ParsedDiscNumber> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Metadata, ParsedReleaseDate, parse_release_date};
+    use super::{Metadata, ParsedReleaseDate, parse_release_date, parse_rg_gain_str};
     use chrono::{NaiveTime, TimeZone, Timelike, Utc};
     use std::path::Path;
 
@@ -460,6 +465,18 @@ mod tests {
         metadata.name = Some("Real Title".to_string());
         metadata.fill_from_filename(Path::new("D:\\music\\云狗蛋 - 天若有情_MQ.mp3"));
         assert_eq!(metadata.name.as_deref(), Some("Real Title"));
+    }
+
+    #[test]
+    fn rg_gain_handles_multibyte_suffix() {
+        // regression: byte-slicing the "db" suffix check panicked on tag values
+        // ending in a multi-byte char instead of yielding None
+        assert_eq!(parse_rg_gain_str(" -6.5 dB"), Some(-6.5));
+        assert_eq!(parse_rg_gain_str("+3.1db"), Some(3.1));
+        assert_eq!(parse_rg_gain_str("2.0 DB"), Some(2.0));
+        assert_eq!(parse_rg_gain_str("a文"), None);
+        assert_eq!(parse_rg_gain_str("文"), None);
+        assert_eq!(parse_rg_gain_str("not a gain"), None);
     }
 
     #[test]
