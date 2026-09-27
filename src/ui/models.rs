@@ -59,6 +59,14 @@ pub enum SettingsHealth {
 // Click position and artist choices for the artist picker overlay
 pub type ArtistPickerState = Option<(Point<Pixels>, Vec<(i64, SharedString)>)>;
 
+/// 全局状态袋（2026-09-26 审计 A-5 起的演进约定）：字段按六个域归组，
+/// 新增字段必须落到所属域内、插在该域现有字段的后面，六个域依次为——
+/// 播放镜像（metadata/albumart）、库缓存（liked_ids/available_*/album_cache）、
+/// 队列与扫描（queue/scan_state/settings_health）、导航（switcher_model/
+/// artist_picker_model）、UI 布局态（sidebar/queue/lyrics/controls 宽高与
+/// 开关、split_widths、window_information）、持久化镜像（table_settings/
+/// 排序方法/show_about/playlist_tracker）。现有声明顺序里跨域交错的历史
+/// 字段不强行重排；新字段不得造成新的跨域交错。
 pub struct Models {
     pub metadata: Entity<Metadata>,
     /// Current-track artwork. The stored *value* stays `None` — the entity is
