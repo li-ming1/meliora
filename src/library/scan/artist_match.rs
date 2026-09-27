@@ -1,15 +1,9 @@
 use rustc_hash::FxHashMap;
 use sqlx::SqliteConnection;
 
-pub fn token_key(value: &str) -> String {
-    let lowered = value.to_lowercase();
-    let mut tokens: Vec<&str> = lowered
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect();
-    tokens.sort_unstable();
-    tokens.join(" ")
-}
+// 规范化函数本体在 media 层（media/lofty.rs 同用它做 tag 归一），此处再导
+// 出维持 scan 内部与 database/artists.rs 的既有引用路径不变。
+pub use crate::media::text::token_key;
 
 struct ArtistEntry {
     id: i64,

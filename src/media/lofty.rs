@@ -11,7 +11,7 @@ use lofty::picture::PictureType;
 use lofty::prelude::ItemKey;
 use lofty::tag::{ItemValue, Tag, TagItem, TagType};
 
-use crate::library::scan::artist_match::token_key;
+use crate::media::text::token_key;
 use crate::media::{
     errors::{
         ChannelRetrievalError, FrameDurationError, MetadataError, OpenError, PlaybackReadError,

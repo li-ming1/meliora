@@ -10,6 +10,7 @@ pub mod pipeline;
 #[cfg(feature = "online_sources")]
 pub mod prefetch;
 pub mod symphonia;
+pub mod text;
 pub mod traits;
 
 use std::path::Path;
