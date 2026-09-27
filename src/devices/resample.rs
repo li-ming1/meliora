@@ -157,10 +157,14 @@ impl Resampler {
         duration: u64,
         channels: u16,
     ) -> Result<Self, String> {
-        info!(
-            "Resampling required, resampling from {:?} to {:?} (duration {:?})",
-            orig_rate, target_rate, duration
-        );
+        // The engine constructs a Resampler unconditionally and switches to
+        // passthrough when rates match, so only log an actual conversion.
+        if orig_rate != target_rate {
+            info!(
+                "Resampling required, resampling from {:?} to {:?} (duration {:?})",
+                orig_rate, target_rate, duration
+            );
+        }
 
         let resampler = Fft::<f64>::new(
             orig_rate as usize,
