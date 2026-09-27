@@ -113,7 +113,7 @@ pub struct StorageData {
     /// reading old config files.  New saves always populate `split_fractions`.
     #[serde(default = "default_split_fraction")]
     pub split_fraction: f32,
-    /// Per-view split fractions keyed by view name (albums, tracks, artists, playlist).
+    /// Per-view split fractions keyed by view name (albums, tracks, artists, playlist, files).
     #[serde(default = "default_split_fractions")]
     pub split_fractions: HashMap<String, f32>,
     #[serde(default = "default_table_settings")]

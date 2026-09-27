@@ -366,6 +366,10 @@ pub(super) struct RawMetadataItem {
 
 pub(super) type MetadataItem = (Utf8PathBuf, SystemTime, FileInformation);
 
+// No cancel_flag by design: on cancel, `meta_rx.close()` in execution.rs makes
+// the `output.send` below fail, and the metadata tasks dropping their
+// `raw_meta_tx` clones close `input` — a flag check could only fire where
+// those two paths already end this loop (the metadata pipeline owns the flag).
 pub(super) async fn run_artwork_pipeline(
     mut input: Receiver<RawMetadataItem>,
     output: Sender<MetadataItem>,

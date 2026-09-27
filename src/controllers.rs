@@ -71,7 +71,7 @@ pub trait PlaybackController: Send {
     async fn shuffle_state_changed(&mut self, shuffling: bool) -> anyhow::Result<()>;
 
     /// Indicates that a new file has started playing. The metadata, duration, position, and album
-    /// art should be reset to default/empty values when this event is recieved.
+    /// art should be reset to default/empty values when this event is received.
     async fn new_file(&mut self, path: &Path) -> anyhow::Result<()>;
 }
 

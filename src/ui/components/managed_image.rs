@@ -741,7 +741,7 @@ pub struct ManagedImage {
     /// Whether decodes may live in `RENDER_CACHE` (default). Images painted
     /// exactly once — the now-playing bar's per-track cover — must opt out:
     /// each track's unique URL would otherwise add a fresh cache entry and
-    /// atlas tile whose reclamation waits on the 64-entry LRU, the measured
+    /// atlas tile whose reclamation waits on the render-cache LRU, the measured
     /// per-track commit ratchet of the 2026-09-14 soak.
     cache: bool,
 }

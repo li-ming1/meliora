@@ -87,7 +87,7 @@ impl RenderOnce for AboutDialog {
                                                 "\u{200B}",
                                                 #description="Because the UI framework we use \
                                                     doesn't support inline elements, we have to \
-                                                    use a seperate string for each part of this \
+                                                    use a separate string for each part of this \
                                                     text. Use a zero-width space (U+200B) if a \
                                                     part isn't needed."
                                             ))

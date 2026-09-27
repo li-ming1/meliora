@@ -51,7 +51,7 @@
     "context": "about.rs",
     "definedIn": "src/ui/about.rs:86",
     "plural": false,
-    "description": "Because the UI framework we use doesn't support inline elements, we have to use a seperate string for each part of this text. Use a zero-width space (U+200B) if a part isn't needed."
+    "description": "Because the UI framework we use doesn't support inline elements, we have to use a separate string for each part of this text. Use a zero-width space (U+200B) if a part isn't needed."
   },
   "ABOUT_OPEN": {
     "context": "about.rs",

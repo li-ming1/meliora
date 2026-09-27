@@ -93,7 +93,7 @@ pub struct KugouSession {
     pub vip_token: Option<String>,
     /// Optional VIP detail fetched from `/v1/get_union_vip` for display.
     pub vip_detail: Option<Value>,
-    /// Local date (yyyy-MM-dd) the daily VIP claim was last attempted. Used
+    /// UTC date (yyyy-MM-dd) the daily VIP claim was last attempted. Used
     /// to avoid re-claiming (and re-hitting the endpoint) across restarts on
     /// the same day.
     pub last_claim_day: Option<String>,
@@ -377,7 +377,7 @@ impl KugouClient {
         session.save(&self.session_path);
     }
 
-    /// Local date string of the last daily-VIP claim attempt (yyyy-MM-dd),
+    /// UTC date string of the last daily-VIP claim attempt (yyyy-MM-dd),
     /// or `None` if never attempted. Persisted so a failed claim isn't retried
     /// over and over across restarts on the same day.
     pub fn last_claim_day(&self) -> Option<String> {

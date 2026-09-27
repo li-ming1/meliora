@@ -641,7 +641,6 @@ pub fn handle_track_drop<V: 'static, F>(
     let config_list_id = manager.read(cx).config.list_id.clone();
 
     // Only handle if this drag originated from our list
-    // Use string comparison for ElementId since direct comparison may not work reliably
     let is_internal = drag_data
         .source_list_id
         .as_ref()

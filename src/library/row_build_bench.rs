@@ -1,7 +1,8 @@
 //! Timing probe for the per-row blocking cost behind the `LibraryAccess for
-//! App` debt (db.rs:961-971): every row built while scrolling a table parks
-//! the UI thread on `RUNTIME.block_on` for one of these queries, so the numbers
-//! here are what a single row build costs the render thread (warm cache).
+//! App` debt (the "UI-thread database blocking measurement" block in db.rs):
+//! every row built while scrolling a table parks the UI thread on
+//! `RUNTIME.block_on` for one of these queries, so the numbers here are what a
+//! single row build costs the render thread (warm cache).
 //!
 //! Excluded from the normal test run — timings are environment-dependent and
 //! only meaningful as a human-read report:
