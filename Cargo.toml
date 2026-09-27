@@ -11,6 +11,12 @@ categories = ["multimedia::audio"]
 runtime_shaders = ["gpui_platform/runtime_shaders"]
 console = ["dep:console-subscriber", "tokio/tracing"]
 online = ["dep:zed-reqwest"]
+# Exposes the [mem] probe's `atlas=` field (main.rs atlas_probe_snapshot).
+# Requires the MELIORA PERMANENT OBSERVABILITY PATCH in the local gpui-ce
+# checkout (directx_atlas.rs, see AGENTS.md); upstream gpui-ce has no
+# `meliora_atlas_probe` symbol, so enabling this anywhere the patch is absent
+# (CI, other machines) fails the link. Keep OFF in CI and public builds.
+atlas-probe = []
 # Shared plumbing for any online source: HTTP-range streaming playback, cover
 # cache, online-aware queue items. Enabled by each provider feature below.
 online_sources = []

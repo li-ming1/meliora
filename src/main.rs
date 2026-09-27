@@ -89,6 +89,49 @@ fn tune_mimalloc_purge_delay() {
 pub static MIMALLOC_PURGE_DELAY_APPLIED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the page-reset overrides took effect (see
+/// [`tune_mimalloc_page_reset`]).
+#[cfg(not(test))]
+pub static MIMALLOC_PAGE_RESET_APPLIED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Decommit free page space eagerly instead of letting it ride in the arena:
+/// v3's `page_reset` resets page space to the OS on every free, and
+/// `abandoned_page_purge` purges a page the moment its thread abandons it.
+/// With `purge_delay = 0` alone the collector only purges on its 5-minute
+/// forced collect, so interactive churn parks tens of MB of free-but-committed
+/// arena between collects. The vendored v3 tree does not export
+/// `mi_option_get_name`, so the two options are addressed by enum index
+/// (page_reset = 10, abandoned_page_purge = 11 in the v3 table; validated
+/// indirectly by `tune_mimalloc_purge_delay`'s anchor: purge_delay sits at 15
+/// with factory default 1000, which pins the table layout). Fail-safe: if the
+/// read-back disagrees, the flag flips off and the probe reports it.
+#[cfg(not(test))]
+fn tune_mimalloc_page_reset() {
+    use std::ffi::{c_int, c_long};
+
+    unsafe extern "C" {
+        fn mi_option_get(option: c_int) -> c_long;
+        fn mi_option_set(option: c_int, value: c_long);
+    }
+
+    const MI_OPTION_PAGE_RESET: c_int = 10;
+    const MI_OPTION_ABANDONED_PAGE_PURGE: c_int = 11;
+    // Both ship disabled; a non-zero read-back means the table does not match
+    // the expected layout and touching it would clobber an unrelated option.
+    let mut applied = unsafe { mi_option_get(MI_OPTION_PAGE_RESET) } == 0
+        && unsafe { mi_option_get(MI_OPTION_ABANDONED_PAGE_PURGE) } == 0;
+    if applied {
+        unsafe {
+            mi_option_set(MI_OPTION_PAGE_RESET, 1);
+            mi_option_set(MI_OPTION_ABANDONED_PAGE_PURGE, 1);
+        }
+        applied = unsafe { mi_option_get(MI_OPTION_PAGE_RESET) } == 1
+            && unsafe { mi_option_get(MI_OPTION_ABANDONED_PAGE_PURGE) } == 1;
+    }
+    MIMALLOC_PAGE_RESET_APPLIED.store(applied, std::sync::atomic::Ordering::Relaxed);
+}
+
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -255,14 +298,76 @@ pub fn log_mem_event(event: &str) {
 /// working set) that separates a real leak from cache/cache-size growth. A
 /// "step" (net growth over a rolling window) is logged explicitly so every
 /// activity-driven bump in long-run memory is attributable instead of silent.
+/// Atlas observability (paired with the MELIORA PERMANENT OBSERVABILITY PATCH
+/// block in gpui_windows' directx_atlas.rs): per texture kind [polychrome,
+/// monochrome, subpixel], five counters each — pages created, pages dropped
+/// (emptied + freed back to the driver), pages live, free_listed,
+/// tiles_by_key length. Read in the [mem] periodic probe so glyph-page
+/// growth (the 2026-09-27 leak class) is visible in every long-session log.
+///
+/// Gated behind the `atlas-probe` cargo feature: the symbol is exported by
+/// the *locally patched* gpui-ce checkout only. Upstream (and therefore CI,
+/// which fetches the pristine rev) has no `meliora_atlas_probe`, and
+/// gpui_windows is not even compiled on non-Windows targets — an ungated
+/// extern here would fail the link everywhere outside this machine.
+#[cfg(all(target_os = "windows", feature = "atlas-probe", not(test)))]
+fn atlas_probe_snapshot() -> [u64; 15] {
+    // The symbol lives in the gpui_windows rlib already in the link graph;
+    // no #[link] attribute — MSVC would demand a matching .lib import lib.
+    unsafe extern "C" {
+        fn meliora_atlas_probe(out: *mut u64, len: usize) -> usize;
+    }
+    let mut out = [0u64; 15];
+    unsafe {
+        meliora_atlas_probe(out.as_mut_ptr(), out.len());
+    }
+    out
+}
+
 #[cfg(not(test))]
 fn spawn_memory_probe() {
     // Net committed growth over the last 10 minutes considered a "step".
     const STEP_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
     const STEP_MIN_MB: i64 = 20;
     const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+    /// Soft private-commit budget (MiB) for the watchdog. Tuned from the
+    /// 2026-09-27 soak (110+ track changes, cover browsing, lyrics+queue
+    /// open): sustained plateau ~370-385 MB, burst peaks ~440 MB settling
+    /// back within minutes. Above 420 MB the purge can no longer be explained
+    /// by live churn — it means a ratchet (or a fresh leak), so purge hard and
+    /// warn every 4th sample.
+    const MEMORY_SOFT_CAP_MB: u64 = 420;
+    /// Hard private-commit ceiling (MiB). The leak fixes bound every known
+    /// growth path, but "无论运行多久都不可能超过" needs an enforced
+    /// mechanism against *unknown* future bugs, and no in-process action can
+    /// reclaim, e.g., glyph atlas pages (eviction trips the 2026-09-08
+    /// dangling-scene crash class). So the terminal valve restarts the
+    /// process: two consecutive samples (≥60 s) past the cap mean the
+    /// commit is sustained past the line — spawn a replacement exe (session
+    /// state lives in playback_session.json, settings save on change) and
+    /// exit. Growth between samples is single-digit MB at post-fix rates,
+    /// so the bound holds to within ~10 MB regardless of the bug. Guarded by
+    /// a minimum-uptime so a startup transient cannot loop-restart; both
+    /// values are env-overridable for testing.
+    const MEMORY_HARD_CAP_MB: u64 = 500;
+    const HARD_CAP_CONSECUTIVE_SAMPLES: u32 = 2;
+    const HARD_CAP_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(300);
 
-    crate::RUNTIME.spawn(async {
+    fn env_override(name: &str, default: u64) -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+    let hard_cap_mb = env_override("MELIORA_MEMORY_HARD_CAP_MB", MEMORY_HARD_CAP_MB);
+    let hard_cap_min_uptime = env_override(
+        "MELIORA_MEMORY_HARD_CAP_MIN_UPTIME_SECS",
+        HARD_CAP_MIN_UPTIME.as_secs(),
+    );
+
+    crate::RUNTIME.spawn(async move {
+        let started_at = std::time::Instant::now();
+        let mut hard_cap_breaches: u32 = 0;
         let mut tick = tokio::time::interval(SAMPLE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut baseline: Option<(std::time::Instant, u64)> = None;
@@ -285,8 +390,24 @@ fn spawn_memory_probe() {
             // bought back: large reclaim = idle-page fragmentation, ~0 = the
             // growth is live data and the leak is real.
             tick_count += 1;
-            let mi_collect_reclaim_mb =
-                (tick_count % 10 == 0).then(|| mimalloc_force_collect_reclaim_mb(mi_commit_mb));
+            let scheduled_collect = tick_count % 10 == 0;
+            // Memory-cap watchdog: past the soft private-commit budget, purge
+            // on every sample instead of waiting for the 5-minute cadence, and
+            // say so in the log. The budget sits above the measured steady
+            // state (~300 MB with lyrics+queue+grid open) and below the known
+            // churn drift, so a breach means fragmentation the eager
+            // page-reset options failed to hold down (or a fresh leak).
+            let watchdog_purge = private >= MEMORY_SOFT_CAP_MB;
+            let mi_collect_reclaim_mb = (scheduled_collect || watchdog_purge)
+                .then(|| mimalloc_force_collect_reclaim_mb(mi_commit_mb));
+            if watchdog_purge && tick_count % 4 == 0 {
+                tracing::warn!(
+                    private_mb = private,
+                    soft_cap_mb = MEMORY_SOFT_CAP_MB,
+                    reclaimed_mb = mi_collect_reclaim_mb,
+                    "mem watchdog: private commit over soft cap, forced mimalloc purge"
+                );
+            }
             // Same cadence as the forced collect: mimalloc's own size-bin
             // statistics read right after a full purge, where stranded pages
             // are at their minimum. A large stranded commit there is
@@ -324,10 +445,51 @@ fn spawn_memory_probe() {
                     tiles_leaked = funnel.5,
                     "mem step: committed grew in last 10 min"
                 );
+            }
+
+            // Hard-cap valve: sustained commit past the ceiling restarts the
+            // process (see MEMORY_HARD_CAP_MB). One sample can be a burst
+            // spike; two consecutive mean it is not coming back down on its
+            // own.
+            if private >= hard_cap_mb {
+                hard_cap_breaches += 1;
+            } else {
+                hard_cap_breaches = 0;
+            }
+            let hard_cap_restart = hard_cap_breaches >= HARD_CAP_CONSECUTIVE_SAMPLES
+                && started_at.elapsed().as_secs() >= hard_cap_min_uptime;
+            if hard_cap_restart {
+                tracing::error!(
+                    private_mb = private,
+                    hard_cap_mb = hard_cap_mb,
+                    "memory hard cap breached for two consecutive samples; \
+                     restarting to bound private commit"
+                );
+                let restart = std::env::current_exe().ok().and_then(|exe| {
+                    std::process::Command::new(exe)
+                        .args(std::env::args_os().skip(1))
+                        .spawn()
+                        .ok()
+                });
+                if restart.is_some() {
+                    std::process::exit(70);
+                }
+                tracing::error!("memory hard cap: replacement spawn failed; continuing degraded");
+                hard_cap_breaches = 0;
             } else {
                 #[cfg(not(test))]
                 let purge0 =
                     MIMALLOC_PURGE_DELAY_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(not(test))]
+                let page_reset0 =
+                    MIMALLOC_PAGE_RESET_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
+                // Only resolved when the atlas-probe feature is on (locally
+                // patched gpui checkout); None elsewhere keeps the field in
+                // the log shape without touching the missing extern symbol.
+                #[cfg(all(target_os = "windows", feature = "atlas-probe"))]
+                let atlas_field = Some(atlas_probe_snapshot());
+                #[cfg(not(all(target_os = "windows", feature = "atlas-probe")))]
+                let atlas_field: Option<[u64; 15]> = None;
                 #[cfg(not(test))]
                 tracing::info!(
                     private_mb = private,
@@ -336,6 +498,7 @@ fn spawn_memory_probe() {
                     non_heap_mb = private.saturating_sub(heap_committed_mb),
                     mi_rss_mb = mi_rss_mb,
                     mi_collect_reclaim_mb = mi_collect_reclaim_mb,
+                    atlas = ?atlas_field,
                     covers_mb = covers,
                     render_cache_mb = render_cache,
                     render_cache_entries = render_cache_entries,
@@ -348,6 +511,7 @@ fn spawn_memory_probe() {
                     tiles_kept_holders = funnel.4,
                     tiles_leaked = funnel.5,
                     purge_delay0 = purge0,
+                    page_reset0 = page_reset0,
                     "[mem] periodic"
                 );
                 #[cfg(test)]
@@ -405,6 +569,8 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(not(test))]
     tune_mimalloc_purge_delay();
+    #[cfg(not(test))]
+    tune_mimalloc_page_reset();
 
     // move any data/log dirs left under the legacy `li-ming1/meliora` and
     // `mailliw/hummingbird` names so logins and caches survive the renames
