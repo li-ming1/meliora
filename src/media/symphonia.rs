@@ -4,7 +4,7 @@ use symphonia::{
     core::{
         audio::{Audio, GenericAudioBufferRef},
         codecs::{
-            audio::{AudioDecoder, AudioDecoderOptions},
+            audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions},
             registry::CodecRegistry,
         },
         errors::Error,
@@ -99,9 +99,85 @@ fn map_probe_error(err: Error) -> OpenError {
     }
 }
 
+/// LOOP_START / LOOP_END raw tag values are microseconds; they are converted to
+/// seconds for the loop seek.
+const LOOP_TAG_MICROS_PER_SECOND: f64 = 1_000_000.0;
+
+/// Maps a symphonia standard tag onto our tag model. Unmapped standards are ignored.
+fn map_standard_tag(std_tag: &StandardTag) -> Option<MetadataTag> {
+    match std_tag {
+        StandardTag::TrackTitle(s) => Some(MetadataTag::Name((**s).clone())),
+        StandardTag::Artist(s) => Some(MetadataTag::Artist((**s).clone())),
+        StandardTag::AlbumArtist(s) => Some(MetadataTag::AlbumArtist((**s).clone())),
+        StandardTag::OriginalArtist(s) => Some(MetadataTag::OriginalArtist((**s).clone())),
+        StandardTag::Composer(s) => Some(MetadataTag::Composer((**s).clone())),
+        StandardTag::Album(s) => Some(MetadataTag::Album((**s).clone())),
+        StandardTag::Genre(s) => Some(MetadataTag::Genre((**s).clone())),
+        StandardTag::Grouping(s) => Some(MetadataTag::Grouping((**s).clone())),
+        StandardTag::Bpm(n) => Some(MetadataTag::Bpm(*n)),
+        StandardTag::CompilationFlag(b) => Some(MetadataTag::Compilation(*b)),
+        StandardTag::ReleaseDate(s) => Some(MetadataTag::Date((**s).clone())),
+        StandardTag::TrackNumber(n) => Some(MetadataTag::TrackNumber(n.to_string())),
+        StandardTag::TrackTotal(n) => Some(MetadataTag::TrackTotal(*n)),
+        StandardTag::DiscNumber(n) => Some(MetadataTag::DiscNumber(n.to_string())),
+        StandardTag::DiscTotal(n) => Some(MetadataTag::DiscTotal(*n)),
+        StandardTag::Label(s) => Some(MetadataTag::Label((**s).clone())),
+        StandardTag::IdentCatalogNumber(s) => Some(MetadataTag::Catalog((**s).clone())),
+        StandardTag::IdentIsrc(s) => Some(MetadataTag::Isrc((**s).clone())),
+        StandardTag::SortAlbum(s) => Some(MetadataTag::SortAlbum((**s).clone())),
+        StandardTag::SortAlbumArtist(s) => Some(MetadataTag::ArtistSort((**s).clone())),
+        StandardTag::MusicBrainzAlbumId(s) => Some(MetadataTag::MbidAlbum((**s).clone())),
+        StandardTag::Lyrics(s) => Some(MetadataTag::Lyrics((**s).clone())),
+        StandardTag::ReplayGainTrackGain(s) => {
+            Some(MetadataTag::ReplayGainTrackGain((**s).clone()))
+        }
+        StandardTag::ReplayGainTrackPeak(s) => {
+            Some(MetadataTag::ReplayGainTrackPeak((**s).clone()))
+        }
+        StandardTag::ReplayGainAlbumGain(s) => {
+            Some(MetadataTag::ReplayGainAlbumGain((**s).clone()))
+        }
+        StandardTag::ReplayGainAlbumPeak(s) => {
+            Some(MetadataTag::ReplayGainAlbumPeak((**s).clone()))
+        }
+        StandardTag::DiscSubtitle(s) => Some(MetadataTag::DiscSubtitle((**s).clone())),
+        _ => None,
+    }
+}
+
+/// Maps a raw (non-standard) tag key onto our tag model: the ReplayGain/R128
+/// family, MusicBrainz album ids, and loop points. Unknown keys are ignored.
+fn map_raw_tag(tag: &Tag) -> Option<MetadataTag> {
+    let key = tag.raw.key.trim_start_matches("TXXX:").to_ascii_lowercase();
+    let value = &tag.raw.value;
+    match key.as_str() {
+        "replaygain_track_gain" => Some(MetadataTag::ReplayGainTrackGain(value.to_string())),
+        "replaygain_track_peak" => Some(MetadataTag::ReplayGainTrackPeak(value.to_string())),
+        "replaygain_album_gain" => Some(MetadataTag::ReplayGainAlbumGain(value.to_string())),
+        "replaygain_album_peak" => Some(MetadataTag::ReplayGainAlbumPeak(value.to_string())),
+        "r128_track_gain" => Some(MetadataTag::R128TrackGain(value.to_string())),
+        "r128_album_gain" => Some(MetadataTag::R128AlbumGain(value.to_string())),
+        "musicbrainz album id" => Some(MetadataTag::MbidAlbum(value.to_string())),
+        "loop_start" => value
+            .to_string()
+            .parse::<f64>()
+            .ok()
+            .map(|v| MetadataTag::LoopStart(v / LOOP_TAG_MICROS_PER_SECOND)),
+        "loop_end" => value
+            .to_string()
+            .parse::<f64>()
+            .ok()
+            .map(|v| MetadataTag::LoopEnd(v / LOOP_TAG_MICROS_PER_SECOND)),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 pub struct SymphoniaProvider;
 
+/// An open symphonia file. Starts empty (`Default`); [`SymphoniaProvider::open_source`]
+/// fills the format reader and reads the initial metadata.
+#[derive(Default)]
 pub struct SymphoniaStream {
     format: Option<Box<dyn FormatReader>>,
     current_metadata: Metadata,
@@ -124,85 +200,12 @@ pub struct SymphoniaStream {
 impl SymphoniaStream {
     fn break_metadata(&mut self, tags: &[Tag]) {
         for tag in tags {
-            let meta_tag = if let Some(ref std_tag) = tag.std {
-                match std_tag {
-                    StandardTag::TrackTitle(s) => Some(MetadataTag::Name((**s).clone())),
-                    StandardTag::Artist(s) => Some(MetadataTag::Artist((**s).clone())),
-                    StandardTag::AlbumArtist(s) => Some(MetadataTag::AlbumArtist((**s).clone())),
-                    StandardTag::OriginalArtist(s) => {
-                        Some(MetadataTag::OriginalArtist((**s).clone()))
-                    }
-                    StandardTag::Composer(s) => Some(MetadataTag::Composer((**s).clone())),
-                    StandardTag::Album(s) => Some(MetadataTag::Album((**s).clone())),
-                    StandardTag::Genre(s) => Some(MetadataTag::Genre((**s).clone())),
-                    StandardTag::Grouping(s) => Some(MetadataTag::Grouping((**s).clone())),
-                    StandardTag::Bpm(n) => Some(MetadataTag::Bpm(*n)),
-                    StandardTag::CompilationFlag(b) => Some(MetadataTag::Compilation(*b)),
-                    StandardTag::ReleaseDate(s) => Some(MetadataTag::Date((**s).clone())),
-                    StandardTag::TrackNumber(n) => Some(MetadataTag::TrackNumber(n.to_string())),
-                    StandardTag::TrackTotal(n) => Some(MetadataTag::TrackTotal(*n)),
-                    StandardTag::DiscNumber(n) => Some(MetadataTag::DiscNumber(n.to_string())),
-                    StandardTag::DiscTotal(n) => Some(MetadataTag::DiscTotal(*n)),
-                    StandardTag::Label(s) => Some(MetadataTag::Label((**s).clone())),
-                    StandardTag::IdentCatalogNumber(s) => Some(MetadataTag::Catalog((**s).clone())),
-                    StandardTag::IdentIsrc(s) => Some(MetadataTag::Isrc((**s).clone())),
-                    StandardTag::SortAlbum(s) => Some(MetadataTag::SortAlbum((**s).clone())),
-                    StandardTag::SortAlbumArtist(s) => Some(MetadataTag::ArtistSort((**s).clone())),
-                    StandardTag::MusicBrainzAlbumId(s) => {
-                        Some(MetadataTag::MbidAlbum((**s).clone()))
-                    }
-                    StandardTag::Lyrics(s) => Some(MetadataTag::Lyrics((**s).clone())),
-                    StandardTag::ReplayGainTrackGain(s) => {
-                        Some(MetadataTag::ReplayGainTrackGain((**s).clone()))
-                    }
-                    StandardTag::ReplayGainTrackPeak(s) => {
-                        Some(MetadataTag::ReplayGainTrackPeak((**s).clone()))
-                    }
-                    StandardTag::ReplayGainAlbumGain(s) => {
-                        Some(MetadataTag::ReplayGainAlbumGain((**s).clone()))
-                    }
-                    StandardTag::ReplayGainAlbumPeak(s) => {
-                        Some(MetadataTag::ReplayGainAlbumPeak((**s).clone()))
-                    }
-                    StandardTag::DiscSubtitle(s) => Some(MetadataTag::DiscSubtitle((**s).clone())),
-                    _ => None,
-                }
-            } else {
-                let key = tag.raw.key.trim_start_matches("TXXX:");
-                if key.eq_ignore_ascii_case("REPLAYGAIN_TRACK_GAIN") {
-                    Some(MetadataTag::ReplayGainTrackGain(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("REPLAYGAIN_TRACK_PEAK") {
-                    Some(MetadataTag::ReplayGainTrackPeak(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("REPLAYGAIN_ALBUM_GAIN") {
-                    Some(MetadataTag::ReplayGainAlbumGain(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("REPLAYGAIN_ALBUM_PEAK") {
-                    Some(MetadataTag::ReplayGainAlbumPeak(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("R128_TRACK_GAIN") {
-                    Some(MetadataTag::R128TrackGain(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("R128_ALBUM_GAIN") {
-                    Some(MetadataTag::R128AlbumGain(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("MusicBrainz Album Id") {
-                    Some(MetadataTag::MbidAlbum(tag.raw.value.to_string()))
-                } else if key.eq_ignore_ascii_case("LOOP_START") {
-                    tag.raw
-                        .value
-                        .to_string()
-                        .parse::<f64>()
-                        .ok()
-                        .map(|v| MetadataTag::LoopStart(v / 1_000_000.0))
-                } else if key.eq_ignore_ascii_case("LOOP_END") {
-                    tag.raw
-                        .value
-                        .to_string()
-                        .parse::<f64>()
-                        .ok()
-                        .map(|v| MetadataTag::LoopEnd(v / 1_000_000.0))
-                } else {
-                    None
-                }
+            let meta_tag = match &tag.std {
+                Some(std_tag) => map_standard_tag(std_tag),
+                None => map_raw_tag(tag),
             };
-            if let Some(mt) = meta_tag {
-                apply_tag(mt, &mut self.current_metadata);
+            if let Some(meta_tag) = meta_tag {
+                apply_tag(meta_tag, &mut self.current_metadata);
             }
         }
     }
@@ -225,6 +228,23 @@ impl SymphoniaStream {
         };
 
         self.pending_metadata_update = found_metadata;
+    }
+
+    /// The audio parameters of the first track that carries codec params.
+    fn audio_params(&self) -> Result<&AudioCodecParameters, ChannelRetrievalError> {
+        let format = self
+            .format
+            .as_ref()
+            .ok_or(ChannelRetrievalError::InvalidState)?;
+        let track = format
+            .tracks()
+            .iter()
+            .find(|track| track.codec_params.is_some())
+            .ok_or(ChannelRetrievalError::NothingToPlay)?;
+        let codec_params = track.codec_params.as_ref().unwrap();
+        codec_params
+            .audio()
+            .ok_or(ChannelRetrievalError::NothingToPlay)
     }
 
     fn loop_seek_if_pending(&mut self) -> Result<(), PlaybackReadError> {
@@ -320,8 +340,8 @@ impl SymphoniaProvider {
         ext: Option<&OsStr>,
     ) -> Result<Box<dyn MediaStream>, OpenError> {
         let mss = MediaSourceStream::new(source, Default::default());
-        let meta_opts: MetadataOptions = Default::default();
-        let fmt_opts: FormatOptions = Default::default();
+        let meta_opts = MetadataOptions::default();
+        let fmt_opts = FormatOptions::default();
 
         let mut hint = Hint::new();
         if let Some(ext) = ext.and_then(|e| e.to_str()) {
@@ -331,25 +351,7 @@ impl SymphoniaProvider {
             .probe(&hint, mss, fmt_opts, meta_opts)
             .map_err(map_probe_error)?;
 
-        let mut stream = SymphoniaStream {
-            format: None,
-            current_metadata: Metadata::default(),
-            current_track: 0,
-            current_duration: 0,
-            current_length: None,
-            current_position_ms: 0,
-            current_timebase: None,
-            decoder: None,
-            pending_metadata_update: false,
-            last_image: None,
-            conversion_buffer: Vec::new(),
-            looping: false,
-            loop_start_seconds: None,
-            loop_end_seconds: None,
-            pending_loop_seek: false,
-            needs_loop_start_trim: false,
-        };
-
+        let mut stream = SymphoniaStream::default();
         stream.read_base_metadata(&mut *format);
         stream.format = Some(format);
 
@@ -421,7 +423,7 @@ impl MediaStream for SymphoniaStream {
 
         self.current_track = track.id;
 
-        let dec_opts: AudioDecoderOptions = Default::default();
+        let dec_opts = AudioDecoderOptions::default();
         self.decoder = Some({
             let mut codecs = CodecRegistry::new();
             codecs.register_audio_decoder::<MpaDecoder>();
@@ -448,21 +450,19 @@ impl MediaStream for SymphoniaStream {
 
     fn frame_duration(&self) -> Result<u64, FrameDurationError> {
         if self.decoder.is_none() || self.current_duration == 0 {
-            Err(FrameDurationError::NeverStarted)
-        } else {
-            Ok(self.current_duration)
+            return Err(FrameDurationError::NeverStarted);
         }
+        Ok(self.current_duration)
     }
 
     fn read_metadata(&mut self) -> Result<Metadata, MetadataError> {
         self.pending_metadata_update = false;
 
-        if self.format.is_some() {
-            // cloned, not taken - playback re-reads metadata as tags update mid-stream
-            Ok(self.current_metadata.clone())
-        } else {
-            Err(MetadataError::InvalidState)
+        if self.format.is_none() {
+            return Err(MetadataError::InvalidState);
         }
+        // cloned, not taken - playback re-reads metadata as tags update mid-stream
+        Ok(self.current_metadata.clone())
     }
 
     fn metadata_updated(&self) -> bool {
@@ -470,33 +470,25 @@ impl MediaStream for SymphoniaStream {
     }
 
     fn read_image(&mut self) -> Result<Option<Box<[u8]>>, MetadataError> {
-        if self.format.is_some() {
-            if let Some(visual) = &self.last_image {
-                let data = Ok(Some(visual.data.clone()));
-                self.last_image = None;
-                data
-            } else {
-                Ok(None)
-            }
-        } else {
-            Err(MetadataError::InvalidState)
+        if self.format.is_none() {
+            return Err(MetadataError::InvalidState);
         }
+        // the image is handed out once: take clears it as it is returned
+        Ok(self.last_image.take().map(|visual| visual.data))
     }
 
     fn duration_ms(&self) -> Result<u64, TrackDurationError> {
-        if self.decoder.is_none() || self.current_length.is_none() {
-            Err(TrackDurationError::NeverStarted)
-        } else {
-            Ok(self.current_length.unwrap_or_default())
+        if self.decoder.is_none() {
+            return Err(TrackDurationError::NeverStarted);
         }
+        self.current_length.ok_or(TrackDurationError::NeverStarted)
     }
 
     fn position_ms(&self) -> Result<u64, TrackDurationError> {
         if self.decoder.is_none() || self.current_length.is_none() {
-            Err(TrackDurationError::NeverStarted)
-        } else {
-            Ok(self.current_position_ms)
+            return Err(TrackDurationError::NeverStarted);
         }
+        Ok(self.current_position_ms)
     }
 
     fn seek(&mut self, time: f64) -> Result<(), SeekError> {
@@ -530,21 +522,7 @@ impl MediaStream for SymphoniaStream {
     fn channels(&self) -> Result<ChannelSpec, ChannelRetrievalError> {
         use symphonia::core::audio::{ChannelLabel as SymLabel, Channels as SymChannels};
 
-        let Some(format) = &self.format else {
-            return Err(ChannelRetrievalError::InvalidState);
-        };
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.is_some())
-            .ok_or(ChannelRetrievalError::NothingToPlay)?;
-
-        let codec_params = track.codec_params.as_ref().unwrap();
-        let audio_params = codec_params
-            .audio()
-            .ok_or(ChannelRetrievalError::NothingToPlay)?;
-
+        let audio_params = self.audio_params()?;
         let sym_channels = audio_params.channels.clone().unwrap_or(SymChannels::None);
 
         let fallback_discrete =
@@ -565,9 +543,9 @@ impl MediaStream for SymphoniaStream {
                             .filter(|position| position.bits().count_ones() == 1)
                             .map(ChannelLabel::Positioned)
                             .unwrap_or_else(|| fallback_discrete(index)),
-                        SymLabel::Discrete(n) => ChannelLabel::Discrete(*n),
-                        SymLabel::Ambisonic(n) => ChannelLabel::Discrete(*n),
-                        SymLabel::AmbisonicBFormat(_) => fallback_discrete(index),
+                        SymLabel::Discrete(n) | SymLabel::Ambisonic(n) => {
+                            ChannelLabel::Discrete(*n)
+                        }
                         _ => fallback_discrete(index),
                     })
                     .collect();
@@ -578,7 +556,6 @@ impl MediaStream for SymphoniaStream {
                 let count = (1 + usize::from(order)) * (1 + usize::from(order));
                 ChannelSpec::Count(count as u16)
             }
-            SymChannels::None => ChannelSpec::Count(2),
             _ => ChannelSpec::Count(2),
         };
 
@@ -586,21 +563,7 @@ impl MediaStream for SymphoniaStream {
     }
 
     fn sample_rate(&self) -> Result<u32, ChannelRetrievalError> {
-        let Some(format) = &self.format else {
-            return Err(ChannelRetrievalError::InvalidState);
-        };
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.is_some())
-            .ok_or(ChannelRetrievalError::NothingToPlay)?;
-
-        let codec_params = track.codec_params.as_ref().unwrap();
-        let audio_params = codec_params
-            .audio()
-            .ok_or(ChannelRetrievalError::NothingToPlay)?;
-
+        let audio_params = self.audio_params()?;
         audio_params
             .sample_rate
             .ok_or(ChannelRetrievalError::NothingToPlay)
@@ -796,16 +759,14 @@ impl MediaStream for SymphoniaStream {
 
     fn set_looping(&mut self, enabled: bool) {
         self.looping = enabled;
+        self.pending_loop_seek = false;
+        self.needs_loop_start_trim = false;
         if enabled {
             self.loop_start_seconds = self.current_metadata.loop_start;
             self.loop_end_seconds = self.current_metadata.loop_end;
-            self.pending_loop_seek = false;
-            self.needs_loop_start_trim = false;
         } else {
             self.loop_start_seconds = None;
             self.loop_end_seconds = None;
-            self.pending_loop_seek = false;
-            self.needs_loop_start_trim = false;
         }
     }
 }

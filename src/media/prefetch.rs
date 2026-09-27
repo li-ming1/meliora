@@ -254,7 +254,7 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
         let target = match pos {
             SeekFrom::Start(offset) => Some(offset),
             SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
-            SeekFrom::End(delta) => self.byte_len.and_then(|len| add_signed(len, delta)),
+            SeekFrom::End(delta) => self.byte_len.and_then(|len| len.checked_add_signed(delta)),
         };
         let Some(target) = target else {
             return Err(io::Error::new(
@@ -283,14 +283,6 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
         self.shared.signal.notify_all();
         self.pos = target;
         Ok(target)
-    }
-}
-
-fn add_signed(len: u64, delta: i64) -> Option<u64> {
-    if delta >= 0 {
-        len.checked_add(delta as u64)
-    } else {
-        len.checked_sub(delta.unsigned_abs())
     }
 }
 

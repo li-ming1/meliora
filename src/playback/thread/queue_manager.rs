@@ -213,15 +213,26 @@ pub struct QueueManager {
 }
 
 impl QueueManager {
+    /// The queue index the cursor (`queue_next`) sits on, if it is on a real
+    /// slot (`None` when nothing is playing or the cursor is past the end).
+    fn cursor_index(queue_len: usize, queue_next: usize) -> Option<usize> {
+        queue_next
+            .checked_sub(1)
+            .filter(|current_idx| *current_idx < queue_len)
+    }
+
+    /// The queue item the cursor sits on, if it is on a real slot.
+    fn cursor_item(queue: &[QueueItemData], queue_next: usize) -> Option<QueueItemData> {
+        let current_idx = Self::cursor_index(queue.len(), queue_next)?;
+        Some(queue[current_idx].clone())
+    }
+
     fn undo_result_from_state(
         queue: &[QueueItemData],
         queue_next: usize,
         shuffle: bool,
     ) -> UndoResult {
-        if let Some(current_idx) = queue_next
-            .checked_sub(1)
-            .filter(|current_idx| *current_idx < queue.len())
-        {
+        if let Some(current_idx) = Self::cursor_index(queue.len(), queue_next) {
             UndoResult::Ok {
                 current_idx,
                 current_path: queue[current_idx].get_path().clone(),
@@ -229,6 +240,29 @@ impl QueueManager {
             }
         } else {
             UndoResult::OkNoCurrent { shuffle }
+        }
+    }
+
+    /// Undo a removal: re-insert the removed `(index, item)` pairs in
+    /// ascending index order so earlier indices stay valid while inserting.
+    fn undo_reinsert_items(
+        queue: &mut Vec<QueueItemData>,
+        removed: SmallVec<[(usize, QueueItemData); 1]>,
+    ) {
+        let mut removed = removed.into_vec();
+        removed.sort_unstable_by_key(|(idx, _)| *idx);
+        for (idx, item) in removed {
+            queue.insert(idx, item);
+        }
+    }
+
+    /// Undo an insertion: remove the recorded indices highest-first so lower
+    /// indices stay valid while removing.
+    fn undo_remove_items(queue: &mut Vec<QueueItemData>, indices: SmallVec<[usize; 1]>) {
+        let mut indices = indices.into_vec();
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in indices {
+            queue.remove(idx);
         }
     }
 
@@ -267,12 +301,88 @@ impl QueueManager {
             .find(|idx| Self::item_is_playable(&queue[*idx]))
     }
 
+    /// In repeat-one mode the track the cursor sits on replays instead of
+    /// advancing. `None` when not repeat-one or the slot is gone/unplayable.
+    fn repeat_one_target<'a>(
+        repeat: RepeatState,
+        queue: &'a [QueueItemData],
+        queue_next: usize,
+    ) -> Option<&'a QueueItemData> {
+        if repeat != RepeatState::RepeatingOne {
+            return None;
+        }
+        let current = queue.get(queue_next.saturating_sub(1))?;
+        Self::item_is_playable(current).then_some(current)
+    }
+
+    /// Whether a navigation step reshuffled the queue (a repeat-all wrap with
+    /// shuffle enabled).
+    fn reshuffle_state(shuffle: bool) -> Reshuffled {
+        if shuffle {
+            Reshuffled::Reshuffled
+        } else {
+            Reshuffled::NotReshuffled
+        }
+    }
+
+    /// Persist after a navigation: a reshuffling wrap changed queue contents
+    /// (full snapshot), a plain advance only moved the cursor.
+    fn persist_after_navigation(&mut self, result: &QueueNavigationResult) {
+        if let QueueNavigationResult::Changed { reshuffled, .. } = result {
+            if *reshuffled == Reshuffled::Reshuffled {
+                self.persist_session_with_queue();
+            } else {
+                self.persist_session_state();
+            }
+        }
+    }
+
     fn push_undo_action(&mut self, action: UndoAction) {
         if self.undo_stack.len() >= UNDO_STACK_CAPACITY {
             self.undo_stack.pop_front();
         }
 
         self.undo_stack.push_back(action);
+    }
+
+    /// Shuffle mode: append `item` to `original_queue`, returning the undo
+    /// indices for the append (empty when not shuffling — `original_queue`
+    /// stays empty by definition then).
+    fn append_to_original_queue(&mut self, item: &QueueItemData) -> SmallVec<[usize; 1]> {
+        let mut indices = SmallVec::new();
+        if self.shuffle {
+            indices.push(self.original_queue.len());
+            Arc::make_mut(&mut self.original_queue).push(item.clone());
+        }
+        indices
+    }
+
+    /// Shuffle mode: append `items` to `original_queue`, returning the undo
+    /// indices for the append (empty when not shuffling).
+    fn append_all_to_original_queue(&mut self, items: &[QueueItemData]) -> SmallVec<[usize; 1]> {
+        let mut indices = SmallVec::new();
+        if self.shuffle {
+            let original_start = self.original_queue.len();
+            Arc::make_mut(&mut self.original_queue).extend(items.iter().cloned());
+            indices.extend(original_start..original_start + items.len());
+        }
+        indices
+    }
+
+    /// Resolve an insert's effect on the cursor: items inserted before the
+    /// current slot shift it right by `cursor_shift`.
+    fn resolve_insert_result(&mut self, insert_pos: usize, cursor_shift: usize) -> InsertResult {
+        if insert_pos < self.queue_next {
+            self.queue_next += cursor_shift;
+            InsertResult::InsertedMovedCurrent {
+                first_index: insert_pos,
+                new_position: self.queue_next.saturating_sub(1),
+            }
+        } else {
+            InsertResult::Inserted {
+                first_index: insert_pos,
+            }
+        }
     }
 
     pub fn undo_last_action(&mut self) -> UndoResult {
@@ -301,19 +411,10 @@ impl QueueManager {
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 let queue = Arc::make_mut(&mut queue);
-
-                let mut queue_items = queue_items.into_vec();
-                queue_items.sort_unstable_by_key(|(idx, _)| *idx);
-                for (idx, item) in queue_items {
-                    queue.insert(idx, item);
-                }
+                Self::undo_reinsert_items(queue, queue_items);
 
                 let original_queue = Arc::make_mut(&mut self.original_queue);
-                let mut original_queue_items = original_queue_items.into_vec();
-                original_queue_items.sort_unstable_by_key(|(idx, _)| *idx);
-                for (idx, item) in original_queue_items {
-                    original_queue.insert(idx, item);
-                }
+                Self::undo_reinsert_items(original_queue, original_queue_items);
 
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
@@ -328,19 +429,10 @@ impl QueueManager {
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 let queue = Arc::make_mut(&mut queue);
-
-                let mut queue_indices = queue_indices.into_vec();
-                queue_indices.sort_unstable_by(|a, b| b.cmp(a));
-                for idx in queue_indices {
-                    queue.remove(idx);
-                }
+                Self::undo_remove_items(queue, queue_indices);
 
                 let original_queue = Arc::make_mut(&mut self.original_queue);
-                let mut original_queue_indices = original_queue_indices.into_vec();
-                original_queue_indices.sort_unstable_by(|a, b| b.cmp(a));
-                for idx in original_queue_indices {
-                    original_queue.remove(idx);
-                }
+                Self::undo_remove_items(original_queue, original_queue_indices);
 
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
@@ -463,8 +555,7 @@ impl QueueManager {
     /// Get the current queue position (0-indexed).
     /// Returns None if no track is playing.
     pub fn current_position(&self) -> Option<usize> {
-        let position = self.queue_next.checked_sub(1)?;
-        (position < self.len()).then_some(position)
+        Self::cursor_index(self.len(), self.queue_next)
     }
 
     /// Online-provider identity of the currently playing item, if it is an
@@ -543,13 +634,8 @@ impl QueueManager {
 
     /// Get the first playable item in the queue along with its index.
     pub fn first_with_index(&self) -> Option<(QueueItemData, usize)> {
-        self.queue
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .enumerate()
-            .find(|(_, item)| Self::item_is_playable(item))
-            .map(|(idx, item)| (item.clone(), idx))
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        Self::first_playable_index(&queue).map(|index| (queue[index].clone(), index))
     }
 
     /// Get the last item in the queue along with its index, if the queue is non-empty.
@@ -587,10 +673,8 @@ impl QueueManager {
         let result = {
             let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
-            if self.repeat == RepeatState::RepeatingOne
-                && !user_initiated
-                && let Some(path) = queue.get(self.queue_next.saturating_sub(1))
-                && Self::item_is_playable(path)
+            if !user_initiated
+                && let Some(path) = Self::repeat_one_target(self.repeat, &queue, self.queue_next)
             {
                 return QueueNavigationResult::Unchanged {
                     path: path.get_path().clone(),
@@ -617,11 +701,7 @@ impl QueueManager {
                     QueueNavigationResult::Changed {
                         index,
                         path: queue[index].get_path().clone(),
-                        reshuffled: if self.shuffle {
-                            Reshuffled::Reshuffled
-                        } else {
-                            Reshuffled::NotReshuffled
-                        },
+                        reshuffled: Self::reshuffle_state(self.shuffle),
                     }
                 } else {
                     QueueNavigationResult::EndOfQueue
@@ -631,13 +711,7 @@ impl QueueManager {
             }
         };
 
-        if let QueueNavigationResult::Changed { reshuffled, .. } = &result {
-            if *reshuffled == Reshuffled::Reshuffled {
-                self.persist_session_with_queue();
-            } else {
-                self.persist_session_state();
-            }
-        }
+        self.persist_after_navigation(&result);
 
         result
     }
@@ -648,10 +722,7 @@ impl QueueManager {
     pub fn peek_next_path(&self) -> Option<PathBuf> {
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
 
-        if self.repeat == RepeatState::RepeatingOne
-            && let Some(path) = queue.get(self.queue_next.saturating_sub(1))
-            && Self::item_is_playable(path)
-        {
+        if let Some(path) = Self::repeat_one_target(self.repeat, &queue, self.queue_next) {
             return Some(path.get_path().clone());
         }
 
@@ -689,24 +760,14 @@ impl QueueManager {
                 QueueNavigationResult::Changed {
                     index,
                     path: queue[index].get_path().clone(),
-                    reshuffled: if self.shuffle {
-                        Reshuffled::Reshuffled
-                    } else {
-                        Reshuffled::NotReshuffled
-                    },
+                    reshuffled: Self::reshuffle_state(self.shuffle),
                 }
             } else {
                 QueueNavigationResult::EndOfQueue
             }
         };
 
-        if let QueueNavigationResult::Changed { reshuffled, .. } = &result {
-            if *reshuffled == Reshuffled::Reshuffled {
-                self.persist_session_with_queue();
-            } else {
-                self.persist_session_state();
-            }
-        }
+        self.persist_after_navigation(&result);
 
         result
     }
@@ -733,9 +794,8 @@ impl QueueManager {
             return self.jump(index);
         }
 
-        let original_item = match self.original_queue.get(index) {
-            Some(item) => item.clone(),
-            None => return JumpResult::OutOfBounds,
+        let Some(original_item) = self.original_queue.get(index).cloned() else {
+            return JumpResult::OutOfBounds;
         };
 
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
@@ -754,15 +814,9 @@ impl QueueManager {
     pub fn queue_item(&mut self, item: QueueItemData) -> usize {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
+        let original_queue_indices = self.append_to_original_queue(&item);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
-        let mut original_queue_indices = SmallVec::new();
-
-        if self.shuffle {
-            original_queue_indices.push(self.original_queue.len());
-            Arc::make_mut(&mut self.original_queue).push(item.clone());
-        }
-
         Arc::make_mut(&mut queue).push(item);
 
         let index = queue.len() - 1;
@@ -791,17 +845,13 @@ impl QueueManager {
 
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
+        let original_queue_indices = self.append_all_to_original_queue(&items);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
         let first_index = queue.len();
         let items_len = items.len();
-        let mut original_queue_indices = SmallVec::new();
 
         if self.shuffle {
-            let original_start = self.original_queue.len();
-            Arc::make_mut(&mut self.original_queue).extend(items.clone());
-            original_queue_indices.extend(original_start..original_start + items_len);
-
             let mut shuffled = items;
             shuffled.shuffle(&mut rng());
             Arc::make_mut(&mut queue).extend(shuffled);
@@ -826,32 +876,16 @@ impl QueueManager {
     pub fn insert_item(&mut self, position: usize, item: QueueItemData) -> InsertResult {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
+        let original_queue_indices = self.append_to_original_queue(&item);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
-        let mut original_queue_indices = SmallVec::new();
 
         let insert_pos = position.min(queue.len());
-
-        if self.shuffle {
-            original_queue_indices.push(self.original_queue.len());
-            Arc::make_mut(&mut self.original_queue).push(item.clone());
-        }
-
         Arc::make_mut(&mut queue).insert(insert_pos, item);
 
         drop(queue);
 
-        let result = if insert_pos < self.queue_next {
-            self.queue_next += 1;
-            InsertResult::InsertedMovedCurrent {
-                first_index: insert_pos,
-                new_position: self.queue_next.saturating_sub(1),
-            }
-        } else {
-            InsertResult::Inserted {
-                first_index: insert_pos,
-            }
-        };
+        let result = self.resolve_insert_result(insert_pos, 1);
 
         self.persist_session_with_queue();
 
@@ -873,34 +907,17 @@ impl QueueManager {
 
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
+        let original_queue_indices = self.append_all_to_original_queue(&items);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         let insert_pos = position.min(queue.len());
         let items_len = items.len();
-        let mut original_queue_indices = SmallVec::new();
-
-        if self.shuffle {
-            let original_start = self.original_queue.len();
-            Arc::make_mut(&mut self.original_queue).extend(items.clone());
-            original_queue_indices.extend(original_start..original_start + items_len);
-        }
-
         Arc::make_mut(&mut queue).splice(insert_pos..insert_pos, items);
 
         drop(queue);
 
-        let result = if insert_pos < self.queue_next {
-            self.queue_next += items_len;
-            InsertResult::InsertedMovedCurrent {
-                first_index: insert_pos,
-                new_position: self.queue_next.saturating_sub(1),
-            }
-        } else {
-            InsertResult::Inserted {
-                first_index: insert_pos,
-            }
-        };
+        let result = self.resolve_insert_result(insert_pos, items_len);
 
         self.persist_session_with_queue();
 
@@ -1266,11 +1283,10 @@ impl QueueManager {
         self.queue_next = 0;
         self.persist_session_with_queue();
 
-        match first_item {
-            Some(first) => ReplaceResult::Replaced {
-                first_item: Some(first),
-            },
-            None => ReplaceResult::Empty,
+        if first_item.is_some() {
+            ReplaceResult::Replaced { first_item }
+        } else {
+            ReplaceResult::Empty
         }
     }
 
@@ -1288,12 +1304,11 @@ impl QueueManager {
         // empties the Vec, so reading `queue.len()` afterwards always saw an
         // empty queue and `clear(true)` silently dropped the playing track it
         // was supposed to keep.
-        let current_item = keep_current
-            .then(|| {
-                (self.queue_next > 0 && self.queue_next <= queue.len())
-                    .then(|| queue[self.queue_next - 1].clone())
-            })
-            .flatten();
+        let current_item = if keep_current {
+            Self::cursor_item(&queue, self.queue_next)
+        } else {
+            None
+        };
 
         // take-based snapshots, same rationale as replace_queue: no full-queue copy
         let queue_clone = take(&mut *queue);
@@ -1351,11 +1366,7 @@ impl QueueManager {
 
                 ShuffleResult::Shuffled
             } else {
-                let current_item = if self.queue_next > 0 && self.queue_next <= queue.len() {
-                    Some(queue[self.queue_next - 1].clone())
-                } else {
-                    None
-                };
+                let current_item = Self::cursor_item(&queue, self.queue_next);
 
                 let had_current = current_item.is_some();
 
@@ -1452,10 +1463,7 @@ impl QueueManager {
     fn send_session_with_queue(&mut self) {
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         let queue_snapshot = Arc::clone(&queue);
-        let queue_position = self
-            .queue_next
-            .checked_sub(1)
-            .filter(|position| *position < queue.len());
+        let queue_position = Self::cursor_index(queue.len(), self.queue_next);
         drop(queue);
 
         let original_queue = self.original_queue.clone();

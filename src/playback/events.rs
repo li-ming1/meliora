@@ -16,8 +16,8 @@ pub enum RepeatState {
 }
 
 /// A command to the playback thread. This is used to control the playback thread from other
-/// threads. The playback thread recieves these commands from an MPSC channel, and processes them
-/// in the order they are recieved. They are processed every 10ms when playback is stopped, or
+/// threads. The playback thread receives these commands from an MPSC channel, and processes them
+/// in the order they are received. They are processed every 10ms when playback is stopped, or
 /// every time additional decoding is required to fill the ring buffer during playback.
 #[derive(Debug, PartialEq, Clone)]
 pub enum PlaybackCommand {
@@ -25,7 +25,7 @@ pub enum PlaybackCommand {
     Play,
     /// Requests that the playback thread pause playback.
     Pause,
-    /// Requests that, if the playback thread is playing, it pauses, and vise/versa.
+    /// Requests that, if the playback thread is playing, it pauses, and vice versa.
     /// Only constructed by the macOS remote-command and Linux MPRIS controllers.
     #[cfg(not(target_os = "windows"))]
     TogglePlayPause,
@@ -104,7 +104,7 @@ pub enum PlaybackCommand {
 
 /// An event from the playback thread. This is used to communicate information from the playback
 /// thread to other threads. The playback thread sends these events to an MPSC channel, and the
-/// main thread processes them in the order they are recieved.
+/// main thread processes them in the order they are received.
 #[derive(Debug, PartialEq, Clone)]
 pub enum PlaybackEvent {
     /// Indicates that the playback state has changed.

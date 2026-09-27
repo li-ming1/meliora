@@ -27,19 +27,14 @@ fn item_value_to_string(value: &ItemValue) -> Option<String> {
         ItemValue::Text(s) | ItemValue::Locator(s) => Some(s.clone()),
         ItemValue::Binary(v) => String::from_utf8(v.clone()).ok(),
     };
-
-    value.and_then(|v| {
-        if v.trim().is_empty() {
-            None
-        } else {
-            Some(v.trim().to_string())
-        }
-    })
+    let value = value?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn item_value_to_bool(value: &ItemValue) -> Option<bool> {
     match value {
-        ItemValue::Text(v) => Some(v.as_str() == "1" || v.as_str() == "true"),
+        ItemValue::Text(v) => Some(matches!(v.as_str(), "1" | "true")),
         _ => None,
     }
 }
@@ -59,15 +54,14 @@ fn item_value_to_u64(value: &ItemValue) -> Option<u64> {
     }
 }
 
+/// The front cover if the tag has one, otherwise the first picture of any kind.
 fn extract_cover(tag: &Tag) -> Option<Box<[u8]>> {
-    for picture in tag.pictures() {
-        if picture.pic_type() == PictureType::CoverFront {
-            return Some(picture.data().to_vec().into_boxed_slice());
-        }
-    }
-    tag.pictures()
-        .first()
-        .map(|p| p.data().to_vec().into_boxed_slice())
+    let picture = tag
+        .pictures()
+        .iter()
+        .find(|picture| picture.pic_type() == PictureType::CoverFront)
+        .or_else(|| tag.pictures().first())?;
+    Some(picture.data().to_vec().into_boxed_slice())
 }
 
 fn map_standard_tag(item: &TagItem) -> Option<MetadataTag> {
@@ -332,9 +326,11 @@ fn finalize_album_artist_keys(metadata: &mut Metadata, album_artists: &[String])
                 .iter()
                 .any(|name| token_key(name) == token_key(part))
         };
-        let trusted = parts.len() > 1 && parts.iter().all(|part| claimed(part))
-            || parts.len() == 1 && album_artists.is_empty();
-        if !parts.is_empty() && trusted {
+        let multi_part_all_claimed = parts.len() > 1 && parts.iter().all(|part| claimed(part));
+        let single_part_without_credits = parts.len() == 1 && album_artists.is_empty();
+        // both rules imply `parts` is non-empty, so no extra emptiness check is needed
+        let trusted = multi_part_all_claimed || single_part_without_credits;
+        if trusted {
             metadata.album_artist_keys = parts.into_iter().map(str::to_string).collect();
         }
     }
@@ -391,11 +387,7 @@ fn read_tags_from_file(mut file: File) -> Result<TagsFromFile, OpenError> {
     finalize_album_artist_keys(&mut metadata, &artist_names.album_artists_tag);
 
     let duration = tagged_file.properties().duration();
-    let duration_ms = if duration.is_zero() {
-        None
-    } else {
-        Some(duration.as_millis() as u64)
-    };
+    let duration_ms = (!duration.is_zero()).then(|| duration.as_millis() as u64);
 
     Ok(TagsFromFile {
         metadata,

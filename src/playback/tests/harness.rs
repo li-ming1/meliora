@@ -76,6 +76,10 @@ pub fn run_to_eof(engine: &mut AudioEngine, max_cycles: usize) -> usize {
     panic!("engine did not reach EOF within {max_cycles} cycles");
 }
 
+/// WAVE format tags for the RIFF `fmt ` chunk written by [`write_wav`].
+const WAVE_FORMAT_PCM: u16 = 1;
+const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+
 pub fn xorshift64(state: &mut u64) -> u64 {
     let mut x = *state;
     x ^= x << 13;
@@ -119,7 +123,15 @@ pub fn write_wav_i16(path: &Path, rate: u32, channels: u16, interleaved: &[i16])
     for sample in interleaved {
         data.extend_from_slice(&sample.to_le_bytes());
     }
-    write_wav(path, 1, 16, rate, channels, &data, interleaved.len());
+    write_wav(
+        path,
+        WAVE_FORMAT_PCM,
+        16,
+        rate,
+        channels,
+        &data,
+        interleaved.len(),
+    );
 }
 
 pub fn write_wav_f32(path: &Path, rate: u32, channels: u16, interleaved: &[f32]) {
@@ -127,7 +139,15 @@ pub fn write_wav_f32(path: &Path, rate: u32, channels: u16, interleaved: &[f32])
     for sample in interleaved {
         data.extend_from_slice(&sample.to_le_bytes());
     }
-    write_wav(path, 3, 32, rate, channels, &data, interleaved.len());
+    write_wav(
+        path,
+        WAVE_FORMAT_IEEE_FLOAT,
+        32,
+        rate,
+        channels,
+        &data,
+        interleaved.len(),
+    );
 }
 
 fn write_wav(
@@ -142,7 +162,11 @@ fn write_wav(
     let block_align = channels * bits / 8;
     let byte_rate = rate * u32::from(block_align);
     // fmt chunk + data chunk header + (for float) a fact chunk
-    let fact_len: u32 = if format_tag == 3 { 12 } else { 0 };
+    let fact_len: u32 = if format_tag == WAVE_FORMAT_IEEE_FLOAT {
+        12
+    } else {
+        0
+    };
     let riff_len = 4 + 24 + fact_len + 8 + data.len() as u32;
 
     let mut out = Vec::with_capacity(riff_len as usize + 8);
@@ -159,7 +183,7 @@ fn write_wav(
     out.extend_from_slice(&block_align.to_le_bytes());
     out.extend_from_slice(&bits.to_le_bytes());
 
-    if format_tag == 3 {
+    if format_tag == WAVE_FORMAT_IEEE_FLOAT {
         let frames = samples as u32 / u32::from(channels);
         out.extend_from_slice(b"fact");
         out.extend_from_slice(&4u32.to_le_bytes());

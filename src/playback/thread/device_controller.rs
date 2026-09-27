@@ -15,6 +15,12 @@ use crate::{
 pub const LN_50: f64 = 3.91202300543_f64;
 pub const LINEAR_SCALING_COEFFICIENT: f64 = 0.295751527165_f64;
 
+/// [`DeviceController::set_volume`] snaps to full volume at or above this input level.
+const FULL_VOLUME_MIN_INPUT: f64 = 0.99;
+/// [`DeviceController::set_volume`] uses the plain linear ramp instead of the exp curve below
+/// this input level.
+const LINEAR_SEGMENT_MAX_INPUT: f64 = 0.1;
+
 /// Error type for device controller operations.
 #[derive(Debug)]
 pub enum DeviceError {
@@ -111,21 +117,17 @@ impl DeviceController {
 
     /// Initialize a specific device provider by name.
     pub fn initialize_provider_by_name(&mut self, provider_name: &str) {
-        match provider_name {
-            "cpal" => {
-                self.device_provider = Some(Box::new(CpalProvider::default()));
-            }
-            "dummy" => {
-                self.device_provider = Some(Box::new(DummyDeviceProvider::new()));
-            }
+        let mut provider: Box<dyn DeviceProvider> = match provider_name {
+            "cpal" => Box::new(CpalProvider::default()),
+            "dummy" => Box::new(DummyDeviceProvider::new()),
             _ => {
                 warn!("Unknown device provider: {}", provider_name);
                 warn!("Falling back to CPAL");
-                self.device_provider = Some(Box::new(CpalProvider::default()));
+                Box::new(CpalProvider::default())
             }
-        }
-
-        self.device_provider.as_mut().unwrap().initialize();
+        };
+        provider.initialize();
+        self.device_provider = Some(provider);
     }
 
     /// Check if a stream is currently open.
@@ -154,15 +156,13 @@ impl DeviceController {
             .get_default_format()
             .map_err(|_| DeviceError::NoDevice)?;
 
+        // the requested channel layout on top of the device's default format
         let requested = channels.map(|ch| FormatInfo {
-            originating_provider: default_format.originating_provider,
-            sample_type: default_format.sample_type,
-            sample_rate: default_format.sample_rate,
-            buffer_size: default_format.buffer_size,
             channels: ch,
+            ..default_format.clone()
         });
 
-        let (stream, opened_format) = if let Some(req) = requested {
+        let (mut stream, opened_format) = if let Some(req) = requested {
             match device.open_device(req.clone()) {
                 Ok(stream) => (stream, req),
                 Err(e) => {
@@ -178,14 +178,13 @@ impl DeviceController {
             (device.open_device(default_format.clone())?, default_format)
         };
 
+        // restore the last applied volume/ReplayGain on the fresh stream
+        stream.set_volume(self.last_volume).ok();
+        stream.set_replaygain(self.last_replaygain).ok();
+
         self.stream = Some(stream);
         self.current_format = Some(opened_format.clone());
         self.device = Some(device);
-
-        if let Some(stream) = &mut self.stream {
-            stream.set_volume(self.last_volume).ok();
-            stream.set_replaygain(self.last_replaygain).ok();
-        }
 
         info!(
             "Opened device: {:?}, format: {:?}, rate: {}, channel_count: {}",
@@ -211,15 +210,13 @@ impl DeviceController {
     /// Start playback on the current stream.
     pub fn play(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
-        stream.play()?;
-        Ok(())
+        Ok(stream.play()?)
     }
 
     /// Pause playback on the current stream.
     pub fn pause(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
-        stream.pause()?;
-        Ok(())
+        Ok(stream.pause()?)
     }
 
     /// Advance any deferred stream work (e.g. completing an async pause fade). No-op with no
@@ -234,23 +231,21 @@ impl DeviceController {
     /// Reset the stream buffer.
     pub fn reset(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
-        stream.reset()?;
-        Ok(())
+        Ok(stream.reset()?)
     }
 
     /// Consume samples from ring buffer consumers and submit them to the device.
     pub fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
-        let count = stream.consume_from(input)?;
-        Ok(count)
+        Ok(stream.consume_from(input)?)
     }
 
     /// Set the playback volume (0.0 to 1.0, already scaled).
     pub fn set_volume(&mut self, volume: f64) -> Result<(), DeviceError> {
-        let volume_scaled = if volume >= 0.99_f64 {
-            1_f64
-        } else if volume > 0.1 {
-            f64::exp(LN_50 * volume) / 50_f64
+        let volume_scaled = if volume >= FULL_VOLUME_MIN_INPUT {
+            1.0
+        } else if volume > LINEAR_SEGMENT_MAX_INPUT {
+            f64::exp(LN_50 * volume) / 50.0
         } else {
             volume * LINEAR_SCALING_COEFFICIENT
         };

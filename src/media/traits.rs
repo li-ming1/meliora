@@ -104,7 +104,7 @@ pub trait MediaStream: Send {
     /// immediately after playback has started, and should not require reading any samples.
     fn position_ms(&self) -> Result<u64, TrackDurationError>;
 
-    /// Returns the chnanel specification used by the track being decoded. This function should be
+    /// Returns the channel specification used by the track being decoded. This function should be
     /// available immediately after playback has started, and should not require reading any
     /// samples.
     ///
@@ -127,7 +127,7 @@ pub trait MediaStream: Send {
         output: &mut ChannelProducers,
     ) -> Result<DecodeResult, PlaybackReadError>;
 
-    /// Whether or not the media stream should attempt to use it's internal loop handling. With
+    /// Whether or not the media stream should attempt to use its internal loop handling. With
     /// Symphonia, the media stream will seek to the loop start point from the EOF or loop end
     /// point when looping is enabled.
     ///

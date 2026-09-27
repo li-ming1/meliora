@@ -64,7 +64,7 @@ impl SpectrumTap {
         }
         // per-channel peak, a hard-panned clip must not hide inside the mono downmix
         // scan the whole block, the ring may have dropped the clipped part
-        let block = frames.min(planes.iter().map(Vec::len).min().unwrap_or(0));
+        let block = frames.min(common_frame_count(planes));
         let mut peak = 0.0f32;
         for plane in planes {
             for &sample in &plane[..block] {
@@ -73,6 +73,12 @@ impl SpectrumTap {
         }
         self.post_peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
     }
+}
+
+/// Number of frames present in every plane, i.e. the shortest plane's length.
+#[inline]
+fn common_frame_count(planes: &[Vec<f64>]) -> usize {
+    planes.iter().map(Vec::len).min().unwrap_or(0)
 }
 
 // Downmix to mono and push the newest frames, dropping the oldest of a block that does not
@@ -86,7 +92,7 @@ fn push(
     if viewers.load(Ordering::Relaxed) == 0 || planes.is_empty() {
         return 0;
     }
-    let block = planes.iter().map(Vec::len).min().unwrap_or(0);
+    let block = common_frame_count(planes);
     let writable = ring.slots().min(frames).min(block);
     if writable == 0 {
         return 0;

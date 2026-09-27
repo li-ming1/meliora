@@ -122,19 +122,24 @@ mod tests {
         TestDir::new("meliora-session-storage-test")
     }
 
+    /// `load` must yield exactly the neutral default on any unusable input:
+    /// no queue rows, no position, shuffle off, no repeat.
+    fn assert_default(session: &PlaybackSessionData) {
+        let default = PlaybackSessionData::default();
+        assert!(session.queue.is_empty());
+        assert!(session.original_queue.is_empty());
+        assert_eq!(session.queue_position, default.queue_position);
+        assert_eq!(session.shuffle, default.shuffle);
+        assert_eq!(session.repeat, default.repeat);
+    }
+
     #[test]
     fn load_returns_default_when_file_is_missing() {
         let dir = create_test_dir();
         let path = dir.join("session.json");
 
         let session = PlaybackSessionStorageWorker::load(&path);
-        let default = PlaybackSessionData::default();
-
-        assert!(session.queue.is_empty());
-        assert!(session.original_queue.is_empty());
-        assert_eq!(session.queue_position, default.queue_position);
-        assert_eq!(session.shuffle, default.shuffle);
-        assert_eq!(session.repeat, default.repeat);
+        assert_default(&session);
     }
 
     #[test]
@@ -144,13 +149,7 @@ mod tests {
         fs::write(&path, "{not valid json").unwrap();
 
         let session = PlaybackSessionStorageWorker::load(&path);
-        let default = PlaybackSessionData::default();
-
-        assert!(session.queue.is_empty());
-        assert!(session.original_queue.is_empty());
-        assert_eq!(session.queue_position, default.queue_position);
-        assert_eq!(session.shuffle, default.shuffle);
-        assert_eq!(session.repeat, default.repeat);
+        assert_default(&session);
     }
 
     #[test]

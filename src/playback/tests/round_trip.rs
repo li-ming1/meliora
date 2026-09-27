@@ -119,6 +119,8 @@ fn f32_round_trip_dense() {
     let mut failures = 0;
     for _ in 0..DENSE_SWEEP_SAMPLES {
         let v = (xorshift64(&mut state) as u32 as i32) as f32 / (i32::MAX as f32 + 1.0);
+        // compared on bits, which is stricter than the PartialEq inside
+        // `round_trips`: -0.0 and 0.0 are equal but not identical
         if f32::sample_from(SampleInto::<f64>::sample_into(v)).to_bits() != v.to_bits() {
             failures += 1;
         }

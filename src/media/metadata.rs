@@ -1,6 +1,7 @@
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use smallvec::{SmallVec, smallvec};
 use std::path::Path;
+use std::str::FromStr;
 
 pub fn parse_rg_float_str(value: &str) -> Option<f64> {
     value.trim().parse().ok()
@@ -262,13 +263,8 @@ fn utc_midnight(date: NaiveDate) -> DateTime<Utc> {
     DateTime::from_naive_utc_and_offset(date.and_time(NaiveTime::MIN), Utc)
 }
 
-fn parse_fixed_u16(value: &str, len: usize) -> Option<u16> {
-    (value.len() == len && value.chars().all(|c| c.is_ascii_digit()))
-        .then(|| value.parse().ok())
-        .flatten()
-}
-
-fn parse_fixed_u8(value: &str, len: usize) -> Option<u8> {
+/// Parses `value` as a `T` only when it is exactly `len` ASCII digits.
+fn parse_fixed_digits<T: FromStr>(value: &str, len: usize) -> Option<T> {
     (value.len() == len && value.chars().all(|c| c.is_ascii_digit()))
         .then(|| value.parse().ok())
         .flatten()
@@ -299,13 +295,13 @@ fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> 
     }
 
     match (second, third) {
-        (None, None) => parse_fixed_u16(first, 4)
+        (None, None) => parse_fixed_digits::<u16>(first, 4)
             .map(ParsedReleaseDate::Year)
             .map(Some)
             .ok_or(()),
         (Some(month), None) => {
-            let year = parse_fixed_u16(first, 4).ok_or(())?;
-            let month = match parse_fixed_u8(month, 2) {
+            let year = parse_fixed_digits::<u16>(first, 4).ok_or(())?;
+            let month = match parse_fixed_digits::<u8>(month, 2) {
                 Some(month @ 1..=12) => month,
                 _ => return Err(()),
             };
@@ -313,9 +309,9 @@ fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> 
             Ok(Some(ParsedReleaseDate::YearMonth(year, month)))
         }
         (Some(month), Some(day)) => {
-            parse_fixed_u16(first, 4).ok_or(())?;
-            parse_fixed_u8(month, 2).ok_or(())?;
-            parse_fixed_u8(day, 2).ok_or(())?;
+            parse_fixed_digits::<u16>(first, 4).ok_or(())?;
+            parse_fixed_digits::<u8>(month, 2).ok_or(())?;
+            parse_fixed_digits::<u8>(day, 2).ok_or(())?;
 
             NaiveDate::parse_from_str(value, "%Y-%m-%d")
                 .map(|date| Some(ParsedReleaseDate::FullDate(utc_midnight(date))))

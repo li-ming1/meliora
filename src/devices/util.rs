@@ -6,6 +6,8 @@ use super::resample::{SampleFrom, SampleInto};
 
 /// How long a ring-buffer producer sleeps between retries when the buffer is full.
 pub const RING_WRITE_PARK: Duration = Duration::from_millis(1);
+/// How long `write_bounded_planar` keeps retrying a full ring before giving
+/// up and reporting [`RingWriteTimeout`].
 pub const RING_WRITE_DEADLINE: Duration = Duration::from_millis(250);
 
 /// The consumer of a ring buffer stopped draining before the write deadline.
@@ -91,7 +93,6 @@ pub fn read_available<T: Copy>(consumer: &mut Consumer<T>, data: &mut [T]) -> us
     read
 }
 
-#[allow(dead_code)] // this code is not dead
 pub trait Scale: Sized {
     fn scale(self, factor: f64) -> Self;
 }

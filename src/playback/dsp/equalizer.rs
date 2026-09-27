@@ -14,6 +14,8 @@ pub const MAX_Q: f64 = 40.0;
 /// ~2.7 ms at 48 kHz.
 const SUB_BLOCK_FRAMES: usize = 128;
 const SMOOTHING_TAU_SECONDS: f64 = 0.030;
+/// Relative tolerance for a smoothed parameter counting as settled onto its target.
+const CONVERGENCE_TOLERANCE: f64 = 1e-4;
 /// Structural changes crossfade over one sub-block.
 const CROSSFADE_FRAMES: usize = SUB_BLOCK_FRAMES;
 const DENORMAL_THRESHOLD: f64 = 1e-30;
@@ -29,11 +31,21 @@ fn sanitize(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
     }
 }
 
+/// Highest usable band frequency for a sample rate: above it the cookbook formulas leave the
+/// range where they stay stable and accurate.
+fn frequency_ceiling(sample_rate: f64) -> f64 {
+    // 0.45 × rate can dip below MIN_FREQUENCY at tiny rates, never clamp against min > max
+    MAX_FREQUENCY.min(0.45 * sample_rate).max(MIN_FREQUENCY)
+}
+
 /// Clamp into the range where the cookbook formulas stay stable and accurate.
 pub fn clamp_frequency(frequency: f64, sample_rate: f64) -> f64 {
-    // 0.45 × rate can dip below MIN_FREQUENCY at tiny rates, never clamp against min > max
-    let max = MAX_FREQUENCY.min(0.45 * sample_rate).max(MIN_FREQUENCY);
-    sanitize(frequency, MIN_FREQUENCY, max, MIN_FREQUENCY)
+    sanitize(
+        frequency,
+        MIN_FREQUENCY,
+        frequency_ceiling(sample_rate),
+        MIN_FREQUENCY,
+    )
 }
 
 #[inline]
@@ -48,7 +60,7 @@ fn smoothing_coeff(sample_rate: f64) -> f64 {
 
 #[inline]
 fn converged(current: f64, target: f64) -> bool {
-    (current - target).abs() <= 1e-4 * target.abs().max(1.0)
+    (current - target).abs() <= CONVERGENCE_TOLERANCE * target.abs().max(1.0)
 }
 
 /// Normalized (a0 = 1) biquad coefficients.
@@ -189,7 +201,7 @@ fn peak_response_db(biquads: &[Biquad], centers: &[f64], sample_rate: f64) -> f6
         let w = omega(frequency, sample_rate);
         biquads.iter().map(|biquad| biquad.magnitude_db(w)).sum()
     };
-    let max = MAX_FREQUENCY.min(0.45 * sample_rate).max(MIN_FREQUENCY);
+    let max = frequency_ceiling(sample_rate);
     let ratio = max / MIN_FREQUENCY;
     let mut peak = 0.0f64;
     for i in 0..COMP_GRID_POINTS {
@@ -216,6 +228,22 @@ impl SmoothedParams {
             gain_db: sanitize(band.gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0),
             q: sanitize(band.q, MIN_Q, MAX_Q, 1.0),
         }
+    }
+
+    /// One-pole step of every field toward `target`.
+    #[inline]
+    fn step_toward(&mut self, target: &Self, coeff: f64) {
+        self.frequency += (target.frequency - self.frequency) * coeff;
+        self.gain_db += (target.gain_db - self.gain_db) * coeff;
+        self.q += (target.q - self.q) * coeff;
+    }
+
+    /// Whether every field has settled onto `target` within the convergence tolerance.
+    #[inline]
+    fn converged_with(&self, target: &Self) -> bool {
+        converged(self.frequency, target.frequency)
+            && converged(self.gain_db, target.gain_db)
+            && converged(self.q, target.q)
     }
 }
 
@@ -275,26 +303,12 @@ impl BandRuntime {
     fn retarget(&mut self, band: &EqBandSettings) {
         self.enabled = band.enabled;
         self.target = SmoothedParams::from_band(band);
-        self.moving = !converged(self.current.frequency, self.target.frequency)
-            || !converged(self.current.gain_db, self.target.gain_db)
-            || !converged(self.current.q, self.target.q);
+        self.moving = !self.current.converged_with(&self.target);
     }
 
-    /// One-pole step toward the target, then recompute coefficients.
-    fn advance(&mut self, coeff: f64, sample_rate: f64) {
-        if !self.moving {
-            return;
-        }
-        self.current.frequency += (self.target.frequency - self.current.frequency) * coeff;
-        self.current.gain_db += (self.target.gain_db - self.current.gain_db) * coeff;
-        self.current.q += (self.target.q - self.current.q) * coeff;
-        if converged(self.current.frequency, self.target.frequency)
-            && converged(self.current.gain_db, self.target.gain_db)
-            && converged(self.current.q, self.target.q)
-        {
-            self.current = self.target;
-            self.moving = false;
-        }
+    /// Recompute the coefficients from the current smoothed params.
+    #[inline]
+    fn recompute_coeffs(&mut self, sample_rate: f64) {
         self.coeffs = Biquad::new(
             self.kind,
             sample_rate,
@@ -302,6 +316,19 @@ impl BandRuntime {
             self.current.gain_db,
             self.current.q,
         );
+    }
+
+    /// One-pole step toward the target, then recompute coefficients.
+    fn advance(&mut self, coeff: f64, sample_rate: f64) {
+        if !self.moving {
+            return;
+        }
+        self.current.step_toward(&self.target, coeff);
+        if self.current.converged_with(&self.target) {
+            self.current = self.target;
+            self.moving = false;
+        }
+        self.recompute_coeffs(sample_rate);
     }
 }
 
@@ -630,13 +657,7 @@ impl EqualizerProcessor {
         self.sample_rate = sample_rate;
         self.smoothing_coeff = smoothing_coeff(sample_rate);
         for band in &mut self.bands {
-            band.coeffs = Biquad::new(
-                band.kind,
-                sample_rate,
-                band.current.frequency,
-                band.current.gain_db,
-                band.current.q,
-            );
+            band.recompute_coeffs(sample_rate);
         }
         // Nyquist clamping shifts responses, and the hard reset already masks the jump
         self.comp.snap(self.compensation_target());

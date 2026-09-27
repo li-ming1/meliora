@@ -179,7 +179,7 @@ impl Resampler {
             duration,
             // sized for the largest read a cycle can feed us plus one undrained chunk, so
             // steady-state processing never grows them
-            input_buffer: (0..channels)
+            input_buffer: (0..channels_usize)
                 .map(|_| VecDeque::with_capacity(DEFAULT_BUFFER_FRAMES + duration as usize))
                 .collect(),
             temp_input: (0..channels_usize)
@@ -268,47 +268,18 @@ impl Resampler {
             return 0;
         }
 
-        let available = self.input_available();
-        if available < self.duration as usize {
+        let duration = self.duration as usize;
+        if self.input_available() < duration {
             return 0; // not enough input yet
         }
 
         let mut total_output = 0;
-        let duration = self.duration as usize;
-
         while self.input_available() >= duration {
-            for ch in 0..self.channels {
-                let drain_count = duration.min(self.input_buffer[ch].len());
-                self.temp_input[ch].clear();
-                self.temp_input[ch].extend(self.input_buffer[ch].drain(..drain_count));
-            }
-
-            let input_frames = self.temp_input.first().map(|v| v.len()).unwrap_or(0);
-            let input_adapter =
-                SequentialSliceOfVecs::new(&self.temp_input, self.channels, input_frames).unwrap();
-            let output_frames_max = self.temp_output.first().map(|v| v.len()).unwrap_or(0);
-            let mut output_adapter = SequentialSliceOfVecs::new_mut(
-                &mut self.temp_output,
-                self.channels,
-                output_frames_max,
-            )
-            .unwrap();
-
-            let Ok((_, frames_written)) =
-                self.resampler
-                    .process_into_buffer(&input_adapter, &mut output_adapter, None)
-            else {
+            let Some(frames_written) = self.pump_resampler(duration, None) else {
                 error!("resampler error while processing; chunk truncated");
                 break;
             };
-
-            for (out_buf, temp_ch) in output
-                .iter_mut()
-                .zip(self.temp_output.iter())
-                .take(self.channels)
-            {
-                out_buf.extend_from_slice(&temp_ch[..frames_written]);
-            }
+            self.append_frames(output, frames_written);
             total_output += frames_written;
         }
 
@@ -346,34 +317,13 @@ impl Resampler {
                 break;
             }
 
-            for ch in 0..self.channels {
-                let drain_count = partial.min(self.input_buffer[ch].len());
-                self.temp_input[ch].clear();
-                self.temp_input[ch].extend(self.input_buffer[ch].drain(..drain_count));
-            }
-
-            let input_adapter =
-                SequentialSliceOfVecs::new(&self.temp_input, self.channels, partial).unwrap();
-            let output_frames_max = self.temp_output.first().map(|v| v.len()).unwrap_or(0);
-            let mut output_adapter = SequentialSliceOfVecs::new_mut(
-                &mut self.temp_output,
-                self.channels,
-                output_frames_max,
-            )
-            .unwrap();
-
             let indexing = rubato::Indexing {
                 input_offset: 0,
                 output_offset: 0,
                 active_channels_mask: None,
                 partial_len: Some(partial),
             };
-
-            let Ok((_, frames_written)) = self.resampler.process_into_buffer(
-                &input_adapter,
-                &mut output_adapter,
-                Some(&indexing),
-            ) else {
+            let Some(frames_written) = self.pump_resampler(partial, Some(&indexing)) else {
                 error!("resampler error while flushing; tail truncated");
                 break;
             };
@@ -381,19 +331,56 @@ impl Resampler {
             // truncate the final chunk so the flush ends exactly where the
             // input did instead of appending extra silence
             let keep = frames_written.min((expected_total - self.frames_out) as usize);
-            for (out_buf, temp_ch) in output
-                .iter_mut()
-                .zip(self.temp_output.iter())
-                .take(self.channels)
-            {
-                out_buf.extend_from_slice(&temp_ch[..keep]);
-            }
+            self.append_frames(output, keep);
             self.frames_out += keep as u64;
             written += keep;
             partial = 0;
         }
 
         written
+    }
+
+    /// Drain up to `max_frames` frames from the input buffers into `temp_input` and run one
+    /// resampler pass over them, returning the frames it produced. `indexing` carries the
+    /// flush-time partial-chunk length; steady-state processing passes `None`. Returns `None`
+    /// when the resampler errors — the caller owns logging and truncation policy.
+    fn pump_resampler(
+        &mut self,
+        max_frames: usize,
+        indexing: Option<&rubato::Indexing>,
+    ) -> Option<usize> {
+        for ch in 0..self.channels {
+            let drain_count = max_frames.min(self.input_buffer[ch].len());
+            self.temp_input[ch].clear();
+            self.temp_input[ch].extend(self.input_buffer[ch].drain(..drain_count));
+        }
+
+        let input_frames = self.temp_input.first().map(|v| v.len()).unwrap_or(0);
+        let input_adapter =
+            SequentialSliceOfVecs::new(&self.temp_input, self.channels, input_frames).unwrap();
+        let output_frames_max = self.temp_output.first().map(|v| v.len()).unwrap_or(0);
+        let mut output_adapter =
+            SequentialSliceOfVecs::new_mut(&mut self.temp_output, self.channels, output_frames_max)
+                .unwrap();
+
+        let Ok((_, frames_written)) =
+            self.resampler
+                .process_into_buffer(&input_adapter, &mut output_adapter, indexing)
+        else {
+            return None;
+        };
+        Some(frames_written)
+    }
+
+    /// Append the first `frames` samples of every staged channel to `output`.
+    fn append_frames(&self, output: &mut [Vec<f64>], frames: usize) {
+        for (out_buf, temp_ch) in output
+            .iter_mut()
+            .zip(self.temp_output.iter())
+            .take(self.channels)
+        {
+            out_buf.extend_from_slice(&temp_ch[..frames]);
+        }
     }
 
     pub fn passthrough_direct(

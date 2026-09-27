@@ -10,7 +10,7 @@ pub enum OpenError {
 
 #[derive(PartialEq, Eq, Debug, Clone, Error)]
 pub enum PlaybackStartError {
-    /// This error means that, for what ever reason, the decoder's setup failed in a manner which
+    /// This error means that, for whatever reason, the decoder's setup failed in a manner which
     /// should be impossible. Do not use this error for general decoder errors (use Undecodable
     /// instead), as it will cause the application to crash.
     #[error("The media file is not valid and cannot be played")]
@@ -27,7 +27,7 @@ pub enum PlaybackStartError {
 
 #[derive(PartialEq, Eq, Debug, Clone, Error)]
 pub enum PlaybackReadError {
-    /// This error means that, for what ever reason, the decoder's setup failed in a manner which
+    /// This error means that, for whatever reason, the decoder's setup failed in a manner which
     /// should be impossible. Do not use this error for general decoder errors (use DecodeFatal
     /// instead), as it will cause the application to crash.
     #[error("The media file is not valid and cannot be played")]

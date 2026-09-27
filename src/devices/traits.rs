@@ -10,8 +10,6 @@ use super::{
 /// The DeviceProvider trait defines the methods used to interact with a device provider. A device
 /// provider is responsible for providing a list of devices available to the system, as well as
 /// opening and closing streams on those devices.
-///
-/// The current audio pipeline is as follows:
 pub trait DeviceProvider {
     /// Requests the device provider prepare itself for use.
     fn initialize(&mut self);

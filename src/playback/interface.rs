@@ -1,4 +1,7 @@
-use gpui::App;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use gpui::{App, AsyncApp, Entity};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::library::Pool;
@@ -14,6 +17,16 @@ use super::{
     queue::QueueItemData,
     thread::PlaybackState,
 };
+
+/// Volume echoes only update `prev_volume` above this floor: the remembered
+/// value must stay visible in the UI while volume is toggled on/off, even if
+/// the user slid it all the way to `0`.
+const MIN_REMEMBERED_VOLUME: f64 = 0.05;
+
+/// Cadence of the idle atlas-tile drain spawned by
+/// [`PlaybackInterface::start_broadcast`]: keeps evicted tiles reclaimed
+/// while playback is paused (the event loop only drains when events arrive).
+const IDLE_TILE_DRAIN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The playback interface struct that will be used to communicate between the playback thread and
 /// the main thread. This implementation takes advantage of the GPUI Global trait to allow any
@@ -52,112 +65,112 @@ impl PlaybackInterface {
         self.spectrum_tap.take()
     }
 
+    /// Fire-and-forget send to the playback thread. An unbounded channel send
+    /// only fails once the receiver is gone (the playback thread already torn
+    /// down), which is harmless for these UI-originated commands — hence the
+    /// deliberately ignored result.
+    fn send(&self, command: PlaybackCommand) {
+        let _ = self.cmd_tx.send(command);
+    }
+
     pub fn play(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Play);
+        self.send(PlaybackCommand::Play);
     }
 
     pub fn pause(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Pause);
+        self.send(PlaybackCommand::Pause);
     }
 
     pub fn queue(&self, item: QueueItemData) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Queue(item));
+        self.send(PlaybackCommand::Queue(item));
     }
 
     pub fn queue_list(&self, items: Vec<QueueItemData>) {
-        let _ = self.cmd_tx.send(PlaybackCommand::QueueList(items));
+        self.send(PlaybackCommand::QueueList(items));
     }
 
     pub fn insert_at(&self, item: QueueItemData, position: usize) {
-        let _ = self
-            .cmd_tx
-            .send(PlaybackCommand::InsertAt { item, position });
+        self.send(PlaybackCommand::InsertAt { item, position });
     }
 
     pub fn insert_list_at(&self, items: Vec<QueueItemData>, position: usize) {
-        let _ = self
-            .cmd_tx
-            .send(PlaybackCommand::InsertListAt { items, position });
+        self.send(PlaybackCommand::InsertListAt { items, position });
     }
 
     pub fn next(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Next);
+        self.send(PlaybackCommand::Next);
     }
 
     pub fn previous(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Previous);
+        self.send(PlaybackCommand::Previous);
     }
 
     pub fn clear_queue(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::ClearQueue);
+        self.send(PlaybackCommand::ClearQueue);
     }
 
     pub fn jump(&self, index: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Jump(index));
+        self.send(PlaybackCommand::Jump(index));
     }
 
     pub fn seek(&self, position: f64) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Seek(position));
+        self.send(PlaybackCommand::Seek(position));
     }
 
     pub fn set_volume(&self, volume: f64) {
-        let _ = self.cmd_tx.send(PlaybackCommand::SetVolume(volume));
+        self.send(PlaybackCommand::SetVolume(volume));
     }
 
     pub fn replace_queue(&self, items: Vec<QueueItemData>) {
-        let _ = self.cmd_tx.send(PlaybackCommand::ReplaceQueue(items));
+        self.send(PlaybackCommand::ReplaceQueue(items));
     }
 
     pub fn replace_queue_with_index(&self, items: Vec<QueueItemData>, idx: usize) {
-        let _ = self
-            .cmd_tx
-            .send(PlaybackCommand::ReplaceQueueWithIndex(items, idx));
+        self.send(PlaybackCommand::ReplaceQueueWithIndex(items, idx));
     }
 
     pub fn toggle_stop_after_current(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::StopAfterCurrent);
+        self.send(PlaybackCommand::StopAfterCurrent);
     }
 
     pub fn toggle_shuffle(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::ToggleShuffle);
+        self.send(PlaybackCommand::ToggleShuffle);
     }
 
     pub fn set_repeat(&self, state: RepeatState) {
-        let _ = self.cmd_tx.send(PlaybackCommand::SetRepeat(state));
+        self.send(PlaybackCommand::SetRepeat(state));
     }
 
     pub fn remove_item(&self, idx: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::RemoveItem(idx));
+        self.send(PlaybackCommand::RemoveItem(idx));
     }
 
     pub fn remove_items(&self, indices: Vec<usize>) {
-        let _ = self.cmd_tx.send(PlaybackCommand::RemoveItems(indices));
+        self.send(PlaybackCommand::RemoveItems(indices));
     }
 
     pub fn move_item(&self, from: usize, to: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::MoveItem { from, to });
+        self.send(PlaybackCommand::MoveItem { from, to });
     }
 
     pub fn move_items(&self, indices: Vec<usize>, to: usize) {
-        let _ = self.cmd_tx.send(PlaybackCommand::MoveItems { indices, to });
+        self.send(PlaybackCommand::MoveItems { indices, to });
     }
 
     pub fn undo(&self) {
-        let _ = self.cmd_tx.send(PlaybackCommand::Undo);
+        self.send(PlaybackCommand::Undo);
     }
 
     pub fn update_settings(&self, settings: PlaybackSettings) {
-        let _ = self.cmd_tx.send(PlaybackCommand::SettingsChanged(settings));
+        self.send(PlaybackCommand::SettingsChanged(settings));
     }
 
     pub fn set_equalizer(&self, settings: EqualizerSettings) {
-        let _ = self.cmd_tx.send(PlaybackCommand::SetEqualizer(settings));
+        self.send(PlaybackCommand::SetEqualizer(settings));
     }
 
     pub fn set_position_broadcast_active(&self, active: bool) {
-        let _ = self
-            .cmd_tx
-            .send(PlaybackCommand::SetPositionBroadcastActive(active));
+        self.send(PlaybackCommand::SetPositionBroadcastActive(active));
     }
 
     pub fn get_sender(&self) -> UnboundedSender<PlaybackCommand> {
@@ -170,8 +183,9 @@ impl PlaybackInterface {
     pub fn start_broadcast(&mut self, app: &mut App) {
         // This function's sole responsibility is to read events from the playback thread and update
         // data models accordingly.
-        let mut events_rx = None;
-        std::mem::swap(&mut self.events_rx, &mut events_rx);
+        let Some(mut events_rx) = self.events_rx.take() else {
+            panic!("broadcast thread already started");
+        };
 
         let metadata_model = app.global::<Models>().metadata.clone();
         let albumart_model = app.global::<Models>().albumart.clone();
@@ -181,10 +195,6 @@ impl PlaybackInterface {
         let power_manager = app.global::<PowerManager>().clone();
         let stats = app.global::<crate::stats::StatsHandle>().0.clone();
         let stats_pool = app.global::<Pool>().0.clone();
-
-        let Some(mut events_rx) = events_rx else {
-            panic!("broadcast thread already started");
-        };
 
         app.spawn(async move |cx| {
             // `recv()` returning None means the playback thread dropped its
@@ -205,10 +215,7 @@ impl PlaybackInterface {
                 for event in latest {
                     match event {
                         PlaybackEvent::MetadataUpdate(v) => {
-                            metadata_model.update(cx, |m, cx| {
-                                *m = *v;
-                                cx.notify()
-                            });
+                            metadata_model.write(cx, *v);
                         }
                         PlaybackEvent::AlbumArtUpdate(v) => {
                             albumart_model.update(cx, |m, cx| {
@@ -221,10 +228,7 @@ impl PlaybackInterface {
                             });
                         }
                         PlaybackEvent::StateChanged(v) => {
-                            playback_info.playback_state.update(cx, |m, cx| {
-                                *m = v;
-                                cx.notify()
-                            });
+                            playback_info.playback_state.write(cx, v);
 
                             if v == PlaybackState::Stopped {
                                 playback_info.current_track.update(cx, |m, cx| {
@@ -235,12 +239,10 @@ impl PlaybackInterface {
 
                             power_manager.set_state(cx, v);
 
-                            let rows = {
-                                let mut recorder = stats.lock().unwrap_or_else(|e| e.into_inner());
+                            record_and_flush(&stats, stats_pool.clone(), |recorder| {
                                 recorder.on_state(v);
                                 recorder.take_pending()
-                            };
-                            crate::stats::flush_rows_async(stats_pool.clone(), rows);
+                            });
                         }
                         PlaybackEvent::PositionChanged(v) => {
                             playback_info.position.update(cx, |m, cx| {
@@ -248,28 +250,21 @@ impl PlaybackInterface {
                                 cx.notify()
                             });
 
-                            let rows = {
-                                let mut recorder = stats.lock().unwrap_or_else(|e| e.into_inner());
+                            record_and_flush(&stats, stats_pool.clone(), |recorder| {
                                 recorder.on_position(v);
                                 recorder.take_pending()
-                            };
-                            crate::stats::flush_rows_async(stats_pool.clone(), rows);
+                            });
                         }
                         PlaybackEvent::DurationChanged(v) => {
-                            playback_info.duration.update(cx, |m, cx| {
-                                *m = v;
-                                cx.notify()
-                            });
+                            playback_info.duration.write(cx, v);
                         }
                         PlaybackEvent::SongChanged(path) => {
                             let (track_key, meta) =
                                 crate::stats::song_info(&path, &queue_model, cx);
-                            let rows = {
-                                let mut recorder = stats.lock().unwrap_or_else(|e| e.into_inner());
+                            record_and_flush(&stats, stats_pool.clone(), |recorder| {
                                 recorder.on_song_changed(track_key, meta);
                                 recorder.take_pending()
-                            };
-                            crate::stats::flush_rows_async(stats_pool.clone(), rows);
+                            });
 
                             playback_info.current_track.update(cx, |m, cx| {
                                 *m = Some(CurrentTrack::new(path.clone()));
@@ -280,32 +275,18 @@ impl PlaybackInterface {
                             queue_model.update(cx, |_, cx| cx.notify());
                         }
                         PlaybackEvent::ShuffleToggled(v) => {
-                            playback_info.shuffling.update(cx, |m, cx| {
-                                *m = v;
-                                cx.notify()
-                            });
+                            playback_info.shuffling.write(cx, v);
                         }
                         PlaybackEvent::VolumeChanged(v) => {
                             // equality guard: during a slider drag the echo-back
                             // notify would re-render the source slider per tick
-                            playback_info.volume.update(cx, |m, cx| {
-                                if *m != v {
-                                    *m = v;
-                                    cx.notify();
-                                }
-                            });
+                            update_if_changed(&playback_info.volume, cx, v);
 
-                            // Note: `prev_volume` should not be to small.
-                            // Its value needs to be visible in UI
-                            // while toggling volume `on` / `off` and even
-                            // an user used a slider to move volume to `0`
-                            if v > 0.05 {
-                                playback_info.prev_volume.update(cx, |m, cx| {
-                                    if *m != v {
-                                        *m = v;
-                                        cx.notify();
-                                    }
-                                });
+                            // `prev_volume` must never dip below the floor: its
+                            // value needs to stay visible in the UI while volume
+                            // is toggled on/off, even if the user slid it to `0`.
+                            if v > MIN_REMEMBERED_VOLUME {
+                                update_if_changed(&playback_info.prev_volume, cx, v);
                             }
                         }
                         PlaybackEvent::QueuePositionChanged(v) => {
@@ -317,28 +298,13 @@ impl PlaybackInterface {
                             })
                         }
                         PlaybackEvent::RepeatChanged(v) => {
-                            playback_info.repeating.update(cx, |m, cx| {
-                                if *m != v {
-                                    *m = v;
-                                    cx.notify();
-                                }
-                            })
+                            update_if_changed(&playback_info.repeating, cx, v);
                         }
                         PlaybackEvent::StopAfterCurrentChanged(v) => {
-                            playback_info.stop_after_current.update(cx, |m, cx| {
-                                if *m != v {
-                                    *m = v;
-                                    cx.notify();
-                                }
-                            })
+                            update_if_changed(&playback_info.stop_after_current, cx, v);
                         }
                         PlaybackEvent::SampleRateChanged(rate) => {
-                            playback_info.sample_rate.update(cx, |m, cx| {
-                                if *m != rate {
-                                    *m = rate;
-                                    cx.notify();
-                                }
-                            })
+                            update_if_changed(&playback_info.sample_rate, cx, rate);
                         }
                     }
                 }
@@ -362,13 +328,37 @@ impl PlaybackInterface {
         app.spawn(async move |cx| {
             loop {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_secs(30))
+                    .timer(IDLE_TILE_DRAIN_INTERVAL)
                     .await;
                 cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
             }
         })
         .detach();
     }
+}
+
+/// Feeds one recording step to the shared stats recorder and flushes the
+/// rows it produced. A poisoned lock is recovered from: a panic inside an
+/// earlier recording step must not wedge the broadcast loop.
+fn record_and_flush<T>(
+    stats: &Mutex<T>,
+    pool: sqlx::SqlitePool,
+    record: impl FnOnce(&mut T) -> Vec<crate::stats::ListenRow>,
+) {
+    let rows = record(&mut stats.lock().unwrap_or_else(|e| e.into_inner()));
+    crate::stats::flush_rows_async(pool, rows);
+}
+
+/// Writes `value` into the entity and notifies, but only when it actually
+/// differs: echo-back events during a slider drag would otherwise re-render
+/// the source widget on every tick.
+fn update_if_changed<T: PartialEq + 'static>(entity: &Entity<T>, cx: &mut AsyncApp, value: T) {
+    entity.update(cx, |m, cx| {
+        if *m != value {
+            *m = value;
+            cx.notify();
+        }
+    });
 }
 
 /// Replace the current queue with the given items.

@@ -1,5 +1,6 @@
 use std::{
     env,
+    str::FromStr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -10,7 +11,9 @@ use tracing::{debug, info, warn};
 
 use crate::{
     devices::{
-        errors::{CloseError, FindError, InfoError, OpenError, StateError, SubmissionError},
+        errors::{
+            CloseError, FindError, InfoError, OpenError, ResetError, StateError, SubmissionError,
+        },
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         traits::{Device, DeviceProvider, OutputStream},
     },
@@ -90,19 +93,22 @@ impl DeviceProvider for DummyDeviceProvider {
     }
 }
 
+/// Parsed value of a `HB_DUMMY_*` environment variable, or `None` when the
+/// variable is unset or does not parse as `T`.
+fn env_parsed<T: FromStr>(name: &str) -> Option<T> {
+    env::var(name).ok().and_then(|s| s.parse().ok())
+}
+
 pub struct DummyDevice {}
 
 impl DummyDevice {
     pub fn get_sample_rate() -> u32 {
-        env::var("HB_DUMMY_SAMPLE_RATE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(44100)
+        env_parsed("HB_DUMMY_SAMPLE_RATE").unwrap_or(44100)
     }
 
     pub fn get_bit_format() -> Result<SampleFormat, InfoError> {
         let var = env::var("HB_DUMMY_BIT_FORMAT");
-        Ok(match var.as_deref() {
+        let format = match var.as_deref() {
             Ok("F64") => SampleFormat::Float64,
             Ok("F32") => SampleFormat::Float32,
             Ok("S32") => SampleFormat::Signed32,
@@ -113,45 +119,33 @@ impl DummyDevice {
             Ok("U16") => SampleFormat::Unsigned16,
             Ok("S8") => SampleFormat::Signed8,
             Ok("U8") => SampleFormat::Unsigned8,
-            Err(std::env::VarError::NotPresent) => SampleFormat::Signed16,
-            Ok(_) => Err(InfoError::SampleFmt(var.unwrap()))?,
-            Err(std::env::VarError::NotUnicode(os)) => {
-                Err(InfoError::SampleFmt(os.to_string_lossy().into_owned()))?
+            Err(env::VarError::NotPresent) => SampleFormat::Signed16,
+            Ok(other) => return Err(InfoError::SampleFmt(other.to_string())),
+            Err(env::VarError::NotUnicode(os)) => {
+                return Err(InfoError::SampleFmt(os.to_string_lossy().into_owned()));
             }
-        })
+        };
+        Ok(format)
     }
 
     pub fn get_channels() -> u16 {
-        env::var("HB_DUMMY_CHANNELS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2)
+        env_parsed("HB_DUMMY_CHANNELS").unwrap_or(2)
     }
 
     pub fn get_buffer_size() -> u32 {
-        env::var("HB_DUMMY_BUFFER_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096)
+        env_parsed("HB_DUMMY_BUFFER_SIZE").unwrap_or(4096)
     }
 
     pub fn get_bounded_frames() -> Option<usize> {
-        env::var("HB_DUMMY_BOUNDED_FRAMES")
-            .ok()
-            .and_then(|s| s.parse().ok())
+        env_parsed("HB_DUMMY_BOUNDED_FRAMES")
     }
 
     pub fn get_drain_frames() -> usize {
-        env::var("HB_DUMMY_DRAIN_FRAMES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1024)
+        env_parsed("HB_DUMMY_DRAIN_FRAMES").unwrap_or(1024)
     }
 
     pub fn get_die_after_frames() -> Option<usize> {
-        env::var("HB_DUMMY_DIE_AFTER_FRAMES")
-            .ok()
-            .and_then(|s| s.parse().ok())
+        env_parsed("HB_DUMMY_DIE_AFTER_FRAMES")
     }
 }
 
@@ -217,7 +211,7 @@ impl OutputStream for DummyStream {
         Ok(())
     }
 
-    fn reset(&mut self) -> Result<(), crate::devices::errors::ResetError> {
+    fn reset(&mut self) -> Result<(), ResetError> {
         debug!("Stream reset.");
         Ok(())
     }
@@ -281,7 +275,7 @@ impl OutputStream for BoundedDummyStream {
         Ok(())
     }
 
-    fn reset(&mut self) -> Result<(), crate::devices::errors::ResetError> {
+    fn reset(&mut self) -> Result<(), ResetError> {
         self.fill = 0;
         Ok(())
     }

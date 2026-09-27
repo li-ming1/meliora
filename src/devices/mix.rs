@@ -146,12 +146,14 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         rows[oi][ii] += weight;
     };
 
+    // Source channels the destination has no matching slot for need rerouting.
+    let unmapped = |pos: ChannelPosition| src.contains(pos) && !dst.contains(pos);
+
     let has_l = dst.contains(ChannelPosition::FRONT_LEFT);
     let has_r = dst.contains(ChannelPosition::FRONT_RIGHT);
     let has_c = dst.contains(ChannelPosition::FRONT_CENTER);
     let has_rl = dst.contains(ChannelPosition::REAR_LEFT);
     let has_rr = dst.contains(ChannelPosition::REAR_RIGHT);
-    let has_rc = dst.contains(ChannelPosition::REAR_CENTER);
 
     let src_only_mono = src == ChannelPosition::FRONT_CENTER;
 
@@ -162,7 +164,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
     }
 
     // Non-mono center folds into L/R when the destination has no center.
-    if src.contains(ChannelPosition::FRONT_CENTER) && !has_c && !src_only_mono {
+    if unmapped(ChannelPosition::FRONT_CENTER) && !src_only_mono {
         if has_l {
             route(
                 ChannelPosition::FRONT_LEFT,
@@ -197,27 +199,27 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         }
     }
 
-    if src.contains(ChannelPosition::SIDE_LEFT) && !dst.contains(ChannelPosition::SIDE_LEFT) {
+    if unmapped(ChannelPosition::SIDE_LEFT) {
         if has_rl {
             route(ChannelPosition::REAR_LEFT, ChannelPosition::SIDE_LEFT, a);
         } else if has_l {
             route(ChannelPosition::FRONT_LEFT, ChannelPosition::SIDE_LEFT, a);
         }
     }
-    if src.contains(ChannelPosition::SIDE_RIGHT) && !dst.contains(ChannelPosition::SIDE_RIGHT) {
+    if unmapped(ChannelPosition::SIDE_RIGHT) {
         if has_rr {
             route(ChannelPosition::REAR_RIGHT, ChannelPosition::SIDE_RIGHT, a);
         } else if has_r {
             route(ChannelPosition::FRONT_RIGHT, ChannelPosition::SIDE_RIGHT, a);
         }
     }
-    if src.contains(ChannelPosition::REAR_LEFT) && !has_rl && has_l {
+    if unmapped(ChannelPosition::REAR_LEFT) && has_l {
         route(ChannelPosition::FRONT_LEFT, ChannelPosition::REAR_LEFT, a);
     }
-    if src.contains(ChannelPosition::REAR_RIGHT) && !has_rr && has_r {
+    if unmapped(ChannelPosition::REAR_RIGHT) && has_r {
         route(ChannelPosition::FRONT_RIGHT, ChannelPosition::REAR_RIGHT, a);
     }
-    if src.contains(ChannelPosition::REAR_CENTER) && !has_rc {
+    if unmapped(ChannelPosition::REAR_CENTER) {
         if has_rl && has_rr {
             route(ChannelPosition::REAR_LEFT, ChannelPosition::REAR_CENTER, a);
             route(ChannelPosition::REAR_RIGHT, ChannelPosition::REAR_CENTER, a);
@@ -241,10 +243,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         }
     }
 
-    if opts.lfe_to_stereo
-        && src.contains(ChannelPosition::LFE1)
-        && !dst.contains(ChannelPosition::LFE1)
-    {
+    if opts.lfe_to_stereo && unmapped(ChannelPosition::LFE1) {
         if has_l {
             route(ChannelPosition::FRONT_LEFT, ChannelPosition::LFE1, a);
         }

@@ -75,7 +75,9 @@ pub struct ChannelProducers {
 }
 
 impl ChannelProducers {
-    pub fn write_slices(&mut self, samples: &[&[f64]]) -> Result<(), WriteError> {
+    /// Validates a planar sample set against this producer set — matching channel count,
+    /// equal-length planes — and returns the common plane length.
+    fn checked_plane_len(&self, samples: &[&[f64]]) -> Result<usize, WriteError> {
         if samples.len() != self.channel_count {
             return Err(WriteError::ChannelMismatch(ChannelMismatch {
                 expected: self.channel_count,
@@ -88,6 +90,12 @@ impl ChannelProducers {
         if min != max {
             return Err(WriteError::UnequalPlanes { min, max });
         }
+
+        Ok(min)
+    }
+
+    pub fn write_slices(&mut self, samples: &[&[f64]]) -> Result<(), WriteError> {
+        let min = self.checked_plane_len(samples)?;
 
         write_bounded_planar(&mut self.producers, samples, min).map_err(|t| WriteError::Timeout {
             dropped: min - t.written,
@@ -98,18 +106,7 @@ impl ChannelProducers {
     /// dropped. Required when the consumer drains on the same thread (decoder → resampler), where
     /// the blocking version would spin against a consumer that can never run until we return.
     pub fn write_slices_nonblocking(&mut self, samples: &[&[f64]]) -> Result<(), WriteError> {
-        if samples.len() != self.channel_count {
-            return Err(WriteError::ChannelMismatch(ChannelMismatch {
-                expected: self.channel_count,
-                got: samples.len(),
-            }));
-        }
-
-        let min = samples.iter().map(|s| s.len()).min().unwrap_or(0);
-        let max = samples.iter().map(|s| s.len()).max().unwrap_or(0);
-        if min != max {
-            return Err(WriteError::UnequalPlanes { min, max });
-        }
+        let min = self.checked_plane_len(samples)?;
 
         let written = try_write_planar(&mut self.producers, samples, min);
         if written < min {
@@ -259,12 +256,16 @@ pub struct AudioPipeline {
     pub decoder_buffer_frames: usize,
 }
 
+/// Headroom added on top of the scaled frame count so the bound stays a safe upper
+/// bound on one processing cycle's output.
+const FRAME_BOUND_HEADROOM_FRAMES: usize = 1024;
+
 /// Upper bound on the frames one processing cycle can hand from the resampler
 /// to the mixer/device stage.
 pub fn output_frame_bound(source_rate: u32, target_rate: u32, buffer_frames: usize) -> usize {
     let scaled = (buffer_frames as u64 * u64::from(target_rate))
         .div_ceil(u64::from(source_rate.max(1))) as usize;
-    scaled.max(buffer_frames) + 1024
+    scaled.max(buffer_frames) + FRAME_BOUND_HEADROOM_FRAMES
 }
 
 impl AudioPipeline {

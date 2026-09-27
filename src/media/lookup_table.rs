@@ -9,9 +9,8 @@ static PROVIDERS: OnceLock<Vec<Box<dyn MediaProvider>>> = OnceLock::new();
 /// Registers the media providers. Called once at startup before any reads.
 pub fn register_providers(providers: Vec<Box<dyn MediaProvider>>) {
     info!("Registering {} media provider(s)", providers.len());
-    match PROVIDERS.set(providers) {
-        Ok(()) => {}
-        Err(_) => panic!("media providers registered twice"),
+    if PROVIDERS.set(providers).is_err() {
+        panic!("media providers registered twice");
     }
 }
 
@@ -33,7 +32,7 @@ fn provider_can_read(
             .iter()
             .any(|v| v.eq_ignore_ascii_case(ext))
     {
-        return Ok(provider.supported_features() & required_features == required_features);
+        return Ok(provider.supported_features().contains(required_features));
     }
 
     Ok(false)

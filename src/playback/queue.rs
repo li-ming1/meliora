@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use futures::TryFutureExt as _;
 use gpui::{App, AppContext, Entity, SharedString};
@@ -181,17 +181,12 @@ impl PartialEq for QueueItemData {
 }
 
 impl QueueItemData {
-    /// Creates a new `QueueItemData` instance with the given information.
+    /// Creates a new `QueueItemData` instance with the given information,
+    /// eagerly creating the (still empty) UI metadata entity.
     pub fn new(cx: &mut App, path: PathBuf, db_id: Option<i64>, db_album_id: Option<i64>) -> Self {
         QueueItemData {
-            path,
-            db_id,
-            db_album_id,
             data: Arc::new(RwLock::new(Some(cx.new(|_| None)))),
-            persisted_ui: None,
-            duration: Arc::new(AtomicI64::new(UNKNOWN_DURATION)),
-            #[cfg(feature = "online_sources")]
-            online_identity: None,
+            ..Self::lazy(path, db_id, db_album_id)
         }
     }
 
@@ -220,13 +215,10 @@ impl QueueItemData {
         let persisted_ui = persist_from(ui_data.clone());
         let duration = Arc::new(AtomicI64::new(ui_data.duration.unwrap_or(UNKNOWN_DURATION)));
         QueueItemData {
-            path,
-            db_id: None,
-            db_album_id: None,
             data: Arc::new(RwLock::new(Some(cx.new(|_| Some(ui_data))))),
             persisted_ui,
             duration,
-            online_identity: None,
+            ..Self::lazy(path, None, None)
         }
     }
 
@@ -268,6 +260,7 @@ impl QueueItemData {
         }
     }
 
+    /// Stores the length in seconds; `None` resets it to [`UNKNOWN_DURATION`].
     pub fn set_known_duration(&self, secs: Option<i64>) {
         self.duration
             .store(secs.unwrap_or(UNKNOWN_DURATION), Ordering::Relaxed);
@@ -278,23 +271,20 @@ impl QueueItemData {
     /// summary's render registers a dependency, so the summary recomputes as
     /// metadata loads land.
     pub fn loaded_duration(&self, cx: &App) -> Option<i64> {
-        let entity = self
-            .data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()?
-            .clone();
+        let entity = self.lock_data().as_ref()?.clone();
         entity.read(cx).as_ref()?.duration
+    }
+
+    /// Read-locks the UI data slot, recovering from a poisoned lock instead
+    /// of propagating the panic: a panic elsewhere while the slot was locked
+    /// must not permanently brick this queue item.
+    fn lock_data(&self) -> RwLockReadGuard<'_, Option<Entity<Option<QueueItemUIData>>>> {
+        self.data.read().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Helper to lazily initialize the UI data entity if it was deserialized.
     fn ensure_entity(&self, cx: &mut App) {
-        if self
-            .data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none()
-        {
+        if self.lock_data().is_none() {
             let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
             if data.is_none() {
                 *data = Some(cx.new(|_| None));
@@ -306,13 +296,7 @@ impl QueueItemData {
     /// loaded).
     pub fn get_data(&self, cx: &mut App) -> Entity<Option<QueueItemUIData>> {
         self.ensure_entity(cx);
-        let model = self
-            .data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .unwrap()
-            .clone();
+        let model = self.lock_data().as_ref().unwrap().clone();
 
         // Fast path: the metadata entity already holds its data, so return the
         // handle without cloning the path/persisted-ui/duration payloads (those
@@ -382,7 +366,7 @@ impl QueueItemData {
     /// Drop the UI data from the queue item. This means the data must be retrieved again from disk
     /// if the item is used with get_data again.
     pub fn drop_data(&self, cx: &mut App) {
-        if let Some(model) = self.data.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(model) = self.lock_data().as_ref() {
             model.update(cx, |m, cx| {
                 *m = None;
                 cx.notify();
@@ -412,21 +396,17 @@ impl QueueItemData {
         self.db_id
     }
 
+    /// Stable key for this item's UI state slot (the GPUI entity id),
+    /// creating the entity if it does not exist yet.
     pub fn slot_key(&self, cx: &mut App) -> usize {
         self.ensure_entity(cx);
-        self.data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .unwrap()
-            .entity_id()
-            .as_u64() as usize
+        self.lock_data().as_ref().unwrap().entity_id().as_u64() as usize
     }
 
+    /// The same key as [`Self::slot_key`], but `None` while no entity was
+    /// ever created (deserialized or [`Self::lazy`] items before first use).
     pub fn existing_slot_key(&self) -> Option<usize> {
-        self.data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+        self.lock_data()
             .as_ref()
             .map(|e| e.entity_id().as_u64() as usize)
     }
@@ -527,9 +507,11 @@ fn spawn_library_load(
             data.duration = Some(track.duration);
             duration.store(track.duration, Ordering::Relaxed);
 
-            if let Some(artist_name) = track.artist_names.clone() {
-                data.artist_name = Some(artist_name.0);
-            } else if let Some(artist_name) = album.artist_display_override.clone() {
+            if let Some(artist_name) = track
+                .artist_names
+                .clone()
+                .or_else(|| album.artist_display_override.clone())
+            {
                 data.artist_name = Some(artist_name.0);
             }
 

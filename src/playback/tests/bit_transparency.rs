@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::devices::dummy;
 use crate::devices::resample::SampleFrom;
 use crate::test_support::TestDir;
@@ -12,6 +14,17 @@ const CHANNELS: usize = 2;
 const FRAMES: usize = 32_768;
 const MAX_CYCLES: usize = 100_000;
 
+/// Plays `path` to EOF on the already-configured dummy device and returns
+/// the captured device-layer planes.
+fn captured_planes(path: &Path) -> dummy::CapturedPlanes {
+    let capture = dummy::install_capture();
+    let mut engine = engine_playing(path);
+    run_to_eof(&mut engine, MAX_CYCLES);
+    engine.stop();
+    dummy::uninstall_capture();
+    capture
+}
+
 #[test]
 fn i16_source_reaches_device_layer_bit_exact() {
     let _guard = engine_lock();
@@ -22,11 +35,7 @@ fn i16_source_reaches_device_layer_bit_exact() {
     let source = i16_test_signal(FRAMES, CHANNELS);
     write_wav_i16(&path, RATE, CHANNELS as u16, &source);
 
-    let capture = dummy::install_capture();
-    let mut engine = engine_playing(&path);
-    run_to_eof(&mut engine, MAX_CYCLES);
-    engine.stop();
-    dummy::uninstall_capture();
+    let capture = captured_planes(&path);
 
     let planes = capture.lock().unwrap();
     assert_eq!(planes.len(), CHANNELS, "expected a stereo capture");
@@ -60,11 +69,7 @@ fn f32_source_reaches_device_layer_bit_exact() {
     let source = f32_test_signal(FRAMES, CHANNELS);
     write_wav_f32(&path, RATE, CHANNELS as u16, &source);
 
-    let capture = dummy::install_capture();
-    let mut engine = engine_playing(&path);
-    run_to_eof(&mut engine, MAX_CYCLES);
-    engine.stop();
-    dummy::uninstall_capture();
+    let capture = captured_planes(&path);
 
     let planes = capture.lock().unwrap();
     assert_eq!(planes.len(), CHANNELS, "expected a stereo capture");

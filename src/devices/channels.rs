@@ -40,12 +40,7 @@ impl ChannelPosition {
     /// Iterate over each channel position set in this mask, in ascending bit order.
     pub fn positions(self) -> impl Iterator<Item = ChannelPosition> {
         (0..u64::BITS).filter_map(move |bit| {
-            let bit_val = 1u64 << bit;
-            if self.bits() & bit_val == 0 {
-                return None;
-            }
-            let single = ChannelPosition::from_bits(bit_val)?;
-            Some(single)
+            ChannelPosition::from_bits(self.bits() & (1u64 << bit)).filter(|pos| !pos.is_empty())
         })
     }
 }
@@ -93,44 +88,58 @@ impl ChannelLayout {
     /// Resolve a bare channel count to a conventional layout when one is obvious (common surround
     /// sound configurations).
     pub fn from_count_canonical(count: u16) -> ChannelLayout {
+        /// Union of the listed positions, folded in list order.
+        fn union_all(positions: &[ChannelPosition]) -> ChannelPosition {
+            positions
+                .iter()
+                .fold(ChannelPosition::empty(), |acc, pos| acc.union(*pos))
+        }
+
+        const FRONT_CENTER: ChannelPosition = ChannelPosition::FRONT_CENTER;
+        const FRONT_LEFT: ChannelPosition = ChannelPosition::FRONT_LEFT;
+        const FRONT_RIGHT: ChannelPosition = ChannelPosition::FRONT_RIGHT;
+        const LFE1: ChannelPosition = ChannelPosition::LFE1;
+        const REAR_CENTER: ChannelPosition = ChannelPosition::REAR_CENTER;
+        const REAR_LEFT: ChannelPosition = ChannelPosition::REAR_LEFT;
+        const REAR_RIGHT: ChannelPosition = ChannelPosition::REAR_RIGHT;
+        const SIDE_LEFT: ChannelPosition = ChannelPosition::SIDE_LEFT;
+        const SIDE_RIGHT: ChannelPosition = ChannelPosition::SIDE_RIGHT;
+
         let pos = match count {
             0 => ChannelPosition::empty(),
             1 => ChannelPosition::FRONT_CENTER,
-            2 => ChannelPosition::FRONT_LEFT.union(ChannelPosition::FRONT_RIGHT),
-            3 => ChannelPosition::FRONT_LEFT
-                .union(ChannelPosition::FRONT_RIGHT)
-                .union(ChannelPosition::FRONT_CENTER),
-            4 => ChannelPosition::FRONT_LEFT
-                .union(ChannelPosition::FRONT_RIGHT)
-                .union(ChannelPosition::REAR_LEFT)
-                .union(ChannelPosition::REAR_RIGHT),
+            2 => union_all(&[FRONT_LEFT, FRONT_RIGHT]),
+            3 => union_all(&[FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER]),
+            4 => union_all(&[FRONT_LEFT, FRONT_RIGHT, REAR_LEFT, REAR_RIGHT]),
             // NB: this could also be 4.1 but 5.0 is more common
-            5 => ChannelPosition::FRONT_LEFT
-                .union(ChannelPosition::FRONT_RIGHT)
-                .union(ChannelPosition::FRONT_CENTER)
-                .union(ChannelPosition::REAR_LEFT)
-                .union(ChannelPosition::REAR_RIGHT),
-            6 => ChannelPosition::FRONT_LEFT
-                .union(ChannelPosition::FRONT_RIGHT)
-                .union(ChannelPosition::FRONT_CENTER)
-                .union(ChannelPosition::LFE1)
-                .union(ChannelPosition::REAR_LEFT)
-                .union(ChannelPosition::REAR_RIGHT),
-            7 => ChannelPosition::FRONT_LEFT
-                .union(ChannelPosition::FRONT_RIGHT)
-                .union(ChannelPosition::FRONT_CENTER)
-                .union(ChannelPosition::LFE1)
-                .union(ChannelPosition::REAR_CENTER)
-                .union(ChannelPosition::REAR_LEFT)
-                .union(ChannelPosition::REAR_RIGHT),
-            8 => ChannelPosition::FRONT_LEFT
-                .union(ChannelPosition::FRONT_RIGHT)
-                .union(ChannelPosition::FRONT_CENTER)
-                .union(ChannelPosition::LFE1)
-                .union(ChannelPosition::REAR_LEFT)
-                .union(ChannelPosition::REAR_RIGHT)
-                .union(ChannelPosition::SIDE_LEFT)
-                .union(ChannelPosition::SIDE_RIGHT),
+            5 => union_all(&[FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, REAR_LEFT, REAR_RIGHT]),
+            6 => union_all(&[
+                FRONT_LEFT,
+                FRONT_RIGHT,
+                FRONT_CENTER,
+                LFE1,
+                REAR_LEFT,
+                REAR_RIGHT,
+            ]),
+            7 => union_all(&[
+                FRONT_LEFT,
+                FRONT_RIGHT,
+                FRONT_CENTER,
+                LFE1,
+                REAR_CENTER,
+                REAR_LEFT,
+                REAR_RIGHT,
+            ]),
+            8 => union_all(&[
+                FRONT_LEFT,
+                FRONT_RIGHT,
+                FRONT_CENTER,
+                LFE1,
+                REAR_LEFT,
+                REAR_RIGHT,
+                SIDE_LEFT,
+                SIDE_RIGHT,
+            ]),
             _ => return ChannelLayout::Discrete(count),
         };
         ChannelLayout::Positioned(pos)

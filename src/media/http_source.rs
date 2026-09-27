@@ -61,6 +61,9 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
 /// track like any other decode failure.
 const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Per-request cap for one-shot cover downloads (`http_cover_bytes`).
+const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Downloads the bytes of a small remote resource (e.g. a KuGou album-cover
 /// image). On any non-success status or empty body returns `None`; the caller
 /// treats that as "no artwork". Uses a fresh request with a short timeout so
@@ -70,22 +73,16 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     // per-request timeout. A fresh Client per cover built a new rustls
     // config and pool per track and left idle-connection teardown work on
     // the runtime after every fetch.
-    let request = HTTP_CLIENT.get(url).timeout(Duration::from_secs(15));
+    let request = HTTP_CLIENT.get(url).timeout(COVER_FETCH_TIMEOUT);
 
     let response = match request.send().await {
-        Ok(response) => response,
-        Err(_) => return Ok(None),
+        Ok(response) if response.status().is_success() => response,
+        _ => return Ok(None),
     };
-    if !response.status().is_success() {
-        return Ok(None);
-    }
     let bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(_) => return Ok(None),
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        _ => return Ok(None),
     };
-    if bytes.is_empty() {
-        return Ok(None);
-    }
     Ok(Some(bytes.to_vec()))
 }
 
@@ -363,13 +360,20 @@ pub fn open_http_media(path: &Path) -> anyhow::Result<Box<dyn MediaStream>> {
         .map_err(|e| anyhow::anyhow!("failed to probe remote media: {e}"))
 }
 
+/// Upper bound for a "short" extension in [`url_extension`]; longer names are
+/// left to content probing.
+const MAX_URL_EXTENSION_LEN: usize = 8;
+
 /// Extracts a probable file extension from the URL path component. Returns
 /// `None` for anything that does not look like a short alphanumeric extension,
 /// letting symphonia probe the format from the content instead.
 fn url_extension(url: &Url) -> Option<String> {
     let file_name = url.path().rsplit('/').next()?;
     let (_, ext) = file_name.rsplit_once('.')?;
-    if ext.is_empty() || ext.len() > 8 || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    if ext.is_empty()
+        || ext.len() > MAX_URL_EXTENSION_LEN
+        || !ext.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
         return None;
     }
     Some(ext.to_ascii_lowercase())
@@ -561,7 +565,7 @@ impl Seek for HttpRangeSource {
             SeekFrom::Start(offset) => Some(offset),
             SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
             // seeking past the end is allowed and reads back EOF
-            SeekFrom::End(delta) => self.total_len.and_then(|len| add_signed(len, delta)),
+            SeekFrom::End(delta) => self.total_len.and_then(|len| len.checked_add_signed(delta)),
         };
 
         let Some(target) = target else {
@@ -579,14 +583,6 @@ impl Seek for HttpRangeSource {
         self.pos = target;
 
         Ok(target)
-    }
-}
-
-fn add_signed(len: u64, delta: i64) -> Option<u64> {
-    if delta >= 0 {
-        len.checked_add(delta as u64)
-    } else {
-        len.checked_sub(delta.unsigned_abs())
     }
 }
 

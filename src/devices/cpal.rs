@@ -18,10 +18,13 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use rtrb::{Producer, RingBuffer};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use tracing::{debug, info, warn};
 
 macro_rules! make_unknown_error {
@@ -55,6 +58,12 @@ const PRODUCER_STALL_REPORT_MS: u64 = 100;
 /// Capacity of the fixed error-message slot the realtime error callback writes
 /// into. Longer backend messages are truncated.
 const DEVICE_ERROR_MESSAGE_CAP: usize = 256;
+/// Minimum spacing between underrun log lines; bursts within the window are
+/// collapsed into one report.
+const UNDERRUN_LOG_INTERVAL: Duration = Duration::from_secs(1);
+/// Nonzero xorshift seed for the per-sample TPDF dither (the 64-bit
+/// golden-ratio constant; any nonzero value works).
+const DITHER_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Latest cpal error, written by the realtime error callback and drained
 /// (logged) by the producer. The callback copies bytes only — no allocation on
@@ -153,21 +162,21 @@ impl TryFrom<cpal::SampleFormat> for SampleFormat {
 
 fn cpal_config_from_info(format: &FormatInfo) -> Result<cpal::StreamConfig, ()> {
     if format.originating_provider != "cpal" {
-        Err(())
-    } else {
-        let target_frames = frames_for_duration(format.sample_rate, DEVICE_BUFFER_TARGET);
-        let buffer_size = match format.buffer_size {
-            BufferSize::Range(min, max) => cpal::BufferSize::Fixed(target_frames.clamp(min, max)),
-            BufferSize::Fixed(size) => cpal::BufferSize::Fixed(size),
-            BufferSize::Unknown => cpal::BufferSize::Default,
-        };
-
-        Ok(cpal::StreamConfig {
-            channels: format.channels.count(),
-            sample_rate: format.sample_rate,
-            buffer_size,
-        })
+        return Err(());
     }
+
+    let target_frames = frames_for_duration(format.sample_rate, DEVICE_BUFFER_TARGET);
+    let buffer_size = match format.buffer_size {
+        BufferSize::Range(min, max) => cpal::BufferSize::Fixed(target_frames.clamp(min, max)),
+        BufferSize::Fixed(size) => cpal::BufferSize::Fixed(size),
+        BufferSize::Unknown => cpal::BufferSize::Default,
+    };
+
+    Ok(cpal::StreamConfig {
+        channels: format.channels.count(),
+        sample_rate: format.sample_rate,
+        buffer_size,
+    })
 }
 
 fn frames_for_duration(sample_rate: u32, duration: Duration) -> u32 {
@@ -279,7 +288,7 @@ impl CpalDevice {
             target_gain,
             last_user_volume: 1.0,
             replaygain: 1.0,
-            dither: 0x9E37_79B9_7F4A_7C15,
+            dither: DITHER_SEED,
             // worst case: a full pipeline staging buffer, interleaved
             interleave_buffer: Vec::with_capacity(DEFAULT_BUFFER_FRAMES * channels as usize),
             underruns,
@@ -299,19 +308,19 @@ impl CpalDevice {
 impl Device for CpalDevice {
     fn open_device(&mut self, format: FormatInfo) -> Result<Box<dyn OutputStream>, OpenError> {
         if format.originating_provider != "cpal" {
-            Err(OpenError::InvalidConfigProvider)
-        } else {
-            match format.sample_type {
-                SampleFormat::Signed8 => self.create_stream::<i8>(format),
-                SampleFormat::Signed16 => self.create_stream::<i16>(format),
-                SampleFormat::Signed32 => self.create_stream::<i32>(format),
-                SampleFormat::Unsigned8 => self.create_stream::<u8>(format),
-                SampleFormat::Unsigned16 => self.create_stream::<u16>(format),
-                SampleFormat::Unsigned32 => self.create_stream::<u32>(format),
-                SampleFormat::Float32 => self.create_stream::<f32>(format),
-                SampleFormat::Float64 => self.create_stream::<f64>(format),
-                _ => Err(OpenError::InvalidSampleFormat),
-            }
+            return Err(OpenError::InvalidConfigProvider);
+        }
+
+        match format.sample_type {
+            SampleFormat::Signed8 => self.create_stream::<i8>(format),
+            SampleFormat::Signed16 => self.create_stream::<i16>(format),
+            SampleFormat::Signed32 => self.create_stream::<i32>(format),
+            SampleFormat::Unsigned8 => self.create_stream::<u8>(format),
+            SampleFormat::Unsigned16 => self.create_stream::<u16>(format),
+            SampleFormat::Unsigned32 => self.create_stream::<u32>(format),
+            SampleFormat::Float32 => self.create_stream::<f32>(format),
+            SampleFormat::Float64 => self.create_stream::<f64>(format),
+            _ => Err(OpenError::InvalidSampleFormat),
         }
     }
 
@@ -332,8 +341,8 @@ impl Device for CpalDevice {
     fn get_name(&self) -> Result<String, InfoError> {
         self.device
             .description()
-            .map_err(|v| v.into())
-            .map(|v| v.name().to_string())
+            .map_err(Into::into)
+            .map(|description| description.name().to_string())
     }
 }
 
@@ -347,7 +356,7 @@ where
     pub device: cpal::Device,
     pub buffer_size: usize,
     pub target_gain: Arc<AtomicF64>,
-    /// most recent volume the user asked for. This is tracked separately
+    /// Most recent volume the user asked for. This is tracked separately
     /// from `target_gain` because pause-fades temporarily overwrite the
     /// shared atomic with 0.0. `play()` restores from this field.
     pub last_user_volume: f64,
@@ -360,7 +369,8 @@ where
     /// `reset`): the realtime callback counts underruns only while this is
     /// set, so the open->prime silence gap is not counted as starvation.
     pub primed: Arc<AtomicBool>,
-    /// keep track of the last log, so we don't log the same underrun multiple times
+    /// How many underruns have already been reported, so a burst is not
+    /// logged repeatedly.
     underruns_reported: u64,
     last_underrun_log: Instant,
     /// When this stream began consuming, used to time the open -> first-audio gap.
@@ -369,6 +379,7 @@ where
     /// successful submit. Producer-side only, so the realtime callback stays
     /// untouched.
     idle_since: Option<Instant>,
+    /// Whether the open -> first-submit log line has been emitted for this stream.
     logged_first_submit: bool,
     device_errored: Arc<AtomicBool>,
     /// Latest cpal error, written by the realtime error callback and drained
@@ -387,7 +398,7 @@ where
     fn report_underruns(&mut self) {
         let total = self.underruns.load(Ordering::Relaxed);
         if total > self.underruns_reported
-            && self.last_underrun_log.elapsed() >= Duration::from_secs(1)
+            && self.last_underrun_log.elapsed() >= UNDERRUN_LOG_INTERVAL
         {
             warn!(
                 "audio callback underran {} time(s) ({} total)",

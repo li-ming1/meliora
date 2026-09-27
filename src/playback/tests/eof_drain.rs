@@ -2,19 +2,35 @@ use crate::devices::dummy;
 use crate::test_support::TestDir;
 
 use super::harness::{
-    configure_bounded_device, configure_dummy_device, engine_lock, engine_playing, write_wav_i16,
+    configure_bounded_device, configure_dummy_device, engine_lock, engine_playing, run_to_eof,
+    write_wav_i16,
 };
 
 const DEVICE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
 const MAX_CYCLES: usize = 100_000;
 
+/// Length of the constant marker `signal_with_tail_marker` appends.
+const TAIL_MARKER_LEN: usize = 1024;
+
+/// Frames examined at the end of a capture when hunting for a track's
+/// end-of-stream marker.
+const TAIL_WINDOW: usize = 4096;
+
+/// The tail markers are written at ±`i16::MAX / 2` (≈ ±0.5 after the device
+/// layer scales to [-1, 1]); a tail only counts as present beyond this.
+const MARKER_THRESHOLD: f64 = 0.4;
+
+/// Flat-line deviation across the seam that still reads as gapless, in
+/// scaled sample units.
+const SEAM_DROPOUT_TOLERANCE: f64 = 2_000.0;
+
 /// A signal ending in a constant marker so a truncated tail is detectable.
 fn signal_with_tail_marker(frames: usize, marker: i16) -> Vec<i16> {
     (0..frames * CHANNELS as usize)
         .map(|i| {
             let frame = i / CHANNELS as usize;
-            if frame >= frames - 1024 {
+            if frame >= frames - TAIL_MARKER_LEN {
                 marker
             } else {
                 // low-amplitude ramp body
@@ -30,6 +46,25 @@ fn expected_min_frames(source_frames: usize, source_rate: u32) -> usize {
 
 fn constant_signal(frames: usize, value: i16) -> Vec<i16> {
     super::harness::constant_signal(frames, CHANNELS as usize, value)
+}
+
+/// Both tracks must land on the device in full, and track B's negative
+/// end-of-stream marker must be present in the captured tail.
+fn assert_both_tracks_reached_device(planes: &[Vec<f64>], expected_min: usize) {
+    for (ch, plane) in planes.iter().enumerate() {
+        assert!(
+            plane.len() >= expected_min,
+            "channel {ch}: only {} frames reached the device across both \
+             tracks, expected at least {expected_min}",
+            plane.len()
+        );
+        let tail = &plane[plane.len().saturating_sub(TAIL_WINDOW)..];
+        let trough = tail.iter().fold(0.0_f64, |acc, &s| acc.min(s));
+        assert!(
+            trough < -MARKER_THRESHOLD,
+            "channel {ch}: second track's tail missing (trough {trough})"
+        );
+    }
 }
 
 #[test]
@@ -50,12 +85,12 @@ fn gapless_transition_under_backpressure_drops_no_frames() {
 
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     // gapless transition into track B while the device ring is still full of A
     engine
         .open(&path_b, true)
         .expect("failed to open the second track");
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     engine.stop();
     dummy::uninstall_capture();
 
@@ -104,11 +139,11 @@ fn gapless_transition_has_no_seam_dropout() {
 
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     engine
         .open(&path_b, true)
         .expect("failed to open the second track");
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     engine.stop();
     dummy::uninstall_capture();
 
@@ -131,7 +166,7 @@ fn gapless_transition_has_no_seam_dropout() {
             // sample is f64 in [-1, 1] scaled from i16
             let scaled = sample * f64::from(i16::MAX);
             assert!(
-                (scaled - expected).abs() < 2_000.0,
+                (scaled - expected).abs() < SEAM_DROPOUT_TOLERANCE,
                 "channel {ch}: dropout at frame {frame} (value {scaled:.0}, expected \
                 ~{expected:.0}), not gapless",
             );
@@ -158,7 +193,7 @@ fn resampled_track_tail_reaches_device_at_end_of_playback() {
 
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path);
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
 
     // should flush remaining resampler tail to the device
     engine.stop();
@@ -176,10 +211,10 @@ fn resampled_track_tail_reaches_device_at_end_of_playback() {
         );
 
         // find the end-of-track marker
-        let tail = &plane[plane.len().saturating_sub(4096)..];
+        let tail = &plane[plane.len().saturating_sub(TAIL_WINDOW)..];
         let peak = tail.iter().fold(0.0_f64, |acc, &s| acc.max(s));
         assert!(
-            peak > 0.4,
+            peak > MARKER_THRESHOLD,
             "channel {ch}: end-of-track marker missing from the device \
              stream tail (peak {peak})"
         );
@@ -212,32 +247,18 @@ fn gapless_same_rate_tracks_lose_no_frames() {
 
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     // gapless transition: the resampler (and its tail) carries over
     engine
         .open(&path_b, true)
         .expect("failed to open the second track");
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     engine.stop();
     dummy::uninstall_capture();
 
     let planes = capture.lock().unwrap();
     let expected_min = expected_min_frames(frames_a + frames_b, source_rate);
-    for (ch, plane) in planes.iter().enumerate() {
-        assert!(
-            plane.len() >= expected_min,
-            "channel {ch}: only {} frames reached the device across both \
-             tracks, expected at least {expected_min}",
-            plane.len()
-        );
-        // ensure track B's end-of-track marker is present
-        let tail = &plane[plane.len().saturating_sub(4096)..];
-        let trough = tail.iter().fold(0.0_f64, |acc, &s| acc.min(s));
-        assert!(
-            trough < -0.4,
-            "channel {ch}: second track's tail missing (trough {trough})"
-        );
-    }
+    assert_both_tracks_reached_device(&planes, expected_min);
 }
 
 #[test]
@@ -267,31 +288,18 @@ fn rate_change_between_tracks_flushes_previous_tail() {
 
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     // preserve requested, but the rate change forces a rebuild — the old
     // resampler's tail must be flushed, not dropped
     engine
         .open(&path_b, true)
         .expect("failed to open the second track");
-    super::harness::run_to_eof(&mut engine, MAX_CYCLES);
+    run_to_eof(&mut engine, MAX_CYCLES);
     engine.stop();
     dummy::uninstall_capture();
 
     let planes = capture.lock().unwrap();
     let expected_min =
         expected_min_frames(frames_a, rate_a) + expected_min_frames(frames_b, rate_b);
-    for (ch, plane) in planes.iter().enumerate() {
-        assert!(
-            plane.len() >= expected_min,
-            "channel {ch}: only {} frames reached the device across both \
-             tracks, expected at least {expected_min}",
-            plane.len()
-        );
-        let tail = &plane[plane.len().saturating_sub(4096)..];
-        let trough = tail.iter().fold(0.0_f64, |acc, &s| acc.min(s));
-        assert!(
-            trough < -0.4,
-            "channel {ch}: second track's tail missing (trough {trough})"
-        );
-    }
+    assert_both_tracks_reached_device(&planes, expected_min);
 }

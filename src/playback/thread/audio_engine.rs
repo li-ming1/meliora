@@ -22,7 +22,7 @@ use crate::{
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
 };
 
-use super::device_controller::DeviceController;
+use super::device_controller::{DeviceController, DeviceError};
 use super::media_controller::MediaController;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,14 +442,9 @@ impl AudioEngine {
                             "Failed to reset stream on resume, recreating device instead... {:?}",
                             err
                         );
-                        let channels = self.device.current_format().map(|f| f.channels.clone());
-                        if let Err(e) = self.device.create_stream(channels) {
-                            return Err(EngineError::DeviceError(format!(
-                                "Failed to recreate stream: {:?}",
-                                e
-                            )));
-                        }
-                        self.sync_eq_format();
+                        self.recreate_stream().map_err(|e| {
+                            EngineError::DeviceError(format!("Failed to recreate stream: {:?}", e))
+                        })?;
                     }
                     self.eq.reset();
 
@@ -458,14 +453,9 @@ impl AudioEngine {
                             "Failed to restart playback after resume reset, recreating device and retrying... {:?}",
                             err
                         );
-                        let channels = self.device.current_format().map(|f| f.channels.clone());
-                        if let Err(e) = self.device.create_stream(channels) {
-                            return Err(EngineError::DeviceError(format!(
-                                "Failed to recreate stream: {:?}",
-                                e
-                            )));
-                        }
-                        self.sync_eq_format();
+                        self.recreate_stream().map_err(|e| {
+                            EngineError::DeviceError(format!("Failed to recreate stream: {:?}", e))
+                        })?;
 
                         if let Err(e) = self.device.play() {
                             return Err(EngineError::DeviceError(format!(
@@ -604,6 +594,16 @@ impl AudioEngine {
             .set_channel_count(format.channels.to_layout().count().max(1));
     }
 
+    /// Recreate the device stream with the current channel format and re-sync
+    /// the EQ to it. Returns the raw device error so each caller reports it
+    /// in its own wording.
+    fn recreate_stream(&mut self) -> Result<(), DeviceError> {
+        let channels = self.device.current_format().map(|f| f.channels.clone());
+        self.device.create_stream(channels).map(|_| ())?;
+        self.sync_eq_format();
+        Ok(())
+    }
+
     /// Update settings that affect playback.
     pub fn update_settings(&mut self, settings: &PlaybackSettings) {
         self.eq.set_config(&settings.equalizer);
@@ -708,7 +708,7 @@ impl AudioEngine {
         self.consume_to_device()
     }
 
-    /// Send as much as much as the device can accept, then wait for it to drain. If this happens
+    /// Send as much as the device can accept, then wait for it to drain. If this happens
     /// too many times in a row (more than MAX_DRAIN_CYCLES) we just give up
     fn drain_cycle(&mut self) -> EngineCycleResult {
         if let DrainState::Draining { cycles } = &mut self.drain {
@@ -722,23 +722,13 @@ impl AudioEngine {
         }
 
         if let Some(p) = &mut self.pipeline {
-            match &mut self.resampler {
-                Some(resampler) => {
-                    resampler.process_into(
-                        &mut p.resampler_input,
-                        &mut p.resampler_output,
-                        p.decoder_buffer_frames,
-                    );
-                }
-                None => {
-                    Resampler::passthrough_direct(
-                        &mut p.resampler_input,
-                        &mut p.resampler_output,
-                        p.decoder_buffer_frames,
-                    );
-                }
-            }
-            Self::route_resampler_output(p, &mut self.mixer, &mut self.eq, &mut self.tap);
+            Self::resample_and_route(
+                p,
+                self.resampler.as_mut(),
+                &mut self.mixer,
+                &mut self.eq,
+                &mut self.tap,
+            );
         }
 
         match self.consume_to_device() {
@@ -798,12 +788,10 @@ impl AudioEngine {
             self.device_recreate_defer = Some((now + defer, failures));
             warn!(parent: &s, failures, ?defer, "Recreating device and retrying...");
 
-            let channels = self.device.current_format().map(|f| f.channels.clone());
-            if let Err(e) = self.device.create_stream(channels) {
+            if let Err(e) = self.recreate_stream() {
                 error!(parent: &s, "Failed to recreate stream: {:?}", e);
                 return EngineCycleResult::NothingToDo;
             }
-            self.sync_eq_format();
 
             let Some(pipeline) = &mut self.pipeline else {
                 return EngineCycleResult::NothingToDo;
@@ -1051,7 +1039,28 @@ impl AudioEngine {
         // Read up to a full decoder ring per cycle: a large packet was written
         // whole and must drain whole, or the residue shrinks the free space the
         // next packet write needs. Equals the old default for ordinary streams.
-        match &mut self.resampler {
+        Self::resample_and_route(
+            p,
+            self.resampler.as_mut(),
+            &mut self.mixer,
+            &mut self.eq,
+            &mut self.tap,
+        );
+
+        Ok(DecodeStepResult::Continue)
+    }
+
+    /// Push decoder-buffered frames through the resampler (or straight
+    /// through when no resampling is active) and hand the result to the
+    /// device stage.
+    fn resample_and_route(
+        p: &mut AudioPipeline,
+        resampler: Option<&mut Resampler>,
+        mixer: &mut Option<ChannelMixer>,
+        eq: &mut EqualizerProcessor,
+        tap: &mut SpectrumTap,
+    ) {
+        match resampler {
             Some(resampler) => {
                 resampler.process_into(
                     &mut p.resampler_input,
@@ -1068,9 +1077,7 @@ impl AudioEngine {
             }
         }
 
-        Self::route_resampler_output(p, &mut self.mixer, &mut self.eq, &mut self.tap);
-
-        Ok(DecodeStepResult::Continue)
+        Self::route_resampler_output(p, mixer, eq, tap);
     }
 
     fn route_resampler_output(

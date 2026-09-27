@@ -23,7 +23,7 @@ use crate::{
     settings::{
         equalizer::EqualizerSettings,
         playback::PlaybackSettings,
-        replaygain::{ReplayGainAutoHint, calculate_gain},
+        replaygain::{ReplayGainAutoHint, ReplayGainMode, calculate_gain},
     },
 };
 
@@ -39,7 +39,7 @@ use queue_manager::{
     QueueNavigationResult, ReplaceResult, Reshuffled, ShuffleResult, UndoResult,
 };
 
-// throttle position broadcasts to prevent excees CPU utilization, especially while the application isn't
+// throttle position broadcasts to prevent excess CPU utilization, especially while the application isn't
 // focused
 const ACTIVE_POSITION_BROADCAST_INTERVAL_MS: u64 = 33;
 const BACKGROUND_POSITION_BROADCAST_INTERVAL_MS: u64 = 250;
@@ -343,10 +343,7 @@ impl PlaybackThread {
             && let Some((first, index)) = self.queue.first_with_index()
         {
             let path = first.get_path().clone();
-
-            if let Err(err) = self.open(&path) {
-                error!(path = %path.display(), ?err, "Unable to open file: {err}");
-            }
+            self.open_or_log(&path);
             self.queue.set_position(index);
             self.send_event(PlaybackEvent::QueuePositionChanged(index));
         }
@@ -355,6 +352,23 @@ impl PlaybackThread {
     /// Open a media file and prepare it for playback.
     fn open(&mut self, path: &Path) -> Result<(), PlaybackStartError> {
         self.open_with_resampler(path, false)
+    }
+
+    /// Open a track for playback, logging a failure instead of propagating
+    /// it: the queue operation in progress must complete even if this track
+    /// cannot be opened.
+    fn open_or_log(&mut self, path: &Path) {
+        if let Err(err) = self.open(path) {
+            error!(path = %path.display(), ?err, "Unable to open file: {err}");
+        }
+    }
+
+    /// [`Self::open_or_log`] across a transition that may reuse the resampler
+    /// (gapless advance).
+    fn open_or_log_resampled(&mut self, path: &Path, preserve_resampler: bool) {
+        if let Err(err) = self.open_with_resampler(path, preserve_resampler) {
+            error!(path = %path.display(), ?err, "Unable to open file: {err}");
+        }
     }
 
     /// One-shot retry for expired online stream URLs: a persisted
@@ -402,8 +416,9 @@ impl PlaybackThread {
                 warn!("failed to refresh expired stream URL; skipping track");
                 None
             })?;
-        self.queue.replace_current_path(PathBuf::from(&url));
-        Some(PathBuf::from(url))
+        let path = PathBuf::from(url);
+        self.queue.replace_current_path(path.clone());
+        Some(path)
     }
 
     #[cfg(not(feature = "online_sources"))]
@@ -429,17 +444,16 @@ impl PlaybackThread {
                 // A persisted online direct link is signed and expires (403).
                 // Before skipping, re-fetch a fresh URL from the item's
                 // provider identity and retry the open once.
-                let Some(fresh_path) = crate::media::is_http_path(path)
-                    .then(|| self.refresh_expired_online_url())
-                    .flatten()
-                else {
+                let fresh_path = if crate::media::is_http_path(path) {
+                    self.refresh_expired_online_url()
+                } else {
+                    None
+                };
+                let Some(fresh_path) = fresh_path else {
                     return Err(first_error);
                 };
                 info!("persisted stream URL expired; retrying with refreshed URL");
-                let fresh_path = PathBuf::from(fresh_path);
-                let duration = self
-                    .engine
-                    .open(Path::new(&fresh_path), preserve_resampler)?;
+                let duration = self.engine.open(&fresh_path, preserve_resampler)?;
                 (duration, fresh_path)
             }
         };
@@ -530,8 +544,7 @@ impl PlaybackThread {
 
     fn refresh_rg_auto_hint(&mut self) {
         if self.recompute_rg_auto_hint()
-            && self.playback_settings.replaygain.mode
-                == crate::settings::replaygain::ReplayGainMode::Auto
+            && self.playback_settings.replaygain.mode == ReplayGainMode::Auto
         {
             self.reapply_replaygain();
         }
@@ -563,19 +576,16 @@ impl PlaybackThread {
                     self.send_event(PlaybackEvent::QueueUpdated);
                 }
 
-                let preserve_resampler =
-                    preserve_resampler && reshuffled == Reshuffled::NotReshuffled;
-                if let Err(err) = self.open_with_resampler(&path, preserve_resampler) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
+                self.open_or_log_resampled(
+                    &path,
+                    preserve_resampler && reshuffled == Reshuffled::NotReshuffled,
+                );
 
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
             QueueNavigationResult::Unchanged { path } => {
                 info!("Repeating current track");
-                if let Err(err) = self.open_with_resampler(&path, preserve_resampler) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
+                self.open_or_log_resampled(&path, preserve_resampler);
             }
             QueueNavigationResult::EndOfQueue => {
                 info!("Playback queue ended, stopping playback");
@@ -593,7 +603,7 @@ impl PlaybackThread {
             && self.playback_settings.prev_track_jump_first
             && self.last_timestamp > 5_000
         {
-            self.seek(0_f64);
+            self.seek(0.0);
             return;
         }
 
@@ -601,10 +611,7 @@ impl PlaybackThread {
         if self.state() == PlaybackState::Stopped {
             if let Some((last, _)) = self.queue.last_with_index() {
                 let path = last.get_path().clone();
-
-                if let Err(err) = self.open(&path) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
+                self.open_or_log(&path);
                 let last_index = self.queue.len().saturating_sub(1);
                 self.queue.set_position(last_index);
                 self.send_event(PlaybackEvent::QueuePositionChanged(last_index));
@@ -619,23 +626,51 @@ impl PlaybackThread {
                 reshuffled: _,
             } => {
                 info!("Opening previous file in queue at index {}", index);
-
-                if let Err(err) = self.open(&path) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
-
+                self.open_or_log(&path);
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
             QueueNavigationResult::Unchanged { path } => {
                 info!("At beginning of queue, replaying current track");
-                if let Err(err) = self.open(&path) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
+                self.open_or_log(&path);
             }
             QueueNavigationResult::EndOfQueue => {
                 // At the beginning of the queue, do nothing
             }
         }
+    }
+
+    /// If nothing is playing, open and start playing the just-inserted item
+    /// at `first_index`. Unplayable paths are skipped; the caller's trailing
+    /// QueueUpdated still announces the queue change either way.
+    fn start_playing_inserted_if_stopped(&mut self, item: &QueueItemData, first_index: usize) {
+        if self.state() != PlaybackState::Stopped || !path_playable(item.get_path()) {
+            return;
+        }
+        let path = item.get_path();
+        self.open_or_log(path);
+        self.queue.set_position(first_index);
+        self.send_event(PlaybackEvent::QueuePositionChanged(first_index));
+    }
+
+    /// If nothing is playing, open and start playing the first playable item
+    /// of a just-inserted batch: `first` is `(index within the batch, item)`
+    /// and `first_index` the queue slot the batch starts at.
+    fn start_playing_first_inserted_if_stopped(
+        &mut self,
+        first: Option<(usize, QueueItemData)>,
+        first_index: usize,
+    ) {
+        if self.state() != PlaybackState::Stopped {
+            return;
+        }
+        let Some((relative_idx, first)) = first else {
+            return;
+        };
+        let path = first.get_path();
+        self.open_or_log(path);
+        let position = first_index + relative_idx;
+        self.queue.set_position(position);
+        self.send_event(PlaybackEvent::QueuePositionChanged(position));
     }
 
     /// Add a new [`QueueItemData`] to the queue. If nothing is playing, start playing it.
@@ -644,21 +679,7 @@ impl PlaybackThread {
 
         let index = self.queue.queue_item(item.clone());
         self.refresh_rg_auto_hint();
-
-        if self.state() == PlaybackState::Stopped {
-            if !path_playable(item.get_path()) {
-                self.send_event(PlaybackEvent::QueueUpdated);
-                return;
-            }
-
-            let path = item.get_path();
-
-            if let Err(err) = self.open(path) {
-                error!(path = %path.display(), ?err, "Unable to open file: {err}");
-            }
-            self.queue.set_position(index);
-            self.send_event(PlaybackEvent::QueuePositionChanged(index));
-        }
+        self.start_playing_inserted_if_stopped(item, index);
 
         self.send_event(PlaybackEvent::QueueUpdated);
     }
@@ -685,10 +706,7 @@ impl PlaybackThread {
             && let Some((relative_idx, first)) = first
         {
             let path = first.get_path();
-
-            if let Err(err) = self.open(path) {
-                error!(path = %path.display(), ?err, "Unable to open file: {err}");
-            }
+            self.open_or_log(path);
             let position = first_index + relative_idx;
             // With shuffle on, `queue_items` shuffled the appended batch, so
             // the opened item no longer sits at `first_index + relative_idx`;
@@ -753,9 +771,7 @@ impl PlaybackThread {
                     let should_reopen = self.engine.current_path() != Some(current_path.as_path());
 
                     if should_reopen {
-                        if let Err(err) = self.open(&current_path) {
-                            error!(path = %current_path.display(), ?err, "Unable to open file: {err}");
-                        }
+                        self.open_or_log(&current_path);
 
                         if previous_state == PlaybackState::Paused {
                             self.pause();
@@ -794,6 +810,21 @@ impl PlaybackThread {
         }
     }
 
+    /// After removing the currently playing track: open the track that took
+    /// its slot (keeping the resampler across the transition when asked), or
+    /// stop when the queue has nothing left to play.
+    fn play_after_removal(&mut self, new_path: Option<PathBuf>, preserve_resampler: bool) {
+        // Play the next track if there is one
+        let Some(path) = new_path else {
+            self.stop();
+            return;
+        };
+        self.open_or_log_resampled(&path, preserve_resampler);
+        if let Some(pos) = self.queue.current_position() {
+            self.send_event(PlaybackEvent::QueuePositionChanged(pos));
+        }
+    }
+
     /// Remove an item from the queue.
     fn remove(&mut self, idx: usize) {
         self.remove_with_resampler(idx, false);
@@ -810,18 +841,7 @@ impl PlaybackThread {
                 self.set_stop_after_current(false);
                 self.refresh_rg_auto_hint();
                 self.send_event(PlaybackEvent::QueueUpdated);
-
-                // Play the next track if there is one
-                if let Some(path) = new_path {
-                    if let Err(err) = self.open_with_resampler(&path, preserve_resampler) {
-                        error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                    }
-                    if let Some(pos) = self.queue.current_position() {
-                        self.send_event(PlaybackEvent::QueuePositionChanged(pos));
-                    }
-                } else {
-                    self.stop();
-                }
+                self.play_after_removal(new_path, preserve_resampler);
             }
             DequeueResult::Unchanged => {}
         }
@@ -838,17 +858,7 @@ impl PlaybackThread {
                 self.set_stop_after_current(false);
                 self.refresh_rg_auto_hint();
                 self.send_event(PlaybackEvent::QueueUpdated);
-
-                if let Some(path) = new_path {
-                    if let Err(err) = self.open(&path) {
-                        error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                    }
-                    if let Some(pos) = self.queue.current_position() {
-                        self.send_event(PlaybackEvent::QueuePositionChanged(pos));
-                    }
-                } else {
-                    self.stop();
-                }
+                self.play_after_removal(new_path, false);
             }
             DequeueManyResult::Unchanged => {}
         }
@@ -863,20 +873,7 @@ impl PlaybackThread {
             InsertResult::Inserted { first_index } => {
                 self.refresh_rg_auto_hint();
                 // If stopped, start playing the inserted item
-                if self.state() == PlaybackState::Stopped {
-                    if !path_playable(item.get_path()) {
-                        self.send_event(PlaybackEvent::QueueUpdated);
-                        return;
-                    }
-
-                    let path = item.get_path();
-
-                    if let Err(err) = self.open(path) {
-                        error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                    }
-                    self.queue.set_position(first_index);
-                    self.send_event(PlaybackEvent::QueuePositionChanged(first_index));
-                }
+                self.start_playing_inserted_if_stopped(item, first_index);
             }
             InsertResult::InsertedMovedCurrent {
                 first_index,
@@ -886,20 +883,7 @@ impl PlaybackThread {
                 self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
 
                 // If stopped, start playing the inserted item
-                if self.state() == PlaybackState::Stopped {
-                    if !path_playable(item.get_path()) {
-                        self.send_event(PlaybackEvent::QueueUpdated);
-                        return;
-                    }
-
-                    let path = item.get_path();
-
-                    if let Err(err) = self.open(path) {
-                        error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                    }
-                    self.queue.set_position(first_index);
-                    self.send_event(PlaybackEvent::QueuePositionChanged(first_index));
-                }
+                self.start_playing_inserted_if_stopped(item, first_index);
             }
             InsertResult::Unchanged => {}
         }
@@ -930,18 +914,7 @@ impl PlaybackThread {
             InsertResult::Inserted { first_index } => {
                 self.refresh_rg_auto_hint();
                 // If stopped, start playing the first inserted item
-                if self.state() == PlaybackState::Stopped
-                    && let Some((relative_idx, first)) = first
-                {
-                    let path = first.get_path();
-
-                    if let Err(err) = self.open(path) {
-                        error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                    }
-                    let position = first_index + relative_idx;
-                    self.queue.set_position(position);
-                    self.send_event(PlaybackEvent::QueuePositionChanged(position));
-                }
+                self.start_playing_first_inserted_if_stopped(first, first_index);
             }
             InsertResult::InsertedMovedCurrent {
                 first_index,
@@ -951,18 +924,7 @@ impl PlaybackThread {
                 self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
 
                 // If stopped, start playing the first inserted item
-                if self.state() == PlaybackState::Stopped
-                    && let Some((relative_idx, first)) = first
-                {
-                    let path = first.get_path();
-
-                    if let Err(err) = self.open(path) {
-                        error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                    }
-                    let position = first_index + relative_idx;
-                    self.queue.set_position(position);
-                    self.send_event(PlaybackEvent::QueuePositionChanged(position));
-                }
+                self.start_playing_first_inserted_if_stopped(first, first_index);
             }
             InsertResult::Unchanged => {}
         }
@@ -1012,9 +974,7 @@ impl PlaybackThread {
         match self.queue.jump(index) {
             JumpResult::Jumped { path } => {
                 self.set_stop_after_current(false);
-                if let Err(err) = self.open(&path) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
+                self.open_or_log(&path);
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
             JumpResult::OutOfBounds => {
@@ -1029,9 +989,7 @@ impl PlaybackThread {
         match self.queue.jump_unshuffled(index) {
             JumpResult::Jumped { path } => {
                 self.set_stop_after_current(false);
-                if let Err(err) = self.open(&path) {
-                    error!(path = %path.display(), ?err, "Unable to open file: {err}");
-                }
+                self.open_or_log(&path);
                 // Get the actual position in the (possibly shuffled) queue
                 if let Some(pos) = self.queue.current_position() {
                     self.send_event(PlaybackEvent::QueuePositionChanged(pos));
@@ -1150,19 +1108,17 @@ impl PlaybackThread {
 
     /// Toggle shuffle mode. This will result in the queue being duplicated and shuffled.
     fn toggle_shuffle(&mut self) {
-        match self.queue.toggle_shuffle() {
-            ShuffleResult::Shuffled => {
-                self.refresh_rg_auto_hint();
-                self.send_event(PlaybackEvent::ShuffleToggled(true));
-                self.send_event(PlaybackEvent::QueueUpdated);
-            }
-            ShuffleResult::Unshuffled { new_position } => {
-                self.refresh_rg_auto_hint();
-                self.send_event(PlaybackEvent::ShuffleToggled(false));
-                self.send_event(PlaybackEvent::QueueUpdated);
+        let (shuffled, new_position) = match self.queue.toggle_shuffle() {
+            ShuffleResult::Shuffled => (true, None),
+            ShuffleResult::Unshuffled { new_position } => (false, Some(new_position)),
+        };
 
-                self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
-            }
+        self.refresh_rg_auto_hint();
+        self.send_event(PlaybackEvent::ShuffleToggled(shuffled));
+        self.send_event(PlaybackEvent::QueueUpdated);
+
+        if let Some(new_position) = new_position {
+            self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
         }
     }
 
