@@ -373,7 +373,7 @@ impl PlaybackThread {
             #[cfg(feature = "kugou")]
             {
                 let path = self.queue.current_path()?;
-                crate::ui::online::online_track_matching_path(&path).map(|track| {
+                crate::online_sources::kugou::online_track_matching_path(&path).map(|track| {
                     OnlineIdentity::Kugou {
                         hash: track.hash.clone(),
                         mix_song_id: track.mix_song_id,
@@ -399,7 +399,7 @@ impl PlaybackThread {
             .block_on(async {
                 tokio::time::timeout(
                     STREAM_REFRESH_TIMEOUT,
-                    crate::ui::online::refresh_online_url(
+                    crate::online_sources::refresh_online_url(
                         &identity,
                         #[cfg(feature = "kugou")]
                         kugou_quality,

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use gpui::{AsyncApp, Entity, Global};
 
 #[cfg(feature = "online_sources")]
-use crate::playback::queue::OnlineIdentity;
+use crate::online_sources::OnlineIdentity;
 use crate::ui::models::Queue;
 
 pub use recorder::ListenRow;
@@ -92,7 +92,7 @@ pub fn song_info(
         let mut meta = None;
         #[cfg(feature = "kugou")]
         if matches!(identity, Some(OnlineIdentity::Kugou { .. }))
-            && let Some(track) = crate::ui::online::online_track_matching_path(path)
+            && let Some(track) = crate::online_sources::kugou::online_track_matching_path(path)
         {
             meta = Some(TrackMeta {
                 title: track.title.to_string(),
@@ -102,7 +102,7 @@ pub fn song_info(
         }
         #[cfg(feature = "netease")]
         if matches!(identity, Some(OnlineIdentity::Netease { .. }))
-            && let Some(track) = crate::ui::online::netease_online_track_matching_path(path)
+            && let Some(track) = crate::online_sources::netease::online_track_matching_path(path)
         {
             meta = Some(TrackMeta {
                 title: track.title.to_string(),

@@ -15,9 +15,9 @@ pub fn download_label() -> cntp_i18n::I18nString {
 
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
-        Arc, Mutex, OnceLock, RwLock,
+        Arc, OnceLock, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -29,7 +29,6 @@ use gpui::{
     App, ClickEvent, FontWeight, InteractiveElement, IntoElement, ParentElement, RenderImage,
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::SmallVec;
 
@@ -52,22 +51,18 @@ use crate::{
     },
 };
 
-/// One online track as shown in search results and playlists. `id` is the
-/// NetEase song id (the play-URL / lyrics / like key).
-#[derive(Clone, Debug, PartialEq)]
-pub struct NeteaseTrackInfo {
-    pub title: SharedString,
-    pub artist: SharedString,
-    pub album: SharedString,
-    /// Duration in seconds (0 when unknown).
-    pub duration: i64,
-    pub id: i64,
-    pub album_id: i64,
-    /// `fee` field: 0 free, 1 VIP-only, 4 album purchase, 8 low quality free.
-    pub fee: i64,
-    /// Absolute album-art URL from the API. Empty when there is none.
-    pub cover_url: SharedString,
-}
+// ①步下沉：流注册表（stream map）、播放 URL 获取与恢复期 URL 刷新已搬至
+// `crate::online_sources::netease`（A-1 第①步，playback/stats 不再反向依赖
+// crate::ui），此处按原可见性再导出，保证 ui 侧全部既有调用点零改动；
+// ②步收编（trait 化）时清理这些再导出。
+// （`refresh_restored_url` 的 ui 侧消费者已全部切到 crate::online_sources，
+// 故此处不再重复再导出；`StreamMapEntry` 无需具名，经 `stream_map` 再导出
+// 即可访问其 pub(crate) 字段。）
+pub(crate) use crate::online_sources::netease::stream_map;
+pub use crate::online_sources::netease::{
+    NeteaseTrackInfo, extract_song_url, fetch_stream_url, online_track_matching_path,
+    remember_online_track,
+};
 
 impl NeteaseTrackInfo {
     /// Right-hand label used in listings: "artist · m:ss".
@@ -98,156 +93,6 @@ pub struct NeteaseRank {
     pub name: SharedString,
     pub cover_url: SharedString,
     pub update_frequency: SharedString,
-}
-
-// ---------------------------------------------------------------------------
-// Stream URL → track registry
-//
-// NetEase play URLs are opaque signed CDN links that embed no song id, so the
-// queue (which only carries the URL) cannot resolve lyrics / the like state
-// on its own. Every resolved play URL is recorded here (in memory AND on
-// disk, so a restored queue still matches after a restart).
-// ---------------------------------------------------------------------------
-
-/// On-disk mirror of a registry entry (plain strings, JSON friendly).
-#[derive(Serialize, Deserialize, Clone)]
-struct StreamMapEntry {
-    url: String,
-    id: i64,
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    artist: String,
-    #[serde(default)]
-    album: String,
-    #[serde(default)]
-    album_id: i64,
-    #[serde(default)]
-    fee: i64,
-    #[serde(default)]
-    duration: i64,
-    #[serde(default)]
-    cover_url: String,
-}
-
-const STREAM_MAP_CAP: usize = 200;
-
-fn stream_map_path() -> PathBuf {
-    crate::paths::data_dir().join("netease_stream_map.json")
-}
-
-fn stream_map() -> &'static Mutex<Vec<StreamMapEntry>> {
-    static STREAM_MAP: OnceLock<Mutex<Vec<StreamMapEntry>>> = OnceLock::new();
-    STREAM_MAP.get_or_init(|| {
-        let entries = std::fs::read_to_string(stream_map_path())
-            .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
-            .unwrap_or_default();
-        Mutex::new(entries)
-    })
-}
-
-fn entry_to_track(entry: &StreamMapEntry) -> NeteaseTrackInfo {
-    NeteaseTrackInfo {
-        title: SharedString::from(entry.title.clone()),
-        artist: SharedString::from(entry.artist.clone()),
-        album: SharedString::from(entry.album.clone()),
-        duration: entry.duration,
-        id: entry.id,
-        album_id: entry.album_id,
-        fee: entry.fee,
-        cover_url: SharedString::from(entry.cover_url.clone()),
-    }
-}
-
-/// Bytes of the stream-map JSON last handed to the persistence task. Kept so
-/// re-recording an unchanged registry (e.g. replaying the same song) skips
-/// the disk write entirely instead of re-writing identical bytes.
-static LAST_PERSISTED_STREAM_MAP: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
-
-/// Serializes stream-map persistence. Two overlapping truncate+write on the
-/// same file can interleave into torn, unparseable JSON — which would drop
-/// the whole registry on next launch — so every write takes this gate first.
-/// tokio's mutex is fair by poll order (not spawn order), so writers land
-/// roughly in hand-off order; a stale final write only costs a URL refresh
-/// on next launch (the registry is a cache).
-static STREAM_MAP_WRITE_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-/// Returns `json` back when it differs from the last persisted bytes (and
-/// records it as the new baseline), or `None` when it is unchanged and the
-/// write task can be skipped. The mutex is only ever held for a memcmp.
-fn persist_stream_map_if_changed(json: Vec<u8>) -> Option<Vec<u8>> {
-    let mut last = LAST_PERSISTED_STREAM_MAP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if last.as_deref() == Some(json.as_slice()) {
-        return None;
-    }
-    *last = Some(json.clone());
-    Some(json)
-}
-
-/// Records that `url` (a NetEase stream) belongs to `track` and persists the
-/// registry (LRU-capped).
-pub fn remember_online_track(url: String, track: NeteaseTrackInfo) {
-    let entry = StreamMapEntry {
-        url,
-        id: track.id,
-        title: track.title.to_string(),
-        artist: track.artist.to_string(),
-        album: track.album.to_string(),
-        album_id: track.album_id,
-        fee: track.fee,
-        duration: track.duration,
-        cover_url: track.cover_url.to_string(),
-    };
-    // Only mutate + snapshot under the lock; serialization and the disk write
-    // both happen outside of it: the map is read on both the UI thread and
-    // the playback thread, so holding the mutex across either lets a slow FS
-    // stall song changes.
-    let snapshot = {
-        let mut guard = stream_map().lock().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|existing| existing.url != entry.url);
-        guard.insert(0, entry);
-        guard.truncate(STREAM_MAP_CAP);
-        guard.clone()
-    };
-    let Some(json) = serde_json::to_vec(&snapshot).ok() else {
-        return;
-    };
-    // Off-thread and lock-free disk write; see the kugou twin for rationale.
-    if let Some(json) = persist_stream_map_if_changed(json) {
-        let path = stream_map_path();
-        let gate = STREAM_MAP_WRITE_GATE.get_or_init(Default::default);
-        crate::RUNTIME.spawn(async move {
-            let _gate = gate.lock().await;
-            if let Err(err) = tokio::fs::write(&path, &json).await {
-                // Roll the baseline back so an identical later snapshot
-                // retries instead of silently leaving the old file in place.
-                // Only when the baseline is still our own bytes: a newer
-                // writer may have updated it meanwhile.
-                if let Some(last) = LAST_PERSISTED_STREAM_MAP.get() {
-                    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
-                    if last.as_deref() == Some(json.as_slice()) {
-                        last.take();
-                    }
-                }
-                tracing::warn!(%err, "failed to persist netease stream map");
-            }
-        });
-    }
-}
-
-/// If `path` is a stream reached through this app, returns the remembered
-/// online track for it.
-pub fn online_track_matching_path(path: &Path) -> Option<NeteaseTrackInfo> {
-    let path_str = path.to_string_lossy();
-    let guard = stream_map().lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .iter()
-        .find(|entry| entry.url == path_str.as_ref())
-        .map(entry_to_track)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,24 +281,6 @@ pub fn parse_ranks(body: &Value) -> Vec<NeteaseRank> {
         .unwrap_or_default()
 }
 
-/// Extracts the first playable URL out of a `song_url` response
-/// (`data[0].url`), together with whether it is only a trial clip
-/// (`freeTrialInfo` present).
-pub fn extract_song_url(body: &Value) -> Option<(String, bool)> {
-    body.pointer("/data/0").and_then(|entry| {
-        entry
-            .get("url")
-            .and_then(Value::as_str)
-            .filter(|url| !url.is_empty())
-            .map(|url| {
-                let trial = entry
-                    .get("freeTrialInfo")
-                    .is_some_and(|info| !info.is_null());
-                (url.to_string(), trial)
-            })
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Playback
 // ---------------------------------------------------------------------------
@@ -463,64 +290,12 @@ enum PlayIntent {
     Queue,
 }
 
-/// Playable URL for one NetEase song at the requested level, falling back to
-/// standard when the higher tier is unavailable. Trial clips are accepted for
-/// playback (that is what a non-VIP account gets for VIP songs, same as the
-/// web player); downloads reject them. Shared by live playback and the
-/// session-restore URL refresh.
-pub async fn fetch_stream_url(
-    client: &netease::NeteaseClient,
-    id: i64,
-    quality: &str,
-) -> Option<String> {
-    let levels: [&str; 2] = if quality == "standard" {
-        [quality, ""]
-    } else {
-        [quality, "standard"]
-    };
-    for &level in levels.iter().filter(|l| !l.is_empty()) {
-        if let Ok(resp) = client.song_url(id, level).await
-            && let Some((url, _trial)) = extract_song_url(&resp.body)
-        {
-            return Some(url);
-        }
-    }
-    None
-}
-
 async fn fetch_play_url(
     client: &netease::NeteaseClient,
     track: &NeteaseTrackInfo,
     quality: &str,
 ) -> Option<String> {
     fetch_stream_url(client, track.id, quality).await
-}
-
-/// Re-fetches a fresh play URL for a restored NetEase queue item and
-/// re-records the new URL in the stream registry, so lyrics / like resolution
-/// for the running stream keeps working after the signed URL expired.
-pub async fn refresh_restored_url(
-    id: i64,
-    quality: &str,
-    name: Option<String>,
-    artist: Option<String>,
-    duration: Option<i64>,
-    cover_url: Option<String>,
-) -> Option<String> {
-    let client = netease::shared_client();
-    let url = fetch_stream_url(&client, id, quality).await?;
-    let track = NeteaseTrackInfo {
-        title: SharedString::from(name.unwrap_or_default()),
-        artist: SharedString::from(artist.unwrap_or_default()),
-        album: SharedString::default(),
-        duration: duration.unwrap_or(0),
-        id,
-        album_id: 0,
-        fee: 0,
-        cover_url: SharedString::from(cover_url.unwrap_or_default()),
-    };
-    remember_online_track(url.clone(), track);
-    Some(url)
 }
 
 /// Song ids whose play-URL fetch is currently in flight, plus ids whose

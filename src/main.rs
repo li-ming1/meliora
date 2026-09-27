@@ -23,6 +23,8 @@ mod media;
 mod mimalloc_stats;
 #[cfg(feature = "netease")]
 mod netease;
+#[cfg(feature = "online_sources")]
+mod online_sources;
 mod paths;
 mod playback;
 mod power;
