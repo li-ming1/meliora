@@ -34,6 +34,8 @@ mod stats;
 mod test_support;
 mod toasts;
 pub mod ui;
+#[cfg(feature = "online")]
+mod updater;
 
 const VERSION_STRING: &str = env!("MELIORA_VERSION_STRING");
 
@@ -324,6 +326,24 @@ fn atlas_probe_snapshot() -> [u64; 15] {
     out
 }
 
+/// Spawns a fresh copy of this executable with the original CLI arguments.
+/// Returns `false` when the spawn failed (callers continue degraded). Shared
+/// by the memory hard-cap valve (exits immediately with a sentinel code) and
+/// the updater's "restart to apply" (quits through gpui so the `on_app_quit`
+/// flushes still run); session state rides in `playback_session.json`, which
+/// the storage worker persists continuously, so the restart gap is ~2 s.
+pub(crate) fn spawn_replacement() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .spawn()
+                .ok()
+        })
+        .is_some()
+}
+
 #[cfg(not(test))]
 fn spawn_memory_probe() {
     // Net committed growth over the last 10 minutes considered a "step".
@@ -465,13 +485,7 @@ fn spawn_memory_probe() {
                     "memory hard cap breached for two consecutive samples; \
                      restarting to bound private commit"
                 );
-                let restart = std::env::current_exe().ok().and_then(|exe| {
-                    std::process::Command::new(exe)
-                        .args(std::env::args_os().skip(1))
-                        .spawn()
-                        .ok()
-                });
-                if restart.is_some() {
+                if spawn_replacement() {
                     std::process::exit(70);
                 }
                 tracing::error!("memory hard cap: replacement spawn failed; continuing degraded");

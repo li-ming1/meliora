@@ -591,6 +591,15 @@ pub fn run() -> anyhow::Result<()> {
         #[cfg(feature = "netease")]
         crate::ui::netease::prime_liked_cache();
 
+        // Auto-update: publish the updater state, scrub leftovers of a
+        // previous update restart, and check GitHub Releases once the
+        // startup rush has settled. No-op unless a new release exists; the
+        // download/install pipeline lives in updater.rs.
+        #[cfg(feature = "online")]
+        crate::updater::init(cx);
+        #[cfg(feature = "online")]
+        crate::updater::schedule_startup_check(cx);
+
         // Update `StorageData` and save it to file system while quitting the app.
         cx.on_app_quit({
             let storage = storage.clone();

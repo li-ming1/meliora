@@ -67,6 +67,14 @@ impl Toast {
         });
         self
     }
+
+    /// Overrides the default 5 s lifetime — the `duration` field exists for
+    /// callers whose notice is easy to miss and cheap to keep up (e.g. the
+    /// updater's "restart to apply").
+    pub fn with_duration(mut self, duration: Duration) -> Self {
+        self.duration = Some(duration);
+        self
+    }
 }
 
 /// Queue a toast for display. Silently dropped if the sender hasn't been

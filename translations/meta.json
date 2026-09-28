@@ -7,55 +7,55 @@
   },
   "ABOUT_COPYRIGHT": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:109",
+    "definedIn": "src/ui/about.rs:158",
     "plural": false,
     "description": null
   },
   "ABOUT_LICENSE_AFTER_LINK": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:129",
+    "definedIn": "src/ui/about.rs:178",
     "plural": false,
     "description": null
   },
   "ABOUT_LICENSE_BEFORE_LINK": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:117",
+    "definedIn": "src/ui/about.rs:166",
     "plural": false,
     "description": null
   },
   "ABOUT_LICENSE_LINK": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:125",
+    "definedIn": "src/ui/about.rs:174",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_BUG": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:98",
+    "definedIn": "src/ui/about.rs:147",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_CODE": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:105",
+    "definedIn": "src/ui/about.rs:154",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_MIDDLE": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:100",
+    "definedIn": "src/ui/about.rs:149",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_START": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:86",
+    "definedIn": "src/ui/about.rs:135",
     "plural": false,
     "description": "Because the UI framework we use doesn't support inline elements, we have to use a separate string for each part of this text. Use a zero-width space (U+200B) if a part isn't needed."
   },
   "ABOUT_OPEN": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:66",
+    "definedIn": "src/ui/settings/about.rs:280",
     "plural": false,
     "description": null
   },
@@ -67,25 +67,25 @@
   },
   "ABOUT_SECTION_ABOUT_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:62",
+    "definedIn": "src/ui/settings/about.rs:276",
     "plural": false,
     "description": null
   },
   "ABOUT_SECTION_COPY_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:86",
+    "definedIn": "src/ui/settings/about.rs:300",
     "plural": false,
     "description": null
   },
   "ABOUT_SECTION_ISSUE_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:74",
+    "definedIn": "src/ui/settings/about.rs:288",
     "plural": false,
     "description": null
   },
   "ABOUT_SECTION_LOG_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:98",
+    "definedIn": "src/ui/settings/about.rs:312",
     "plural": false,
     "description": null
   },
@@ -103,7 +103,7 @@
   },
   "ACTION_COPY": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:90",
+    "definedIn": "src/ui/settings/about.rs:304",
     "plural": false,
     "description": null
   },
@@ -331,13 +331,13 @@
   },
   "CODEBERG_ISSUES": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:72",
+    "definedIn": "src/ui/settings/about.rs:286",
     "plural": false,
     "description": null
   },
   "CODEBERG_ISSUES_OPEN": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:78",
+    "definedIn": "src/ui/settings/about.rs:292",
     "plural": false,
     "description": null
   },
@@ -1555,7 +1555,7 @@
   },
   "OPEN_LOG_OPEN": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:102",
+    "definedIn": "src/ui/settings/about.rs:316",
     "plural": false,
     "description": null
   },
@@ -2525,9 +2525,141 @@
     "plural": false,
     "description": null
   },
+  "UPDATE_ABOUT_AVAILABLE": {
+    "context": "about.rs",
+    "definedIn": "src/ui/about.rs:36",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_ABOUT_READY": {
+    "context": "about.rs",
+    "definedIn": "src/ui/about.rs:50",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_AUTO_CHECK": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:329",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_AUTO_CHECK_SUBTEXT": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:331",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_AUTO_DOWNLOAD": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:341",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_AUTO_DOWNLOAD_SUBTEXT": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:343",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_AVAILABLE_TOAST": {
+    "context": "updater.rs",
+    "definedIn": "src/updater.rs:263",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_CHECK_NOW": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:226",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_CURRENT": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:211",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_DOWNLOAD_NOW": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:236",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_OPEN_RELEASE": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:246",
+    "plural": false,
+    "description": null
+  },
   "UPDATE_PLAYLIST": {
     "context": "update_playlist.rs",
     "definedIn": "src/ui/library/update_playlist.rs:34",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_READY_TOAST": {
+    "context": "updater.rs",
+    "definedIn": "src/updater.rs:380",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_RESTART_FAILED_TOAST": {
+    "context": "updater.rs",
+    "definedIn": "src/updater.rs:409",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_RESTART_NOW": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:254",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_SECTION": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:323",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_AVAILABLE": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:164",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_CHECKING": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:142",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_DOWNLOADING": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:184",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_FAILED": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:151",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_IDLE": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:138",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_READY": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:194",
+    "plural": false,
+    "description": null
+  },
+  "UPDATE_STATUS_UP_TO_DATE": {
+    "context": "about.rs",
+    "definedIn": "src/ui/settings/about.rs:146",
     "plural": false,
     "description": null
   },

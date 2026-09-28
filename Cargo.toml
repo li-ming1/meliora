@@ -10,7 +10,7 @@ categories = ["multimedia::audio"]
 [features]
 runtime_shaders = ["gpui_platform/runtime_shaders"]
 console = ["dep:console-subscriber", "tokio/tracing"]
-online = ["dep:zed-reqwest"]
+online = ["dep:zed-reqwest", "dep:sha2"]
 # Exposes the [mem] probe's `atlas=` field (main.rs atlas_probe_snapshot).
 # Requires the MELIORA PERMANENT OBSERVABILITY PATCH in the local gpui-ce
 # checkout (directx_atlas.rs, see AGENTS.md); upstream gpui-ce has no
@@ -85,6 +85,9 @@ rustc-hash = "2"
 same-file = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+# Update artifact integrity (updater.rs): sha256 of the downloaded bare
+# binary against the release's checksums.txt. Pulled in by `online` only.
+sha2 = { version = "0.10", optional = true }
 smallvec = "1"
 sqlx = { version = "0.9", default-features = false, features = [
     "chrono",

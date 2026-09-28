@@ -4,6 +4,7 @@ pub mod playback;
 pub mod replaygain;
 pub mod scan;
 pub mod storage;
+pub mod update;
 
 use std::{
     fs,
@@ -32,6 +33,8 @@ pub struct Settings {
     pub playback: playback::PlaybackSettings,
     #[serde(default)]
     pub interface: interface::InterfaceSettings,
+    #[serde(default)]
+    pub update: update::UpdateSettings,
 }
 
 fn has_stored_theme_setting(value: &serde_json::Value) -> bool {
@@ -432,9 +435,21 @@ mod tests {
         let empty_settings = json!({
             "scanning": {},
             "playback": {},
-            "interface": {}
+            "interface": {},
+            "update": {}
         });
 
         let _: Settings = serde_json::from_value(empty_settings).unwrap();
+    }
+
+    #[test]
+    fn update_settings_default_when_key_missing() {
+        let dir = create_test_dir();
+        fs::write(settings_path(&dir), r#"{"interface": {}}"#).unwrap();
+
+        let settings = create_settings(&settings_path(&dir)).into_settings();
+
+        assert!(settings.update.auto_check);
+        assert!(settings.update.auto_download);
     }
 }
