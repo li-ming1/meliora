@@ -1105,7 +1105,7 @@ fn lerp(start: f32, end: f32, progress: f32) -> f32 {
 }
 
 /// 单个字的卡拉OK 完成进度 0..1（按播放位置与字时间窗求交）。
-fn word_progress(word: &LrcWord, pos_ms: u64) -> f32 {
+pub(crate) fn word_progress(word: &LrcWord, pos_ms: u64) -> f32 {
     if pos_ms <= word.time_ms {
         0.0
     } else if pos_ms >= word.time_ms + word.duration_ms {

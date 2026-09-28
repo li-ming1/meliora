@@ -745,6 +745,10 @@ pub struct ManagedImage {
     /// atlas tile whose reclamation waits on the render-cache LRU, the measured
     /// per-track commit ratchet of the 2026-09-14 soak.
     cache: bool,
+    /// Mild unsharp pass after decode, for low-resolution sources shown much
+    /// larger than native (full-screen immersive backdrop). Skipped for
+    /// already-large sources where the scale factor is small.
+    sharpen: bool,
 }
 
 impl ManagedImage {
@@ -770,6 +774,14 @@ impl ManagedImage {
     /// the element unmounts instead of pinning the page until LRU eviction.
     pub fn uncached(mut self) -> Self {
         self.cache = false;
+        self
+    }
+
+    /// Runs a mild unsharp mask after decoding. Only fires for sources
+    /// smaller than [`SHARPEN_MAX_SOURCE_PX`] — large covers scale down
+    /// cleanly and sharpening would just amplify noise.
+    pub fn sharpened(mut self) -> Self {
+        self.sharpen = true;
         self
     }
 }
@@ -810,6 +822,7 @@ impl Element for ManagedImage {
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
         let use_cache = self.cache;
+        let sharpen = self.sharpen;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
@@ -840,6 +853,14 @@ impl Element for ManagedImage {
                 };
                 match result {
                     Ok(Some(image)) => {
+                        // The sharpen pass runs before the image reaches the
+                        // state/atlas: one off-thread sweep, only for small
+                        // sources (large covers scale down cleanly).
+                        let image = if sharpen {
+                            sharpen_render_image(&image).unwrap_or(image)
+                        } else {
+                            image
+                        };
                         if this
                             .update(cx, |this: &mut ManagedImageState, cx| {
                                 // keyed state 被同一元素位置跨内容复用时（如
@@ -997,6 +1018,69 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         object_fit: ObjectFit::Cover,
         thumb_size: 0,
         cache: true,
+        sharpen: false,
+    }
+}
+
+/// Sources at or above this side length skip the sharpen pass: the full-screen
+/// scale factor is already small, and sharpening a clean large decode would
+/// only amplify noise.
+const SHARPEN_MAX_SOURCE_PX: u32 = 1400;
+/// Unsharp strength (out = orig + AMOUNT × (orig − 3×3 box mean)).
+const SHARPEN_AMOUNT: f32 = 0.6;
+/// Flat-neighborhood guard: per-channel diffs below this stay untouched so
+/// film grain and compression noise don't amplify.
+const SHARPEN_THRESHOLD: f32 = 2.0;
+
+/// Mild unsharp mask for low-resolution sources shown far above native size
+/// (the immersive backdrop): a GPU bilinear stretch of a 500-1000px embedded
+/// cover reads soft; one sharpening sweep before atlas upload restores edge
+/// bite. RGB channels only, alpha untouched.
+fn sharpen_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
+    let bytes = image.as_bytes(0)?;
+    let size = image.size(0);
+    let (width, height) = (u32::from(size.width), u32::from(size.height));
+    if width == 0 || height == 0 || width >= SHARPEN_MAX_SOURCE_PX {
+        return Some(Arc::clone(image));
+    }
+    let mut rgba = image::RgbaImage::from_raw(width, height, bytes.to_vec())?;
+    sharpen_rgba(&mut rgba);
+    Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
+}
+
+/// In-place 3×3 unsharp mask over RGB: `out = orig + AMOUNT × (orig −
+/// box3x3(orig))`, edges clamped to the nearest pixel, flat neighborhoods
+/// (per-channel `|diff| < THRESHOLD`) left as-is.
+fn sharpen_rgba(image: &mut image::RgbaImage) {
+    let (width, height) = image.dimensions();
+    let source = image.clone();
+    let sample = |x: i64, y: i64| -> [u8; 4] {
+        let x = x.clamp(0, width as i64 - 1) as u32;
+        let y = y.clamp(0, height as i64 - 1) as u32;
+        source.get_pixel(x, y).0
+    };
+    for y in 0..height {
+        for x in 0..width {
+            let orig = *source.get_pixel(x, y);
+            let mut out = [orig[0], orig[1], orig[2]];
+            for channel in 0..3 {
+                let mut sum = 0u32;
+                for dy in -1i64..=1 {
+                    for dx in -1i64..=1 {
+                        sum += sample(x as i64 + dx, y as i64 + dy)[channel] as u32;
+                    }
+                }
+                let mean = sum as f32 / 9.0;
+                let diff = orig[channel] as f32 - mean;
+                if diff.abs() >= SHARPEN_THRESHOLD {
+                    out[channel] = (orig[channel] as f32 + SHARPEN_AMOUNT * diff)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                }
+            }
+            let pixel = image.get_pixel_mut(x, y);
+            pixel.0 = [out[0], out[1], out[2], orig[3]];
+        }
     }
 }
 
@@ -1006,6 +1090,70 @@ mod tests {
     use image::{Frame, RgbaImage};
     use smallvec::smallvec;
     use std::collections::HashSet;
+
+    #[test]
+    fn sharpen_boosts_edges_and_keeps_flat_areas() {
+        // 3×3: a dark pixel in the middle of bright ones — an edge the
+        // unsharp pass must bite into.
+        let mut image = RgbaImage::from_fn(3, 3, |x, y| {
+            if x == 1 && y == 1 {
+                image::Rgba([40u8, 40, 40, 255])
+            } else {
+                image::Rgba([200u8, 200, 200, 255])
+            }
+        });
+        let before = *image.get_pixel(1, 1);
+        sharpen_rgba(&mut image);
+        let after = *image.get_pixel(1, 1);
+        // Dark center gets darker (edge contrast grows).
+        assert!(
+            after[0] < before[0],
+            "edge should sharpen: {before:?} → {after:?}"
+        );
+
+        // A flat region stays byte-identical (threshold guard).
+        let mut flat = RgbaImage::from_fn(3, 3, |_, _| image::Rgba([128u8, 128, 128, 255]));
+        sharpen_rgba(&mut flat);
+        assert_eq!(*flat.get_pixel(1, 1), image::Rgba([128u8, 128, 128, 255]));
+    }
+
+    #[test]
+    fn sharpen_render_image_skips_large_sources() {
+        // 1600px source ≥ SHARPEN_MAX_SOURCE_PX: the same Arc comes back.
+        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            1600,
+            2,
+            |_, _| image::Rgba([10u8, 10, 10, 255])
+        ))]));
+        let sharpened = sharpen_render_image(&image).unwrap();
+        assert!(Arc::ptr_eq(&image, &sharpened));
+    }
+
+    #[test]
+    fn sharpen_render_image_processes_small_sources() {
+        // 8px source < SHARPEN_MAX_SOURCE_PX: a new Arc with an edge-bitten
+        // center comes back.
+        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            8,
+            8,
+            |x, y| {
+                if x == 4 && y == 4 {
+                    image::Rgba([40u8, 40, 40, 255])
+                } else {
+                    image::Rgba([200u8, 200, 200, 255])
+                }
+            }
+        ))]));
+        let sharpened = sharpen_render_image(&image).unwrap();
+        assert!(!Arc::ptr_eq(&image, &sharpened));
+        let bytes = sharpened.as_bytes(0).unwrap();
+        let center = 4 * (4 * 8 + 4);
+        assert!(
+            bytes[center] < 40,
+            "center should darken: {}",
+            bytes[center]
+        );
+    }
 
     fn test_image() -> Arc<RenderImage> {
         Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::new(

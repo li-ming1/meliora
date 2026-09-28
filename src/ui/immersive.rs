@@ -3,7 +3,8 @@
 //! blur — one vertical + one horizontal gradient carve out the reading
 //! zones), a spinning vinyl disc with the cover as its label sits on the
 //! left above the track names and a frosted-glass player card (seekable
-//! progress, transport, volume), and the right half is the lyrics column.
+//! progress, transport, volume), and the right half is the lyrics column
+//! with karaoke word timing, wheel browsing and click-to-seek.
 //!
 //! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
 //! loaded a second time: that entity owns the sidecar/DB/online fetch
@@ -17,27 +18,25 @@
 //!
 //! Animation discipline (see `GPUI_HARDCORE_PERFORMANCE.md` and the
 //! 2026-09-27 glyph-atlas lesson in `scroll_follow.rs`):
-//! - every frame is data-driven (spectrum/position broadcasts) or
-//!   transition-driven (line glide), with the frame loop stopped the moment
-//!   nothing animates any more;
+//! - every frame is data-driven (position broadcasts) or transition-driven
+//!   (line glide), with the frame loop stopped the moment nothing animates
+//!   any more;
 //! - lyric glyph geometry never interpolates: font sizes come from a
-//!   discrete set and line offsets snap to whole pixels, only colors lerp;
-//! - the vinyl disc is canvas-drawn; its rotation is carried by sheen arcs
-//!   whose angle derives from the playback position (33⅓ RPM), so it spins
-//!   exactly while the music plays and freezes when it doesn't — no frame
-//!   loop of its own;
-//! - the backdrop is its own 2048px uncached decode (held by the element
-//!   alone, recycled through the orphan-tile funnel on track switch) so
-//!   full-screen sharpness costs one bounded buffer instead of a pile of
-//!   render-cache entries.
+//!   discrete set and line offsets snap to whole pixels, only colors lerp
+//!   (karaoke word colors included);
+//! - the vinyl disc is two layered SVG elements (grooves + sheen) rotated
+//!   via the Svg element's own transform at 33⅓ RPM keyed off the playback
+//!   position, so it spins exactly while the music plays and freezes when
+//!   it doesn't — no frame loop of its own. The cover label itself cannot
+//!   rotate: gpui has no image-rotation primitive, and a circular label
+//!   hides that anyway;
+//! - the backdrop is its own full-sharpness uncached decode (held by the
+//!   element alone, recycled through the orphan-tile funnel on track
+//!   switch) with a mild unsharp pass for low-resolution sources.
 
 use std::{
     path::PathBuf,
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
     time::{Duration, Instant},
 };
 
@@ -45,9 +44,9 @@ use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ObjectFit, ParentElement, Path, PathBuilder, Render, Rgba,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div,
-    linear_color_stop, linear_gradient, point, px, relative,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, Render, Rgba, ScrollWheelEvent,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Transformation,
+    Window, div, linear_color_stop, linear_gradient, px, radians, relative, svg,
 };
 use tracing::warn;
 
@@ -57,16 +56,15 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
+            icons::{
+                MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VINYL_GROOVES, VINYL_SHEEN, VOLUME,
+                VOLUME_OFF, icon,
+            },
             managed_image::{ManagedImageKey, managed_image},
             slider::slider,
             tooltip::build_tooltip,
         },
-        equalizer::{
-            mapping::spectrum_db_to_y,
-            spectrum::{SpectrumData, SpectrumState, ensure_analyzer},
-        },
-        lyrics::{Lyrics, lerp_color},
+        lyrics::{Lyrics, lerp_color, word_progress},
         models::{CurrentTrack, Models, PlaybackInfo, Queue},
         scroll_follow::ease_out_cubic,
         theme::Theme,
@@ -93,18 +91,13 @@ const VINYL_SIZE_FRACTION: f32 = 0.34;
 const VINYL_LABEL_FRACTION: f32 = 0.56;
 /// Cover decode for the vinyl label — small, render-cached.
 const LABEL_THUMB_PX: u32 = 512;
-/// Backdrop decode for full-screen sharpness — uncached, element-held.
+/// Backdrop decode cap for full-screen sharpness — uncached, element-held.
 const BACKDROP_THUMB_PX: u32 = 2048;
 /// Vinyl rotation: 33⅓ RPM = 200°/s of playback position.
 const VINYL_DEG_PER_SEC: f32 = 200.0;
-/// Spectrum ribbon: dB floor below which a frame counts as silence.
-const RIBBON_SILENCE_DB: f32 = -89.0;
-/// Vinyl palette.
-const DISC_COLOR: Rgba = Rgba::new(0.045, 0.045, 0.058, 1.0);
-const GROOVE_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.045);
-const RIM_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.10);
-const SHEEN_SOFT_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.05);
-const SHEEN_BRIGHT_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.11);
+/// Wheel browsing: after this long without scrolling the view glides back
+/// to the active line (the sidebar's lyrics panel uses the same pattern).
+const SCROLL_RETURN_AFTER: Duration = Duration::from_secs(2);
 
 /// Enters or leaves immersive mode: flips [`Models::immersive`] and toggles
 /// the main window's OS fullscreen state in step. Every entry point (keybind,
@@ -135,9 +128,6 @@ pub struct ImmersiveView {
     lyrics: Entity<Lyrics>,
     /// `Lyrics::parsed_generation` last mirrored into `parsed`.
     synced_lyrics_generation: u64,
-    /// `(published spectrum, tap viewers)` — `None` until the analyzer exists.
-    spectrum: Option<(Entity<SpectrumData>, Arc<AtomicUsize>)>,
-    spectrum_viewing: bool,
 
     // Track presentation, re-resolved on track/queue-position changes.
     image_key: Option<ManagedImageKey>,
@@ -155,9 +145,16 @@ pub struct ImmersiveView {
     // Lyrics, mirrored from the shared `Lyrics` entity.
     parsed: Option<Rc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
     current_line: Option<usize>,
-    /// Animated "active line" position, glided between line indices so line
-    /// changes read as a vertical glide. Whole-pixel snapped per line at
-    /// render time.
+    /// Wheel-browsing offset from the active line, in lines. Returns to 0
+    /// after [`SCROLL_RETURN_AFTER`] of wheel idle (position ticks drive the
+    /// check, so paused playback never resets the browse position).
+    browse_offset: i64,
+    /// Sub-line wheel accumulator (fractional lines between snaps).
+    scroll_accum: f32,
+    /// Last wheel interaction; `None` once the browse offset has returned.
+    last_scroll: Option<Instant>,
+    /// Animated display center = active line + browse offset, glided
+    /// whenever either moves. Whole-pixel snapped per line at render time.
     visual_line: f32,
     line_anim: Option<(f32, f32, Instant)>,
 
@@ -190,6 +187,18 @@ impl ImmersiveView {
                     return;
                 }
                 this.track_lyric_line(*pos.read(cx));
+                // Wheel-browsing returns to the active line after the idle
+                // window; position ticks drive the check so paused playback
+                // never resets the browse position.
+                if this.browse_offset != 0
+                    && this
+                        .last_scroll
+                        .is_some_and(|at| at.elapsed() >= SCROLL_RETURN_AFTER)
+                {
+                    this.browse_offset = 0;
+                    this.last_scroll = None;
+                    this.sync_display_target(true);
+                }
                 // Drives the progress bar, the vinyl rotation and any
                 // in-flight line glide.
                 cx.notify();
@@ -261,8 +270,6 @@ impl ImmersiveView {
                 queue,
                 lyrics,
                 synced_lyrics_generation: 0,
-                spectrum: None,
-                spectrum_viewing: false,
                 image_key: None,
                 image_element_key: 0,
                 track_name: None,
@@ -273,6 +280,9 @@ impl ImmersiveView {
                 resolved_signature: None,
                 parsed: None,
                 current_line: None,
+                browse_offset: 0,
+                scroll_accum: 0.0,
+                last_scroll: None,
                 visual_line: -1.0,
                 line_anim: None,
                 frame_scheduled: false,
@@ -300,31 +310,11 @@ impl ImmersiveView {
     }
 
     fn activate(&mut self, cx: &mut Context<Self>) {
-        // Spectrum publishes only while someone is watching (viewer-gated).
-        ensure_analyzer(cx);
-        if self.spectrum.is_none() && cx.has_global::<SpectrumState>() {
-            let (data, viewers) = {
-                let state = cx.global::<SpectrumState>();
-                (state.data.clone(), state.viewers.clone())
-            };
-            self.spectrum = Some((data, viewers));
-        }
-        if let Some((_, viewers)) = &self.spectrum {
-            viewers.fetch_add(1, Ordering::Relaxed);
-            self.spectrum_viewing = true;
-        }
-
         self.resolve_track_presentation(cx);
         self.sync_lyrics(cx);
     }
 
     fn deactivate(&mut self) {
-        if self.spectrum_viewing {
-            if let Some((_, viewers)) = &self.spectrum {
-                viewers.fetch_sub(1, Ordering::Relaxed);
-            }
-            self.spectrum_viewing = false;
-        }
         self.line_anim = None;
     }
 
@@ -358,6 +348,9 @@ impl ImmersiveView {
         self.image_element_key += 1;
         self.track_name = None;
         self.artist_name = None;
+        // A fresh track ends any wheel-browsing session.
+        self.browse_offset = 0;
+        self.last_scroll = None;
         drop(self.meta_subscription.take());
 
         let mut cover_key = None;
@@ -457,7 +450,7 @@ impl ImmersiveView {
             let idx = parsed.partition_point(|line| line.time_ms <= pos_ms);
             self.current_line = if idx == 0 { None } else { Some(idx - 1) };
         }
-        self.visual_line = self.current_line.map_or(-1.0, |line| line as f32);
+        self.sync_display_target(false);
     }
 
     fn track_lyric_line(&mut self, pos_ms: u64) {
@@ -469,14 +462,36 @@ impl ImmersiveView {
         if new_line == self.current_line {
             return;
         }
-        let from = self.visual_line;
-        let target = new_line.map_or(-1.0, |line| line as f32);
+        // A jump of more than one line is a seek (click-to-seek, scrubber,
+        // prev/next): the wheel-browse session ends so the window recenters
+        // on the line the user jumped to. Natural playback steps by one.
+        if let (Some(new), Some(old)) = (new_line, self.current_line)
+            && new.abs_diff(old) > 1
+        {
+            self.browse_offset = 0;
+            self.last_scroll = None;
+        }
         self.current_line = new_line;
-        if (target - from).abs() < 0.01 {
+        self.sync_display_target(true);
+    }
+
+    /// Recenters the lyric window on the active line plus the wheel-browse
+    /// offset, gliding when the target moved.
+    fn sync_display_target(&mut self, animate: bool) {
+        let len = self.parsed.as_ref().map_or(0, |parsed| parsed.len() as i64);
+        let base = self.current_line.map_or(-1, |line| line as i64);
+        let min = -LINE_WINDOW - base;
+        let max = len - 1 + LINE_WINDOW - base;
+        self.browse_offset = self.browse_offset.clamp(min, max);
+        let target = (base + self.browse_offset) as f32;
+        if (target - self.visual_line).abs() < 0.01 {
+            self.visual_line = target;
+            self.line_anim = None;
+        } else if !animate {
             self.visual_line = target;
             self.line_anim = None;
         } else {
-            self.line_anim = Some((from, target, Instant::now()));
+            self.line_anim = Some((self.visual_line, target, Instant::now()));
         }
     }
 
@@ -524,10 +539,15 @@ impl ImmersiveView {
     }
 }
 
-/// The lyric lines inside the window around the animated active line:
+/// The lyric lines inside the window around the animated display center:
 /// `(line index, whole-pixel top offset, is_current)`. Pure so the clamp and
-/// snap math is unit-testable.
-fn lyric_window(visual_line: f32, parsed_len: usize) -> Vec<(usize, f32, bool)> {
+/// snap math is unit-testable. The highlighted line is the one actually
+/// playing, even while the user browses away with the wheel.
+fn lyric_window(
+    visual_line: f32,
+    parsed_len: usize,
+    current_line: Option<usize>,
+) -> Vec<(usize, f32, bool)> {
     let center = visual_line.round();
     let len = parsed_len as i64;
     (-LINE_WINDOW..=LINE_WINDOW)
@@ -539,64 +559,9 @@ fn lyric_window(visual_line: f32, parsed_len: usize) -> Vec<(usize, f32, bool)> 
             }
             let index = index as usize;
             let top = ((index as f32 - visual_line) + LINE_WINDOW as f32) * LINE_PITCH_PX;
-            Some((index, top.round(), index as f32 == visual_line))
+            Some((index, top.round(), Some(index) == current_line))
         })
         .collect()
-}
-
-/// Samples a circular arc into polyline points (degrees, screen Y-down).
-fn arc_points(
-    center: gpui::Point<gpui::Pixels>,
-    radius: f32,
-    from_deg: f32,
-    to_deg: f32,
-) -> Vec<gpui::Point<gpui::Pixels>> {
-    const STEPS: usize = 20;
-    (0..=STEPS)
-        .map(|i| {
-            let angle = (from_deg + (to_deg - from_deg) * i as f32 / STEPS as f32).to_radians();
-            point(
-                center.x + px(radius * angle.cos()),
-                center.y + px(radius * angle.sin()),
-            )
-        })
-        .collect()
-}
-
-fn stroked_circle(center: gpui::Point<gpui::Pixels>, radius: f32) -> Option<Path<gpui::Pixels>> {
-    let mut builder = PathBuilder::stroke(px(1.0));
-    let points = arc_points(center, radius, 0.0, 360.0);
-    builder.move_to(points[0]);
-    for p in &points[1..] {
-        builder.line_to(*p);
-    }
-    builder.build().ok()
-}
-
-fn filled_disc(center: gpui::Point<gpui::Pixels>, radius: f32) -> Option<Path<gpui::Pixels>> {
-    let mut builder = PathBuilder::fill();
-    let points = arc_points(center, radius, 0.0, 360.0);
-    builder.move_to(points[0]);
-    for p in &points[1..] {
-        builder.line_to(*p);
-    }
-    builder.build().ok()
-}
-
-fn stroked_arc(
-    center: gpui::Point<gpui::Pixels>,
-    radius: f32,
-    from_deg: f32,
-    to_deg: f32,
-    width: f32,
-) -> Option<Path<gpui::Pixels>> {
-    let mut builder = PathBuilder::stroke(px(width));
-    let points = arc_points(center, radius, from_deg, to_deg);
-    builder.move_to(points[0]);
-    for p in &points[1..] {
-        builder.line_to(*p);
-    }
-    builder.build().ok()
 }
 
 impl Render for ImmersiveView {
@@ -646,15 +611,17 @@ impl Render for ImmersiveView {
         } else {
             (position_ms as f32 / 1000.0 * VINYL_DEG_PER_SEC) % 360.0
         };
+        let vinyl_angle = radians(vinyl_angle_deg.to_radians());
 
-        // Backdrop: the full 2048px decode, Cover-fit, NO blur — sharpness
-        // is the point; the gradients below carve the reading zones.
+        // Backdrop: full-sharpness decode, Cover-fit, NO blur — sharpness is
+        // the point; the gradients below carve the reading zones.
         let backdrop = div().absolute().inset_0().overflow_hidden().when_some(
             self.image_key.clone(),
             |el, key| {
                 el.child(
                     managed_image(("immersive-bg", image_gen), key)
                         .thumb_max(BACKDROP_THUMB_PX)
+                        .sharpened()
                         .uncached()
                         .w_full()
                         .h_full()
@@ -678,6 +645,11 @@ impl Render for ImmersiveView {
         ));
 
         // ── Left column: vinyl disc, names, frosted player card ──────────
+        // The disc is two layered SVG elements rotated by the Svg element's
+        // own transform: groove rings (static-looking but part of the spin)
+        // under sheen arcs (the rotation-visible light sweep). The center
+        // label is the cover itself, circularly clipped; gpui has no
+        // image-rotation primitive, and a circular label hides that.
         let vinyl_label = div()
             .absolute()
             .inset_0()
@@ -703,69 +675,31 @@ impl Render for ImmersiveView {
                         .bg(Rgba::new(1.0, 1.0, 1.0, 0.06)),
                 )
             });
-        let spindle = div()
+        let vinyl_disc = div()
             .absolute()
             .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
+            .rounded_full()
+            .bg(Rgba::new(0.045, 0.045, 0.058, 1.0))
             .child(
-                div()
-                    .size(px(10.0))
-                    .rounded_full()
-                    .bg(Rgba::new(0.02, 0.02, 0.03, 1.0)),
+                svg()
+                    .path(VINYL_GROOVES)
+                    .with_transformation(Transformation::rotate(vinyl_angle))
+                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.35))
+                    .size_full(),
+            )
+            .child(
+                svg()
+                    .path(VINYL_SHEEN)
+                    .with_transformation(Transformation::rotate(vinyl_angle))
+                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.75))
+                    .size_full(),
             );
-        let vinyl_angle_rad = vinyl_angle_deg.to_radians();
-        let vinyl_disc = canvas(
-            move |bounds, _, _| {
-                let radius = f32::from(bounds.size.width.min(bounds.size.height)) * 0.5;
-                (bounds.center(), radius, vinyl_angle_rad)
-            },
-            move |_, (center, radius, angle_rad), window, _| {
-                let angle_deg = angle_rad.to_degrees();
-                if let Some(disc) = filled_disc(center, radius) {
-                    window.paint_path(disc, DISC_COLOR);
-                }
-                // Groove rings — concentric, rotation-invisible.
-                for k in 0..7 {
-                    let r = radius * (0.60 + 0.052 * k as f32);
-                    if let Some(ring) = stroked_circle(center, r) {
-                        window.paint_path(ring, GROOVE_COLOR);
-                    }
-                }
-                if let Some(rim) = stroked_circle(center, radius - 1.0) {
-                    window.paint_path(rim, RIM_COLOR);
-                }
-                // Sheen arcs — the only rotation-visible part of a vinyl:
-                // light sweeping across the grooves at 33⅓ RPM.
-                let sheen_radius = radius * 0.79;
-                if let Some(arc) = stroked_arc(
-                    center,
-                    sheen_radius,
-                    angle_deg + 12.0,
-                    angle_deg + 68.0,
-                    radius * 0.055,
-                ) {
-                    window.paint_path(arc, SHEEN_SOFT_COLOR);
-                }
-                if let Some(arc) = stroked_arc(
-                    center,
-                    sheen_radius,
-                    angle_deg + 184.0,
-                    angle_deg + 203.0,
-                    radius * 0.028,
-                ) {
-                    window.paint_path(arc, SHEEN_BRIGHT_COLOR);
-                }
-            },
-        );
         let vinyl = div()
             .relative()
             .h(relative(VINYL_SIZE_FRACTION))
             .aspect_square()
             .child(vinyl_disc)
-            .child(vinyl_label)
-            .child(spindle);
+            .child(vinyl_label);
 
         let track_info = div()
             .flex()
@@ -857,7 +791,7 @@ impl Render for ImmersiveView {
                     slider()
                         .id("immersive-volume")
                         .w(px(90.0))
-                        .h(px(4.0))
+                        .h(px(6.0))
                         .rounded_full()
                         .value(volume as f32)
                         .on_change(move |v, _, cx| {
@@ -883,7 +817,7 @@ impl Render for ImmersiveView {
                     slider()
                         .id("immersive-progress")
                         .flex_1()
-                        .h(px(4.0))
+                        .h(px(6.0))
                         .rounded_full()
                         .value(progress)
                         .on_change(move |v, _, cx| {
@@ -903,10 +837,10 @@ impl Render for ImmersiveView {
             .w(relative(0.90))
             .max_w(px(460.0))
             .rounded(px(16.0))
-            .bg(Rgba::new(0.05, 0.05, 0.07, 0.45))
+            .bg(Rgba::new(0.05, 0.05, 0.07, 0.62))
             .backdrop_blur(px(14.0))
             .border_1()
-            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
+            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.10))
             .p(px(18.0))
             .flex()
             .flex_col()
@@ -938,10 +872,17 @@ impl Render for ImmersiveView {
             .child(player_card);
 
         // ── Right column: lyrics ─────────────────────────────────────────
+        // Every line is click-to-seek; the wheel browses away from the
+        // active line (returning after the idle window); the active line
+        // renders word-by-word karaoke when the track carries per-word
+        // timing. Colors lerp only — glyph geometry never interpolates.
         let lyric_children = self.parsed.as_ref().map(|parsed| {
             let visual_line = self.visual_line;
-            lyric_window(visual_line, parsed.len()).into_iter().map(
-                move |(index, top, is_current)| {
+            let current_line = self.current_line;
+            let position_ms = position_ms;
+            lyric_window(visual_line, parsed.len(), current_line)
+                .into_iter()
+                .map(move |(index, top, is_current)| {
                     let line = &parsed[index];
                     let distance = (index as f32 - visual_line).abs().round() as i64;
                     let opacity = LINE_OPACITY
@@ -953,7 +894,39 @@ impl Render for ImmersiveView {
                     } else {
                         lerp_color(text, text_secondary, 0.4)
                     };
+                    let line_time_ms = line.time_ms;
+                    // Karaoke: each word lerps from the line color to the
+                    // accent as its window passes. Word colors change per
+                    // tick — glyph geometry stays fixed.
+                    let text_child: Div = if is_current && !line.words.is_empty() {
+                        let mut row = div().flex().flex_wrap().items_baseline();
+                        for word in &line.words {
+                            let progress = word_progress(word, position_ms);
+                            row = row.child(
+                                div()
+                                    .child(word.text.clone())
+                                    .text_color(lerp_color(color, accent, progress)),
+                            );
+                        }
+                        row
+                    } else {
+                        div().child(line.text.clone())
+                    };
                     div()
+                        .id(index)
+                        .cursor_pointer()
+                        .hover(move |el| el.opacity(opacity.max(0.9)))
+                        .on_click(move |_, _, cx| {
+                            // Direct-closure handler (sidebar lyric rows use
+                            // the same shape): the click only seeks — the
+                            // wheel-browse session unwinds through the
+                            // position-tick idle return.
+                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                            if state != PlaybackState::Stopped {
+                                cx.global::<PlaybackInterface>()
+                                    .seek(line_time_ms as f64 / 1000.0);
+                            }
+                        })
                         .absolute()
                         .left_0()
                         .right_0()
@@ -966,7 +939,7 @@ impl Render for ImmersiveView {
                         .opacity(opacity)
                         .text_color(color)
                         .child(
-                            div()
+                            text_child
                                 .text_size(px(if is_current {
                                     CURRENT_LINE_SIZE
                                 } else {
@@ -978,8 +951,7 @@ impl Render for ImmersiveView {
                                 } else {
                                     FontWeight::MEDIUM
                                 })
-                                .text_left()
-                                .child(line.text.clone()),
+                                .text_left(),
                         )
                         .when(is_current && line.translation.is_some(), |el| {
                             el.child(
@@ -990,14 +962,28 @@ impl Render for ImmersiveView {
                                     .child(line.translation.clone().unwrap()),
                             )
                         })
-                },
-            )
+                })
         });
         let lyrics_viewport = div()
             .relative()
             .w_full()
             .h(px(LYRICS_VIEWPORT_HEIGHT))
             .overflow_hidden()
+            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                if !this.active {
+                    return;
+                }
+                let dy = f32::from(ev.delta.pixel_delta(px(LINE_PITCH_PX)).y);
+                this.scroll_accum += dy / LINE_PITCH_PX;
+                let whole = this.scroll_accum as i64;
+                if whole != 0 {
+                    this.scroll_accum -= whole as f32;
+                    this.browse_offset += whole;
+                    this.last_scroll = Some(Instant::now());
+                    this.sync_display_target(true);
+                    cx.notify();
+                }
+            }))
             .children(lyric_children.into_iter().flatten());
         let right_column = div()
             .absolute()
@@ -1025,55 +1011,6 @@ impl Render for ImmersiveView {
             .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
 
-        // Spectrum ribbon: thin pre-EQ curve hugging the bottom edge, behind
-        // everything.
-        let ribbon_accent = accent;
-        let ribbon = canvas(
-            move |bounds, _, cx| {
-                let data = if cx.has_global::<SpectrumState>() {
-                    cx.global::<SpectrumState>().data.read(cx).pre.clone()
-                } else {
-                    Rc::default()
-                };
-                (bounds, data)
-            },
-            move |bounds, (plot, data), window, _| {
-                if data.is_empty() || data.iter().all(|db| *db <= RIBBON_SILENCE_DB) {
-                    return;
-                }
-                let width: f32 = plot.size.width.into();
-                let height: f32 = plot.size.height.into();
-                let last = data.len() - 1;
-                let mut builder = PathBuilder::fill();
-                builder.move_to(point(bounds.origin.x, bounds.origin.y + px(height)));
-                for (i, db) in data.iter().enumerate() {
-                    let x = bounds.origin.x + px(i as f32 / last as f32 * width);
-                    let y = bounds.origin.y + px(spectrum_db_to_y(*db, height).clamp(0.0, height));
-                    builder.line_to(point(x, y));
-                }
-                builder.line_to(point(
-                    bounds.origin.x + px(width),
-                    bounds.origin.y + px(height),
-                ));
-                if let Ok(path) = builder.build() {
-                    window.paint_path(
-                        path,
-                        Rgba::new(
-                            ribbon_accent.red,
-                            ribbon_accent.green,
-                            ribbon_accent.blue,
-                            0.30,
-                        ),
-                    );
-                }
-            },
-        )
-        .absolute()
-        .bottom_0()
-        .left_0()
-        .right_0()
-        .h(px(64.0));
-
         div()
             .key_context("Immersive")
             .track_focus(&self.focus_handle)
@@ -1084,7 +1021,6 @@ impl Render for ImmersiveView {
             .child(backdrop)
             .child(vertical_shade)
             .child(right_shade)
-            .child(ribbon)
             .child(left_column)
             .child(right_column)
             .child(exit_button)
@@ -1208,7 +1144,7 @@ mod tests {
 
     #[test]
     fn lyric_window_centers_the_active_line() {
-        let lines: Vec<(usize, f32, bool)> = lyric_window(10.0, 30);
+        let lines: Vec<(usize, f32, bool)> = lyric_window(10.0, 30, Some(10));
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             (4..=16).collect::<Vec<_>>()
@@ -1221,22 +1157,35 @@ mod tests {
 
     #[test]
     fn lyric_window_clamps_to_parsed_range() {
-        let lines: Vec<(usize, f32, bool)> = lyric_window(1.0, 3);
+        let lines: Vec<(usize, f32, bool)> = lyric_window(1.0, 3, Some(1));
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
         // Before the first line the window still starts at the clamp.
-        let lines: Vec<(usize, f32, bool)> = lyric_window(-1.0, 3);
+        let lines: Vec<(usize, f32, bool)> = lyric_window(-1.0, 3, None);
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
+        );
+        // Browsing away: the highlight stays on the playing line even when
+        // the window centers elsewhere.
+        let lines: Vec<(usize, f32, bool)> = lyric_window(4.0, 30, Some(1));
+        assert!(
+            lines
+                .iter()
+                .any(|(index, _, current)| *index == 1 && *current)
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|(index, _, current)| *index == 4 && *current)
         );
     }
 
     #[test]
     fn lyric_window_offsets_snap_to_whole_pixels() {
-        for line in lyric_window(3.37, 30) {
+        for line in lyric_window(3.37, 30, Some(3)) {
             let (_, top, _) = line;
             assert_eq!(top, top.round());
         }
