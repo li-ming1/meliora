@@ -24,12 +24,11 @@
 //! - lyric glyph geometry never interpolates: font sizes come from a
 //!   discrete set and line offsets snap to whole pixels, only colors lerp
 //!   (karaoke word colors included);
-//! - the vinyl disc is static art: a plain dark platter with the circular
-//!   cover as its center label. A 2026-09-28 attempt at a rotating sheen arc
-//!   (`Svg::with_transformation(rotate)`) rendered the sprite displaced and
-//!   oversized on DirectX — the arc showed up around the track title instead
-//!   of on the disc — so the sheen layer and the rotation were removed
-//!   outright, and the groove rings went with it per user feedback;
+//! - the "vinyl" is now just the circular cover art at disc size: the dark
+//!   platter, groove rings and sheen went away across 2026-09-28 feedback
+//!   (a rotating sheen arc rendered displaced/oversized on DirectX via
+//!   `Svg::with_transformation`, and the exposed platter ring read as a
+//!   pointless border around the cover);
 //! - the backdrop is its own full-sharpness uncached decode (held by the
 //!   element alone, recycled through the orphan-tile funnel on track
 //!   switch) with a mild unsharp pass for low-resolution sources.
@@ -84,8 +83,10 @@ const LINE_OPACITY: [f32; 7] = [1.0, 0.82, 0.64, 0.47, 0.33, 0.22, 0.14];
 const LINE_ANIMATION: Duration = Duration::from_millis(320);
 /// Vinyl disc as a fraction of the left column height.
 const VINYL_SIZE_FRACTION: f32 = 0.34;
-/// Vinyl label (center cover) as a fraction of the disc diameter.
-const VINYL_LABEL_FRACTION: f32 = 0.56;
+/// Cover as a fraction of the disc diameter — 1.0: the cover IS the disc.
+/// (The dark platter used to peek out around a smaller label; 2026-09-28
+/// feedback: with the grooves gone that ring read as a pointless border.)
+const VINYL_LABEL_FRACTION: f32 = 1.0;
 /// Cover decode for the vinyl label — small, render-cached.
 const LABEL_THUMB_PX: u32 = 512;
 /// Backdrop decode cap for full-screen sharpness — uncached, element-held.
@@ -629,10 +630,11 @@ impl Render for ImmersiveView {
             linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.52), 1.0),
         ));
 
-        // ── Left column: vinyl disc, names, frosted player card ──────────
-        // The disc is a plain dark platter with the cover as its circularly
-        //-clipped center label (see the module docs for why nothing here
-        // rotates and why there are no groove rings).
+        // ── Left column: circular cover, names, frosted player card ──────
+        // The cover fills the whole disc circle (label fraction 1.0); the
+        // dark layer behind it only shows through while the cover decodes or
+        // when a track has no art at all. See module docs for why nothing
+        // rotates and the grooves/sheen are gone.
         let vinyl_label = div()
             .absolute()
             .inset_0()
