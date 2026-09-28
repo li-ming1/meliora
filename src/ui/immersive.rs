@@ -1,9 +1,9 @@
-//! Full-screen immersive listening view: a blurred cover ambience backdrop,
-//! large synced lyrics, a slim spectrum ribbon hugging the bottom edge and
-//! auto-hiding transport controls floating over it. Lives inside the main
-//! window — `MainWindow::render` swaps the whole library layout for this view
-//! while `Models::immersive` is set — and the OS fullscreen toggle rides
-//! along via `player::ToggleImmersive`.
+//! Full-screen immersive listening view, laid out like a hi-fi lyrics
+//! presentation: the artwork fills the screen at full decoded sharpness (no
+//! blur — one vertical + one horizontal gradient carve out the reading
+//! zones), a spinning vinyl disc with the cover as its label sits on the
+//! left above the track names and a frosted-glass player card (seekable
+//! progress, transport, volume), and the right half is the lyrics column.
 //!
 //! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
 //! loaded a second time: that entity owns the sidecar/DB/online fetch
@@ -18,14 +18,18 @@
 //! Animation discipline (see `GPUI_HARDCORE_PERFORMANCE.md` and the
 //! 2026-09-27 glyph-atlas lesson in `scroll_follow.rs`):
 //! - every frame is data-driven (spectrum/position broadcasts) or
-//!   transition-driven (line glide, controls fade), with the frame loop
-//!   stopped the moment nothing animates any more;
+//!   transition-driven (line glide), with the frame loop stopped the moment
+//!   nothing animates any more;
 //! - lyric glyph geometry never interpolates: font sizes come from a
 //!   discrete set and line offsets snap to whole pixels, only colors lerp;
-//! - the ambience backdrop shares the center cover's 512px decode (same
-//!   render-cache entry) so the GPU blur pass never sees a full-resolution
-//!   source, and the overlay is one vertical gradient instead of a flat
-//!   black slab.
+//! - the vinyl disc is canvas-drawn; its rotation is carried by sheen arcs
+//!   whose angle derives from the playback position (33⅓ RPM), so it spins
+//!   exactly while the music plays and freezes when it doesn't — no frame
+//!   loop of its own;
+//! - the backdrop is its own 2048px uncached decode (held by the element
+//!   alone, recycled through the orphan-tile funnel on track switch) so
+//!   full-screen sharpness costs one bounded buffer instead of a pile of
+//!   render-cache entries.
 
 use std::{
     path::PathBuf,
@@ -41,9 +45,9 @@ use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, MouseMoveEvent, ObjectFit, ParentElement, PathBuilder, Render,
-    Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, canvas,
-    div, linear_color_stop, linear_gradient, point, px, relative,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, Path, PathBuilder, Render, Rgba,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div,
+    linear_color_stop, linear_gradient, point, px, relative,
 };
 use tracing::warn;
 
@@ -53,8 +57,9 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
+            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
             managed_image::{ManagedImageKey, managed_image},
+            slider::slider,
             tooltip::build_tooltip,
         },
         equalizer::{
@@ -70,27 +75,36 @@ use crate::{
 };
 
 /// Vertical distance between lyric lines, in px.
-const LINE_PITCH_PX: f32 = 64.0;
+const LINE_PITCH_PX: f32 = 44.0;
 /// Lyric font sizes — discrete glyph-atlas-safe levels only.
-const CURRENT_LINE_SIZE: f32 = 36.0;
-const NEIGHBOR_LINE_SIZE: f32 = 24.0;
-const TRANSLATION_SIZE: f32 = 15.0;
-/// Lyric lines rendered on either side of the active one.
-const LINE_WINDOW: i64 = 2;
-/// Height of the lyric viewport: five pitches (window + headroom).
-const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 5.0;
+const CURRENT_LINE_SIZE: f32 = 22.0;
+const NEIGHBOR_LINE_SIZE: f32 = 18.0;
+const TRANSLATION_SIZE: f32 = 13.0;
+/// Lyric lines rendered on either side of the active one (13-line window).
+const LINE_WINDOW: i64 = 6;
+/// Height of the lyric viewport: thirteen pitches.
+const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 13.0;
+/// Per-line opacity by distance from the active line (index = distance).
+const LINE_OPACITY: [f32; 7] = [1.0, 0.82, 0.64, 0.47, 0.33, 0.22, 0.14];
 const LINE_ANIMATION: Duration = Duration::from_millis(320);
-/// Controls hide after this much pointer inactivity (checked on the position
-/// tick, so the view never polls while paused).
-const CONTROLS_IDLE_HIDE: Duration = Duration::from_secs(3);
-const CONTROLS_FADE: Duration = Duration::from_millis(300);
-/// Central cover as a fraction of the viewport height.
-const COVER_FRACTION: f32 = 0.30;
-/// Cover decode size, shared by the center cover, the ambience backdrop
-/// (same render-cache entry) and the accent extractor.
-const COVER_THUMB_PX: u32 = 512;
+/// Vinyl disc as a fraction of the left column height.
+const VINYL_SIZE_FRACTION: f32 = 0.34;
+/// Vinyl label (center cover) as a fraction of the disc diameter.
+const VINYL_LABEL_FRACTION: f32 = 0.56;
+/// Cover decode for the vinyl label — small, render-cached.
+const LABEL_THUMB_PX: u32 = 512;
+/// Backdrop decode for full-screen sharpness — uncached, element-held.
+const BACKDROP_THUMB_PX: u32 = 2048;
+/// Vinyl rotation: 33⅓ RPM = 200°/s of playback position.
+const VINYL_DEG_PER_SEC: f32 = 200.0;
 /// Spectrum ribbon: dB floor below which a frame counts as silence.
 const RIBBON_SILENCE_DB: f32 = -89.0;
+/// Vinyl palette.
+const DISC_COLOR: Rgba = Rgba::new(0.045, 0.045, 0.058, 1.0);
+const GROOVE_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.045);
+const RIM_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.10);
+const SHEEN_SOFT_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.05);
+const SHEEN_BRIGHT_COLOR: Rgba = Rgba::new(1.0, 1.0, 1.0, 0.11);
 
 /// Enters or leaves immersive mode: flips [`Models::immersive`] and toggles
 /// the main window's OS fullscreen state in step. Every entry point (keybind,
@@ -112,6 +126,8 @@ pub struct ImmersiveView {
 
     position: Entity<u64>,
     duration: Entity<u64>,
+    volume: Entity<f64>,
+    prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
     current_track: Entity<Option<CurrentTrack>>,
     queue: Entity<Queue>,
@@ -145,11 +161,6 @@ pub struct ImmersiveView {
     visual_line: f32,
     line_anim: Option<(f32, f32, Instant)>,
 
-    // Auto-hiding controls.
-    controls_visible: bool,
-    controls_opacity: f32,
-    hide_anim: Option<(f32, f32, Instant)>,
-    last_activity: Instant,
     frame_scheduled: bool,
 }
 
@@ -178,20 +189,21 @@ impl ImmersiveView {
                 if !this.active {
                     return;
                 }
-                let pos_ms = *pos.read(cx);
-                this.track_lyric_line(pos_ms);
-                if this.controls_visible
-                    && this.hide_anim.is_none()
-                    && this.last_activity.elapsed() >= CONTROLS_IDLE_HIDE
-                {
-                    this.start_controls_fade(false);
-                }
-                // Drives the progress bar (and any in-flight transition).
+                this.track_lyric_line(*pos.read(cx));
+                // Drives the progress bar, the vinyl rotation and any
+                // in-flight line glide.
                 cx.notify();
             })
             .detach();
 
             cx.observe(&info.duration, |this, _, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            })
+            .detach();
+
+            cx.observe(&info.volume, |this, _, cx| {
                 if this.active {
                     cx.notify();
                 }
@@ -242,6 +254,8 @@ impl ImmersiveView {
                 active: *immersive_flag.read(cx),
                 position: info.position.clone(),
                 duration: info.duration.clone(),
+                volume: info.volume.clone(),
+                prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
                 current_track: info.current_track.clone(),
                 queue,
@@ -261,10 +275,6 @@ impl ImmersiveView {
                 current_line: None,
                 visual_line: -1.0,
                 line_anim: None,
-                controls_visible: true,
-                controls_opacity: 1.0,
-                hide_anim: None,
-                last_activity: Instant::now(),
                 frame_scheduled: false,
             };
             if this.active {
@@ -304,10 +314,6 @@ impl ImmersiveView {
             self.spectrum_viewing = true;
         }
 
-        self.last_activity = Instant::now();
-        self.controls_visible = true;
-        self.controls_opacity = 1.0;
-        self.hide_anim = None;
         self.resolve_track_presentation(cx);
         self.sync_lyrics(cx);
     }
@@ -320,7 +326,6 @@ impl ImmersiveView {
             self.spectrum_viewing = false;
         }
         self.line_anim = None;
-        self.hide_anim = None;
     }
 
     /// Re-resolves cover/names/accent for whatever is playing now. Fired by
@@ -399,8 +404,8 @@ impl ImmersiveView {
         }
         self.image_key = cover_key;
 
-        // Accent color: extracted from the same 512px decode the cover uses
-        // (one decode per track, render-cached), analyzed off-thread.
+        // Accent color: extracted from the label's small decode (render
+        // cached), analyzed off-thread.
         if let Some(key) = self.image_key.clone()
             && self.accent_for.as_ref() != Some(&key)
         {
@@ -411,7 +416,7 @@ impl ImmersiveView {
             cx.spawn(async move |this, cx| {
                 let accent = crate::RUNTIME
                     .spawn(async move {
-                        key.retrieve(pool, COVER_THUMB_PX, true)
+                        key.retrieve(pool, LABEL_THUMB_PX, true)
                             .await
                             .ok()
                             .flatten()
@@ -475,20 +480,8 @@ impl ImmersiveView {
         }
     }
 
-    fn start_controls_fade(&mut self, visible: bool) {
-        let from = self.controls_opacity;
-        let to = if visible { 1.0 } else { 0.0 };
-        self.controls_visible = visible;
-        if (to - from).abs() < 0.01 {
-            self.controls_opacity = to;
-            self.hide_anim = None;
-            return;
-        }
-        self.hide_anim = Some((from, to, Instant::now()));
-    }
-
     fn needs_animation_frame(&self) -> bool {
-        self.line_anim.is_some() || self.hide_anim.is_some()
+        self.line_anim.is_some()
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -503,54 +496,31 @@ impl ImmersiveView {
     }
 
     fn advance_animations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut changed = false;
+        let Some((from, target, started_at)) = self.line_anim else {
+            return;
+        };
         let reduced_motion = cx
             .global::<SettingsGlobal>()
             .model
             .read(cx)
             .interface
             .reduced_motion;
-
-        if let Some((from, target, started_at)) = self.line_anim {
-            if reduced_motion {
+        if reduced_motion {
+            self.visual_line = target;
+            self.line_anim = None;
+        } else {
+            let progress =
+                (started_at.elapsed().as_secs_f32() / LINE_ANIMATION.as_secs_f32()).clamp(0.0, 1.0);
+            self.visual_line = from + (target - from) * ease_out_cubic(progress);
+            if progress >= 1.0 {
                 self.visual_line = target;
                 self.line_anim = None;
-                changed = true;
-            } else {
-                let progress = (started_at.elapsed().as_secs_f32() / LINE_ANIMATION.as_secs_f32())
-                    .clamp(0.0, 1.0);
-                self.visual_line = from + (target - from) * ease_out_cubic(progress);
-                changed = true;
-                if progress >= 1.0 {
-                    self.visual_line = target;
-                    self.line_anim = None;
-                }
             }
         }
-
-        if let Some((from, target, started_at)) = self.hide_anim {
-            if reduced_motion {
-                self.controls_opacity = target;
-                self.hide_anim = None;
-                changed = true;
-            } else {
-                let progress = (started_at.elapsed().as_secs_f32() / CONTROLS_FADE.as_secs_f32())
-                    .clamp(0.0, 1.0);
-                self.controls_opacity = from + (target - from) * ease_out_cubic(progress);
-                changed = true;
-                if progress >= 1.0 {
-                    self.controls_opacity = target;
-                    self.hide_anim = None;
-                }
-            }
-        }
-
-        if !reduced_motion && self.needs_animation_frame() {
+        if self.needs_animation_frame() {
             self.schedule_frame(window, cx);
         }
-        if changed {
-            cx.notify();
-        }
+        cx.notify();
     }
 }
 
@@ -568,10 +538,65 @@ fn lyric_window(visual_line: f32, parsed_len: usize) -> Vec<(usize, f32, bool)> 
                 return None;
             }
             let index = index as usize;
-            let top = ((index as f32 - visual_line) + 2.0) * LINE_PITCH_PX;
+            let top = ((index as f32 - visual_line) + LINE_WINDOW as f32) * LINE_PITCH_PX;
             Some((index, top.round(), index as f32 == visual_line))
         })
         .collect()
+}
+
+/// Samples a circular arc into polyline points (degrees, screen Y-down).
+fn arc_points(
+    center: gpui::Point<gpui::Pixels>,
+    radius: f32,
+    from_deg: f32,
+    to_deg: f32,
+) -> Vec<gpui::Point<gpui::Pixels>> {
+    const STEPS: usize = 20;
+    (0..=STEPS)
+        .map(|i| {
+            let angle = (from_deg + (to_deg - from_deg) * i as f32 / STEPS as f32).to_radians();
+            point(
+                center.x + px(radius * angle.cos()),
+                center.y + px(radius * angle.sin()),
+            )
+        })
+        .collect()
+}
+
+fn stroked_circle(center: gpui::Point<gpui::Pixels>, radius: f32) -> Option<Path<gpui::Pixels>> {
+    let mut builder = PathBuilder::stroke(px(1.0));
+    let points = arc_points(center, radius, 0.0, 360.0);
+    builder.move_to(points[0]);
+    for p in &points[1..] {
+        builder.line_to(*p);
+    }
+    builder.build().ok()
+}
+
+fn filled_disc(center: gpui::Point<gpui::Pixels>, radius: f32) -> Option<Path<gpui::Pixels>> {
+    let mut builder = PathBuilder::fill();
+    let points = arc_points(center, radius, 0.0, 360.0);
+    builder.move_to(points[0]);
+    for p in &points[1..] {
+        builder.line_to(*p);
+    }
+    builder.build().ok()
+}
+
+fn stroked_arc(
+    center: gpui::Point<gpui::Pixels>,
+    radius: f32,
+    from_deg: f32,
+    to_deg: f32,
+    width: f32,
+) -> Option<Path<gpui::Pixels>> {
+    let mut builder = PathBuilder::stroke(px(width));
+    let points = arc_points(center, radius, from_deg, to_deg);
+    builder.move_to(points[0]);
+    for p in &points[1..] {
+        builder.line_to(*p);
+    }
+    builder.build().ok()
 }
 
 impl Render for ImmersiveView {
@@ -610,83 +635,319 @@ impl Render for ImmersiveView {
             0.0
         };
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
-        let controls_alpha = self.controls_opacity;
+        let volume = *self.volume.read(cx);
+        let prev_volume = *self.prev_volume.read(cx);
 
-        // Ambience backdrop: the cover's own 512px decode (shared cache
-        // entry) stretched to Cover, one mild blur pass on top.
+        // Vinyl rotation: 33⅓ RPM keyed off the playback position — spins
+        // only while the clock advances (i.e. while playing), frozen when
+        // paused, pinned under reduced motion.
+        let vinyl_angle_deg = if reduced_motion {
+            30.0
+        } else {
+            (position_ms as f32 / 1000.0 * VINYL_DEG_PER_SEC) % 360.0
+        };
+
+        // Backdrop: the full 2048px decode, Cover-fit, NO blur — sharpness
+        // is the point; the gradients below carve the reading zones.
         let backdrop = div().absolute().inset_0().overflow_hidden().when_some(
             self.image_key.clone(),
             |el, key| {
                 el.child(
                     managed_image(("immersive-bg", image_gen), key)
-                        .thumb_max(COVER_THUMB_PX)
-                        .w_full()
-                        .h_full()
-                        .object_fit(ObjectFit::Cover)
-                        .blur(px(24.0)),
-                )
-            },
-        );
-        // One vertical gradient instead of a flat black slab: light at the
-        // top so the ambience reads, heavier toward the controls.
-        let dim_overlay = div().absolute().inset_0().bg(linear_gradient(
-            0.0,
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.30), 0.0),
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.62), 1.0),
-        ));
-
-        // Central column: cover, names, lyric viewport.
-        let cover = div()
-            .h(relative(COVER_FRACTION))
-            .aspect_square()
-            .rounded(px(14.0))
-            .shadow_lg()
-            .overflow_hidden()
-            .when_some(self.image_key.clone(), |el, key| {
-                el.child(
-                    managed_image(("immersive-cover", image_gen), key)
-                        .thumb_max(COVER_THUMB_PX)
+                        .thumb_max(BACKDROP_THUMB_PX)
+                        .uncached()
                         .w_full()
                         .h_full()
                         .object_fit(ObjectFit::Cover),
                 )
+            },
+        );
+        // Global weight: heavier at the bottom (card zone), light at the top
+        // (0deg = to top: the 0% stop sits at the bottom edge).
+        let vertical_shade = div().absolute().inset_0().bg(linear_gradient(
+            0.0,
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.42), 0.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.12), 1.0),
+        ));
+        // Right lyrics zone: transparent over the artwork, dark toward the
+        // right edge (90deg = to right).
+        let right_shade = div().absolute().inset_0().bg(linear_gradient(
+            90.0,
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 0.30),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.52), 1.0),
+        ));
+
+        // ── Left column: vinyl disc, names, frosted player card ──────────
+        let vinyl_label = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when_some(self.image_key.clone(), |el, key| {
+                el.child(
+                    managed_image(("immersive-label", image_gen), key)
+                        .thumb_max(LABEL_THUMB_PX)
+                        .h(relative(VINYL_LABEL_FRACTION))
+                        .aspect_square()
+                        .rounded_full()
+                        .object_fit(ObjectFit::Cover),
+                )
             })
-            .when_none(&self.image_key, |el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.06)));
+            .when_none(&self.image_key, |el| {
+                el.child(
+                    div()
+                        .h(relative(VINYL_LABEL_FRACTION))
+                        .aspect_square()
+                        .rounded_full()
+                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.06)),
+                )
+            });
+        let spindle = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .size(px(10.0))
+                    .rounded_full()
+                    .bg(Rgba::new(0.02, 0.02, 0.03, 1.0)),
+            );
+        let vinyl_angle_rad = vinyl_angle_deg.to_radians();
+        let vinyl_disc = canvas(
+            move |bounds, _, _| {
+                let radius = f32::from(bounds.size.width.min(bounds.size.height)) * 0.5;
+                (bounds.center(), radius, vinyl_angle_rad)
+            },
+            move |_, (center, radius, angle_rad), window, _| {
+                let angle_deg = angle_rad.to_degrees();
+                if let Some(disc) = filled_disc(center, radius) {
+                    window.paint_path(disc, DISC_COLOR);
+                }
+                // Groove rings — concentric, rotation-invisible.
+                for k in 0..7 {
+                    let r = radius * (0.60 + 0.052 * k as f32);
+                    if let Some(ring) = stroked_circle(center, r) {
+                        window.paint_path(ring, GROOVE_COLOR);
+                    }
+                }
+                if let Some(rim) = stroked_circle(center, radius - 1.0) {
+                    window.paint_path(rim, RIM_COLOR);
+                }
+                // Sheen arcs — the only rotation-visible part of a vinyl:
+                // light sweeping across the grooves at 33⅓ RPM.
+                let sheen_radius = radius * 0.79;
+                if let Some(arc) = stroked_arc(
+                    center,
+                    sheen_radius,
+                    angle_deg + 12.0,
+                    angle_deg + 68.0,
+                    radius * 0.055,
+                ) {
+                    window.paint_path(arc, SHEEN_SOFT_COLOR);
+                }
+                if let Some(arc) = stroked_arc(
+                    center,
+                    sheen_radius,
+                    angle_deg + 184.0,
+                    angle_deg + 203.0,
+                    radius * 0.028,
+                ) {
+                    window.paint_path(arc, SHEEN_BRIGHT_COLOR);
+                }
+            },
+        );
+        let vinyl = div()
+            .relative()
+            .h(relative(VINYL_SIZE_FRACTION))
+            .aspect_square()
+            .child(vinyl_disc)
+            .child(vinyl_label)
+            .child(spindle);
 
         let track_info = div()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(4.0))
+            .gap(px(5.0))
             .children(self.track_name.clone().map(|name| {
                 div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(22.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(26.0))
                     .line_height(relative(1.15))
                     .text_color(text)
+                    .text_center()
                     .child(name)
             }))
             .children(self.artist_name.clone().map(|artist| {
                 div()
                     .text_size(px(15.0))
                     .text_color(text_secondary)
+                    .text_center()
                     .child(artist)
             }));
 
+        let transport_button =
+            |id: &'static str, icon_path: &'static str, size: f32| -> Stateful<Div> {
+                div()
+                    .id(id)
+                    .p(px(7.0))
+                    .rounded(px(9.0))
+                    .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
+                    .active(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.16)))
+                    .child(icon(icon_path).size(px(size)).text_color(text))
+            };
+        let transport_row = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                transport_button("immersive-prev", PREV_TRACK, 18.0).on_click(|_, _, cx| {
+                    cx.global::<PlaybackInterface>().previous();
+                }),
+            )
+            .child(
+                transport_button("immersive-play", if playing { PAUSE } else { PLAY }, 22.0)
+                    .p(px(10.0))
+                    .rounded_full()
+                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                    .on_click(|_, _, cx| {
+                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                        let interface = cx.global::<PlaybackInterface>();
+                        if state == PlaybackState::Playing {
+                            interface.pause();
+                        } else {
+                            interface.play();
+                        }
+                    }),
+            )
+            .child(
+                transport_button("immersive-next", NEXT_TRACK, 18.0).on_click(|_, _, cx| {
+                    cx.global::<PlaybackInterface>().next();
+                }),
+            );
+        let volume_group =
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .id("immersive-volume-btn")
+                        .p(px(4.0))
+                        .rounded(px(8.0))
+                        .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
+                        .on_click(move |_, _, cx| {
+                            let interface = cx.global::<PlaybackInterface>();
+                            if volume <= 0.0 {
+                                interface.set_volume(prev_volume);
+                            } else {
+                                interface.set_volume(0.0);
+                            }
+                        })
+                        .child(
+                            icon(if volume <= 0.0 { VOLUME_OFF } else { VOLUME })
+                                .size(px(16.0))
+                                .text_color(text_secondary),
+                        ),
+                )
+                .child(
+                    slider()
+                        .id("immersive-volume")
+                        .w(px(90.0))
+                        .h(px(4.0))
+                        .rounded_full()
+                        .value(volume as f32)
+                        .on_change(move |v, _, cx| {
+                            cx.global::<PlaybackInterface>().set_volume(v as f64);
+                        }),
+                )
+                .child(div().text_size(px(11.0)).text_color(text_secondary).child(
+                    SharedString::from(format!("{}%", (volume * 100.0).round() as i64)),
+                ));
+        let progress_row =
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .w_full()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(text_secondary)
+                        .child(SharedString::from(format_duration(position_s, false))),
+                )
+                .child(
+                    slider()
+                        .id("immersive-progress")
+                        .flex_1()
+                        .h(px(4.0))
+                        .rounded_full()
+                        .value(progress)
+                        .on_change(move |v, _, cx| {
+                            if duration_ms > 0 {
+                                let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                if state != PlaybackState::Stopped {
+                                    cx.global::<PlaybackInterface>()
+                                        .seek(v as f64 * duration_ms as f64 / 1000.0);
+                                }
+                            }
+                        }),
+                )
+                .child(div().text_size(px(11.0)).text_color(text_secondary).child(
+                    SharedString::from(format_duration(duration_s.max(0), false)),
+                ));
+        let player_card = div()
+            .w(relative(0.90))
+            .max_w(px(460.0))
+            .rounded(px(16.0))
+            .bg(Rgba::new(0.05, 0.05, 0.07, 0.45))
+            .backdrop_blur(px(14.0))
+            .border_1()
+            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
+            .p(px(18.0))
+            .flex()
+            .flex_col()
+            .gap(px(14.0))
+            .child(progress_row)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(transport_row)
+                    .child(volume_group),
+            );
+
+        let left_column = div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(relative(0.44))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(22.0))
+            .px(px(40.0))
+            .child(vinyl)
+            .child(track_info)
+            .child(player_card);
+
+        // ── Right column: lyrics ─────────────────────────────────────────
         let lyric_children = self.parsed.as_ref().map(|parsed| {
             let visual_line = self.visual_line;
-            let text = text;
-            let accent = accent;
-            let text_secondary = text_secondary;
             lyric_window(visual_line, parsed.len()).into_iter().map(
                 move |(index, top, is_current)| {
                     let line = &parsed[index];
                     let distance = (index as f32 - visual_line).abs().round() as i64;
-                    let opacity = match distance {
-                        0 => 1.0,
-                        1 => 0.6,
-                        _ => 0.3,
-                    };
+                    let opacity = LINE_OPACITY
+                        .get(distance as usize)
+                        .copied()
+                        .unwrap_or(*LINE_OPACITY.last().unwrap());
                     let color = if is_current {
                         accent
                     } else {
@@ -700,7 +961,7 @@ impl Render for ImmersiveView {
                         .h(px(LINE_PITCH_PX))
                         .flex()
                         .flex_col()
-                        .items_center()
+                        .items_start()
                         .justify_center()
                         .opacity(opacity)
                         .text_color(color)
@@ -717,7 +978,7 @@ impl Render for ImmersiveView {
                                 } else {
                                     FontWeight::MEDIUM
                                 })
-                                .text_center()
+                                .text_left()
                                 .child(line.text.clone()),
                         )
                         .when(is_current && line.translation.is_some(), |el| {
@@ -734,27 +995,38 @@ impl Render for ImmersiveView {
         });
         let lyrics_viewport = div()
             .relative()
-            .w(relative(0.86))
-            .max_w(px(980.0))
+            .w_full()
             .h(px(LYRICS_VIEWPORT_HEIGHT))
             .overflow_hidden()
             .children(lyric_children.into_iter().flatten());
-
-        let center_column = div()
+        let right_column = div()
             .absolute()
-            .inset_0()
+            .top_0()
+            .bottom_0()
+            .left(relative(0.46))
+            .right_0()
             .flex()
             .flex_col()
-            .items_center()
             .justify_center()
-            .gap(px(16.0))
-            .pb(px(110.0))
-            .child(cover)
-            .child(track_info)
+            .pl(px(24.0))
+            .pr(px(52.0))
             .child(lyrics_viewport);
 
+        let exit_button = div()
+            .id("immersive-exit")
+            .absolute()
+            .top(px(14.0))
+            .right(px(14.0))
+            .p(px(8.0))
+            .rounded(px(10.0))
+            .opacity(0.55)
+            .hover(|el| el.opacity(1.0).bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
+            .on_click(|_: &ClickEvent, _, cx| set_immersive(false, cx))
+            .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
+            .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
+
         // Spectrum ribbon: thin pre-EQ curve hugging the bottom edge, behind
-        // the floating controls.
+        // everything.
         let ribbon_accent = accent;
         let ribbon = canvas(
             move |bounds, _, cx| {
@@ -800,106 +1072,7 @@ impl Render for ImmersiveView {
         .bottom_0()
         .left_0()
         .right_0()
-        .h(px(72.0));
-
-        // Transport controls floating over the ribbon — no reserved block,
-        // the whole bottom overlay fades with pointer inactivity.
-        let transport_button =
-            |id: &'static str, icon_path: &'static str, size: f32| -> Stateful<Div> {
-                div()
-                    .id(id)
-                    .p(px(8.0))
-                    .rounded(px(10.0))
-                    .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
-                    .active(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.16)))
-                    .child(icon(icon_path).size(px(size)).text_color(text))
-            };
-        let transport_row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.0))
-            .child(
-                transport_button("immersive-prev", PREV_TRACK, 20.0).on_click(|_, _, cx| {
-                    cx.global::<PlaybackInterface>().previous();
-                }),
-            )
-            .child(
-                transport_button("immersive-play", if playing { PAUSE } else { PLAY }, 26.0)
-                    .p(px(12.0))
-                    .rounded_full()
-                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.10))
-                    .on_click(|_, _, cx| {
-                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                        let interface = cx.global::<PlaybackInterface>();
-                        if state == PlaybackState::Playing {
-                            interface.pause();
-                        } else {
-                            interface.play();
-                        }
-                    }),
-            )
-            .child(
-                transport_button("immersive-next", NEXT_TRACK, 20.0).on_click(|_, _, cx| {
-                    cx.global::<PlaybackInterface>().next();
-                }),
-            );
-        let progress_row =
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.0))
-                .w(px(680.0))
-                .max_w(relative(0.85))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(text_secondary)
-                        .child(SharedString::from(format_duration(position_s, false))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .h(px(4.0))
-                        .rounded_full()
-                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.18))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(progress))
-                                .rounded_full()
-                                .bg(accent),
-                        ),
-                )
-                .child(div().text_size(px(12.0)).text_color(text_secondary).child(
-                    SharedString::from(format_duration(duration_s.max(0), false)),
-                ));
-        let bottom_overlay = div()
-            .absolute()
-            .bottom_0()
-            .left_0()
-            .right_0()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(12.0))
-            .pb(px(12.0))
-            .opacity(controls_alpha)
-            .when(controls_alpha <= 0.02, |el| el.hidden())
-            .child(transport_row)
-            .child(progress_row);
-
-        let exit_button = div()
-            .id("immersive-exit")
-            .absolute()
-            .top(px(14.0))
-            .right(px(14.0))
-            .p(px(8.0))
-            .rounded(px(10.0))
-            .opacity(controls_alpha.max(0.5))
-            .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
-            .on_click(|_: &ClickEvent, _, cx| set_immersive(false, cx))
-            .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
-            .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
+        .h(px(64.0));
 
         div()
             .key_context("Immersive")
@@ -907,19 +1080,13 @@ impl Render for ImmersiveView {
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(Rgba::new(0.04, 0.04, 0.05, 1.0))
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
-                this.last_activity = Instant::now();
-                if !this.controls_visible {
-                    this.start_controls_fade(true);
-                    cx.notify();
-                }
-            }))
+            .bg(Rgba::new(0.02, 0.02, 0.03, 1.0))
             .child(backdrop)
-            .child(dim_overlay)
+            .child(vertical_shade)
+            .child(right_shade)
             .child(ribbon)
-            .child(center_column)
-            .child(bottom_overlay)
+            .child(left_column)
+            .child(right_column)
             .child(exit_button)
     }
 }
@@ -938,7 +1105,7 @@ fn extract_accent(image: &gpui::RenderImage) -> Option<Rgba> {
 /// Bucketed dominant-color core over raw BGRA bytes (4 bytes per pixel).
 /// 12-bit histogram (4 bits per channel); weight = saturation + a small
 /// floor, so grey covers still produce a usable tone. Subsamples every third
-/// pixel — a 512px decode is ~44k reads, off the UI thread.
+/// pixel — a 512px decode is ~29k reads, off the UI thread.
 fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
     use rustc_hash::FxHashMap;
 
@@ -1041,34 +1208,35 @@ mod tests {
 
     #[test]
     fn lyric_window_centers_the_active_line() {
-        let lines: Vec<(usize, f32, bool)> = lyric_window(4.0, 10);
+        let lines: Vec<(usize, f32, bool)> = lyric_window(10.0, 30);
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
-            vec![2, 3, 4, 5, 6]
+            (4..=16).collect::<Vec<_>>()
         );
-        let (_, top, is_current) = lines[2];
+        // The active line sits in the middle slot (index 6 of 13).
+        let (_, top, is_current) = lines[6];
         assert!(is_current);
-        assert_eq!(top, 2.0 * LINE_PITCH_PX);
+        assert_eq!(top, LINE_WINDOW as f32 * LINE_PITCH_PX);
     }
 
     #[test]
     fn lyric_window_clamps_to_parsed_range() {
-        let lines: Vec<(usize, f32, bool)> = lyric_window(2.0, 3);
+        let lines: Vec<(usize, f32, bool)> = lyric_window(1.0, 3);
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
-        // Before the first line the window slides down from slot 3.
+        // Before the first line the window still starts at the clamp.
         let lines: Vec<(usize, f32, bool)> = lyric_window(-1.0, 3);
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
-            vec![0, 1]
+            vec![0, 1, 2]
         );
     }
 
     #[test]
     fn lyric_window_offsets_snap_to_whole_pixels() {
-        for line in lyric_window(3.37, 10) {
+        for line in lyric_window(3.37, 30) {
             let (_, top, _) = line;
             assert_eq!(top, top.round());
         }
