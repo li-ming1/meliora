@@ -303,8 +303,8 @@ impl Lyrics {
 
     /// Loads lyrics for `path` off the main thread (startup and track-switch
     /// path): sidecar read via tokio fs, DB via the pool directly, no
-    /// `block_on` on the main thread.
-    async fn load_lyrics_off_thread(
+    /// `block_on` on the main thread. Shared with the immersive view.
+    pub(crate) async fn load_lyrics_off_thread(
         pool: &sqlx::SqlitePool,
         path: std::path::PathBuf,
     ) -> (Option<String>, Option<Vec<LrcLine>>) {
@@ -1074,7 +1074,7 @@ enum FollowTarget {
 }
 
 /// 统一歌词解析：先按 LRC，再按 KRC / YRC 明文；无时间行返回 `None`。
-fn parse_lyrics(content: &str) -> Option<Vec<LrcLine>> {
+pub(crate) fn parse_lyrics(content: &str) -> Option<Vec<LrcLine>> {
     parse_lrc(content)
         .or_else(|| krc::parse_krc(content))
         .or_else(|| yrc::parse_yrc(content))
@@ -1095,7 +1095,7 @@ fn word_progress(word: &LrcWord, pos_ms: u64) -> f32 {
     }
 }
 
-fn lerp_color(start: Rgba, end: Rgba, progress: f32) -> Rgba {
+pub(crate) fn lerp_color(start: Rgba, end: Rgba, progress: f32) -> Rgba {
     Rgba::new(
         lerp(start.red, end.red, progress),
         lerp(start.green, end.green, progress),

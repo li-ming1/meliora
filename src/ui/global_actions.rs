@@ -24,7 +24,14 @@ actions!(
 actions!(meliora, [OpenThemeFolder]);
 actions!(
     player,
-    [PlayPause, Next, Previous, ShuffleAll, StopAfterCurrent]
+    [
+        PlayPause,
+        Next,
+        Previous,
+        ShuffleAll,
+        StopAfterCurrent,
+        ToggleImmersive
+    ]
 );
 actions!(scan, [ForceScan, Scan]);
 actions!(debug, [TestToast]);
@@ -39,6 +46,7 @@ pub fn register_actions(cx: &mut App) {
     cx.on_action(play_pause);
     cx.on_action(next);
     cx.on_action(previous);
+    cx.on_action(toggle_immersive);
     cx.on_action(hide_self);
     cx.on_action(hide_others);
     cx.on_action(show_all);
@@ -147,6 +155,11 @@ fn next(_: &Next, cx: &mut App) {
 fn previous(_: &Previous, cx: &mut App) {
     let interface = cx.global::<PlaybackInterface>();
     interface.previous();
+}
+
+fn toggle_immersive(_: &ToggleImmersive, cx: &mut App) {
+    let entering = !*cx.global::<Models>().immersive.read(cx);
+    super::immersive::set_immersive(entering, cx);
 }
 
 fn hide_self(_: &HideSelf, cx: &mut App) {

@@ -568,7 +568,8 @@ impl ManagedImageKey {
     /// paying for a fresh decode + atlas upload per element instance. Only
     /// thumbnails are cached: full-resolution (thumb 0) art is a one-off gallery
     /// decode that would blow the pixel budget at `RENDER_CACHE_MAX`.
-    async fn retrieve(
+    /// Also consumed by the immersive view's accent-color extractor.
+    pub(crate) async fn retrieve(
         &self,
         pool: SqlitePool,
         thumb_size: u32,

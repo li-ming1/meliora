@@ -115,6 +115,8 @@
   "GRID_VIEW": "Grid View",
   "HIDE": "Hide Meliora",
   "HIDE_OTHERS": "Hide Others",
+  "IMMERSIVE_ENTER": "Immersive Mode",
+  "IMMERSIVE_EXIT": "Exit Immersive Mode",
   "INTERFACE": "Interface",
   "INTERFACE_ALWAYS_SHOW_SCROLLBARS": "Always show scrollbars",
   "INTERFACE_ALWAYS_SHOW_SCROLLBARS_SUBTEXT": "Keeps scrollbars visible instead of hiding them automatically.",

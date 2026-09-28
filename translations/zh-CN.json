@@ -30,6 +30,8 @@
   "ACTION_IMPORT_PLAYLIST": "导入 M3U 播放列表",
   "ACTION_NEXT": "下一首",
   "ACTION_OPEN_LOG": "打开日志",
+  "IMMERSIVE_ENTER": "沉浸模式",
+  "IMMERSIVE_EXIT": "退出沉浸模式",
   "OPEN_LOG_OPEN": "打开日志文件",
   "ACTION_OPEN_THEME_FOLDER": "打开主题文件夹",
   "ACTION_PLAYPAUSE": "暂停/继续播放当前曲目",

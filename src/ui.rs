@@ -12,6 +12,7 @@ pub(crate) mod design;
 mod equalizer;
 mod global_actions;
 mod header;
+mod immersive;
 mod keymap;
 #[cfg(feature = "kugou")]
 mod kugou;

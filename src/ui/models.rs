@@ -119,6 +119,10 @@ pub struct Models {
     pub controls_left_width: Entity<Pixels>,
     pub controls_right_width: Entity<Pixels>,
     pub window_information: Entity<Option<WindowInformation>>,
+    /// Full-screen immersive listening view (`ui::immersive`): while `true`
+    /// the main window renders the immersive page instead of the library
+    /// layout and the window is toggled fullscreen.
+    pub immersive: Entity<bool>,
 }
 
 impl Global for Models {}
@@ -277,6 +281,7 @@ pub fn build_models(
     });
 
     let window_information = cx.new(|_| None);
+    let immersive: Entity<bool> = cx.new(|_| false);
 
     cx.set_global(Models {
         metadata,
@@ -307,6 +312,7 @@ pub fn build_models(
         controls_left_width,
         controls_right_width,
         window_information,
+        immersive,
     });
 
     // Startup view = Liked Songs: resolving its playlist id needs the

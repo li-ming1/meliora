@@ -24,8 +24,8 @@ use crate::{
         components::{
             context::context,
             icons::{
-                MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, REPEAT, REPEAT_OFF,
-                REPEAT_ONCE, SHUFFLE, STAR, STAR_FILLED, VOLUME, VOLUME_OFF, icon,
+                MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, REPEAT,
+                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, STAR, STAR_FILLED, VOLUME, VOLUME_OFF, icon,
             },
             managed_image::{ManagedImageKey, managed_image},
             menu::{menu, menu_check_item, menu_item},
@@ -749,6 +749,14 @@ impl Render for InfoSection {
                                     cx.notify();
                                 }
                             }))
+                            // Double-click enters the immersive view; the
+                            // single-click path stays free (hover shows the
+                            // big preview).
+                            .on_click(|event: &ClickEvent, _, cx| {
+                                if event.click_count() == 2 {
+                                    crate::ui::immersive::set_immersive(true, cx);
+                                }
+                            })
                             .when_some(image_key, |this: Stateful<Div>, key| {
                                 this.when(self.is_hovering_art, |this: Stateful<Div>| {
                                     this.child(
@@ -1373,6 +1381,7 @@ pub struct SecondaryControls {
     info: PlaybackInfo,
     show_queue: Entity<bool>,
     show_lyrics: Entity<bool>,
+    immersive: Entity<bool>,
     replaygain_button: Entity<ReplayGainButton>,
 }
 
@@ -1382,10 +1391,14 @@ impl SecondaryControls {
             let info = cx.global::<PlaybackInfo>().clone();
             observe_notify(cx, &info.volume);
 
+            let immersive = cx.global::<Models>().immersive.clone();
+            cx.observe(&immersive, |_, _, cx| cx.notify()).detach();
+
             Self {
                 info,
                 show_queue,
                 show_lyrics,
+                immersive,
                 replaygain_button: ReplayGainButton::new(cx),
             }
         })
@@ -1401,6 +1414,7 @@ impl Render for SecondaryControls {
         let show_lyrics = self.show_lyrics.clone();
         let lyrics_active = *self.show_lyrics.read(cx);
         let queue_active = *self.show_queue.read(cx);
+        let immersive_active = *self.immersive.read(cx);
 
         div().flex().w_full().h_full().child(
             div()
@@ -1505,6 +1519,14 @@ impl Render for SecondaryControls {
                             })
                         })
                         .tooltip(build_tooltip(tr!("LYRICS", "Lyrics"))),
+                )
+                .child(
+                    sidebar_toggle_button("immersive-button", MAXIMIZE, immersive_active)
+                        .on_click(|_, _, cx| {
+                            let entering = !*cx.global::<Models>().immersive.read(cx);
+                            crate::ui::immersive::set_immersive(entering, cx);
+                        })
+                        .tooltip(build_tooltip(tr!("IMMERSIVE_ENTER", "Immersive Mode"))),
                 ),
         )
     }

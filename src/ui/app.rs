@@ -54,6 +54,7 @@ use super::{
     controls::Controls,
     global_actions::register_actions,
     header::Header,
+    immersive::ImmersiveView,
     library::{Library, sidebar::Sidebar},
     models::{self, CurrentTrack, Models, PlaybackInfo, build_models},
     right_sidebar::RightSidebar,
@@ -73,6 +74,8 @@ struct MainWindow {
     pub show_queue: Entity<bool>,
     pub show_lyrics: Entity<bool>,
     pub show_about: Entity<bool>,
+    pub immersive: Entity<bool>,
+    pub immersive_view: Entity<ImmersiveView>,
     pub about_focus: FocusHandle,
     pub missing_folder_dialog: Entity<MissingFolderDialog>,
     pub corrupt_settings_dialog: Entity<CorruptSettingsDialog>,
@@ -86,6 +89,18 @@ impl Render for MainWindow {
         cx.global::<ModalActive>().0.store(false, Ordering::Relaxed);
 
         let show_about = *self.show_about.read(cx);
+        let immersive = *self.immersive.read(cx);
+        if immersive {
+            // Immersive mode replaces the whole library layout; the toast
+            // layer stays so notifications remain visible. window_chrome is
+            // skipped — the OS decorations are gone in fullscreen anyway.
+            return div()
+                .image_cache(self.image_cache.clone())
+                .key_context("app")
+                .size_full()
+                .child(self.immersive_view.clone())
+                .child(self.toast_layer.clone());
+        }
         let show_corrupt_settings_dialog = matches!(
             cx.global::<Models>().settings_health.read(cx),
             models::SettingsHealth::Corrupt { .. }
@@ -221,6 +236,16 @@ fn find_main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
         .find_map(|window| window.downcast::<MainWindow>())
 }
 
+/// Toggles the main window's OS fullscreen state. Used by the immersive
+/// view (`ui::immersive::set_immersive`), which only owns the app context.
+pub(crate) fn toggle_main_window_fullscreen(cx: &mut App) {
+    if let Some(window) = find_main_window(cx) {
+        let _ = window.update(cx, |_, window, _| {
+            window.toggle_fullscreen();
+        });
+    }
+}
+
 pub(super) fn has_main_window(cx: &App) -> bool {
     find_main_window(cx).is_some()
 }
@@ -309,6 +334,7 @@ fn build_main_window(
         let show_queue = cx.global::<Models>().show_queue.clone();
         let show_lyrics = cx.global::<Models>().show_lyrics.clone();
         let show_about = cx.global::<Models>().show_about.clone();
+        let immersive = cx.global::<Models>().immersive.clone();
         let about_focus = cx.focus_handle();
 
         cx.observe(&show_queue, |_, _, cx| {
@@ -320,6 +346,10 @@ fn build_main_window(
         })
         .detach();
         cx.observe(&show_about, |_, _, cx| {
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&immersive, |_, _, cx| {
             cx.notify();
         })
         .detach();
@@ -347,6 +377,8 @@ fn build_main_window(
             show_queue,
             show_lyrics,
             show_about,
+            immersive,
+            immersive_view: ImmersiveView::new(cx),
             about_focus,
             missing_folder_dialog: MissingFolderDialog::new(cx),
             corrupt_settings_dialog: CorruptSettingsDialog::new(cx),

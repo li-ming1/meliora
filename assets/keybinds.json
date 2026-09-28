@@ -21,6 +21,8 @@
     { "key": "alt-shift-s", "action": "scan::ForceScan" },
     { "key": "alt-s", "action": "scan::Scan" },
     { "key": "space", "action": "player::PlayPause" },
+    { "key": "f", "action": "player::ToggleImmersive", "context": "!TextInput" },
+    { "key": "escape", "action": "player::ToggleImmersive", "context": "Immersive" },
     { "key": "alt-shift-t", "action": "debug::TestToast" },
     { "key": "ctrl-shift-space", "action": "player::StopAfterCurrent", "context": "!TextInput" },
 

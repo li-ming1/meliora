@@ -1,5 +1,5 @@
 mod band_editor;
 mod graph;
-mod mapping;
+pub(crate) mod mapping;
 pub mod spectrum;
 pub mod view;
