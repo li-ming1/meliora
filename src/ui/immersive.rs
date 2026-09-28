@@ -24,12 +24,12 @@
 //! - lyric glyph geometry never interpolates: font sizes come from a
 //!   discrete set and line offsets snap to whole pixels, only colors lerp
 //!   (karaoke word colors included);
-//! - the vinyl disc is two layered SVG elements (grooves + sheen) rotated
-//!   via the Svg element's own transform at 33⅓ RPM keyed off the playback
-//!   position, so it spins exactly while the music plays and freezes when
-//!   it doesn't — no frame loop of its own. The cover label itself cannot
-//!   rotate: gpui has no image-rotation primitive, and a circular label
-//!   hides that anyway;
+//! - the vinyl disc is static art: a plain dark platter with the circular
+//!   cover as its center label. A 2026-09-28 attempt at a rotating sheen arc
+//!   (`Svg::with_transformation(rotate)`) rendered the sprite displaced and
+//!   oversized on DirectX — the arc showed up around the track title instead
+//!   of on the disc — so the sheen layer and the rotation were removed
+//!   outright, and the groove rings went with it per user feedback;
 //! - the backdrop is its own full-sharpness uncached decode (held by the
 //!   element alone, recycled through the orphan-tile funnel on track
 //!   switch) with a mild unsharp pass for low-resolution sources.
@@ -45,8 +45,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ObjectFit, ParentElement, Render, Rgba, ScrollWheelEvent,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Transformation,
-    Window, div, linear_color_stop, linear_gradient, px, radians, relative, svg,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    linear_color_stop, linear_gradient, px, relative,
 };
 use tracing::warn;
 
@@ -56,10 +56,7 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{
-                MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VINYL_GROOVES, VINYL_SHEEN, VOLUME,
-                VOLUME_OFF, icon,
-            },
+            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
             managed_image::{ManagedImageKey, managed_image},
             slider::slider,
             tooltip::build_tooltip,
@@ -93,8 +90,6 @@ const VINYL_LABEL_FRACTION: f32 = 0.56;
 const LABEL_THUMB_PX: u32 = 512;
 /// Backdrop decode cap for full-screen sharpness — uncached, element-held.
 const BACKDROP_THUMB_PX: u32 = 2048;
-/// Vinyl rotation: 33⅓ RPM = 200°/s of playback position.
-const VINYL_DEG_PER_SEC: f32 = 200.0;
 /// Wheel browsing: after this long without scrolling the view glides back
 /// to the active line (the sidebar's lyrics panel uses the same pattern).
 const SCROLL_RETURN_AFTER: Duration = Duration::from_secs(2);
@@ -603,16 +598,6 @@ impl Render for ImmersiveView {
         let volume = *self.volume.read(cx);
         let prev_volume = *self.prev_volume.read(cx);
 
-        // Vinyl rotation: 33⅓ RPM keyed off the playback position — spins
-        // only while the clock advances (i.e. while playing), frozen when
-        // paused, pinned under reduced motion.
-        let vinyl_angle_deg = if reduced_motion {
-            30.0
-        } else {
-            (position_ms as f32 / 1000.0 * VINYL_DEG_PER_SEC) % 360.0
-        };
-        let vinyl_angle = radians(vinyl_angle_deg.to_radians());
-
         // Backdrop: full-sharpness decode, Cover-fit, NO blur — sharpness is
         // the point; the gradients below carve the reading zones.
         let backdrop = div().absolute().inset_0().overflow_hidden().when_some(
@@ -621,7 +606,7 @@ impl Render for ImmersiveView {
                 el.child(
                     managed_image(("immersive-bg", image_gen), key)
                         .thumb_max(BACKDROP_THUMB_PX)
-                        .sharpened()
+                        .denoised()
                         .uncached()
                         .w_full()
                         .h_full()
@@ -645,11 +630,9 @@ impl Render for ImmersiveView {
         ));
 
         // ── Left column: vinyl disc, names, frosted player card ──────────
-        // The disc is two layered SVG elements rotated by the Svg element's
-        // own transform: groove rings (static-looking but part of the spin)
-        // under sheen arcs (the rotation-visible light sweep). The center
-        // label is the cover itself, circularly clipped; gpui has no
-        // image-rotation primitive, and a circular label hides that.
+        // The disc is a plain dark platter with the cover as its circularly
+        //-clipped center label (see the module docs for why nothing here
+        // rotates and why there are no groove rings).
         let vinyl_label = div()
             .absolute()
             .inset_0()
@@ -679,21 +662,7 @@ impl Render for ImmersiveView {
             .absolute()
             .inset_0()
             .rounded_full()
-            .bg(Rgba::new(0.045, 0.045, 0.058, 1.0))
-            .child(
-                svg()
-                    .path(VINYL_GROOVES)
-                    .with_transformation(Transformation::rotate(vinyl_angle))
-                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.35))
-                    .size_full(),
-            )
-            .child(
-                svg()
-                    .path(VINYL_SHEEN)
-                    .with_transformation(Transformation::rotate(vinyl_angle))
-                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.75))
-                    .size_full(),
-            );
+            .bg(Rgba::new(0.045, 0.045, 0.058, 1.0));
         let vinyl = div()
             .relative()
             .h(relative(VINYL_SIZE_FRACTION))

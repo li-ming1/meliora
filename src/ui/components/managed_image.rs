@@ -745,10 +745,12 @@ pub struct ManagedImage {
     /// atlas tile whose reclamation waits on the render-cache LRU, the measured
     /// per-track commit ratchet of the 2026-09-14 soak.
     cache: bool,
-    /// Mild unsharp pass after decode, for low-resolution sources shown much
-    /// larger than native (full-screen immersive backdrop). Skipped for
-    /// already-large sources where the scale factor is small.
-    sharpen: bool,
+    /// 3×3 median denoise after decode, for the full-screen immersive
+    /// backdrop: cover art is JPEG-compressed, and its 8×8 block steps read
+    /// as a grid of dark boxes ("黑框框") once the decode is stretched across
+    /// the window. The median melts the block edges while leaving real edges
+    /// (buildings, subjects) intact.
+    denoise: bool,
 }
 
 impl ManagedImage {
@@ -777,11 +779,11 @@ impl ManagedImage {
         self
     }
 
-    /// Runs a mild unsharp mask after decoding. Only fires for sources
-    /// smaller than [`SHARPEN_MAX_SOURCE_PX`] — large covers scale down
-    /// cleanly and sharpening would just amplify noise.
-    pub fn sharpened(mut self) -> Self {
-        self.sharpen = true;
+    /// Runs a 3×3 median denoise after decoding. Cover art is served
+    /// JPEG-compressed; the full-screen backdrop magnifies the 8×8 block
+    /// steps into a visible grid of dark boxes, which the median suppresses.
+    pub fn denoised(mut self) -> Self {
+        self.denoise = true;
         self
     }
 }
@@ -822,7 +824,7 @@ impl Element for ManagedImage {
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
         let use_cache = self.cache;
-        let sharpen = self.sharpen;
+        let denoise = self.denoise;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
@@ -853,11 +855,11 @@ impl Element for ManagedImage {
                 };
                 match result {
                     Ok(Some(image)) => {
-                        // The sharpen pass runs before the image reaches the
-                        // state/atlas: one off-thread sweep, only for small
-                        // sources (large covers scale down cleanly).
-                        let image = if sharpen {
-                            sharpen_render_image(&image).unwrap_or(image)
+                        // The denoise pass runs before the image reaches the
+                        // state/atlas: one off-thread sweep for the backdrop
+                        // (any source size — block steps show at 1:1 too).
+                        let image = if denoise {
+                            denoise_render_image(&image).unwrap_or(image)
                         } else {
                             image
                         };
@@ -1018,40 +1020,30 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         object_fit: ObjectFit::Cover,
         thumb_size: 0,
         cache: true,
-        sharpen: false,
+        denoise: false,
     }
 }
 
-/// Sources at or above this side length skip the sharpen pass: the full-screen
-/// scale factor is already small, and sharpening a clean large decode would
-/// only amplify noise.
-const SHARPEN_MAX_SOURCE_PX: u32 = 1400;
-/// Unsharp strength (out = orig + AMOUNT × (orig − 3×3 box mean)).
-const SHARPEN_AMOUNT: f32 = 0.6;
-/// Flat-neighborhood guard: per-channel diffs below this stay untouched so
-/// film grain and compression noise don't amplify.
-const SHARPEN_THRESHOLD: f32 = 2.0;
-
-/// Mild unsharp mask for low-resolution sources shown far above native size
-/// (the immersive backdrop): a GPU bilinear stretch of a 500-1000px embedded
-/// cover reads soft; one sharpening sweep before atlas upload restores edge
-/// bite. RGB channels only, alpha untouched.
-fn sharpen_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
+/// Applies the 3×3 median denoise to a decoded image, returning a fresh
+/// `RenderImage`. RGB channels only, alpha untouched.
+fn denoise_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
     let bytes = image.as_bytes(0)?;
     let size = image.size(0);
     let (width, height) = (u32::from(size.width), u32::from(size.height));
-    if width == 0 || height == 0 || width >= SHARPEN_MAX_SOURCE_PX {
+    if width == 0 || height == 0 {
         return Some(Arc::clone(image));
     }
     let mut rgba = image::RgbaImage::from_raw(width, height, bytes.to_vec())?;
-    sharpen_rgba(&mut rgba);
+    denoise_rgba(&mut rgba);
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
 }
 
-/// In-place 3×3 unsharp mask over RGB: `out = orig + AMOUNT × (orig −
-/// box3x3(orig))`, edges clamped to the nearest pixel, flat neighborhoods
-/// (per-channel `|diff| < THRESHOLD`) left as-is.
-fn sharpen_rgba(image: &mut image::RgbaImage) {
+/// In-place 3×3 median filter over RGB: each output channel is the median of
+/// its 3×3 neighborhood (edges clamped to the nearest pixel). A median melts
+/// JPEG's 8×8 block steps and other flat-region noise while keeping genuine
+/// edges intact — the unsharp pass this replaces did the opposite (it
+/// amplified exactly those block edges into the "黑框框" grid).
+fn denoise_rgba(image: &mut image::RgbaImage) {
     let (width, height) = image.dimensions();
     let source = image.clone();
     let sample = |x: i64, y: i64| -> [u8; 4] {
@@ -1061,24 +1053,21 @@ fn sharpen_rgba(image: &mut image::RgbaImage) {
     };
     for y in 0..height {
         for x in 0..width {
-            let orig = *source.get_pixel(x, y);
-            let mut out = [orig[0], orig[1], orig[2]];
+            let mut out = [0u8; 3];
             for channel in 0..3 {
-                let mut sum = 0u32;
+                let mut window = [0u8; 9];
+                let mut n = 0;
                 for dy in -1i64..=1 {
                     for dx in -1i64..=1 {
-                        sum += sample(x as i64 + dx, y as i64 + dy)[channel] as u32;
+                        window[n] = sample(x as i64 + dx, y as i64 + dy)[channel];
+                        n += 1;
                     }
                 }
-                let mean = sum as f32 / 9.0;
-                let diff = orig[channel] as f32 - mean;
-                if diff.abs() >= SHARPEN_THRESHOLD {
-                    out[channel] = (orig[channel] as f32 + SHARPEN_AMOUNT * diff)
-                        .round()
-                        .clamp(0.0, 255.0) as u8;
-                }
+                window.sort_unstable();
+                out[channel] = window[4];
             }
             let pixel = image.get_pixel_mut(x, y);
+            let orig = *pixel;
             pixel.0 = [out[0], out[1], out[2], orig[3]];
         }
     }
@@ -1092,67 +1081,61 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn sharpen_boosts_edges_and_keeps_flat_areas() {
-        // 3×3: a dark pixel in the middle of bright ones — an edge the
-        // unsharp pass must bite into.
+    fn median_removes_salt_noise_and_keeps_flat_areas() {
+        // 3×3: a bright outlier pixel amid dark ones — block-step-like noise
+        // the median must erase.
         let mut image = RgbaImage::from_fn(3, 3, |x, y| {
             if x == 1 && y == 1 {
-                image::Rgba([40u8, 40, 40, 255])
-            } else {
                 image::Rgba([200u8, 200, 200, 255])
+            } else {
+                image::Rgba([40u8, 40, 40, 255])
             }
         });
-        let before = *image.get_pixel(1, 1);
-        sharpen_rgba(&mut image);
+        denoise_rgba(&mut image);
         let after = *image.get_pixel(1, 1);
-        // Dark center gets darker (edge contrast grows).
-        assert!(
-            after[0] < before[0],
-            "edge should sharpen: {before:?} → {after:?}"
-        );
+        assert_eq!(after[0], 40, "outlier should be medianed away: {after:?}");
 
-        // A flat region stays byte-identical (threshold guard).
+        // A flat region stays byte-identical.
         let mut flat = RgbaImage::from_fn(3, 3, |_, _| image::Rgba([128u8, 128, 128, 255]));
-        sharpen_rgba(&mut flat);
+        denoise_rgba(&mut flat);
         assert_eq!(*flat.get_pixel(1, 1), image::Rgba([128u8, 128, 128, 255]));
     }
 
     #[test]
-    fn sharpen_render_image_skips_large_sources() {
-        // 1600px source ≥ SHARPEN_MAX_SOURCE_PX: the same Arc comes back.
-        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
-            1600,
-            2,
-            |_, _| image::Rgba([10u8, 10, 10, 255])
-        ))]));
-        let sharpened = sharpen_render_image(&image).unwrap();
-        assert!(Arc::ptr_eq(&image, &sharpened));
+    fn median_keeps_true_edges_in_place() {
+        // A hard two-level edge (like a building silhouette against sky) must
+        // survive: pixels away from the boundary keep their original values.
+        let mut image = RgbaImage::from_fn(5, 5, |x, _| {
+            if x < 2 {
+                image::Rgba([30u8, 30, 30, 255])
+            } else {
+                image::Rgba([220u8, 220, 220, 255])
+            }
+        });
+        denoise_rgba(&mut image);
+        assert_eq!(*image.get_pixel(0, 2), image::Rgba([30u8, 30, 30, 255]));
+        assert_eq!(*image.get_pixel(4, 2), image::Rgba([220u8, 220, 220, 255]));
     }
 
     #[test]
-    fn sharpen_render_image_processes_small_sources() {
-        // 8px source < SHARPEN_MAX_SOURCE_PX: a new Arc with an edge-bitten
-        // center comes back.
+    fn denoise_render_image_processes_all_sizes() {
+        // The backdrop denoise runs for every source size: block steps show
+        // at 1:1 too. A 1600px decode must come back as a new (processed) Arc.
         let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
-            8,
-            8,
-            |x, y| {
-                if x == 4 && y == 4 {
-                    image::Rgba([40u8, 40, 40, 255])
-                } else {
-                    image::Rgba([200u8, 200, 200, 255])
-                }
+            1600,
+            2,
+            |x, _| if x == 800 {
+                image::Rgba([200u8, 200, 200, 255])
+            } else {
+                image::Rgba([10u8, 10, 10, 255])
             }
         ))]));
-        let sharpened = sharpen_render_image(&image).unwrap();
-        assert!(!Arc::ptr_eq(&image, &sharpened));
-        let bytes = sharpened.as_bytes(0).unwrap();
-        let center = 4 * (4 * 8 + 4);
-        assert!(
-            bytes[center] < 40,
-            "center should darken: {}",
-            bytes[center]
-        );
+        let denoised = denoise_render_image(&image).unwrap();
+        assert!(!Arc::ptr_eq(&image, &denoised));
+        let bytes = denoised.as_bytes(0).unwrap();
+        // The isolated bright column is a 1px outlier in its window → medianed.
+        let outlier = 4 * (800 + 0 * 1600) + 0;
+        assert!(bytes[outlier] < 200, "outlier should be removed");
     }
 
     fn test_image() -> Arc<RenderImage> {

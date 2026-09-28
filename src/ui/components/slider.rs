@@ -165,7 +165,14 @@ impl Element for Slider {
 
         let mut corners = Corners::default();
         corners.refine(&self.style.corner_radii);
-        let corner_radii = corners.to_pixels(window.rem_size());
+        // Clamp to the track's half-height/width before painting: callers use
+        // `rounded_full` for a pill-shaped bar, and its relative radius
+        // resolves to a huge sentinel that — unclamped — degenerates the
+        // DirectX quad SDF into alpha 0 across the whole quad, i.e. a
+        // completely invisible slider (immersive page, 2026-09-28).
+        let corner_radii = corners
+            .to_pixels(window.rem_size())
+            .clamp_radii_for_quad_size(bounds.size);
 
         let mut borders = Edges::default();
         borders.refine(&self.style.border_widths);
