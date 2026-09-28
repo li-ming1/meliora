@@ -37,6 +37,12 @@ impl RightSidebar {
         Self { queue, lyrics }
     }
 
+    /// The shared lyrics model: the immersive view mirrors its parsed state
+    /// (including online fetches) instead of loading lyrics a second time.
+    pub(crate) fn lyrics(&self) -> Entity<Lyrics> {
+        self.lyrics.clone()
+    }
+
     /// Renders the width-resizable queue pane; the lyrics pane sits below it,
     /// or fills the whole column when the queue is hidden.
     pub fn render(&self, cx: &mut App, show_queue: bool, show_lyrics: bool) -> impl IntoElement {

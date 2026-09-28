@@ -52,6 +52,10 @@ const LYRIC_CACHE_CAP: usize = 16;
 pub struct Lyrics {
     content: Option<String>,
     parsed: Option<Vec<LrcLine>>,
+    /// Bumped on every applied load (local, cached or online fetch): lets
+    /// other consumers (the immersive view) mirror `parsed` without
+    /// re-cloning it on unrelated notifies.
+    parsed_generation: u64,
     last_active_line: Option<usize>,
     /// Bumped per track change; a background load only lands if its generation
     /// still matches, so fast switches never apply stale lyrics.
@@ -283,6 +287,7 @@ impl Lyrics {
                 content: None,
                 parsed: None,
                 load_generation: 0,
+                parsed_generation: 0,
                 lyric_cache: FxHashMap::default(),
                 lyric_cache_order: Vec::new(),
                 last_active_line: None,
@@ -299,6 +304,20 @@ impl Lyrics {
                 playback_state,
             }
         })
+    }
+
+    /// Parsed lyric lines of the current track, for consumers that render
+    /// lyrics themselves (the immersive view mirrors this instead of loading
+    /// a second copy — online fetches included). Pair with
+    /// [`Self::parsed_generation`] to detect changes cheaply.
+    pub(crate) fn parsed_lines(&self) -> Option<Vec<LrcLine>> {
+        self.parsed.clone()
+    }
+
+    /// Generation counter bumped on every applied load; see
+    /// [`Self::parsed_lines`].
+    pub(crate) fn parsed_generation(&self) -> u64 {
+        self.parsed_generation
     }
 
     /// Loads lyrics for `path` off the main thread (startup and track-switch
@@ -384,6 +403,7 @@ impl Lyrics {
     ) {
         self.content = content;
         self.parsed = parsed;
+        self.parsed_generation += 1;
         let line_count = self.parsed.as_ref().map_or(0, Vec::len);
         self.last_active_line = None;
         self.follow_pending = false;

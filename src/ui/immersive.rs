@@ -1,8 +1,19 @@
 //! Full-screen immersive listening view: a blurred cover ambience backdrop,
-//! large synced lyrics, a slim spectrum ribbon and auto-hiding transport
-//! controls. Lives inside the main window — `MainWindow::render` swaps the
-//! whole library layout for this view while `Models::immersive` is set — and
-//! the OS fullscreen toggle rides along via `player::ToggleImmersive`.
+//! large synced lyrics, a slim spectrum ribbon hugging the bottom edge and
+//! auto-hiding transport controls floating over it. Lives inside the main
+//! window — `MainWindow::render` swaps the whole library layout for this view
+//! while `Models::immersive` is set — and the OS fullscreen toggle rides
+//! along via `player::ToggleImmersive`.
+//!
+//! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
+//! loaded a second time: that entity owns the sidecar/DB/online fetch
+//! pipeline (KuGou/NetEase included), its bounded cache and the scan-reset
+//! logic. The mirror is generation-guarded so a re-notify never re-clones.
+//!
+//! Track presentation (cover, names, accent) is keyed off the queue position
+//! — the single source of truth for "what is playing", as in InfoSection —
+//! and re-resolved on both `SongChanged` and `QueuePositionChanged`, because
+//! the former lands while the position still points at the previous track.
 //!
 //! Animation discipline (see `GPUI_HARDCORE_PERFORMANCE.md` and the
 //! 2026-09-27 glyph-atlas lesson in `scroll_follow.rs`):
@@ -11,9 +22,10 @@
 //!   stopped the moment nothing animates any more;
 //! - lyric glyph geometry never interpolates: font sizes come from a
 //!   discrete set and line offsets snap to whole pixels, only colors lerp;
-//! - the ambience backdrop is a small (≤160px) decode stretched over the
-//!   window — upscale softness plus a modest blur radius, so the GPU blur
-//!   pass never sees a full-resolution source.
+//! - the ambience backdrop shares the center cover's 512px decode (same
+//!   render-cache entry) so the GPU blur pass never sees a full-resolution
+//!   source, and the overlay is one vertical gradient instead of a flat
+//!   black slab.
 
 use std::{
     path::PathBuf,
@@ -36,7 +48,7 @@ use gpui::{
 use tracing::warn;
 
 use crate::{
-    playback::{interface::PlaybackInterface, queue::QueueItemData, thread::PlaybackState},
+    playback::{interface::PlaybackInterface, thread::PlaybackState},
     settings::SettingsGlobal,
     ui::{
         app::Pool,
@@ -50,7 +62,7 @@ use crate::{
             spectrum::{SpectrumData, SpectrumState, ensure_analyzer},
         },
         lyrics::{Lyrics, lerp_color},
-        models::{CurrentTrack, Models, PlaybackInfo},
+        models::{CurrentTrack, Models, PlaybackInfo, Queue},
         scroll_follow::ease_out_cubic,
         theme::Theme,
         util::format_duration,
@@ -74,10 +86,9 @@ const CONTROLS_IDLE_HIDE: Duration = Duration::from_secs(3);
 const CONTROLS_FADE: Duration = Duration::from_millis(300);
 /// Central cover as a fraction of the viewport height.
 const COVER_FRACTION: f32 = 0.30;
-/// Ambience backdrop decode cap — small source, stretched soft.
-const BACKDROP_THUMB_PX: u32 = 160;
-/// Accent extraction decode size; 64px is plenty for a 12-bit histogram.
-const ACCENT_THUMB_PX: u32 = 64;
+/// Cover decode size, shared by the center cover, the ambience backdrop
+/// (same render-cache entry) and the accent extractor.
+const COVER_THUMB_PX: u32 = 512;
 /// Spectrum ribbon: dB floor below which a frame counts as silence.
 const RIBBON_SILENCE_DB: f32 = -89.0;
 
@@ -103,23 +114,30 @@ pub struct ImmersiveView {
     duration: Entity<u64>,
     playback_state: Entity<PlaybackState>,
     current_track: Entity<Option<CurrentTrack>>,
+    queue: Entity<Queue>,
+    /// The sidebar's lyrics model — shared so online fetches are reused.
+    lyrics: Entity<Lyrics>,
+    /// `Lyrics::parsed_generation` last mirrored into `parsed`.
+    synced_lyrics_generation: u64,
     /// `(published spectrum, tap viewers)` — `None` until the analyzer exists.
     spectrum: Option<(Entity<SpectrumData>, Arc<AtomicUsize>)>,
     spectrum_viewing: bool,
 
-    // Track presentation, (re)resolved on every track change while active.
+    // Track presentation, re-resolved on track/queue-position changes.
     image_key: Option<ManagedImageKey>,
     image_element_key: u64,
     track_name: Option<SharedString>,
     artist_name: Option<SharedString>,
     meta_subscription: Option<Subscription>,
     accent: Option<Rgba>,
-    /// Which track path the pending/existing accent belongs to.
-    accent_for: Option<Option<PathBuf>>,
+    /// Which cover the pending/existing accent was extracted from.
+    accent_for: Option<ManagedImageKey>,
+    /// `(queue position, current track path)` last resolved; both triggers
+    /// fire per switch, the second one must be a no-op.
+    resolved_signature: Option<(usize, Option<PathBuf>)>,
 
-    // Lyrics (parsed off-thread, loader shared with the sidebar panel).
+    // Lyrics, mirrored from the shared `Lyrics` entity.
     parsed: Option<Rc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
-    lyrics_generation: u64,
     current_line: Option<usize>,
     /// Animated "active line" position, glided between line indices so line
     /// changes read as a vertical glide. Whole-pixel snapped per line at
@@ -142,10 +160,11 @@ impl Focusable for ImmersiveView {
 }
 
 impl ImmersiveView {
-    pub fn new(cx: &mut App) -> Entity<Self> {
+    pub fn new(cx: &mut App, lyrics: Entity<Lyrics>) -> Entity<Self> {
         cx.new(|cx| {
             let info = cx.global::<PlaybackInfo>().clone();
             let immersive_flag = cx.global::<Models>().immersive.clone();
+            let queue = cx.global::<Models>().queue.clone();
 
             // Fullscreen toggling itself lives in `set_immersive` (it needs
             // the window handle); this observer only mirrors the flag into
@@ -186,9 +205,34 @@ impl ImmersiveView {
             })
             .detach();
 
+            // Both per-switch triggers funnel into one guarded resolve:
+            // SongChanged lands while the queue position still points at the
+            // previous track, QueuePositionChanged completes the picture.
             cx.observe(&info.current_track, |this, _, cx| {
                 if this.active {
-                    this.reload_track_content(cx);
+                    this.resolve_track_presentation(cx);
+                }
+            })
+            .detach();
+            cx.observe(&queue, |this, _, cx| {
+                if this.active {
+                    this.resolve_track_presentation(cx);
+                }
+            })
+            .detach();
+
+            // The Lyrics entity notifies unconditionally when a load (local
+            // or online fetch) lands; the generation guard keeps re-notifies
+            // from re-cloning the parsed lines.
+            cx.observe(&lyrics, |this: &mut ImmersiveView, lyrics, cx| {
+                if !this.active {
+                    return;
+                }
+                let generation = lyrics.read(cx).parsed_generation();
+                if generation != this.synced_lyrics_generation {
+                    this.synced_lyrics_generation = generation;
+                    this.sync_lyrics(cx);
+                    cx.notify();
                 }
             })
             .detach();
@@ -200,6 +244,9 @@ impl ImmersiveView {
                 duration: info.duration.clone(),
                 playback_state: info.playback_state.clone(),
                 current_track: info.current_track.clone(),
+                queue,
+                lyrics,
+                synced_lyrics_generation: 0,
                 spectrum: None,
                 spectrum_viewing: false,
                 image_key: None,
@@ -209,8 +256,8 @@ impl ImmersiveView {
                 meta_subscription: None,
                 accent: None,
                 accent_for: None,
+                resolved_signature: None,
                 parsed: None,
-                lyrics_generation: 0,
                 current_line: None,
                 visual_line: -1.0,
                 line_anim: None,
@@ -261,7 +308,8 @@ impl ImmersiveView {
         self.controls_visible = true;
         self.controls_opacity = 1.0;
         self.hide_anim = None;
-        self.reload_track_content(cx);
+        self.resolve_track_presentation(cx);
+        self.sync_lyrics(cx);
     }
 
     fn deactivate(&mut self) {
@@ -275,34 +323,63 @@ impl ImmersiveView {
         self.hide_anim = None;
     }
 
-    /// Re-resolves cover/metadata/lyrics/accent for whatever is playing now.
-    fn reload_track_content(&mut self, cx: &mut Context<Self>) {
-        self.lyrics_generation += 1;
-        let generation = self.lyrics_generation;
+    /// Re-resolves cover/names/accent for whatever is playing now. Fired by
+    /// both `SongChanged` and `QueuePositionChanged`; the signature guard
+    /// makes the second fire per switch a no-op.
+    fn resolve_track_presentation(&mut self, cx: &mut Context<Self>) {
+        let (position, item) = {
+            let queue = self.queue.read(cx);
+            let position = queue.position;
+            let item = queue
+                .data
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(position)
+                .cloned();
+            (position, item)
+        };
         let track_path = self
             .current_track
             .read(cx)
             .as_ref()
             .map(|track| track.get_path().clone());
+        let signature = (position, track_path);
+        if self.resolved_signature.as_ref() == Some(&signature) {
+            return;
+        }
+        let track_path = signature.1.clone();
+        self.resolved_signature = Some(signature);
 
         self.image_element_key += 1;
-        self.image_key = Self::cover_key(cx);
-        self.accent = None;
-        self.accent_for = Some(track_path.clone());
         self.track_name = None;
         self.artist_name = None;
-        self.parsed = None;
-        self.current_line = None;
-        self.visual_line = -1.0;
-        self.line_anim = None;
-
-        // Metadata comes from the queue item at the playback position (the
-        // single source of truth for "what is playing", as in InfoSection).
         drop(self.meta_subscription.take());
-        if let Some(item) = Self::current_queue_item(cx) {
+
+        let mut cover_key = None;
+        if let Some(item) = &item {
+            // Online tracks carry a cover URL on their queue item; local
+            // files fall back to embedded art / sidecar files.
+            #[cfg(feature = "online_sources")]
+            if let Some(url) = item
+                .get_data(cx)
+                .read(cx)
+                .clone()
+                .and_then(|data| data.cover_url)
+                .filter(|url| !url.is_empty())
+            {
+                cover_key = Some(ManagedImageKey::HttpCover(url));
+            }
+            if cover_key.is_none() {
+                cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
+            }
+
             let data = item.get_data(cx);
             let item_path = item.get_path().clone();
-            if let Some(ui_data) = data.read(cx).clone() {
+            let is_current_slot = track_path.as_ref().is_some_and(|path| *path == item_path);
+            // Names only from the slot that actually holds the playing track
+            // — a stale slot (SongChanged before QueuePositionChanged) must
+            // not latch, the position-change resolve corrects it instead.
+            if is_current_slot && let Some(ui_data) = data.read(cx).clone() {
                 self.adopt_names(ui_data);
             }
             self.meta_subscription = Some(cx.observe(&data, move |this, data, cx| {
@@ -320,15 +397,21 @@ impl ImmersiveView {
                 }
             }));
         }
+        self.image_key = cover_key;
 
-        // Accent color: one small decode per track, analyzed off-thread.
-        if let Some(key) = self.image_key.clone() {
+        // Accent color: extracted from the same 512px decode the cover uses
+        // (one decode per track, render-cached), analyzed off-thread.
+        if let Some(key) = self.image_key.clone()
+            && self.accent_for.as_ref() != Some(&key)
+        {
+            self.accent = None;
+            self.accent_for = Some(key.clone());
             let pool = cx.global::<Pool>().0.clone();
-            let expected = track_path.clone();
+            let key_for_guard = key.clone();
             cx.spawn(async move |this, cx| {
                 let accent = crate::RUNTIME
                     .spawn(async move {
-                        key.retrieve(pool, ACCENT_THUMB_PX, true)
+                        key.retrieve(pool, COVER_THUMB_PX, true)
                             .await
                             .ok()
                             .flatten()
@@ -340,7 +423,7 @@ impl ImmersiveView {
                         None
                     });
                 this.update(cx, |this, cx| {
-                    if this.active && this.accent_for == Some(expected) {
+                    if this.active && this.accent_for.as_ref() == Some(&key_for_guard) {
                         this.accent = accent;
                         cx.notify();
                     }
@@ -349,67 +432,27 @@ impl ImmersiveView {
             })
             .detach();
         }
-
-        // Lyrics: same off-thread loader the sidebar panel uses.
-        if let Some(path) = track_path {
-            let pool = cx.global::<Pool>().0.clone();
-            cx.spawn(async move |this, cx| {
-                let loaded = crate::RUNTIME
-                    .spawn(async move { Lyrics::load_lyrics_off_thread(&pool, path).await })
-                    .await;
-                this.update(cx, |this, cx| {
-                    if this.lyrics_generation != generation {
-                        return;
-                    }
-                    this.parsed = loaded.ok().and_then(|(_, parsed)| parsed).map(Rc::new);
-                    let pos_ms = *this.position.read(cx);
-                    this.current_line = None;
-                    this.track_lyric_line(pos_ms);
-                    this.line_anim = None;
-                    this.visual_line = this.current_line.map_or(-1.0, |line| line as f32);
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
-        }
+        cx.notify();
     }
 
     fn adopt_names(&mut self, data: crate::playback::queue::QueueItemUIData) {
-        if self.track_name.is_none() {
-            self.track_name = data.name;
-        }
-        if self.artist_name.is_none() {
-            self.artist_name = data.artist_name;
-        }
+        self.track_name = data.name.or(self.track_name.take());
+        self.artist_name = data.artist_name.or(self.artist_name.take());
     }
 
-    fn current_queue_item(cx: &App) -> Option<QueueItemData> {
-        let queue = cx.global::<Models>().queue.read(cx);
-        queue
-            .data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(queue.position)
-            .cloned()
-    }
-
-    /// Cover source for the current track: online cover URL first, then the
-    /// file's own embedded art / sidecar files (mirrors InfoSection minus
-    /// the library-id route).
-    fn cover_key(cx: &mut App) -> Option<ManagedImageKey> {
-        let item = Self::current_queue_item(cx)?;
-        #[cfg(feature = "online_sources")]
-        if let Some(url) = item
-            .get_data(cx)
-            .read(cx)
-            .clone()
-            .and_then(|data| data.cover_url)
-            .filter(|url| !url.is_empty())
-        {
-            return Some(ManagedImageKey::HttpCover(url));
+    /// Mirrors the shared lyrics entity's parsed lines and snaps to the
+    /// current line without gliding across the whole list.
+    fn sync_lyrics(&mut self, cx: &mut Context<Self>) {
+        self.synced_lyrics_generation = self.lyrics.read(cx).parsed_generation();
+        self.parsed = self.lyrics.read(cx).parsed_lines().map(Rc::new);
+        let pos_ms = *self.position.read(cx);
+        self.current_line = None;
+        self.line_anim = None;
+        if let Some(parsed) = &self.parsed {
+            let idx = parsed.partition_point(|line| line.time_ms <= pos_ms);
+            self.current_line = if idx == 0 { None } else { Some(idx - 1) };
         }
-        Some(ManagedImageKey::TrackFile(item.get_path().clone()))
+        self.visual_line = self.current_line.map_or(-1.0, |line| line as f32);
     }
 
     fn track_lyric_line(&mut self, pos_ms: u64) {
@@ -556,24 +599,27 @@ impl Render for ImmersiveView {
         let accent = self.accent.unwrap_or(theme.text);
         let image_gen = self.image_element_key;
 
-        let position_s = (*self.position.read(cx) / 1000) as i64;
-        let duration_s = *self.duration.read(cx) as i64;
-        let progress = if duration_s > 0 {
-            (position_s as f32 / duration_s as f32).clamp(0.0, 1.0)
+        // PlaybackInfo positions and durations are both in milliseconds.
+        let position_ms = *self.position.read(cx);
+        let duration_ms = *self.duration.read(cx);
+        let position_s = (position_ms / 1000) as i64;
+        let duration_s = (duration_ms / 1000) as i64;
+        let progress = if duration_ms > 0 {
+            (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
         let controls_alpha = self.controls_opacity;
 
-        // Ambience backdrop: tiny decode, stretched to Cover, mild blur.
+        // Ambience backdrop: the cover's own 512px decode (shared cache
+        // entry) stretched to Cover, one mild blur pass on top.
         let backdrop = div().absolute().inset_0().overflow_hidden().when_some(
             self.image_key.clone(),
             |el, key| {
                 el.child(
                     managed_image(("immersive-bg", image_gen), key)
-                        .thumb()
-                        .thumb_max(BACKDROP_THUMB_PX)
+                        .thumb_max(COVER_THUMB_PX)
                         .w_full()
                         .h_full()
                         .object_fit(ObjectFit::Cover)
@@ -581,21 +627,13 @@ impl Render for ImmersiveView {
                 )
             },
         );
-        let dim_overlay = div()
-            .absolute()
-            .inset_0()
-            .bg(Rgba::new(0.0, 0.0, 0.0, 0.55));
-        let bottom_scrim = div()
-            .absolute()
-            .bottom_0()
-            .left_0()
-            .right_0()
-            .h(relative(0.22))
-            .bg(linear_gradient(
-                0.0,
-                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 0.0),
-                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.55), 1.0),
-            ));
+        // One vertical gradient instead of a flat black slab: light at the
+        // top so the ambience reads, heavier toward the controls.
+        let dim_overlay = div().absolute().inset_0().bg(linear_gradient(
+            0.0,
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.30), 0.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.62), 1.0),
+        ));
 
         // Central column: cover, names, lyric viewport.
         let cover = div()
@@ -607,8 +645,7 @@ impl Render for ImmersiveView {
             .when_some(self.image_key.clone(), |el, key| {
                 el.child(
                     managed_image(("immersive-cover", image_gen), key)
-                        .thumb()
-                        .thumb_max(512)
+                        .thumb_max(COVER_THUMB_PX)
                         .w_full()
                         .h_full()
                         .object_fit(ObjectFit::Cover),
@@ -710,13 +747,14 @@ impl Render for ImmersiveView {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(20.0))
-            .pb(px(96.0))
+            .gap(px(16.0))
+            .pb(px(110.0))
             .child(cover)
             .child(track_info)
             .child(lyrics_viewport);
 
-        // Spectrum ribbon: thin pre-EQ curve, accent tinted, above the scrim.
+        // Spectrum ribbon: thin pre-EQ curve hugging the bottom edge, behind
+        // the floating controls.
         let ribbon_accent = accent;
         let ribbon = canvas(
             move |bounds, _, cx| {
@@ -759,12 +797,13 @@ impl Render for ImmersiveView {
             },
         )
         .absolute()
-        .bottom(px(86.0))
+        .bottom_0()
         .left_0()
         .right_0()
-        .h(px(52.0));
+        .h(px(72.0));
 
-        // Transport controls (auto-hiding) + read-only progress.
+        // Transport controls floating over the ribbon — no reserved block,
+        // the whole bottom overlay fades with pointer inactivity.
         let transport_button =
             |id: &'static str, icon_path: &'static str, size: f32| -> Stateful<Div> {
                 div()
@@ -775,13 +814,42 @@ impl Render for ImmersiveView {
                     .active(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.16)))
                     .child(icon(icon_path).size(px(size)).text_color(text))
             };
+        let transport_row = div()
+            .flex()
+            .items_center()
+            .gap(px(14.0))
+            .child(
+                transport_button("immersive-prev", PREV_TRACK, 20.0).on_click(|_, _, cx| {
+                    cx.global::<PlaybackInterface>().previous();
+                }),
+            )
+            .child(
+                transport_button("immersive-play", if playing { PAUSE } else { PLAY }, 26.0)
+                    .p(px(12.0))
+                    .rounded_full()
+                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.10))
+                    .on_click(|_, _, cx| {
+                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                        let interface = cx.global::<PlaybackInterface>();
+                        if state == PlaybackState::Playing {
+                            interface.pause();
+                        } else {
+                            interface.play();
+                        }
+                    }),
+            )
+            .child(
+                transport_button("immersive-next", NEXT_TRACK, 20.0).on_click(|_, _, cx| {
+                    cx.global::<PlaybackInterface>().next();
+                }),
+            );
         let progress_row =
             div()
                 .flex()
                 .items_center()
                 .gap(px(12.0))
-                .w(px(560.0))
-                .max_w(relative(0.7))
+                .w(px(680.0))
+                .max_w(relative(0.85))
                 .child(
                     div()
                         .text_size(px(12.0))
@@ -805,47 +873,20 @@ impl Render for ImmersiveView {
                 .child(div().text_size(px(12.0)).text_color(text_secondary).child(
                     SharedString::from(format_duration(duration_s.max(0), false)),
                 ));
-        let transport_row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.0))
-            .child(
-                transport_button("immersive-prev", PREV_TRACK, 20.0).on_click(|_, _, cx| {
-                    cx.global::<PlaybackInterface>().previous();
-                }),
-            )
-            .child(
-                transport_button("immersive-play", if playing { PAUSE } else { PLAY }, 26.0)
-                    .p(px(12.0))
-                    .rounded_full()
-                    .on_click(|_, _, cx| {
-                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                        let interface = cx.global::<PlaybackInterface>();
-                        if state == PlaybackState::Playing {
-                            interface.pause();
-                        } else {
-                            interface.play();
-                        }
-                    }),
-            )
-            .child(
-                transport_button("immersive-next", NEXT_TRACK, 20.0).on_click(|_, _, cx| {
-                    cx.global::<PlaybackInterface>().next();
-                }),
-            );
-        let controls_bar = div()
+        let bottom_overlay = div()
             .absolute()
-            .bottom(px(18.0))
+            .bottom_0()
             .left_0()
             .right_0()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(10.0))
+            .gap(px(12.0))
+            .pb(px(12.0))
             .opacity(controls_alpha)
             .when(controls_alpha <= 0.02, |el| el.hidden())
-            .child(progress_row)
-            .child(transport_row);
+            .child(transport_row)
+            .child(progress_row);
 
         let exit_button = div()
             .id("immersive-exit")
@@ -876,10 +917,9 @@ impl Render for ImmersiveView {
             }))
             .child(backdrop)
             .child(dim_overlay)
-            .child(bottom_scrim)
             .child(ribbon)
             .child(center_column)
-            .child(controls_bar)
+            .child(bottom_overlay)
             .child(exit_button)
     }
 }
@@ -898,7 +938,7 @@ fn extract_accent(image: &gpui::RenderImage) -> Option<Rgba> {
 /// Bucketed dominant-color core over raw BGRA bytes (4 bytes per pixel).
 /// 12-bit histogram (4 bits per channel); weight = saturation + a small
 /// floor, so grey covers still produce a usable tone. Subsamples every third
-/// pixel — a 64px decode is a few thousand reads, off the UI thread.
+/// pixel — a 512px decode is ~44k reads, off the UI thread.
 fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
     use rustc_hash::FxHashMap;
 

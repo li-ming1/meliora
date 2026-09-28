@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:860",
+    "definedIn": "src/ui/immersive.rs:901",
     "plural": false,
     "description": null
   },
@@ -1537,7 +1537,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:621",
+    "definedIn": "src/ui/lyrics.rs:641",
     "plural": false,
     "description": null
   },

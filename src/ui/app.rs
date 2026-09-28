@@ -363,13 +363,16 @@ fn build_main_window(
         let lyrics_height = cx.global::<Models>().lyrics_height.clone();
         cx.observe(&lyrics_height, |_, _, cx| cx.notify()).detach();
 
+        let right_sidebar = RightSidebar::new(cx);
+        let lyrics_model = right_sidebar.lyrics();
+
         MainWindow {
             controls: Controls::new(cx, show_queue.clone(), show_lyrics.clone()),
             sidebar: {
                 let nav_model = cx.global::<Models>().switcher_model.clone();
                 Sidebar::new(cx, nav_model)
             },
-            right_sidebar: RightSidebar::new(cx),
+            right_sidebar,
             library: Library::new(cx),
             header: Header::new(cx),
             search: SearchView::new(cx),
@@ -378,7 +381,7 @@ fn build_main_window(
             show_lyrics,
             show_about,
             immersive,
-            immersive_view: ImmersiveView::new(cx),
+            immersive_view: ImmersiveView::new(cx, lyrics_model),
             about_focus,
             missing_folder_dialog: MissingFolderDialog::new(cx),
             corrupt_settings_dialog: CorruptSettingsDialog::new(cx),
