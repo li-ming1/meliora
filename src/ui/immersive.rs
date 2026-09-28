@@ -361,7 +361,9 @@ impl ImmersiveView {
                 .and_then(|data| data.cover_url)
                 .filter(|url| !url.is_empty())
             {
-                cover_key = Some(ManagedImageKey::HttpCover(url));
+                // Large-display variant: the queue carries 256px thumbnails,
+                // which turn to mush across a fullscreen backdrop.
+                cover_key = Some(ManagedImageKey::HttpCoverLarge(url));
             }
             if cover_key.is_none() {
                 cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
@@ -607,7 +609,7 @@ impl Render for ImmersiveView {
                 el.child(
                     managed_image(("immersive-bg", image_gen), key)
                         .thumb_max(BACKDROP_THUMB_PX)
-                        .denoised()
+                        .enhanced()
                         .uncached()
                         .w_full()
                         .h_full()

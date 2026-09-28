@@ -86,6 +86,7 @@ pub fn identify_path(path: &Path) -> Option<OnlineTrackMatch> {
     providers().iter().find_map(|p| p.identify_path(path))
 }
 
+pub mod cover_art;
 #[cfg(feature = "kugou")]
 pub mod kugou;
 #[cfg(feature = "netease")]

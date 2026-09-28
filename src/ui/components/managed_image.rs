@@ -159,6 +159,13 @@ pub enum ManagedImageKey {
     /// Online album art fetched over HTTP (KuGou / NetEase track cover URL).
     #[cfg(feature = "online_sources")]
     HttpCover(SharedString),
+    /// Same art, but the fetch tries the provider's large-display variant of
+    /// the URL first (KuGou `stdmusic/480`, NetEase `?param=1024y1024`) with
+    /// a fallback to the original thumbnail — for the immersive backdrop and
+    /// label, where a 256px thumbnail stretched across the window reads as
+    /// mush. See `online_sources::cover_art`.
+    #[cfg(feature = "online_sources")]
+    HttpCoverLarge(SharedString),
 }
 
 /// Upper bound on decoded `RenderImage`s kept alive across elements.
@@ -653,6 +660,24 @@ impl ManagedImageKey {
                 };
                 Ok(image)
             }
+            #[cfg(feature = "online_sources")]
+            ManagedImageKey::HttpCoverLarge(url) => {
+                let bytes =
+                    crate::online_sources::cover_art::fetch_display_cover_bytes(&url).await?;
+                let Some(bytes) = bytes else { return Ok(None) };
+                let image = {
+                    let _permit = DECODE_PERMITS
+                        .acquire()
+                        .await
+                        .expect("semaphore is never closed");
+                    crate::RUNTIME
+                        .spawn_blocking(move || {
+                            decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
+                        })
+                        .await??
+                };
+                Ok(image)
+            }
             ManagedImageKey::Album(id) | ManagedImageKey::Track(id) => {
                 let thumb = thumb_size > 0;
                 // The `thumb` column holds the scanner's 70×70 BMP, sized for
@@ -677,6 +702,8 @@ impl ManagedImageKey {
                     (ManagedImageKey::TrackFile(_), _) => unreachable!(),
                     #[cfg(feature = "online_sources")]
                     (ManagedImageKey::HttpCover(_), _) => unreachable!(),
+                    #[cfg(feature = "online_sources")]
+                    (ManagedImageKey::HttpCoverLarge(_), _) => unreachable!(),
                 };
                 let Some((image_encoded,)): Option<(Option<Vec<u8>>,)> =
                     sqlx::query_as(query).bind(id).fetch_optional(&pool).await?
@@ -745,12 +772,13 @@ pub struct ManagedImage {
     /// atlas tile whose reclamation waits on the render-cache LRU, the measured
     /// per-track commit ratchet of the 2026-09-14 soak.
     cache: bool,
-    /// 3×3 median denoise after decode, for the full-screen immersive
-    /// backdrop: cover art is JPEG-compressed, and its 8×8 block steps read
-    /// as a grid of dark boxes ("黑框框") once the decode is stretched across
-    /// the window. The median melts the block edges while leaving real edges
-    /// (buildings, subjects) intact.
-    denoise: bool,
+    /// 3×3 median denoise plus small-source Lanczos upscale after decode,
+    /// for the full-screen immersive backdrop: cover art is JPEG-compressed
+    /// (its 8×8 block steps read as a grid of dark boxes once stretched) and
+    /// online thumbnails are far smaller than the window (GPU bilinear
+    /// magnification reads mushy). The median melts the block edges, the
+    /// Lanczos resample hands the GPU a near-1:1 texture.
+    enhance: bool,
 }
 
 impl ManagedImage {
@@ -779,11 +807,11 @@ impl ManagedImage {
         self
     }
 
-    /// Runs a 3×3 median denoise after decoding. Cover art is served
-    /// JPEG-compressed; the full-screen backdrop magnifies the 8×8 block
-    /// steps into a visible grid of dark boxes, which the median suppresses.
-    pub fn denoised(mut self) -> Self {
-        self.denoise = true;
+    /// Runs the backdrop enhancement pass after decoding: median denoise
+    /// plus, for sources smaller than [`ENHANCE_UPSCALE_MIN_SOURCE_PX`], a
+    /// Lanczos resample up to [`ENHANCE_UPSCALE_TARGET_PX`] on the long side.
+    pub fn enhanced(mut self) -> Self {
+        self.enhance = true;
         self
     }
 }
@@ -824,7 +852,7 @@ impl Element for ManagedImage {
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
         let use_cache = self.cache;
-        let denoise = self.denoise;
+        let enhance = self.enhance;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
@@ -855,11 +883,12 @@ impl Element for ManagedImage {
                 };
                 match result {
                     Ok(Some(image)) => {
-                        // The denoise pass runs before the image reaches the
-                        // state/atlas: one off-thread sweep for the backdrop
-                        // (any source size — block steps show at 1:1 too).
-                        let image = if denoise {
-                            denoise_render_image(&image).unwrap_or(image)
+                        // The enhancement pass runs before the image reaches
+                        // the state/atlas: one off-thread sweep for the
+                        // backdrop (any source size — block steps show at
+                        // 1:1 too, small sources magnify mushy).
+                        let image = if enhance {
+                            enhance_render_image(&image).unwrap_or(image)
                         } else {
                             image
                         };
@@ -1020,13 +1049,21 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         object_fit: ObjectFit::Cover,
         thumb_size: 0,
         cache: true,
-        denoise: false,
+        enhance: false,
     }
 }
 
-/// Applies the 3×3 median denoise to a decoded image, returning a fresh
-/// `RenderImage`. RGB channels only, alpha untouched.
-fn denoise_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
+/// Sources below this long side get the Lanczos upscale; at or above it the
+/// GPU magnification is small enough to look fine.
+const ENHANCE_UPSCALE_MIN_SOURCE_PX: u32 = 1000;
+/// Long side of the resampled backdrop — matches a 1920-wide fullscreen.
+const ENHANCE_UPSCALE_TARGET_PX: u32 = 1920;
+
+/// Backdrop enhancement for a decoded image, returning a fresh
+/// `RenderImage`: 3×3 median denoise (melts JPEG block steps at any source
+/// size), then a Lanczos resample to near display size for small sources.
+/// RGB channels only, alpha untouched.
+fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
     let bytes = image.as_bytes(0)?;
     let size = image.size(0);
     let (width, height) = (u32::from(size.width), u32::from(size.height));
@@ -1035,6 +1072,18 @@ fn denoise_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
     }
     let mut rgba = image::RgbaImage::from_raw(width, height, bytes.to_vec())?;
     denoise_rgba(&mut rgba);
+    let long_side = rgba.width().max(rgba.height());
+    if long_side < ENHANCE_UPSCALE_MIN_SOURCE_PX {
+        let scale = f64::from(ENHANCE_UPSCALE_TARGET_PX) / f64::from(long_side);
+        let new_width = ((f64::from(rgba.width()) * scale) as u32).max(1);
+        let new_height = ((f64::from(rgba.height()) * scale) as u32).max(1);
+        rgba = image::imageops::resize(
+            &rgba,
+            new_width,
+            new_height,
+            image::imageops::FilterType::Lanczos3,
+        );
+    }
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
 }
 
@@ -1118,9 +1167,10 @@ mod tests {
     }
 
     #[test]
-    fn denoise_render_image_processes_all_sizes() {
-        // The backdrop denoise runs for every source size: block steps show
-        // at 1:1 too. A 1600px decode must come back as a new (processed) Arc.
+    fn enhance_render_image_medians_large_sources_without_upscale() {
+        // A 1600px source is at/above the upscale floor: block steps still
+        // get medianed (they show at 1:1 too), but the size stays put — the
+        // GPU magnification is already small.
         let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
             1600,
             2,
@@ -1130,12 +1180,34 @@ mod tests {
                 image::Rgba([10u8, 10, 10, 255])
             }
         ))]));
-        let denoised = denoise_render_image(&image).unwrap();
-        assert!(!Arc::ptr_eq(&image, &denoised));
-        let bytes = denoised.as_bytes(0).unwrap();
+        let enhanced = enhance_render_image(&image).unwrap();
+        assert!(!Arc::ptr_eq(&image, &enhanced));
+        let size = enhanced.size(0);
+        assert_eq!((u32::from(size.width), u32::from(size.height)), (1600, 2));
         // The isolated bright column is a 1px outlier in its window → medianed.
+        let bytes = enhanced.as_bytes(0).unwrap();
         let outlier = 4 * (800 + 0 * 1600) + 0;
         assert!(bytes[outlier] < 200, "outlier should be removed");
+    }
+
+    #[test]
+    fn enhance_render_image_upscales_small_sources() {
+        // A 480px online thumbnail stretched across the window reads mushy;
+        // the enhancement pass must resample it to the display-size target
+        // before upload so the GPU scales ~1:1.
+        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            480,
+            360,
+            |x, y| image::Rgba([((x * 7 + y) % 255) as u8, 60, 90, 255])
+        ))]));
+        let enhanced = enhance_render_image(&image).unwrap();
+        let size = enhanced.size(0);
+        assert_eq!(
+            u32::from(size.width),
+            ENHANCE_UPSCALE_TARGET_PX,
+            "long side must reach the target"
+        );
+        assert_eq!(u32::from(size.height), 1440, "aspect ratio preserved");
     }
 
     fn test_image() -> Arc<RenderImage> {
