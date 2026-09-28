@@ -83,6 +83,8 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$STAGE/"
           Copy-Item README.md, LICENSE "$STAGE/"
           Compress-Archive -Path "$STAGE/*" -DestinationPath "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.zip"
+          # Bare binary for the in-app updater (download → sha256 → rename swap)
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.exe"
 
       - name: Package macOS (.app tar.gz)
         if: ${{ runner.os == 'macOS' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
@@ -110,6 +112,8 @@ jobs:
           </plist>
           PLIST
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" "Meliora.app"
+          # Bare binary for the in-app updater
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.bin"
 
       - name: Package Linux (tar.gz)
         if: ${{ runner.os == 'Linux' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
@@ -120,6 +124,8 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$STAGE/"
           cp README.md LICENSE "$STAGE/"
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" .
+        # Bare binary for the in-app updater
+        cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.bin"
 
       - name: Upload artifact
         if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
@@ -140,6 +146,11 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # sha256 manifest consumed by the in-app updater to verify the
+      # downloaded bare binary before installing it
+      - name: Generate checksums
+        run: cd dist && sha256sum * > checksums.txt
 
       - uses: softprops/action-gh-release@v2
         with:
