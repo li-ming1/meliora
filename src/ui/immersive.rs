@@ -868,17 +868,20 @@ impl Render for ImmersiveView {
                         lerp_color(text, text_secondary, 0.4)
                     };
                     let line_time_ms = line.time_ms;
-                    // Karaoke: each word lerps from the line color to the
-                    // accent as its window passes. Word colors change per
+                    // Karaoke: un-sung words sit at the dimmed neighbor tone
+                    // and sweep to the accent as each word's window passes
+                    // (the current line's own color is already the accent, so
+                    // it cannot be the sweep start). Word colors change per
                     // tick — glyph geometry stays fixed.
                     let text_child: Div = if is_current && !line.words.is_empty() {
+                        let unsung = lerp_color(text, text_secondary, 0.4);
                         let mut row = div().flex().flex_wrap().items_baseline();
                         for word in &line.words {
                             let progress = word_progress(word, position_ms);
                             row = row.child(
                                 div()
                                     .child(word.text.clone())
-                                    .text_color(lerp_color(color, accent, progress)),
+                                    .text_color(lerp_color(unsung, accent, progress)),
                             );
                         }
                         row
