@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1343",
+    "definedIn": "src/ui/immersive.rs:1342",
     "plural": false,
     "description": null
   },

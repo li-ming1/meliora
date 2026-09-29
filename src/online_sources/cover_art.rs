@@ -7,10 +7,11 @@
 //! KuGou's `stdmusic` path takes a size segment (probed 2026-09-28:
 //! 480/1280/1920/2048/4096 all serve real pixels — but only for covers whose
 //! large variants were actually generated), NetEase images accept a
-//! `?param=WxH` query. [`display_cover_url`] rewrites a thumbnail URL to its
-//! largest variant; [`fetch_display_cover_bytes`] walks a size LADDER and
-//! keeps the biggest variant that actually serves pixels, falling back to
-//! the original thumbnail only when every rung misses. A silent jump from a
+//! `?param=WxH` query. [`display_cover_candidates`] lays out the size LADDER
+//! (largest variant first, the original thumbnail last) and
+//! [`fetch_display_cover_bytes_capped`] walks it, keeping the biggest variant
+//! that actually serves pixels and falling back to the original thumbnail
+//! only when every rung misses. A silent jump from a
 //! 404'd 2048 straight to the 256px thumbnail is exactly the "immersive
 //! backdrop is mush" report of 2026-09-29 — the ladder plus the winner log
 //! line make the resolution the backdrop actually gets observable.
@@ -106,18 +107,15 @@ fn rewrite_netease_param_with(url: &str, param: &str) -> String {
     out
 }
 
-/// Fetches the display-quality cover for `url`: walks the provider's size
-/// ladder largest-first and returns the biggest variant that actually serves
-/// pixels, falling back to the original thumbnail when every rung misses.
-/// Failed rungs are remembered for the session so later retrieves for the
-/// same cover skip straight to the winning size. Both winners and misses go
-/// through the shared disk cache, so grid elements fetching the original
-/// thumbnail still share entries with this path.
-pub async fn fetch_display_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    fetch_display_cover_bytes_capped(url, 0).await
-}
-
-/// Same walk with the ladder capped at `max_side` (0 = uncapped): thumbnail-
+/// Walks the provider's size ladder largest-first and returns the biggest
+/// variant that actually serves pixels, falling back to the original
+/// thumbnail when every rung misses. Failed rungs are remembered for the
+/// session so later retrieves for the same cover skip straight to the
+/// winning size. Both winners and misses go through the shared disk cache,
+/// so grid elements fetching the original thumbnail still share entries with
+/// this path.
+///
+/// The ladder can be capped at `max_side` (0 = uncapped): thumbnail-
 /// class consumers (the 512px vinyl label) must not pay a full 4096² decode
 /// for a small display — display×4 already oversamples at the source, and a
 /// 2048 decode costs a quarter of a 4096 one (2026-09-29 audit). Rungs whose
@@ -161,8 +159,9 @@ pub async fn fetch_display_cover_bytes_capped(
 }
 
 /// Largest side of a ladder rung URL, when its shape carries one: KuGou
-/// `…/stdmusic/{size}/…`, NetEase `…?param={w}x{h}` (squares). Unknown
-/// shapes return None and are never capped out.
+/// `…/stdmusic/{size}/…`, NetEase `…?param={w}y{h}` (squares; the `x`
+/// separator is accepted too). Unknown shapes return None and are never
+/// capped out.
 fn rung_size(url: &str) -> Option<u32> {
     if let Some(rest) = url.split("/stdmusic/").nth(1) {
         return rest

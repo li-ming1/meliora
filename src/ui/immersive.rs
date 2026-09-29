@@ -4,12 +4,11 @@
 //! aspect, median-denoised, Lanczos-resampled to the exact device-pixel size
 //! and unsharp-masked; the KuGou ladder now leads with 4096 so the resample
 //! averages noise like the disc label does; one vertical + one horizontal
-//! gradient carve out the reading zones), a spinning vinyl
-//! disc
-//! with the cover as its label sits on the left above the track names and a
-//! frosted-glass player card (seekable progress, transport, volume), and the
-//! right half is the lyrics column with karaoke word timing, wheel browsing
-//! and click-to-seek.
+//! gradient carve out the reading zones), a static disc-sized circular
+//! cover (the "vinyl" no longer spins — see the animation notes below) sits
+//! on the left above the track names and a frosted-glass player card
+//! (seekable progress, transport, volume), and the right half is the lyrics
+//! column with karaoke word timing, wheel browsing and click-to-seek.
 //!
 //! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
 //! loaded a second time: that entity owns the sidecar/DB/online fetch
@@ -108,7 +107,8 @@ const VINYL_SIZE_FRACTION: f32 = 0.34;
 const VINYL_LABEL_FRACTION: f32 = 1.0;
 /// Cover decode for the vinyl label — small, render-cached.
 const LABEL_THUMB_PX: u32 = 512;
-/// Backdrop decode cap for full-screen sharpness — uncached, element-held.
+/// Backdrop decode cap for the fixed-size fallback path (`Backdrop(None)`,
+/// see `backdrop_layer`): taken only when the device-pixel target is unknown.
 const BACKDROP_THUMB_PX: u32 = 2048;
 /// 大图回收队列未放行时的退避重试间隔：重试只是一次廉价的队列计数检查，
 /// 期间旧背景保持绘制，不出现黑底。
@@ -123,7 +123,8 @@ const SCROLL_RETURN_AFTER: Duration = Duration::from_secs(2);
 
 /// Enters or leaves immersive mode: flips [`Models::immersive`] and toggles
 /// the main window's OS fullscreen state in step. Every entry point (keybind,
-/// playbar button, exit button) funnels through here.
+/// sidebar toggle, info-section double-click, exit button) funnels through
+/// here.
 pub fn set_immersive(entering: bool, cx: &mut App) {
     let immersive = cx.global::<Models>().immersive.clone();
     if *immersive.read(cx) == entering {
@@ -135,8 +136,7 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
 
 pub struct ImmersiveView {
     focus_handle: FocusHandle,
-    /// Mirrors `Models::immersive`; drives the spectrum viewer registration
-    /// and gates every observer's `notify`.
+    /// Mirrors `Models::immersive`; gates every observer's `notify`.
     active: bool,
 
     position: Entity<u64>,
@@ -248,8 +248,7 @@ impl ImmersiveView {
                     this.last_scroll = None;
                     this.sync_display_target(true);
                 }
-                // Drives the progress bar, the vinyl rotation and any
-                // in-flight line glide.
+                // Drives the progress bar and any in-flight line glide.
                 cx.notify();
             })
             .detach();
@@ -601,7 +600,7 @@ impl ImmersiveView {
     /// 背景不进回收漏斗，零队列成本，§33/§34）；解码完成时若曲目仍是当
     /// 前这首才晋升交换。晋升即进入 400ms crossfade：旧背景降级为淡出
     /// 层继续绘制，新图在其上淡入，没有黑底间隙也没有硬切闪变。大图回
-    /// 收队列未放行（>2 套在队）时按 [`BACKDROP_RETRY`] 退避重试，是
+    /// 收队列未放行（>3 套在队）时按 [`BACKDROP_RETRY`] 退避重试，是
     /// "同时驻留大图套数"硬上界的执行点；大图 3s 短年龄门让积压在数秒
     /// 内排空，普通切歌节奏下阀门不再成为"背景不跟歌"的来源。
     fn arm_backdrop(&mut self, cx: &mut Context<Self>) {
@@ -732,8 +731,9 @@ impl ImmersiveView {
 
     /// 渲染一个背景槽位图层：显式 id 让元素祖先路径跨帧稳定（槽位是否
     /// 有图、图是否更换都不影响另一个槽位的 keyed state）；opacity 由
-    /// wrapper div 提供给子 `ManagedImage` 的 `paint_image`。纹理按
-    /// `backdrop_target` 设备尺寸精确重采样，绘制时 GPU 1:1 取样。
+    /// wrapper div 的 `opacity()` 设置，gpui 的 element_opacity 栈在绘制
+    /// 时乘进子 `ManagedImage` 的精灵。纹理按 `backdrop_target` 设备尺寸
+    /// 精确重采样，绘制时 GPU 1:1 取样。
     fn backdrop_layer(&self, index: usize, opacity: f32) -> impl IntoElement {
         let layer = self.backdrop_layers[index].clone();
         let target = self.backdrop_target;
@@ -747,6 +747,8 @@ impl ImmersiveView {
                     Some((w, h)) if w > 0 && h > 0 => {
                         managed_image(("immersive-bg", gen_id), key).backdrop_cached_target(w, h)
                     }
+                    // 定长兜底（Backdrop(None)）：目标尺寸未知/为零时退回
+                    // 2048 上限解码（render 总会先写入非零目标，正常不走）。
                     _ => managed_image(("immersive-bg", gen_id), key)
                         .thumb_max(BACKDROP_THUMB_PX)
                         .backdrop_cached(),
@@ -806,10 +808,8 @@ impl ImmersiveView {
         let max = len - 1 + LINE_WINDOW - base;
         self.browse_offset = self.browse_offset.clamp(min, max);
         let target = (base + self.browse_offset) as f32;
-        if (target - self.visual_line).abs() < 0.01 {
-            self.visual_line = target;
-            self.line_anim = None;
-        } else if !animate {
+        if !animate || (target - self.visual_line).abs() < 0.01 {
+            // 已在目标上，或调用方要求直接落位：不滑动并清掉进行中的动画。
             self.visual_line = target;
             self.line_anim = None;
         } else {
@@ -1208,7 +1208,6 @@ impl Render for ImmersiveView {
         let lyric_children = self.parsed.as_ref().map(|parsed| {
             let visual_line = self.visual_line;
             let current_line = self.current_line;
-            let position_ms = position_ms;
             lyric_window(visual_line, parsed.len(), current_line)
                 .into_iter()
                 .map(move |(index, top, is_current)| {

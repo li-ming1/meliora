@@ -176,7 +176,8 @@ pub(crate) fn extract_accent(image: &RenderImage) -> Option<Rgba> {
 
 /// 分桶主色核心，作用于原始 BGRA 字节（每像素 4 字节）。12 位直方图
 /// （每通道 4 位）；权重 = 饱和度 + 一个小底数，灰白封面也能产出可用色调。
-/// 每隔 3 个像素采样一次 —— 512px 解码约 2.9 万次读取，在 UI 线程之外执行。
+/// 每隔 3 个像素采样一次 —— 512² 解码约 8.7 万次、256² 约 2.2 万次采样，
+/// 在 UI 线程之外执行。
 fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
     const PIXEL_STRIDE: usize = 3;
     let mut buckets: FxHashMap<u16, (u64, u64, u64, u64)> = FxHashMap::default();
@@ -236,18 +237,22 @@ fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
 mod tests {
     use super::*;
 
+    /// 把单个 BGRA 像素重复 `count` 次铺成原始字节缓冲。
+    fn repeated_pixel(pixel: [u8; 4], count: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(count * 4);
+        for _ in 0..count {
+            bytes.extend_from_slice(&pixel);
+        }
+        bytes
+    }
+
     #[test]
     fn dominant_accent_prefers_saturated_pixels() {
         // BGRA: mostly grey pixels, a few vivid red ones — red must win.
         let grey = [128u8, 128, 128, 255];
         let red = [40u8, 30, 220, 255];
-        let mut bytes = Vec::new();
-        for _ in 0..100 {
-            bytes.extend_from_slice(&grey);
-        }
-        for _ in 0..20 {
-            bytes.extend_from_slice(&red);
-        }
+        let mut bytes = repeated_pixel(grey, 100);
+        bytes.extend(repeated_pixel(red, 20));
         let accent = dominant_accent_bgra(&bytes).unwrap();
         assert!(accent.red > 0.6, "red channel should dominate: {accent:?}");
         assert!(accent.blue < 0.3 && accent.green < 0.3);
@@ -255,7 +260,7 @@ mod tests {
 
     #[test]
     fn dominant_accent_ignores_transparent_pixels() {
-        let bytes = vec![0u8; 4 * 32];
+        let bytes = repeated_pixel([0, 0, 0, 0], 32);
         assert!(dominant_accent_bgra(&bytes).is_none());
     }
 
@@ -263,10 +268,7 @@ mod tests {
     fn dominant_accent_lifts_dark_winners() {
         // A single near-black bucket: the lift must raise luminance.
         let dark = [10u8, 12, 16, 255];
-        let mut bytes = Vec::new();
-        for _ in 0..64 {
-            bytes.extend_from_slice(&dark);
-        }
+        let bytes = repeated_pixel(dark, 64);
         let accent = dominant_accent_bgra(&bytes).unwrap();
         let luminance = 0.2126 * accent.red + 0.7152 * accent.green + 0.0722 * accent.blue;
         assert!(

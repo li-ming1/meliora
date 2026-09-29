@@ -59,7 +59,7 @@ fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
 /// in-flight decode transiently holds a full-size RGBA buffer (a 3000px cover
 /// is ~36MB), and one fast grid scroll can miss the render cache for dozens
 /// of tiles at once. Mirrors the scanner's artwork decode cap; the render
-/// cache above bounds what is *retained*, this bounds what is *in flight*.
+/// cache bounds what is *retained*, this bounds what is *in flight*.
 static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
 
@@ -88,6 +88,23 @@ const STORED_THUMB_PX: u32 = 72;
 fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<RenderImage>> {
     let image = image::load_from_memory(data)?;
     decode_rgba_to_render_image(dynamic_to_rgba_scaled(image, bound))
+}
+
+/// Acquires a [`DECODE_PERMITS`] slot and decodes `data` into a
+/// `bound`-capped `RenderImage` on the blocking pool. Shared by every
+/// byte-buffer decode path (`HttpCover` / `HttpCoverLarge` / DB art) so the
+/// in-flight cap and the blocking-pool handoff stay in one place.
+async fn decode_bounded_with_permit(
+    data: Vec<u8>,
+    bound: u32,
+) -> anyhow::Result<Option<Arc<RenderImage>>> {
+    let _permit = DECODE_PERMITS
+        .acquire()
+        .await
+        .expect("semaphore is never closed");
+    Ok(crate::RUNTIME
+        .spawn_blocking(move || decode_to_render_image_scaled(&data, bound).map(Some))
+        .await??)
 }
 
 /// Converts a decoded image to RGBA, preferring steal-or-expand over
@@ -189,10 +206,10 @@ const RENDER_CACHE_MAX: usize = 32;
 /// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
 /// are different decodes. Cached tiles are reclaimed exactly once through
 /// `queue_tile_drop` + `drain_pending_tile_drops`; element `on_release`
-/// reclaims only when it holds the last reference (see `drop_image_if_last`
-/// there) — double-freeing a tile trips an etagere assertion (2026-09-12
-/// crash) and never freeing one leaks it once a surviving element re-paints
-/// it after eviction.
+/// pushes its held references into the same funnel, where the drain only
+/// reclaims what nothing outside the batch can still paint — double-freeing
+/// a tile trips an etagere assertion (2026-09-12 crash) and never freeing
+/// one leaks it once a surviving element re-paints it after eviction.
 static RENDER_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -272,7 +289,9 @@ pub fn backdrop_cache_stats() -> (usize, u64) {
 /// Covers whose atlas tiles still need dropping, tagged with their cache key.
 /// This queue is the SINGLE reclaim funnel: cache evictions/replacements and
 /// element `on_release` both push here, and `drain_pending_tile_drops` (event
-/// loop only, never mid-frame) is the only place that calls `drop_image`.
+/// loop only, never mid-frame) is its only drain — the one reclaim outside
+/// it is the retrieve continuation's `strong_count == 1` fallback when the
+/// element vanished before the image landed (see `request_layout`).
 /// Eviction runs on the RUNTIME where no `App` exists, which is why the drop
 /// itself has to be deferred. Without any of this, an evicted cover's atlas
 /// page stays pinned forever once its owning elements have unmounted.
@@ -502,8 +521,7 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
         let mut queue = queue
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (ready, young) = partition_ready(queue.drain(..).collect(), now);
-        (ready, young)
+        partition_ready(queue.drain(..).collect(), now)
     };
 
     if !ready.is_empty() {
@@ -528,7 +546,7 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     }
 
     // 未到期条目必须先回队再返回：drain 挂在播放事件循环上，几乎每秒
-    // 都会执行，一张刚入队的图（60s 年龄门未到）若在这里被丢弃，它的
+    // 都会执行，一张刚入队的图（回收年龄门未到）若在这里被丢弃，它的
     // 最后一份 Arc 就地消失，瓦片永远无人回收——pushed 持续增长而其余
     // 计数恒为零的 [mem] 曲线（2026-09-26 两个会话）正是这条路径。
     // Re-queue the not-yet-due entries only after the reclaim decision, so a
@@ -779,18 +797,7 @@ impl ManagedImageKey {
                 let url = url.to_string();
                 let bytes = crate::media::http_source::http_cover_bytes_cached(&url).await?;
                 let Some(bytes) = bytes else { return Ok(None) };
-                let image = {
-                    let _permit = DECODE_PERMITS
-                        .acquire()
-                        .await
-                        .expect("semaphore is never closed");
-                    crate::RUNTIME
-                        .spawn_blocking(move || {
-                            decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
-                        })
-                        .await??
-                };
-                Ok(image)
+                Ok(decode_bounded_with_permit(bytes, thumb_size).await?)
             }
             #[cfg(feature = "online_sources")]
             ManagedImageKey::HttpCoverLarge(url) => {
@@ -803,18 +810,7 @@ impl ManagedImageKey {
                     crate::online_sources::cover_art::fetch_display_cover_bytes_capped(&url, cap)
                         .await?;
                 let Some(bytes) = bytes else { return Ok(None) };
-                let image = {
-                    let _permit = DECODE_PERMITS
-                        .acquire()
-                        .await
-                        .expect("semaphore is never closed");
-                    crate::RUNTIME
-                        .spawn_blocking(move || {
-                            decode_to_render_image_scaled(&bytes, thumb_size).map(Some)
-                        })
-                        .await??
-                };
-                Ok(image)
+                Ok(decode_bounded_with_permit(bytes, thumb_size).await?)
             }
             ManagedImageKey::Album(id) | ManagedImageKey::Track(id) => {
                 let thumb = thumb_size > 0;
@@ -856,19 +852,7 @@ impl ManagedImageKey {
                     return Ok(None);
                 }
 
-                let image = {
-                    let _permit = DECODE_PERMITS
-                        .acquire()
-                        .await
-                        .expect("semaphore is never closed");
-                    crate::RUNTIME
-                        .spawn_blocking(move || {
-                            decode_to_render_image_scaled(&image_encoded, thumb_size).map(Some)
-                        })
-                        .await??
-                };
-
-                Ok(image)
+                Ok(decode_bounded_with_permit(image_encoded, thumb_size).await?)
             }
         }
     }
@@ -886,7 +870,8 @@ pub(crate) enum ImageCacheMode {
     None,
     /// 沉浸页全屏背景：独立的小容量 LRU（与 `RENDER_CACHE` 分开，避免
     /// 14MB 级大图挤占封面条目）。`Some((w, h))` 携带背景元素的**设备像
-    /// 素目标尺寸**——解码后直接 cover 裁剪 + Lanczos 重采样到该尺寸，缓
+    /// 素目标尺寸**——解码后经 [`backdrop_sharp_fill`] 清晰裁剪带渲染到
+    /// 该尺寸（cover 裁剪 → 中值去噪 → 重采样 → 阈值 unsharp），缓
     /// 存里永远是"拿来即绘"且与屏幕 1:1 的成图（2026-09-29 实测定案：
     /// 2048 纹理按 0.94 非整数比例双线性采样本身就会带来半像素级模糊，
     /// 唯一根治法是让纹理与屏幕逐像素对齐）；`None` 为旧的定长解码路径。
@@ -930,8 +915,8 @@ fn backdrop_cache_lookup(key: &RenderCacheKey) -> Option<Arc<RenderImage>> {
     Some(image)
 }
 
-/// 插入并按容量逐出；逐出项经回收漏斗释放（像素与瓦片都在 60s 门后
-/// 放行）。
+/// 插入并按容量逐出；逐出项经回收漏斗释放（背景类大图走
+/// [`RECLAIM_DELAY_LARGE`] 3s 短门，见 [`reclaim_delay_for`]）。
 fn backdrop_cache_insert(key: RenderCacheKey, image: Arc<RenderImage>) {
     let mut cache = lock_backdrop_cache();
     let bytes = image_bytes(&image);
@@ -977,10 +962,11 @@ pub(crate) fn backdrop_cache_shrink(keep: usize) {
 /// ≈ 16.8MB，增强后的 1920px 在线背景 ≈ 14.7MB；常规封面 ≤1MB）。
 const LARGE_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// 回收队列中等待 60s 年龄门的**去重大图**（≥[`LARGE_IMAGE_BYTES`]）套
-/// 数。同一份图可能被缓存逐出和元素卸载各推一次，按 `RenderImage::id`
-/// 去重后的套数才是真实驻留。大图在队期间其像素与图集瓦片全程驻留，
-/// 沉浸页只在计数低于 [`BACKDROP_QUEUE_HEADROOM`] 时放行新的背景解码，
+/// 回收队列中等待年龄门的**去重大图**（≥[`LARGE_IMAGE_BYTES`]，走
+/// [`RECLAIM_DELAY_LARGE`] 3s 短门）套数。同一份图可能被缓存逐出和元素
+/// 卸载各推一次，按 `RenderImage::id` 去重后的套数才是真实驻留。大图在
+/// 队期间其像素与图集瓦片全程驻留，沉浸页只在计数不超过
+/// [`BACKDROP_QUEUE_HEADROOM`] 时放行新的背景解码，
 /// 把"同时驻留的大图套数"钉死在常数上。
 pub(crate) fn large_drops_pending() -> usize {
     PENDING_TILE_DROPS
@@ -1094,7 +1080,8 @@ impl ManagedImage {
         self
     }
 
-    /// 沉浸页全屏背景专用：独立的容量 2 LRU，解码后在入缓存前完成增强
+    /// 沉浸页全屏背景专用：独立的容量 3 LRU（[`BACKDROP_CACHE_CAP`]），
+    /// 解码后在入缓存前完成增强
     /// （`retrieve` 内部）。同一首歌切走再切回、重进沉浸页都命中同一份
     /// `RenderImage` 与图集瓦片——零解码零重传，交换只隔一帧。
     pub fn backdrop_cached(mut self) -> Self {
@@ -1439,8 +1426,10 @@ fn backdrop_sharp_fill(
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(out)])))
 }
 
-/// Backdrop enhancement for a decoded image, returning a fresh
-/// `RenderImage`: sources already at display size pass through untouched;
+/// Fixed-size backdrop enhancement — the [`ImageCacheMode::Backdrop(None)`]
+/// fallback used when the window's device-pixel target is unknown (the exact
+/// target path is [`backdrop_sharp_fill`]). Returns a fresh `RenderImage`:
+/// sources already at or above [`ENHANCE_TARGET_PX`] pass through untouched;
 /// smaller sources get 3×3 median denoise (melts JPEG block steps — after a
 /// 7.5× upscale each block would smear across 60px), a Lanczos resample to
 /// display size, and a thresholded unsharp pass to restore edge acutance.
