@@ -73,8 +73,8 @@ use crate::{
         components::{
             icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
             managed_image::{
-                ImageCacheMode, ManagedImageKey, backdrop_cache_contains, backdrop_decode_allowed,
-                managed_image,
+                ImageCacheMode, ManagedImageKey, backdrop_cache_contains, backdrop_cache_shrink,
+                backdrop_decode_allowed, managed_image,
             },
             slider::slider,
             tooltip::build_tooltip,
@@ -381,13 +381,18 @@ impl ImmersiveView {
         self.line_anim = None;
         // 退出沉浸页：取消解码任务并立即失显。已显示背景随元素 unmount
         // 推进回收漏斗，短年龄门（大图 3s）后像素与瓦片放行；背景缓存
-        // （容量 2）保留最近两套，重进沉浸页秒开。
+        // 收缩到仅当前歌曲一套（重进沉浸页秒开），预取图与上一首经漏斗
+        // 归还——普通模式下不为看不见的背景驻留 ~16MB（"退出界面即归
+        // 还"纪律的执行点）。预取记忆一并清除：收缩后记忆指向的条目可
+        // 能已被逐出，残留会让下次激活误信缓存命中而漏掉重预取。
         // 未 detach 的 Task 置空即取消。
         self.backdrop_task = None;
         self.backdrop_key = None;
         self.backdrop_layers = [None, None];
         self.backdrop_pending_arm = false;
         self.backdrop_fade_started = None;
+        self.prefetched_art = None;
+        backdrop_cache_shrink(1);
     }
     /// Re-resolves cover/names/accent for whatever is playing now. Fired by
     /// both `SongChanged` and `QueuePositionChanged`; the signature guard
@@ -664,8 +669,9 @@ impl ImmersiveView {
                     .flatten();
                 // 解码/渲染失败（网络抖动、临时离线）：有限次退避重试，
                 // 期间旧背景保持绘制；曲目已变则放弃（成果留缓存）。
-                // 不重试会让旧图一直挂到下一次手动操作。
-                let Some(decoded) = decoded else {
+                // 不重试会让旧图一直挂到下一次手动操作。像素本身由背景
+                // 缓存持有，晋升时元素按同键取回，这里只做存在性检查。
+                let Some(_) = decoded else {
                     render_misses += 1;
                     if render_misses > 3 {
                         return;

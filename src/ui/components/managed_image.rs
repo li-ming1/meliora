@@ -938,6 +938,24 @@ fn backdrop_cache_insert(key: RenderCacheKey, image: Arc<RenderImage>) {
     }
 }
 
+/// 退出沉浸模式时收缩背景缓存：从 LRU 尾部逐出多余的成图（经回收漏斗
+/// 3s 短门放行像素与瓦片）。普通模式下沉浸页的预取图与上一首不该继续
+/// 驻留——`keep=1` 保留当前歌曲一套（重进沉浸页秒开），其余立刻让位，
+/// 省下 ~16MB 给普通界面。这是"退出界面即归还"纪律的执行点。
+pub(crate) fn backdrop_cache_shrink(keep: usize) {
+    let mut cache = lock_backdrop_cache();
+    while cache.usage.len() > keep {
+        if let Some(oldest) = cache.usage.pop_front()
+            && let Some((old, old_bytes)) = cache.cache.remove(&oldest)
+        {
+            cache.bytes = cache.bytes.saturating_sub(old_bytes);
+            queue_tile_drop(oldest, old);
+        } else {
+            break;
+        }
+    }
+}
+
 /// 队列中的图像像素字节数达到该阈值即视为"大图"（2048px 沉浸页背景
 /// ≈ 16.8MB，增强后的 1920px 在线背景 ≈ 14.7MB；常规封面 ≤1MB）。
 const LARGE_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
