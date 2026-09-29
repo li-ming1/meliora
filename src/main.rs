@@ -516,6 +516,9 @@ fn spawn_memory_probe() {
                     covers_mb = covers,
                     render_cache_mb = render_cache,
                     render_cache_entries = render_cache_entries,
+                    backdrop_cache_mb = crate::ui::components::managed_image::backdrop_cache_stats().1,
+                    backdrop_cache_entries =
+                        crate::ui::components::managed_image::backdrop_cache_stats().0,
                     img_cache_mb = img_mb,
                     img_cache_entries = img_entries,
                     funnel_pending = funnel.0,

@@ -258,6 +258,17 @@ pub fn render_cache_entries() -> usize {
     cache.cache.len()
 }
 
+/// Resident bytes of the immersive-backdrop LRU, in MiB, plus entry count.
+/// Reported by the [mem] periodic probe: immersive-active sits at ~3 sets,
+/// after leaving the immersive view it must fall back to 1 (the
+/// `backdrop_cache_shrink` release discipline) — this field is how the next
+/// cross-surface residency audit verifies that directly instead of by
+/// inference.
+pub fn backdrop_cache_stats() -> (usize, u64) {
+    let cache = lock_backdrop_cache();
+    (cache.cache.len(), cache.bytes / (1024 * 1024))
+}
+
 /// Covers whose atlas tiles still need dropping, tagged with their cache key.
 /// This queue is the SINGLE reclaim funnel: cache evictions/replacements and
 /// element `on_release` both push here, and `drain_pending_tile_drops` (event
