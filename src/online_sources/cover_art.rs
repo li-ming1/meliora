@@ -114,9 +114,24 @@ fn rewrite_netease_param_with(url: &str, param: &str) -> String {
 /// through the shared disk cache, so grid elements fetching the original
 /// thumbnail still share entries with this path.
 pub async fn fetch_display_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    fetch_display_cover_bytes_capped(url, 0).await
+}
+
+/// Same walk with the ladder capped at `max_side` (0 = uncapped): thumbnail-
+/// class consumers (the 512px vinyl label) must not pay a full 4096² decode
+/// for a small display — display×4 already oversamples at the source, and a
+/// 2048 decode costs a quarter of a 4096 one (2026-09-29 audit). Rungs whose
+/// size cannot be parsed (foreign shapes) always pass.
+pub async fn fetch_display_cover_bytes_capped(
+    url: &str,
+    max_side: u32,
+) -> anyhow::Result<Option<Vec<u8>>> {
     let mut last_error = None;
     for rung in display_cover_candidates(url) {
         if variant_missed(&rung) {
+            continue;
+        }
+        if max_side > 0 && rung_size(&rung).is_some_and(|size| size > max_side) {
             continue;
         }
         match crate::media::http_source::http_cover_bytes_cached(&rung).await {
@@ -143,6 +158,22 @@ pub async fn fetch_display_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u
         Some(error) => Err(error).with_context(|| format!("fetching cover {url}")),
         None => Ok(None),
     }
+}
+
+/// Largest side of a ladder rung URL, when its shape carries one: KuGou
+/// `…/stdmusic/{size}/…`, NetEase `…?param={w}x{h}` (squares). Unknown
+/// shapes return None and are never capped out.
+fn rung_size(url: &str) -> Option<u32> {
+    if let Some(rest) = url.split("/stdmusic/").nth(1) {
+        return rest
+            .split('/')
+            .next()
+            .and_then(|size| size.parse::<u32>().ok());
+    }
+    let param = url.split("?param=").nth(1)?;
+    let wh = param.split('&').next()?;
+    let (w, h) = wh.split_once(['x', 'y'])?;
+    Some(w.parse::<u32>().ok()?.max(h.parse::<u32>().ok()?))
 }
 
 #[cfg(test)]
@@ -213,5 +244,28 @@ mod tests {
         // Non-numeric size segments are left alone.
         let weird = "http://imge.kugou.com/stdmusic/mid/20200101/x.jpg";
         assert_eq!(largest_variant(weird), weird);
+    }
+
+    #[test]
+    fn rung_size_parses_ladder_shapes() {
+        assert_eq!(
+            rung_size("http://imge.kugou.com/stdmusic/4096/20260306/x.jpg"),
+            Some(4096)
+        );
+        assert_eq!(
+            rung_size("http://imge.kugou.com/stdmusic/256/20260306/x.jpg"),
+            Some(256)
+        );
+        assert_eq!(
+            rung_size("http://p3.music.126.net/AbC/123.jpg?param=1024y1024"),
+            Some(1024)
+        );
+        // NetEase URLs may carry extra params after ?param=.
+        assert_eq!(
+            rung_size("http://p1.music.126.net/AbC/1.jpg?param=2048y2048&type=1"),
+            Some(2048)
+        );
+        // Unknown shapes are never capped out.
+        assert_eq!(rung_size("https://example.com/cover/art.png"), None);
     }
 }

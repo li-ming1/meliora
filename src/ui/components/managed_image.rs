@@ -794,8 +794,14 @@ impl ManagedImageKey {
             }
             #[cfg(feature = "online_sources")]
             ManagedImageKey::HttpCoverLarge(url) => {
+                // 缩略图类消费（圆盘标签 512 等）阶梯封顶显示×4：512 显示
+                // 用 2048 源已是 4× 过采样，观感与 4096 无差、解码成本
+                // 1/4；thumb 0（背景全尺寸路径）cap=0 即不封顶，保持
+                // 4096 阶梯。
+                let cap = thumb_size.saturating_mul(4);
                 let bytes =
-                    crate::online_sources::cover_art::fetch_display_cover_bytes(&url).await?;
+                    crate::online_sources::cover_art::fetch_display_cover_bytes_capped(&url, cap)
+                        .await?;
                 let Some(bytes) = bytes else { return Ok(None) };
                 let image = {
                     let _permit = DECODE_PERMITS
