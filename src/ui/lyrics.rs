@@ -17,11 +17,13 @@ use crate::{
     ui::{
         components::{
             icons::{MICROPHONE, icon},
+            managed_image::ManagedImageKey,
             scrollbar::{ScrollableHandle, floating_scrollbar},
         },
         models::{Models, PlaybackInfo},
         scroll_follow::{SmoothScrollFollow, ease_out_cubic},
         theme::Theme,
+        util::extract_accent,
     },
 };
 use cntp_i18n::tr;
@@ -48,6 +50,9 @@ const LYRICS_ACTIVE_LINE_HEIGHT: f32 = 1.65;
 const LYRICS_FADE_MASK_HEIGHT: f32 = 56.0;
 /// 按曲目歌词缓存容量（FIFO 淘汰）：覆盖来回切歌重访的最近曲目。
 const LYRIC_CACHE_CAP: usize = 16;
+/// 封面取色解码尺寸：与沉浸页黑胶标签同为 512px，两个消费者共享同一份
+/// render-cache 解码条目，不新增常驻瓦片。
+const ACCENT_THUMB_PX: u32 = 512;
 
 pub struct Lyrics {
     content: Option<String>,
@@ -87,6 +92,11 @@ pub struct Lyrics {
     line_emphasis_target_values: Vec<f32>,
     line_emphasis_started_at: Option<Instant>,
     playback_state: Entity<PlaybackState>,
+    /// 每首歌主题色（与沉浸页同一提取器，取自当前封面）：活动行高亮与逐字
+    /// 扫色的终点色。提取中或无封面时为 None，回退主题文本色。
+    accent: Option<Rgba>,
+    /// 当前 `accent` 对应的封面键；键未变化时跳过重复提取。
+    accent_for: Option<ManagedImageKey>,
 }
 
 impl Lyrics {
@@ -121,6 +131,9 @@ impl Lyrics {
 
             cx.observe(&current_track, |this: &mut Lyrics, ct, cx| {
                 let track = ct.read(cx).clone();
+                // 每首歌主题色跟随曲目切换；放在所有提前 return 的分支之前，
+                // 在线歌词路径同样生效。
+                this.resolve_accent(cx);
 
                 #[cfg(any(feature = "kugou", feature = "netease"))]
                 if track
@@ -199,6 +212,14 @@ impl Lyrics {
                     .ok();
                 })
                 .detach();
+            })
+            .detach();
+
+            // 队列改写（在线曲目的 cover_url 晚到、position 变化）也重解析
+            // 主题色；封面键未变化时 resolve_accent 直接返回，重复触发无成本。
+            let queue = cx.global::<Models>().queue.clone();
+            cx.observe(&queue, |this: &mut Lyrics, _, cx| {
+                this.resolve_accent(cx);
             })
             .detach();
 
@@ -283,7 +304,7 @@ impl Lyrics {
 
             // Content starts in the empty state (same rendering as the
             // track-switch in-flight state); lyrics land off-thread above.
-            Self {
+            let mut this = Self {
                 content: None,
                 parsed: None,
                 load_generation: 0,
@@ -302,7 +323,11 @@ impl Lyrics {
                 line_emphasis_target_values: Vec::new(),
                 line_emphasis_started_at: None,
                 playback_state,
-            }
+                accent: None,
+                accent_for: None,
+            };
+            this.resolve_accent(cx);
+            this
         })
     }
 
@@ -457,6 +482,77 @@ impl Lyrics {
             .read(cx)
             .as_ref()
             .map(|t| t.get_path().to_string_lossy().into_owned())
+    }
+
+    /// 解析当前曲目的封面键并在封面变化时重提取每首歌主题色（与沉浸页
+    /// 同一提取器、同一 `ManagedImageKey` 形态与解码尺寸，两个消费者共享
+    /// 同一份 render-cache 条目）。键未变化时直接返回，重复触发无成本；
+    /// 提取在 UI 线程之外执行，落地时以键匹配防串歌。
+    fn resolve_accent(&mut self, cx: &mut Context<Self>) {
+        let queue = cx.global::<Models>().queue.clone();
+        let item = {
+            let queue = queue.read(cx);
+            let position = queue.position;
+            queue
+                .data
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(position)
+                .cloned()
+        };
+        let mut cover_key = None;
+        if let Some(item) = &item {
+            // 与沉浸页同形的键：在线曲目用大图封面变体，本地曲目读内嵌/
+            // sidecar 封面。
+            #[cfg(feature = "online_sources")]
+            if let Some(url) = item
+                .get_data(cx)
+                .read(cx)
+                .clone()
+                .and_then(|data| data.cover_url)
+                .filter(|url| !url.is_empty())
+            {
+                cover_key = Some(ManagedImageKey::HttpCoverLarge(url));
+            }
+            if cover_key.is_none() {
+                cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
+            }
+        }
+        if self.accent_for.as_ref() == cover_key.as_ref() {
+            return;
+        }
+        // 换封面的瞬间先回到主题回退色，新主题色异步落地。
+        self.accent = None;
+        self.accent_for = cover_key.clone();
+        let Some(key) = cover_key else {
+            return;
+        };
+
+        let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+        let key_for_guard = key.clone();
+        cx.spawn(async move |this, cx| {
+            let accent = crate::RUNTIME
+                .spawn(async move {
+                    key.retrieve(pool, ACCENT_THUMB_PX, true)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|image| extract_accent(&image))
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "lyrics: accent task failed");
+                    None
+                });
+            this.update(cx, |this, cx| {
+                if this.accent_for.as_ref() == Some(&key_for_guard) {
+                    this.accent = accent;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Applies a fetched online lyric to the current track and files it in
@@ -675,7 +771,8 @@ impl Render for Lyrics {
                 } else {
                     let emphasis = this.line_emphasis_for(idx);
                     let is_active = emphasis > 0.0 || Some(idx) == this.last_active_line;
-                    let text_color = lerp_color(muted, normal, emphasis);
+                    let highlight = this.accent.unwrap_or(normal);
+                    let text_color = lerp_color(muted, highlight, emphasis);
                     // Geometry (font size, line height, padding) must move on
                     // a discrete grid: glyph atlas tiles are keyed by the
                     // exact f32 font size AND the glyph origin's fractional
@@ -740,7 +837,7 @@ impl Render for Lyrics {
                                         .children(line.words.iter().map(|word| {
                                             let color = lerp_color(
                                                 muted,
-                                                text_color,
+                                                highlight,
                                                 word_progress(word, this.position_ms),
                                             );
                                             div().text_color(color).child(word.text.clone())

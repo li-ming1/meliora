@@ -64,7 +64,7 @@ use crate::{
         models::{CurrentTrack, Models, PlaybackInfo, Queue},
         scroll_follow::ease_out_cubic,
         theme::Theme,
-        util::format_duration,
+        util::{extract_accent, format_duration},
     },
 };
 
@@ -1001,78 +1001,6 @@ impl Render for ImmersiveView {
             .child(right_column)
             .child(exit_button)
     }
-}
-
-/// Saturation-weighted dominant color of a BGRA `RenderImage`, used as the
-/// immersive page's accent (current lyric line, play button, spectrum tint).
-/// Very dark winners are lifted so they still read on the dim backdrop.
-fn extract_accent(image: &gpui::RenderImage) -> Option<Rgba> {
-    let bytes = image.as_bytes(0)?;
-    if bytes.is_empty() {
-        return None;
-    }
-    dominant_accent_bgra(bytes)
-}
-
-/// Bucketed dominant-color core over raw BGRA bytes (4 bytes per pixel).
-/// 12-bit histogram (4 bits per channel); weight = saturation + a small
-/// floor, so grey covers still produce a usable tone. Subsamples every third
-/// pixel — a 512px decode is ~29k reads, off the UI thread.
-fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
-    use rustc_hash::FxHashMap;
-
-    const PIXEL_STRIDE: usize = 3;
-    let mut buckets: FxHashMap<u16, (u64, u64, u64, u64)> = FxHashMap::default();
-    let mut sampled = 0usize;
-    for (n, pixel) in bytes.chunks_exact(4).enumerate() {
-        if n % PIXEL_STRIDE != 0 {
-            continue;
-        }
-        let (b, g, r, a) = (
-            pixel[0] as u32,
-            pixel[1] as u32,
-            pixel[2] as u32,
-            pixel[3] as u32,
-        );
-        if a < 128 {
-            continue;
-        }
-        sampled += 1;
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let saturation = if max == 0 { 0 } else { (max - min) * 255 / max };
-        let weight = (saturation + 16) as u64;
-        let key = (((r >> 4) as u16) << 8) | (((g >> 4) as u16) << 4) | ((b >> 4) as u16);
-        let entry = buckets.entry(key).or_insert((0, 0, 0, 0));
-        entry.0 += r as u64 * weight;
-        entry.1 += g as u64 * weight;
-        entry.2 += b as u64 * weight;
-        entry.3 += weight;
-    }
-    if sampled == 0 {
-        return None;
-    }
-
-    let (_, (sum_r, sum_g, sum_b, total)) = buckets
-        .iter()
-        .max_by_key(|(_, (_, _, _, weight))| *weight)?;
-    if *total == 0 {
-        return None;
-    }
-    let mut red = (*sum_r as f64 / *total as f64 / 255.0) as f32;
-    let mut green = (*sum_g as f64 / *total as f64 / 255.0) as f32;
-    let mut blue = (*sum_b as f64 / *total as f64 / 255.0) as f32;
-
-    // Lift very dark accents above a readability floor (relative luminance).
-    let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-    const MIN_LUMINANCE: f32 = 0.35;
-    if luminance < MIN_LUMINANCE {
-        let lift = MIN_LUMINANCE / luminance.max(0.02);
-        red = (red * lift).min(1.0);
-        green = (green * lift).min(1.0);
-        blue = (blue * lift).min(1.0);
-    }
-    Some(Rgba::new(red, green, blue, 1.0))
 }
 
 #[cfg(test)]

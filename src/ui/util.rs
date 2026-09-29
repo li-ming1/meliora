@@ -3,7 +3,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, Entity, Render, RenderImage};
+use gpui::{App, Entity, Render, RenderImage, Rgba};
 use rustc_hash::FxHashMap;
 use tracing::{debug, error};
 
@@ -162,4 +162,72 @@ pub fn format_duration(secs: i64, pad_minutes: bool) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
+}
+
+/// 饱和度加权的封面主色提取（BGRA `RenderImage`）：沉浸页与歌词面板共用的
+/// 每首歌主题色来源。极暗的胜出色会被提亮，保证在暗色底上仍然可读。
+pub(crate) fn extract_accent(image: &RenderImage) -> Option<Rgba> {
+    let bytes = image.as_bytes(0)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    dominant_accent_bgra(bytes)
+}
+
+/// 分桶主色核心，作用于原始 BGRA 字节（每像素 4 字节）。12 位直方图
+/// （每通道 4 位）；权重 = 饱和度 + 一个小底数，灰白封面也能产出可用色调。
+/// 每隔 3 个像素采样一次 —— 512px 解码约 2.9 万次读取，在 UI 线程之外执行。
+fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
+    const PIXEL_STRIDE: usize = 3;
+    let mut buckets: FxHashMap<u16, (u64, u64, u64, u64)> = FxHashMap::default();
+    let mut sampled = 0usize;
+    for (n, pixel) in bytes.chunks_exact(4).enumerate() {
+        if n % PIXEL_STRIDE != 0 {
+            continue;
+        }
+        let (b, g, r, a) = (
+            pixel[0] as u32,
+            pixel[1] as u32,
+            pixel[2] as u32,
+            pixel[3] as u32,
+        );
+        if a < 128 {
+            continue;
+        }
+        sampled += 1;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let saturation = if max == 0 { 0 } else { (max - min) * 255 / max };
+        let weight = (saturation + 16) as u64;
+        let key = (((r >> 4) as u16) << 8) | (((g >> 4) as u16) << 4) | ((b >> 4) as u16);
+        let entry = buckets.entry(key).or_insert((0, 0, 0, 0));
+        entry.0 += r as u64 * weight;
+        entry.1 += g as u64 * weight;
+        entry.2 += b as u64 * weight;
+        entry.3 += weight;
+    }
+    if sampled == 0 {
+        return None;
+    }
+
+    let (_, (sum_r, sum_g, sum_b, total)) = buckets
+        .iter()
+        .max_by_key(|(_, (_, _, _, weight))| *weight)?;
+    if *total == 0 {
+        return None;
+    }
+    let mut red = (*sum_r as f64 / *total as f64 / 255.0) as f32;
+    let mut green = (*sum_g as f64 / *total as f64 / 255.0) as f32;
+    let mut blue = (*sum_b as f64 / *total as f64 / 255.0) as f32;
+
+    // 相对亮度低于下限的极暗主色向上提亮。
+    let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    const MIN_LUMINANCE: f32 = 0.35;
+    if luminance < MIN_LUMINANCE {
+        let lift = MIN_LUMINANCE / luminance.max(0.02);
+        red = (red * lift).min(1.0);
+        green = (green * lift).min(1.0);
+        blue = (blue * lift).min(1.0);
+    }
+    Some(Rgba::new(red, green, blue, 1.0))
 }
