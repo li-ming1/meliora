@@ -17,7 +17,7 @@ use crate::{
     ui::{
         components::{
             icons::{MICROPHONE, icon},
-            managed_image::ManagedImageKey,
+            managed_image::{ImageCacheMode, ManagedImageKey},
             scrollbar::{ScrollableHandle, floating_scrollbar},
         },
         models::{Models, PlaybackInfo},
@@ -50,9 +50,10 @@ const LYRICS_ACTIVE_LINE_HEIGHT: f32 = 1.65;
 const LYRICS_FADE_MASK_HEIGHT: f32 = 56.0;
 /// 按曲目歌词缓存容量（FIFO 淘汰）：覆盖来回切歌重访的最近曲目。
 const LYRIC_CACHE_CAP: usize = 16;
-/// 封面取色解码尺寸：与沉浸页黑胶标签同为 512px，两个消费者共享同一份
-/// render-cache 解码条目，不新增常驻瓦片。
-const ACCENT_THUMB_PX: u32 = 512;
+/// 封面取色解码尺寸：256px 对饱和度加权主色已绰绰有余（约 2.1 万个采样
+/// 点）。取色图从不绘制——`use_cache=false` 解码即弃，零 RENDER_CACHE
+/// 条目、零图集瓦片，像素在提取任务结束时就地释放。
+const ACCENT_THUMB_PX: u32 = 256;
 
 pub struct Lyrics {
     content: Option<String>,
@@ -485,9 +486,9 @@ impl Lyrics {
     }
 
     /// 解析当前曲目的封面键并在封面变化时重提取每首歌主题色（与沉浸页
-    /// 同一提取器、同一 `ManagedImageKey` 形态与解码尺寸，两个消费者共享
-    /// 同一份 render-cache 条目）。键未变化时直接返回，重复触发无成本；
-    /// 提取在 UI 线程之外执行，落地时以键匹配防串歌。
+    /// 同一提取器）。取色图从不绘制：`use_cache=false` 解码即弃——零
+    /// RENDER_CACHE 条目、零图集瓦片，256px 像素缓冲在提取任务结束时
+    /// 就地释放；键未变化时直接返回，重复触发无成本。
     fn resolve_accent(&mut self, cx: &mut Context<Self>) {
         let queue = cx.global::<Models>().queue.clone();
         let item = {
@@ -502,8 +503,8 @@ impl Lyrics {
         };
         let mut cover_key = None;
         if let Some(item) = &item {
-            // 与沉浸页同形的键：在线曲目用大图封面变体，本地曲目读内嵌/
-            // sidecar 封面。
+            // 取色只需要小图：在线曲目用缩略图变体（而非沉浸页背景的
+            // 大图变体），本地曲目读内嵌/sidecar 封面。
             #[cfg(feature = "online_sources")]
             if let Some(url) = item
                 .get_data(cx)
@@ -512,7 +513,7 @@ impl Lyrics {
                 .and_then(|data| data.cover_url)
                 .filter(|url| !url.is_empty())
             {
-                cover_key = Some(ManagedImageKey::HttpCoverLarge(url));
+                cover_key = Some(ManagedImageKey::HttpCover(url));
             }
             if cover_key.is_none() {
                 cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
@@ -533,7 +534,7 @@ impl Lyrics {
         cx.spawn(async move |this, cx| {
             let accent = crate::RUNTIME
                 .spawn(async move {
-                    key.retrieve(pool, ACCENT_THUMB_PX, true)
+                    key.retrieve(pool, ACCENT_THUMB_PX, ImageCacheMode::None)
                         .await
                         .ok()
                         .flatten()

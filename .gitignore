@@ -29,3 +29,6 @@ desktop.ini
 
 
 patches/
+
+# ZCode agent workspace
+.zcode/

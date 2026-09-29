@@ -231,3 +231,47 @@ fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
     }
     Some(Rgba::new(red, green, blue, 1.0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dominant_accent_prefers_saturated_pixels() {
+        // BGRA: mostly grey pixels, a few vivid red ones — red must win.
+        let grey = [128u8, 128, 128, 255];
+        let red = [40u8, 30, 220, 255];
+        let mut bytes = Vec::new();
+        for _ in 0..100 {
+            bytes.extend_from_slice(&grey);
+        }
+        for _ in 0..20 {
+            bytes.extend_from_slice(&red);
+        }
+        let accent = dominant_accent_bgra(&bytes).unwrap();
+        assert!(accent.red > 0.6, "red channel should dominate: {accent:?}");
+        assert!(accent.blue < 0.3 && accent.green < 0.3);
+    }
+
+    #[test]
+    fn dominant_accent_ignores_transparent_pixels() {
+        let bytes = vec![0u8; 4 * 32];
+        assert!(dominant_accent_bgra(&bytes).is_none());
+    }
+
+    #[test]
+    fn dominant_accent_lifts_dark_winners() {
+        // A single near-black bucket: the lift must raise luminance.
+        let dark = [10u8, 12, 16, 255];
+        let mut bytes = Vec::new();
+        for _ in 0..64 {
+            bytes.extend_from_slice(&dark);
+        }
+        let accent = dominant_accent_bgra(&bytes).unwrap();
+        let luminance = 0.2126 * accent.red + 0.7152 * accent.green + 0.0722 * accent.blue;
+        assert!(
+            luminance >= 0.34,
+            "dark accent should be lifted: {accent:?}"
+        );
+    }
+}

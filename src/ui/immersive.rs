@@ -1,10 +1,15 @@
 //! Full-screen immersive listening view, laid out like a hi-fi lyrics
-//! presentation: the artwork fills the screen at full decoded sharpness (no
-//! blur — one vertical + one horizontal gradient carve out the reading
-//! zones), a spinning vinyl disc with the cover as its label sits on the
-//! left above the track names and a frosted-glass player card (seekable
-//! progress, transport, volume), and the right half is the lyrics column
-//! with karaoke word timing, wheel browsing and click-to-seek.
+//! presentation: the artwork fills the screen as a sharp cover-band backdrop
+//! (see `managed_image::backdrop_sharp_fill` — center-cropped to the window
+//! aspect, median-denoised, Lanczos-resampled to the exact device-pixel size
+//! and unsharp-masked; the KuGou ladder now leads with 4096 so the resample
+//! averages noise like the disc label does; one vertical + one horizontal
+//! gradient carve out the reading zones), a spinning vinyl
+//! disc
+//! with the cover as its label sits on the left above the track names and a
+//! frosted-glass player card (seekable progress, transport, volume), and the
+//! right half is the lyrics column with karaoke word timing, wheel browsing
+//! and click-to-seek.
 //!
 //! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
 //! loaded a second time: that entity owns the sidecar/DB/online fetch
@@ -29,9 +34,20 @@
 //!   (a rotating sheen arc rendered displaced/oversized on DirectX via
 //!   `Svg::with_transformation`, and the exposed platter ring read as a
 //!   pointless border around the cover);
-//! - the backdrop is its own full-sharpness uncached decode (held by the
-//!   element alone, recycled through the orphan-tile funnel on track
-//!   switch) with a mild unsharp pass for low-resolution sources.
+//! - the backdrop is its own decode, rendered as a sharp cover-band to the
+//!   exact window device-pixel size (held by the backdrop LRU, recycled
+//!   through the orphan-tile funnel on track switch; the swap is a 400ms
+//!   crossfade — the outgoing art keeps painting underneath until the fade
+//!   ends). Sharp won the 2026-09-29 four-round bake-off with the user:
+//!   blur-fill (three strength grades, with and without luma dimming) was
+//!   rejected round by round — the directive is backdrop sharpness on par
+//!   with the disc label, so the pipeline is center-crop → median denoise
+//!   (kills JPEG block edges that 1:1-ish resampling would paint) → Lanczos
+//!   → thresholded unsharp, and the KuGou ladder leads with 4096 so covers
+//!   that have it resample ~0.47× (disc-grade averaging). Online covers walk
+//!   the ladder (4096 → 2048 → 1280 → 480 → original) so a missing largest
+//!   variant degrades gracefully instead of silently painting a 256px
+//!   thumbnail across the screen.
 
 use std::{
     path::PathBuf,
@@ -44,7 +60,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ObjectFit, ParentElement, Render, Rgba, ScrollWheelEvent,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
     linear_color_stop, linear_gradient, px, relative,
 };
 use tracing::warn;
@@ -56,7 +72,10 @@ use crate::{
         app::Pool,
         components::{
             icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
-            managed_image::{ManagedImageKey, managed_image},
+            managed_image::{
+                ImageCacheMode, ManagedImageKey, backdrop_cache_contains, backdrop_decode_allowed,
+                managed_image,
+            },
             slider::slider,
             tooltip::build_tooltip,
         },
@@ -91,6 +110,13 @@ const VINYL_LABEL_FRACTION: f32 = 1.0;
 const LABEL_THUMB_PX: u32 = 512;
 /// Backdrop decode cap for full-screen sharpness — uncached, element-held.
 const BACKDROP_THUMB_PX: u32 = 2048;
+/// 大图回收队列未放行时的退避重试间隔：重试只是一次廉价的队列计数检查，
+/// 期间旧背景保持绘制，不出现黑底。
+const BACKDROP_RETRY: Duration = Duration::from_millis(500);
+/// 背景切换 crossfade 时长。必须严格小于 managed_image 的
+/// RECLAIM_DELAY_LARGE（3s）：淡出期间旧背景元素仍在绘制，其图集瓦片
+/// 靠那条短年龄门兜底（门到时淡出早已结束、旧元素已卸载）。
+const BACKDROP_FADE: Duration = Duration::from_millis(400);
 /// Wheel browsing: after this long without scrolling the view glides back
 /// to the active line (the sidebar's lyrics panel uses the same pattern).
 const SCROLL_RETURN_AFTER: Duration = Duration::from_secs(2);
@@ -128,6 +154,33 @@ pub struct ImmersiveView {
     // Track presentation, re-resolved on track/queue-position changes.
     image_key: Option<ManagedImageKey>,
     image_element_key: u64,
+    /// 当前渲染中的背景图键：解码完成时才晋升，与 `image_key`（封面/
+    /// 取色的即时来源）解耦。晋升前旧背景一直绘制——没有黑底间隙。
+    backdrop_key: Option<ManagedImageKey>,
+    /// crossfade 双槽位：两个带显式 id 的固定图层（index 0/1）交替充当
+    /// "当前背景"与"淡出层"。晋升时新图进入空闲槽，旧图原地不动——
+    /// 其 ManagedImage 元素 id 与祖先路径全程不变，keyed state 不重建、
+    /// 不重解码，淡出结束才清槽并把瓦片推进回收漏斗。
+    backdrop_layers: [Option<(ManagedImageKey, u64)>; 2],
+    /// 当前背景所在的槽位 index（0/1），每次晋升翻转。
+    backdrop_active: usize,
+    /// 背景元素 id 代数：仅在晋升时递增（新图进入槽位时取下一代号）。
+    backdrop_gen: u64,
+    /// 背景重采样目标 = 背景元素的设备像素尺寸（viewport × DPR，render
+    /// 时更新）。纹素与屏幕逐像素对齐后 GPU 1:1 采样，消除非整数比例
+    /// 双线性采样的半像素模糊（2026-09-29 取证定案的质量损失根源）。
+    backdrop_target: Option<(u32, u32)>,
+    /// `activate` 早于首个沉浸页 render：目标尺寸未知时先记下，render
+    /// 拿到窗口尺寸后补一次布防。
+    backdrop_pending_arm: bool,
+    /// crossfade 起点；`None` 表示没有过渡在进行。
+    backdrop_fade_started: Option<Instant>,
+    /// 背景解码任务（未 detach：切歌/退出即取消；从未显示的背景不进
+    /// 回收漏斗，零队列成本）。
+    backdrop_task: Option<Task<()>>,
+    /// 已预取的下一首封面记忆 `(键, 目标宽, 目标高)`：同键同尺寸只预取
+    /// 一次，重复 resolve / activate 直接跳过。
+    prefetched_art: Option<(ManagedImageKey, u32, u32)>,
     track_name: Option<SharedString>,
     artist_name: Option<SharedString>,
     meta_subscription: Option<Subscription>,
@@ -282,6 +335,15 @@ impl ImmersiveView {
                 visual_line: -1.0,
                 line_anim: None,
                 frame_scheduled: false,
+                backdrop_key: None,
+                backdrop_layers: [None, None],
+                backdrop_active: 0,
+                backdrop_gen: 0,
+                backdrop_target: None,
+                backdrop_pending_arm: false,
+                backdrop_fade_started: None,
+                backdrop_task: None,
+                prefetched_art: None,
             };
             if this.active {
                 this.activate(cx);
@@ -307,13 +369,26 @@ impl ImmersiveView {
 
     fn activate(&mut self, cx: &mut Context<Self>) {
         self.resolve_track_presentation(cx);
+        // 重进沉浸页：resolve 可能因签名守卫早退（同一首歌），这里兜底
+        // 重新布防背景 settle（退出时已失显/中止）。
+        self.arm_backdrop(cx);
         self.sync_lyrics(cx);
+        // 同首歌重进（resolve 早退）时 resolve 里的预取不会执行，这里补。
+        self.prefetch_next_track_art(cx);
     }
 
     fn deactivate(&mut self) {
         self.line_anim = None;
+        // 退出沉浸页：取消解码任务并立即失显。已显示背景随元素 unmount
+        // 推进回收漏斗，短年龄门（大图 3s）后像素与瓦片放行；背景缓存
+        // （容量 2）保留最近两套，重进沉浸页秒开。
+        // 未 detach 的 Task 置空即取消。
+        self.backdrop_task = None;
+        self.backdrop_key = None;
+        self.backdrop_layers = [None, None];
+        self.backdrop_pending_arm = false;
+        self.backdrop_fade_started = None;
     }
-
     /// Re-resolves cover/names/accent for whatever is playing now. Fired by
     /// both `SongChanged` and `QueuePositionChanged`; the signature guard
     /// makes the second fire per switch a no-op.
@@ -350,6 +425,14 @@ impl ImmersiveView {
         drop(self.meta_subscription.take());
 
         let mut cover_key = None;
+        // SongChanged 先于 QueuePositionChanged 落地时，队列槽位仍指向
+        // 上一首：这次 resolve 解析出的封面键属于旧曲目，只为名字/标签
+        // 服务，绝不能据此布防背景解码（否则每首歌先为马上作废的键付
+        // 一次 2048 解码再被取消）。
+        let resolved_slot_is_current = item.as_ref().is_none_or(|slot_item| {
+            let slot_path = slot_item.get_path().clone();
+            track_path.as_ref().is_some_and(|path| *path == slot_path)
+        });
         if let Some(item) = &item {
             // Online tracks carry a cover URL on their queue item; local
             // files fall back to embedded art / sidecar files.
@@ -394,6 +477,11 @@ impl ImmersiveView {
             }));
         }
         self.image_key = cover_key;
+        // 完全停止（无 current_track）时沿用原行为照常布防；只有
+        // "槽位与播放中曲目不一致" 的陈旧 resolve 才跳过。
+        if resolved_slot_is_current || track_path.is_none() {
+            self.arm_backdrop(cx);
+        }
 
         // Accent color: extracted from the label's small decode (render
         // cached), analyzed off-thread.
@@ -407,7 +495,7 @@ impl ImmersiveView {
             cx.spawn(async move |this, cx| {
                 let accent = crate::RUNTIME
                     .spawn(async move {
-                        key.retrieve(pool, LABEL_THUMB_PX, true)
+                        key.retrieve(pool, LABEL_THUMB_PX, ImageCacheMode::RenderCache)
                             .await
                             .ok()
                             .flatten()
@@ -428,7 +516,237 @@ impl ImmersiveView {
             })
             .detach();
         }
+        // 当前曲目布防完成后，顺手把下一首的圆盘图与背景渲染进缓存：
+        // 切歌瞬间整条链路零解码（"切换不丝滑"的收尾一环）。仅沉浸页
+        // 激活时执行，关闭页面时不为看不见的背景烧 CPU/流量。
+        if resolved_slot_is_current || track_path.is_none() {
+            self.prefetch_next_track_art(cx);
+        }
         cx.notify();
+    }
+
+    /// 下一首曲目的封面键：与 `resolve_track_presentation` 同一构造（在
+    /// 线取 cover_url 的 Large 变体，本地回退 TrackFile），保证预取写入
+    /// 的正是切歌时元素查找的缓存键。队列末尾返回 None。
+    fn next_track_art_key(&self, cx: &mut Context<Self>) -> Option<ManagedImageKey> {
+        let slot = {
+            let queue = self.queue.read(cx);
+            queue
+                .data
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(queue.position + 1)
+                .cloned()?
+        };
+        #[cfg(feature = "online_sources")]
+        if let Some(url) = slot
+            .get_data(cx)
+            .read(cx)
+            .clone()
+            .and_then(|data| data.cover_url)
+            .filter(|url| !url.is_empty())
+        {
+            return Some(ManagedImageKey::HttpCoverLarge(url));
+        }
+        Some(ManagedImageKey::TrackFile(slot.get_path().clone()))
+    }
+
+    /// 预取下一首的 512 圆盘缩略图（RENDER_CACHE）与整幅背景
+    /// （Backdrop 缓存）：与真实切换的元素路径同键同模式，切歌时直接命
+    /// 中——圆盘与背景同时零解码换上。解码信号量天然让预取排在其后，不
+    /// 抢当前 swap 的道；`(键, 目标尺寸)` 记忆去重，队列末尾、下一首即
+    /// 当前曲目时跳过。
+    fn prefetch_next_track_art(&mut self, cx: &mut Context<Self>) {
+        if !self.active {
+            return;
+        }
+        let Some((target_w, target_h)) = self.backdrop_target else {
+            return;
+        };
+        let Some(next_key) = self.next_track_art_key(cx) else {
+            return;
+        };
+        if self.image_key.as_ref() == Some(&next_key)
+            || self.prefetched_art.as_ref() == Some(&(next_key.clone(), target_w, target_h))
+        {
+            return;
+        }
+        if !backdrop_decode_allowed() {
+            return; // 背压饱和：不写记忆，下次 resolve 重试
+        }
+        self.prefetched_art = Some((next_key.clone(), target_w, target_h));
+        let pool = cx.global::<Pool>().0.clone();
+        crate::RUNTIME.spawn(async move {
+            // 背景先行：它是切歌丝滑的关键路径。两条预取各付一次完整
+            // 4096 解码，用户若在中间切歌，至少背景已就绪。
+            let _ = next_key
+                .retrieve(
+                    pool.clone(),
+                    0,
+                    ImageCacheMode::Backdrop(Some((target_w, target_h))),
+                )
+                .await;
+            let _ = next_key
+                .retrieve(pool, LABEL_THUMB_PX, ImageCacheMode::RenderCache)
+                .await;
+        });
+    }
+
+    /// 切歌即启动背景解码（切歌/退出时上一个任务随之取消——从未显示的
+    /// 背景不进回收漏斗，零队列成本，§33/§34）；解码完成时若曲目仍是当
+    /// 前这首才晋升交换。晋升即进入 400ms crossfade：旧背景降级为淡出
+    /// 层继续绘制，新图在其上淡入，没有黑底间隙也没有硬切闪变。大图回
+    /// 收队列未放行（>2 套在队）时按 [`BACKDROP_RETRY`] 退避重试，是
+    /// "同时驻留大图套数"硬上界的执行点；大图 3s 短年龄门让积压在数秒
+    /// 内排空，普通切歌节奏下阀门不再成为"背景不跟歌"的来源。
+    fn arm_backdrop(&mut self, cx: &mut Context<Self>) {
+        // 设备像素目标尺寸由沉浸页 render 提供（activate 早于首个
+        // render，先挂起，render 里补布防）。
+        let Some((target_w, target_h)) = self.backdrop_target else {
+            self.backdrop_pending_arm = true;
+            return;
+        };
+        self.backdrop_pending_arm = false;
+        let key = self.image_key.clone();
+        if self.backdrop_key == key && key.is_some() {
+            return; // 已在显示
+        }
+        // 未 detach 的 Task 在替换/置空时即取消（equalizer 防抖同款语义）。
+        self.backdrop_task = None;
+        let Some(key) = key else {
+            // 无封面曲目：立即失显（渲染以槽位图层为准，两槽都要清）。
+            self.backdrop_key = None;
+            self.backdrop_layers = [None, None];
+            self.backdrop_fade_started = None;
+            return;
+        };
+        let pool = cx.global::<Pool>().0.clone();
+        self.backdrop_task = Some(cx.spawn(async move |this, cx| {
+            let mut render_misses = 0u32;
+            loop {
+                // 缓存命中（预取/回跳）不产生新解码，直接绕过背压阀门：
+                // 连跳时阀门按 3s/套排水，不能把已经渲染好的下一首也拖住
+                // （"换了歌还是之前的图"的主因）。
+                let cached = backdrop_cache_contains(&key, target_w, target_h);
+                if !cached && !backdrop_decode_allowed() {
+                    cx.background_executor().timer(BACKDROP_RETRY).await;
+                    let still = this
+                        .update(cx, |this, _| {
+                            this.active && this.image_key.as_ref() == Some(&key)
+                        })
+                        .unwrap_or(false);
+                    if !still {
+                        return;
+                    }
+                    continue;
+                }
+                let decoded = crate::RUNTIME
+                    .spawn({
+                        let key = key.clone();
+                        let pool = pool.clone();
+                        // 解码 bound 给目标长边 25% 余量：KuGou 2048 源不被
+                        // 压缩（2048 < 2400），超大本地图先 box 压到界内，
+                        // 之后只做一次 Lanczos 裁剪重采样。
+                        let bound = (target_w.max(target_h) * 5 / 4).clamp(2048, 3200);
+                        async move {
+                            key.retrieve(
+                                pool,
+                                bound,
+                                ImageCacheMode::Backdrop(Some((target_w, target_h))),
+                            )
+                            .await
+                            .ok()
+                            .flatten()
+                        }
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                // 解码/渲染失败（网络抖动、临时离线）：有限次退避重试，
+                // 期间旧背景保持绘制；曲目已变则放弃（成果留缓存）。
+                // 不重试会让旧图一直挂到下一次手动操作。
+                let Some(decoded) = decoded else {
+                    render_misses += 1;
+                    if render_misses > 3 {
+                        return;
+                    }
+                    cx.background_executor().timer(BACKDROP_RETRY).await;
+                    let still = this
+                        .update(cx, |this, _| {
+                            this.active && this.image_key.as_ref() == Some(&key)
+                        })
+                        .unwrap_or(false);
+                    if !still {
+                        return;
+                    }
+                    continue;
+                };
+                // 解码完成：曲目已又变则放弃晋升（成果留在背景缓存里，
+                // 回跳零成本）。
+                let promote = this
+                    .update(cx, |this, _| {
+                        this.active && this.image_key.as_ref() == Some(&key)
+                    })
+                    .unwrap_or(false);
+                if !promote {
+                    return;
+                }
+                this.update(cx, |this, cx| {
+                    if this.image_key.as_ref() != Some(&key) {
+                        return;
+                    }
+                    let reduced_motion = cx
+                        .global::<SettingsGlobal>()
+                        .model
+                        .read(cx)
+                        .interface
+                        .reduced_motion;
+                    // 新图进入空闲槽（槽位翻转），旧图原地留作淡出层——
+                    // 元素 id 与祖先路径全程不变，keyed state 不重建、不
+                    // 重解码。被覆盖的槽若有残留（上一次过渡被打断的图），
+                    // 其元素就地卸载进回收漏斗。reduced_motion 硬切。
+                    let incoming = 1 - this.backdrop_active;
+                    this.backdrop_active = incoming;
+                    if reduced_motion {
+                        this.backdrop_layers[1 - incoming] = None;
+                        this.backdrop_fade_started = None;
+                    } else {
+                        this.backdrop_fade_started = Some(Instant::now());
+                    }
+                    this.backdrop_gen += 1;
+                    this.backdrop_layers[incoming] = Some((key.clone(), this.backdrop_gen));
+                    this.backdrop_key = Some(key);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+        }));
+    }
+
+    /// 渲染一个背景槽位图层：显式 id 让元素祖先路径跨帧稳定（槽位是否
+    /// 有图、图是否更换都不影响另一个槽位的 keyed state）；opacity 由
+    /// wrapper div 提供给子 `ManagedImage` 的 `paint_image`。纹理按
+    /// `backdrop_target` 设备尺寸精确重采样，绘制时 GPU 1:1 取样。
+    fn backdrop_layer(&self, index: usize, opacity: f32) -> impl IntoElement {
+        let layer = self.backdrop_layers[index].clone();
+        let target = self.backdrop_target;
+        div()
+            .id(("immersive-bg-layer", index as u64))
+            .absolute()
+            .inset_0()
+            .opacity(opacity)
+            .when_some(layer, move |el, (key, gen_id)| {
+                let image = match target {
+                    Some((w, h)) if w > 0 && h > 0 => {
+                        managed_image(("immersive-bg", gen_id), key).backdrop_cached_target(w, h)
+                    }
+                    _ => managed_image(("immersive-bg", gen_id), key)
+                        .thumb_max(BACKDROP_THUMB_PX)
+                        .backdrop_cached(),
+                };
+                el.child(image.w_full().h_full().object_fit(ObjectFit::Cover))
+            })
     }
 
     fn adopt_names(&mut self, data: crate::playback::queue::QueueItemUIData) {
@@ -494,7 +812,7 @@ impl ImmersiveView {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.line_anim.is_some()
+        self.line_anim.is_some() || self.backdrop_fade_started.is_some()
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -509,26 +827,32 @@ impl ImmersiveView {
     }
 
     fn advance_animations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((from, target, started_at)) = self.line_anim else {
-            return;
-        };
         let reduced_motion = cx
             .global::<SettingsGlobal>()
             .model
             .read(cx)
             .interface
             .reduced_motion;
-        if reduced_motion {
-            self.visual_line = target;
-            self.line_anim = None;
-        } else {
-            let progress =
-                (started_at.elapsed().as_secs_f32() / LINE_ANIMATION.as_secs_f32()).clamp(0.0, 1.0);
-            self.visual_line = from + (target - from) * ease_out_cubic(progress);
-            if progress >= 1.0 {
+        if let Some((from, target, started_at)) = self.line_anim {
+            if reduced_motion {
                 self.visual_line = target;
                 self.line_anim = None;
+            } else {
+                let progress = (started_at.elapsed().as_secs_f32() / LINE_ANIMATION.as_secs_f32())
+                    .clamp(0.0, 1.0);
+                self.visual_line = from + (target - from) * ease_out_cubic(progress);
+                if progress >= 1.0 {
+                    self.visual_line = target;
+                    self.line_anim = None;
+                }
             }
+        }
+        // crossfade 走完：清空淡出槽，旧背景的瓦片随后经回收漏斗放行。
+        if let Some(started) = self.backdrop_fade_started
+            && started.elapsed() >= BACKDROP_FADE
+        {
+            self.backdrop_fade_started = None;
+            self.backdrop_layers[1 - self.backdrop_active] = None;
         }
         if self.needs_animation_frame() {
             self.schedule_frame(window, cx);
@@ -587,6 +911,28 @@ impl Render for ImmersiveView {
         let accent = self.accent.unwrap_or(theme.text);
         let image_gen = self.image_element_key;
 
+        // 背景重采样目标 = 背景 inset_0 元素的设备像素尺寸（本机
+        // 1920×1080@125% → 1920×1028）。长边超 2560 时等比缩界，把
+        // 4K 屏的纹理驻留压回合理区间（放大交还 GPU，质量仍优于旧路径）。
+        {
+            let dpr = window.scale_factor();
+            let vp = window.viewport_size();
+            let (mut tw, mut th) = (
+                (vp.width.as_f32() * dpr).round().max(1.0),
+                (vp.height.as_f32() * dpr).round().max(1.0),
+            );
+            let long = tw.max(th);
+            if long > 2560.0 {
+                let k = 2560.0 / long;
+                tw = (tw * k).round().max(1.0);
+                th = (th * k).round().max(1.0);
+            }
+            self.backdrop_target = Some((tw as u32, th as u32));
+            if self.backdrop_pending_arm {
+                self.arm_backdrop(cx);
+            }
+        }
+
         // PlaybackInfo positions and durations are both in milliseconds.
         let position_ms = *self.position.read(cx);
         let duration_ms = *self.duration.read(cx);
@@ -602,21 +948,26 @@ impl Render for ImmersiveView {
         let prev_volume = *self.prev_volume.read(cx);
 
         // Backdrop: full-sharpness decode, Cover-fit, NO blur — sharpness is
-        // the point; the gradients below carve the reading zones.
-        let backdrop = div().absolute().inset_0().overflow_hidden().when_some(
-            self.image_key.clone(),
-            |el, key| {
-                el.child(
-                    managed_image(("immersive-bg", image_gen), key)
-                        .thumb_max(BACKDROP_THUMB_PX)
-                        .enhanced()
-                        .uncached()
-                        .w_full()
-                        .h_full()
-                        .object_fit(ObjectFit::Cover),
-                )
-            },
-        );
+        // the point; the gradients below carve the reading zones. The two
+        // fixed layers render `backdrop_layers` (decode-ready slots), not
+        // `image_key`: the view promotes a slot only once the decoded Arc is
+        // in hand, so the previous art keeps painting until the swap — no
+        // dark gap. The swap itself is a 400ms crossfade: the outgoing layer
+        // keeps painting underneath at (1-p) while the incoming one fades in
+        // at p (div opacity → gpui's element_opacity → PolychromeSprite
+        // opacity).
+        let fade_progress = self.backdrop_fade_started.map_or(1.0, |started| {
+            ease_out_cubic((started.elapsed().as_secs_f32() / BACKDROP_FADE.as_secs_f32()).min(1.0))
+        });
+        let backdrop = div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .child(self.backdrop_layer(
+                1 - self.backdrop_active,
+                (1.0 - fade_progress).clamp(0.0, 1.0),
+            ))
+            .child(self.backdrop_layer(self.backdrop_active, fade_progress.clamp(0.0, 1.0)));
         // Global weight: heavier at the bottom (card zone), light at the top
         // (0deg = to top: the 0% stop sits at the bottom edge).
         let vertical_shade = div().absolute().inset_0().bg(linear_gradient(
@@ -719,7 +1070,6 @@ impl Render for ImmersiveView {
                 transport_button("immersive-play", if playing { PAUSE } else { PLAY }, 22.0)
                     .p(px(10.0))
                     .rounded_full()
-                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
                     .on_click(|_, _, cx| {
                         let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
                         let interface = cx.global::<PlaybackInterface>();
@@ -1006,45 +1356,6 @@ impl Render for ImmersiveView {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn dominant_accent_prefers_saturated_pixels() {
-        // BGRA: mostly grey pixels, a few vivid red ones — red must win.
-        let grey = [128u8, 128, 128, 255];
-        let red = [40u8, 30, 220, 255];
-        let mut bytes = Vec::new();
-        for _ in 0..100 {
-            bytes.extend_from_slice(&grey);
-        }
-        for _ in 0..20 {
-            bytes.extend_from_slice(&red);
-        }
-        let accent = dominant_accent_bgra(&bytes).unwrap();
-        assert!(accent.red > 0.6, "red channel should dominate: {accent:?}");
-        assert!(accent.blue < 0.3 && accent.green < 0.3);
-    }
-
-    #[test]
-    fn dominant_accent_ignores_transparent_pixels() {
-        let bytes = vec![0u8; 4 * 32];
-        assert!(dominant_accent_bgra(&bytes).is_none());
-    }
-
-    #[test]
-    fn dominant_accent_lifts_dark_winners() {
-        // A single near-black bucket: the lift must raise luminance.
-        let dark = [10u8, 12, 16, 255];
-        let mut bytes = Vec::new();
-        for _ in 0..64 {
-            bytes.extend_from_slice(&dark);
-        }
-        let accent = dominant_accent_bgra(&bytes).unwrap();
-        let luminance = 0.2126 * accent.red + 0.7152 * accent.green + 0.0722 * accent.blue;
-        assert!(
-            luminance >= 0.34,
-            "dark accent should be lifted: {accent:?}"
-        );
-    }
 
     #[test]
     fn lyric_window_centers_the_active_line() {

@@ -17,7 +17,7 @@ use image::{Frame, Pixel};
 use rustc_hash::FxHashMap;
 use smallvec::smallvec;
 use sqlx::SqlitePool;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{
     media::{lookup_table::try_open_media, traits::MediaProviderFeatures},
@@ -151,7 +151,7 @@ fn expand_rgb8_to_rgba8_in_place(buf: &mut Vec<u8>, w: u32, h: u32) {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ManagedImageKey {
     Album(i64),
     Track(i64),
@@ -289,9 +289,33 @@ struct PendingTileDrop {
 /// the probe curve showed the floor is dominated by allocator/GPU residency,
 /// not reclaim latency).
 const RECLAIM_DELAY: Duration = Duration::from_secs(60);
+/// Large (≥[`LARGE_IMAGE_BYTES`], immersive-backdrop-class) images age out
+/// on a much shorter gate. Their only painter is the immersive backdrop
+/// element (audited 2026-09-29: every other `ManagedImage` decode is ≤512px
+/// ≤1MB), and every removal of that element — promote, deactivate, crossfade
+/// end — coincides with an `ImmersiveView` re-render (`cx.notify()` in the
+/// same state change), after which no recorded scene can replay its sprites.
+/// The short gate only has to cover the crossfade window (400ms) plus frame
+/// timing, and it MUST stay above `BACKDROP_FADE`: the crossfade keeps the
+/// old element mounted while it fades. The uniform 60s gate turned a burst
+/// of song switches into "the background stops following the song" — the
+/// pending large sets blocked new backdrop decodes for up to a minute
+/// (`backdrop_decode_allowed`), which is exactly the 2026-09-29 complaint.
+const RECLAIM_DELAY_LARGE: Duration = Duration::from_secs(3);
+
+/// Reclaim age for one queued image: large backdrop-class images use the
+/// short gate, everything else the conservative 60s one.
+fn reclaim_delay_for(image: &RenderImage) -> Duration {
+    if image_bytes(image) >= LARGE_IMAGE_BYTES {
+        RECLAIM_DELAY_LARGE
+    } else {
+        RECLAIM_DELAY
+    }
+}
 
 fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
     TILE_DROP_STATS.pushed.fetch_add(1, Ordering::Relaxed);
+    let due = reclaim_delay_for(&image);
     PENDING_TILE_DROPS
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
@@ -299,7 +323,7 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
         .push(PendingTileDrop {
             key,
             image,
-            due: Instant::now() + RECLAIM_DELAY,
+            due: Instant::now() + due,
         });
 }
 
@@ -570,28 +594,125 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
 }
 
 impl ManagedImageKey {
-    /// Fetches and decodes the artwork, memoized in `RENDER_CACHE` so a cover
-    /// that scrolls back into view reuses the same `RenderImage` instead of
-    /// paying for a fresh decode + atlas upload per element instance. Only
-    /// thumbnails are cached: full-resolution (thumb 0) art is a one-off gallery
-    /// decode that would blow the pixel budget at `RENDER_CACHE_MAX`.
-    /// Also consumed by the immersive view's accent-color extractor.
+    /// Fetches and decodes the artwork, memoized per [`ImageCacheMode`] so a
+    /// cover that scrolls back into view reuses the same `RenderImage` instead
+    /// of paying for a fresh decode + atlas upload per element instance.
+    /// Backdrop mode additionally renders the sharp cover-band pass (see
+    /// `backdrop_sharp_fill`; the fixed-size fallback still uses
+    /// [`enhance_render_image`]) BEFORE the cache insert, so the cached image
+    /// is display-ready and the element paints the exact Arc the cache
+    /// holds — one decode, one enhancement, one set of pixels per artwork.
+    /// `ImageCacheMode::None` serves decode-and-drop callers: one-shot images
+    /// that are never painted (the accent extractor) or whose tile lifetime
+    /// is bounded by their element instead.
     pub(crate) async fn retrieve(
         &self,
         pool: SqlitePool,
         thumb_size: u32,
-        use_cache: bool,
+        cache: ImageCacheMode,
     ) -> anyhow::Result<Option<Arc<RenderImage>>> {
-        let cacheable = use_cache && thumb_size > 0;
-        if cacheable && let Some(image) = render_cache_lookup(self, thumb_size) {
-            return Ok(Some(image));
-        }
+        let backdrop_target = match cache {
+            ImageCacheMode::RenderCache => {
+                if thumb_size > 0
+                    && let Some(image) = render_cache_lookup(self, thumb_size)
+                {
+                    return Ok(Some(image));
+                }
+                None
+            }
+            ImageCacheMode::Backdrop(target) => {
+                let thumb = match target {
+                    Some((w, h)) => pack_backdrop_thumb(w, h),
+                    None => thumb_size,
+                };
+                let cache_key = RenderCacheKey {
+                    key: self.clone(),
+                    thumb,
+                };
+                if let Some(image) = backdrop_cache_lookup(&cache_key) {
+                    return Ok(Some(image));
+                }
+                target
+            }
+            ImageCacheMode::None => None,
+        };
 
-        let decoded = self.retrieve_uncached(pool, thumb_size).await?;
-        if cacheable && let Some(image) = &decoded {
-            render_cache_insert(self.clone(), thumb_size, image.clone());
+        // 目标尺寸模式解码全尺寸原图（≥目标的源不被 thumbnail 压缩，裁剪
+        // 与重采样只做一次），旧路径按方阵 bound 解码。
+        let decode_bound = match backdrop_target {
+            Some(_) => 0,
+            None => thumb_size,
+        };
+        let decoded = self.retrieve_uncached(pool, decode_bound).await?;
+        let Some(decoded) = decoded else {
+            return Ok(None);
+        };
+        // 增强只属于背景两条路径：RenderCache（封面/标签）与 None（取色）
+        // 保持解码原样——否则 512px 标签会被放大成 1920² 条目污染
+        // RENDER_CACHE，256px 取色图也白付一次全尺寸增强。
+        let image = match (cache, backdrop_target) {
+            (ImageCacheMode::Backdrop(Some((w, h))), _) if w > 0 && h > 0 => {
+                // 去噪+重采样是数百 ms 级同步 CPU（4096 源更高），必须在
+                // 阻塞线程池执行：内联在运行时 worker 上会与音频流/封面
+                // 下载等异步任务抢线程，切歌即卡顿（2026-09-29 "切换不
+                // 丝滑" 的根因之一）。
+                let rendered = crate::RUNTIME.spawn_blocking({
+                    let decoded = Arc::clone(&decoded);
+                    move || backdrop_sharp_fill(&decoded, w, h).unwrap_or_else(|| decoded.clone())
+                });
+                let resampled: Arc<RenderImage> = rendered.await?;
+                // 每首歌背景解码一次的唯一观测点：来源小图回退（大图变体
+                // 404 后阶梯取到的尺寸）或内嵌小封面在这里现形——
+                // 2026-09-29 "背景还是糊" 投诉的取证通道。
+                let size = resampled.size(0);
+                let src_size = decoded.size(0);
+                info!(
+                    target: "backdrop",
+                    key = ?self,
+                    source = format!("{}x{}", u32::from(src_size.width), u32::from(src_size.height)),
+                    width = u32::from(size.width),
+                    height = u32::from(size.height),
+                    "immersive backdrop decoded"
+                );
+                resampled
+            }
+            (ImageCacheMode::Backdrop(None), _) => {
+                let enhanced = enhance_render_image(&decoded).unwrap_or_else(|| decoded.clone());
+                // 旧路径观测点：与上面同目的。
+                let size = enhanced.size(0);
+                info!(
+                    target: "backdrop",
+                    key = ?self,
+                    width = u32::from(size.width),
+                    height = u32::from(size.height),
+                    "immersive backdrop decoded (fixed-size path)"
+                );
+                enhanced
+            }
+            _ => decoded,
+        };
+        match cache {
+            ImageCacheMode::RenderCache => {
+                if thumb_size > 0 {
+                    render_cache_insert(self.clone(), thumb_size, image.clone());
+                }
+            }
+            ImageCacheMode::Backdrop(_) => {
+                let cache_thumb = match backdrop_target {
+                    Some((w, h)) => pack_backdrop_thumb(w, h),
+                    None => thumb_size,
+                };
+                backdrop_cache_insert(
+                    RenderCacheKey {
+                        key: self.clone(),
+                        thumb: cache_thumb,
+                    },
+                    image.clone(),
+                );
+            }
+            ImageCacheMode::None => {}
         }
-        Ok(decoded)
+        Ok(Some(image))
     }
 
     async fn retrieve_uncached(
@@ -738,6 +859,142 @@ impl ManagedImageKey {
 
 type ImageBridge = Arc<OnceLock<Option<Arc<RenderImage>>>>;
 
+/// 解码结果的缓存去向（[`ManagedImageKey::retrieve`] 第三参）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ImageCacheMode {
+    /// 常规封面：进共享的 `RENDER_CACHE`（32 条 LRU，条目 ≤512px）。
+    RenderCache,
+    /// 解码即弃：一次性图像（取色等从不绘制的用途）——像素只被调用方
+    /// 短暂持有，零缓存条目、零图集瓦片。
+    None,
+    /// 沉浸页全屏背景：独立的小容量 LRU（与 `RENDER_CACHE` 分开，避免
+    /// 14MB 级大图挤占封面条目）。`Some((w, h))` 携带背景元素的**设备像
+    /// 素目标尺寸**——解码后直接 cover 裁剪 + Lanczos 重采样到该尺寸，缓
+    /// 存里永远是"拿来即绘"且与屏幕 1:1 的成图（2026-09-29 实测定案：
+    /// 2048 纹理按 0.94 非整数比例双线性采样本身就会带来半像素级模糊，
+    /// 唯一根治法是让纹理与屏幕逐像素对齐）；`None` 为旧的定长解码路径。
+    /// 逐出走同一回收漏斗。
+    Backdrop(Option<(u32, u32)>),
+}
+
+/// 把目标尺寸打包进缓存键的 thumb 字段（各 ≤65535，高 16 位宽、低 16 位高）。
+fn pack_backdrop_thumb(w: u32, h: u32) -> u32 {
+    (w.min(0xFFFF) << 16) | h.min(0xFFFF)
+}
+
+/// 沉浸页背景专用 LRU（容量 3）：同一首歌切走再切回、退出沉浸页再进，
+/// 都命中同一份 `RenderImage`（同一 Arc → 同一批图集瓦片），零解码零重
+/// 传。容量 3 覆盖"当前 + 预取的下一首 + crossfade 中的旧层"三套并存
+/// （2026-09-29 预取优化：切歌瞬间整条链路零解码，详见沉浸页
+/// `prefetch_next_track_art`）。
+const BACKDROP_CACHE_CAP: usize = 3;
+
+static BACKDROP_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
+
+fn lock_backdrop_cache() -> MutexGuard<'static, RenderCache> {
+    BACKDROP_CACHE
+        .get_or_init(|| {
+            Mutex::new(RenderCache {
+                cache: FxHashMap::default(),
+                usage: VecDeque::new(),
+                bytes: 0,
+            })
+        })
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn backdrop_cache_lookup(key: &RenderCacheKey) -> Option<Arc<RenderImage>> {
+    let mut cache = lock_backdrop_cache();
+    let image = cache.cache.get(key).map(|(image, _)| image.clone())?;
+    // LRU touch：命中即移到队尾。
+    cache.usage.retain(|k| k != key);
+    cache.usage.push_back(key.clone());
+    Some(image)
+}
+
+/// 插入并按容量逐出；逐出项经回收漏斗释放（像素与瓦片都在 60s 门后
+/// 放行）。
+fn backdrop_cache_insert(key: RenderCacheKey, image: Arc<RenderImage>) {
+    let mut cache = lock_backdrop_cache();
+    let bytes = image_bytes(&image);
+    if let Some((old, old_bytes)) = cache.cache.insert(key.clone(), (image.clone(), bytes)) {
+        cache.bytes = cache.bytes.saturating_sub(old_bytes);
+        // 同键替换且不是同一份（罕见）：旧图走漏斗。
+        if !Arc::ptr_eq(&old, &image) {
+            queue_tile_drop(key.clone(), old);
+        }
+    }
+    cache.bytes += bytes;
+    cache.usage.retain(|k| k != &key);
+    cache.usage.push_back(key);
+    while cache.usage.len() > BACKDROP_CACHE_CAP {
+        if let Some(oldest) = cache.usage.pop_front()
+            && let Some((old, old_bytes)) = cache.cache.remove(&oldest)
+        {
+            cache.bytes = cache.bytes.saturating_sub(old_bytes);
+            queue_tile_drop(oldest, old);
+        }
+    }
+}
+
+/// 队列中的图像像素字节数达到该阈值即视为"大图"（2048px 沉浸页背景
+/// ≈ 16.8MB，增强后的 1920px 在线背景 ≈ 14.7MB；常规封面 ≤1MB）。
+const LARGE_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// 回收队列中等待 60s 年龄门的**去重大图**（≥[`LARGE_IMAGE_BYTES`]）套
+/// 数。同一份图可能被缓存逐出和元素卸载各推一次，按 `RenderImage::id`
+/// 去重后的套数才是真实驻留。大图在队期间其像素与图集瓦片全程驻留，
+/// 沉浸页只在计数低于 [`BACKDROP_QUEUE_HEADROOM`] 时放行新的背景解码，
+/// 把"同时驻留的大图套数"钉死在常数上。
+pub(crate) fn large_drops_pending() -> usize {
+    PENDING_TILE_DROPS
+        .get()
+        .map(|queue| {
+            let queue = queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut seen: Vec<ImageId> = Vec::new();
+            queue
+                .iter()
+                .filter(|entry| image_bytes(&entry.image) >= LARGE_IMAGE_BYTES)
+                .filter(|entry| {
+                    // 插入序去重：条目量级是个位数，线性扫足够。
+                    if seen.contains(&entry.image.id) {
+                        false
+                    } else {
+                        seen.push(entry.image.id);
+                        true
+                    }
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// 允许在队的大图套数（不含缓存与显示中的那套）：3 → 普通切歌与预取
+/// 节奏（2-4s/首，每曲至多 1-2 套入队）下阀门永不关闭；极端连跳时最多
+/// 积压 3 套，加上缓存 3、显示 1、解码中 1 ≈ 8 套的瞬时上界（~63MB）。
+/// 3s 大图短年龄门让积压在数秒内自行排空，而不是把切歌卡死整整一分钟。
+/// 注意：阀门只拦"要新解码"的换图——缓存命中的换图经
+/// [`backdrop_cache_contains`] 绕过本阀门，预取成果不被排水拖住。
+const BACKDROP_QUEUE_HEADROOM: usize = 3;
+
+pub(crate) fn backdrop_decode_allowed() -> bool {
+    large_drops_pending() <= BACKDROP_QUEUE_HEADROOM
+}
+
+/// 背景缓存命中探测：命中说明目标图已渲染完成（预取/回跳），换图不产
+/// 生新解码——`arm_backdrop` 据此绕过背压阀门直接交换，连跳时阀门排水
+/// （3s/套）不再拖住已经就绪的下一首。
+pub(crate) fn backdrop_cache_contains(key: &ManagedImageKey, w: u32, h: u32) -> bool {
+    let cache_key = RenderCacheKey {
+        key: key.clone(),
+        thumb: pack_backdrop_thumb(w, h),
+    };
+    lock_backdrop_cache().cache.contains_key(&cache_key)
+}
+
 struct ManagedImageState {
     image: Option<Arc<RenderImage>>,
     bridge: Option<ImageBridge>,
@@ -766,19 +1023,14 @@ pub struct ManagedImage {
     /// Decodes cheaply so grid/list art never holds a full-resolution RGBA
     /// buffer just to paint a small tile (was: GB-scale working set).
     thumb_size: u32,
-    /// Whether decodes may live in `RENDER_CACHE` (default). Images painted
+    /// Decode-cache destination (see [`ImageCacheMode`]). Images painted
     /// exactly once — the now-playing bar's per-track cover — must opt out:
     /// each track's unique URL would otherwise add a fresh cache entry and
     /// atlas tile whose reclamation waits on the render-cache LRU, the measured
-    /// per-track commit ratchet of the 2026-09-14 soak.
-    cache: bool,
-    /// 3×3 median denoise plus small-source Lanczos upscale after decode,
-    /// for the full-screen immersive backdrop: cover art is JPEG-compressed
-    /// (its 8×8 block steps read as a grid of dark boxes once stretched) and
-    /// online thumbnails are far smaller than the window (GPU bilinear
-    /// magnification reads mushy). The median melts the block edges, the
-    /// Lanczos resample hands the GPU a near-1:1 texture.
-    enhance: bool,
+    /// per-track commit ratchet of the 2026-09-14 soak. The immersive backdrop
+    /// uses [`ImageCacheMode::Backdrop`] (dedicated small LRU + in-retrieve
+    /// enhancement) so song revisits and immersive re-entries paint instantly.
+    cache: ImageCacheMode,
 }
 
 impl ManagedImage {
@@ -803,15 +1055,26 @@ impl ManagedImage {
     /// instance, its atlas tile is reclaimed through the funnel as soon as
     /// the element unmounts instead of pinning the page until LRU eviction.
     pub fn uncached(mut self) -> Self {
-        self.cache = false;
+        self.cache = ImageCacheMode::None;
         self
     }
 
-    /// Runs the backdrop enhancement pass after decoding: median denoise
-    /// plus, for sources smaller than [`ENHANCE_UPSCALE_MIN_SOURCE_PX`], a
-    /// Lanczos resample up to [`ENHANCE_UPSCALE_TARGET_PX`] on the long side.
-    pub fn enhanced(mut self) -> Self {
-        self.enhance = true;
+    /// 沉浸页全屏背景专用：独立的容量 2 LRU，解码后在入缓存前完成增强
+    /// （`retrieve` 内部）。同一首歌切走再切回、重进沉浸页都命中同一份
+    /// `RenderImage` 与图集瓦片——零解码零重传，交换只隔一帧。
+    pub fn backdrop_cached(mut self) -> Self {
+        self.cache = ImageCacheMode::Backdrop(None);
+        self
+    }
+
+    /// 背景的设备像素精确模式：解码后清晰裁剪带渲染到 `(w, h)`（全尺寸
+    /// 裁剪 → 中值去噪 → Lanczos → 阈值 unsharp，见 [`backdrop_sharp_fill`]），
+    /// 绘制时 GPU 以 1:1 采样（无重采样模糊）。thumb_size 打包目标尺寸，
+    /// 保证 keyed-state 取回与 on_release 的缓存键和视图侧 `arm_backdrop`
+    /// 插入的键完全一致。
+    pub fn backdrop_cached_target(mut self, w: u32, h: u32) -> Self {
+        self.cache = ImageCacheMode::Backdrop(Some((w, h)));
+        self.thumb_size = pack_backdrop_thumb(w, h);
         self
     }
 }
@@ -851,8 +1114,7 @@ impl Element for ManagedImage {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
-        let use_cache = self.cache;
-        let enhance = self.enhance;
+        let cache = self.cache;
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
             let pool = cx.global::<Pool>().0.clone();
             let bridge: ImageBridge = Arc::new(OnceLock::new());
@@ -860,7 +1122,7 @@ impl Element for ManagedImage {
             let task_key = key.clone();
 
             let handle = crate::RUNTIME.spawn(async move {
-                let result = task_key.retrieve(pool, thumb_size, use_cache).await;
+                let result = task_key.retrieve(pool, thumb_size, cache).await;
                 let image = match &result {
                     Ok(img) => img.clone(),
                     Err(_) => None,
@@ -883,15 +1145,8 @@ impl Element for ManagedImage {
                 };
                 match result {
                     Ok(Some(image)) => {
-                        // The enhancement pass runs before the image reaches
-                        // the state/atlas: one off-thread sweep for the
-                        // backdrop (any source size — block steps show at
-                        // 1:1 too, small sources magnify mushy).
-                        let image = if enhance {
-                            enhance_render_image(&image).unwrap_or(image)
-                        } else {
-                            image
-                        };
+                        // 增强在 retrieve 内部完成（Backdrop 模式先增强后
+                        // 入缓存），元素绘制的 Arc 与缓存持有的是同一份。
                         if this
                             .update(cx, |this: &mut ManagedImageState, cx| {
                                 // keyed state 被同一元素位置跨内容复用时（如
@@ -1048,20 +1303,112 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
         style: StyleRefinement::default(),
         object_fit: ObjectFit::Cover,
         thumb_size: 0,
-        cache: true,
-        enhance: false,
+        cache: ImageCacheMode::RenderCache,
     }
 }
 
-/// Sources below this long side get the Lanczos upscale; at or above it the
-/// GPU magnification is small enough to look fine.
-const ENHANCE_UPSCALE_MIN_SOURCE_PX: u32 = 1000;
 /// Long side of the resampled backdrop — matches a 1920-wide fullscreen.
-const ENHANCE_UPSCALE_TARGET_PX: u32 = 1920;
+/// Sources at or above this pass through untouched: they paint at ~1:1 or a
+/// downscale, where their detail IS the maximum available sharpness, and any
+/// filtering (including the median meant for JPEG blocks) only melts real
+/// 1-2px detail — the measured reason a real-2048 backdrop read blurrier
+/// than the vinyl label, which never runs enhance. Anything below is
+/// median-denoised, Lanczos-resampled up to this size and sharpened, so the
+/// GPU never magnifies the texture.
+const ENHANCE_TARGET_PX: u32 = 1920;
+/// Unsharp-mask amount applied after the upscale (see [`sharpen_rgba`]).
+const ENHANCE_SHARPEN_AMOUNT: f32 = 0.6;
+/// Unsharp-mask blur sigma in output pixels: with 7.5× Lanczos magnification
+/// edge transitions span several pixels, so the halo radius must scale with
+/// the magnification, not stay at 1px.
+const ENHANCE_SHARPEN_SIGMA: f32 = 1.5;
+/// Channel differences below this (0-255) pass through unsharpened, so
+/// Lanczos ringing and sensor noise are not boosted into halos.
+const ENHANCE_SHARPEN_THRESHOLD: f32 = 3.0;
+
+/// 沉浸页背景目标尺寸渲染（2026-09-29 第四版·清晰裁剪带）：解码全尺寸
+/// 原图 → cover 居中裁剪到目标纵横比 → 3×3 中值去噪（拆掉 JPEG 块边与
+/// 椒盐噪声）→ Lanczos3 重采样到精确 `(w, h)` 设备像素 → 阈值 unsharp
+/// 补回锐度。元素 `ObjectFit::Cover` 绘制时缩放系数恰为 1.0，GPU 双线性
+/// 按纹素中心逐像素取样，零重采样。
+///
+/// 用户定案（2026-09-29 四轮反馈）：模糊方向整体否决——512+σ/20 糊成
+/// 纯色斑，1024+σ/180+压暗仍是"这样糊糊的真的好吗"，最终要求**背景与
+/// 圆盘小封面同等清晰**。圆盘清晰的机理是 4× 缩采样把压缩噪声平均掉；
+/// 背景要追平同级观感靠两件事：
+/// - **源尽量大**：酷狗阶梯加 4096 档（见 `cover_art`），存在时 4096 带
+///   缩到 ~1920 设备像素约 0.47×，平均效应与圆盘同级；
+/// - **去噪在前、锐化在后**：源只有 2048 时是 0.94× 近 1:1 搬运，JPEG
+///   块伤会原样上屏（v2"质量差"的根因）——先中值去噪拆块边，再阈值
+///   unsharp（缩小 0.5/σ1.0，放大 0.6/σ1.5，阈值 3）补锐度；顺序保证
+///   锐化放大的是真边缘而非块伤。
+/// 几何仍是 cover 居中裁剪：方形封面铺满宽屏必然裁掉上下各 ~23.5%，这
+/// 是全出血背景的物理前提，清晰化不改变它。
+///
+/// 成本纪律（2026-09-29 "切换不丝滑" 复盘）：4096 源的全管线 ~1s+，其中
+/// **中值去噪在 ≥2× 缩采样时是纯浪费**——CatmullRom 在 2× 以上每输出像
+/// 素平均 ≥8 源像素，8px 的 JPEG 块被直接平均掉（4096→1920 约 0.47×，
+/// 正是圆盘级观感的来源），去噪只在缩采样比 <2×（如 2048→1920 的
+/// 0.94× 搬运，块伤会原样上屏）和放大路径执行。缩小用 CatmullRom（双三
+/// 次，~Lanczos3 一半成本，缩采样画质等价，锐度由后面的 unsharp 统一
+/// 补），放大保持 Lanczos3。本函数是数百 ms 级同步 CPU，**必须经
+/// `spawn_blocking` 执行**（见 `retrieve` 的 Backdrop 分支），不得在异
+/// 步运行时线程内联调用——否则音频流/封面下载与它抢 worker，切歌卡顿。
+fn backdrop_sharp_fill(
+    image: &Arc<RenderImage>,
+    target_w: u32,
+    target_h: u32,
+) -> Option<Arc<RenderImage>> {
+    let bytes = image.as_bytes(0)?;
+    let size = image.size(0);
+    let (sw, sh) = (u32::from(size.width), u32::from(size.height));
+    if sw == 0 || sh == 0 || target_w == 0 || target_h == 0 {
+        return None;
+    }
+    let rgba = image::RgbaImage::from_raw(sw, sh, bytes.to_vec())?;
+    // cover: 保留能铺满目标纵横比的最大居中区域。
+    let crop_w = (f64::from(sw).min(f64::from(sh) * f64::from(target_w) / f64::from(target_h)))
+        .round()
+        .max(1.0) as u32;
+    let crop_h = (f64::from(sh).min(f64::from(sw) * f64::from(target_h) / f64::from(target_w)))
+        .round()
+        .max(1.0) as u32;
+    let mut band =
+        image::imageops::crop_imm(&rgba, (sw - crop_w) / 2, (sh - crop_h) / 2, crop_w, crop_h)
+            .to_image();
+    // 中值去噪只在实际需要时执行：缩采样比 <2×（块边会在输出中存活）或
+    // 放大（块会被拉伸涂抹）。≥2× 时重采样的平均效应接管，跳过省一半时间。
+    let band_long = crop_w.max(crop_h);
+    let target_long = target_w.max(target_h);
+    if band_long < 2 * target_long {
+        denoise_rgba(&mut band);
+    }
+    let mut out = image::imageops::resize(
+        &band,
+        target_w,
+        target_h,
+        if band_long >= target_long {
+            image::imageops::FilterType::CatmullRom
+        } else {
+            image::imageops::FilterType::Lanczos3
+        },
+    );
+    // 阈值 unsharp 补回重采样损失的锐度：缩小轻量档（0.5/σ1.0），放大
+    // 档随倍数走（0.6/σ1.5）。阈值 3 以下不动，避免把残余噪声推成 halo。
+    let upscale = target_w.max(target_h) > sw.max(sh);
+    if upscale {
+        sharpen_rgba_with(&mut out, 0.6, ENHANCE_SHARPEN_SIGMA);
+    } else {
+        sharpen_rgba_with(&mut out, 0.5, 1.0);
+    }
+    Some(Arc::new(RenderImage::new(smallvec![Frame::new(out)])))
+}
 
 /// Backdrop enhancement for a decoded image, returning a fresh
-/// `RenderImage`: 3×3 median denoise (melts JPEG block steps at any source
-/// size), then a Lanczos resample to near display size for small sources.
+/// `RenderImage`: sources already at display size pass through untouched;
+/// smaller sources get 3×3 median denoise (melts JPEG block steps — after a
+/// 7.5× upscale each block would smear across 60px), a Lanczos resample to
+/// display size, and a thresholded unsharp pass to restore edge acutance.
 /// RGB channels only, alpha untouched.
 fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
     let bytes = image.as_bytes(0)?;
@@ -1070,21 +1417,47 @@ fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
     if width == 0 || height == 0 {
         return Some(Arc::clone(image));
     }
+    if width.max(height) >= ENHANCE_TARGET_PX {
+        return Some(Arc::clone(image));
+    }
     let mut rgba = image::RgbaImage::from_raw(width, height, bytes.to_vec())?;
     denoise_rgba(&mut rgba);
     let long_side = rgba.width().max(rgba.height());
-    if long_side < ENHANCE_UPSCALE_MIN_SOURCE_PX {
-        let scale = f64::from(ENHANCE_UPSCALE_TARGET_PX) / f64::from(long_side);
-        let new_width = ((f64::from(rgba.width()) * scale) as u32).max(1);
-        let new_height = ((f64::from(rgba.height()) * scale) as u32).max(1);
-        rgba = image::imageops::resize(
-            &rgba,
-            new_width,
-            new_height,
-            image::imageops::FilterType::Lanczos3,
-        );
-    }
+    let scale = f64::from(ENHANCE_TARGET_PX) / f64::from(long_side);
+    let new_width = ((f64::from(rgba.width()) * scale) as u32).max(1);
+    let new_height = ((f64::from(rgba.height()) * scale) as u32).max(1);
+    rgba = image::imageops::resize(
+        &rgba,
+        new_width,
+        new_height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    sharpen_rgba(&mut rgba);
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
+}
+
+/// In-place thresholded unsharp mask over RGB: `out = src + amount·(src −
+/// blur(src))` where the difference exceeds the threshold. Runs AFTER the
+/// median (which melts JPEG block edges) and the Lanczos upscale, so it
+/// boosts genuine edges only — the un-ordered unsharp this replaces once
+/// amplified block steps into the "黑框框" grid. Alpha untouched.
+fn sharpen_rgba(image: &mut image::RgbaImage) {
+    sharpen_rgba_with(image, ENHANCE_SHARPEN_AMOUNT, ENHANCE_SHARPEN_SIGMA);
+}
+
+/// Parameterized core of [`sharpen_rgba`]: `amount` scales the unsharp
+/// response, `sigma` sets the halo radius in output pixels.
+fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
+    let blurred = image::imageops::blur(image, sigma);
+    for (src, blur) in image.pixels_mut().zip(blurred.pixels()) {
+        for c in 0..3 {
+            let s = src.0[c] as f32;
+            let diff = s - blur.0[c] as f32;
+            if diff.abs() > ENHANCE_SHARPEN_THRESHOLD {
+                src.0[c] = (s + amount * diff).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
 }
 
 /// In-place 3×3 median filter over RGB: each output channel is the median of
@@ -1125,7 +1498,7 @@ fn denoise_rgba(image: &mut image::RgbaImage) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Frame, RgbaImage};
+    use image::{Frame, GenericImage, RgbaImage};
     use smallvec::smallvec;
     use std::collections::HashSet;
 
@@ -1167,27 +1540,55 @@ mod tests {
     }
 
     #[test]
-    fn enhance_render_image_medians_large_sources_without_upscale() {
-        // A 1600px source is at/above the upscale floor: block steps still
-        // get medianed (they show at 1:1 too), but the size stays put — the
-        // GPU magnification is already small.
+    fn enhance_render_image_passes_display_size_sources_through() {
+        // A real-2048 source paints at ~1:1 — its detail IS the maximum
+        // available sharpness. Any filtering (including the block-edge
+        // median) would melt genuine 1-2px detail and read blurrier than the
+        // unenhanced vinyl label, so it must come back as the SAME image,
+        // zero-copy.
         let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
-            1600,
+            2048,
             2,
-            |x, _| if x == 800 {
-                image::Rgba([200u8, 200, 200, 255])
-            } else {
-                image::Rgba([10u8, 10, 10, 255])
-            }
+            |x, y| image::Rgba([((x * 3 + y) % 255) as u8, 60, 90, 255])
         ))]));
         let enhanced = enhance_render_image(&image).unwrap();
-        assert!(!Arc::ptr_eq(&image, &enhanced));
-        let size = enhanced.size(0);
-        assert_eq!((u32::from(size.width), u32::from(size.height)), (1600, 2));
-        // The isolated bright column is a 1px outlier in its window → medianed.
-        let bytes = enhanced.as_bytes(0).unwrap();
-        let outlier = 4 * (800 + 0 * 1600) + 0;
-        assert!(bytes[outlier] < 200, "outlier should be removed");
+        assert!(
+            Arc::ptr_eq(&image, &enhanced),
+            "display-size sources must pass through untouched"
+        );
+    }
+
+    #[test]
+    fn sharpen_rgba_boosts_edge_contrast() {
+        // A soft vertical step with cover-art-scale contrast (180 levels):
+        // sharpening must increase the steepest adjacent-pixel difference
+        // across the edge without touching alpha.
+        let mut image = RgbaImage::from_fn(24, 8, |x, _| {
+            image::Rgba([if x < 12 { 40 } else { 220 }, 7, 9, 255])
+        });
+        // Soften the edge to mimic a Lanczos-upscaled transition.
+        let softened = image::imageops::blur(&image, 1.5);
+        image.copy_from(&softened, 0, 0).unwrap();
+        let max_diff = |img: &RgbaImage| {
+            let mut max = 0u8;
+            for y in 0..img.height() {
+                for x in 1..img.width() {
+                    let a = img.get_pixel(x - 1, y).0[0];
+                    let b = img.get_pixel(x, y).0[0];
+                    max = max.max(a.abs_diff(b));
+                }
+            }
+            max
+        };
+        let before = max_diff(&image);
+        sharpen_rgba(&mut image);
+        let after = max_diff(&image);
+        assert!(
+            after > before,
+            "edge contrast must rise: {before} → {after}"
+        );
+        // Alpha stays 255 everywhere.
+        assert!(image.pixels().all(|p| p.0[3] == 255));
     }
 
     #[test]
@@ -1204,10 +1605,62 @@ mod tests {
         let size = enhanced.size(0);
         assert_eq!(
             u32::from(size.width),
-            ENHANCE_UPSCALE_TARGET_PX,
+            ENHANCE_TARGET_PX,
             "long side must reach the target"
         );
         assert_eq!(u32::from(size.height), 1440, "aspect ratio preserved");
+    }
+
+    #[test]
+    fn backdrop_sharp_fill_hits_exact_target() {
+        // The element draws the cached image with ObjectFit::Cover at 1:1 GPU
+        // sampling — the output must be EXACTLY the window device-pixel
+        // target, for both a full-size source and a ladder-fallback thumbnail.
+        for source in [2048u32, 256] {
+            let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+                source,
+                source,
+                |x, y| { image::Rgba([((x / 8) % 255) as u8, ((y / 8) % 255) as u8, 90, 255]) }
+            ))]));
+            let out = backdrop_sharp_fill(&image, 1920, 1020).unwrap();
+            let size = out.size(0);
+            assert_eq!(
+                (u32::from(size.width), u32::from(size.height)),
+                (1920, 1020),
+                "source {source}px must still render to the exact target"
+            );
+        }
+    }
+
+    #[test]
+    fn backdrop_sharp_fill_preserves_high_contrast_edges() {
+        // Thin 8px white "text strokes" on black — the class of content the
+        // user wants as sharp in the backdrop as on the disc label. The sharp
+        // pipeline (denoise → Lanczos → thresholded unsharp) must keep the
+        // stroke edges at high contrast: no blur stage may melt them away.
+        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            1024,
+            1024,
+            |x, y| {
+                let on = (x / 8) % 2 == 0 && (400..440).contains(&y);
+                image::Rgba([if on { 255 } else { 0 }, 0, 0, 255])
+            }
+        ))]));
+        let out = backdrop_sharp_fill(&image, 1920, 1020).unwrap();
+        let bytes = out.as_bytes(0).unwrap().to_vec();
+        let sharp = RgbaImage::from_raw(1920, 1020, bytes).unwrap();
+        let mut max_diff = 0u8;
+        for y in 0..sharp.height() {
+            for x in 1..sharp.width() {
+                let a = sharp.get_pixel(x - 1, y).0[0];
+                let b = sharp.get_pixel(x, y).0[0];
+                max_diff = max_diff.max(a.abs_diff(b));
+            }
+        }
+        assert!(
+            max_diff >= 128,
+            "a 255-level stroke edge must stay high-contrast, got {max_diff}"
+        );
     }
 
     fn test_image() -> Arc<RenderImage> {
@@ -1540,5 +1993,74 @@ mod tests {
         drop(p2);
 
         assert_eq!(dropped.len(), 2, "every released image reclaimed once");
+    }
+
+    /// Backdrop-class (≥4MB) images age out on the short gate so a burst of
+    /// song switches cannot freeze the background for 60s; covers keep the
+    /// conservative 60s gate. The short gate must stay above the immersive
+    /// crossfade window, which keeps the old element (and its tiles) painting
+    /// while it fades out.
+    #[test]
+    fn large_backdrop_images_use_the_short_reclaim_gate() {
+        assert_eq!(reclaim_delay_for(&test_image()), RECLAIM_DELAY);
+        let large = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            1024,
+            1024,
+            |_, _| image::Rgba([1, 2, 3, 4])
+        ))]));
+        assert!(image_bytes(&large) >= LARGE_IMAGE_BYTES);
+        assert_eq!(reclaim_delay_for(&large), RECLAIM_DELAY_LARGE);
+        assert!(RECLAIM_DELAY_LARGE > Duration::from_millis(400));
+    }
+
+    /// Crop geometry pinning: denoise/resample happen AFTER the centered
+    /// cover-crop, so content outside the crop band must never bleed into the
+    /// output — the band is still the geometric cover crop.
+    #[test]
+    fn backdrop_sharp_fill_matches_target_and_center() {
+        // 2048x2048 source: top fifth red, everything else flat green. The
+        // centered cover-crop for a 1920x1028 target starts at source row
+        // (2048 - 1097) / 2 = 475, below the red band (Lanczos ringing
+        // reaches ~12 source rows), so every output pixel must be green.
+        let src = RgbaImage::from_fn(2048, 2048, |_, y| {
+            if y < 400 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 255, 0, 255])
+            }
+        });
+        let source = Arc::new(RenderImage::new(smallvec![Frame::new(src)]));
+
+        let out = backdrop_sharp_fill(&source, 1920, 1028).expect("render succeeds");
+        let size = out.size(0);
+        assert_eq!(u32::from(size.width), 1920);
+        assert_eq!(u32::from(size.height), 1028);
+
+        let bytes = out.as_bytes(0).expect("frame bytes");
+        assert!(
+            bytes
+                .chunks(4)
+                .all(|px| px[0] < 8 && px[1] > 240 && px[2] < 8 && px[3] == 255),
+            "cover crop must exclude the top red band; flat green survives denoise+resize"
+        );
+
+        // Degenerate targets fall back to None (caller keeps the original).
+        assert!(backdrop_sharp_fill(&source, 0, 100).is_none());
+        assert!(backdrop_sharp_fill(&source, 100, 0).is_none());
+    }
+
+    /// Small sources (ladder fallback) must still render to the exact target
+    /// (GPU then samples 1:1 instead of magnifying a tiny texture).
+    #[test]
+    fn backdrop_sharp_fill_upscales_small_sources() {
+        let source = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            480,
+            360,
+            |x, y| { image::Rgba([((x * 7 + y) % 255) as u8, 60, 90, 255]) }
+        ))]));
+        let out = backdrop_sharp_fill(&source, 1920, 1440).expect("render succeeds");
+        let size = out.size(0);
+        assert_eq!(u32::from(size.width), 1920);
+        assert_eq!(u32::from(size.height), 1440);
     }
 }
