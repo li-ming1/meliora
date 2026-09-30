@@ -35,7 +35,8 @@ use crate::{
         library::context_menus::{play_now, queue_item},
         lyrics::lrc::{LrcLine, parse_lrc},
         online_common::{
-            FETCH_COOLDOWN, PlayIntent, i64_field, string_field, write_pending_fetches,
+            FETCH_COOLDOWN, PlayIntent, i64_field, parse_pointer_list, string_field,
+            write_pending_fetches,
         },
         online_track_row::OnlineTrackDisplay,
     },
@@ -176,61 +177,39 @@ fn parse_song(item: &Value) -> Option<NeteaseTrackInfo> {
 /// (`/songs`), daily recommend (`/data/dailySongs`) and playlist
 /// (`/songs`) endpoints.
 pub fn parse_tracks(body: &Value, list_pointer: &str) -> Vec<NeteaseTrackInfo> {
-    body.pointer(list_pointer)
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(parse_song).collect())
-        .unwrap_or_default()
+    parse_pointer_list(body, list_pointer, parse_song)
 }
 
 /// Parses the user playlist list (`/playlist` of user_playlist).
 pub fn parse_playlists(body: &Value) -> Vec<NeteasePlaylistInfo> {
-    body.pointer("/playlist")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let id = i64_field(item, &["id"]);
-                    if id == 0 {
-                        return None;
-                    }
-                    Some(NeteasePlaylistInfo {
-                        id,
-                        name: SharedString::from(string_field(item, &["name"])),
-                        count: i64_field(item, &["trackCount"]),
-                        cover_url: cover_url_field(item),
-                    })
-                })
-                .collect()
+    parse_pointer_list(body, "/playlist", |item| {
+        let id = i64_field(item, &["id"]);
+        if id == 0 {
+            return None;
+        }
+        Some(NeteasePlaylistInfo {
+            id,
+            name: SharedString::from(string_field(item, &["name"])),
+            count: i64_field(item, &["trackCount"]),
+            cover_url: cover_url_field(item),
         })
-        .unwrap_or_default()
+    })
 }
 
 /// Parses the chart list (`/list` of toplist).
 pub fn parse_ranks(body: &Value) -> Vec<NeteaseRank> {
-    body.pointer("/list")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let id = i64_field(item, &["id"]);
-                    if id == 0 {
-                        return None;
-                    }
-                    Some(NeteaseRank {
-                        id,
-                        name: SharedString::from(string_field(item, &["name"])),
-                        cover_url: cover_url_field(item),
-                        update_frequency: SharedString::from(string_field(
-                            item,
-                            &["updateFrequency"],
-                        )),
-                    })
-                })
-                .collect()
+    parse_pointer_list(body, "/list", |item| {
+        let id = i64_field(item, &["id"]);
+        if id == 0 {
+            return None;
+        }
+        Some(NeteaseRank {
+            id,
+            name: SharedString::from(string_field(item, &["name"])),
+            cover_url: cover_url_field(item),
+            update_frequency: SharedString::from(string_field(item, &["updateFrequency"])),
         })
-        .unwrap_or_default()
+    })
 }
 
 // ---------------------------------------------------------------------------

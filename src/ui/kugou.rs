@@ -30,7 +30,8 @@ use crate::{
     ui::{
         library::context_menus::{play_now, queue_item},
         online_common::{
-            FETCH_COOLDOWN, PlayIntent, i64_field, string_field, write_pending_fetches,
+            FETCH_COOLDOWN, PlayIntent, i64_field, parse_pointer_list, string_field,
+            write_pending_fetches,
         },
         online_track_row::OnlineTrackDisplay,
     },
@@ -331,61 +332,45 @@ const ALBUM_ID_KEYS: &[&str] = &["AlbumID", "album_id"];
 /// Parses the track arrays of the search (`/data/lists`) and playlist
 /// (`/data/songs`) endpoints. Entries without a hash are skipped.
 pub fn parse_tracks(body: &Value, list_pointer: &str) -> Vec<KugouTrackInfo> {
-    body.pointer(list_pointer)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let hash = string_field(item, &["FileHash", "hash"]);
-                    if hash.is_empty() {
-                        return None;
-                    }
-                    Some(KugouTrackInfo {
-                        title: SharedString::from(title_field(item)),
-                        artist: SharedString::from(artist_field(item)),
-                        album: SharedString::from(album_field(item)),
-                        duration: duration_field(item),
-                        hash,
-                        mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
-                        album_id: i64_field(item, ALBUM_ID_KEYS),
-                        cover_url: cover_url_field(item),
-                    })
-                })
-                .collect()
+    parse_pointer_list(body, list_pointer, |item| {
+        let hash = string_field(item, &["FileHash", "hash"]);
+        if hash.is_empty() {
+            return None;
+        }
+        Some(KugouTrackInfo {
+            title: SharedString::from(title_field(item)),
+            artist: SharedString::from(artist_field(item)),
+            album: SharedString::from(album_field(item)),
+            duration: duration_field(item),
+            hash,
+            mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
+            album_id: i64_field(item, ALBUM_ID_KEYS),
+            cover_url: cover_url_field(item),
         })
-        .unwrap_or_default()
+    })
 }
 
 /// Parses the rank list (`/data/info`). Entries without a rankid are skipped.
 pub fn parse_ranks(body: &Value) -> Vec<KugouRank> {
-    body.pointer("/data/info")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let rankid = i64_field(item, &["rankid"]);
-                    if rankid == 0 {
-                        return None;
-                    }
-                    // the rank endpoint ships covers under `img_9` with a
-                    // `{size}` placeholder
-                    let raw_cover = string_field(item, &["img_9", "album_img_9"]);
-                    let cover_url = if raw_cover.is_empty() {
-                        cover_url_field(item)
-                    } else {
-                        SharedString::from(raw_cover.replace("{size}", "256"))
-                    };
-                    Some(KugouRank {
-                        rankid,
-                        name: SharedString::from(string_field(item, &["rankname", "name"])),
-                        cover_url,
-                    })
-                })
-                .collect()
+    parse_pointer_list(body, "/data/info", |item| {
+        let rankid = i64_field(item, &["rankid"]);
+        if rankid == 0 {
+            return None;
+        }
+        // the rank endpoint ships covers under `img_9` with a
+        // `{size}` placeholder
+        let raw_cover = string_field(item, &["img_9", "album_img_9"]);
+        let cover_url = if raw_cover.is_empty() {
+            cover_url_field(item)
+        } else {
+            SharedString::from(raw_cover.replace("{size}", "256"))
+        };
+        Some(KugouRank {
+            rankid,
+            name: SharedString::from(string_field(item, &["rankname", "name"])),
+            cover_url,
         })
-        .unwrap_or_default()
+    })
 }
 
 /// Parses one track object, tolerating the schema variations across search,
@@ -453,62 +438,38 @@ fn parse_track(item: &Value) -> KugouTrackInfo {
 
 /// Parses the songs of one rank (`/data/songlist`).
 pub fn parse_rank_tracks(body: &Value) -> Vec<KugouTrackInfo> {
-    body.pointer("/data/songlist")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let track = parse_track(item);
-                    (!track.hash.is_empty()).then_some(track)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    parse_pointer_list(body, "/data/songlist", |item| {
+        let track = parse_track(item);
+        (!track.hash.is_empty()).then_some(track)
+    })
 }
 
 /// Parses the daily recommend tracks (`/data/song_list`).
 pub fn parse_recommend_tracks(body: &Value) -> Vec<KugouTrackInfo> {
-    body.pointer("/data/song_list")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let track = parse_track(item);
-                    (!track.hash.is_empty()).then_some(track)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    parse_pointer_list(body, "/data/song_list", |item| {
+        let track = parse_track(item);
+        (!track.hash.is_empty()).then_some(track)
+    })
 }
 
 /// Parses the user playlist list (`/data/info`).
 pub fn parse_playlists(body: &Value) -> Vec<KugouPlaylistInfo> {
-    body.pointer("/data/info")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let id = match item.get("global_collection_id") {
-                        Some(Value::String(s)) if !s.is_empty() => s.clone(),
-                        Some(Value::Number(n)) => n.to_string(),
-                        _ => string_field(item, &["global_collection_id", "specialid"]),
-                    };
-                    if id.is_empty() {
-                        return None;
-                    }
-                    Some(KugouPlaylistInfo {
-                        global_collection_id: id,
-                        listid: i64_field(item, &["listid", "list_create_listid"]),
-                        name: SharedString::from(string_field(item, &["name", "Name"])),
-                        count: i64_field(item, &["count", "total", "m_count"]),
-                    })
-                })
-                .collect()
+    parse_pointer_list(body, "/data/info", |item| {
+        let id = match item.get("global_collection_id") {
+            Some(Value::String(s)) if !s.is_empty() => s.clone(),
+            Some(Value::Number(n)) => n.to_string(),
+            _ => string_field(item, &["global_collection_id", "specialid"]),
+        };
+        if id.is_empty() {
+            return None;
+        }
+        Some(KugouPlaylistInfo {
+            global_collection_id: id,
+            listid: i64_field(item, &["listid", "list_create_listid"]),
+            name: SharedString::from(string_field(item, &["name", "Name"])),
+            count: i64_field(item, &["count", "total", "m_count"]),
         })
-        .unwrap_or_default()
+    })
 }
 
 async fn fetch_play_url(

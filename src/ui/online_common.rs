@@ -98,3 +98,17 @@ pub(crate) fn i64_field(value: &Value, keys: &[&str]) -> i64 {
     }
     0
 }
+
+/// Resolves `pointer` to a JSON array and maps each entry through `parse`,
+/// dropping entries it rejects. Shared shell for the provider response
+/// parsers (search / playlist / rank / recommend endpoints).
+pub(crate) fn parse_pointer_list<T>(
+    body: &Value,
+    pointer: &str,
+    parse: impl Fn(&Value) -> Option<T>,
+) -> Vec<T> {
+    body.pointer(pointer)
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(parse).collect())
+        .unwrap_or_default()
+}
