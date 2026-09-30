@@ -70,7 +70,11 @@ pub fn write_bounded_planar<T: Copy>(
         // counts from the front of the planes it is given, so hand it the
         // remaining subslices — passing the full planes again would re-copy
         // the packet's prefix into the ring (audible as static garbage)
-        let remaining: Vec<&[T]> = planes.iter().map(|plane| &plane[written..]).collect();
+        // Stack-allocated for realistic channel counts: this runs once per
+        // 1ms retry while the ring is full, and a heap Vec per retry is
+        // allocator churn on the realtime-adjacent path.
+        let mut remaining = smallvec::SmallVec::<[&[T]; 8]>::with_capacity(planes.len());
+        remaining.extend(planes.iter().map(|plane| &plane[written..]));
         written += try_write_planar(producers, &remaining, total - written);
     }
 

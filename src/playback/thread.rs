@@ -496,6 +496,12 @@ impl PlaybackThread {
         if duration.saturating_sub(self.last_timestamp as u64) > PREPARE_LEAD_MS {
             return;
         }
+        // Cheap guard before taking the queue lock and cloning a PathBuf:
+        // inside the 15s lead window this runs every decode cycle, and once
+        // the next stream is prepared/in-flight every call is pure overhead.
+        if self.engine.is_next_prepared() {
+            return;
+        }
         let Some(next_path) = self.queue.peek_next_path() else {
             return;
         };

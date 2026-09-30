@@ -535,7 +535,12 @@ impl Read for HttpRangeSource {
 
             match chunk {
                 Ok(Ok(Some(chunk))) if !chunk.is_empty() => {
-                    self.pending = chunk.to_vec();
+                    // Reuse the buffer's capacity instead of replacing the
+                    // Vec: every body chunk would otherwise drop an old
+                    // allocation and hand the allocator fresh work per
+                    // network chunk (dozens per second).
+                    self.pending.clear();
+                    self.pending.extend_from_slice(&chunk);
                     self.pending_offset = 0;
                     return Ok(self.take_pending(buf));
                 }

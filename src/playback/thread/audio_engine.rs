@@ -209,6 +209,15 @@ impl AudioEngine {
         self.state
     }
 
+    /// Whether a next-track stream is already prepared or being prepared.
+    /// Cheap check for the per-cycle `maybe_prepare_next` path: once the
+    /// next stream is in flight, the caller can skip the queue lock and the
+    /// `PathBuf` clone entirely. Queue mutations clear `prepared`/`prepare_rx`,
+    /// so a present value is never for a stale path.
+    pub fn is_next_prepared(&self) -> bool {
+        self.prepare_rx.is_some() || self.prepared.is_some()
+    }
+
     /// Pre-open `path`'s media stream on a background thread so the track
     /// swap at end-of-track doesn't wait on connect+probe (online sources).
     /// Ignored when that track is already prepared or being prepared.

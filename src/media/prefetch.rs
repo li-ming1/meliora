@@ -39,6 +39,11 @@ type Epoch = u64;
 
 struct FillState {
     buf: Vec<u8>,
+    /// Consumer read cursor into `buf`. Reads copy from `buf[read_pos..]`
+    /// instead of draining from the front (which memmoved the remaining
+    /// bytes on every read); the buffer is compacted once the cursor passes
+    /// its midpoint, amortizing the move to ≤1 byte per byte consumed.
+    read_pos: usize,
     epoch: Epoch,
     /// Absolute target of the latest seek, applied by the filler thread:
     /// in-flight reads from before the seek are discarded by epoch, but
@@ -52,6 +57,7 @@ struct FillState {
 impl FillState {
     fn clear_stream(&mut self) {
         self.buf.clear();
+        self.read_pos = 0;
         self.eof = false;
     }
 }
@@ -92,7 +98,7 @@ fn fill_loop<S: Read + Seek + Send>(shared: Arc<Shared<S>>, retry_backoff: Durat
                 if let Some(target) = st.pending_seek.take() {
                     break (st.epoch, Some(target));
                 }
-                if st.buf.len() < HIGH_WATER_BYTES && !st.eof {
+                if st.buf.len() - st.read_pos < HIGH_WATER_BYTES && !st.eof {
                     break (st.epoch, None);
                 }
                 st = shared
@@ -172,6 +178,7 @@ impl<S: MediaSource + 'static> PrefetchSource<S> {
             source: Mutex::new(source),
             state: Mutex::new(FillState {
                 buf: Vec::new(),
+                read_pos: 0,
                 epoch: 0,
                 pending_seek: None,
                 eof: false,
@@ -212,10 +219,19 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
         let deadline = Instant::now() + self.stall_budget;
         let mut st = lock(&self.shared.state);
         loop {
-            if !st.buf.is_empty() {
-                let n = st.buf.len().min(buf.len());
-                buf[..n].copy_from_slice(&st.buf[..n]);
-                st.buf.drain(..n);
+            let available = st.buf.len() - st.read_pos;
+            if available > 0 {
+                let n = available.min(buf.len());
+                buf[..n].copy_from_slice(&st.buf[st.read_pos..st.read_pos + n]);
+                st.read_pos += n;
+                // Amortized compaction: only move the remaining bytes once
+                // the cursor passes the midpoint — at most one byte moved
+                // per byte consumed, instead of a full memmove per read.
+                let consumed = st.read_pos;
+                if consumed >= st.buf.len() / 2 {
+                    st.buf.drain(..consumed);
+                    st.read_pos = 0;
+                }
                 self.pos += n as u64;
                 self.shared.signal.notify_all();
                 return Ok(n);

@@ -967,7 +967,7 @@ fn lyric_window(
     visual_line: f32,
     parsed_len: usize,
     current_line: Option<usize>,
-) -> Vec<(usize, f32, bool)> {
+) -> smallvec::SmallVec<[(usize, f32, bool); 16]> {
     let center = visual_line.round();
     let len = parsed_len as i64;
     (-LINE_WINDOW..=LINE_WINDOW)
@@ -1418,7 +1418,7 @@ mod tests {
 
     #[test]
     fn lyric_window_centers_the_active_line() {
-        let lines: Vec<(usize, f32, bool)> = lyric_window(10.0, 30, Some(10));
+        let lines = lyric_window(10.0, 30, Some(10));
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             (4..=16).collect::<Vec<_>>()
@@ -1431,20 +1431,20 @@ mod tests {
 
     #[test]
     fn lyric_window_clamps_to_parsed_range() {
-        let lines: Vec<(usize, f32, bool)> = lyric_window(1.0, 3, Some(1));
+        let lines = lyric_window(1.0, 3, Some(1));
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
         // Before the first line the window still starts at the clamp.
-        let lines: Vec<(usize, f32, bool)> = lyric_window(-1.0, 3, None);
+        let lines = lyric_window(-1.0, 3, None);
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
         // Browsing away: the highlight stays on the playing line even when
         // the window centers elsewhere.
-        let lines: Vec<(usize, f32, bool)> = lyric_window(4.0, 30, Some(1));
+        let lines = lyric_window(4.0, 30, Some(1));
         assert!(
             lines
                 .iter()
