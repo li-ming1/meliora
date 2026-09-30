@@ -755,7 +755,6 @@ impl Render for ArtistDetailView {
                                                 // app off a stale album_ids snapshot.
                                                 let cached_view =
                                                     grid_views_model.read(cx).get(&idx).cloned();
-                                                
 
                                                 match cached_view {
                                                     Some(view) => div()

@@ -450,8 +450,6 @@ impl Render for InterfaceSettings {
                 |interface| interface.queue_select_on_click = !interface.queue_select_on_click,
             ));
 
-        
-
         body.child(
             label(
                 "interface-command-palette",
