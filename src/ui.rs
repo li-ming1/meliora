@@ -22,6 +22,8 @@ pub mod models;
 #[cfg(feature = "netease")]
 mod netease;
 #[cfg(any(feature = "kugou", feature = "netease"))]
+mod online_common;
+#[cfg(any(feature = "kugou", feature = "netease"))]
 mod online_track_row;
 mod queue;
 mod right_sidebar;

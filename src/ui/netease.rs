@@ -14,19 +14,18 @@ pub fn download_label() -> cntp_i18n::I18nString {
 }
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::PathBuf,
     sync::{
         Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use cntp_i18n::tr;
 use gpui::{App, RenderImage, SharedString};
 use serde_json::Value;
-use smallvec::SmallVec;
 
 use crate::{
     playback::queue::{DataSource, OnlineIdentity, QueueItemData, QueueItemUIData},
@@ -35,6 +34,9 @@ use crate::{
     ui::{
         library::context_menus::{play_now, queue_item},
         lyrics::lrc::{LrcLine, parse_lrc},
+        online_common::{
+            FETCH_COOLDOWN, PlayIntent, i64_field, string_field, write_pending_fetches,
+        },
         online_track_row::OnlineTrackDisplay,
     },
 };
@@ -74,32 +76,6 @@ pub struct NeteaseRank {
 // ---------------------------------------------------------------------------
 // JSON parsing (tolerant to the shape differences between the endpoints)
 // ---------------------------------------------------------------------------
-
-fn string_field(value: &Value, keys: &[&str]) -> String {
-    for key in keys {
-        if let Some(Value::String(s)) = value.get(*key)
-            && !s.is_empty()
-        {
-            return s.clone();
-        }
-    }
-    String::new()
-}
-
-fn i64_field(value: &Value, keys: &[&str]) -> i64 {
-    for key in keys {
-        match value.get(*key) {
-            Some(Value::Number(n)) => return n.as_i64().unwrap_or(0),
-            Some(Value::String(s)) => {
-                if let Ok(parsed) = s.parse::<i64>() {
-                    return parsed;
-                }
-            }
-            _ => {}
-        }
-    }
-    0
-}
 
 /// Artists: `ar[]` (cloudsearch / song detail) or `artists[]` (legacy shapes),
 /// joined with " / ".
@@ -260,44 +236,6 @@ pub fn parse_ranks(body: &Value) -> Vec<NeteaseRank> {
 // ---------------------------------------------------------------------------
 // Playback
 // ---------------------------------------------------------------------------
-
-enum PlayIntent {
-    Now,
-    Queue,
-}
-
-/// Song ids whose play-URL fetch is currently in flight, plus ids whose
-/// fetch recently succeeded (tagged with the intent it served). Concurrent
-/// clicks on the same song coalesce into the first fetch so the track can't
-/// be queued twice while the (slow) URL request is still outstanding, and a
-/// short same-intent cooldown after a success keeps a click burst from
-/// running the full fetch + open churn several times — GPUI delivers one
-/// click event per click of a multi-click sequence, so a double-click is
-/// two `play_track` calls a few hundred ms apart.
-struct PlayFetchDedup {
-    in_flight: HashSet<i64>,
-    recent: HashMap<i64, (u8, Instant)>,
-}
-
-/// How long a successful fetch suppresses an identical-intent re-request.
-const FETCH_COOLDOWN: Duration = Duration::from_millis(800);
-
-static PENDING_FETCHES: OnceLock<RwLock<PlayFetchDedup>> = OnceLock::new();
-
-fn pending_fetches() -> &'static RwLock<PlayFetchDedup> {
-    PENDING_FETCHES.get_or_init(|| {
-        RwLock::new(PlayFetchDedup {
-            in_flight: HashSet::new(),
-            recent: HashMap::new(),
-        })
-    })
-}
-
-/// Poison-recovering write lock for the fetch dedup table: a panicking
-/// holder must not wedge every later click behind a poisoned lock.
-fn write_pending_fetches() -> RwLockWriteGuard<'static, PlayFetchDedup> {
-    pending_fetches().write().unwrap_or_else(|e| e.into_inner())
-}
 
 fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
     let quality = cx
@@ -729,26 +667,9 @@ pub async fn fetch_online_lyric(track: &NeteaseTrackInfo) -> Result<Option<Netea
 // QR rendering + track row
 // ---------------------------------------------------------------------------
 
-/// Renders a URL as a black-on-white QR code image. Uses the same frame
-/// construction as the album art pipeline.
-pub fn build_qr_render_image(url: &str) -> anyhow::Result<Arc<RenderImage>> {
-    let code = qrcode::QrCode::new(url.as_bytes())?;
-    let mut image: image::RgbaImage = code
-        .render::<image::Rgba<u8>>()
-        .quiet_zone(true)
-        .min_dimensions(320, 320)
-        .build();
-
-    crate::ui::components::managed_image::rgb_to_bgr(&mut image);
-
-    let mut frames: SmallVec<[_; 1]> = SmallVec::new();
-    frames.push(image::Frame::new(image));
-    Ok(Arc::new(RenderImage::new(frames)))
-}
-
 /// Renders a QR code for the given QR login key, encoded from the login URL.
 pub fn build_login_qr(key: &str) -> anyhow::Result<Arc<RenderImage>> {
-    build_qr_render_image(&crate::netease::api::qr_login_url(key))
+    crate::ui::online_common::build_qr_render_image(&crate::netease::api::qr_login_url(key))
 }
 
 impl OnlineTrackDisplay for NeteaseTrackInfo {
