@@ -773,8 +773,6 @@ impl AudioEngine {
         let consume_result = self.device.consume_from(&mut pipeline.device_input);
 
         if let Err(err) = consume_result {
-            warn!(parent: &s, ?err, "Failed to consume from pipeline: {err}");
-
             // A device whose WriteTimeout recurs every cycle never converges
             // through recreation; pace the recreate with a growing defer
             // window instead of churning the stream every cycle. The consume
@@ -785,8 +783,14 @@ impl AudioEngine {
             if let Some((next_recreate, _)) = self.device_recreate_defer
                 && now < next_recreate
             {
+                // Inside the defer window: the episode is already logged and
+                // the recreate is deferred — logging the same WriteTimeout
+                // again would repeat it at the consume timeout's pace (~4 Hz,
+                // sometimes for minutes during a device outage, doctrine §29).
                 return EngineCycleResult::NothingToDo;
             }
+            warn!(parent: &s, ?err, "Failed to consume from pipeline: {err}");
+
             let failures = self
                 .device_recreate_defer
                 .map(|(_, failures)| failures + 1)
