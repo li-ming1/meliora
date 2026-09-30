@@ -196,8 +196,14 @@ impl QueueItem {
 
             let queue = cx.global::<Models>().queue.clone();
             cx.observe(&queue, |this: &mut QueueItem, queue, cx| {
-                this.current = queue.read(cx).position;
-                cx.notify();
+                let position = queue.read(cx).position;
+                // Only the rows whose current-track highlight actually moved
+                // re-render; without this guard every queue notification
+                // repaints all n rows (an O(n) fan-out per track switch).
+                if this.current != position {
+                    this.current = position;
+                    cx.notify();
+                }
             })
             .detach();
 
