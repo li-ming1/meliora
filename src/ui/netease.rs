@@ -35,7 +35,7 @@ use crate::{
         library::context_menus::{play_now, queue_item},
         lyrics::lrc::{LrcLine, parse_lrc},
         online_common::{
-            FETCH_COOLDOWN, PlayIntent, i64_field, parse_pointer_list, string_field,
+            PlayIntent, claim_fetch, i64_field, parse_pointer_list, settle_fetch, string_field,
             write_pending_fetches,
         },
         online_track_row::OnlineTrackDisplay,
@@ -228,20 +228,11 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
     let track = track.clone();
     cx.spawn(async move |cx| {
         // Coalesce concurrent clicks on the same song: only the first click
-        // fetches and queues; later clicks in the same window are dropped so
-        // a double-click can't enqueue the track twice. The intent tag keeps
-        // the cooldown from swallowing a deliberate play right after a
-        // queue-add of the same song.
-        let intent_key = matches!(intent, PlayIntent::Now) as u8;
+        // fetches and queues; later clicks in the same window are dropped
+        // (claim_fetch, shared with the KuGou glue).
         {
             let mut dedup = write_pending_fetches();
-            dedup.recent.retain(|_, (_, at)| at.elapsed() < FETCH_COOLDOWN);
-            let duplicate = dedup
-                .recent
-                .get(&track.id)
-                .is_some_and(|&(seen_intent, _)| seen_intent == intent_key)
-                || !dedup.in_flight.insert(track.id);
-            if duplicate {
+            if !claim_fetch(&mut dedup, track.id, intent, Instant::now()) {
                 return;
             }
         }
@@ -329,8 +320,7 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
 
         {
             let mut dedup = write_pending_fetches();
-            dedup.in_flight.remove(&track.id);
-            dedup.recent.insert(track.id, (intent_key, Instant::now()));
+            settle_fetch(&mut dedup, track.id, intent, Instant::now());
         }
     })
     .detach();

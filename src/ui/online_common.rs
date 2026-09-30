@@ -53,6 +53,36 @@ pub(crate) fn write_pending_fetches() -> RwLockWriteGuard<'static, PlayFetchDedu
     pending_fetches().write().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Decision core of the play-URL fetch dedup: `true` when the fetch may
+/// proceed (the key is tagged in-flight), `false` when this click is a
+/// duplicate suppressed by the in-flight tag or the same-intent cooldown.
+/// `now` is injected so the cooldown expiry is unit-testable.
+pub(crate) fn claim_fetch(
+    dedup: &mut PlayFetchDedup,
+    key: i64,
+    intent: PlayIntent,
+    now: Instant,
+) -> bool {
+    let intent_key = matches!(intent, PlayIntent::Now) as u8;
+    dedup
+        .recent
+        .retain(|_, (_, at)| now.duration_since(*at) < FETCH_COOLDOWN);
+    let duplicate = dedup
+        .recent
+        .get(&key)
+        .is_some_and(|&(seen_intent, _)| seen_intent == intent_key)
+        || !dedup.in_flight.insert(key);
+    !duplicate
+}
+
+/// Records a finished fetch: clears the in-flight tag and stamps the
+/// same-intent cooldown. `now` is injected for testability.
+pub(crate) fn settle_fetch(dedup: &mut PlayFetchDedup, key: i64, intent: PlayIntent, now: Instant) {
+    let intent_key = matches!(intent, PlayIntent::Now) as u8;
+    dedup.in_flight.remove(&key);
+    dedup.recent.insert(key, (intent_key, now));
+}
+
 /// Renders a URL as a black-on-white QR code image. Uses the same frame
 /// construction as the album art pipeline.
 pub(crate) fn build_qr_render_image(url: &str) -> anyhow::Result<Arc<RenderImage>> {
@@ -111,4 +141,57 @@ pub(crate) fn parse_pointer_list<T>(
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(parse).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_dedup() -> PlayFetchDedup {
+        PlayFetchDedup {
+            in_flight: HashSet::new(),
+            recent: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn second_click_while_in_flight_is_suppressed() {
+        let mut dedup = empty_dedup();
+        let now = Instant::now();
+        assert!(claim_fetch(&mut dedup, 1, PlayIntent::Now, now));
+        assert!(!claim_fetch(&mut dedup, 1, PlayIntent::Now, now));
+        // a different song is never suppressed by another's in-flight tag
+        assert!(claim_fetch(&mut dedup, 2, PlayIntent::Now, now));
+    }
+
+    #[test]
+    fn cooldown_suppresses_same_intent_only_until_expiry() {
+        let mut dedup = empty_dedup();
+        let t0 = Instant::now();
+        assert!(claim_fetch(&mut dedup, 1, PlayIntent::Now, t0));
+        settle_fetch(&mut dedup, 1, PlayIntent::Now, t0);
+
+        // same intent inside the cooldown window is swallowed...
+        let mid = t0 + Duration::from_millis(FETCH_COOLDOWN.as_millis() as u64 / 2);
+        assert!(!claim_fetch(&mut dedup, 1, PlayIntent::Now, mid));
+        // ...but a deliberate play right after a queue-add is not (it starts
+        // its own fetch, which we settle like the click handler would)
+        assert!(claim_fetch(&mut dedup, 1, PlayIntent::Queue, mid));
+        settle_fetch(&mut dedup, 1, PlayIntent::Queue, mid);
+        // ...and the same intent passes once the cooldown expires
+        let after = t0 + FETCH_COOLDOWN + Duration::from_millis(1);
+        assert!(claim_fetch(&mut dedup, 1, PlayIntent::Now, after));
+    }
+
+    #[test]
+    fn settle_releases_the_in_flight_tag() {
+        let mut dedup = empty_dedup();
+        let now = Instant::now();
+        assert!(claim_fetch(&mut dedup, 1, PlayIntent::Queue, now));
+        settle_fetch(&mut dedup, 1, PlayIntent::Queue, now);
+        assert!(
+            !dedup.in_flight.contains(&1),
+            "a finished fetch must not stay tagged in-flight"
+        );
+    }
 }
