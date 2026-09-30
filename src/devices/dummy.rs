@@ -29,14 +29,14 @@ static CAPTURE: Mutex<Option<CapturedPlanes>> = Mutex::new(None);
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn install_capture() -> CapturedPlanes {
     let sink: CapturedPlanes = Arc::new(Mutex::new(Vec::new()));
-    *CAPTURE.lock().unwrap() = Some(Arc::clone(&sink));
+    *CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&sink));
     sink
 }
 
 /// Remove the sink installed by [`install_capture`], if any.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn uninstall_capture() {
-    *CAPTURE.lock().unwrap() = None;
+    *CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Set once a modelled device death has fired, so the recreated stream doesn't die again.
@@ -49,10 +49,10 @@ pub fn arm_device_death() {
 }
 
 fn capture_samples<T: Copy + Into<f64>>(staging: &[Vec<T>], read: usize) {
-    let guard = CAPTURE.lock().unwrap();
+    let guard = CAPTURE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(sink) = guard.as_ref() else { return };
 
-    let mut planes = sink.lock().unwrap();
+    let mut planes = sink.lock().unwrap_or_else(|e| e.into_inner());
     if planes.len() < staging.len() {
         planes.resize_with(staging.len(), Vec::new);
     }

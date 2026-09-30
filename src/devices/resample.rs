@@ -360,12 +360,18 @@ impl Resampler {
         }
 
         let input_frames = self.temp_input.first().map(|v| v.len()).unwrap_or(0);
+        // Same failure policy as process_into_buffer below: a malformed
+        // adapter (channel mismatch, ragged planes) skips the pass instead of
+        // panicking on the audio path. The equal-length, channel-complete
+        // invariant is maintained by the buffer construction above, so this
+        // is unreachable in practice — but the audio path must not rely on
+        // unwrap for it.
         let input_adapter =
-            SequentialSliceOfVecs::new(&self.temp_input, self.channels, input_frames).unwrap();
+            SequentialSliceOfVecs::new(&self.temp_input, self.channels, input_frames).ok()?;
         let output_frames_max = self.temp_output.first().map(|v| v.len()).unwrap_or(0);
         let mut output_adapter =
             SequentialSliceOfVecs::new_mut(&mut self.temp_output, self.channels, output_frames_max)
-                .unwrap();
+                .ok()?;
 
         let Ok((_, frames_written)) =
             self.resampler
