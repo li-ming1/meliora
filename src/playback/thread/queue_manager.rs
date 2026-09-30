@@ -10,7 +10,11 @@ use rand::{rng, seq::SliceRandom};
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    playback::{events::RepeatState, queue::QueueItemData, session_storage::PlaybackSessionData},
+    playback::{
+        events::RepeatState,
+        queue::{PersistedDisplay, QueueItemData},
+        session_storage::PlaybackSessionData,
+    },
     settings::playback::PlaybackSettings,
 };
 
@@ -103,6 +107,9 @@ pub enum ShuffleResult {
     Unshuffled { new_position: usize },
 }
 
+/// Short-lived operation result; the size asymmetry is irrelevant because
+/// values are dropped immediately after the caller inspects them.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ReplaceResult {
     /// Queue replaced, contains the first item to play.
@@ -303,11 +310,11 @@ impl QueueManager {
 
     /// In repeat-one mode the track the cursor sits on replays instead of
     /// advancing. `None` when not repeat-one or the slot is gone/unplayable.
-    fn repeat_one_target<'a>(
+    fn repeat_one_target(
         repeat: RepeatState,
-        queue: &'a [QueueItemData],
+        queue: &[QueueItemData],
         queue_next: usize,
-    ) -> Option<&'a QueueItemData> {
+    ) -> Option<&QueueItemData> {
         if repeat != RepeatState::RepeatingOne {
             return None;
         }
@@ -570,9 +577,7 @@ impl QueueManager {
     /// Persisted display metadata `(name, artist, duration, cover)` of the
     /// currently playing item, for stream-registry re-registration.
     #[cfg(feature = "online_sources")]
-    pub fn current_display(
-        &self,
-    ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
+    pub fn current_display(&self) -> Option<PersistedDisplay> {
         let position = self.current_position()?;
         let queue = self.queue.read().ok()?;
         queue.get(position)?.persisted_display()

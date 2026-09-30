@@ -450,7 +450,9 @@ impl Render for InterfaceSettings {
                 |interface| interface.queue_select_on_click = !interface.queue_select_on_click,
             ));
 
-        let body = body.child(
+        
+
+        body.child(
             label(
                 "interface-command-palette",
                 tr!("COMMAND_PALETTE", "Command Palette"),
@@ -474,8 +476,6 @@ impl Render for InterfaceSettings {
                         })),
                 ),
             ),
-        );
-
-        body
+        )
     }
 }

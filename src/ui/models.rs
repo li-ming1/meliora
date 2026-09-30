@@ -341,7 +341,7 @@ pub fn build_models(
                 return;
             };
 
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 if switcher_model.read(cx).current() == ViewSwitchMessage::Albums {
                     switcher_model.update(cx, |_, cx| {
                         cx.emit(ViewSwitchMessage::Playlist(liked_id));

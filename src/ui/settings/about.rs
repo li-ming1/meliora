@@ -174,11 +174,7 @@ impl AboutSettings {
             UpdateStatus::Downloading {
                 received, total, ..
             } => {
-                let percent = if total > 0 {
-                    (received * 100 / total) as u32
-                } else {
-                    0
-                };
+                let percent = (received * 100).checked_div(total).unwrap_or(0) as u32;
                 (
                     tr!(
                         "UPDATE_STATUS_DOWNLOADING",

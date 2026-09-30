@@ -182,7 +182,7 @@ fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
     const PIXEL_STRIDE: usize = 3;
     let mut buckets: FxHashMap<u16, (u64, u64, u64, u64)> = FxHashMap::default();
     let mut sampled = 0usize;
-    for (n, pixel) in bytes.chunks_exact(4).enumerate() {
+    for (n, pixel) in bytes.as_chunks::<4>().0.iter().enumerate() {
         if n % PIXEL_STRIDE != 0 {
             continue;
         }
@@ -198,7 +198,10 @@ fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
         sampled += 1;
         let max = r.max(g).max(b);
         let min = r.min(g).min(b);
-        let saturation = if max == 0 { 0 } else { (max - min) * 255 / max };
+        let saturation = (max - min)
+            .checked_mul(255)
+            .and_then(|v| v.checked_div(max))
+            .unwrap_or(0);
         let weight = (saturation + 16) as u64;
         let key = (((r >> 4) as u16) << 8) | (((g >> 4) as u16) << 4) | ((b >> 4) as u16);
         let entry = buckets.entry(key).or_insert((0, 0, 0, 0));

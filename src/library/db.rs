@@ -180,9 +180,9 @@ pub async fn list_albums(
         }
     };
 
-    Ok(sqlx::query_as::<_, (u32, String)>(query)
+    sqlx::query_as::<_, (u32, String)>(query)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 pub async fn list_tracks(
@@ -222,11 +222,9 @@ pub async fn list_tracks(
         }
     };
 
-    Ok(
-        sqlx::query_as::<_, (i64, String, Option<i64>, String)>(query)
+    sqlx::query_as::<_, (i64, String, Option<i64>, String)>(query)
             .fetch_all(pool)
-            .await?,
-    )
+            .await
 }
 
 pub async fn list_tracks_in_album(
@@ -298,10 +296,10 @@ pub async fn list_albums_by_artist(
 ) -> sqlx::Result<Vec<(u32, String)>> {
     let query = include_str!("../../queries/library/find_albums_by_artist.sql");
 
-    Ok(sqlx::query_as::<_, (u32, String)>(query)
+    sqlx::query_as::<_, (u32, String)>(query)
         .bind(artist_id)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 pub async fn get_artist_with_counts(
@@ -427,11 +425,9 @@ pub async fn list_albums_search(
 ) -> sqlx::Result<Vec<(i64, String, Option<String>, String)>> {
     let query = include_str!("../../queries/library/find_albums_search.sql");
 
-    Ok(
-        sqlx::query_as::<_, (i64, String, Option<String>, String)>(query)
+    sqlx::query_as::<_, (i64, String, Option<String>, String)>(query)
             .fetch_all(pool)
-            .await?,
-    )
+            .await
 }
 
 /// Lists all tracks for searching. Returns (id, title, artist_names, album_id).
@@ -440,20 +436,18 @@ pub async fn list_tracks_search(
 ) -> sqlx::Result<Vec<(i64, String, String, Option<i64>)>> {
     let query = include_str!("../../queries/library/find_tracks_search.sql");
 
-    Ok(
-        sqlx::query_as::<_, (i64, String, String, Option<i64>)>(query)
+    sqlx::query_as::<_, (i64, String, String, Option<i64>)>(query)
             .fetch_all(pool)
-            .await?,
-    )
+            .await
 }
 
 /// Lists all artists for searching. Returns (id, name).
 pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artists_search.sql");
 
-    Ok(sqlx::query_as::<_, (i64, String)>(query)
+    sqlx::query_as::<_, (i64, String)>(query)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 /// Every (album id, track location) pair, used to compute album availability
@@ -462,9 +456,9 @@ pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, St
 pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_album_availability.sql");
 
-    Ok(sqlx::query_as::<_, (i64, String)>(query)
+    sqlx::query_as::<_, (i64, String)>(query)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 /// Every (artist id, track location) pair, used to compute artist availability
@@ -478,9 +472,9 @@ pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64
 pub async fn list_artist_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artist_availability.sql");
 
-    Ok(sqlx::query_as::<_, (i64, String)>(query)
+    sqlx::query_as::<_, (i64, String)>(query)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 pub async fn add_playlist_item(
@@ -707,7 +701,7 @@ pub async fn remove_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Resu
 pub async fn get_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Result<PlaylistItem> {
     let query = include_str!("../../queries/playlist/select_playlist_item.sql");
 
-    Ok(sqlx::query_as(query).bind(item_id).fetch_one(pool).await?)
+    sqlx::query_as(query).bind(item_id).fetch_one(pool).await
 }
 
 pub async fn playlist_has_track(
@@ -717,11 +711,11 @@ pub async fn playlist_has_track(
 ) -> sqlx::Result<Option<i64>> {
     let query = include_str!("../../queries/playlist/playlist_has_track.sql");
 
-    Ok(sqlx::query_scalar(query)
+    sqlx::query_scalar(query)
         .bind(playlist_id)
         .bind(track_id)
         .fetch_optional(pool)
-        .await?)
+        .await
 }
 
 /// IN-clause chunk size for the playlist batch queries: stays under SQLite's
@@ -854,10 +848,10 @@ pub async fn artist_ids_for_album(
 ) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artist_ids_for_album.sql");
 
-    Ok(sqlx::query_as::<_, (i64, String)>(query)
+    sqlx::query_as::<_, (i64, String)>(query)
         .bind(album_id)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 /// Lists all (id, name) artist pairs linked to a track, through its album or standalone links.
@@ -867,16 +861,16 @@ pub async fn artist_ids_for_track(
 ) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artist_ids_for_track.sql");
 
-    Ok(sqlx::query_as::<_, (i64, String)>(query)
+    sqlx::query_as::<_, (i64, String)>(query)
         .bind(track_id)
         .fetch_all(pool)
-        .await?)
+        .await
 }
 
 pub async fn get_all_tracks(pool: &SqlitePool) -> sqlx::Result<Vec<(String, i64, i64)>> {
     let query = include_str!("../../queries/library/get_all_tracks.sql");
 
-    Ok(sqlx::query_as(query).fetch_all(pool).await?)
+    sqlx::query_as(query).fetch_all(pool).await
 }
 
 pub async fn list_album_paths(pool: &SqlitePool, album_id: i64) -> sqlx::Result<Vec<String>> {

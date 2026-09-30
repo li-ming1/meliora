@@ -107,7 +107,7 @@ impl Render for MainWindow {
         );
         let show_missing_folder_dialog = !show_corrupt_settings_dialog
             && matches!(
-                &*cx.global::<Models>().scan_state.read(cx),
+                cx.global::<Models>().scan_state.read(cx),
                 ScanEvent::WaitingForMissingFolderDecision { .. }
             );
         let show_queue = *self.show_queue.read(cx);
@@ -550,7 +550,7 @@ pub fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     if cx.has_global::<ScanInterface>() {
                         cx.global::<ScanInterface>().scan();
                     }

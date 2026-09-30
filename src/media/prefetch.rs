@@ -135,7 +135,7 @@ fn fill_loop<S: Read + Seek + Send>(shared: Arc<Shared<S>>, retry_backoff: Durat
             }
             Err(e) => {
                 consecutive_errors += 1;
-                if consecutive_errors == 1 || consecutive_errors % 5 == 0 {
+                if consecutive_errors == 1 || consecutive_errors.is_multiple_of(5) {
                     tracing::warn!(
                         consecutive = consecutive_errors,
                         error = %e,
@@ -148,7 +148,7 @@ fn fill_loop<S: Read + Seek + Send>(shared: Arc<Shared<S>>, retry_backoff: Durat
                     let mut source = lock(&shared.source);
                     let _ = source.seek(SeekFrom::Current(0));
                 }
-                thread::sleep(retry_backoff * consecutive_errors.min(10) as u32);
+                thread::sleep(retry_backoff * consecutive_errors.min(10));
             }
         }
     }

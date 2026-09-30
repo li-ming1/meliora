@@ -89,6 +89,7 @@ fn schedule_row_prefetch<T, C>(
     let pool = cx.global::<Pool>().0.clone();
     if let Some(prefetch) = T::prefetch_rows(pool, &items[start..end]) {
         // dropping the JoinHandle detaches the task
+        #[allow(clippy::let_underscore_future)]
         let _ = crate::RUNTIME.spawn(prefetch);
     }
 }

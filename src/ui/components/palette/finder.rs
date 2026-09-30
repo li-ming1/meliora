@@ -547,7 +547,7 @@ where
             }
         }
         // Stable sort: equal scores keep the provider's own result order.
-        dynamic.sort_by(|a, b| b.0.cmp(&a.0));
+        dynamic.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         matches.extend(dynamic.into_iter().map(|(_, item)| item));
 
         matches

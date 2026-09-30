@@ -69,6 +69,7 @@ fn login_label() -> SharedString {
 /// 不是头像照片：导航语境里品牌可识别性优先，照片只会变成一张突兀的随机图；
 /// 折叠时退化为 28px 图标圆钮，与折叠态其他条目的形态一致。
 #[cfg(any(feature = "kugou", feature = "netease"))]
+#[allow(clippy::too_many_arguments)] // pill styling facets; callers pass theme-derived values
 fn account_pill(
     id: &'static str,
     brand_icon: &'static str,

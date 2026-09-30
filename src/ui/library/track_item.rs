@@ -133,7 +133,7 @@ impl TrackItem {
                 track_number_label,
                 duration_text,
                 drag_data,
-                is_liked: is_song_liked(&**cx, track.id),
+                is_liked: is_song_liked(cx, track.id),
                 album_art: Some(match track.album_id {
                     Some(album_id) => format!("!db://album/{album_id}/thumb").into(),
                     None => format!("!db://track/{}/thumb", track.id).into(),
@@ -413,7 +413,6 @@ impl Render for TrackItem {
                         let track_menu_context = track_menu_context;
                         let pl_info = self.pl_info;
                         let show_add_to = show_add_to.clone();
-                        let is_available = is_available;
                         let is_liked = self.is_liked;
                         move |_, cx| {
                             div()

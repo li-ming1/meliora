@@ -31,8 +31,11 @@ pub struct InfoSectionContextMenu {
     /// Present only for online (KuGou) tracks: label plus a fire-and-forget
     /// download action. Takes the place of "show in file manager", which is
     /// meaningless for a stream URL.
-    online_download: Option<(SharedString, Rc<dyn Fn(&mut gpui::App)>)>,
+    online_download: Option<OnlineDownloadAction>,
 }
+
+/// Online download menu entry: `(localized label, fire-and-forget action)`.
+type OnlineDownloadAction = (SharedString, Rc<dyn Fn(&mut gpui::App)>);
 
 impl InfoSectionContextMenu {
     pub fn new(
@@ -40,7 +43,7 @@ impl InfoSectionContextMenu {
         track: Option<Rc<Track>>,
         is_liked: Option<i64>,
         show_add_to: Option<Entity<bool>>,
-        online_download: Option<(SharedString, Rc<dyn Fn(&mut gpui::App)>)>,
+        online_download: Option<OnlineDownloadAction>,
     ) -> Self {
         Self {
             current_path,

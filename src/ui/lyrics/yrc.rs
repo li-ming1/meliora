@@ -46,12 +46,9 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
         let mut words = Vec::new();
         let mut plain = String::new();
         let mut rest = body;
-        loop {
-            // word tokens look like `(start,duration,0)text`; a line without
-            // any word marker is an instrumental/interlude line
-            let Some(token_start) = rest.strip_prefix('(') else {
-                break;
-            };
+        // word tokens look like `(start,duration,0)text`; a line without
+        // any word marker is an instrumental/interlude line
+        while let Some(token_start) = rest.strip_prefix('(') {
             let Some(close) = token_start.find(')') else {
                 break;
             };

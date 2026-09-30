@@ -43,6 +43,9 @@ use tree::{ChildState, FileNode, FileTree, collect_expanded_paths};
 /// menu. Rc-shared so each selected row's render clones a refcount instead of
 /// rebuilding (or deep-cloning) the whole batch.
 type BatchItems = (Rc<Vec<(Arc<Path>, Option<TrackRef>)>>, Rc<Vec<i64>>);
+/// The same selection as owned `Vec`s, as returned by
+/// [`FilesView::selected_batch_items`] for the menu snapshot.
+type SelectedBatch = (Vec<(Arc<Path>, Option<TrackRef>)>, Vec<i64>);
 
 /// Root paths currently configured for scanning in settings.
 fn configured_root_paths(cx: &App) -> Vec<PathBuf> {
@@ -206,7 +209,9 @@ impl FilesView {
         self.selected.len() > 1
     }
 
-    pub fn selected_batch_items(&self) -> (Vec<(Arc<Path>, Option<TrackRef>)>, Vec<i64>) {
+    /// `(audio files with their track refs, track ids)` snapshot of the
+    /// current multi-selection, for the batch add-to-playlist menu.
+    pub fn selected_batch_items(&self) -> SelectedBatch {
         let mut audio_items = Vec::with_capacity(self.selected.len());
         let mut track_ids = Vec::with_capacity(self.selected.len());
 

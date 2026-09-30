@@ -858,12 +858,17 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
         // The fileid usually sits in the cache primed by the last full liked
         // fetch; only a miss (like made on another device since then, or the
         // cache never primed) pays for a fresh paged fetch.
-        let fileid = match liked_fileids()
+        //
+        // Bind the cache lookup to a local first: as a `match` scrutinee the
+        // RwLock guard temporary would live for the whole match — across the
+        // `None` arm's network `.await` — starving like-state writers for the
+        // entire fetch (clippy::await_holding_lock).
+        let cached = liked_fileids()
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&hash)
-            .copied()
-        {
+            .copied();
+        let fileid = match cached {
             Some(fid) => Some(fid),
             None => fetch_liked_entries().await.and_then(|entries| {
                 let found = entries.iter().find(|(h, _)| *h == hash).map(|(_, f)| *f);

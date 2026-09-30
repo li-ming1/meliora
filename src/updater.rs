@@ -47,7 +47,10 @@ const UPDATE_TOAST_DURATION: Duration = Duration::from_secs(12);
 /// so its single request never competes with first-frame work.
 const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(8);
 
-const UPDATE_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
+// `static`, not `const`: LazyLock is interior-mutable, and a `const` would
+// inline a fresh lazily-initialized client at every use site (clippy::
+// declare_interior_mutable_const).
+static UPDATE_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
     zed_reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         // No client-wide timeout: the download streams for minutes. Each
@@ -342,7 +345,7 @@ pub fn start_download(cx: &mut App) {
                         sender_alive = false;
                     } else {
                         let (received, total) = *progress_rx.borrow();
-                        let _ = cx.update(|cx| {
+                        cx.update(|cx| {
                             state.update(cx, |state, cx| {
                                 let next = UpdateStatus::Downloading {
                                     version: version.clone(),
@@ -382,7 +385,7 @@ pub fn start_download(cx: &mut App) {
                         version = version.clone()
                     ))
                     .with_duration(UPDATE_TOAST_DURATION)
-                    .with_action(tr!("UPDATE_RESTART_NOW"), |cx| restart_to_apply(cx)),
+                    .with_action(tr!("UPDATE_RESTART_NOW"), restart_to_apply),
                 );
             }
             Err(error) => {

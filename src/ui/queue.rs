@@ -231,7 +231,7 @@ impl QueueItem {
             // Pure cache read, zero IO: the liked-id set is reloaded on every
             // liked-playlist change, and is_song_liked yields the track id
             // convention every row stores (see HasLikedState / is_song_liked).
-            let is_liked = track_id.and_then(|id| is_song_liked(&**cx, id));
+            let is_liked = track_id.and_then(|id| is_song_liked(cx, id));
 
             subscribe_liked_updates(cx, |this: &QueueItem| this.track_id);
 
@@ -281,7 +281,7 @@ impl Render for QueueItem {
         let album_id = self.item.get_db_album_id();
         let track_id = self.item.get_db_id();
         let data_entity = self.item.get_data(cx);
-        let ui_data = &*data_entity.read(cx);
+        let ui_data = data_entity.read(cx);
         let theme = cx.global::<Theme>();
         let is_available = self.is_available;
         let is_selected = self.selection.read(cx).contains(self.idx);

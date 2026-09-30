@@ -133,7 +133,7 @@ fn live_offline_flow() {
                             Ok(lrc) => report.push_str(&format!(
                                 "lyric_lrc: ok ({} chars)\n{}\n",
                                 lrc.len(),
-                                &lrc.chars().take(200).collect::<String>()
+                                lrc.chars().take(200).collect::<String>()
                             )),
                             Err(e) => report.push_str(&format!("lyric_lrc: FAILED {e}\n")),
                         }

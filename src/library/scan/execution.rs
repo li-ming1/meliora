@@ -522,12 +522,11 @@ impl<'a> ScanExecution<'a> {
             }
             self.discovery_complete = true;
         }
-        if let Some(task) = self.active.slow_discover_task.take() {
-            if let Err(error) = task.await {
+        if let Some(task) = self.active.slow_discover_task.take()
+            && let Err(error) = task.await {
                 error!("slow discover task panicked: {:?}", error);
                 self.failures.worker_panic += 1;
             }
-        }
         for task in self.active.metadata_tasks.drain(..) {
             if let Err(error) = task.await {
                 error!("Metadata pipeline task failed: {:?}", error);

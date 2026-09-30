@@ -24,6 +24,12 @@ pub struct WindowHeader {
     main_window: bool,
 }
 
+impl Default for WindowHeader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowHeader {
     pub fn new() -> Self {
         Self {

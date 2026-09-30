@@ -278,10 +278,11 @@ fn build_paths(
     let plot_height: f32 = plot.size.height.into();
     let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
     let right = plot.origin.x + plot.size.width;
-    let mut paths = EqGraphPaths::default();
-
-    paths.spectrum_pre_fill = spectrum_fill_path(spectrum_pre, plot);
-    paths.spectrum_post_fill = spectrum_fill_path(spectrum_post, plot);
+    let mut paths = EqGraphPaths {
+        spectrum_pre_fill: spectrum_fill_path(spectrum_pre, plot),
+        spectrum_post_fill: spectrum_fill_path(spectrum_post, plot),
+        ..Default::default()
+    };
     if !spectrum_post.is_empty() {
         let mut edge = PathBuilder::stroke(px(1.5));
         spectrum_path(&mut edge, spectrum_post, plot);

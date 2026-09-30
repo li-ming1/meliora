@@ -216,11 +216,11 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
             .last_art
             .as_ref()
             .and_then(|last| last.upgrade())
-            .is_some_and(|current| Arc::ptr_eq(&current, &img));
+            .is_some_and(|current| Arc::ptr_eq(&current, img));
         if already_sent {
             return;
         }
-        handle.last_art = Some(Arc::downgrade(&img));
+        handle.last_art = Some(Arc::downgrade(img));
         send_pbc_event(&handle.event_tx, PbcEvent::AlbumArtChanged(img.clone()));
     })
     .detach();

@@ -169,6 +169,7 @@ fn schedule_row_prefetch(
     let rows_cache = rows_cache.clone();
 
     // dropping the JoinHandle detaches the task
+    #[allow(clippy::let_underscore_future)]
     let _ = crate::RUNTIME.spawn(async move {
         for track_id in track_ids {
             // skip rows the cache already holds: overlapping windows stay cheap

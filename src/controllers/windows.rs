@@ -336,7 +336,7 @@ impl PlaybackController for WindowsController {
         // `to_str()`; either unwrap would panic inside the pbc task, unwinding
         // it and permanently disabling SMTC. Fall back to the full path and
         // replace invalid UTF-8 instead.
-        let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
+        let file_name = path.file_name().unwrap_or(path.as_os_str());
         let title_string = HSTRING::from(file_name.to_string_lossy().as_ref());
         // Same as metadata_changed: a failed MusicProperties() skips this
         // update instead of panicking the controller task.

@@ -387,7 +387,7 @@ fn read_tags_from_file(mut file: File) -> Result<TagsFromFile, OpenError> {
     finalize_album_artist_keys(&mut metadata, &artist_names.album_artists_tag);
 
     let duration = tagged_file.properties().duration();
-    let duration_ms = (!duration.is_zero()).then(|| duration.as_millis() as u64);
+    let duration_ms = (!duration.is_zero()).then_some(duration.as_millis() as u64);
 
     Ok(TagsFromFile {
         metadata,

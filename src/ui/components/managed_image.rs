@@ -102,9 +102,9 @@ async fn decode_bounded_with_permit(
         .acquire()
         .await
         .expect("semaphore is never closed");
-    Ok(crate::RUNTIME
+    crate::RUNTIME
         .spawn_blocking(move || decode_to_render_image_scaled(&data, bound).map(Some))
-        .await??)
+        .await?
 }
 
 /// Converts a decoded image to RGBA, preferring steal-or-expand over
@@ -529,7 +529,7 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
             .into_iter()
             .map(|entry| (entry.key, entry.image))
             .collect();
-        let plan = plan_tile_reclaims(batch, |key, image| render_cache_holds(key, image));
+        let plan = plan_tile_reclaims(batch, render_cache_holds);
         let stats = &TILE_DROP_STATS;
         stats
             .reclaimed
@@ -611,13 +611,12 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
     } else {
         cache.bytes += new_bytes;
         cache.usage.push_back(cache_key);
-        if cache.usage.len() > RENDER_CACHE_MAX {
-            if let Some(oldest) = cache.usage.pop_front()
-                && let Some((image, bytes)) = cache.cache.remove(&oldest)
-            {
-                cache.bytes = cache.bytes.saturating_sub(bytes);
-                queue_tile_drop(oldest, image);
-            }
+        if cache.usage.len() > RENDER_CACHE_MAX
+            && let Some(oldest) = cache.usage.pop_front()
+            && let Some((image, bytes)) = cache.cache.remove(&oldest)
+        {
+            cache.bytes = cache.bytes.saturating_sub(bytes);
+            queue_tile_drop(oldest, image);
         }
     }
 }
@@ -807,7 +806,7 @@ impl ManagedImageKey {
                 // 4096 阶梯。
                 let cap = thumb_size.saturating_mul(4);
                 let bytes =
-                    crate::online_sources::cover_art::fetch_display_cover_bytes_capped(&url, cap)
+                    crate::online_sources::cover_art::fetch_display_cover_bytes_capped(url, cap)
                         .await?;
                 let Some(bytes) = bytes else { return Ok(None) };
                 Ok(decode_bounded_with_permit(bytes, thumb_size).await?)
@@ -1191,7 +1190,7 @@ impl Element for ManagedImage {
                             // 失，若这是最后一份引用，由这里回收 atlas 瓦
                             // 片（普通 Drop 不回收瓦片）。
                             if Arc::strong_count(&image) == 1 {
-                                let _ = cx.update(|cx| {
+                                cx.update(|cx| {
                                     crate::ui::util::reclaim_images_from_app(cx, vec![image]);
                                 });
                             }
@@ -1364,6 +1363,7 @@ const ENHANCE_SHARPEN_THRESHOLD: f32 = 3.0;
 ///   块伤会原样上屏（v2"质量差"的根因）——先中值去噪拆块边，再阈值
 ///   unsharp（缩小 0.5/σ1.0，放大 0.6/σ1.5，阈值 3）补锐度；顺序保证
 ///   锐化放大的是真边缘而非块伤。
+///
 /// 几何仍是 cover 居中裁剪：方形封面铺满宽屏必然裁掉上下各 ~23.5%，这
 /// 是全出血背景的物理前提，清晰化不改变它。
 ///
@@ -1500,7 +1500,7 @@ fn denoise_rgba(image: &mut image::RgbaImage) {
     for y in 0..height {
         for x in 0..width {
             let mut out = [0u8; 3];
-            for channel in 0..3 {
+            for (channel, out_cell) in out.iter_mut().enumerate() {
                 let mut window = [0u8; 9];
                 let mut n = 0;
                 for dy in -1i64..=1 {
@@ -1510,7 +1510,7 @@ fn denoise_rgba(image: &mut image::RgbaImage) {
                     }
                 }
                 window.sort_unstable();
-                out[channel] = window[4];
+                *out_cell = window[4];
             }
             let pixel = image.get_pixel_mut(x, y);
             let orig = *pixel;

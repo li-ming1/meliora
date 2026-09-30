@@ -755,7 +755,9 @@ impl Render for ArtistDetailView {
                                                 // app off a stale album_ids snapshot.
                                                 let cached_view =
                                                     grid_views_model.read(cx).get(&idx).cloned();
-                                                let view = match cached_view {
+                                                
+
+                                                match cached_view {
                                                     Some(view) => div()
                                                         .size_full()
                                                         .child(view)
@@ -789,9 +791,7 @@ impl Render for ArtistDetailView {
                                                             None => div().into_any_element(),
                                                         }
                                                     }
-                                                };
-
-                                                view
+                                                }
                                             },
                                         )
                                         .min_item_width(px(grid_min_item_width))

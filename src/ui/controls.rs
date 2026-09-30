@@ -618,9 +618,7 @@ impl InfoSection {
                         .await
                         .ok()
                         .flatten();
-                    let Some(track) = track else {
-                        return None;
-                    };
+                    let track = track?;
                     let can_navigate_to_artist = match track.album_id {
                         Some(album_id) => crate::library::db::artist_ids_for_album(&pool, album_id)
                             .await
@@ -645,20 +643,17 @@ impl InfoSection {
                 if this.library_resolve_generation != generation {
                     return;
                 }
-                match resolved {
-                    Ok(Some((track, can_navigate_to_artist, is_liked))) => {
-                        this.current_library_track = Some(Rc::new(track));
-                        this.can_navigate_to_album = this
-                            .current_library_track
-                            .as_ref()
-                            .is_some_and(|t| t.album_id.is_some());
-                        this.can_navigate_to_artist = can_navigate_to_artist;
-                        this.is_liked = is_liked;
-                        cx.notify();
-                    }
-                    // A query error or a non-library (online) path just leaves the
-                    // cleared state in place - same as the sync path's None result.
-                    _ => {}
+                // A query error or a non-library (online) path just leaves the
+                // cleared state in place - same as the sync path's None result.
+                if let Ok(Some((track, can_navigate_to_artist, is_liked))) = resolved {
+                    this.current_library_track = Some(Rc::new(track));
+                    this.can_navigate_to_album = this
+                        .current_library_track
+                        .as_ref()
+                        .is_some_and(|t| t.album_id.is_some());
+                    this.can_navigate_to_artist = can_navigate_to_artist;
+                    this.is_liked = is_liked;
+                    cx.notify();
                 }
             })
             .ok();

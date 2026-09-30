@@ -228,11 +228,11 @@ mod tests {
     /// Decision rule from the perf audit: <50 ms per checkpoint at 100k records
     /// -> keep per-batch checkpointing and record the numbers here;
     /// >=100 ms -> gate checkpoint writes on a >=2 s clock interval in
-    /// execution.rs. In between: keep unless further evidence appears.
+    /// > execution.rs. In between: keep unless further evidence appears.
     ///
     /// Measured 2026-09-12 (release, median of 20 rounds after 2 warmup;
     /// two runs agreed within ~10%, second run quoted):
-    /// -  50k records: postcard 4.49 ms (lock held), postcard+zlib 140.26 ms;
+    /// - 50k records: postcard 4.49 ms (lock held), postcard+zlib 140.26 ms;
     ///   sizes 3.72 MiB -> 0.67 MiB zlib
     /// - 100k records: postcard 8.81 ms (lock held), postcard+zlib 265.66 ms;
     ///   sizes 7.44 MiB -> 1.40 MiB zlib

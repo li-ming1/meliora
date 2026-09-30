@@ -126,6 +126,10 @@ fn select_download_dir_label() -> cntp_i18n::I18nString {
 impl QrLoginHost for KugouSettings {
     const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
+    // Explicit `impl Future + Send`, not `async fn`: the trait contract
+    // requires Send futures (callers spawn them on the runtime), and only the
+    // RPITIT form expresses that bound.
+    #[allow(clippy::manual_async_fn)]
     fn create_key() -> impl Future<Output = Result<String, String>> + Send {
         async move {
             kugou::shared_client()
@@ -139,6 +143,7 @@ impl QrLoginHost for KugouSettings {
         crate::ui::kugou::build_login_qr(key).map_err(|err| err.to_string())
     }
 
+    #[allow(clippy::manual_async_fn)] // Send bound required by the trait contract, see create_key
     fn poll(key: String) -> impl Future<Output = Result<QrPoll, String>> + Send {
         async move {
             let status = kugou::shared_client()

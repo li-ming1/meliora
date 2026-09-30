@@ -247,11 +247,11 @@ impl PlaybackThread {
         // sources, so intermediate positions are pure waste.
         let mut collapsed: Vec<PlaybackCommand> = Vec::with_capacity(commands.len());
         for command in commands {
-            let repeats_last = match (&command, collapsed.last()) {
-                (PlaybackCommand::Next, Some(PlaybackCommand::Next)) => true,
-                (PlaybackCommand::Seek(_), Some(PlaybackCommand::Seek(_))) => true,
-                _ => false,
-            };
+            let repeats_last = matches!(
+                (&command, collapsed.last()),
+                (PlaybackCommand::Next, Some(PlaybackCommand::Next))
+                    | (PlaybackCommand::Seek(_), Some(PlaybackCommand::Seek(_)))
+            );
             if repeats_last {
                 *collapsed.last_mut().expect("matched collapsed.last()") = command;
             } else {
@@ -493,7 +493,7 @@ impl PlaybackThread {
         let Some(duration) = self.duration_ms else {
             return;
         };
-        if duration.saturating_sub(self.last_timestamp as u64) > PREPARE_LEAD_MS {
+        if duration.saturating_sub(self.last_timestamp) > PREPARE_LEAD_MS {
             return;
         }
         // Cheap guard before taking the queue lock and cloning a PathBuf:

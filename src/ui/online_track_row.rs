@@ -72,6 +72,7 @@ impl<T: OnlineTrackDisplay> OnlineTrackDisplay for std::sync::Arc<T> {
 /// The shared online-track row used by both providers' playlists and
 /// discovery (ranks / daily recommend) pages. The callbacks carry the
 /// per-view semantics; the visual skeleton is identical.
+#[allow(clippy::too_many_arguments)] // builder-style row API, mirrors the gpui element builders it feeds
 pub(crate) fn track_row<T: OnlineTrackDisplay, F1, F2, F3>(
     theme: &Theme,
     track: &T,

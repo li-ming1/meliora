@@ -461,8 +461,10 @@ mod tests {
         assert_eq!(metadata.name.as_deref(), Some("遗失的心跳-白允y"));
 
         // real tags are never overwritten
-        let mut metadata = Metadata::default();
-        metadata.name = Some("Real Title".to_string());
+        let mut metadata = Metadata {
+            name: Some("Real Title".to_string()),
+            ..Metadata::default()
+        };
         metadata.fill_from_filename(Path::new("D:\\music\\云狗蛋 - 天若有情_MQ.mp3"));
         assert_eq!(metadata.name.as_deref(), Some("Real Title"));
     }

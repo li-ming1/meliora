@@ -16,6 +16,12 @@ use crate::media::{
 /// Sentinel for "length not known yet" in [`QueueItemData`]'s duration slot.
 pub const UNKNOWN_DURATION: i64 = i64::MIN;
 
+/// Display metadata persisted with an online queue item:
+/// `(name, artist, duration, cover)`. Shared by the queue item's
+/// `persisted_display` and the stream registry re-registration path.
+#[cfg(feature = "online_sources")]
+pub type PersistedDisplay = (Option<String>, Option<String>, Option<i64>, Option<String>);
+
 #[derive(Clone, Debug)]
 pub struct QueueItemData {
     // hardcore: three layers are all required — `Arc` shares one entity slot
@@ -238,9 +244,7 @@ impl QueueItemData {
 
     /// Display metadata persisted with the item: (name, artist, duration, cover).
     #[cfg(feature = "online_sources")]
-    pub fn persisted_display(
-        &self,
-    ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
+    pub fn persisted_display(&self) -> Option<PersistedDisplay> {
         self.persisted_ui.as_ref().map(|p| {
             (
                 p.name.clone(),

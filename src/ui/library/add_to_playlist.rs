@@ -276,6 +276,9 @@ impl AddToPlaylist {
 
             let track_list_for_create = track_list.clone();
             let show_for_create = show.clone();
+            // Main-thread-only palette: the closure captures gpui entities
+            // (not Send), which is fine for a provider invoked on the UI thread.
+            #[allow(clippy::arc_with_non_send_sync)]
             let provider: ExtraItemProvider = Arc::new(move |query: &str| {
                 let name = query.trim();
                 if name.is_empty() {

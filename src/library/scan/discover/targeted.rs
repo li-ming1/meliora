@@ -342,8 +342,8 @@ pub async fn reconcile_rescan_paths(
             continue;
         };
 
-        if is_missing(target) {
-            if let Some(descendants) = fetch_reconciliation_locations(
+        if is_missing(target)
+            && let Some(descendants) = fetch_reconciliation_locations(
                 pool,
                 RECONCILE_UNDER_PREFIX_SQL,
                 target,
@@ -353,7 +353,6 @@ pub async fn reconcile_rescan_paths(
             {
                 rows.extend(descendants);
             }
-        }
 
         candidates.extend(
             rows.into_iter()

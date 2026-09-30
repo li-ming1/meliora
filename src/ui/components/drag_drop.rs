@@ -466,6 +466,7 @@ pub fn perform_edge_scroll(
 /// runs (and chains get scheduled) while the pointer is anywhere else on the
 /// same row, and a stale in-zone mouse_y keeps a scheduled chain scrolling
 /// after the pointer left.
+#[allow(clippy::too_many_arguments)] // internal helper threading drag-state through one pass
 fn update_drag_move_state<V: 'static>(
     manager: &Entity<DragDropListManager>,
     scroll_handle: &ScrollableHandle,
