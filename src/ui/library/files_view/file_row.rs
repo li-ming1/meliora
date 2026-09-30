@@ -286,7 +286,7 @@ impl Render for FileRowItem {
                 .as_ref()
                 .is_some_and(|current| current.get_path() == &*path);
 
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let bg = if is_selected {
             theme.queue_item_selected
         } else if is_current {
@@ -298,6 +298,7 @@ impl Render for FileRowItem {
         let guide_color = theme.border_color;
         let icon_color = theme.text_secondary;
         let hover_bg = theme.queue_item_hover;
+        let radius_sm = theme.radius_sm;
 
         let two_column = cx
             .global::<SettingsGlobal>()
@@ -402,7 +403,7 @@ impl Render for FileRowItem {
                                 .w_full()
                                 .h_full()
                                 .thumb()
-                                .rounded(px(theme.radius_sm))
+                                .rounded(px(radius_sm))
                                 .into_any_element()
                         } else {
                             icon(MUSIC)

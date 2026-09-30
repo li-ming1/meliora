@@ -140,7 +140,6 @@ pub struct ImmersiveView {
     active: bool,
 
     position: Entity<u64>,
-    duration: Entity<u64>,
     volume: Entity<f64>,
     prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
@@ -208,6 +207,9 @@ pub struct ImmersiveView {
     line_anim: Option<(f32, f32, Instant)>,
 
     frame_scheduled: bool,
+    /// Self-contained seek bar; observes position/duration itself so 30 Hz
+    /// ticks repaint only this subtree instead of the fullscreen view.
+    progress: Entity<ImmersiveProgress>,
 }
 
 impl Focusable for ImmersiveView {
@@ -235,7 +237,8 @@ impl ImmersiveView {
                 if !this.active {
                     return;
                 }
-                this.track_lyric_line(*pos.read(cx));
+                let pos_ms = *pos.read(cx);
+                let mut needs_repaint = this.track_lyric_line(pos_ms);
                 // Wheel-browsing returns to the active line after the idle
                 // window; position ticks drive the check so paused playback
                 // never resets the browse position.
@@ -247,14 +250,25 @@ impl ImmersiveView {
                     this.browse_offset = 0;
                     this.last_scroll = None;
                     this.sync_display_target(true);
+                    needs_repaint = true;
                 }
-                // Drives the progress bar and any in-flight line glide.
-                cx.notify();
-            })
-            .detach();
-
-            cx.observe(&info.duration, |this, _, cx| {
-                if this.active {
+                // Karaoke word colors sweep per tick — but only while the
+                // current line's last word is still in flight. Line-based
+                // lyrics repaint only when the line moved (track_lyric_line).
+                // The progress bar lives in its own entity and observes
+                // position itself, so nothing else needs this 30 Hz path.
+                if !needs_repaint
+                    && this.current_line.is_some_and(|i| {
+                        this.parsed
+                            .as_ref()
+                            .and_then(|parsed| parsed.get(i))
+                            .and_then(|line| line.words.last())
+                            .is_some_and(|last| pos_ms < last.time_ms + last.duration_ms)
+                    })
+                {
+                    needs_repaint = true;
+                }
+                if needs_repaint {
                     cx.notify();
                 }
             })
@@ -306,11 +320,22 @@ impl ImmersiveView {
             })
             .detach();
 
+            let progress = cx.new(|cx| {
+                // The seek bar repaints on every position tick while the
+                // fullscreen view around it stays put (see the position
+                // observer above).
+                cx.observe(&info.position, |_, _, cx| cx.notify()).detach();
+                cx.observe(&info.duration, |_, _, cx| cx.notify()).detach();
+                ImmersiveProgress {
+                    position: info.position.clone(),
+                    duration: info.duration.clone(),
+                }
+            });
+
             let mut this = Self {
                 focus_handle: cx.focus_handle(),
                 active: *immersive_flag.read(cx),
                 position: info.position.clone(),
-                duration: info.duration.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
@@ -343,6 +368,7 @@ impl ImmersiveView {
                 backdrop_fade_started: None,
                 backdrop_task: None,
                 prefetched_art: None,
+                progress,
             };
             if this.active {
                 this.activate(cx);
@@ -777,14 +803,16 @@ impl ImmersiveView {
         self.sync_display_target(false);
     }
 
-    fn track_lyric_line(&mut self, pos_ms: u64) {
+    /// Returns whether the active line moved (i.e. the lyrics pane changed
+    /// and a repaint is needed).
+    fn track_lyric_line(&mut self, pos_ms: u64) -> bool {
         let Some(parsed) = &self.parsed else {
-            return;
+            return false;
         };
         let idx = parsed.partition_point(|line| line.time_ms <= pos_ms);
         let new_line = if idx == 0 { None } else { Some(idx - 1) };
         if new_line == self.current_line {
-            return;
+            return false;
         }
         // A jump of more than one line is a seek (click-to-seek, scrubber,
         // prev/next): the wheel-browse session ends so the window recenters
@@ -797,6 +825,7 @@ impl ImmersiveView {
         }
         self.current_line = new_line;
         self.sync_display_target(true);
+        true
     }
 
     /// Recenters the lyric window on the active line plus the wheel-browse
@@ -864,6 +893,69 @@ impl ImmersiveView {
             self.schedule_frame(window, cx);
         }
         cx.notify();
+    }
+}
+
+/// Self-contained seek bar for the immersive player card. It owns the 30 Hz
+/// position observation so progress ticks repaint only this small subtree —
+/// the fullscreen view's own position observer is gated on actual lyric-pane
+/// changes (line moves, wheel-browse return, karaoke sweep in flight).
+struct ImmersiveProgress {
+    position: Entity<u64>,
+    duration: Entity<u64>,
+}
+
+impl Render for ImmersiveProgress {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // PlaybackInfo positions and durations are both in milliseconds.
+        let position_ms = *self.position.read(cx);
+        let duration_ms = *self.duration.read(cx);
+        let position_s = (position_ms / 1000) as i64;
+        let duration_s = (duration_ms / 1000) as i64;
+        let progress = if duration_ms > 0 {
+            (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let text_secondary = cx.global::<Theme>().text_secondary;
+
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .w_full()
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(text_secondary)
+                    .child(SharedString::from(format_duration(position_s, false))),
+            )
+            .child(
+                slider()
+                    .id("immersive-progress")
+                    .flex_1()
+                    .h(px(6.0))
+                    .rounded_full()
+                    .value(progress)
+                    .on_change(move |v, _, cx| {
+                        if duration_ms > 0 {
+                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                            if state != PlaybackState::Stopped {
+                                cx.global::<PlaybackInterface>()
+                                    .seek(v as f64 * duration_ms as f64 / 1000.0);
+                            }
+                        }
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(text_secondary)
+                    .child(SharedString::from(format_duration(
+                        duration_s.max(0),
+                        false,
+                    ))),
+            )
     }
 }
 
@@ -939,16 +1031,9 @@ impl Render for ImmersiveView {
             }
         }
 
-        // PlaybackInfo positions and durations are both in milliseconds.
+        // PlaybackInfo positions are in milliseconds. The progress bar reads
+        // position/duration in its own entity (ImmersiveProgress).
         let position_ms = *self.position.read(cx);
-        let duration_ms = *self.duration.read(cx);
-        let position_s = (position_ms / 1000) as i64;
-        let duration_s = (duration_ms / 1000) as i64;
-        let progress = if duration_ms > 0 {
-            (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
         let volume = *self.volume.read(cx);
         let prev_volume = *self.prev_volume.read(cx);
@@ -1130,38 +1215,7 @@ impl Render for ImmersiveView {
                 .child(div().text_size(px(11.0)).text_color(text_secondary).child(
                     SharedString::from(format!("{}%", (volume * 100.0).round() as i64)),
                 ));
-        let progress_row =
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .w_full()
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(text_secondary)
-                        .child(SharedString::from(format_duration(position_s, false))),
-                )
-                .child(
-                    slider()
-                        .id("immersive-progress")
-                        .flex_1()
-                        .h(px(6.0))
-                        .rounded_full()
-                        .value(progress)
-                        .on_change(move |v, _, cx| {
-                            if duration_ms > 0 {
-                                let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                                if state != PlaybackState::Stopped {
-                                    cx.global::<PlaybackInterface>()
-                                        .seek(v as f64 * duration_ms as f64 / 1000.0);
-                                }
-                            }
-                        }),
-                )
-                .child(div().text_size(px(11.0)).text_color(text_secondary).child(
-                    SharedString::from(format_duration(duration_s.max(0), false)),
-                ));
+        let progress_row = self.progress.clone();
         let player_card = div()
             .w(relative(0.90))
             .max_w(px(460.0))

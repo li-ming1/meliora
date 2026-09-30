@@ -656,7 +656,7 @@ impl KugouPlaylistsView {
         entity: &Entity<Self>,
         cx: &App,
     ) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let liked = self.is_track_liked(&track.hash);
         // The row closures must own their data ('static): capture Arc clones
         // (refcount bump only) instead of three deep clones per visible row
@@ -759,7 +759,7 @@ fn kugou_track_count(count: i64) -> cntp_i18n::I18nString {
 
 impl Render for KugouPlaylistsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let scroll_handle = self.scroll_handle.clone();
 
         // Once a playlist's tracks are loaded the list itself becomes the
@@ -773,10 +773,10 @@ impl Render for KugouPlaylistsView {
             // track list of the open playlist
             match &self.tracks_state {
                 TracksState::Loading if self.tracks.is_empty() => {
-                    content = content.child(muted_line(tr!("KUGOU_LOADING"), &theme));
+                    content = content.child(muted_line(tr!("KUGOU_LOADING"), theme));
                 }
                 TracksState::Failed(message) if self.tracks.is_empty() => {
-                    content = content.child(error_line(message.clone(), &theme)).child(
+                    content = content.child(error_line(message.clone(), theme)).child(
                         button()
                             .id("kugou-retry-tracks")
                             .child(tr!("KUGOU_RETRY", "Retry"))
@@ -788,7 +788,7 @@ impl Render for KugouPlaylistsView {
                 _ if self.tracks.is_empty() => {
                     content = content.child(muted_line(
                         tr!("KUGOU_PLAYLIST_EMPTY", "This playlist is empty"),
-                        &theme,
+                        theme,
                     ));
                 }
                 // loaded tracks are rendered by the virtualized uniform_list
@@ -824,10 +824,10 @@ impl Render for KugouPlaylistsView {
                         );
                 }
                 PlaylistsState::Loading => {
-                    content = content.child(muted_line(tr!("KUGOU_LOADING"), &theme));
+                    content = content.child(muted_line(tr!("KUGOU_LOADING"), theme));
                 }
                 PlaylistsState::Failed(message) => {
-                    content = content.child(error_line(message.clone(), &theme)).child(
+                    content = content.child(error_line(message.clone(), theme)).child(
                         button()
                             .id("kugou-retry-playlists")
                             .child(tr!("KUGOU_RETRY"))
@@ -840,7 +840,7 @@ impl Render for KugouPlaylistsView {
                     if playlists.is_empty() {
                         content = content.child(muted_line(
                             tr!("KUGOU_NO_PLAYLISTS", "No playlists found"),
-                            &theme,
+                            theme,
                         ));
                     } else {
                         for (index, playlist) in playlists.iter().enumerate() {

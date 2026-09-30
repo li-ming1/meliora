@@ -97,13 +97,16 @@ impl RenderOnce for ContextMenu {
         let on_esc_close = self.on_close.clone();
         let focus_open = focus_handle.clone();
 
-        let theme = cx.global::<Theme>().clone();
-
+        // Build the (possibly lazy) menu before borrowing the theme: the
+        // builder needs `&mut cx`, and the styling below only reads Copy
+        // colors off the borrow.
         let menu = match self.menu_fn {
             Some(build) if position.is_some() => Some(div().child(build(window, cx))),
             Some(_) => None,
             None => self.menu,
         };
+
+        let theme = cx.global::<Theme>();
 
         let overlay = if let (Some(pos), Some(menu)) = (position, menu) {
             Some(

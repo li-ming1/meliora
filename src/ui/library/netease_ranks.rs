@@ -501,14 +501,14 @@ impl NeteaseRanksView {
                             range
                                 .map(|row| {
                                     let start = row * GRID_COLS;
-                                    let theme = cx.global::<Theme>().clone();
+                                    let theme = cx.global::<Theme>();
                                     let cards: Vec<_> = ranks
                                         .iter()
                                         .skip(start)
                                         .take(GRID_COLS)
                                         .enumerate()
                                         .map(|(i, rank)| {
-                                            Self::render_rank_card(rank, start + i, &theme, &entity)
+                                            Self::render_rank_card(rank, start + i, theme, &entity)
                                                 .into_any_element()
                                         })
                                         .collect();
@@ -608,7 +608,7 @@ impl NeteaseRanksView {
         entity: &Entity<Self>,
         cx: &App,
     ) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let liked = self.is_liked(track.id);
         // The row closures must own their data ('static): capture Arc clones
         // (refcount bump only) instead of three full clones per visible row
@@ -654,7 +654,7 @@ impl NeteaseRanksView {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
 
         match self.tab {
             Tab::Ranks => match &self.ranks {
@@ -763,7 +763,6 @@ impl NeteaseRanksView {
 
 impl Render for NeteaseRanksView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
         let scroll_handle = self.scroll_handle.clone();
 
         // Mirror kugou_ranks: while a track list is on screen it is its own
@@ -874,6 +873,9 @@ impl Render for NeteaseRanksView {
         } else if grid_ready {
             root = root.child(self.render_ranks_grid(cx));
         } else {
+            // Borrowed only inside this fallback branch: all `&mut cx` uses
+            // above (header, grid) are already done.
+            let theme = cx.global::<Theme>();
             let content: AnyElement = if self.selected.is_some() {
                 match &self.tracks_state {
                     TracksState::Loading if self.tracks.is_empty() => div()

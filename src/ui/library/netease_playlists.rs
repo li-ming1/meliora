@@ -403,7 +403,7 @@ impl NeteasePlaylistsView {
         index: usize,
         cx: &App,
     ) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let liked = crate::ui::netease::liked_set_contains(track.id);
         // The row closures must own their data ('static): capture Arc clones
         // (refcount bump only) instead of three full clones per visible row
@@ -475,7 +475,7 @@ fn netease_track_count(count: i64) -> cntp_i18n::I18nString {
 
 impl Render for NeteasePlaylistsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let scroll_handle = self.scroll_handle.clone();
 
         // Once a playlist's tracks are loaded the list itself becomes the
@@ -489,10 +489,10 @@ impl Render for NeteasePlaylistsView {
             // track list of the open playlist
             match &self.tracks_state {
                 TracksState::Loading if self.tracks.is_empty() => {
-                    content = content.child(muted_line(tr!("NETEASE_LOADING"), &theme));
+                    content = content.child(muted_line(tr!("NETEASE_LOADING"), theme));
                 }
                 TracksState::Failed(message) if self.tracks.is_empty() => {
-                    content = content.child(error_line(message.clone(), &theme)).child(
+                    content = content.child(error_line(message.clone(), theme)).child(
                         button()
                             .id("netease-retry-tracks")
                             .child(tr!("NETEASE_RETRY"))
@@ -504,7 +504,7 @@ impl Render for NeteasePlaylistsView {
                 _ if self.tracks.is_empty() => {
                     content = content.child(muted_line(
                         tr!("NETEASE_PLAYLIST_EMPTY", "This playlist is empty"),
-                        &theme,
+                        theme,
                     ));
                 }
                 // loaded tracks are rendered by the virtualized uniform_list
@@ -543,10 +543,10 @@ impl Render for NeteasePlaylistsView {
                     );
                 }
                 PlaylistsState::Loading => {
-                    content = content.child(muted_line(tr!("NETEASE_LOADING"), &theme));
+                    content = content.child(muted_line(tr!("NETEASE_LOADING"), theme));
                 }
                 PlaylistsState::Failed(message) => {
-                    content = content.child(error_line(message.clone(), &theme)).child(
+                    content = content.child(error_line(message.clone(), theme)).child(
                         button()
                             .id("netease-retry-playlists")
                             .child(tr!("NETEASE_RETRY"))
@@ -559,7 +559,7 @@ impl Render for NeteasePlaylistsView {
                     if playlists.is_empty() {
                         content = content.child(muted_line(
                             tr!("NETEASE_NO_PLAYLISTS", "No playlists found"),
-                            &theme,
+                            theme,
                         ));
                     } else {
                         for (index, playlist) in playlists.iter().enumerate() {

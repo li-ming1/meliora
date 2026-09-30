@@ -970,7 +970,7 @@ pub fn build_login_qr(key: &str) -> anyhow::Result<Arc<RenderImage>> {
 /// (ranks / daily recommend) page. The like/play/download callbacks carry the
 /// per-view semantics; the visual skeleton is identical.
 pub(crate) fn kugou_track_row<F1, F2, F3>(
-    theme: Theme,
+    theme: &Theme,
     track: &KugouTrackInfo,
     index: usize,
     id_prefix: &'static str,
@@ -1013,10 +1013,7 @@ where
         .border_b_1()
         .border_color(theme.border_color)
         .cursor_pointer()
-        .hover({
-            let theme = theme.clone();
-            move |this| this.bg(theme.queue_item_hover)
-        })
+        .hover(move |this| this.bg(theme.queue_item_hover))
         .on_click(move |event, window, cx| {
             // GPUI delivers one click event per click of a multi-click
             // sequence; only the first click starts playback so a

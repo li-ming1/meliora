@@ -447,14 +447,14 @@ impl KugouRanksView {
                             range
                                 .map(|row| {
                                     let start = row * GRID_COLS;
-                                    let theme = cx.global::<Theme>().clone();
+                                    let theme = cx.global::<Theme>();
                                     let cards: Vec<_> = ranks
                                         .iter()
                                         .skip(start)
                                         .take(GRID_COLS)
                                         .enumerate()
                                         .map(|(i, rank)| {
-                                            Self::render_rank_card(rank, start + i, &theme, &entity)
+                                            Self::render_rank_card(rank, start + i, theme, &entity)
                                                 .into_any_element()
                                         })
                                         .collect();
@@ -546,7 +546,7 @@ impl KugouRanksView {
         entity: &Entity<Self>,
         cx: &App,
     ) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let liked = self.is_liked(&track.hash);
         // The row closures must own their data ('static): capture Arc clones
         // (refcount bump only) instead of three deep clones per visible row
@@ -593,13 +593,13 @@ impl KugouRanksView {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
 
         match self.tab {
             Tab::Ranks => match &self.ranks {
-                RanksState::Loading => muted_line(tr!("KUGOU_LOADING"), &theme).into_any_element(),
+                RanksState::Loading => muted_line(tr!("KUGOU_LOADING"), theme).into_any_element(),
                 RanksState::Failed(message) => {
-                    error_line(message.clone(), &theme).into_any_element()
+                    error_line(message.clone(), theme).into_any_element()
                 }
                 // unreachable in practice: Render::render routes a Ready rank
                 // grid to the virtualized container below; this arm only
@@ -608,10 +608,10 @@ impl KugouRanksView {
             },
             Tab::DailyRecommend => match &self.recommend {
                 RecommendState::Idle | RecommendState::Loading => {
-                    muted_line(tr!("KUGOU_LOADING"), &theme).into_any_element()
+                    muted_line(tr!("KUGOU_LOADING"), theme).into_any_element()
                 }
                 RecommendState::Failed(message) => {
-                    error_line(message.clone(), &theme).into_any_element()
+                    error_line(message.clone(), theme).into_any_element()
                 }
                 RecommendState::Ready(tracks) => {
                     // unreachable in practice: Render::render routes a Ready
@@ -653,7 +653,6 @@ fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
 
 impl Render for KugouRanksView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
         let scroll_handle = self.scroll_handle.clone();
 
         // Mirror kugou_playlists: while a track list is on screen it is its
@@ -764,13 +763,16 @@ impl Render for KugouRanksView {
         } else if grid_ready {
             root = root.child(self.render_ranks_grid(cx));
         } else {
+            // Borrowed only inside this fallback branch: all `&mut cx` uses
+            // above (header, grid, load-more) are already done.
+            let theme = cx.global::<Theme>();
             let content: AnyElement = if self.selected.is_some() {
                 match &self.tracks_state {
                     TracksState::Loading if self.tracks.is_empty() => {
-                        muted_line(tr!("KUGOU_LOADING"), &theme).into_any_element()
+                        muted_line(tr!("KUGOU_LOADING"), theme).into_any_element()
                     }
                     TracksState::Failed(message) if self.tracks.is_empty() => {
-                        error_line(message.clone(), &theme).into_any_element()
+                        error_line(message.clone(), theme).into_any_element()
                     }
                     // unreachable while tracks_ready routes non-empty lists to
                     // the virtualized container; kept exhaustive for the compiler

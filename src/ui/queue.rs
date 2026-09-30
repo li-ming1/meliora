@@ -276,7 +276,7 @@ impl Render for QueueItem {
         let track_id = self.item.get_db_id();
         let data_entity = self.item.get_data(cx);
         let ui_data = &*data_entity.read(cx);
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>();
         let is_available = self.is_available;
         let is_selected = self.selection.read(cx).contains(self.idx);
 
@@ -941,7 +941,6 @@ impl Render for Queue {
             self.needs_queue_rescan = false;
         }
 
-        let theme = cx.global::<Theme>().clone();
         let queue_len = {
             let queue = cx.global::<Models>().queue.clone().read(cx);
             queue.data.read().unwrap_or_else(|e| e.into_inner()).len()
@@ -1006,6 +1005,10 @@ impl Render for Queue {
         {
             self.schedule_follow_frame(window, cx);
         }
+
+        // Borrow the theme only after the last `&mut cx` use above; the
+        // per-element styling below just reads its Copy fields.
+        let theme = cx.global::<Theme>();
 
         div()
             .h_full()

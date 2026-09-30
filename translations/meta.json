@@ -313,13 +313,13 @@
   },
   "CLEAR_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1050",
+    "definedIn": "src/ui/queue.rs:1053",
     "plural": false,
     "description": null
   },
   "CLOSE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1068",
+    "definedIn": "src/ui/queue.rs:1071",
     "plural": false,
     "description": null
   },
@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1342",
+    "definedIn": "src/ui/immersive.rs:1396",
     "plural": false,
     "description": null
   },
@@ -1747,13 +1747,13 @@
   },
   "QUEUE_SUMMARY_TRACKS": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:977",
+    "definedIn": "src/ui/queue.rs:976",
     "plural": true,
     "description": null
   },
   "QUEUE_TITLE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1035",
+    "definedIn": "src/ui/queue.rs:1038",
     "plural": false,
     "description": null
   },
