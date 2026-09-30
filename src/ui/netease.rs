@@ -36,7 +36,6 @@ use crate::{
         library::context_menus::{play_now, queue_item},
         lyrics::lrc::{LrcLine, parse_lrc},
         online_track_row::OnlineTrackDisplay,
-        util::format_duration,
     },
 };
 
@@ -52,18 +51,6 @@ pub use crate::online_sources::netease::{
     NeteaseTrackInfo, extract_song_url, fetch_stream_url, online_track_matching_path,
     remember_online_track,
 };
-
-impl NeteaseTrackInfo {
-    /// Right-hand label used in listings: "artist · m:ss".
-    pub fn detail_label(&self) -> SharedString {
-        let duration = format_duration(self.duration, false);
-        if self.artist.is_empty() {
-            duration.into()
-        } else {
-            format!("{} · {}", self.artist, duration).into()
-        }
-    }
-}
 
 /// One user (created or subscribed) playlist.
 #[derive(Clone, Debug)]

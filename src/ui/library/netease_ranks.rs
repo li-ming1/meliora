@@ -18,7 +18,6 @@ use crate::{
     ui::{
         components::{
             button::{ButtonIntent, button},
-            managed_image::{ManagedImageKey, managed_image},
             scrollbar::floating_scrollbar,
         },
         library::{EscapeBack, view_header::view_header},
@@ -61,7 +60,7 @@ enum RanksState {
 /// 900px content column (with the 16px side padding); `GRID_ROW_H` covers
 /// the 148px cover plus the name and update-frequency lines.
 const GRID_COLS: usize = 5;
-const GRID_CARD_W: f32 = 148.0;
+use crate::ui::online_track_row::RANK_CARD_W as GRID_CARD_W;
 const GRID_GAP: f32 = 18.0;
 const GRID_ROW_H: f32 = 196.0;
 
@@ -539,38 +538,14 @@ impl NeteaseRanksView {
         theme: &Theme,
         entity: &WeakEntity<Self>,
     ) -> impl IntoElement {
-        let cover = managed_image(
-            ("netease-rank-cover", index),
-            ManagedImageKey::HttpCover(rank.cover_url.clone()),
-        )
-        // cards paint at 148 CSS px; 192 device px keeps 1.25-1.5 DPR sharp
-        // while shrinking every tile the atlas packs
-        .thumb_max(192)
-        .w(px(GRID_CARD_W))
-        .h(px(GRID_CARD_W))
-        .rounded(px(theme.radius_md));
-        let name = div()
-            .mt(px(6.0))
-            .text_sm()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme.text)
-            .overflow_x_hidden()
-            .text_ellipsis()
-            .child(rank.name.clone());
-        let frequency = div()
-            .mt(px(2.0))
-            .text_xs()
-            .text_color(theme.text_secondary)
-            .overflow_x_hidden()
-            .text_ellipsis()
-            .child(rank.update_frequency.clone());
-        div()
-            .id(("netease-rank", index))
-            .flex()
-            .flex_col()
-            .w(px(GRID_CARD_W))
-            .cursor_pointer()
-            .on_click({
+        crate::ui::online_track_row::rank_card(
+            "netease-rank",
+            index,
+            theme,
+            &rank.cover_url,
+            &rank.name,
+            Some(&rank.update_frequency),
+            {
                 let entity = entity.clone();
                 let rank = rank.clone();
                 move |_, _, cx| {
@@ -578,10 +553,8 @@ impl NeteaseRanksView {
                         view.update(cx, |this, cx| this.open_rank(rank.clone(), cx));
                     }
                 }
-            })
-            .child(cover)
-            .child(name)
-            .child(frequency)
+            },
+        )
     }
 
     /// Rows are built from inside the uniform_list render closure where only

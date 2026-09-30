@@ -32,7 +32,6 @@ use crate::{
     ui::{
         library::context_menus::{play_now, queue_item},
         online_track_row::OnlineTrackDisplay,
-        util::format_duration,
     },
 };
 
@@ -48,18 +47,6 @@ pub(crate) use crate::online_sources::kugou::{
     LIKED_SET_INIT, fetch_liked_entries, liked_fileids, liked_load_lock, liked_set,
     mixsongid_in_url, refresh_liked_set_from_service, store_liked_entries,
 };
-
-impl KugouTrackInfo {
-    /// Right-hand label used in listings: "artist · m:ss".
-    pub fn detail_label(&self) -> SharedString {
-        let duration = format_duration(self.duration, false);
-        if self.artist.is_empty() {
-            duration.into()
-        } else {
-            format!("{} · {}", self.artist, duration).into()
-        }
-    }
-}
 
 /// One user playlist.
 #[derive(Clone, Debug)]

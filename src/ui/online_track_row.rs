@@ -34,6 +34,16 @@ pub(crate) trait OnlineTrackDisplay {
     /// Localized "Download" label. Per-provider so the i18n generator keeps
     /// seeing distinct `KUGOU_DOWNLOAD` / `NETEASE_DOWNLOAD` keys.
     fn download_label() -> I18nString;
+
+    /// Right-hand label used in listings: "artist · m:ss".
+    fn detail_label(&self) -> SharedString {
+        let duration = format_duration(self.duration_secs(), false);
+        if self.artist().is_empty() {
+            duration.into()
+        } else {
+            format!("{} · {}", self.artist(), duration).into()
+        }
+    }
 }
 
 /// The discovery pages iterate `Arc<...TrackInfo>` items; a blanket impl lets
@@ -194,6 +204,67 @@ where
                     on_download(event, window, cx);
                 }),
         )
+}
+
+/// Width of one discovery-page rank card in CSS px. Cards paint at this size;
+/// the managed-image thumb decodes at 192 device px so 1.25-1.5 DPR stays
+/// sharp while shrinking every tile the atlas packs.
+pub(crate) const RANK_CARD_W: f32 = 148.0;
+
+/// One discovery-page rank card: cover + name, optional provider subtitle
+/// (NetEase shows the chart's update frequency). The click handler is
+/// supplied by the caller — the provider view types and their `open_rank`
+/// differ, and the cards are built from inside a uniform_list closure where
+/// only `&App` is available, so the weak-entity upgrade lives at the call
+/// site.
+pub(crate) fn rank_card<F>(
+    id_prefix: &'static str,
+    index: usize,
+    theme: &Theme,
+    cover_url: &SharedString,
+    name: &SharedString,
+    subtitle: Option<&SharedString>,
+    on_open: F,
+) -> impl IntoElement
+where
+    F: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+{
+    let cover = managed_image(
+        ("rank-cover", index),
+        ManagedImageKey::HttpCover(cover_url.clone()),
+    )
+    .thumb_max(192)
+    .w(px(RANK_CARD_W))
+    .h(px(RANK_CARD_W))
+    .rounded(px(theme.radius_md));
+    let name = div()
+        .mt(px(6.0))
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.text)
+        .overflow_x_hidden()
+        .text_ellipsis()
+        .child(name.clone());
+    div()
+        .id((id_prefix, index))
+        .flex()
+        .flex_col()
+        .w(px(RANK_CARD_W))
+        .cursor_pointer()
+        .on_click(on_open)
+        .child(cover)
+        .child(name)
+        .when_some(subtitle, |this, subtitle| {
+            this.child(
+                div()
+                    .mt(px(2.0))
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .overflow_x_hidden()
+                    .text_ellipsis()
+                    .child(subtitle.clone()),
+            )
+        })
 }
 
 /// Muted placeholder line for empty/loading states.
