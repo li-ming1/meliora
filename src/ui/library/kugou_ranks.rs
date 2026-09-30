@@ -4,10 +4,11 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
+    AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
 };
@@ -556,7 +557,7 @@ impl KugouRanksView {
         let download = track.clone();
         let weak = entity.downgrade();
 
-        crate::ui::kugou::kugou_track_row(
+        crate::ui::online_track_row::track_row(
             theme,
             track,
             index,
@@ -634,23 +635,6 @@ impl KugouRanksView {
 
 /// Muted placeholder line for the loading and empty states of both the rank
 /// grid and the track lists.
-fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
-    div()
-        .text_sm()
-        .text_color(theme.text_secondary)
-        .py(px(24.0))
-        .child(text)
-}
-
-/// Error placeholder line; the caller pairs it with a retry button.
-fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
-    div()
-        .text_sm()
-        .text_color(theme.status_error)
-        .py(px(12.0))
-        .child(message)
-}
-
 impl Render for KugouRanksView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let scroll_handle = self.scroll_handle.clone();

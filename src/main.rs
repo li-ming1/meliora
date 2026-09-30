@@ -224,6 +224,9 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
 // it" (mi_commit climbs in lockstep with private_mb — retention/fragmentation
 // inside the heap) versus "something outside the heap grew" (private_mb
 // climbs while mi_commit stays flat — D3D/driver territory).
+// Only the `#[cfg(not(test))]` memory probe calls these; test builds swap in
+// the counting allocator, so gate the declarations off there entirely.
+#[cfg(not(test))]
 #[link(name = "mimalloc")]
 unsafe extern "C" {
     fn mi_process_info(
@@ -240,6 +243,7 @@ unsafe extern "C" {
     fn mi_collect(force: bool);
 }
 
+#[cfg(not(test))]
 fn mimalloc_memory_mb() -> (u64, u64) {
     let mut elapsed: usize = 0;
     let mut user: usize = 0;
@@ -270,6 +274,7 @@ fn mimalloc_memory_mb() -> (u64, u64) {
 /// fragmentation the allocator simply hadn't decommitted yet (harmless — the
 /// pages get reused); a ~0 reclaim at a rising commit means live allocations
 /// are accumulating and the leak is real.
+#[cfg(not(test))]
 fn mimalloc_force_collect_reclaim_mb(before: u64) -> u64 {
     // SAFETY: stats-adjacent maintenance call; safe per mimalloc docs.
     unsafe { mi_collect(true) };

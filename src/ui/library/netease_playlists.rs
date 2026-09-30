@@ -6,11 +6,12 @@
 
 use std::sync::Arc;
 
+use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::{tr, trn};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
@@ -412,7 +413,7 @@ impl NeteasePlaylistsView {
         let like = track.clone();
         let download = track.clone();
 
-        crate::ui::netease::netease_track_row(
+        crate::ui::online_track_row::track_row(
             theme,
             track,
             index,
@@ -445,23 +446,6 @@ fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
 
 /// Muted placeholder line for the loading and empty states of both the
 /// overview and the track list.
-fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
-    div()
-        .text_sm()
-        .text_color(theme.text_secondary)
-        .py(px(24.0))
-        .child(text)
-}
-
-/// Error placeholder line; the caller pairs it with a retry button.
-fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
-    div()
-        .text_sm()
-        .text_color(theme.status_error)
-        .py(px(12.0))
-        .child(message)
-}
-
 /// Localized "{count} track(s)" label. Single place where the plural string is
 /// defined so the i18n generator doesn't see duplicate definitions.
 fn netease_track_count(count: i64) -> cntp_i18n::I18nString {

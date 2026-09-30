@@ -4,11 +4,12 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::{tr, trn};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
@@ -666,7 +667,7 @@ impl KugouPlaylistsView {
         let download = track.clone();
         let weak = entity.downgrade();
 
-        crate::ui::kugou::kugou_track_row(
+        crate::ui::online_track_row::track_row(
             theme,
             track,
             index,
@@ -724,23 +725,6 @@ fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
 
 /// Muted placeholder line for the loading and empty states of both the
 /// overview and the track list.
-fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
-    div()
-        .text_sm()
-        .text_color(theme.text_secondary)
-        .py(px(24.0))
-        .child(text)
-}
-
-/// Error placeholder line; the caller pairs it with a retry button.
-fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
-    div()
-        .text_sm()
-        .text_color(theme.status_error)
-        .py(px(12.0))
-        .child(message)
-}
-
 /// Total 1-based page count for `count` items at `TRACKS_PER_PAGE` per page.
 fn page_count(count: i64) -> i64 {
     (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE

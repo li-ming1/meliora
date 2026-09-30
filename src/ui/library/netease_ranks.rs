@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -618,7 +619,7 @@ impl NeteaseRanksView {
         let download = track.clone();
         let weak = entity.downgrade();
 
-        crate::ui::netease::netease_track_row(
+        crate::ui::online_track_row::track_row(
             theme,
             track,
             index,
@@ -878,18 +879,12 @@ impl Render for NeteaseRanksView {
             let theme = cx.global::<Theme>();
             let content: AnyElement = if self.selected.is_some() {
                 match &self.tracks_state {
-                    TracksState::Loading if self.tracks.is_empty() => div()
-                        .text_sm()
-                        .text_color(theme.text_secondary)
-                        .py(px(24.0))
-                        .child(tr!("NETEASE_LOADING"))
-                        .into_any_element(),
-                    TracksState::Failed(message) if self.tracks.is_empty() => div()
-                        .text_sm()
-                        .text_color(theme.status_error)
-                        .py(px(12.0))
-                        .child(message.clone())
-                        .into_any_element(),
+                    TracksState::Loading if self.tracks.is_empty() => {
+                        muted_line(tr!("NETEASE_LOADING"), theme).into_any_element()
+                    }
+                    TracksState::Failed(message) if self.tracks.is_empty() => {
+                        error_line(message.clone(), theme).into_any_element()
+                    }
                     // unreachable while tracks_ready routes non-empty lists to
                     // the virtualized container; kept exhaustive for the compiler
                     _ => div().into_any_element(),
