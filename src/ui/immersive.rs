@@ -1398,7 +1398,9 @@ impl Render for ImmersiveView {
                     return;
                 }
                 let dy = f32::from(ev.delta.pixel_delta(px(LINE_PITCH_PX)).y);
-                this.scroll_accum += dy / LINE_PITCH_PX;
+                // gpui 原样透传 Windows 滚轮符号：向下滚为负。歌词语义是
+                // "向下滚 = 前进到更晚的行"（browse_offset 增大），故取反。
+                this.scroll_accum -= dy / LINE_PITCH_PX;
                 let whole = this.scroll_accum as i64;
                 if whole != 0 {
                     this.scroll_accum -= whole as f32;
