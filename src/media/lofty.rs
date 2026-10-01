@@ -5,7 +5,7 @@ use std::{
 };
 
 use lofty::config::ParseOptions;
-use lofty::file::{AudioFile, FileType, TaggedFileExt};
+use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::id3::v2::Id3v2Version;
 use lofty::picture::PictureType;
 use lofty::prelude::ItemKey;
@@ -116,8 +116,8 @@ fn map_standard_tag(item: &TagItem) -> Option<MetadataTag> {
 }
 
 struct TagsFromFile {
+    tagged_file: TaggedFile,
     metadata: Metadata,
-    image: Option<Box<[u8]>>,
     duration: Option<u64>,
 }
 
@@ -352,7 +352,6 @@ fn read_tags_from_file(mut file: File) -> Result<TagsFromFile, OpenError> {
     let tagged_file = lofty::read_from(&mut file).map_err(|_| OpenError::UnsupportedFormat)?;
 
     let mut metadata = Metadata::default();
-    let mut image: Option<Box<[u8]>> = None;
 
     let has_better_tag = tagged_file
         .tags()
@@ -377,10 +376,6 @@ fn read_tags_from_file(mut file: File) -> Result<TagsFromFile, OpenError> {
         let split_artists =
             tag.tag_type() == TagType::Id3v2 && id3v2_version == Some(Id3v2Version::V3);
         apply_tag_items(tag, split_artists, &mut metadata, &mut artist_names);
-
-        if image.is_none() {
-            image = extract_cover(tag);
-        }
     }
 
     finalize_track_artists(&mut metadata, artist_names.tpe1, artist_names.artists_tag);
@@ -390,8 +385,8 @@ fn read_tags_from_file(mut file: File) -> Result<TagsFromFile, OpenError> {
     let duration_ms = (!duration.is_zero()).then_some(duration.as_millis() as u64);
 
     Ok(TagsFromFile {
+        tagged_file,
         metadata,
-        image,
         duration: duration_ms,
     })
 }
@@ -401,7 +396,7 @@ pub struct LoftyProvider;
 
 pub struct LoftyStream {
     metadata: Metadata,
-    image: Option<Box<[u8]>>,
+    tagged_file: TaggedFile,
     duration_ms: Option<u64>,
     started: bool,
 }
@@ -412,7 +407,7 @@ impl MediaProvider for LoftyProvider {
 
         Ok(Box::new(LoftyStream {
             metadata: tags.metadata,
-            image: tags.image,
+            tagged_file: tags.tagged_file,
             duration_ms: tags.duration,
             started: false,
         }))
@@ -458,7 +453,18 @@ impl MediaStream for LoftyStream {
     }
 
     fn read_image(&mut self) -> Result<Option<Box<[u8]>>, MetadataError> {
-        Ok(self.image.take())
+        // 封面按需从 tags 现场提取，避免读取标签时无条件拷贝整份图片字节；
+        // 提取后清空 tags 释放图片驻留，重复调用返回 None（一次取走的语义不变）
+        let has_id3v2 = self
+            .tagged_file
+            .tags()
+            .iter()
+            .any(|tag| tag.tag_type() == TagType::Id3v2);
+        let image = tags_by_priority(self.tagged_file.tags(), has_id3v2)
+            .into_iter()
+            .find_map(extract_cover);
+        self.tagged_file.clear();
+        Ok(image)
     }
 
     fn duration_ms(&self) -> Result<u64, TrackDurationError> {
