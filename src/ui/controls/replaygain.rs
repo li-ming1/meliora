@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{
     settings::{Settings, SettingsGlobal, replaygain::ReplayGainMode, save_settings},
     ui::components::{
@@ -9,7 +11,7 @@ use crate::{
     },
 };
 use cntp_i18n::tr;
-use gpui::{prelude::FluentBuilder, *};
+use gpui::{Task, prelude::FluentBuilder, *};
 
 use super::{observe_notify, playback_toggle_button};
 use crate::ui::design::ICON_SM;
@@ -18,6 +20,8 @@ use crate::ui::theme::Theme;
 pub struct ReplayGainButton {
     settings: Entity<Settings>,
     show_popover: bool,
+    /// Pre-amp 拖动的尾沿保存任务：每次编辑替换（取消上一定时）。
+    save_task: Option<Task<()>>,
 }
 
 impl ReplayGainButton {
@@ -29,6 +33,7 @@ impl ReplayGainButton {
             Self {
                 settings,
                 show_popover: false,
+                save_task: None,
             }
         })
     }
@@ -36,6 +41,23 @@ impl ReplayGainButton {
     fn close_popover(&mut self, cx: &mut Context<Self>) {
         self.show_popover = false;
         cx.notify();
+    }
+
+    /// Pre-amp 拖动的尾沿保存：每次编辑重置 300ms 定时，静默后才执行一次
+    /// save_settings（推播放线程 + 磁盘写），拖动期不再逐 mouse-move 推送。
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        // 新编辑替换旧定时：被替换的 Task drop 即取消，拖动期只保留最后一个。
+        drop(self.save_task.take());
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            this.update(cx, |this, cx| {
+                this.settings
+                    .update(cx, |settings, cx| save_settings(cx, settings));
+            })
+            .ok();
+        }));
     }
 }
 
@@ -73,6 +95,7 @@ impl Render for ReplayGainButton {
             .when(show_popover, |this| {
                 let entity = cx.entity().downgrade();
                 let click_away_entity = entity.clone();
+                let button_entity = entity.clone();
                 this.child(
                     popover()
                         .position(PopoverPosition::TopRight)
@@ -97,6 +120,7 @@ impl Render for ReplayGainButton {
                                 .when(rg_mode != ReplayGainMode::Off, |this| {
                                     this.child(replaygain_preamp_section(
                                         settings.clone(),
+                                        button_entity,
                                         rg_settings.preamp_db,
                                         theme,
                                     ))
@@ -139,8 +163,16 @@ fn replaygain_mode_section(settings: Entity<Settings>, mode: ReplayGainMode, the
         )
 }
 
-/// The pre-amp label and slider; writes the gain straight through to settings.
-fn replaygain_preamp_section(settings: Entity<Settings>, preamp_db: f64, theme: &Theme) -> Div {
+/// Pre-amp 标签与滑杆：实时值写入 settings 模型但不 notify 它——每次
+/// mouse-move 的模型 notify 会级联到 app 级 refresh_windows 观察者，拖动期
+/// 全窗口逐帧重绘。改为 notify 按钮实体使 dB 读数跟随拖动；尾沿防抖保存
+/// 在拖动静默后才把 preamp 推给播放线程与磁盘。
+fn replaygain_preamp_section(
+    settings: Entity<Settings>,
+    button: WeakEntity<ReplayGainButton>,
+    preamp_db: f64,
+    theme: &Theme,
+) -> Div {
     div()
         .flex()
         .flex_col()
@@ -161,11 +193,15 @@ fn replaygain_preamp_section(settings: Entity<Settings>, preamp_db: f64, theme: 
                 .default_value(0.0)
                 .format_value(|v| format!("{:+.1} dB", v).into())
                 .on_change(move |v, _, cx| {
-                    settings.update(cx, |settings, cx| {
+                    settings.update(cx, |settings, _| {
                         settings.playback.replaygain.preamp_db = v as f64;
-                        save_settings(cx, settings);
-                        cx.notify();
                     });
+                    if let Some(this) = button.upgrade() {
+                        this.update(cx, |this, cx| {
+                            cx.notify();
+                            this.schedule_save(cx);
+                        });
+                    }
                 }),
         )
 }
