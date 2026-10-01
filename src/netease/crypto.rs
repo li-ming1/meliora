@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use aes::Aes128;
 use aes::cipher::{BlockEncryptMut, KeyInit, KeyIvInit};
 use cbc::cipher::block_padding::Pkcs7;
-use rsa::BigUint;
+use num_bigint_dig::BigUint;
 
 const IV: &[u8; 16] = b"0102030405060708";
 const PRESET_KEY: &[u8; 16] = b"0CoJUm6Qyw8W8jud";

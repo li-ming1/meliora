@@ -20,7 +20,7 @@ atlas-probe = []
 # Shared plumbing for any online source: HTTP-range streaming playback, cover
 # cache, online-aware queue items. Enabled by each provider feature below.
 online_sources = []
-kugou = ["online", "online_sources", "dep:md-5", "dep:rsa", "dep:qrcode"]
+kugou = ["online", "online_sources", "dep:md-5", "dep:num-bigint-dig", "dep:qrcode"]
 netease = [
     "online",
     "online_sources",
@@ -28,7 +28,7 @@ netease = [
     "dep:cbc",
     "dep:ecb",
     "dep:md-5",
-    "dep:rsa",
+    "dep:num-bigint-dig",
     "dep:qrcode",
 ]
 default = []
@@ -39,7 +39,7 @@ aes = { version = "0.8", optional = true }
 audioadapter-buffers = "5"
 async-compression = { version = "0.4", features = ["zlib", "tokio"] }
 async-trait = "0.1"
-base64 = "0.23"
+base64 = "0.22"
 bitflags = "2"
 camino = { version = "1", features = ["serde1"] }
 cbc = { version = "0.1", optional = true, features = ["alloc"] }
@@ -69,7 +69,7 @@ indexmap = { version = "2", features = ["serde"] }
 intx = "0.1"
 lofty = "0.25"
 md-5 = { version = "0.10", optional = true }
-rsa = { version = "0.9", optional = true, default-features = false, features = ["std", "pem"] }
+num-bigint-dig = { version = "0.9", optional = true, default-features = false, features = ["std"] }
 qrcode = { version = "0.14", optional = true, default-features = false, features = ["image"] }
 notify = "8"
 nucleo = "0.5"
