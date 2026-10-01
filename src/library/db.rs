@@ -223,8 +223,8 @@ pub async fn list_tracks(
     };
 
     sqlx::query_as::<_, (i64, String, Option<i64>, String)>(query)
-            .fetch_all(pool)
-            .await
+        .fetch_all(pool)
+        .await
 }
 
 pub async fn list_tracks_in_album(
@@ -426,8 +426,8 @@ pub async fn list_albums_search(
     let query = include_str!("../../queries/library/find_albums_search.sql");
 
     sqlx::query_as::<_, (i64, String, Option<String>, String)>(query)
-            .fetch_all(pool)
-            .await
+        .fetch_all(pool)
+        .await
 }
 
 /// Lists all tracks for searching. Returns (id, title, artist_names, album_id).
@@ -437,8 +437,8 @@ pub async fn list_tracks_search(
     let query = include_str!("../../queries/library/find_tracks_search.sql");
 
     sqlx::query_as::<_, (i64, String, String, Option<i64>)>(query)
-            .fetch_all(pool)
-            .await
+        .fetch_all(pool)
+        .await
 }
 
 /// Lists all artists for searching. Returns (id, name).

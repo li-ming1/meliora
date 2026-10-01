@@ -350,9 +350,9 @@ pub async fn reconcile_rescan_paths(
                 "prefix query",
             )
             .await
-            {
-                rows.extend(descendants);
-            }
+        {
+            rows.extend(descendants);
+        }
 
         candidates.extend(
             rows.into_iter()
