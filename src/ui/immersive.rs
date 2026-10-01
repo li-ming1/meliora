@@ -329,6 +329,13 @@ impl ImmersiveView {
                 ImmersiveProgress {
                     position: info.position.clone(),
                     duration: info.duration.clone(),
+                    // u64::MAX 永不匹配真实秒数：强制首建
+                    time_labels: ImmersiveTimeLabels {
+                        position_secs: u64::MAX,
+                        duration_secs: u64::MAX,
+                        elapsed_text: SharedString::default(),
+                        total_text: SharedString::default(),
+                    },
                 }
             });
 
@@ -896,6 +903,16 @@ impl ImmersiveView {
     }
 }
 
+/// 按 (整秒 position, 整秒 duration) 键缓存两个 "m:ss" 标签：文本每秒才变
+/// 一次，而播放中 render 以 ~30Hz 运行（同 controls.rs Scrubber 的
+/// TimeLabels 模式）。pad_minutes 保持 false（沉浸页 11px 紧凑风格）。
+struct ImmersiveTimeLabels {
+    position_secs: u64,
+    duration_secs: u64,
+    elapsed_text: SharedString,
+    total_text: SharedString,
+}
+
 /// Self-contained seek bar for the immersive player card. It owns the 30 Hz
 /// position observation so progress ticks repaint only this small subtree —
 /// the fullscreen view's own position observer is gated on actual lyric-pane
@@ -903,6 +920,7 @@ impl ImmersiveView {
 struct ImmersiveProgress {
     position: Entity<u64>,
     duration: Entity<u64>,
+    time_labels: ImmersiveTimeLabels,
 }
 
 impl Render for ImmersiveProgress {
@@ -910,14 +928,35 @@ impl Render for ImmersiveProgress {
         // PlaybackInfo positions and durations are both in milliseconds.
         let position_ms = *self.position.read(cx);
         let duration_ms = *self.duration.read(cx);
-        let position_s = (position_ms / 1000) as i64;
-        let duration_s = (duration_ms / 1000) as i64;
+        let position_secs = position_ms / 1000;
+        let duration_secs = duration_ms / 1000;
         let progress = if duration_ms > 0 {
             (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
         let text_secondary = cx.global::<Theme>().text_secondary;
+
+        // 整秒键未变即复用已格式化标签：30Hz 重渲染里绝大多数输出逐字节相同
+        let (elapsed_text, total_text) = if self.time_labels.position_secs == position_secs
+            && self.time_labels.duration_secs == duration_secs
+        {
+            (
+                self.time_labels.elapsed_text.clone(),
+                self.time_labels.total_text.clone(),
+            )
+        } else {
+            let elapsed_text = SharedString::from(format_duration(position_secs as i64, false));
+            let total_text =
+                SharedString::from(format_duration((duration_secs as i64).max(0), false));
+            self.time_labels = ImmersiveTimeLabels {
+                position_secs,
+                duration_secs,
+                elapsed_text: elapsed_text.clone(),
+                total_text: total_text.clone(),
+            };
+            (elapsed_text, total_text)
+        };
 
         div()
             .flex()
@@ -928,7 +967,7 @@ impl Render for ImmersiveProgress {
                 div()
                     .text_size(px(11.0))
                     .text_color(text_secondary)
-                    .child(SharedString::from(format_duration(position_s, false))),
+                    .child(elapsed_text),
             )
             .child(
                 slider()
@@ -951,10 +990,7 @@ impl Render for ImmersiveProgress {
                 div()
                     .text_size(px(11.0))
                     .text_color(text_secondary)
-                    .child(SharedString::from(format_duration(
-                        duration_s.max(0),
-                        false,
-                    ))),
+                    .child(total_text),
             )
     }
 }
