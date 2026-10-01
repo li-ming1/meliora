@@ -93,7 +93,9 @@ fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<
 /// Acquires a [`DECODE_PERMITS`] slot and decodes `data` into a
 /// `bound`-capped `RenderImage` on the blocking pool. Shared by every
 /// byte-buffer decode path (`HttpCover` / `HttpCoverLarge` / DB art) so the
-/// in-flight cap and the blocking-pool handoff stay in one place.
+/// in-flight cap and the blocking-pool handoff stay in one place. The
+/// path-based `TrackFile` branch of `retrieve_uncached` acquires the same
+/// semaphore directly and must keep doing so.
 async fn decode_bounded_with_permit(
     data: Vec<u8>,
     bound: u32,
@@ -757,6 +759,13 @@ impl ManagedImageKey {
                     return Ok(None);
                 }
                 let path = path.clone();
+                // 本分支是所有解码路径中最重的一条（开文件+格式探测+完整
+                // 解码），与字节缓冲路径同占 DECODE_PERMITS：快速滚动时
+                // 无许可的阻塞任务会把在线封面/背景解码挤出阻塞池。
+                let _permit = DECODE_PERMITS
+                    .acquire()
+                    .await
+                    .expect("semaphore is never closed");
                 crate::RUNTIME
                     .spawn_blocking(move || -> anyhow::Result<Option<Arc<RenderImage>>> {
                         let Some(mut stream) =
