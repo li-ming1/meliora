@@ -47,6 +47,11 @@ const PLAYLIST_ADD_CHUNK: usize = 100;
 /// + 1px bottom border.
 const TRACK_ROW_HEIGHT: f32 = 60.0;
 
+/// Overview playlist rows are pinned to their natural height: 8px vertical
+/// padding × 2 + title line (text_sm) + 1px bottom border (the single-line
+/// name dominates; the 16px icon and count line are shorter).
+const PLAYLIST_ROW_HEIGHT: f32 = 40.0;
+
 /// How long the like/unlike watcher waits for the shared helper to confirm
 /// the outcome through the global liked-set before rolling the optimistic
 /// update back.
@@ -116,6 +121,9 @@ pub struct KugouPlaylistsView {
     /// rows are ignored until the request settles
     like_in_flight: HashSet<String>,
     scroll_handle: ScrollHandle,
+    /// Scroll position of the virtualized playlist overview; reset when a
+    /// playlist is opened so returning to the overview starts at the top.
+    playlists_scroll_handle: UniformListScrollHandle,
     /// Scroll position of the virtualized track list; reset per playlist so
     /// a newly opened playlist starts at the top.
     tracks_scroll_handle: UniformListScrollHandle,
@@ -142,6 +150,7 @@ impl KugouPlaylistsView {
                 unliked: HashSet::new(),
                 like_in_flight: HashSet::new(),
                 scroll_handle: ScrollHandle::new(),
+                playlists_scroll_handle: UniformListScrollHandle::new(),
                 tracks_scroll_handle: UniformListScrollHandle::new(),
                 import_open: false,
                 import_input: None,
@@ -214,6 +223,7 @@ impl KugouPlaylistsView {
         self.has_more_tracks = false;
         self.unliked.clear();
         self.scroll_handle = ScrollHandle::new();
+        self.playlists_scroll_handle = UniformListScrollHandle::new();
         self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
 
@@ -592,14 +602,20 @@ impl KugouPlaylistsView {
         }
     }
 
+    /// Rows are built from inside the overview uniform_list render closure
+    /// where only `&App` is available, so the click handler reaches the view
+    /// through a weak handle instead of `cx.listener` (same pattern as the
+    /// track rows and the import modal's callbacks).
     fn render_playlist_row(
         &self,
         index: usize,
         playlist: &KugouPlaylistInfo,
-        cx: &mut Context<Self>,
+        entity: &Entity<Self>,
+        cx: &App,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let row_id = playlist.global_collection_id.clone();
+        let weak = entity.downgrade();
 
         div()
             .id(("kugou-playlist", index))
@@ -632,18 +648,23 @@ impl KugouPlaylistsView {
                     .flex_shrink(0.0)
                     .child(kugou_track_count(playlist.count)),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let playlist = this.playlists.as_ready().and_then(|playlists| {
-                    playlists
-                        .iter()
-                        .find(|p| p.global_collection_id == row_id)
-                        .cloned()
-                });
+            .on_click(move |_, _, cx| {
+                let Some(view) = weak.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    let playlist = this.playlists.as_ready().and_then(|playlists| {
+                        playlists
+                            .iter()
+                            .find(|p| p.global_collection_id == row_id)
+                            .cloned()
+                    });
 
-                if let Some(playlist) = playlist {
-                    this.open_playlist(&playlist, cx);
-                }
-            }))
+                    if let Some(playlist) = playlist {
+                        this.open_playlist(&playlist, cx);
+                    }
+                });
+            })
     }
 
     /// Rows are built from inside the uniform_list render closure where only
@@ -746,10 +767,12 @@ impl Render for KugouPlaylistsView {
         let theme = cx.global::<Theme>();
         let scroll_handle = self.scroll_handle.clone();
 
-        // Once a playlist's tracks are loaded the list itself becomes the
-        // scroll container (uniform_list); the page-level scroller only
-        // serves the overview and the small loading/error/empty states.
+        // Both large lists (track list, playlist overview) scroll inside
+        // their own virtualized uniform_list; the page-level scroller only
+        // serves the small loading/error/empty states.
         let tracks_ready = self.selected.is_some() && !self.tracks.is_empty();
+        let overview_ready = self.selected.is_none()
+            && matches!(&self.playlists, PlaylistsState::Ready(playlists) if !playlists.is_empty());
 
         let mut content = div().flex().flex_col().pb(px(24.0));
 
@@ -826,11 +849,10 @@ impl Render for KugouPlaylistsView {
                             tr!("KUGOU_NO_PLAYLISTS", "No playlists found"),
                             theme,
                         ));
-                    } else {
-                        for (index, playlist) in playlists.iter().enumerate() {
-                            content = content.child(self.render_playlist_row(index, playlist, cx));
-                        }
                     }
+                    // a non-empty overview is rendered by the virtualized
+                    // uniform_list in the scroll branch below, not by
+                    // page-flow content
                 }
             }
         }
@@ -917,6 +939,72 @@ impl Render for KugouPlaylistsView {
                     .child(floating_scrollbar(
                         "kugou-playlist-tracks-scrollbar",
                         tracks_scroll_handle,
+                    )),
+            );
+        } else if overview_ready {
+            // the playlist overview is its own scroll container, so the
+            // page-level scroller is replaced wholesale here (same as the
+            // track list above)
+            let playlist_count = self.playlists.as_ready().map_or(0, |p| p.len());
+            let list_entity = cx.entity();
+            let playlists_scroll_handle = self.playlists_scroll_handle.clone();
+
+            root = root.child(
+                div()
+                    .id("kugou-playlists-list-container")
+                    .relative()
+                    .w_full()
+                    .max_w(px(900.0))
+                    .mr_auto()
+                    .ml_auto()
+                    .flex()
+                    .flex_col()
+                    .flex_grow(1.0)
+                    .min_h(px(0.0))
+                    .px(px(16.0))
+                    .pt(px(4.0))
+                    .pb(px(24.0))
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .flex_grow(1.0)
+                            .min_h(px(0.0))
+                            .child(
+                                uniform_list(
+                                    "kugou-playlists",
+                                    playlist_count,
+                                    move |range, _, cx| {
+                                        let start = range.start;
+                                        let view = list_entity.read(cx);
+                                        let PlaylistsState::Ready(playlists) = &view.playlists
+                                        else {
+                                            return Vec::new();
+                                        };
+                                        playlists[range]
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, playlist)| {
+                                                div().h(px(PLAYLIST_ROW_HEIGHT)).child(
+                                                    view.render_playlist_row(
+                                                        start + i,
+                                                        playlist,
+                                                        &list_entity,
+                                                        cx,
+                                                    ),
+                                                )
+                                            })
+                                            .collect()
+                                    },
+                                )
+                                .w_full()
+                                .h_full()
+                                .track_scroll(&playlists_scroll_handle),
+                            ),
+                    )
+                    .child(floating_scrollbar(
+                        "kugou-playlists-list-scrollbar",
+                        playlists_scroll_handle,
                     )),
             );
         } else {
