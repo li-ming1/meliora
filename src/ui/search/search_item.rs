@@ -17,9 +17,13 @@ use crate::{
             track::TrackContextMenu,
         },
         models::LIKED_SONGS_PLAYLIST_ID,
-        online_track_row::OnlineTrackDisplay,
     },
 };
+// 与 ui.rs 的 `mod online_track_row` 同 gate：trait 仅服务下方 kugou/netease
+// 匹配臂的 `detail_label()`（trait 方法，需在作用域内）。use 树嵌套段上不能
+// 挂 `#[cfg]`（rustc 判为解析错误），故按全仓惯例拆为独立 use 语句。
+#[cfg(any(feature = "kugou", feature = "netease"))]
+use crate::ui::online_track_row::OnlineTrackDisplay;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchPaletteItem {
