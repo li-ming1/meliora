@@ -13,11 +13,16 @@ use smallvec::{SmallVec, smallvec};
 use crate::{
     playback::{
         events::RepeatState,
-        queue::{PersistedDisplay, QueueItemData},
+        queue::QueueItemData,
         session_storage::PlaybackSessionData,
     },
     settings::playback::PlaybackSettings,
 };
+// 唯一消费者 `current_display` 为 online_sources gated，与 queue.rs 里该类型
+// 的 gate 保持一致。use 树嵌套段上不能挂 `#[cfg]`（rustc 判为解析错误），
+// 故按全仓惯例拆为独立 use 语句。
+#[cfg(feature = "online_sources")]
+use crate::playback::queue::PersistedDisplay;
 
 const UNDO_STACK_CAPACITY: usize = 30;
 
@@ -154,10 +159,11 @@ pub enum UndoAction {
         previous_queue_next: usize,
         previous_shuffle: bool,
     },
-    /// Items were inserted into the queue. Contains a list of inserted item indices.
+    /// Items were inserted into the queue. Inserts are always contiguous, so
+    /// the undo payload is a `(start, len)` range instead of an index list.
     Inserted {
-        queue_indices: SmallVec<[usize; 1]>,
-        original_queue_indices: SmallVec<[usize; 1]>,
+        queue_range: (usize, usize),
+        original_queue_range: (usize, usize),
         previous_queue_next: usize,
         previous_shuffle: bool,
     },
@@ -264,14 +270,10 @@ impl QueueManager {
         }
     }
 
-    /// Undo an insertion: remove the recorded indices highest-first so lower
-    /// indices stay valid while removing.
-    fn undo_remove_items(queue: &mut Vec<QueueItemData>, indices: SmallVec<[usize; 1]>) {
-        let mut indices = indices.into_vec();
-        indices.sort_unstable_by(|a, b| b.cmp(a));
-        for idx in indices {
-            queue.remove(idx);
-        }
+    /// Undo an insertion: drain the recorded contiguous range in one move
+    /// （逐索引 remove 是 O(k×n) memmove，范围 drain 只需一次）.
+    fn undo_remove_items(queue: &mut Vec<QueueItemData>, (start, len): (usize, usize)) {
+        queue.drain(start..start + len);
     }
 
     fn normalize_repeat_state(
@@ -354,27 +356,28 @@ impl QueueManager {
     }
 
     /// Shuffle mode: append `item` to `original_queue`, returning the undo
-    /// indices for the append (empty when not shuffling — `original_queue`
+    /// range for the append (`(0, 0)` when not shuffling — `original_queue`
     /// stays empty by definition then).
-    fn append_to_original_queue(&mut self, item: &QueueItemData) -> SmallVec<[usize; 1]> {
-        let mut indices = SmallVec::new();
+    fn append_to_original_queue(&mut self, item: &QueueItemData) -> (usize, usize) {
         if self.shuffle {
-            indices.push(self.original_queue.len());
+            let start = self.original_queue.len();
             Arc::make_mut(&mut self.original_queue).push(item.clone());
+            (start, 1)
+        } else {
+            (0, 0)
         }
-        indices
     }
 
     /// Shuffle mode: append `items` to `original_queue`, returning the undo
-    /// indices for the append (empty when not shuffling).
-    fn append_all_to_original_queue(&mut self, items: &[QueueItemData]) -> SmallVec<[usize; 1]> {
-        let mut indices = SmallVec::new();
+    /// range for the append (`(0, 0)` when not shuffling).
+    fn append_all_to_original_queue(&mut self, items: &[QueueItemData]) -> (usize, usize) {
         if self.shuffle {
-            let original_start = self.original_queue.len();
+            let start = self.original_queue.len();
             Arc::make_mut(&mut self.original_queue).extend(items.iter().cloned());
-            indices.extend(original_start..original_start + items.len());
+            (start, items.len())
+        } else {
+            (0, 0)
         }
-        indices
     }
 
     /// Resolve an insert's effect on the cursor: items inserted before the
@@ -430,17 +433,17 @@ impl QueueManager {
                 Self::undo_result_from_state(queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::Inserted {
-                queue_indices,
-                original_queue_indices,
+                queue_range,
+                original_queue_range,
                 previous_queue_next,
                 previous_shuffle,
             }) => {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 let queue = Arc::make_mut(&mut queue);
-                Self::undo_remove_items(queue, queue_indices);
+                Self::undo_remove_items(queue, queue_range);
 
                 let original_queue = Arc::make_mut(&mut self.original_queue);
-                Self::undo_remove_items(original_queue, original_queue_indices);
+                Self::undo_remove_items(original_queue, original_queue_range);
 
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
@@ -820,7 +823,7 @@ impl QueueManager {
     pub fn queue_item(&mut self, item: QueueItemData) -> usize {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
-        let original_queue_indices = self.append_to_original_queue(&item);
+        let original_queue_range = self.append_to_original_queue(&item);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
         Arc::make_mut(&mut queue).push(item);
@@ -831,8 +834,8 @@ impl QueueManager {
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Inserted {
-            queue_indices: smallvec![index],
-            original_queue_indices,
+            queue_range: (index, 1),
+            original_queue_range,
             previous_queue_next,
             previous_shuffle,
         });
@@ -851,7 +854,7 @@ impl QueueManager {
 
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
-        let original_queue_indices = self.append_all_to_original_queue(&items);
+        let original_queue_range = self.append_all_to_original_queue(&items);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
         let first_index = queue.len();
@@ -869,8 +872,8 @@ impl QueueManager {
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Inserted {
-            queue_indices: (first_index..first_index + items_len).collect(),
-            original_queue_indices,
+            queue_range: (first_index, items_len),
+            original_queue_range,
             previous_queue_next,
             previous_shuffle,
         });
@@ -882,7 +885,7 @@ impl QueueManager {
     pub fn insert_item(&mut self, position: usize, item: QueueItemData) -> InsertResult {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
-        let original_queue_indices = self.append_to_original_queue(&item);
+        let original_queue_range = self.append_to_original_queue(&item);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
@@ -896,8 +899,8 @@ impl QueueManager {
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Inserted {
-            queue_indices: smallvec![insert_pos],
-            original_queue_indices,
+            queue_range: (insert_pos, 1),
+            original_queue_range,
             previous_queue_next,
             previous_shuffle,
         });
@@ -913,7 +916,7 @@ impl QueueManager {
 
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
-        let original_queue_indices = self.append_all_to_original_queue(&items);
+        let original_queue_range = self.append_all_to_original_queue(&items);
 
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
@@ -928,8 +931,8 @@ impl QueueManager {
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Inserted {
-            queue_indices: (insert_pos..insert_pos + items_len).collect(),
-            original_queue_indices,
+            queue_range: (insert_pos, items_len),
+            original_queue_range,
             previous_queue_next,
             previous_shuffle,
         });
@@ -1251,21 +1254,28 @@ impl QueueManager {
         // for additional removals beyond the primary source index)
         let insert_at = to.min(queue.len() - indices.len());
 
-        // Record original positions and items, then remove in reverse order
+        // 单遍重建替代逐项 remove+insert（与 dequeue_many 同型）：旧实现对
+        // 每个移动项各做一次 O(n) memmove（k 项即 O(k×n) 含逐项 clone），全程
+        // 持有 UI 队列面板/歌词面板每帧读取的同一把写锁。drain 一次分区，
+        // moved 保持 pristine 升序整块 splice 回目标位置；undo 记录的仍是
+        // pristine 升序 (idx, item)，契约不变。
+        let move_set: FxHashSet<usize> = indices.iter().copied().collect();
         let mut original_items: SmallVec<[(usize, QueueItemData); 2]> = SmallVec::new();
         {
             let queue = Arc::make_mut(&mut queue);
-            for &idx in indices.iter().rev() {
-                let item = queue.remove(idx);
-                original_items.push((idx, item));
+            let mut kept = Vec::with_capacity(queue.len() - move_set.len());
+            for (pristine_idx, item) in queue.drain(..).enumerate() {
+                if move_set.contains(&pristine_idx) {
+                    original_items.push((pristine_idx, item));
+                } else {
+                    kept.push(item);
+                }
             }
-            // original_items is in reverse order, reverse to get ascending order
-            original_items.reverse();
-
-            // Insert all items at the destination
-            for (i, (_, item)) in original_items.iter().enumerate() {
-                queue.insert(insert_at + i, item.clone());
-            }
+            kept.splice(
+                insert_at..insert_at,
+                original_items.iter().map(|(_, item)| item.clone()),
+            );
+            *queue = kept;
         }
 
         // Adjust current position
