@@ -4,10 +4,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Mutex,
     time::Duration,
 };
 
@@ -19,6 +16,7 @@ use zed_reqwest::{
 };
 
 use super::crypto;
+use crate::session_io;
 
 pub const DOMAIN: &str = "https://music.163.com";
 pub const EAPI_DOMAIN: &str = "https://interfacepc.music.163.com";
@@ -97,55 +95,6 @@ impl NeteaseSession {
             nmtid: None,
         }
     }
-
-    fn load(path: &Path) -> Option<Self> {
-        let contents = match std::fs::read_to_string(path) {
-            Ok(contents) => contents,
-            // Missing credentials is the normal first-run path; stay quiet.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(%err, "no netease session on disk yet");
-                return None;
-            }
-            Err(err) => {
-                tracing::warn!(%err, path = %path.display(), "failed to read netease session");
-                return None;
-            }
-        };
-        serde_json::from_str(&contents)
-            .map_err(|err| tracing::warn!(%err, "failed to decode netease session"))
-            .ok()
-    }
-
-    fn save(&self, path: &Path) {
-        if let Some(parent) = path.parent()
-            && let Err(err) = std::fs::create_dir_all(parent)
-        {
-            tracing::warn!(%err, "failed to create netease session dir");
-            return;
-        }
-        let json = match serde_json::to_string_pretty(self) {
-            Ok(json) => json,
-            Err(err) => {
-                tracing::warn!(%err, "failed to serialize netease session");
-                return;
-            }
-        };
-        // Write to a temporary file and rename it into place (same pattern as
-        // `playback/session_storage.rs`): an in-place truncate+rewrite can
-        // leave a truncated session file behind when the process dies mid-write.
-        // `fs::rename` replaces an existing target on Windows, so the swap is
-        // atomic on every supported platform.
-        let tmp = path.with_extension("json.tmp");
-        if let Err(err) = std::fs::write(&tmp, json) {
-            tracing::warn!(%err, "failed to write netease session temp file");
-            let _ = std::fs::remove_file(&tmp);
-            return;
-        }
-        if let Err(err) = std::fs::rename(&tmp, path) {
-            tracing::warn!(%err, "failed to persist netease session");
-            let _ = std::fs::remove_file(&tmp);
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -201,14 +150,17 @@ pub struct NeteaseClient {
     session_path: PathBuf,
     /// Per-process `WNMCID` cookie (6 random lowercase letters + timestamp).
     wnm_cid: String,
-    /// Guards the one-shot anonymous registration against stampedes.
-    registering: AtomicBool,
+    /// Guards the one-shot anonymous registration against stampedes. 用
+    /// tokio Mutex 而非原子标志：RAII 在注册 panic 展开时自动放锁，
+    /// 后续等待者可直接重试（原子标志一旦泄漏即永久卡死轮询）。
+    registering: tokio::sync::Mutex<()>,
 }
 
 impl NeteaseClient {
     pub fn new(data_dir: &Path) -> Self {
         let session_path = data_dir.join("netease_session.json");
-        let session = NeteaseSession::load(&session_path).unwrap_or_else(NeteaseSession::generate);
+        let session =
+            session_io::load(&session_path, "netease").unwrap_or_else(NeteaseSession::generate);
         let letters: String = (0..6)
             .map(|_| (b'a' + rand::random_range(0..26u8)) as char)
             .collect();
@@ -224,7 +176,7 @@ impl NeteaseClient {
             session: Mutex::new(session),
             session_path,
             wnm_cid: format!("{letters}.{now_ms}.01.0"),
-            registering: AtomicBool::new(false),
+            registering: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -243,7 +195,7 @@ impl NeteaseClient {
     }
 
     fn save_session(&self, session: &NeteaseSession) {
-        session.save(&self.session_path);
+        session_io::save(session, &self.session_path, "netease");
     }
 
     /// Stores QR-login credentials picked up from the poll response.
@@ -303,29 +255,28 @@ impl NeteaseClient {
     /// The anonymous guest token, registering one if the session has neither
     /// login nor guest cookie yet.
     async fn ensure_anonymous(&self) -> Result<(), NeteaseError> {
-        loop {
-            if self
-                .session_guard()
-                .music_a
-                .as_deref()
-                .is_some_and(|token| !token.is_empty())
-            {
-                return Ok(());
-            }
-            // Someone else is already registering: wait for them to finish.
-            if self
-                .registering
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 快路径不碰锁：绝大多数请求都已持有 guest cookie。
+        if self
+            .session_guard()
+            .music_a
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            return Ok(());
         }
-
-        let result = self.register_anonymous_inner().await;
-        self.registering.store(false, Ordering::SeqCst);
-        result
+        // 串行化并发注册者（替代旧的 50ms 轮询）。
+        let _guard = self.registering.lock().await;
+        // 双重检查：等锁期间前任持有者可能已注册成功。若其 best-effort
+        // 失败（music_a 仍空），由本等待者串行重试，交接语义与轮询一致。
+        if self
+            .session_guard()
+            .music_a
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            return Ok(());
+        }
+        self.register_anonymous_inner().await
     }
 
     /// Calls `/api/register/anonimous` (weapi) and captures the guest
@@ -655,8 +606,8 @@ mod tests {
             user_id: Some(42),
             ..NeteaseSession::generate()
         };
-        session.save(&path);
-        let loaded = NeteaseSession::load(&path).expect("session loads");
+        session_io::save(&session, &path, "netease");
+        let loaded = session_io::load::<NeteaseSession>(&path, "netease").expect("session loads");
         assert_eq!(loaded.music_u.as_deref(), Some("tok"));
         assert_eq!(loaded.user_id, Some(42));
         assert_eq!(loaded.device_id, session.device_id);
