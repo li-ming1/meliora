@@ -14,7 +14,7 @@ use cntp_i18n::{I18N_MANAGER, Locale, tr};
 use gpui::*;
 use gpui_platform::current_platform;
 use prelude::FluentBuilder;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::{
     controllers::{init_pbc_task, register_pbc_event_handlers},
@@ -249,24 +249,39 @@ static IMMERSIVE_WAS_MAXIMIZED: AtomicBool = AtomicBool::new(false);
 /// SetWindowPos is swallowed outright (measured: entering fullscreen from a
 /// maximized window falls back to the small pre-maximize rect, leaving the
 /// taskbar visible). So un-maximize before entering and re-maximize after
-/// leaving; both orderings rely on the main executor / message queue FIFO.
+/// leaving. The SW_RESTORE is a queued OS message while gpui's style switch
+/// runs in an executor callback — measured to land BEFORE the restore, so the
+/// enter path waits until `is_maximized` is actually clear before toggling.
 pub(crate) fn set_main_window_fullscreen(fullscreen: bool, cx: &mut App) {
     let Some(window) = find_main_window(cx) else {
+        error!(
+            fullscreen,
+            "immersive: main window not found for fullscreen toggle"
+        );
         return;
     };
     if fullscreen {
-        let _ = window.update(cx, |_, window, _| {
-            if window.is_maximized() {
+        let update = window.update(cx, |_, window, _| {
+            let maximized = window.is_maximized();
+            info!(maximized, "immersive: entering OS fullscreen");
+            if maximized {
                 IMMERSIVE_WAS_MAXIMIZED.store(true, Ordering::Relaxed);
-                // SW_RESTORE is posted here, so gpui's style switch (spawned
-                // below) is processed against an un-zoomed window.
                 window.zoom_window();
+                enter_fullscreen_when_restored(window, 16);
+            } else {
+                window.toggle_fullscreen();
             }
-            window.toggle_fullscreen();
         });
+        if let Err(err) = update {
+            error!(fullscreen, %err, "immersive: entering fullscreen update failed");
+        }
     } else {
         let was_maximized = IMMERSIVE_WAS_MAXIMIZED.swap(false, Ordering::Relaxed);
-        let _ = window.update(cx, |_, window, _| window.toggle_fullscreen());
+        info!(was_maximized, "immersive: leaving OS fullscreen");
+        let update = window.update(cx, |_, window, _| window.toggle_fullscreen());
+        if let Err(err) = update {
+            error!(fullscreen, %err, "immersive: leaving fullscreen update failed");
+        }
         if was_maximized {
             cx.spawn(async move |cx| {
                 // Same foreground executor FIFO as gpui's internal restore
@@ -288,6 +303,19 @@ pub(crate) fn set_main_window_fullscreen(fullscreen: bool, cx: &mut App) {
             })
             .detach();
         }
+    }
+}
+
+/// Toggles fullscreen once the queued SW_RESTORE has actually landed, retrying
+/// once per frame (capped: an un-restored window after ~16 frames means
+/// something is deeply wrong and we skip the toggle rather than toggle a
+/// zoomed window).
+fn enter_fullscreen_when_restored(window: &mut Window, remaining: u8) {
+    if window.is_maximized() && remaining > 0 {
+        window
+            .on_next_frame(move |window, _| enter_fullscreen_when_restored(window, remaining - 1));
+    } else if !window.is_maximized() {
+        window.toggle_fullscreen();
     }
 }
 

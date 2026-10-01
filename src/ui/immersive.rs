@@ -131,7 +131,10 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
         return;
     }
     immersive.write(cx, entering);
-    crate::ui::app::set_main_window_fullscreen(entering, cx);
+    // 这里运行在点击/按键处理器的窗口更新上下文里，同步调 window.update 是
+    // 重入、会被静默吞掉（进入分支的日志从不出现）——推到本轮 effect 之后，
+    // 与 focus_main_window 的 defer 模式一致。
+    cx.defer(move |cx| crate::ui::app::set_main_window_fullscreen(entering, cx));
 }
 
 pub struct ImmersiveView {
