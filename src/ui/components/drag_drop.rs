@@ -466,6 +466,9 @@ pub fn perform_edge_scroll(
 /// runs (and chains get scheduled) while the pointer is anywhere else on the
 /// same row, and a stale in-zone mouse_y keeps a scheduled chain scrolling
 /// after the pointer left.
+///
+/// `dragging_indices` 传 `None` 表示沿用 state 现值：同一拖拽会话内 payload
+/// 恒定，indices 首次设置后不变，无需按鼠标报告率每次重建。
 #[allow(clippy::too_many_arguments)] // internal helper threading drag-state through one pass
 fn update_drag_move_state<V: 'static>(
     manager: &Entity<DragDropListManager>,
@@ -474,7 +477,7 @@ fn update_drag_move_state<V: 'static>(
     mouse_pos: Point<Pixels>,
     container_bounds: Bounds<Pixels>,
     item_count: usize,
-    dragging_indices: Vec<usize>,
+    dragging_indices: Option<Vec<usize>>,
     reduced_motion: bool,
     cx: &mut Context<V>,
 ) -> bool {
@@ -507,7 +510,9 @@ fn update_drag_move_state<V: 'static>(
     // this list, so all state changes are coalesced into one.
     manager.update(cx, |m, _| {
         m.state.is_dragging = true;
-        m.state.dragging_indices = dragging_indices;
+        if let Some(indices) = dragging_indices {
+            m.state.dragging_indices = indices;
+        }
         if contains {
             m.state.set_mouse_y(mouse_pos.y);
         } else {
@@ -544,6 +549,14 @@ pub fn handle_drag_move<V: 'static>(
         return false;
     }
 
+    // DragMoveEvent 在拖拽期间按鼠标报告率对每次移动触发（125-1000Hz），
+    // 拖拽进行中 payload 恒定，传 None 沿用现值，跳过每次事件的 Vec 分配。
+    let dragging_indices = if manager.read(cx).state.is_dragging {
+        None
+    } else {
+        Some(vec![drag_data.source_index])
+    };
+
     update_drag_move_state(
         &manager,
         &scroll_handle,
@@ -551,7 +564,7 @@ pub fn handle_drag_move<V: 'static>(
         event.event.position,
         event.bounds,
         item_count,
-        vec![drag_data.source_index],
+        dragging_indices,
         reduced_motion,
         cx,
     )
@@ -580,10 +593,14 @@ pub fn handle_track_drag_move<V: 'static>(
         .map(|id| *id == config.list_id)
         .unwrap_or(false);
 
-    let dragging_indices = if is_internal {
-        drag_data.all_indices()
+    // 同 handle_drag_move：拖拽进行中 payload 恒定，传 None 跳过
+    // all_indices 的 collect+sort 堆分配。
+    let dragging_indices = if manager.read(cx).state.is_dragging {
+        None
+    } else if is_internal {
+        Some(drag_data.all_indices())
     } else {
-        Vec::new()
+        Some(Vec::new())
     };
 
     update_drag_move_state(
@@ -739,7 +756,7 @@ pub fn handle_external_drag_move<V: 'static>(
         mouse_pos,
         container_bounds,
         item_count,
-        Vec::new(),
+        Some(Vec::new()),
         reduced_motion,
         cx,
     )
