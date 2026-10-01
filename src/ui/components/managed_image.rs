@@ -1498,32 +1498,60 @@ fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
 /// JPEG's 8×8 block steps and other flat-region noise while keeping genuine
 /// edges intact — the unsharp pass this replaces did the opposite (it
 /// amplified exactly those block edges into the "黑框框" grid).
+///
+/// 行缓冲滑窗实现，不做整图 clone：三条缓冲里永远是采样那一刻的原始字节
+/// （next 行只从写指针之后的未写行装载，prev/cur 靠 swap 轮转），输出与
+/// "先整图快照再采样"逐字节一致。x 的边缘 clamp 每像素算一次
+/// （saturating_sub ≡ clamp(x−1)，min(x+1,last) ≡ clamp(x+1)），y 的每行
+/// 算一次；采样集合、sort_unstable 取 [4]、遍历顺序与原实现相同，alpha
+/// 字节不写即保持原值。
 fn denoise_rgba(image: &mut image::RgbaImage) {
     let (width, height) = image.dimensions();
-    let source = image.clone();
-    let sample = |x: i64, y: i64| -> [u8; 4] {
-        let x = x.clamp(0, width as i64 - 1) as u32;
-        let y = y.clamp(0, height as i64 - 1) as u32;
-        source.get_pixel(x, y).0
-    };
-    for y in 0..height {
-        for x in 0..width {
-            let mut out = [0u8; 3];
-            for (channel, out_cell) in out.iter_mut().enumerate() {
-                let mut window = [0u8; 9];
-                let mut n = 0;
-                for dy in -1i64..=1 {
-                    for dx in -1i64..=1 {
-                        window[n] = sample(x as i64 + dx, y as i64 + dy)[channel];
-                        n += 1;
-                    }
-                }
+    if width == 0 || height == 0 {
+        return;
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let stride = w * 4;
+    let last_y = h - 1;
+    let last_x = w - 1;
+    let bytes: &mut [u8] = image;
+    fn copy_row(dst: &mut [u8], src: &[u8], src_y: usize, stride: usize) {
+        let start = src_y * stride;
+        dst.copy_from_slice(&src[start..start + stride]);
+    }
+    let mut prev_row = vec![0u8; stride];
+    let mut cur_row = vec![0u8; stride];
+    let mut next_row = vec![0u8; stride];
+    copy_row(&mut prev_row, bytes, 0, stride);
+    copy_row(&mut cur_row, bytes, 0, stride);
+    copy_row(&mut next_row, bytes, 1.clamp(0, last_y), stride);
+    for y in 0..h {
+        let out_row = &mut bytes[y * stride..(y + 1) * stride];
+        for x in 0..w {
+            let xm = x.saturating_sub(1) * 4;
+            let xc = x * 4;
+            let xp = (x + 1).min(last_x) * 4;
+            for (c, out_cell) in out_row[xc..xc + 3].iter_mut().enumerate() {
+                let mut window = [
+                    prev_row[xm + c],
+                    prev_row[xc + c],
+                    prev_row[xp + c],
+                    cur_row[xm + c],
+                    cur_row[xc + c],
+                    cur_row[xp + c],
+                    next_row[xm + c],
+                    next_row[xc + c],
+                    next_row[xp + c],
+                ];
                 window.sort_unstable();
                 *out_cell = window[4];
             }
-            let pixel = image.get_pixel_mut(x, y);
-            let orig = *pixel;
-            pixel.0 = [out[0], out[1], out[2], orig[3]];
+        }
+        if y + 1 < h {
+            std::mem::swap(&mut prev_row, &mut cur_row);
+            std::mem::swap(&mut cur_row, &mut next_row);
+            copy_row(&mut next_row, bytes, (y + 2).clamp(0, last_y), stride);
         }
     }
 }
