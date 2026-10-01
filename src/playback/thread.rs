@@ -413,7 +413,11 @@ impl PlaybackThread {
                 .flatten()
             })
             .or_else(|| {
-                warn!("failed to refresh expired stream URL; skipping track");
+                warn!(
+                    identity = ?identity,
+                    title = ctx.display.0.as_deref().unwrap_or("?"),
+                    "failed to refresh expired stream URL; skipping track"
+                );
                 None
             })?;
         let path = PathBuf::from(url);
