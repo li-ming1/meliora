@@ -23,6 +23,10 @@ impl Default for MixOptions {
 struct MixMatrix {
     /// `out_channels` rows, `in_channels` columns
     rows: Vec<Vec<f64>>,
+    /// 每输出行的非零 (输入索引, 权重)，按输入索引升序。
+    /// 必须在 normalize 之后派生（缩放改变权重终值）；
+    /// 过滤条件与 `w != 0.0` 完全一致，-0.0 一并剔除以保证逐位等价
+    taps: Vec<Vec<(u16, f64)>>,
     in_channels: usize,
     out_channels: usize,
 }
@@ -34,6 +38,37 @@ impl MixMatrix {
 
     fn out_channels(&self) -> usize {
         self.out_channels
+    }
+
+    /// 统一构造入口：构造即派生 taps，保证任何已存在的矩阵 taps 与 rows 一致
+    fn from_rows(rows: Vec<Vec<f64>>, in_channels: usize, out_channels: usize) -> Self {
+        let mut matrix = Self {
+            rows,
+            in_channels,
+            out_channels,
+            taps: Vec::new(),
+        };
+        matrix.derive_taps();
+        matrix
+    }
+
+    /// 从 rows 派生稀疏 tap 表。过滤条件与原 `w != 0.0` 分支完全一致
+    /// （IEEE 下 -0.0 != 0.0 为 false，同样剔除），必须在权重终值确定后调用
+    fn derive_taps(&mut self) {
+        self.taps = self
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .filter(|&(_, &w)| w != 0.0)
+                    .map(|(j, &w)| {
+                        debug_assert!(j <= u16::MAX as usize);
+                        (j as u16, w)
+                    })
+                    .collect()
+            })
+            .collect();
     }
 
     #[cfg(test)]
@@ -68,6 +103,8 @@ impl MixMatrix {
             _ => build_count_based(src.count(), dst.count(), opts),
         };
         matrix.normalize();
+        // taps 必须在 normalize 之后（重）派生：缩放改变权重终值
+        matrix.derive_taps();
         matrix
     }
 
@@ -96,12 +133,11 @@ impl MixMatrix {
         debug_assert_eq!(input.len(), self.in_channels);
         debug_assert_eq!(output.len(), self.out_channels);
 
-        for (i, row) in self.rows.iter().enumerate() {
+        // 只遍历非零 tap；taps 按输入索引升序，与原全矩阵扫描累加顺序一致，逐位等价
+        for (i, row_taps) in self.taps.iter().enumerate() {
             let mut acc = 0.0f64;
-            for (j, &w) in row.iter().enumerate() {
-                if w != 0.0 {
-                    acc += w * input[j];
-                }
+            for &(j, w) in row_taps {
+                acc += w * input[j as usize];
             }
             // normalization keeps row sums <= 1.0, so this is a pure safety net
             output[i] = acc.clamp(-1.0, 1.0);
@@ -270,11 +306,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         }
     }
 
-    MixMatrix {
-        rows,
-        in_channels,
-        out_channels,
-    }
+    MixMatrix::from_rows(rows, in_channels, out_channels)
 }
 
 /// Count-only fallback for layouts without usable position metadata.
@@ -282,11 +314,7 @@ fn build_count_based(in_count: usize, out_count: usize, _opts: MixOptions) -> Mi
     let mut rows = vec![vec![0.0f64; in_count]; out_count];
 
     if in_count == 0 || out_count == 0 {
-        return MixMatrix {
-            rows,
-            in_channels: in_count,
-            out_channels: out_count,
-        };
+        return MixMatrix::from_rows(rows, in_count, out_count);
     }
 
     if in_count == out_count {
@@ -315,11 +343,7 @@ fn build_count_based(in_count: usize, out_count: usize, _opts: MixOptions) -> Mi
         }
     }
 
-    MixMatrix {
-        rows,
-        in_channels: in_count,
-        out_channels: out_count,
-    }
+    MixMatrix::from_rows(rows, in_count, out_count)
 }
 
 pub struct ChannelMixer {
@@ -395,13 +419,31 @@ impl ChannelMixer {
             plane.reserve(frames);
         }
 
-        for i in 0..frames {
-            for ch in 0..self.in_channels {
-                self.in_frame[ch] = input.get(ch).map(|p| p[i]).unwrap_or(0.0);
+        if input.len() >= self.in_channels {
+            // 快路径（生产热路径）：平面齐全，行查找已提到样本循环外，直接下标取值
+            for i in 0..frames {
+                // in_frame 槽位数恰为 in_channels，zip 在此自然截断，不会读进多余平面
+                for (slot, plane) in self.in_frame.iter_mut().zip(input) {
+                    *slot = plane[i];
+                }
+                self.matrix.mix_frame(&self.in_frame, &mut self.out_frame);
+                for (ch, &s) in self.out_frame.iter().enumerate() {
+                    self.output_planes[ch].push(s);
+                }
             }
-            self.matrix.mix_frame(&self.in_frame, &mut self.out_frame);
-            for (ch, &s) in self.out_frame.iter().enumerate() {
-                self.output_planes[ch].push(s);
+        } else {
+            // 慢路径（仅短平面输入）：缺失平面按静音，防短平面语义保留
+            let planes: Vec<Option<&[f64]>> = (0..self.in_channels)
+                .map(|ch| input.get(ch).map(|p| p.as_slice()))
+                .collect();
+            for i in 0..frames {
+                for (ch, plane) in planes.iter().enumerate() {
+                    self.in_frame[ch] = plane.map_or(0.0, |p| p[i]);
+                }
+                self.matrix.mix_frame(&self.in_frame, &mut self.out_frame);
+                for (ch, &s) in self.out_frame.iter().enumerate() {
+                    self.output_planes[ch].push(s);
+                }
             }
         }
 
