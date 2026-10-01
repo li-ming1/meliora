@@ -25,6 +25,8 @@ where
     column_index: usize,
     columns: Entity<Arc<IndexMap<C, f32, FxBuildHasher>>>,
     default_width: f32,
+    /// 拖拽结束（MouseUp）与双击复位后回调，持久化最终列宽
+    persist: Rc<dyn Fn(&mut App)>,
 }
 
 impl<C> ColumnResizeHandle<C>
@@ -35,6 +37,7 @@ where
         column_index: usize,
         columns: Entity<Arc<IndexMap<C, f32, FxBuildHasher>>>,
         default_width: f32,
+        persist: Rc<dyn Fn(&mut App)>,
     ) -> Self {
         Self {
             // Composite (name, index) id: zero per-frame allocation. The
@@ -45,6 +48,7 @@ where
             column_index,
             columns,
             default_width,
+            persist,
         }
     }
 }
@@ -137,6 +141,7 @@ where
         let columns_entity = self.columns.clone();
         let column_index = self.column_index;
         let default_width = self.default_width;
+        let persist = self.persist.clone();
 
         window.with_optional_element_state(
             id,
@@ -148,6 +153,7 @@ where
                 // start drag on mouse down
                 let state_down = state.clone();
                 let columns_down = columns_entity.clone();
+                let persist_down = persist.clone();
                 cx.on_mouse_event(move |ev: &MouseDownEvent, _, window, cx| {
                     if ev.button != MouseButton::Left {
                         return;
@@ -172,6 +178,8 @@ where
                             cx.notify();
                         });
                         window.refresh();
+                        // 复位后的宽度在此持久化（宽度变化不再经过 columns 观察者）
+                        persist_down(cx);
                         return;
                     }
 
@@ -217,13 +225,21 @@ where
 
                 // mouse up, end the drag
                 let state_up = state.clone();
-                cx.on_mouse_event(move |ev: &MouseUpEvent, _, _, _| {
+                let persist_up = persist.clone();
+                cx.on_mouse_event(move |ev: &MouseUpEvent, _, _, cx| {
                     if ev.button != MouseButton::Left {
                         return;
                     }
 
-                    let mut state = state_up.borrow_mut();
-                    state.is_dragging = false;
+                    let was_dragging = {
+                        let mut state = state_up.borrow_mut();
+                        std::mem::replace(&mut state.is_dragging, false)
+                    };
+
+                    // 拖拽结束才持久化最终列宽；非拖拽的普通点击在此原样返回
+                    if was_dragging {
+                        persist_up(cx);
+                    }
                 });
 
                 ((), Some(state))
@@ -236,9 +252,10 @@ pub fn column_resize_handle<C>(
     column_index: usize,
     columns: Entity<Arc<IndexMap<C, f32, FxBuildHasher>>>,
     default_width: f32,
+    persist: Rc<dyn Fn(&mut App)>,
 ) -> ColumnResizeHandle<C>
 where
     C: Column + 'static,
 {
-    ColumnResizeHandle::new(column_index, columns, default_width)
+    ColumnResizeHandle::new(column_index, columns, default_width, persist)
 }

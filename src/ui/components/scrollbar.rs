@@ -636,12 +636,14 @@ impl Element for Scrollbar {
                             scroll_handle_scroll.set_offset(new_offset);
                             window.prevent_default();
                             cx.stop_propagation();
+                            // 仅偏移真的变化时才重绘：thumb 顶到端点时滚轮每
+                            // tick 都会进入处理器，重绘全窗口视觉零变化
+                            window.refresh();
                         }
 
                         if let Some(handler) = on_interaction_scroll.as_ref() {
                             handler(window, cx);
                         }
-                        window.refresh();
                     }
                 });
 

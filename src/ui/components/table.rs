@@ -109,6 +109,12 @@ where
     context_menu_context: T::ContextMenuContext,
     default_columns: IndexMap<C, f32, FxBuildHasher>,
     columns: Entity<Arc<IndexMap<C, f32, FxBuildHasher>>>,
+    /// 上次构建行视图时的列集（键序列）快照：columns notify 时与之比较，
+    /// 区分仅宽度变化（跳过 clear_row_views）与结构变化（hide/show/reorder）
+    last_column_set: Arc<IndexMap<C, f32, FxBuildHasher>>,
+    /// 列宽拖拽结束（MouseUp / 双击复位）后由句柄回调的持久化入口：
+    /// 拖拽期间宽度 notify 以指针上报率到达，不能每次都写设置
+    persist_on_resize_end: Rc<dyn Fn(&mut App)>,
     // preserves hidden column widths, even if not shown
     hidden_column_widths: Entity<FxHashMap<C, f32>>,
     views: Entity<RowMap<T, C>>,
@@ -224,7 +230,8 @@ where
                 Self::build_columns_from_settings(initial_settings);
 
             let default_columns = T::default_columns();
-            let columns = cx.new(|_| Arc::new(initial_columns));
+            let initial_columns = Arc::new(initial_columns);
+            let columns = cx.new(|_| initial_columns.clone());
             let hidden_column_widths = cx.new(|_| initial_hidden);
             let views = cx.new(|_| FxHashMap::default());
             let render_counter = cx.new(|_| 0);
@@ -261,9 +268,29 @@ where
             })
             .detach();
 
-            cx.observe(&columns, |this: &mut Table<T, C>, _, cx| {
-                this.clear_row_views(cx);
-                this.persist_settings(cx);
+            // 列宽拖拽结束点回调 Table 持久化，见 columns 观察者；弱引用避免
+            // Table 结构体自持有 Entity<Self> 形成释放循环
+            let table_entity = cx.entity().downgrade();
+            let persist_on_resize_end: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+                let _ = table_entity.update(cx, |table, cx| table.persist_settings(cx));
+            });
+
+            cx.observe(&columns, |this: &mut Table<T, C>, columns, cx| {
+                // 列宽拖拽以指针上报率 notify：仅宽度变化时跳过整体重建，
+                // 行实体靠自身观察者更新快照与宽度，宽度持久化挂在拖拽结束点；
+                // 仅结构变化（hide/show/reorder）才清行视图并即时持久化
+                let current = columns.read(cx).clone();
+                let structural = current.len() != this.last_column_set.len()
+                    || current
+                        .keys()
+                        .zip(this.last_column_set.keys())
+                        .any(|(a, b)| a != b);
+
+                if structural {
+                    this.last_column_set = current;
+                    this.clear_row_views(cx);
+                    this.persist_settings(cx);
+                }
 
                 cx.notify();
             })
@@ -285,6 +312,8 @@ where
                 context_menu_context,
                 default_columns,
                 columns,
+                last_column_set: initial_columns,
+                persist_on_resize_end,
                 hidden_column_widths,
                 views,
                 render_counter,
@@ -335,8 +364,9 @@ where
         self.items.clone()
     }
 
-    /// Drops all cached row views, list and grid alike; called on reload and
-    /// when the column set changes.
+    /// 丢弃全部缓存行视图（列表+网格）。仅在行重载与列集结构变化
+    /// （hide/show/reorder）时调用；仅宽度变化不清行，行实体靠自身
+    /// 观察者更新快照与宽度。
     fn clear_row_views(&mut self, cx: &mut Context<Self>) {
         self.views = cx.new(|_| FxHashMap::default());
         self.render_counter = cx.new(|_| 0);
@@ -551,30 +581,8 @@ where
         let theme = cx.global::<Theme>();
         let sort_method = self.sort_method.read(cx);
         let items = self.items.clone();
-        // A separate handle for the grid branch: the list branch's render
-        // closure moves the original into the uniform_list item builder.
-        let grid_prefetch_state = self.prefetch_state.clone();
-        let views_model = self.views.clone();
-        let render_counter = self.render_counter.clone();
-
-        let grid_views_model = self.grid_views.clone();
-        let grid_render_counter = self.grid_render_counter.clone();
         let view_mode = *self.view_mode.read(cx);
-        let grid_scroll_handle = self.grid_scroll_handle.clone();
-        let grid_min_item_width = {
-            let settings = cx.global::<SettingsGlobal>().model.read(cx);
-            clamp_grid_min_item_width(settings.interface.grid_min_item_width)
-        };
-
-        let columns = self.columns.clone();
-        let list_context_menu_context = self.context_menu_context.clone();
-        let grid_context_menu_context = self.context_menu_context.clone();
-        let list_handler = self.on_select.clone();
-        let grid_handler = self.on_select.clone();
-        let list_vertical_scroll_handle = self.list_vertical_scroll_handle.clone();
-        let list_horizontal_scroll_handle = self.list_horizontal_scroll_handle.clone();
         let rows_generation = self.rows_generation;
-        let prefetch_state = self.prefetch_state.clone();
 
         let columns_read = self.columns.read(cx);
         let column_count = columns_read.len();
@@ -687,7 +695,12 @@ where
             );
 
             if column_id.is_resizable() && !is_last {
-                header = header.child(column_resize_handle(i, self.columns.clone(), default_width));
+                header = header.child(column_resize_handle(
+                    i,
+                    self.columns.clone(),
+                    default_width,
+                    self.persist_on_resize_end.clone(),
+                ));
             }
         }
 
@@ -715,157 +728,6 @@ where
             .with(header)
             .child(div().bg(theme.elevated_background).child(column_menu));
 
-        let list_canvas = div()
-            .image_cache(meliora_cache((T::get_table_name(), 0_usize), 200))
-            .relative()
-            // no min-width here: columns are flex items and compress
-            // proportionally when the pane narrows; a min-width equal to the
-            // column sum pinned the canvas to the un-shrunk width so the
-            // resizable panel covered the overflow
-            .w_full()
-            .h_full()
-            .flex()
-            .flex_col()
-            .child(header_with_context)
-            .when_some(items.clone(), |this, items| {
-                let items_len = items.len();
-                this.child(
-                    div()
-                        .relative()
-                        .w_full()
-                        .h_full()
-                        .flex_grow(1.0)
-                        .min_h(px(0.0))
-                        .child({
-                            let mut list =
-                                uniform_list("table-list", items_len, move |range, _, cx| {
-                                    let start = range.start;
-                                    let is_templ_render = range.start == 0 && range.end == 1;
-
-                                    // keep the row prefetch one band ahead of the
-                                    // visible window so new rows hit the row cache
-                                    if !is_templ_render {
-                                        schedule_row_prefetch::<T, C>(
-                                            &prefetch_state,
-                                            rows_generation,
-                                            (range.start + range.end) / 2,
-                                            items.as_slice(),
-                                            cx,
-                                        );
-                                    }
-
-                                    items[range]
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(idx, item)| {
-                                            let idx = idx + start;
-
-                                            if !is_templ_render {
-                                                prune_views(&views_model, &render_counter, idx, cx);
-                                            }
-
-                                            div()
-                                                .w_full()
-                                                .child(create_or_retrieve_view(
-                                                    &views_model,
-                                                    idx,
-                                                    |cx| {
-                                                        TableItem::new(
-                                                            cx,
-                                                            item.clone(),
-                                                            &columns,
-                                                            list_handler.clone(),
-                                                            list_context_menu_context.clone(),
-                                                        )
-                                                    },
-                                                    cx,
-                                                ))
-                                                .into_any_element()
-                                        })
-                                        .collect()
-                                })
-                                .track_scroll(&list_vertical_scroll_handle)
-                                .w_full()
-                                .h_full();
-                            // GPUI otherwise maps a horizontal gesture onto this list's only
-                            // scrollable axis (Y). Keep X scrolling on the outer viewport.
-                            list.style().restrict_scroll_to_axis = Some(true);
-                            list
-                        }),
-                )
-            });
-
-        let grid_canvas = {
-            let grid_padding = 10.0;
-
-            div()
-                .relative()
-                .w_full()
-                .flex()
-                .h_full()
-                .px(px(grid_padding))
-                .overflow_y_hidden()
-                .when_some(items.clone(), |this, items| {
-                    let items_len = items.len();
-                    this.child(
-                        uniform_grid(
-                            "grid-list",
-                            items_len,
-                            grid_scroll_handle.clone(),
-                            move |idx, _, cx| {
-                                prune_views(&grid_views_model, &grid_render_counter, idx, cx);
-
-                                // keep the row prefetch one band ahead of the
-                                // visible window so new rows hit the row cache
-                                schedule_row_prefetch::<T, C>(
-                                    &grid_prefetch_state,
-                                    rows_generation,
-                                    idx,
-                                    items.as_slice(),
-                                    cx,
-                                );
-
-                                // Fallible equivalent of `create_or_retrieve_view`: a row can
-                                // vanish between get_rows and this frame (a rescan deleted it,
-                                // or its query failed), and the old `.expect` here panicked the
-                                // whole app off a stale items snapshot. The lookup result is
-                                // bound before matching so the entity's read guard is gone
-                                // before the `update` below re-borrows it.
-                                let mut view = grid_views_model.read(cx).get(&idx).cloned();
-                                if view.is_none() {
-                                    view = grid_item::GridItem::new(
-                                        cx,
-                                        items[idx].clone(),
-                                        grid_handler.clone(),
-                                        grid_context_menu_context.clone(),
-                                        GridContext::Table,
-                                    );
-                                    if let Some(built) = view.clone() {
-                                        grid_views_model.update(cx, |m, _| {
-                                            m.insert(idx, built);
-                                        });
-                                    }
-                                }
-
-                                // A vanished row renders as a blank cell for this frame; the
-                                // reload already in flight replaces the stale snapshot. No
-                                // per-item image_cache here either: GridItem draws its artwork
-                                // through managed_image, which never touches the gpui image
-                                // cache the wrapper would feed.
-                                match view {
-                                    Some(view) => div().size_full().child(view).into_any_element(),
-                                    None => div().into_any_element(),
-                                }
-                            },
-                        )
-                        .min_item_width(px(grid_min_item_width))
-                        .gap(px(0.0))
-                        .py(px(grid_padding)),
-                    )
-                    .child(floating_scrollbar("grid-scrollbar", grid_scroll_handle).right(px(4.0)))
-                })
-        };
-
         div()
             .id(T::get_table_name())
             .overflow_hidden()
@@ -875,6 +737,15 @@ where
             .h_full()
             .child(match view_mode {
                 TableViewMode::List => {
+                    let views_model = self.views.clone();
+                    let render_counter = self.render_counter.clone();
+                    let columns = self.columns.clone();
+                    let list_context_menu_context = self.context_menu_context.clone();
+                    let list_handler = self.on_select.clone();
+                    let list_vertical_scroll_handle = self.list_vertical_scroll_handle.clone();
+                    let list_horizontal_scroll_handle = self.list_horizontal_scroll_handle.clone();
+                    let prefetch_state = self.prefetch_state.clone();
+
                     let mut horizontal_viewport = div()
                         .id(self.horizontal_scroll_id.clone())
                         .overflow_x_scroll()
@@ -894,22 +765,221 @@ where
                     // scrollable axis (X). Keep Y scrolling on the inner uniform list.
                     horizontal_viewport.style().restrict_scroll_to_axis = Some(true);
 
+                    let list_canvas = div()
+                        .image_cache(meliora_cache((T::get_table_name(), 0_usize), 200))
+                        .relative()
+                        // no min-width here: columns are flex items and compress
+                        // proportionally when the pane narrows; a min-width equal to the
+                        // column sum pinned the canvas to the un-shrunk width so the
+                        // resizable panel covered the overflow
+                        .w_full()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .child(header_with_context)
+                        .when_some(items, |this, items| {
+                            let items_len = items.len();
+                            this.child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h_full()
+                                    .flex_grow(1.0)
+                                    .min_h(px(0.0))
+                                    .child({
+                                        let mut list = uniform_list(
+                                            "table-list",
+                                            items_len,
+                                            move |range, _, cx| {
+                                                let start = range.start;
+                                                let is_templ_render =
+                                                    range.start == 0 && range.end == 1;
+
+                                                if !is_templ_render {
+                                                    let center = (range.start + range.end) / 2;
+
+                                                    // keep the row prefetch one band ahead
+                                                    // of the visible window so new rows hit
+                                                    // the row cache
+                                                    schedule_row_prefetch::<T, C>(
+                                                        &prefetch_state,
+                                                        rows_generation,
+                                                        center,
+                                                        items.as_slice(),
+                                                        cx,
+                                                    );
+
+                                                    // 每次窗口重建只做一次 prune（原为逐行
+                                                    // 调用，O(可见行数×缓存键数) 键迭代）
+                                                    prune_views(
+                                                        &views_model,
+                                                        &render_counter,
+                                                        center,
+                                                        cx,
+                                                    );
+                                                }
+
+                                                items[range]
+                                                    .iter()
+                                                    .enumerate()
+                                                    .map(|(idx, item)| {
+                                                        let idx = idx + start;
+
+                                                        div()
+                                                            .w_full()
+                                                            .child(create_or_retrieve_view(
+                                                                &views_model,
+                                                                idx,
+                                                                |cx| {
+                                                                    TableItem::new(
+                                                                        cx,
+                                                                        item.clone(),
+                                                                        &columns,
+                                                                        list_handler.clone(),
+                                                                        list_context_menu_context
+                                                                            .clone(),
+                                                                    )
+                                                                },
+                                                                cx,
+                                                            ))
+                                                            .into_any_element()
+                                                    })
+                                                    .collect()
+                                            },
+                                        )
+                                        .track_scroll(&list_vertical_scroll_handle)
+                                        .w_full()
+                                        .h_full();
+                                        // GPUI otherwise maps a horizontal gesture onto this
+                                        // list's only scrollable axis (Y). Keep X scrolling on
+                                        // the outer viewport.
+                                        list.style().restrict_scroll_to_axis = Some(true);
+                                        list
+                                    }),
+                            )
+                        });
+
                     horizontal_viewport.child(list_canvas).into_any_element()
                 }
-                TableViewMode::Grid => grid_canvas.into_any_element(),
+                TableViewMode::Grid => {
+                    let grid_views_model = self.grid_views.clone();
+                    let grid_render_counter = self.grid_render_counter.clone();
+                    let grid_prefetch_state = self.prefetch_state.clone();
+                    let grid_scroll_handle = self.grid_scroll_handle.clone();
+                    let grid_context_menu_context = self.context_menu_context.clone();
+                    let grid_handler = self.on_select.clone();
+                    let grid_min_item_width = {
+                        let settings = cx.global::<SettingsGlobal>().model.read(cx);
+                        clamp_grid_min_item_width(settings.interface.grid_min_item_width)
+                    };
+                    let grid_padding = 10.0;
+
+                    // 每次窗口重建只 prune 一次（首格触发；闭包随渲染每帧重建，
+                    // Cell 天然逐帧复位），render_counter 仍逐格推进，band 演化
+                    // 与原逐格调用一致，删除集合是其子集
+                    let prune_gate = Cell::new(false);
+
+                    div()
+                        .relative()
+                        .w_full()
+                        .flex()
+                        .h_full()
+                        .px(px(grid_padding))
+                        .overflow_y_hidden()
+                        .when_some(items, |this, items| {
+                            let items_len = items.len();
+                            this.child(
+                                uniform_grid(
+                                    "grid-list",
+                                    items_len,
+                                    grid_scroll_handle.clone(),
+                                    move |idx, _, cx| {
+                                        if prune_gate.replace(true) {
+                                            grid_render_counter.update(cx, |m, _| *m = idx);
+                                        } else {
+                                            prune_views(
+                                                &grid_views_model,
+                                                &grid_render_counter,
+                                                idx,
+                                                cx,
+                                            );
+                                        }
+
+                                        // keep the row prefetch one band ahead of the
+                                        // visible window so new rows hit the row cache
+                                        schedule_row_prefetch::<T, C>(
+                                            &grid_prefetch_state,
+                                            rows_generation,
+                                            idx,
+                                            items.as_slice(),
+                                            cx,
+                                        );
+
+                                        // Fallible equivalent of `create_or_retrieve_view`: a row can
+                                        // vanish between get_rows and this frame (a rescan deleted it,
+                                        // or its query failed), and the old `.expect` here panicked the
+                                        // whole app off a stale items snapshot. The lookup result is
+                                        // bound before matching so the entity's read guard is gone
+                                        // before the `update` below re-borrows it.
+                                        let mut view = grid_views_model.read(cx).get(&idx).cloned();
+                                        if view.is_none() {
+                                            view = grid_item::GridItem::new(
+                                                cx,
+                                                items[idx].clone(),
+                                                grid_handler.clone(),
+                                                grid_context_menu_context.clone(),
+                                                GridContext::Table,
+                                            );
+                                            if let Some(built) = view.clone() {
+                                                grid_views_model.update(cx, |m, _| {
+                                                    m.insert(idx, built);
+                                                });
+                                            }
+                                        }
+
+                                        // A vanished row renders as a blank cell for this frame; the
+                                        // reload already in flight replaces the stale snapshot. No
+                                        // per-item image_cache here either: GridItem draws its artwork
+                                        // through managed_image, which never touches the gpui image
+                                        // cache the wrapper would feed.
+                                        match view {
+                                            Some(view) => {
+                                                div().size_full().child(view).into_any_element()
+                                            }
+                                            None => div().into_any_element(),
+                                        }
+                                    },
+                                )
+                                .min_item_width(px(grid_min_item_width))
+                                .gap(px(0.0))
+                                .py(px(grid_padding)),
+                            )
+                            .child(
+                                floating_scrollbar("grid-scrollbar", grid_scroll_handle)
+                                    .right(px(4.0)),
+                            )
+                        })
+                        .into_any_element()
+                }
             })
             .when(view_mode == TableViewMode::List, |this| {
                 this.child(
-                    floating_scrollbar("list-vertical-scrollbar", list_vertical_scroll_handle)
-                        .top(px(TABLE_HEADER_HEIGHT))
-                        .right(px(4.0))
-                        .bottom(px(14.0)),
+                    floating_scrollbar(
+                        "list-vertical-scrollbar",
+                        self.list_vertical_scroll_handle.clone(),
+                    )
+                    .top(px(TABLE_HEADER_HEIGHT))
+                    .right(px(4.0))
+                    .bottom(px(14.0)),
                 )
                 .child(
-                    floating_scrollbar("list-horizontal-scrollbar", list_horizontal_scroll_handle)
-                        .axis(ScrollbarAxis::Horizontal)
-                        .left(px(4.0))
-                        .right(px(14.0)),
+                    floating_scrollbar(
+                        "list-horizontal-scrollbar",
+                        self.list_horizontal_scroll_handle.clone(),
+                    )
+                    .axis(ScrollbarAxis::Horizontal)
+                    .left(px(4.0))
+                    .right(px(14.0)),
                 )
             })
     }
