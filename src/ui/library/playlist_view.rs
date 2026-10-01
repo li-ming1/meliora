@@ -652,19 +652,14 @@ impl PlaylistView {
         let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
         cx.spawn(async move |_, cx| {
-            let pool_for_add = pool.clone();
+            // 一次批量调用完成追加与可选搬移（单事务），取代逐首
+            // add_playlist_item + 逐首 move_playlist_item 的 N 次事务
             let task = crate::RUNTIME.spawn(async move {
-                let mut new_item_ids: Vec<i64> = Vec::new();
-                for track_id in track_ids {
-                    let item_id =
-                        db::add_playlist_item(&pool_for_add, playlist_id, track_id).await?;
-                    new_item_ids.push(item_id);
-                }
-                Ok::<Vec<i64>, sqlx::Error>(new_item_ids)
+                db::add_playlist_items(&pool, playlist_id, &track_ids, target_position).await
             });
 
-            let new_item_ids = match task.await {
-                Ok(Ok(ids)) => ids,
+            match task.await {
+                Ok(Ok(_)) => {}
                 Ok(Err(err)) => {
                     error!("could not add tracks to playlist: {err:?}");
                     return;
@@ -672,18 +667,6 @@ impl PlaylistView {
                 Err(err) => {
                     error!("add tracks to playlist task panicked: {err:?}");
                     return;
-                }
-            };
-
-            if let Some(pos) = target_position {
-                for &item_id in new_item_ids.iter().rev() {
-                    let pool_for_move = pool.clone();
-                    let _ =
-                        crate::RUNTIME
-                            .spawn(async move {
-                                db::move_playlist_item(&pool_for_move, item_id, pos).await
-                            })
-                            .await;
                 }
             }
 

@@ -8,6 +8,7 @@ use gpui::{
     Window, anchored, div, px,
 };
 use nucleo::Utf32String;
+use rustc_hash::FxHashSet;
 use tracing::error;
 
 use crate::{
@@ -73,21 +74,28 @@ fn read_track_list(shared: &SharedTrackList) -> TrackList {
     shared.borrow().clone()
 }
 
-/// One palette row: the selection snapshot, the target playlist, and the
-/// existing playlist-item id when a single track is already in that playlist.
-/// The third slot is resolved once when the item list is built so that
+/// One palette row: the selection snapshot, the target playlist, and whether
+/// the single track is already in that playlist. The third slot is resolved
+/// once per rebuild via a single membership-set query so that
 /// `middle_content` never queries the database — previously it ran a
 /// UI-thread `block_on` `playlist_has_track` query for every visible row on
 /// every palette rebuild (each keystroke; doctrine §2.3 / §14).
-type PlaylistEntry = (TrackList, Playlist, Option<i64>);
+type PlaylistEntry = (TrackList, Playlist, bool);
 
-fn existing_item_id(track_list: &TrackList, playlist: &Playlist, cx: &mut App) -> Option<i64> {
+/// 单曲时一次查询该曲目已在的全部歌单；多选返回 None（行内不做已有标记，
+/// 与原 per-playlist 短路一致）。查询失败降级为 None（全部按未加入显示），
+/// 观察者不 panic。
+fn track_playlist_ids(track_list: &TrackList, cx: &mut App) -> Option<FxHashSet<i64>> {
     if track_list.is_multi() {
         return None;
     }
-    cx.playlist_has_track(playlist.id, track_list.first())
-        .ok()
-        .flatten()
+    match cx.playlist_ids_for_track(track_list.first()) {
+        Ok(ids) => Some(ids),
+        Err(err) => {
+            error!("Failed to resolve playlist membership for the add-to-playlist dialog: {err:?}");
+            None
+        }
+    }
 }
 
 /// Awaits a spawned playlist DB task and logs its two failure modes with the
@@ -117,7 +125,7 @@ impl PaletteItem for PlaylistEntry {
     }
 
     fn middle_content(&self, _cx: &mut App) -> SharedString {
-        if self.0.is_multi() || self.2.is_none() {
+        if self.0.is_multi() || !self.2 {
             tr!(
                 "ADD_TO_SELECTED_PLAYLIST",
                 "Add to {{name}}",
@@ -155,6 +163,12 @@ impl AddToPlaylist {
 
             let track_list_for_observe = track_list.clone();
             cx.observe(&show, move |this: &mut Self, _, cx| {
+                // 关闭路径的 palette.reset 已由 render 的 on_exit 完成；
+                // 观察者只在打开（show 翻真）时重建列表
+                if !*this.show.read(cx) {
+                    return;
+                }
+
                 let current = read_track_list(&track_list_for_observe);
                 this.palette.update(cx, |palette, cx| {
                     // a failed query keeps the palette's current list instead
@@ -163,11 +177,15 @@ impl AddToPlaylist {
                         error!("Failed to load playlists for the add-to-playlist dialog");
                         return;
                     };
+                    // 一次集合查询取代逐歌单的 playlist_has_track block_on
+                    let existing = track_playlist_ids(&current, cx);
                     let new_playlists = (*playlists)
                         .clone()
                         .into_iter()
                         .map(|playlist| {
-                            let has_track = existing_item_id(&current, &playlist, cx);
+                            let has_track = existing
+                                .as_ref()
+                                .is_some_and(|ids| ids.contains(&playlist.id));
                             (current.clone(), playlist, has_track)
                         })
                         .map(Arc::new)
@@ -289,7 +307,7 @@ impl AddToPlaylist {
                 let display = tr!("CREATE_PLAYLIST", name = name_string);
 
                 let show_clone2 = show_for_create.clone();
-                let create_track_ids = read_track_list(&track_list_for_create).ids().to_vec();
+                let track_list_for_accept = track_list_for_create.clone();
 
                 vec![ExtraItem {
                     left: Some(FinderItemLeft::Icon(PLAYLIST_ADD.into())),
@@ -299,7 +317,9 @@ impl AddToPlaylist {
                         let pool = cx.global::<Pool>().0.clone();
                         let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
                         let name_string = name_string.clone();
-                        let create_track_ids = create_track_ids.clone();
+                        // 接受时再取选中曲目（对齐主 accept）：对话框打开后
+                        // 选集仍可能被专辑流程后台补齐
+                        let create_track_ids = track_list_for_accept.borrow().ids().to_vec();
 
                         cx.spawn(async move |cx| {
                             let task = crate::RUNTIME.spawn(async move {

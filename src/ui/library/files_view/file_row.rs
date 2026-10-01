@@ -37,7 +37,7 @@ use crate::{
             },
         },
         models::{
-            HasLikedState, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_like_by_id,
+            HasLikedState, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_album_like,
         },
         theme::Theme,
     },
@@ -213,16 +213,12 @@ impl FileRowItem {
                         },
                         move |_, _, cx| {
                             if any_liked {
-                                // Unlike deletes by track id (see
-                                // toggle_like_by_id): the inner id is ignored,
-                                // so pass the track id.
-                                for &id in &liked_ids {
-                                    toggle_like_by_id(id, Some(id), cx);
-                                }
+                                // Unlike deletes by track id：只摘除已赞子集，
+                                // 未赞的其余选中项保持原状
+                                toggle_album_like(liked_ids.to_vec(), true, cx);
                             } else {
-                                for &id in like_ids.iter() {
-                                    toggle_like_by_id(id, None, cx);
-                                }
+                                // 全部未赞（any_liked 为假），整批一次入赞
+                                toggle_album_like((*like_ids).clone(), false, cx);
                             }
                         },
                     ))

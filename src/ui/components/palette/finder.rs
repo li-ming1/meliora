@@ -69,7 +69,10 @@ pub struct ExtraItem {
     pub left: Option<FinderItemLeft>,
     pub middle: SharedString,
     pub right: Option<SharedString>,
-    pub on_accept: Arc<dyn Fn(&mut App) + Send + Sync>,
+    /// 主线程专用回调：调用点全部在 gpui 的 UI 线程闭包内，与
+    /// `ExtraItemProvider` 及全仓 `Rc<dyn Fn(&mut App)>` 同一无 `Send` 约定，
+    /// 允许捕获 `Rc` 等主线程状态（如 add_to_playlist 的共享选集）。
+    pub on_accept: Arc<dyn Fn(&mut App)>,
 }
 
 pub type ExtraItemProvider = Arc<dyn Fn(&str) -> Vec<ExtraItem> + 'static>;
@@ -834,7 +837,7 @@ where
         .into_any_element()
 }
 
-type OnAcceptOverride = Option<Arc<dyn Fn(&mut App) + Send + Sync>>;
+type OnAcceptOverride = Option<Arc<dyn Fn(&mut App)>>;
 
 pub struct FinderItem<T, MatcherFunc, OnAccept>
 where

@@ -350,32 +350,27 @@ pub(crate) fn queue_item(cx: &mut App, data: QueueItemData) {
 
 /// Append `items` to the queue and jump to the first of them.
 pub(crate) fn play_items_now(cx: &mut App, items: impl IntoIterator<Item = QueueItemData>) {
-    let mut items = items.into_iter().peekable();
-    if items.peek().is_none() {
+    // 空选集早退必须保留：否则 queue_list 空转后仍会 jump 到队尾
+    let items: Vec<_> = items.into_iter().collect();
+    if items.is_empty() {
         return;
     }
     let queue_length = current_queue_length(cx);
     let playback_interface = cx.global::<PlaybackInterface>();
-    for item in items {
-        playback_interface.queue(item);
-    }
+    playback_interface.queue_list(items);
     playback_interface.jump(queue_length);
 }
 
 /// Insert `items` directly after the current queue position, in order.
 pub(crate) fn play_items_next(cx: &mut App, items: impl IntoIterator<Item = QueueItemData>) {
     let queue_position = next_queue_position(cx);
-    for (offset, item) in items.into_iter().enumerate() {
-        cx.global::<PlaybackInterface>()
-            .insert_at(item, queue_position + offset);
-    }
+    cx.global::<PlaybackInterface>()
+        .insert_list_at(items.into_iter().collect(), queue_position);
 }
 
 pub(crate) fn queue_items(cx: &mut App, items: impl IntoIterator<Item = QueueItemData>) {
-    let playback_interface = cx.global::<PlaybackInterface>();
-    for item in items {
-        playback_interface.queue(item);
-    }
+    cx.global::<PlaybackInterface>()
+        .queue_list(items.into_iter().collect());
 }
 
 fn play_track_now(cx: &mut App, track: &Track) {

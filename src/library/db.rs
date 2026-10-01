@@ -8,6 +8,7 @@ use std::{
 };
 
 use gpui::App;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use sqlx::{
     SqlitePool,
@@ -492,6 +493,70 @@ pub async fn add_playlist_item(
         .last_insert_rowid())
 }
 
+/// 批量追加曲目进歌单并可选搬到目标位，返回新条目的 item_id。逐条仍跑同一
+/// add_track.sql，位置语义与循环调用 add_playlist_item 完全一致；区别在于
+/// 整批共享一次连接租借与一次 commit，取代每首歌一次 autocommit 往返
+/// （同 add_tracks_to_playlist_if_missing 的批量理由）。target_position 命中
+/// 时在同一事务内复用 move_playlist_item 的区间重排 SQL，全部生效或全部回滚。
+pub async fn add_playlist_items(
+    pool: &SqlitePool,
+    playlist_id: i64,
+    track_ids: &[i64],
+    target_position: Option<i64>,
+) -> sqlx::Result<Vec<i64>> {
+    let insert_query = include_str!("../../queries/playlist/add_track.sql");
+    let move_up_query = include_str!("../../queries/playlist/move_track_up.sql");
+
+    let mut tx = pool.begin().await?;
+
+    // 追加块的起始 position：add_track.sql 恒取 MAX+1，块内逐条 +1 连续排布
+    let first_position: Option<i64> = match target_position {
+        Some(_) => {
+            let max: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(position), 0) FROM playlist_item WHERE playlist_id = ?",
+            )
+            .bind(playlist_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            Some(max + 1)
+        }
+        None => None,
+    };
+
+    let mut item_ids = Vec::with_capacity(track_ids.len());
+    for &track_id in track_ids {
+        let item_id = sqlx::query(insert_query)
+            .bind(playlist_id)
+            .bind(track_id)
+            .execute(&mut *tx)
+            .await?
+            .last_insert_rowid();
+        item_ids.push(item_id);
+    }
+
+    // 目标位取自既有条目的 position（或其 +1），不会大于追加块首（MAX+1），
+    // 故只需上移分支。倒序逐条搬到目标位：每次区间上移把剩余块整体 +1，
+    // 待搬条目恰始终位于块顶 first + len - 1，绑定值恒定、免逐条回查；
+    // 等于块顶即已在目标位，跳过（对齐 move_playlist_item 的同位早退）。
+    if let (Some(new_position), Some(first_position)) = (target_position, first_position) {
+        let last_position = first_position + item_ids.len() as i64 - 1;
+        if new_position < last_position {
+            for &item_id in item_ids.iter().rev() {
+                sqlx::query(move_up_query)
+                    .bind(new_position)
+                    .bind(last_position)
+                    .bind(item_id)
+                    .bind(playlist_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+    }
+
+    tx.commit().await?;
+    Ok(item_ids)
+}
+
 pub async fn create_playlist(pool: &SqlitePool, name: &str) -> sqlx::Result<i64> {
     let query = include_str!("../../queries/playlist/create_playlist.sql");
 
@@ -718,6 +783,21 @@ pub async fn playlist_has_track(
         .await
 }
 
+/// 一个曲目已在的全部歌单 id 集合。add-to-playlist 弹窗的逐歌单
+/// playlist_has_track（N 个歌单 = N 次 UI 线程 block_on）收敛为这一次查询。
+pub async fn playlist_ids_for_track(
+    pool: &SqlitePool,
+    track_id: i64,
+) -> sqlx::Result<FxHashSet<i64>> {
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT playlist_id FROM playlist_item WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_all(pool)
+            .await?;
+
+    Ok(ids.into_iter().collect())
+}
+
 /// IN-clause chunk size for the playlist batch queries: stays under SQLite's
 /// bind-variable cap (999 on legacy builds, 32766 modern) so no selection size
 /// can fail the whole batch with "too many SQL variables".
@@ -912,6 +992,7 @@ pub trait LibraryAccess {
     fn reorder_playlist(&self, playlist_id: i64, new_position: i64) -> sqlx::Result<()>;
     fn get_playlist_item(&self, item_id: i64) -> sqlx::Result<PlaylistItem>;
     fn playlist_has_track(&self, playlist_id: i64, track_id: i64) -> sqlx::Result<Option<i64>>;
+    fn playlist_ids_for_track(&self, track_id: i64) -> sqlx::Result<FxHashSet<i64>>;
     fn playlist_contains_all_tracks(
         &self,
         playlist_id: i64,
@@ -1083,6 +1164,14 @@ impl LibraryAccess for App {
         blocking_query(
             "playlist_has_track",
             playlist_has_track(&pool.0, playlist_id, track_id),
+        )
+    }
+
+    fn playlist_ids_for_track(&self, track_id: i64) -> sqlx::Result<FxHashSet<i64>> {
+        let pool: &Pool = self.global();
+        blocking_query(
+            "playlist_ids_for_track",
+            playlist_ids_for_track(&pool.0, track_id),
         )
     }
 
