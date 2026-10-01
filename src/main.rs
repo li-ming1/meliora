@@ -28,6 +28,8 @@ mod online_sources;
 mod paths;
 mod playback;
 mod power;
+#[cfg(any(feature = "kugou", feature = "netease"))]
+mod session_io;
 mod settings;
 mod stats;
 #[cfg(test)]

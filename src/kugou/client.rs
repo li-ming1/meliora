@@ -14,6 +14,7 @@ use serde_json::Value;
 use zed_reqwest::{Client, Method, header::HeaderMap, header::HeaderName, header::HeaderValue};
 
 use super::{crypto, sign};
+use crate::session_io;
 use crate::toasts::{Toast, emit_toast};
 
 /// Payload error_code that empirically accompanies requests made with an
@@ -121,55 +122,6 @@ impl KugouSession {
             last_claim_day: None,
             nickname: None,
             avatar_url: None,
-        }
-    }
-
-    fn load(path: &Path) -> Option<Self> {
-        let contents = match std::fs::read_to_string(path) {
-            Ok(contents) => contents,
-            // Missing credentials is the normal first-run path; stay quiet.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(%err, "no kugou session on disk yet");
-                return None;
-            }
-            Err(err) => {
-                tracing::warn!(%err, path = %path.display(), "failed to read kugou session");
-                return None;
-            }
-        };
-        serde_json::from_str(&contents)
-            .map_err(|err| tracing::warn!(%err, "failed to decode kugou session"))
-            .ok()
-    }
-
-    fn save(&self, path: &Path) {
-        if let Some(parent) = path.parent()
-            && let Err(err) = std::fs::create_dir_all(parent)
-        {
-            tracing::warn!(%err, "failed to create kugou session dir");
-            return;
-        }
-        let json = match serde_json::to_string_pretty(self) {
-            Ok(json) => json,
-            Err(err) => {
-                tracing::warn!(%err, "failed to serialize kugou session");
-                return;
-            }
-        };
-        // Write to a temporary file and rename it into place (same pattern as
-        // `playback/session_storage.rs`): an in-place truncate+rewrite can
-        // leave a truncated session file behind when the process dies mid-write.
-        // `fs::rename` replaces an existing target on Windows, so the swap is
-        // atomic on every supported platform.
-        let tmp = path.with_extension("json.tmp");
-        if let Err(err) = std::fs::write(&tmp, json) {
-            tracing::warn!(%err, "failed to write kugou session temp file");
-            let _ = std::fs::remove_file(&tmp);
-            return;
-        }
-        if let Err(err) = std::fs::rename(&tmp, path) {
-            tracing::warn!(%err, "failed to persist kugou session");
-            let _ = std::fs::remove_file(&tmp);
         }
     }
 }
@@ -289,7 +241,8 @@ pub struct KugouClient {
 impl KugouClient {
     pub fn new(data_dir: &Path) -> Self {
         let session_path = data_dir.join("kugou_session.json");
-        let session = KugouSession::load(&session_path).unwrap_or_else(KugouSession::generate);
+        let session =
+            session_io::load(&session_path, "kugou").unwrap_or_else(KugouSession::generate);
         Self {
             // a hung gateway request must not pin `pending_fetches` forever:
             // without a timeout a track that fails to resolve can never be
@@ -338,7 +291,7 @@ impl KugouClient {
         // login fails the claim at get_vip_record and would otherwise block
         // retrying until tomorrow even though the user just signed in again.
         session.last_claim_day = None;
-        session.save(&self.session_path);
+        session_io::save(&*session, &self.session_path, "kugou");
         // A fresh login may outlive the previous throttle window's start.
         reset_login_expired_toast();
     }
@@ -353,7 +306,7 @@ impl KugouClient {
         session.nickname = None;
         session.avatar_url = None;
         session.vip_detail = None;
-        session.save(&self.session_path);
+        session_io::save(&*session, &self.session_path, "kugou");
     }
 
     /// Profile from the persisted session, without touching the network.
@@ -374,7 +327,7 @@ impl KugouClient {
         let mut session = self.session_guard();
         session.nickname = Some(profile.nickname.clone());
         session.avatar_url = Some(profile.avatar_url.clone());
-        session.save(&self.session_path);
+        session_io::save(&*session, &self.session_path, "kugou");
     }
 
     /// UTC date string of the last daily-VIP claim attempt (yyyy-MM-dd),
@@ -389,7 +342,7 @@ impl KugouClient {
         let today = today_utc();
         let mut session = self.session_guard();
         session.last_claim_day = Some(today);
-        session.save(&self.session_path);
+        session_io::save(&*session, &self.session_path, "kugou");
     }
 
     /// Stores the raw `/v1/get_union_vip` payload for the settings page to
@@ -397,7 +350,7 @@ impl KugouClient {
     pub fn store_vip_detail(&self, detail: Value) {
         let mut session = self.session_guard();
         session.vip_detail = Some(detail);
-        session.save(&self.session_path);
+        session_io::save(&*session, &self.session_path, "kugou");
     }
 
     /// Raw `/v1/get_union_vip` payload cached on the session, if any.
@@ -610,8 +563,8 @@ mod tests {
             userid: Some(42),
             ..KugouSession::generate()
         };
-        session.save(&path);
-        let loaded = KugouSession::load(&path).expect("session loads");
+        session_io::save(&session, &path, "kugou");
+        let loaded = session_io::load::<KugouSession>(&path, "kugou").expect("session loads");
         assert_eq!(loaded.token.as_deref(), Some("tok"));
         assert_eq!(loaded.userid, Some(42));
         assert_eq!(loaded.guid, session.guid);
