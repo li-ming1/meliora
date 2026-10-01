@@ -402,11 +402,17 @@ fn spawn_memory_probe() {
         loop {
             tick.tick().await;
             let (private, working) = process_memory_mb();
-            let covers = disk_cover_cache_mb();
+            // 封面缓存目录可达数千文件，同步枚举走阻塞池，不占 async worker。
+            let covers = crate::RUNTIME
+                .spawn_blocking(disk_cover_cache_mb)
+                .await
+                .unwrap_or(0);
             let render_cache = crate::ui::components::managed_image::render_cache_mb();
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
+            let (backdrop_cache_entries, backdrop_cache_mb) =
+                crate::ui::components::managed_image::backdrop_cache_stats();
             let (mi_commit_mb, mi_rss_mb) = mimalloc_memory_mb();
             // mi_process_info's commit mirrors the OS charge (it is refilled
             // from GetProcessMemoryInfo), so the real mimalloc accounting
@@ -498,10 +504,8 @@ fn spawn_memory_probe() {
                 tracing::error!("memory hard cap: replacement spawn failed; continuing degraded");
                 hard_cap_breaches = 0;
             } else {
-                #[cfg(not(test))]
                 let purge0 =
                     MIMALLOC_PURGE_DELAY_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
-                #[cfg(not(test))]
                 let page_reset0 =
                     MIMALLOC_PAGE_RESET_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
                 // Only resolved when the atlas-probe feature is on (locally
@@ -511,7 +515,6 @@ fn spawn_memory_probe() {
                 let atlas_field = Some(atlas_probe_snapshot());
                 #[cfg(not(all(target_os = "windows", feature = "atlas-probe")))]
                 let atlas_field: Option<[u64; 15]> = None;
-                #[cfg(not(test))]
                 tracing::info!(
                     private_mb = private,
                     working_mb = working,
@@ -523,9 +526,8 @@ fn spawn_memory_probe() {
                     covers_mb = covers,
                     render_cache_mb = render_cache,
                     render_cache_entries = render_cache_entries,
-                    backdrop_cache_mb = crate::ui::components::managed_image::backdrop_cache_stats().1,
-                    backdrop_cache_entries =
-                        crate::ui::components::managed_image::backdrop_cache_stats().0,
+                    backdrop_cache_mb,
+                    backdrop_cache_entries,
                     img_cache_mb = img_mb,
                     img_cache_entries = img_entries,
                     funnel_pending = funnel.0,
@@ -536,14 +538,6 @@ fn spawn_memory_probe() {
                     tiles_leaked = funnel.5,
                     purge_delay0 = purge0,
                     page_reset0 = page_reset0,
-                    "[mem] periodic"
-                );
-                #[cfg(test)]
-                tracing::info!(
-                    private_mb = private,
-                    working_mb = working,
-                    covers_mb = covers,
-                    render_cache_mb = render_cache,
                     "[mem] periodic"
                 );
             }

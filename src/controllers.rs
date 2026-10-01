@@ -51,6 +51,14 @@ pub trait PlaybackController: Send {
     /// Indicates that the playback volume has changed.
     async fn volume_changed(&mut self, new_volume: f64) -> anyhow::Result<()>;
 
+    /// Whether this controller consumes `volume_changed`. The Windows SMTC and
+    /// macOS implementations treat it as a no-op, so their volume observer is
+    /// skipped entirely; MPRIS (Linux) does consume the events. 编译期折叠为
+    /// 常量，等价于各平台实现分别覆写，但不需要触碰平台模块。
+    fn handles_volume(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
     /// Indicates that new metadata has been received from the decoder. This may occur more than
     /// once per track.
     async fn metadata_changed(&mut self, metadata: &Metadata) -> anyhow::Result<()>;
@@ -96,6 +104,10 @@ pub struct PbcHandle {
     /// second; forwarding each one makes the Windows controller perform two
     /// WinRT calls per event for nothing.
     last_position_secs: u64,
+    /// 初始化时向 controller 查询一次的 volume 消费能力（见
+    /// `PlaybackController::handles_volume`）；false 时 volume 实体不注册
+    /// 观察者。
+    handles_volume: bool,
 }
 
 impl Global for PbcHandle {}
@@ -172,6 +184,7 @@ fn forward_pbc_events<T: 'static>(
 }
 
 pub fn register_pbc_event_handlers(cx: &mut App) {
+    let handles_volume = cx.global::<PbcHandle>().handles_volume;
     let models = cx.global::<Models>();
     let metadata = models.metadata.clone();
     let albumart = models.albumart.clone();
@@ -201,7 +214,11 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
         PbcEvent::MetadataChanged(Box::new(meta.clone()))
     });
     forward_pbc_events(cx, &duration, |dur| PbcEvent::DurationChanged(*dur / 1_000));
-    forward_pbc_events(cx, &volume, |vol| PbcEvent::VolumeChanged(*vol));
+    // 不消费 volume 的 controller（Windows SMTC / macOS）连观察者都不注册，
+    // 省去向 PBC 队列推送注定为 no-op 的事件。
+    if handles_volume {
+        forward_pbc_events(cx, &volume, |vol| PbcEvent::VolumeChanged(*vol));
+    }
     forward_pbc_events(cx, &repeat, |repeat| PbcEvent::RepeatStateChanged(*repeat));
     forward_pbc_events(cx, &state, |state| PbcEvent::PlaybackStateChanged(*state));
     forward_pbc_events(cx, &shuffle, |shuffle| {
@@ -289,6 +306,11 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
     }
 
     let (pbc_tx, mut pbc_rx) = tokio::sync::mpsc::channel::<PbcEvent>(PBC_CHANNEL_CAP);
+    // controller 随后 move 进消费任务，能力查询必须在其 move 之前完成。
+    let handles_volume = controller
+        .as_ref()
+        .map(|c| c.handles_volume())
+        .unwrap_or(true);
     let task = crate::RUNTIME.spawn(async move {
         let span = debug_span!("pbc_task");
 
@@ -312,5 +334,6 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
         task,
         last_art: None,
         last_position_secs: 0,
+        handles_volume,
     });
 }

@@ -32,6 +32,11 @@ impl PlatformPower {
     }
 
     fn inhibit(&mut self) {
+        // 与 macOS 分支对齐的重入门：重复 inhibit 会覆盖旧 POWER_REQUEST
+        // 句柄，旧句柄从此再无 CloseHandle 机会。
+        if self.handle.is_some() {
+            return;
+        }
         let reason = w!("Playing music");
 
         unsafe {

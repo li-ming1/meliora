@@ -308,21 +308,32 @@ impl StatsSettings {
     /// follows once the base data (and its color scale) is in place. The
     /// 30s refresh tick passes `with_top = false` — the Top list only changes
     /// with tab/range, so re-querying it every tick would just burn a
-    /// `GROUP BY` for identical rows.
+    /// `GROUP BY` for identical rows. 任一查询失败则记录 warn 并整批跳过
+    /// apply（保留上次数据），失败不得折叠成权威空结果清掉 has_data。
     fn load_base(&mut self, cx: &mut Context<Self>, with_top: bool) {
         let pool = cx.global::<Pool>().0.clone();
         cx.spawn(async move |this, cx| {
             let base = crate::RUNTIME
                 .spawn(async move {
                     let since = crate::stats::epoch_ts();
-                    let daily = queries::daily_sums(&pool, since).await.unwrap_or_default();
-                    let hours = queries::hour_histogram(&pool, since)
-                        .await
-                        .unwrap_or_default();
-                    (daily, hours)
+                    let daily = match queries::daily_sums(&pool, since).await {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            tracing::warn!(?err, "stats: daily sums query failed");
+                            return None;
+                        }
+                    };
+                    let hours = match queries::hour_histogram(&pool, since).await {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            tracing::warn!(?err, "stats: hour histogram query failed");
+                            return None;
+                        }
+                    };
+                    Some((daily, hours))
                 })
                 .await;
-            if let Ok((daily, hours)) = base {
+            if let Ok(Some((daily, hours))) = base {
                 let _ = this.update(cx, |this, cx| {
                     this.apply_base(daily, hours, cx);
                     if with_top {
@@ -376,20 +387,28 @@ impl StatsSettings {
         cx.spawn(async move |this, cx| {
             let rows = crate::RUNTIME
                 .spawn(async move {
-                    match tab {
-                        TopTab::Tracks => TopRows::Tracks(
-                            queries::top_tracks(&pool, since).await.unwrap_or_default(),
-                        ),
-                        TopTab::Artists => TopRows::Artists(
-                            queries::top_artists(&pool, since).await.unwrap_or_default(),
-                        ),
-                        TopTab::Albums => TopRows::Albums(
-                            queries::top_albums(&pool, since).await.unwrap_or_default(),
-                        ),
+                    let query = match tab {
+                        TopTab::Tracks => {
+                            queries::top_tracks(&pool, since).await.map(TopRows::Tracks)
+                        }
+                        TopTab::Artists => queries::top_artists(&pool, since)
+                            .await
+                            .map(TopRows::Artists),
+                        TopTab::Albums => {
+                            queries::top_albums(&pool, since).await.map(TopRows::Albums)
+                        }
+                    };
+                    // Top 失败时保留 self.top_items，不覆盖为空列表。
+                    match query {
+                        Ok(rows) => Some(rows),
+                        Err(err) => {
+                            tracing::warn!(?err, "stats: top query failed");
+                            None
+                        }
                     }
                 })
                 .await;
-            if let Ok(rows) = rows {
+            if let Ok(Some(rows)) = rows {
                 let _ = this.update(cx, |this, cx| {
                     this.apply_top(rows);
                     cx.notify();

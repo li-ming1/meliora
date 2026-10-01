@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::OnceLock};
+use std::sync::OnceLock;
 
 use cntp_i18n::tr;
 use gpui::{
@@ -26,7 +26,7 @@ use crate::{
     },
     ui::design::{SPACE_LG, SPACE_SM},
     ui::global_actions::OpenThemeFolder,
-    ui::theme::{ThemeOption, ThemeOptionsGlobal, resolve_theme_relative_path},
+    ui::theme::{ThemeOption, ThemeOptionsGlobal},
 };
 
 use super::debounced_save::DebouncedSave;
@@ -132,7 +132,6 @@ fn toggle_row(
 
 pub struct InterfaceSettings {
     settings: Entity<crate::settings::Settings>,
-    data_dir: PathBuf,
     theme_options: Entity<Vec<ThemeOption>>,
     save_debounce: DebouncedSave,
 }
@@ -141,11 +140,6 @@ impl InterfaceSettings {
     pub fn new(cx: &mut App) -> Entity<Self> {
         let settings_global = cx.global::<SettingsGlobal>();
         let settings = settings_global.model.clone();
-        let data_dir = settings_global
-            .path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
         let theme_options = cx.global::<ThemeOptionsGlobal>().model.clone();
 
         cx.new(|cx| {
@@ -154,7 +148,6 @@ impl InterfaceSettings {
 
             Self {
                 settings,
-                data_dir,
                 theme_options,
                 save_debounce: DebouncedSave::new(),
             }
@@ -199,7 +192,14 @@ impl Render for InterfaceSettings {
 
         let theme_dropdown = {
             let settings_c = settings.clone();
-            let resolved = resolve_theme_relative_path(&self.data_dir, interface.theme.as_deref());
+            // 有效性改查 fs watcher 维护的 theme_options 列表，替代逐 render
+            // 的 is_file() stat；内置 Light 无对应文件，列表命中才能正确回显。
+            let resolved = interface.theme.clone().filter(|selected| {
+                self.theme_options
+                    .read(cx)
+                    .iter()
+                    .any(|t| t.id.as_deref() == Some(selected.as_str()))
+            });
             let mut dd = dropdown::<Option<String>>("theme-dropdown")
                 .w(px(250.0))
                 .selected(resolved)

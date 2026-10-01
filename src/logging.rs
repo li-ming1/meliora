@@ -40,7 +40,17 @@ static LOG_FILE: OnceLock<SharedLogFile> = OnceLock::new();
 
 /// Initializes logging to stderr and, when available, to a rotating log file.
 pub fn init() -> anyhow::Result<()> {
-    let env = tracing_subscriber::EnvFilter::builder().parse(filter_value())?; // inform user they have a malformed filter
+    // 坏过滤器绝不能让日志初始化整体失败：windows_subsystem 下没有控制台，
+    // `?` 会同时摧毁 stderr 与轮转日志两条输出——而坏的 MELIORA_LOG 恰是
+    // 文档化的调试入口。回退默认过滤器，解析错误随后作为首条记录写进日志。
+    let (env, malformed_filter) =
+        match tracing_subscriber::EnvFilter::builder().parse(filter_value()) {
+            Ok(env) => (env, None),
+            Err(err) => (
+                tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER),
+                Some(err),
+            ),
+        };
     let active_log_path = default_active_log_path();
     let _ = ACTIVE_LOG_PATH.set(active_log_path.clone());
     let file_writer = open_file_make_writer(&active_log_path);
@@ -72,6 +82,12 @@ pub fn init() -> anyhow::Result<()> {
     let subscriber = subscriber.with(console_subscriber::spawn());
 
     subscriber.init();
+    if let Some(err) = malformed_filter {
+        tracing::warn!(
+            %err,
+            "invalid MELIORA_LOG/RUST_LOG filter; falling back to default filter"
+        );
+    }
     install_panic_hook();
     Ok(())
 }

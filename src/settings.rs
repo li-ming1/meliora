@@ -199,7 +199,10 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
         cx.set_global(global);
         return;
     };
-    if let Err(e) = watcher.watch(path.parent().unwrap(), RecursiveMode::Recursive) {
+    // settings.json 固定在数据目录根，NonRecursive 在 Windows 上仍监视直接
+    // 子文件（手编与原子替换均发生在目录级），image-cache 等子目录的高频写盘
+    // 事件得以在事件源外挡掉，而不是靠下游逐条过滤。
+    if let Err(e) = watcher.watch(path.parent().unwrap(), RecursiveMode::NonRecursive) {
         warn!("failed to watch settings file: {:?}", e);
     }
 
