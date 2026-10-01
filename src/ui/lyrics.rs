@@ -34,6 +34,7 @@ use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -57,7 +58,9 @@ const ACCENT_THUMB_PX: u32 = 256;
 
 pub struct Lyrics {
     content: Option<String>,
-    parsed: Option<Vec<LrcLine>>,
+    /// Arc 共享：面板、`lyric_cache` 与沉浸页镜像引用同一份行数据，
+    /// 传递全程只付引用计数（LrcLine 含逐字 Vec，深拷贝代价可观）。
+    parsed: Option<Arc<Vec<LrcLine>>>,
     /// Bumped on every applied load (local, cached or online fetch): lets
     /// other consumers (the immersive view) mirror `parsed` without
     /// re-cloning it on unrelated notifies.
@@ -72,7 +75,7 @@ pub struct Lyrics {
     /// online requests). Cleared when a library scan completes (the only
     /// writer of DB lyrics). Online entries are keyed by stream URL, so a
     /// refreshed URL for the same song fetches once more.
-    lyric_cache: FxHashMap<PathBuf, (Option<String>, Option<Vec<LrcLine>>)>,
+    lyric_cache: FxHashMap<PathBuf, (Option<String>, Option<Arc<Vec<LrcLine>>>)>,
     /// Insertion order for `lyric_cache` FIFO eviction.
     lyric_cache_order: Vec<PathBuf>,
     /// Latest playback position snapshot (ms), refreshed by the position
@@ -334,9 +337,11 @@ impl Lyrics {
 
     /// Parsed lyric lines of the current track, for consumers that render
     /// lyrics themselves (the immersive view mirrors this instead of loading
-    /// a second copy — online fetches included). Pair with
-    /// [`Self::parsed_generation`] to detect changes cheaply.
-    pub(crate) fn parsed_lines(&self) -> Option<Vec<LrcLine>> {
+    /// a second copy — online fetches included). Arc-shared with `self.parsed`
+    /// and the per-track cache: cloning is a refcount bump, no line data is
+    /// copied. Pair with [`Self::parsed_generation`] to detect changes
+    /// cheaply.
+    pub(crate) fn parsed_lines(&self) -> Option<Arc<Vec<LrcLine>>> {
         self.parsed.clone()
     }
 
@@ -352,19 +357,19 @@ impl Lyrics {
     pub(crate) async fn load_lyrics_off_thread(
         pool: &sqlx::SqlitePool,
         path: std::path::PathBuf,
-    ) -> (Option<String>, Option<Vec<LrcLine>>) {
+    ) -> (Option<String>, Option<Arc<Vec<LrcLine>>>) {
         if let Some(stem) = path.file_stem() {
             let sidecar = path.with_file_name(format!("{}.krc", stem.to_string_lossy()));
             if let Ok(krc) = tokio::fs::read_to_string(&sidecar).await
                 && let Some(parsed) = krc::parse_krc(&krc)
             {
-                return (Some(krc), Some(parsed));
+                return (Some(krc), Some(Arc::new(parsed)));
             }
             let sidecar = path.with_file_name(format!("{}.yrc", stem.to_string_lossy()));
             if let Ok(yrc) = tokio::fs::read_to_string(&sidecar).await
                 && let Some(parsed) = yrc::parse_yrc(&yrc)
             {
-                return (Some(yrc), Some(parsed));
+                return (Some(yrc), Some(Arc::new(parsed)));
             }
         }
 
@@ -379,7 +384,7 @@ impl Lyrics {
                 .flatten(),
             None => None,
         };
-        let parsed = content.as_ref().and_then(|c| parse_lyrics(c));
+        let parsed = content.as_ref().and_then(|c| parse_lyrics(c)).map(Arc::new);
         (content, parsed)
     }
 
@@ -390,7 +395,7 @@ impl Lyrics {
     async fn load_lyrics_via_runtime(
         pool: sqlx::SqlitePool,
         path: Option<PathBuf>,
-    ) -> (Option<String>, Option<Vec<LrcLine>>) {
+    ) -> (Option<String>, Option<Arc<Vec<LrcLine>>>) {
         crate::RUNTIME
             .spawn(async move {
                 match path {
@@ -424,13 +429,13 @@ impl Lyrics {
     fn apply_loaded_lyrics(
         &mut self,
         content: Option<String>,
-        parsed: Option<Vec<LrcLine>>,
+        parsed: Option<Arc<Vec<LrcLine>>>,
         cx: &mut Context<Self>,
     ) {
         self.content = content;
         self.parsed = parsed;
         self.parsed_generation += 1;
-        let line_count = self.parsed.as_ref().map_or(0, Vec::len);
+        let line_count = self.parsed.as_ref().map_or(0, |parsed| parsed.len());
         self.last_active_line = None;
         self.follow_pending = false;
         self.scroll_follow.cancel();
@@ -454,7 +459,7 @@ impl Lyrics {
 
     /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
     /// oldest entry past [`LYRIC_CACHE_CAP`].
-    fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Vec<LrcLine>>)) {
+    fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Arc<Vec<LrcLine>>>)) {
         // 在线 URL 暂未进注册表时的未命中不缓存负结果：同 URL 稍后可能
         // 进注册表并取到歌词，负缓存会一直给出过期的"无歌词"。
         if loaded.0.is_none()
@@ -564,7 +569,7 @@ impl Lyrics {
     fn apply_online_lyrics(
         &mut self,
         expected: Option<&str>,
-        loaded: (Option<String>, Option<Vec<LrcLine>>),
+        loaded: (Option<String>, Option<Arc<Vec<LrcLine>>>),
         cx: &mut Context<Self>,
     ) {
         self.reset_track_state();
@@ -606,7 +611,8 @@ impl Lyrics {
                         Some(OnlineLyric::Lrc(lrc)) => parse_lrc(lrc),
                         Some(OnlineLyric::Krc(krc)) => krc::parse_krc(krc),
                         None => None,
-                    };
+                    }
+                    .map(Arc::new);
                     let content = lyric.as_ref().map(|lyric| lyric.describe());
                     (parsed, content)
                 })
@@ -654,7 +660,7 @@ impl Lyrics {
                     return;
                 }
 
-                let parsed = lyric.as_ref().map(|lyric| lyric.lines.clone());
+                let parsed = lyric.as_ref().map(|lyric| Arc::new(lyric.lines.clone()));
                 let content = lyric.as_ref().map(|lyric| lyric.content.clone());
                 this.apply_online_lyrics(expected.as_deref(), (content, parsed), cx);
             })
@@ -1081,7 +1087,7 @@ impl Lyrics {
     }
 
     fn start_line_emphasis_animation(&mut self, active_line: Option<usize>, reduced_motion: bool) {
-        let line_count = self.parsed.as_ref().map_or(0, Vec::len);
+        let line_count = self.parsed.as_ref().map_or(0, |parsed| parsed.len());
         if self.line_emphasis_target_values.len() != line_count {
             self.line_emphasis_target_values = vec![0.0; line_count];
         }

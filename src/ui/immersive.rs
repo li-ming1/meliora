@@ -50,7 +50,7 @@
 
 use std::{
     path::PathBuf,
-    rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -183,6 +183,11 @@ pub struct ImmersiveView {
     /// 已预取的下一首封面记忆 `(键, 目标宽, 目标高)`：同键同尺寸只预取
     /// 一次，重复 resolve / activate 直接跳过。
     prefetched_art: Option<(ManagedImageKey, u32, u32)>,
+    /// 在途预取任务句柄：退出沉浸页时 abort，防预取完成后把下一首的
+    /// 背景大图写回刚收缩过的缓存（"退出界面即归还"契约的补口），也防
+    /// 重进时与补预取产生同键双解码。不 detach 的语义与 `backdrop_task`
+    /// 一致——置空即取消。
+    prefetch_task: Option<tokio::task::JoinHandle<()>>,
     track_name: Option<SharedString>,
     artist_name: Option<SharedString>,
     meta_subscription: Option<Subscription>,
@@ -194,7 +199,7 @@ pub struct ImmersiveView {
     resolved_signature: Option<(usize, Option<PathBuf>)>,
 
     // Lyrics, mirrored from the shared `Lyrics` entity.
-    parsed: Option<Rc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
+    parsed: Option<Arc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
     current_line: Option<usize>,
     /// Wheel-browsing offset from the active line, in lines. Returns to 0
     /// after [`SCROLL_RETURN_AFTER`] of wheel idle (position ticks drive the
@@ -378,6 +383,7 @@ impl ImmersiveView {
                 backdrop_fade_started: None,
                 backdrop_task: None,
                 prefetched_art: None,
+                prefetch_task: None,
                 progress,
             };
             if this.active {
@@ -422,6 +428,13 @@ impl ImmersiveView {
         // 能已被逐出，残留会让下次激活误信缓存命中而漏掉重预取。
         // 未 detach 的 Task 置空即取消。
         self.backdrop_task = None;
+        // 在途预取一并取消：否则预取完成后 backdrop_cache_insert 会把下
+        // 一首的大图写回刚被 shrink(1) 收缩的缓存（异步完成时序晚于本函数
+        // 的同步收缩），"退出界面即归还"落空；重进 activate 补预取时还会
+        // 与之同键双解码。
+        if let Some(task) = self.prefetch_task.take() {
+            task.abort();
+        }
         self.backdrop_key = None;
         self.backdrop_layers = [None, None];
         self.backdrop_pending_arm = false;
@@ -616,7 +629,10 @@ impl ImmersiveView {
         }
         self.prefetched_art = Some((next_key.clone(), target_w, target_h));
         let pool = cx.global::<Pool>().0.clone();
-        crate::RUNTIME.spawn(async move {
+        // 句柄留存在案：deactivate 据此 abort（若再切歌则被新预取覆盖，
+        // 旧任务自然跑完，与既往"丢弃句柄"行为一致且写回的是当前曲目条
+        // 目，无害）。
+        self.prefetch_task = Some(crate::RUNTIME.spawn(async move {
             // 背景先行：它是切歌丝滑的关键路径。两条预取各付一次完整
             // 4096 解码，用户若在中间切歌，至少背景已就绪。
             let _ = next_key
@@ -629,7 +645,7 @@ impl ImmersiveView {
             let _ = next_key
                 .retrieve(pool, LABEL_THUMB_PX, ImageCacheMode::RenderCache)
                 .await;
-        });
+        }));
     }
 
     /// 切歌即启动背景解码（切歌/退出时上一个任务随之取消——从未显示的
@@ -802,7 +818,9 @@ impl ImmersiveView {
     /// current line without gliding across the whole list.
     fn sync_lyrics(&mut self, cx: &mut Context<Self>) {
         self.synced_lyrics_generation = self.lyrics.read(cx).parsed_generation();
-        self.parsed = self.lyrics.read(cx).parsed_lines().map(Rc::new);
+        // parsed_lines 返回的 Arc 与面板/缓存共享同一份行数据，镜像只付
+        // 引用计数。
+        self.parsed = self.lyrics.read(cx).parsed_lines();
         let pos_ms = *self.position.read(cx);
         self.current_line = None;
         self.line_anim = None;
