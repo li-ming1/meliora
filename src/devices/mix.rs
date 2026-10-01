@@ -20,7 +20,7 @@ impl Default for MixOptions {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct MixMatrix {
+struct MixMatrix {
     /// `out_channels` rows, `in_channels` columns
     rows: Vec<Vec<f64>>,
     in_channels: usize,
@@ -28,20 +28,20 @@ pub struct MixMatrix {
 }
 
 impl MixMatrix {
-    pub fn in_channels(&self) -> usize {
+    fn in_channels(&self) -> usize {
         self.in_channels
     }
 
-    pub fn out_channels(&self) -> usize {
+    fn out_channels(&self) -> usize {
         self.out_channels
     }
 
     #[cfg(test)]
-    pub fn rows(&self) -> &[Vec<f64>] {
+    fn rows(&self) -> &[Vec<f64>] {
         &self.rows
     }
 
-    pub fn is_identity(&self) -> bool {
+    fn is_identity(&self) -> bool {
         if self.in_channels != self.out_channels {
             return false;
         }
@@ -60,7 +60,7 @@ impl MixMatrix {
     ///
     /// Falls back to a generic count-based matrix when either side lacks positional
     /// information.
-    pub fn build(src: &ChannelLayout, dst: &ChannelLayout, opts: MixOptions) -> MixMatrix {
+    fn build(src: &ChannelLayout, dst: &ChannelLayout, opts: MixOptions) -> MixMatrix {
         let mut matrix = match (src, dst) {
             (ChannelLayout::Positioned(src_pos), ChannelLayout::Positioned(dst_pos)) => {
                 build_positioned(*src_pos, *dst_pos, opts)
@@ -92,7 +92,7 @@ impl MixMatrix {
     ///
     /// `input` and `output` must have lengths `in_channels` and `out_channels`
     /// respectively. `output` is overwritten (not accumulated).
-    pub fn mix_frame(&self, input: &[f64], output: &mut [f64]) {
+    fn mix_frame(&self, input: &[f64], output: &mut [f64]) {
         debug_assert_eq!(input.len(), self.in_channels);
         debug_assert_eq!(output.len(), self.out_channels);
 
@@ -362,7 +362,7 @@ impl ChannelMixer {
     }
 
     #[cfg(test)]
-    pub fn out_channels(&self) -> usize {
+    fn out_channels(&self) -> usize {
         self.out_channels
     }
 

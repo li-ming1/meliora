@@ -76,7 +76,7 @@ impl StatsRecorder {
         self.on_state_at(state, now_ts());
     }
 
-    pub fn on_state_at(&mut self, state: PlaybackState, ts: i64) {
+    fn on_state_at(&mut self, state: PlaybackState, ts: i64) {
         if state == PlaybackState::Playing {
             // Baseline reset: the first position event after the transition
             // re-establishes it, so a seek made while paused is never credited.
@@ -107,7 +107,7 @@ impl StatsRecorder {
         self.on_song_changed_at(track_key, meta, now_ts());
     }
 
-    pub fn on_song_changed_at(&mut self, track_key: String, meta: Option<TrackMeta>, ts: i64) {
+    fn on_song_changed_at(&mut self, track_key: String, meta: Option<TrackMeta>, ts: i64) {
         self.finalize(ts);
         self.current = Some(ActiveTrack {
             key: track_key,

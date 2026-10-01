@@ -2,11 +2,7 @@ pub mod album;
 pub mod info_section;
 pub mod track;
 
-use std::{
-    path::{Path, PathBuf},
-    rc::Rc,
-    sync::Arc,
-};
+use std::{path::PathBuf, rc::Rc, sync::Arc};
 
 use camino::Utf8PathBuf;
 use cntp_i18n::{I18nString, tr};
@@ -286,13 +282,6 @@ pub fn track_show_in_file_manager_label() -> SharedString {
     } else {
         tr!("SHOW_IN_FILE_MANAGER", "Show in File Manager").into()
     }
-}
-
-pub fn resolve_library_track_by_path(cx: &App, path: &Path) -> Option<Rc<Track>> {
-    cx.get_track_by_path(path)
-        .ok()
-        .flatten()
-        .map(|track| Rc::new((*track).clone()))
 }
 
 pub fn remove_from_playlist(

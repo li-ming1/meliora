@@ -3,11 +3,11 @@ use smallvec::{SmallVec, smallvec};
 use std::path::Path;
 use std::str::FromStr;
 
-pub fn parse_rg_float_str(value: &str) -> Option<f64> {
+pub(crate) fn parse_rg_float_str(value: &str) -> Option<f64> {
     value.trim().parse().ok()
 }
 
-pub fn parse_rg_gain_str(value: &str) -> Option<f64> {
+pub(crate) fn parse_rg_gain_str(value: &str) -> Option<f64> {
     let s = value.trim();
     // Probe the suffix as bytes: the byte check is safe on any input, and only
     // once it matches is the str slice below guaranteed to sit on a char
@@ -22,7 +22,7 @@ pub fn parse_rg_gain_str(value: &str) -> Option<f64> {
     s.parse().ok()
 }
 
-pub fn parse_r128_gain_str(value: &str) -> Option<f64> {
+pub(crate) fn parse_r128_gain_str(value: &str) -> Option<f64> {
     let v: i16 = value.trim().parse().ok()?;
     Some(v as f64 / 256.0)
 }
@@ -326,7 +326,7 @@ fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> 
     }
 }
 
-pub fn parse_release_date(value: &str) -> Option<ParsedReleaseDate> {
+pub(crate) fn parse_release_date(value: &str) -> Option<ParsedReleaseDate> {
     match parse_iso_release_date(value) {
         Ok(Some(date)) => Some(date),
         Err(()) => None,
@@ -371,7 +371,7 @@ fn parse_slash_pair(value: &str) -> Option<(u64, Option<u64>)> {
     Some((track.parse().ok()?, total.parse().ok()))
 }
 
-pub fn parse_track_number(value: &str) -> Option<ParsedTrackNumber> {
+pub(crate) fn parse_track_number(value: &str) -> Option<ParsedTrackNumber> {
     let mut parsed = ParsedTrackNumber::default();
 
     // check for vinyl style numbers: one letter side designator + optional number
@@ -402,7 +402,7 @@ pub struct ParsedDiscNumber {
     pub disc_subtitle: Option<String>,
 }
 
-pub fn parse_disc_number(value: &str) -> Option<ParsedDiscNumber> {
+pub(crate) fn parse_disc_number(value: &str) -> Option<ParsedDiscNumber> {
     if let Some((disc, disc_max)) = parse_slash_pair(value) {
         return Some(ParsedDiscNumber {
             disc,
