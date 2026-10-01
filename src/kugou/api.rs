@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::client::{
     APPID, CLIENTVER, GATEWAY, KugouClient, KugouError, KugouRequest, KugouResponse, SRCAPPID,
-    UserProfile, unix_now_secs,
+    UserProfile, today_utc, unix_now_secs,
 };
 use super::crypto;
 
@@ -46,6 +46,7 @@ impl KugouClient {
             .ok_or_else(|| KugouError::Api {
                 status: -1,
                 msg: "qrcode key missing from response".into(),
+                error_code: None,
             })
     }
 
@@ -83,6 +84,7 @@ impl KugouClient {
                     return Err(KugouError::Api {
                         status: 4,
                         msg: "login succeeded but token missing".into(),
+                        error_code: None,
                     });
                 }
                 Ok(QrStatus::Success { token, userid })
@@ -90,6 +92,7 @@ impl KugouClient {
             other => Err(KugouError::Api {
                 status: other,
                 msg: format!("unexpected qr status {other}"),
+                error_code: None,
             }),
         }
     }
@@ -429,6 +432,7 @@ impl KugouClient {
                 let bytes = STANDARD.decode(content).map_err(|_| KugouError::Api {
                     status: -1,
                     msg: "lyric content is not valid base64".into(),
+                    error_code: None,
                 })?;
                 Ok(String::from_utf8_lossy(&bytes).into_owned())
             }
@@ -559,7 +563,7 @@ impl KugouClient {
     /// Free one-day VIP for today. Mirrors `youth_day_vip.js`: fire and
     /// forget against the youth recharge endpoint.
     pub async fn receive_one_day_vip(&self) -> Result<KugouResponse, KugouError> {
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let today = today_utc();
         let spec = KugouRequest::new(GATEWAY, "/youth/v1/recharge/receive_vip_listen_song")
             .post()
             .param("source_id", 90139)
@@ -610,7 +614,7 @@ impl KugouClient {
             return VipClaimOutcome::NotLoggedIn;
         }
 
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let today = today_utc();
 
         // Same-day guard: skip only when today's attempt actually secured
         // VIP. A failed attempt (e.g. one made while the login was expired,
@@ -636,19 +640,16 @@ impl KugouClient {
             }
         };
 
-        let list = record
-            .body
-            .pointer("/data/list")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let list = record.body.pointer("/data/list").and_then(Value::as_array);
 
         // Refresh cached VIP detail for the settings page (best-effort).
         let _ = self.refresh_vip_detail().await;
 
-        let today_entry = list
-            .iter()
-            .find(|item| item.get("day").and_then(Value::as_str) == Some(today.as_str()));
+        let today_entry = list.and_then(|entries| {
+            entries
+                .iter()
+                .find(|item| item.get("day").and_then(Value::as_str) == Some(today.as_str()))
+        });
 
         match today_entry {
             // Not yet claimed today: claim a day then upgrade it.

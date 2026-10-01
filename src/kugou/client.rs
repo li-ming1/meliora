@@ -75,7 +75,13 @@ pub enum KugouError {
     #[error("network error: {0}")]
     Http(#[from] zed_reqwest::Error),
     #[error("api error {status}: {msg}")]
-    Api { status: i64, msg: String },
+    Api {
+        status: i64,
+        msg: String,
+        /// Payload-level `error_code` when the body carried one; callers
+        /// match on this instead of the message text.
+        error_code: Option<i64>,
+    },
 }
 
 /// Persistent device + login state, stored as `kugou_session.json` next to
@@ -251,7 +257,7 @@ impl KugouClient {
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(30))
                 .build()
-                .unwrap_or_else(|_| Client::new()),
+                .expect("kugou http client"),
             session: Mutex::new(session),
             session_path,
         }
@@ -374,9 +380,17 @@ impl KugouClient {
             .any(|item| item.get("is_vip").and_then(Value::as_i64) == Some(1))
     }
 
-    /// Builds the signed request for `spec`.
-    fn build_signed(&self, spec: &KugouRequest) -> Result<zed_reqwest::RequestBuilder, KugouError> {
-        let session = self.session_guard().clone();
+    /// Builds the signed request for `spec`. `body` is the request body
+    /// serialized exactly once by the caller: signed here, then moved into
+    /// the outgoing request. Holds the session lock by reference throughout:
+    /// this function never awaits, so the guard cannot be parked across a
+    /// poll point.
+    fn build_signed(
+        &self,
+        spec: &KugouRequest,
+        body: String,
+    ) -> Result<zed_reqwest::RequestBuilder, KugouError> {
+        let session = self.session_guard();
         let dfid = if spec.random_dfid {
             crypto::random_string(24)
         } else {
@@ -406,7 +420,6 @@ impl KugouClient {
             params.insert(key.clone(), value.clone());
         }
 
-        let body = spec.body_string();
         if spec.need_key {
             let userid = params.get("userid").cloned().unwrap_or_else(|| "0".into());
             let key = sign::sign_key(
@@ -458,8 +471,8 @@ impl KugouClient {
             .request(spec.method.clone(), &url)
             .headers(headers)
             .query(&params);
-        if let Some(json) = &spec.json_body {
-            builder = builder.body(json.to_string());
+        if spec.json_body.is_some() {
+            builder = builder.body(body);
         }
         Ok(builder)
     }
@@ -467,14 +480,21 @@ impl KugouClient {
     /// Executes a signed request and checks the payload-level status fields
     /// (the JS client treats `status == 0` / non-zero `error_code` as failure).
     /// The response bytes are parsed in place: the multi-megabyte bodies some
-    /// endpoints return must not be copied once more before parsing.
+    /// endpoints return must not be copied once more before parsing. A
+    /// response that is neither JSON nor JSONP (e.g. a gateway HTML error
+    /// page) is an explicit error, not an all-empty successful payload.
     pub async fn request(&self, spec: KugouRequest) -> Result<KugouResponse, KugouError> {
-        let response = self.build_signed(&spec)?.send().await?;
+        let body = spec.body_string();
+        let response = self.build_signed(&spec, body)?.send().await?;
         let bytes = response.bytes().await?;
         let body: Value = serde_json::from_slice(&bytes)
             .ok()
             .or_else(|| parse_jsonp(&bytes))
-            .unwrap_or(Value::Null);
+            .ok_or_else(|| KugouError::Api {
+                status: -1,
+                msg: format!("response is not JSON/JSONP ({} bytes)", bytes.len()),
+                error_code: None,
+            })?;
         if let Err(err) = check_payload_status(&body) {
             if is_login_expired(&err) {
                 notify_login_expired();
@@ -520,7 +540,8 @@ fn check_payload_status(body: &Value) -> Result<(), KugouError> {
         // already failed request. status/error_code carry the signal.
         return Err(KugouError::Api {
             status: status.unwrap_or(-1),
-            msg: format!("{msg} | error_code={error_code:?}"),
+            msg,
+            error_code,
         });
     }
     Ok(())
@@ -529,9 +550,7 @@ fn check_payload_status(body: &Value) -> Result<(), KugouError> {
 /// Whether the payload error is the login-expired signature.
 fn is_login_expired(err: &KugouError) -> bool {
     match err {
-        KugouError::Api { msg, .. } => {
-            msg.contains(&format!("error_code=Some({KUGOU_ERR_LOGIN_EXPIRED})"))
-        }
+        KugouError::Api { error_code, .. } => *error_code == Some(KUGOU_ERR_LOGIN_EXPIRED),
         _ => false,
     }
 }
