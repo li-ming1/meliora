@@ -236,13 +236,58 @@ fn find_main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
         .find_map(|window| window.downcast::<MainWindow>())
 }
 
-/// Toggles the main window's OS fullscreen state. Used by the immersive
-/// view (`ui::immersive::set_immersive`), which only owns the app context.
-pub(crate) fn toggle_main_window_fullscreen(cx: &mut App) {
-    if let Some(window) = find_main_window(cx) {
+/// Whether the main window was maximized when immersive mode entered; drives
+/// the restore on fullscreen exit. Pure OS-window-state memory — there is no
+/// Models domain this could belong to.
+static IMMERSIVE_WAS_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
+/// Enters/leaves the main window's OS fullscreen (called by
+/// `ui::immersive::set_immersive`, which only owns the app context).
+///
+/// Windows refuses the fullscreen rect for a zoomed window: stripping the
+/// caption styles implicitly restores it and the subsequent monitor-sized
+/// SetWindowPos is swallowed outright (measured: entering fullscreen from a
+/// maximized window falls back to the small pre-maximize rect, leaving the
+/// taskbar visible). So un-maximize before entering and re-maximize after
+/// leaving; both orderings rely on the main executor / message queue FIFO.
+pub(crate) fn set_main_window_fullscreen(fullscreen: bool, cx: &mut App) {
+    let Some(window) = find_main_window(cx) else {
+        return;
+    };
+    if fullscreen {
         let _ = window.update(cx, |_, window, _| {
+            if window.is_maximized() {
+                IMMERSIVE_WAS_MAXIMIZED.store(true, Ordering::Relaxed);
+                // SW_RESTORE is posted here, so gpui's style switch (spawned
+                // below) is processed against an un-zoomed window.
+                window.zoom_window();
+            }
             window.toggle_fullscreen();
         });
+    } else {
+        let was_maximized = IMMERSIVE_WAS_MAXIMIZED.swap(false, Ordering::Relaxed);
+        let _ = window.update(cx, |_, window, _| window.toggle_fullscreen());
+        if was_maximized {
+            cx.spawn(async move |cx| {
+                // Same foreground executor FIFO as gpui's internal restore
+                // spawn: by the time this runs, style and bounds are back.
+                cx.update(|cx| {
+                    let _ = window.update(cx, |_, window, _| {
+                        if window.is_fullscreen() {
+                            // Restore not landed yet (rare): defer one frame.
+                            window.on_next_frame(|window, _| {
+                                if !window.is_fullscreen() {
+                                    window.zoom_window();
+                                }
+                            });
+                        } else {
+                            window.zoom_window();
+                        }
+                    });
+                });
+            })
+            .detach();
+        }
     }
 }
 

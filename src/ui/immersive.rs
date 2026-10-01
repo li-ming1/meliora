@@ -131,7 +131,7 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
         return;
     }
     immersive.write(cx, entering);
-    crate::ui::app::toggle_main_window_fullscreen(cx);
+    crate::ui::app::set_main_window_fullscreen(entering, cx);
 }
 
 pub struct ImmersiveView {
