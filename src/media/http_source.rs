@@ -86,6 +86,13 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(Some(bytes.to_vec()))
 }
 
+/// 共享 client 的只读访问器：零散的冷路径请求（下载等）复用同一份 rustls
+/// 配置与连接池，而不是每次调用重建。client 刻意不带总超时（流式 range
+/// 响应要保持打开整曲时长），调用处必须自带 per-request timeout。
+pub(crate) fn shared_http_client() -> &'static zed_reqwest::Client {
+    &HTTP_CLIENT
+}
+
 // ---------------------------------------------------------------------------
 // 在线图片磁盘缓存
 //

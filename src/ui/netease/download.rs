@@ -19,7 +19,7 @@ use lofty::{
 use serde_json::Value;
 
 use crate::{
-    media::http_source::http_cover_bytes,
+    media::http_source::{http_cover_bytes, shared_http_client},
     netease::NeteaseClient,
     toasts::{Toast, emit_toast},
     ui::netease::NeteaseTrackInfo,
@@ -60,12 +60,9 @@ fn sanitize_filename(raw: &str) -> String {
 
 /// Fetches `url` into memory (audio files are a few tens of MB, fine to hold).
 async fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let client = zed_reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|err| err.to_string())?;
-    let response = client
+    let response = shared_http_client()
         .get(url)
+        .timeout(Duration::from_secs(120))
         .send()
         .await
         .map_err(|err| err.to_string())?;
@@ -217,8 +214,6 @@ pub async fn download_track(
         "mp3"
     };
 
-    std::fs::create_dir_all(dir).map_err(|err| format!("create download dir: {err}"))?;
-
     // File name stem: "artist - title", with the track id standing in for a
     // missing title. The audio file and the lyric sidecars below share it.
     let title = if track.title.is_empty() {
@@ -238,22 +233,43 @@ pub async fn download_track(
     if bytes.len() < 1024 {
         return Err("downloaded file is empty".into());
     }
-    std::fs::write(&audio_path, &bytes).map_err(|err| format!("write audio: {err}"))?;
+    // 建目录/写音频/标签重写都是几十 MB 级同步 IO，必须搬进阻塞池：
+    // 内联在 RUNTIME worker 上会与播放流泵/DB 查询抢仅有的 2 个 worker。
+    let write_dir = dir.to_path_buf();
+    let audio_path = crate::RUNTIME
+        .spawn_blocking(move || -> Result<PathBuf, String> {
+            std::fs::create_dir_all(&write_dir)
+                .map_err(|err| format!("create download dir: {err}"))?;
+            std::fs::write(&audio_path, &bytes).map_err(|err| format!("write audio: {err}"))?;
+            Ok(audio_path)
+        })
+        .await
+        .map_err(|err| format!("write audio: {err}"))??;
 
     // Lyric sidecars + tags/cover are best-effort: the audio file is already saved.
     let (lrc, yrc) = fetch_lyrics(client, track).await;
-    if let Some(yrc) = &yrc {
-        let _ = std::fs::write(dir.join(format!("{stem}.yrc")), yrc);
-    }
-    if let Some(lrc) = &lrc {
-        let _ = std::fs::write(dir.join(format!("{stem}.lrc")), lrc);
-    }
+    let tag_lrc = lrc.clone();
+    let sidecar_dir = dir.to_path_buf();
+    let _ = crate::RUNTIME
+        .spawn_blocking(move || {
+            if let Some(yrc) = &yrc {
+                let _ = std::fs::write(sidecar_dir.join(format!("{stem}.yrc")), yrc);
+            }
+            if let Some(lrc) = &lrc {
+                let _ = std::fs::write(sidecar_dir.join(format!("{stem}.lrc")), lrc);
+            }
+        })
+        .await;
     let cover = if track.cover_url.is_empty() {
         None
     } else {
         http_cover_bytes(&track.cover_url).await.ok().flatten()
     };
-    let _ = embed_tags(&audio_path, track, cover, lrc.as_deref());
+    let tag_path = audio_path.clone();
+    let tag_track = track.clone();
+    let _ = crate::RUNTIME
+        .spawn_blocking(move || embed_tags(&tag_path, &tag_track, cover, tag_lrc.as_deref()))
+        .await;
 
     Ok(audio_path)
 }
