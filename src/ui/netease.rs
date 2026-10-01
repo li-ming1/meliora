@@ -35,8 +35,8 @@ use crate::{
         library::context_menus::{play_now, queue_item},
         lyrics::lrc::{LrcLine, parse_lrc},
         online_common::{
-            PlayIntent, claim_fetch, i64_field, parse_pointer_list, settle_fetch, string_field,
-            write_pending_fetches,
+            PlayIntent, claim_fetch, i64_field, parse_pointer_list, prime_online_liked_cache,
+            settle_fetch, string_field, write_pending_fetches,
         },
         online_track_row::OnlineTrackDisplay,
     },
@@ -416,12 +416,7 @@ async fn refresh_liked_set_from_service() {
 /// Fires a background refresh of the liked-set. Called at startup (when
 /// logged in) so the play-bar star is immediately accurate.
 pub fn prime_liked_cache() {
-    crate::RUNTIME.spawn(async {
-        // Same lock as the lazy load in `online_track_is_liked` so the two
-        // entry points cannot double-fetch the whole liked list.
-        let _guard = liked_load_lock().lock().await;
-        refresh_liked_set_from_service().await;
-    });
+    prime_online_liked_cache(liked_load_lock, refresh_liked_set_from_service);
 }
 
 /// True when `id` is in the user's NetEase liked-songs list. Uses the cached

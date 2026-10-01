@@ -5,13 +5,18 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::{Arc, OnceLock, RwLock, RwLockWriteGuard},
     time::{Duration, Instant},
 };
 
-use gpui::RenderImage;
+use gpui::{
+    Context, ParentElement, RenderImage, ScrollHandle, SharedString, UniformListScrollHandle,
+};
 use serde_json::Value;
 use smallvec::SmallVec;
+
+use crate::ui::components::button::{ButtonIntent, InteractiveButton, button};
 
 /// Intent of an online-track activation: start playing now, or append.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +146,101 @@ pub(crate) fn parse_pointer_list<T>(
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(parse).collect())
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// 排行榜（discovery）页共享件：kugou_ranks / netease_ranks 的 switch_tab、
+// load_more、tab_button 与 liked 缓存预热四处逐字相同（仅 provider 名/id
+// 前缀与各自私有字段不同），收编于此；两侧调用点保留原方法名，只做一行
+// 转发。差异点全部经参数注入。
+// ---------------------------------------------------------------------------
+
+/// 排行榜页 `switch_tab` 的共享体。与原实现行为一致：同页点击早退；换页时
+/// 先换 tab、再重建两个滚动句柄；切到日推页且 recommend 尚未加载过才触发
+/// 首次加载；最后 notify。各视图经参数接入自己的 tab / recommend 字段与方法。
+///
+/// `same_tab` 与 `recommend_idle` 在调用点求值：两者都是对字段的纯读取，
+/// 提前求值与原实现的短路求值行为等价（`recommend_idle` 传
+/// `tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle)`）。
+pub(crate) fn switch_ranks_tab<V: 'static>(
+    view: &mut V,
+    cx: &mut Context<V>,
+    same_tab: bool,
+    set_tab: impl FnOnce(&mut V),
+    scroll_handles: impl FnOnce(&mut V) -> (&mut ScrollHandle, &mut UniformListScrollHandle),
+    recommend_idle: bool,
+    load_recommend: impl FnOnce(&mut V, &mut Context<V>),
+) {
+    if same_tab {
+        return;
+    }
+    set_tab(view);
+    let (scroll_handle, tracks_scroll_handle) = scroll_handles(view);
+    *scroll_handle = ScrollHandle::new();
+    *tracks_scroll_handle = UniformListScrollHandle::new();
+    if recommend_idle {
+        load_recommend(view, cx);
+    }
+    cx.notify();
+}
+
+/// 排行榜页 `load_more` 的共享体。`next_page`（= track_page + 1）由调用点
+/// 传入，纯计算，提前求值与原实现等价；翻页动作经 `load_page` 注入。
+pub(crate) fn load_more_rank_tracks<V: 'static>(
+    view: &mut V,
+    cx: &mut Context<V>,
+    has_more_tracks: bool,
+    a_page_is_loading: bool,
+    next_page: i64,
+    load_page: impl FnOnce(&mut V, i64, &mut Context<V>),
+) {
+    // one page in flight at a time: tracks_state stays Loading from the
+    // click until the response lands, so extra clicks are ignored
+    if has_more_tracks && !a_page_is_loading {
+        load_page(view, next_page, cx);
+    }
+}
+
+/// 排行榜页头部 `tab_button` 的共享体：两侧按钮的构建/样式/点击管线完全
+/// 相同，仅 element id 前缀与各自的 tab 枚举不同。`on_select` 接各视图自己的
+/// `switch_tab`（点击回调会触发多次，须 `Fn`）。
+pub(crate) fn rank_tab_button<V: 'static>(
+    id_prefix: &str,
+    tab: impl Copy + std::fmt::Debug,
+    active: bool,
+    label: impl Into<SharedString>,
+    on_select: impl Fn(&mut V, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> InteractiveButton {
+    let label = label.into();
+    button()
+        .id(format!("{id_prefix}-rank-tab-{:?}", tab))
+        .intent(if active {
+            ButtonIntent::Primary
+        } else {
+            ButtonIntent::Secondary
+        })
+        .child(label)
+        .on_click(cx.listener(move |this, _, _, cx| on_select(this, cx)))
+}
+
+/// 后台预热 provider 的 liked 缓存（`ui::kugou::prime_liked_cache` /
+/// `ui::netease::prime_liked_cache` 的共享体）：provider 专属的加载锁与刷新
+/// 函数经参数传入，函数体两侧原本逐字相同。
+pub(crate) fn prime_online_liked_cache<L, R, Fut>(
+    liked_load_lock: L,
+    refresh_liked_set_from_service: R,
+) where
+    L: Fn() -> &'static tokio::sync::Mutex<()> + Send + 'static,
+    R: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    crate::RUNTIME.spawn(async move {
+        // Same lock as the lazy load in `online_track_is_liked` so the two
+        // entry points cannot double-fetch the whole liked list.
+        let _guard = liked_load_lock().lock().await;
+        refresh_liked_set_from_service().await;
+    });
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Mutex, OnceLock, RwLock,
+        OnceLock, RwLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -16,6 +16,7 @@ use std::{
 use gpui::SharedString;
 use serde_json::Value;
 
+use super::stream_registry::StreamMapPersistence;
 use crate::kugou;
 
 /// One online track as shown in search results and playlists.
@@ -115,33 +116,9 @@ fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
     })
 }
 
-/// Bytes of the stream-map JSON last handed to the persistence task. Kept so
-/// re-recording an unchanged registry (e.g. replaying the same song) skips
-/// the disk write entirely instead of re-writing identical bytes.
-static LAST_PERSISTED_STREAM_MAP: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
-
-/// Serializes stream-map persistence. Two overlapping truncate+write on the
-/// same file can interleave into torn, unparseable JSON — which would drop
-/// the whole registry on next launch — so every write takes this gate first.
-/// tokio's mutex is fair by poll order (not spawn order), so writers land
-/// roughly in hand-off order; a stale final write only costs a URL refresh
-/// on next launch (the registry is a cache).
-static STREAM_MAP_WRITE_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-/// Returns `json` back when it differs from the last persisted bytes (and
-/// records it as the new baseline), or `None` when it is unchanged and the
-/// write task can be skipped. The mutex is only ever held for a memcmp.
-fn persist_stream_map_if_changed(json: Vec<u8>) -> Option<Vec<u8>> {
-    let mut last = LAST_PERSISTED_STREAM_MAP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if last.as_deref() == Some(json.as_slice()) {
-        return None;
-    }
-    *last = Some(json.clone());
-    Some(json)
-}
+/// 流注册表持久化设施（去重基线 + 写闸门）。本 provider 专属 static 实例：
+/// 基线绝不能与 netease 共享，否则去重跳写与失败回滚会互相误伤。
+static STREAM_MAP_PERSISTENCE: StreamMapPersistence = StreamMapPersistence::new();
 
 /// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
 /// entry for a track on top and evicting older URLs for the same track.
@@ -162,24 +139,9 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     };
     // Write off-thread and outside the lock. Two racing writers may persist
     // in either order; a stale file only costs a URL refresh on next launch.
-    if let Some(json) = persist_stream_map_if_changed(json) {
-        let path = stream_map_path();
-        let gate = STREAM_MAP_WRITE_GATE.get_or_init(Default::default);
-        crate::RUNTIME.spawn(async move {
-            let _gate = gate.lock().await;
-            if let Err(err) = tokio::fs::write(&path, &json).await {
-                // Roll the baseline back so an identical later snapshot
-                // retries instead of silently leaving the old file in place.
-                // Only when the baseline is still our own bytes: a newer
-                // writer may have updated it meanwhile.
-                if let Some(last) = LAST_PERSISTED_STREAM_MAP.get() {
-                    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
-                    if last.as_deref() == Some(json.as_slice()) {
-                        last.take();
-                    }
-                }
-                tracing::warn!(%err, "failed to persist kugou stream map");
-            }
+    if let Some(json) = STREAM_MAP_PERSISTENCE.persist_if_changed(json) {
+        STREAM_MAP_PERSISTENCE.spawn_persist(stream_map_path(), json, |err| {
+            tracing::warn!(%err, "failed to persist kugou stream map");
         });
     }
 }

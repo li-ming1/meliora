@@ -22,6 +22,7 @@ use crate::{
         },
         library::{EscapeBack, view_header::view_header},
         netease::{NeteaseRank, NeteaseTrackInfo, parse_ranks, parse_tracks},
+        online_common::{load_more_rank_tracks, rank_tab_button, switch_ranks_tab},
         settings::{SettingsSectionKind, open_settings_window_with_section},
         theme::Theme,
     },
@@ -175,16 +176,15 @@ impl NeteaseRanksView {
     }
 
     fn switch_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        if self.tab == tab {
-            return;
-        }
-        self.tab = tab;
-        self.scroll_handle = ScrollHandle::new();
-        self.tracks_scroll_handle = UniformListScrollHandle::new();
-        if tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle) {
-            self.load_recommend(cx);
-        }
-        cx.notify();
+        switch_ranks_tab(
+            self,
+            cx,
+            self.tab == tab,
+            |v| v.tab = tab,
+            |v| (&mut v.scroll_handle, &mut v.tracks_scroll_handle),
+            tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle),
+            |v, cx| v.load_recommend(cx),
+        );
     }
 
     fn load_recommend(&mut self, cx: &mut Context<Self>) {
@@ -315,11 +315,14 @@ impl NeteaseRanksView {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        // one page in flight at a time: tracks_state stays Loading from the
-        // click until the response lands, so extra clicks are ignored
-        if self.has_more_tracks && !matches!(self.tracks_state, TracksState::Loading) {
-            self.load_tracks_page(self.track_page + 1, cx);
-        }
+        load_more_rank_tracks(
+            self,
+            cx,
+            self.has_more_tracks,
+            matches!(self.tracks_state, TracksState::Loading),
+            self.track_page + 1,
+            |v, page, cx| v.load_tracks_page(page, cx),
+        );
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -448,17 +451,14 @@ impl NeteaseRanksView {
         label: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let label = label.into();
-        let active = self.tab == tab;
-        button()
-            .id(format!("netease-rank-tab-{:?}", tab))
-            .intent(if active {
-                ButtonIntent::Primary
-            } else {
-                ButtonIntent::Secondary
-            })
-            .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx)))
+        rank_tab_button(
+            "netease",
+            tab,
+            self.tab == tab,
+            label,
+            move |this, cx| this.switch_tab(tab, cx),
+            cx,
+        )
     }
 
     fn render_ranks_grid(&self, cx: &mut Context<Self>) -> AnyElement {

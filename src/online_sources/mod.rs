@@ -92,6 +92,8 @@ pub mod kugou;
 #[cfg(feature = "netease")]
 pub mod netease;
 pub mod refresh;
+// 流注册表持久化设施（与 provider 无关；kugou/netease 各持一份实例）。
+pub mod stream_registry;
 
 // The shared refresh entry point lives in the `refresh` submodule;
 // re-exported here so callers depend on `crate::online_sources` as a unit.
