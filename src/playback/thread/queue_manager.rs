@@ -1,12 +1,13 @@
 use std::{
     collections::VecDeque,
     mem::take,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
 use rand::{rng, seq::SliceRandom};
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
@@ -1023,20 +1024,84 @@ impl QueueManager {
             return DequeueManyResult::Unchanged;
         }
 
+        // 批量移除用单遍重建替代逐项 remove：旧实现对每个被移除项做一次
+        // O(n) memmove（k 项即 O(k×n)），全程持有 UI 队列面板/歌词面板每帧
+        // 读取的同一把写锁，大库多选删除会秒级冻结 UI 与播放线程。
+        // 记录的仍是 pristine 索引（与旧的降序删除等价），顺序升序无碍——
+        // undo_reinsert_items 插入前会重新升序排序。
+        let remove_set: FxHashSet<usize> = indices.iter().copied().collect();
         let mut removed_queue_items: SmallVec<[(usize, QueueItemData); 1]> = SmallVec::new();
+        {
+            let queue = Arc::make_mut(&mut queue);
+            let mut kept = Vec::with_capacity(queue.len() - remove_set.len());
+            for (pristine_idx, item) in queue.drain(..).enumerate() {
+                if remove_set.contains(&pristine_idx) {
+                    removed_queue_items.push((pristine_idx, item));
+                } else {
+                    kept.push(item);
+                }
+            }
+            *queue = kept;
+        }
+
         let mut removed_original_items: SmallVec<[(usize, QueueItemData); 1]> = SmallVec::new();
-
-        for &idx in indices.iter().rev() {
-            let item = Arc::make_mut(&mut queue).remove(idx);
-
-            if self.shuffle
-                && let Some(pos) = self.original_queue.iter().position(|q| q == &item)
-            {
-                let orig_item = Arc::make_mut(&mut self.original_queue).remove(pos);
-                removed_original_items.push((pos, orig_item));
+        if self.shuffle {
+            // 按 QueueItemData::eq 的键 (db_id, db_album_id, path) 在
+            // original_queue 中定位被移除项：各键消费其最小的 k 个 pristine
+            // 位置（k 为队列侧该键的移除数；键无剩余则跳过，即旧实现
+            // position 未命中的分支），移除的多重集合与旧的逐项
+            // position+remove 一致，判定与重建各一遍、整体仍 O(n)。
+            //
+            // 行为变更（缺陷修复）：这里记录 pristine 位置，旧实现记录的是
+            // 随前序删除左移的演化位置——undo_reinsert_items 的升序插入契约
+            // 要求 pristine 位置，演化位置会在乱序/重复键场景错误重排 undo
+            // 还原的 original_queue。
+            let mut pending: FxHashMap<(Option<i64>, Option<i64>, &Path), usize> =
+                FxHashMap::default();
+            for (_, removed) in &removed_queue_items {
+                *pending
+                    .entry((
+                        removed.get_db_id(),
+                        removed.get_db_album_id(),
+                        removed.get_path().as_path(),
+                    ))
+                    .or_insert(0) += 1;
             }
 
-            removed_queue_items.push((idx, item));
+            // 判定与移动分两遍：pending 的键借用 removed_queue_items，若在
+            // drain 迭代里用 orig_item 的路径做键查找，键元组里的 &Path 要
+            // 同时统一到两个借用源的生命周期（一个跨整个循环、一个仅当前
+            // 迭代），NLL 下无解且 orig_item 随后要被移动（E0597/E0505）。
+            // 先以共享借用扫一遍 original_queue 定位要移除的 pristine 位置
+            // （升序消费计数，与单遍判定等价），再 drain 重建。
+            let mut orig_remove_set: FxHashSet<usize> = FxHashSet::default();
+            for (pristine_pos, orig_item) in self.original_queue.iter().enumerate() {
+                let remove_here = match pending.get_mut(&(
+                    orig_item.get_db_id(),
+                    orig_item.get_db_album_id(),
+                    orig_item.get_path().as_path(),
+                )) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        true
+                    }
+                    _ => false,
+                };
+                if remove_here {
+                    orig_remove_set.insert(pristine_pos);
+                }
+            }
+
+            let original = Arc::make_mut(&mut self.original_queue);
+            let mut kept = Vec::with_capacity(original.len().saturating_sub(orig_remove_set.len()));
+            for (pristine_pos, orig_item) in original.drain(..).enumerate() {
+                if orig_remove_set.contains(&pristine_pos) {
+                    removed_original_items.push((pristine_pos, orig_item));
+                } else {
+                    kept.push(orig_item);
+                }
+            }
+            *original = kept;
         }
 
         let current = self.queue_next.checked_sub(1);
@@ -1878,6 +1943,29 @@ mod tests {
 
         manager.dequeue_many(vec![0, 2]);
 
+        assert_undo_round_trip(&mut manager, before);
+    }
+
+    /// 回归：shuffle 批量删除时 original_queue 的 undo 记录必须是 pristine
+    /// 位置。旧实现记录随前序删除左移的演化位置：在本用例的乱序排列下
+    /// （original [1,2,3,4]、queue [2,3,1,4]、按降序队列索引处理 id1→id3
+    /// →id2），id2 的记录由 pristine 1 坍缩成演化 0，undo 的升序插入会把
+    /// 还原的 original_queue 重排成 [2,3,1,4]。
+    #[test]
+    fn undo_dequeue_many_in_shuffle_mode_restores_pristine_original_positions() {
+        let mut manager = manager_with_queue(vec![item(2), item(3), item(1), item(4)]);
+        // tests 模块直写私有字段构造确定性乱序排列（toggle_shuffle 的随机
+        // 洗牌覆盖不到上述特定顺序）。
+        manager.original_queue = Arc::new(vec![item(1), item(2), item(3), item(4)]);
+        manager.shuffle = true;
+        manager.undo_stack.clear();
+
+        let before = snapshot(&manager);
+
+        manager.dequeue_many(vec![0, 1, 2]);
+
+        assert_eq!(manager.len(), 1);
+        assert_eq!(manager.original_queue.len(), 1);
         assert_undo_round_trip(&mut manager, before);
     }
 
