@@ -1,5 +1,6 @@
 mod about;
 pub mod corrupt_settings_dialog;
+mod debounced_save;
 mod equalizer;
 mod interface;
 #[cfg(feature = "kugou")]
