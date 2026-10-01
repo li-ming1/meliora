@@ -173,6 +173,128 @@ fn artist_row_cache() -> &'static Mutex<RowCache<i64, ArtistWithCounts>> {
     CACHE.get_or_init(|| Mutex::new(RowCache::empty()))
 }
 
+/// 行预取分块的绑定变量数上限：留在 SQLite 变量上限（旧版构建 999）之下，
+/// 同 db.rs 的 `PLAYLIST_IN_CHUNK` 先例。
+const ROW_PREFETCH_IN_CHUNK: usize = 900;
+
+/// `?,?,?` —— n 个绑定槽位（db.rs 的同名先例为私有，此处就地同型）。
+fn in_placeholders(n: usize) -> String {
+    vec!["?"; n].join(",")
+}
+
+/// 分块预取的行契约：SELECT 前缀与主键读取由各类型自带，与 queries/ 下
+/// 对应单行查询互引防漂移。
+trait PrefetchRow: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> {
+    /// `SELECT … FROM <table>`（不含 WHERE），列集逐列对齐 queries/ 下对应
+    /// 单行查询的 SELECT，单侧改动即漂移。
+    const CHUNK_SQL_PREFIX: &'static str;
+    /// WHERE 子句里的 id 列（带表别名时含限定）。
+    const ID_COLUMN: &'static str;
+    /// 分块查询失败日志用的表标签。
+    const LOG_LABEL: &'static str;
+
+    /// IN 查询的返回顺序与请求顺序无关，主键必须取自行本身。
+    fn row_id(&self) -> i64;
+}
+
+impl PrefetchRow for Album {
+    // 列集逐列对齐 queries/library/find_album_metadata_by_id.sql 的 SELECT
+    const CHUNK_SQL_PREFIX: &'static str = "SELECT id, title, title_sortable, \
+        NULLIF(artist_display_override, '') AS artist_display_override, release_date, \
+        date_precision, created_at, label, catalog_number, isrc, vinyl_numbering FROM album";
+    const ID_COLUMN: &'static str = "id";
+    const LOG_LABEL: &'static str = "album";
+
+    fn row_id(&self) -> i64 {
+        self.id
+    }
+}
+
+impl PrefetchRow for Track {
+    // 列集逐列对齐 queries/library/find_track_by_id.sql 的 SELECT
+    const CHUNK_SQL_PREFIX: &'static str = "SELECT id, title, album_id, track_number, \
+        disc_number, duration, location, artist_names, disc_subtitle FROM track";
+    const ID_COLUMN: &'static str = "id";
+    const LOG_LABEL: &'static str = "track";
+
+    fn row_id(&self) -> i64 {
+        self.id
+    }
+}
+
+impl PrefetchRow for ArtistWithCounts {
+    // 列集逐列对齐 queries/library/find_artist_with_counts_by_id.sql 的 SELECT
+    const CHUNK_SQL_PREFIX: &'static str = "SELECT a.id, a.name, \
+        (SELECT COUNT(*) FROM album_artist aa WHERE aa.artist_id = a.id) AS album_count, \
+        (SELECT COUNT(*) FROM track t \
+        JOIN album_artist aa ON t.album_id = aa.album_id \
+        WHERE aa.artist_id = a.id) \
+        + (SELECT COUNT(*) FROM track_artist ta WHERE ta.artist_id = a.id) AS track_count \
+        FROM artist a";
+    const ID_COLUMN: &'static str = "a.id";
+    const LOG_LABEL: &'static str = "artist";
+
+    fn row_id(&self) -> i64 {
+        self.id
+    }
+}
+
+/// 三类表格共用的行预取主体：剔除缓存已持有的 id（重叠窗口保持廉价）后，
+/// 剩余 id 按 ≤`ROW_PREFETCH_IN_CHUNK` 个绑定变量分块，每块一条
+/// `… WHERE id IN (…)` 整行取回——替代逐行串行 await（pool 仅 3 连接，
+/// 快速滚动时排空慢，未命中行还会退化成 UI 线程逐行 `block_on`）。
+/// 代际不符（预取途中 `clear_row_cache`）即中止，过期行绝不回写。
+// `Send + Unpin`：fetch_all 对查询输出类型的固有要求，BoxFuture<'static, ()>
+// 调用点的 future Send 也依赖它（三个行类型均为纯数据结构，自动满足）。
+async fn prefetch_rows_chunked<Row: PrefetchRow + Send + Unpin>(
+    cache: &'static Mutex<RowCache<i64, Row>>,
+    pool: sqlx::SqlitePool,
+    ids: Vec<i64>,
+) {
+    let mut pending = ids;
+    pending.retain(|id| cached_row(cache, *id).is_none());
+
+    let generation = row_cache_generation(cache);
+
+    for chunk in pending.chunks(ROW_PREFETCH_IN_CHUNK) {
+        // 每块之间校验代际：缓存已被清空（重载）则不再发过期查询
+        if row_cache_generation(cache) != generation {
+            return;
+        }
+
+        // 内联动态 SQL 先例：db.rs playlist_contains_all_tracks
+        let sql = format!(
+            "{} WHERE {} IN ({})",
+            Row::CHUNK_SQL_PREFIX,
+            Row::ID_COLUMN,
+            in_placeholders(chunk.len())
+        );
+        let mut query = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(sql));
+        for &id in chunk {
+            query = query.bind(id);
+        }
+
+        match query.fetch_all(&pool).await {
+            Ok(rows) => {
+                for row in rows {
+                    if !insert_cached_row(cache, row.row_id(), Arc::new(row), generation) {
+                        // 查询期间缓存被清空（重载）：停止回写过期行
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    table = Row::LOG_LABEL,
+                    count = chunk.len(),
+                    error = %err,
+                    "row prefetch chunk failed"
+                );
+            }
+        }
+    }
+}
+
 /// Default per-column widths (logical pixels) in display order, shared by the
 /// `default_columns` impls below.
 fn default_column_widths<C>(
@@ -271,26 +393,11 @@ impl TableData<AlbumColumn> for Album {
             return None;
         }
 
-        Some(Box::pin(async move {
-            let generation = row_cache_generation(album_row_cache());
-            for album_id in ids {
-                // skip rows the cache already holds: overlapping windows stay cheap
-                if cached_row(album_row_cache(), album_id).is_some() {
-                    continue;
-                }
-                match db::get_album_by_id(&pool, album_id).await {
-                    Ok(album) => {
-                        if !insert_cached_row(album_row_cache(), album_id, album, generation) {
-                            // cache was cleared (reload): stop writing stale rows
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::debug!(album_id, error = %err, "album row prefetch missed");
-                    }
-                }
-            }
-        }))
+        Some(Box::pin(prefetch_rows_chunked(
+            album_row_cache(),
+            pool,
+            ids,
+        )))
     }
 
     fn clear_row_cache() {
@@ -684,26 +791,11 @@ impl TableData<TrackColumn> for Track {
             return None;
         }
 
-        Some(Box::pin(async move {
-            let generation = row_cache_generation(track_row_cache());
-            for track_id in ids {
-                // skip rows the cache already holds: overlapping windows stay cheap
-                if cached_row(track_row_cache(), track_id).is_some() {
-                    continue;
-                }
-                match db::get_track_by_id(&pool, track_id).await {
-                    Ok(track) => {
-                        if !insert_cached_row(track_row_cache(), track_id, track, generation) {
-                            // cache was cleared (reload): stop writing stale rows
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::debug!(track_id, error = %err, "track row prefetch missed");
-                    }
-                }
-            }
-        }))
+        Some(Box::pin(prefetch_rows_chunked(
+            track_row_cache(),
+            pool,
+            ids,
+        )))
     }
 
     fn clear_row_cache() {
@@ -795,26 +887,11 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
             return None;
         }
 
-        Some(Box::pin(async move {
-            let generation = row_cache_generation(artist_row_cache());
-            for artist_id in ids {
-                // skip rows the cache already holds: overlapping windows stay cheap
-                if cached_row(artist_row_cache(), artist_id).is_some() {
-                    continue;
-                }
-                match db::get_artist_with_counts(&pool, artist_id).await {
-                    Ok(artist) => {
-                        if !insert_cached_row(artist_row_cache(), artist_id, artist, generation) {
-                            // cache was cleared (reload): stop writing stale rows
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::debug!(artist_id, error = %err, "artist row prefetch missed");
-                    }
-                }
-            }
-        }))
+        Some(Box::pin(prefetch_rows_chunked(
+            artist_row_cache(),
+            pool,
+            ids,
+        )))
     }
 
     fn clear_row_cache() {
