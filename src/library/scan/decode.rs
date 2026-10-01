@@ -40,21 +40,20 @@ pub(crate) fn folder_art_rank(stem: &str) -> Option<u8> {
     }
 }
 
-/// Skip hidden/system files. Windows often leaves stale Folder.jpg files around.
-pub(crate) fn is_hidden_file(path: &std::path::Path) -> bool {
+/// Skip hidden/system files (attribute bits from already-read metadata, no extra stat).
+/// Windows often leaves stale Folder.jpg files around.
+pub(crate) fn is_hidden_file(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
 
         const HIDDEN_OR_SYSTEM: u32 = FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0;
-        std::fs::metadata(path)
-            .map(|m| m.file_attributes() & HIDDEN_OR_SYSTEM != 0)
-            .unwrap_or(false)
+        metadata.file_attributes() & HIDDEN_OR_SYSTEM != 0
     }
     #[cfg(not(windows))]
     {
-        let _ = path;
+        let _ = metadata;
         false
     }
 }

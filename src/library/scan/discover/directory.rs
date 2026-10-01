@@ -313,8 +313,8 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
             None
         };
         if metadata.is_file()
-            && !is_hidden_file(raw_path.as_std_path())
             && let Some(rank) = art_rank
+            && !is_hidden_file(&metadata)
         {
             let candidate = FolderArtCandidate {
                 path: raw_path.clone(),
@@ -343,6 +343,9 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
             // sidecar directly instead of trusting this directory's listing
             let lyrics_timestamp = if entry.is_symlink {
                 sidecar_modified(&entry.path)
+            } else if lyrics_timestamps.is_empty() {
+                // 绝大多数目录没有 .lrc：空表短路，省去每文件三次堆分配
+                None
             } else {
                 sidecar_lyrics_path(&entry.raw_path)
                     .and_then(|path| normalized_file_name(&path, case_insensitive))

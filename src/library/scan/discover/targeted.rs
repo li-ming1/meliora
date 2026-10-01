@@ -34,17 +34,24 @@ const RECONCILE_UNDER_PREFIX_SQL: &str =
 
 struct RescanState {
     scan_record: Arc<Mutex<ScanRecord>>,
-    folded_targets: FxHashSet<Utf8PathBuf>,
-    /// Recorded paths under the target folders. Built lazily on first use.
-    folded_index: Option<FoldedIndex>,
+    /// Recorded paths under the target folders, indexed before the walk starts.
+    folded_index: FoldedIndex,
 }
 
 impl RescanState {
-    fn new(scan_record: Arc<Mutex<ScanRecord>>, targets: &FxHashSet<Utf8PathBuf>) -> Self {
+    /// 遍历开始前持锁构建一次折叠索引，emit 阶段锁内只剩 classify 的哈希查询。
+    async fn new(scan_record: Arc<Mutex<ScanRecord>>, targets: &FxHashSet<Utf8PathBuf>) -> Self {
+        let folded_targets: FxHashSet<Utf8PathBuf> =
+            targets.iter().map(|target| fold_path(target)).collect();
+        // 锁只覆盖索引构建：guard 若活到函数末尾，其 Drop 对 `scan_record`
+        // 的借用会与 Self 捕获该 Arc 的移动冲突（E0505）
+        let folded_index = {
+            let records = scan_record.lock().await;
+            index_records_under(&records.records, &folded_targets)
+        };
         Self {
             scan_record,
-            folded_targets: targets.iter().map(|target| fold_path(target)).collect(),
-            folded_index: None,
+            folded_index,
         }
     }
 }
@@ -97,7 +104,10 @@ pub async fn rescan_discover(
         }
     }
 
-    let mut state = scan_record.map(|scan_record| RescanState::new(scan_record, &targets));
+    let mut state = match scan_record {
+        Some(scan_record) => Some(RescanState::new(scan_record, &targets).await),
+        None => None,
+    };
 
     let mut visited = FxHashSet::default();
     let mut discovered_total: u64 = 0;
@@ -226,17 +236,13 @@ async fn emit_rescan_path(
     let timestamp = timestamp?;
 
     let rescan_ts = if let Some(state) = state {
-        // lock the record while building the index
         let action = {
             let RescanState {
                 scan_record,
-                folded_targets,
                 folded_index,
             } = state;
             let records = scan_record.lock().await;
-            let index = folded_index
-                .get_or_insert_with(|| index_records_under(&records.records, folded_targets));
-            classify(path, timestamp, &records.records, index).0
+            classify(path, timestamp, &records.records, folded_index).0
         };
 
         match action {
