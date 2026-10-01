@@ -2,7 +2,7 @@ use std::{io::BufReader, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt, sync::watch};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::playback::{events::RepeatState, queue::QueueItemData};
 
@@ -105,10 +105,32 @@ impl PlaybackSessionStorageWorker {
     pub fn load(file_path: &PathBuf) -> PlaybackSessionData {
         let file = match std::fs::File::open(file_path) {
             Ok(file) => file,
-            Err(_) => return PlaybackSessionData::default(),
+            // 首次启动没有会话文件，保持静默。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return PlaybackSessionData::default();
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    file = %file_path.display(),
+                    "failed to open playback session file; starting with empty session"
+                );
+                return PlaybackSessionData::default();
+            }
         };
 
-        serde_json::from_reader(BufReader::new(file)).unwrap_or_default()
+        match serde_json::from_reader(BufReader::new(file)) {
+            Ok(session) => session,
+            // serde_json::Error 的 Display 自带行/列号，可直接指认损坏位置。
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    file = %file_path.display(),
+                    "playback session file is corrupt; starting with empty session"
+                );
+                PlaybackSessionData::default()
+            }
+        }
     }
 }
 

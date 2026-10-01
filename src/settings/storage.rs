@@ -269,6 +269,13 @@ impl Storage {
                         _ => data,
                     })
             })
+            // 首次启动没有设置文件，保持静默；serde_json 错误经 into() 后
+            // 是 InvalidData/UnexpectedEof，不会被 NotFound 过滤误吞。
+            .inspect_err(|e| {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!("could not load `AppState` {:?}", e);
+                }
+            })
             .unwrap_or_default()
     }
 }
