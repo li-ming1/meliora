@@ -361,15 +361,12 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
 
 /// Cumulative reclaim-funnel counters for the `[mem]` periodic probe, so the
 /// log curve shows why resident memory sits where it does: how much tile
-/// traffic went through the funnel, what each drain decided, and — most
-/// importantly — how many atlas tiles leaked through a panicked drop (each
-/// permanently pins a ~4 MB shared GPU page, see `patches/UPSTREAM_NOTES.md`).
+/// traffic went through the funnel and what each drain decided.
 pub(crate) struct TileDropStats {
     pushed: AtomicU64,
     reclaimed: AtomicU64,
     kept_by_cache: AtomicU64,
     kept_by_holders: AtomicU64,
-    leaked_tiles: AtomicU64,
 }
 
 static TILE_DROP_STATS: TileDropStats = TileDropStats {
@@ -377,11 +374,13 @@ static TILE_DROP_STATS: TileDropStats = TileDropStats {
     reclaimed: AtomicU64::new(0),
     kept_by_cache: AtomicU64::new(0),
     kept_by_holders: AtomicU64::new(0),
-    leaked_tiles: AtomicU64::new(0),
 };
 
 /// Snapshot for the `[mem]` probe: (pending, pushed, reclaimed,
-/// kept_by_cache, kept_by_holders, leaked_tiles).
+/// kept_by_cache, kept_by_holders, leaked_tiles). The last slot is a constant
+/// 0 — `panic = "abort"` makes a panicked `drop_image` fatal, so there is
+/// nothing left to count; the slot survives only because `src/main.rs` reads
+/// this tuple positionally.
 // Only the non-test probe consumes this; test builds would flag it dead.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
@@ -402,13 +401,8 @@ pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
         load(&s.reclaimed),
         load(&s.kept_by_cache),
         load(&s.kept_by_holders),
-        load(&s.leaked_tiles),
+        0,
     )
-}
-
-/// Records one leaked atlas tile; called by the catch site in `ui::util`.
-pub(crate) fn note_tile_drop_panic() {
-    TILE_DROP_STATS.leaked_tiles.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 把不属于 RENDER_CACHE 的图（如 `MelioraImageCache` 的驱逐/释放、登录二
@@ -1396,7 +1390,6 @@ fn backdrop_sharp_fill(
     if sw == 0 || sh == 0 || target_w == 0 || target_h == 0 {
         return None;
     }
-    let rgba = image::RgbaImage::from_raw(sw, sh, bytes.to_vec())?;
     // cover: 保留能铺满目标纵横比的最大居中区域。
     let crop_w = (f64::from(sw).min(f64::from(sh) * f64::from(target_w) / f64::from(target_h)))
         .round()
@@ -1404,9 +1397,20 @@ fn backdrop_sharp_fill(
     let crop_h = (f64::from(sh).min(f64::from(sw) * f64::from(target_h) / f64::from(target_w)))
         .round()
         .max(1.0) as u32;
-    let mut band =
-        image::imageops::crop_imm(&rgba, (sw - crop_w) / 2, (sh - crop_h) / 2, crop_w, crop_h)
-            .to_image();
+    // 裁剪带逐行直接从源字节搬运（x0/y0 与下方 cover 居中裁剪同式），不再
+    // 整幅 from_raw 复制——4096² 源那 67MB 全尺寸过路拷贝只有裁剪带用得上。
+    let stride = sw as usize * 4;
+    if bytes.len() < sh as usize * stride {
+        return None;
+    }
+    let x0 = ((sw - crop_w) / 2) as usize;
+    let y0 = ((sh - crop_h) / 2) as usize;
+    let mut band = image::RgbaImage::new(crop_w, crop_h);
+    let row_bytes = crop_w as usize * 4;
+    for (row, dst) in band.chunks_exact_mut(row_bytes).enumerate() {
+        let sy = y0 + row;
+        dst.copy_from_slice(&bytes[sy * stride + x0 * 4..][..row_bytes]);
+    }
     // 中值去噪只在实际需要时执行：缩采样比 <2×（块边会在输出中存活）或
     // 放大（块会被拉伸涂抹）。≥2× 时重采样的平均效应接管，跳过省一半时间。
     let band_long = crop_w.max(crop_h);
