@@ -688,7 +688,7 @@ impl AudioEngine {
                 return self.drain_cycle();
             }
             DecodeStepResult::FatalError(msg) => {
-                error!("Fatal error in audio engine");
+                error!("Fatal error in audio engine: {msg}");
                 return EngineCycleResult::FatalError(msg);
             }
             DecodeStepResult::Rebuild(overrides) => {

@@ -1102,33 +1102,26 @@ fn theme_relative_path_for_event(data_dir: &Path, path: &Path) -> Option<String>
     None
 }
 
-/// Checks if any of the paths in a filesystem event affect the currently selected theme.
+/// Checks if any of the event's theme-relative paths affect the currently
+/// selected theme.
 ///
 /// A plain string compare against the selected id suffices:
 /// `resolve_theme_relative_path` either echoes the selected id back or
 /// returns `None`, so resolving it here adds nothing.
-fn event_affects_selected_theme(
-    data_dir: &Path,
-    selected_theme: Option<&str>,
-    event_paths: &[PathBuf],
-) -> bool {
+fn event_affects_selected_theme(selected_theme: Option<&str>, affected: &[String]) -> bool {
     let Some(selected_theme) = selected_theme else {
         return false;
     };
 
-    event_paths
+    affected
         .iter()
-        .filter_map(|path| theme_relative_path_for_event(data_dir, path))
-        .any(|changed_path| changed_path == selected_theme)
+        .any(|affected_path| affected_path == selected_theme)
 }
 
-/// Checks whether a filesystem event changes the set of available theme choices.
-fn event_affects_theme_options(data_dir: &Path, event_paths: &[PathBuf]) -> bool {
-    let themes_dir = data_dir.join(THEMES_DIR_NAME);
-
-    event_paths
-        .iter()
-        .any(|path| path == &themes_dir || theme_relative_path_for_event(data_dir, path).is_some())
+/// Checks whether a filesystem event changes the set of available theme
+/// choices: the themes directory itself was touched or a theme file matched.
+fn event_affects_theme_options(themes_dir_touched: bool, affected: &[String]) -> bool {
+    themes_dir_touched || !affected.is_empty()
 }
 
 #[derive(PartialEq, Clone)]
@@ -1192,14 +1185,24 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
 
     let (tx, rx) = channel::<notify::Result<Event>>();
     let watcher = notify::recommended_watcher(tx);
+    let themes_dir = data_dir.join(THEMES_DIR_NAME);
 
     if let Ok(mut watcher) = watcher {
-        if let Err(e) = watcher.watch(&data_dir, RecursiveMode::Recursive) {
+        // themes/ 可能尚不存在（首次安装且未点过"打开主题文件夹"），而
+        // NonRecursive watch 要求目录已在；先补建以保住主题文件热重载覆盖。
+        let _ = fs::create_dir_all(&themes_dir);
+        // 两个 NonRecursive watch：根目录只为 legacy theme.json，themes/ 为
+        // 主题 JSON——image-cache / WAL 等子目录的高频写盘在事件源外即被挡掉。
+        if let Err(e) = watcher.watch(&data_dir, RecursiveMode::NonRecursive) {
             warn!("failed to watch theme directory: {:?}", e);
+        }
+        if let Err(e) = watcher.watch(&themes_dir, RecursiveMode::NonRecursive) {
+            warn!("failed to watch themes directory: {:?}", e);
         }
 
         cx.spawn({
             let data_dir = data_dir.clone();
+            let themes_dir = themes_dir.clone();
             let selected_theme_state = selected_theme_state.clone();
             let theme_transmitter = theme_transmitter.clone();
             let theme_options_model = theme_options_model.clone();
@@ -1211,7 +1214,18 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
                                 notify::EventKind::Create(_)
                                 | notify::EventKind::Modify(_)
                                 | notify::EventKind::Remove(_) => {
-                                    if event_affects_theme_options(&data_dir, &v.paths) {
+                                    // 事件路径的相对化整批只算一次，两处判定共用。
+                                    let affected: Vec<String> = v
+                                        .paths
+                                        .iter()
+                                        .filter_map(|path| {
+                                            theme_relative_path_for_event(&data_dir, path)
+                                        })
+                                        .collect();
+                                    let themes_dir_touched =
+                                        v.paths.iter().any(|path| path == &themes_dir);
+
+                                    if event_affects_theme_options(themes_dir_touched, &affected) {
                                         let theme_options = discover_theme_options(&data_dir);
                                         theme_options_model.update(cx, move |current, cx| {
                                             if *current != theme_options {
@@ -1226,9 +1240,8 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
                                         .unwrap_or_else(|e| e.into_inner())
                                         .clone();
                                     if !event_affects_selected_theme(
-                                        &data_dir,
                                         selected_theme.as_deref(),
-                                        &v.paths,
+                                        &affected,
                                     ) {
                                         continue;
                                     }

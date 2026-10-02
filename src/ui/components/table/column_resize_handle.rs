@@ -154,7 +154,10 @@ where
                 let state_down = state.clone();
                 let columns_down = columns_entity.clone();
                 let persist_down = persist.clone();
-                cx.on_mouse_event(move |ev: &MouseDownEvent, _, window, cx| {
+                cx.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
                     if ev.button != MouseButton::Left {
                         return;
                     }
@@ -198,7 +201,10 @@ where
                 // change width on drag
                 let state_move = state.clone();
                 let columns_move = columns_entity.clone();
-                cx.on_mouse_event(move |ev: &MouseMoveEvent, _, _window, cx| {
+                cx.on_mouse_event(move |ev: &MouseMoveEvent, phase, _window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
                     let state_ref = state_move.borrow();
                     if !state_ref.is_dragging {
                         return;
@@ -226,7 +232,10 @@ where
                 // mouse up, end the drag
                 let state_up = state.clone();
                 let persist_up = persist.clone();
-                cx.on_mouse_event(move |ev: &MouseUpEvent, _, _, cx| {
+                cx.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
                     if ev.button != MouseButton::Left {
                         return;
                     }

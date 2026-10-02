@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc, time::Duration};
+use std::{marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
 
 use cntp_i18n::{I18nString, trn};
 use gpui::{
@@ -127,10 +127,11 @@ where
     /// `Matcher::new` eagerly allocates a large slab.
     dynamic_matcher: Matcher,
     // Arc-wrapped so the per-frame render clone is a refcount bump; rebuilt
-    // only by `regenerate_list_state` / `recompute_extra_items`.
+    // only by `rebuild_display_list` / `recompute_extra_items`.
     display_list: Arc<Vec<DisplayEntry<T>>>,
     extra_providers: Vec<ExtraItemProvider>,
-    extra_items: Arc<Vec<ExtraItem>>,
+    // `ExtraItem` 回调非 `Send`（主线程专用），容器相应走 `Rc`。
+    extra_items: Rc<Vec<ExtraItem>>,
     list_state: ListState,
     current_selection: Entity<usize>,
     expanded_categories: Vec<I18nString>,
@@ -208,8 +209,8 @@ where
 
                             let matches: Vec<Arc<T>> = this.get_matches();
                             if !same_items(&matches, &this.last_match) {
+                                this.rebuild_display_list(&matches, cx);
                                 this.last_match = matches;
-                                this.regenerate_list_state(cx);
                                 cx.notify();
                             }
                         });
@@ -287,7 +288,7 @@ where
                 dynamic_matcher,
                 display_list: Arc::new(Vec::new()),
                 extra_providers: Vec::new(),
-                extra_items: Arc::new(Vec::new()),
+                extra_items: Rc::new(Vec::new()),
                 render_counter,
                 current_selection,
                 expanded_categories: Vec::new(),
@@ -419,7 +420,7 @@ where
     }
 
     fn recompute_extra_items(&mut self) {
-        self.extra_items = Arc::new(
+        self.extra_items = Rc::new(
             self.extra_providers
                 .iter()
                 .flat_map(|provider| (provider)(&self.query))
@@ -429,12 +430,13 @@ where
 
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         debug!("Setting query: '{}' (previous: '{}')", query, self.query);
-        self.query = query.clone();
         self.expanded_categories.clear();
 
         self.matcher
             .pattern
             .reparse(0, &query, CaseMatching::Smart, Normalization::Smart, false);
+
+        self.query = query;
 
         // recompute dynamic extra items based on query
         self.recompute_extra_items();
@@ -446,8 +448,8 @@ where
 
         // if there are extras or the items are different regenerate the list state
         if !same_items(&matches, &self.last_match) || !self.extra_items.is_empty() {
+            self.rebuild_display_list(&matches, cx);
             self.last_match = matches;
-            self.regenerate_list_state(cx);
         }
 
         self.current_selection.update(cx, |sel, cx| {
@@ -556,12 +558,21 @@ where
         matches
     }
 
+    /// `Palette::reset`（palette.rs，本域外）仍调用此入口；finder 内部调用点
+    /// 一律把已有匹配集直接传给 `rebuild_display_list`，避免同一批匹配被
+    /// 二次 snapshot+collect。
     pub fn regenerate_list_state(&mut self, cx: &mut Context<Self>) {
         let matches = self.get_matches();
+        self.rebuild_display_list(&matches, cx);
+    }
+
+    /// 由调用方提供匹配集重建展示列表与滚动状态；`matches` 通常就是
+    /// `last_match`，借切片免二次收集。
+    fn rebuild_display_list(&mut self, matches: &[Arc<T>], cx: &mut Context<Self>) {
         let curr_scroll = self.list_state.logical_scroll_top();
 
         self.display_list = Arc::new(Self::build_display_list(
-            &matches,
+            matches,
             &self.expanded_categories,
             self.query.is_empty(),
         ));
@@ -578,7 +589,9 @@ where
         if !self.expanded_categories.iter().any(|c| c == &category) {
             self.expanded_categories.push(category);
         }
-        self.regenerate_list_state(cx);
+        // 展开分类不改匹配集，直接复用 `last_match`，不重新 snapshot。
+        let matches = self.last_match.clone();
+        self.rebuild_display_list(&matches, cx);
         cx.notify();
     }
 

@@ -24,8 +24,7 @@ pub struct ToastAction {
 pub struct Toast {
     pub severity: Severity,
     pub message: I18nString,
-    /// Always `Some(DEFAULT_DURATION)` today; left an `Option` so a future
-    /// caller can pin a custom lifetime without changing the constructors.
+    /// 默认 5s，[`Toast::with_duration`] 可覆盖（如更新提示 12s）。
     pub duration: Option<Duration>,
     pub actions: Vec<ToastAction>,
 }

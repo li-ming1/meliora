@@ -286,9 +286,7 @@ pub async fn list_artists(
         }
     };
 
-    let artists: Vec<(i64,)> = sqlx::query_as(query).fetch_all(pool).await?;
-
-    Ok(artists.into_iter().map(|r| r.0).collect())
+    sqlx::query_scalar::<_, i64>(query).fetch_all(pool).await
 }
 
 pub async fn list_albums_by_artist(
@@ -497,7 +495,7 @@ pub async fn add_playlist_item(
 /// add_track.sql，位置语义与循环调用 add_playlist_item 完全一致；区别在于
 /// 整批共享一次连接租借与一次 commit，取代每首歌一次 autocommit 往返
 /// （同 add_tracks_to_playlist_if_missing 的批量理由）。target_position 命中
-/// 时在同一事务内复用 move_playlist_item 的区间重排 SQL，全部生效或全部回滚。
+/// 时在同一事务内一次区间平移让位 + 逐条定位块内条目，全部生效或全部回滚。
 pub async fn add_playlist_items(
     pool: &SqlitePool,
     playlist_id: i64,
@@ -505,7 +503,6 @@ pub async fn add_playlist_items(
     target_position: Option<i64>,
 ) -> sqlx::Result<Vec<i64>> {
     let insert_query = include_str!("../../queries/playlist/add_track.sql");
-    let move_up_query = include_str!("../../queries/playlist/move_track_up.sql");
 
     let mut tx = pool.begin().await?;
 
@@ -535,18 +532,28 @@ pub async fn add_playlist_items(
     }
 
     // 目标位取自既有条目的 position（或其 +1），不会大于追加块首（MAX+1），
-    // 故只需上移分支。倒序逐条搬到目标位：每次区间上移把剩余块整体 +1，
-    // 待搬条目恰始终位于块顶 first + len - 1，绑定值恒定、免逐条回查；
+    // 故只需上移分支。一次平移（position >= 目标位整体 +块长）让既有行与刚
+    // 追加的块同时让位，再逐条定位到目标位 + offset：O(受让行数+块长) 行更新，
+    // 避免逐条「区间上移+定位」的 O(块长×区间) 写放大（15 曲专辑拖到 3000 曲
+    // 歌单顶由 ~4.5 万行降为 ~3 千行）。(playlist_id, position) 仅普通索引
+    // （idx_playlist_item_playlist_position），平移中间态无唯一约束冲突。
     // 等于块顶即已在目标位，跳过（对齐 move_playlist_item 的同位早退）。
     if let (Some(new_position), Some(first_position)) = (target_position, first_position) {
         let last_position = first_position + item_ids.len() as i64 - 1;
         if new_position < last_position {
-            for &item_id in item_ids.iter().rev() {
-                sqlx::query(move_up_query)
-                    .bind(new_position)
-                    .bind(last_position)
+            sqlx::query(
+                "UPDATE playlist_item SET position = position + ? \
+                 WHERE playlist_id = ? AND position >= ?",
+            )
+            .bind(item_ids.len() as i64)
+            .bind(playlist_id)
+            .bind(new_position)
+            .execute(&mut *tx)
+            .await?;
+            for (offset, &item_id) in item_ids.iter().enumerate() {
+                sqlx::query("UPDATE playlist_item SET position = ? WHERE id = ?")
+                    .bind(new_position + offset as i64)
                     .bind(item_id)
-                    .bind(playlist_id)
                     .execute(&mut *tx)
                     .await?;
             }
@@ -804,7 +811,8 @@ pub async fn playlist_ids_for_track(
 const PLAYLIST_IN_CHUNK: usize = 900;
 
 /// `?,?,?` — the bind-slot list for an IN clause of `n` parameters.
-fn in_placeholders(n: usize) -> String {
+/// Shared with `library/types/table.rs`'s chunked row prefetch.
+pub(crate) fn in_placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
 
@@ -956,9 +964,10 @@ pub async fn get_all_tracks(pool: &SqlitePool) -> sqlx::Result<Vec<(String, i64,
 pub async fn list_album_paths(pool: &SqlitePool, album_id: i64) -> sqlx::Result<Vec<String>> {
     let query = include_str!("../../queries/scan/list_album_paths.sql");
 
-    let rows: Vec<(String,)> = sqlx::query_as(query).bind(album_id).fetch_all(pool).await?;
-
-    Ok(rows.into_iter().map(|(path,)| path).collect())
+    sqlx::query_scalar::<_, String>(query)
+        .bind(album_id)
+        .fetch_all(pool)
+        .await
 }
 
 pub async fn lyrics_for_track(pool: &SqlitePool, track_id: i64) -> sqlx::Result<Option<String>> {
@@ -1299,5 +1308,65 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(positions, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn add_playlist_items_moves_block_contiguously() {
+        let (_dir, pool) = crate::test_support::create_test_pool("playlist-add-move-test").await;
+
+        let playlist_id = create_playlist(&pool, "test").await.unwrap();
+        for n in 0..=4i64 {
+            sqlx::query(
+                "INSERT INTO track (title, title_sortable, duration, location) \
+                 VALUES ('t', 't', 0, ?)",
+            )
+            .bind(format!("t{n}.flac"))
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO playlist_item (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(playlist_id)
+            .bind(n + 1)
+            .bind(n)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // 追加块用的 3 首新曲目（track id 6..=8），尚未入列
+        for n in 5..=7i64 {
+            sqlx::query(
+                "INSERT INTO track (title, title_sortable, duration, location) \
+                 VALUES ('t', 't', 0, ?)",
+            )
+            .bind(format!("t{n}.flac"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // 追加 track 6..=8 搬到目标位 2：既有位 2..=4（track 3..=5）让位到
+        // 5..=7，块按追加顺序占 2..=4；位置全集 0..=7 无重复无缺口
+        add_playlist_items(&pool, playlist_id, &[6, 7, 8], Some(2))
+            .await
+            .unwrap();
+
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT position, track_id FROM playlist_item \
+             WHERE playlist_id = ? ORDER BY position",
+        )
+        .bind(playlist_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows.iter().map(|(p, _)| *p).collect::<Vec<i64>>(),
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+        assert_eq!(
+            rows.iter().map(|(_, t)| *t).collect::<Vec<i64>>(),
+            vec![1, 2, 6, 7, 8, 3, 4, 5]
+        );
     }
 }

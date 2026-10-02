@@ -64,11 +64,23 @@ const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request cap for one-shot cover downloads (`http_cover_bytes`).
 const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// `http_cover_bytes` 收集响应体前的硬上限。正常封面（4096px 档）只有几
+/// MB，超限只可能是异常/重定向 CDN 响应；这里在收集开始前拒绝，而不是
+/// 收集完再丢弃——写盘路径的容量检查发生在收集之后，拦不住内存峰值。
+const COVER_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Downloads the bytes of a small remote resource (e.g. a KuGou album-cover
 /// image). On any non-success status or empty body returns `None`; the caller
 /// treats that as "no artwork". Uses a fresh request with a short timeout so
 /// cover fetches never block on the long-lived streaming client above.
-pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+///
+/// 返回聚合缓冲本体（zed-reqwest 未重导出 `Bytes`，以 `impl trait` 命名），
+/// 调用方按需取用/克隆（`Bytes` 的 clone 即引用计数），不再整体复制。
+pub async fn http_cover_bytes(
+    url: &str,
+) -> anyhow::Result<
+    Option<impl AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Clone + Send + 'static>,
+> {
     // Reuse the shared pooled client (TLS config + connection pool) with a
     // per-request timeout. A fresh Client per cover built a new rustls
     // config and pool per track and left idle-connection teardown work on
@@ -79,11 +91,18 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
         Ok(response) if response.status().is_success() => response,
         _ => return Ok(None),
     };
+    // 内存契约上唯一无上界的响应体收集点：Content-Length 超限直接按
+    // "无图" 返回，不开始收集。
+    if let Some(len) = response.content_length()
+        && len > COVER_MAX_BYTES
+    {
+        return Ok(None);
+    }
     let bytes = match response.bytes().await {
         Ok(bytes) if !bytes.is_empty() => bytes,
         _ => return Ok(None),
     };
-    Ok(Some(bytes.to_vec()))
+    Ok(Some(bytes))
 }
 
 /// 共享 client 的只读访问器：零散的冷路径请求（下载等）复用同一份 rustls
@@ -142,15 +161,17 @@ async fn read_cached_cover(url: &str) -> Option<Vec<u8>> {
 }
 
 /// 写盘（先写临时文件再 rename，避免留下半截文件）；best effort。
-async fn write_cached_cover(url: &str, bytes: &[u8]) {
-    if bytes.is_empty() || bytes.len() as u64 > IMAGE_CACHE_MAX_BYTES {
+/// 按值收聚合字节（`Bytes` 类 clone 即引用计数），闭包直接 move 落盘，
+/// 不再为写盘整体复制一遍。
+async fn write_cached_cover(url: &str, bytes: impl AsRef<[u8]> + Send + 'static) {
+    let slice = bytes.as_ref();
+    if slice.is_empty() || slice.len() as u64 > IMAGE_CACHE_MAX_BYTES {
         return;
     }
 
     let dir = image_cache_dir();
     let file = image_cache_key(url);
     let path = dir.join(&file);
-    let bytes = bytes.to_vec();
     let write = crate::RUNTIME.spawn_blocking(move || -> std::io::Result<()> {
         if path.exists() {
             return Ok(());
@@ -340,9 +361,9 @@ pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<Vec<u8>
         http_cover_bytes(url).await?
     };
     if let Some(bytes) = &bytes {
-        write_cached_cover(url, bytes).await;
+        write_cached_cover(url, bytes.clone()).await;
     }
-    Ok(bytes)
+    Ok(bytes.map(|b| b.as_ref().to_vec()))
 }
 
 /// Opens the HTTP(S) URL stored in `path` and probes it with the Symphonia

@@ -194,6 +194,15 @@ pub fn schedule_startup_check(cx: &mut App) {
     .detach();
 }
 
+/// 非 progress 状态变更的统一入口：换入新状态并唤醒 UI。
+fn set_status(cx: &mut App, status: UpdateStatus) {
+    let state = cx.global::<UpdaterGlobal>().state.clone();
+    state.update(cx, |state, cx| {
+        state.status = status;
+        cx.notify();
+    });
+}
+
 /// Run one check. Re-entrant calls while a check or download is in flight
 /// are ignored; the status machine is only ever mutated on the UI thread.
 pub fn check_for_updates(cx: &mut App, source: CheckSource) {
@@ -207,10 +216,7 @@ pub fn check_for_updates(cx: &mut App, source: CheckSource) {
     ) {
         return;
     }
-    state.update(cx, |state, cx| {
-        state.status = UpdateStatus::Checking;
-        cx.notify();
-    });
+    set_status(cx, UpdateStatus::Checking);
 
     cx.spawn(async move |cx| {
         let fetched = crate::RUNTIME.spawn(fetch_latest_release()).await;
@@ -225,11 +231,7 @@ pub fn check_for_updates(cx: &mut App, source: CheckSource) {
 
 fn mark_check_failed(cx: &mut App, error: String) {
     warn!(error = %error, "updater: check failed");
-    let state = cx.global::<UpdaterGlobal>().state.clone();
-    state.update(cx, |state, cx| {
-        state.status = UpdateStatus::Failed;
-        cx.notify();
-    });
+    set_status(cx, UpdateStatus::Failed);
 }
 
 fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource) {
@@ -238,26 +240,21 @@ fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource)
         // Equal or older, or a tag that doesn't parse into three numeric
         // components — "cannot judge" must never offer an update.
         info!(tag = %release.tag_name, "updater: no update over the running version");
-        let state = cx.global::<UpdaterGlobal>().state.clone();
-        state.update(cx, |state, cx| {
-            state.status = UpdateStatus::UpToDate;
-            cx.notify();
-        });
+        set_status(cx, UpdateStatus::UpToDate);
         return;
     };
 
     info!(version = %release.tag_name, "updater: update available");
     let (binary_url, checksums_url) = find_update_assets(&release);
-    let state = cx.global::<UpdaterGlobal>().state.clone();
-    state.update(cx, |state, cx| {
-        state.status = UpdateStatus::Available {
+    set_status(
+        cx,
+        UpdateStatus::Available {
             version: release.tag_name.clone(),
             url: release.html_url.clone(),
             binary_url: binary_url.clone(),
             checksums_url: checksums_url.clone(),
-        };
-        cx.notify();
-    });
+        },
+    );
 
     if source == CheckSource::Startup {
         let page_url = release.html_url.clone();
@@ -307,14 +304,14 @@ pub fn start_download(cx: &mut App) {
         return;
     };
 
-    state.update(cx, |state, cx| {
-        state.status = UpdateStatus::Downloading {
+    set_status(
+        cx,
+        UpdateStatus::Downloading {
             version: version.clone(),
             received: 0,
             total: 0,
-        };
-        cx.notify();
-    });
+        },
+    );
 
     cx.spawn(async move |cx| {
         let (progress_tx, mut progress_rx) = tokio::sync::watch::channel((0u64, 0u64));
@@ -371,13 +368,12 @@ pub fn start_download(cx: &mut App) {
         cx.update(|cx| match result {
             Ok(()) => {
                 info!(version = %version, "updater: staged update installed, restart to apply");
-                let state = cx.global::<UpdaterGlobal>().state.clone();
-                state.update(cx, |state, cx| {
-                    state.status = UpdateStatus::ReadyToRestart {
+                set_status(
+                    cx,
+                    UpdateStatus::ReadyToRestart {
                         version: version.clone(),
-                    };
-                    cx.notify();
-                });
+                    },
+                );
                 emit_toast(
                     Toast::success(tr!(
                         "UPDATE_READY_TOAST",
@@ -390,11 +386,7 @@ pub fn start_download(cx: &mut App) {
             }
             Err(error) => {
                 warn!(error = %error, "updater: download/install failed");
-                let state = cx.global::<UpdaterGlobal>().state.clone();
-                state.update(cx, |state, cx| {
-                    state.status = UpdateStatus::Failed;
-                    cx.notify();
-                });
+                set_status(cx, UpdateStatus::Failed);
             }
         });
     })

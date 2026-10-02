@@ -63,7 +63,11 @@ fn sanitize_filename(raw: &str) -> String {
 }
 
 /// Fetches `url` into memory (audio files are a few tens of MB, fine to hold).
-async fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
+/// 返回聚合缓冲本体（zed-reqwest 未重导出 `Bytes`，以 `impl trait` 命名）：
+/// 几十 MB 的音频不再整体 `to_vec` 复制一遍，消费点直接 Deref/落盘。
+async fn http_get_bytes(
+    url: &str,
+) -> Result<impl AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Send + 'static, String> {
     let response = shared_http_client()
         .get(url)
         .header(USER_AGENT, HeaderValue::from_static(KUGOU_UA))
@@ -74,11 +78,7 @@ async fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    response
-        .bytes()
-        .await
-        .map(|bytes| bytes.to_vec())
-        .map_err(|err| err.to_string())
+    response.bytes().await.map_err(|err| err.to_string())
 }
 
 /// Best-quality playable URL for `track` (flac -> 320 -> 128), asking for the
@@ -142,7 +142,7 @@ async fn fetch_lyrics(
 fn embed_tags(
     path: &Path,
     track: &KugouTrackInfo,
-    cover: Option<Vec<u8>>,
+    cover: Option<&[u8]>,
     lrc: Option<&str>,
 ) -> Result<(), String> {
     let tag_type = match path.extension().and_then(|ext| ext.to_str()) {
@@ -171,7 +171,9 @@ fn embed_tags(
         } else {
             MimeType::Png
         };
-        let picture = Picture::unchecked(bytes)
+        // lofty 的 Picture::unchecked 只收 owned Vec（内部 Cow::Owned），
+        // 这一次拷贝是封面全量在下载链路上的唯一一份。
+        let picture = Picture::unchecked(bytes.to_vec())
             .pic_type(PictureType::CoverFront)
             .mime_type(mime)
             .build();
@@ -244,7 +246,9 @@ pub async fn download_track(
     let tag_path = audio_path.clone();
     let tag_track = track.clone();
     let _ = crate::RUNTIME
-        .spawn_blocking(move || embed_tags(&tag_path, &tag_track, cover, tag_lrc.as_deref()))
+        .spawn_blocking(move || {
+            embed_tags(&tag_path, &tag_track, cover.as_deref(), tag_lrc.as_deref())
+        })
         .await;
 
     Ok(audio_path)

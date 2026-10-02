@@ -86,7 +86,7 @@ impl SettingsLoadOutcome {
 /// Read the settings file at `path`, applying the legacy `theme.json`
 /// migration to the result. A missing file counts as `Loaded` defaults; a
 /// parse or deserialize failure yields `Corrupt` carrying the path.
-pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
+pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
     let Ok(contents) = fs::read_to_string(path) else {
         return SettingsLoadOutcome::Loaded(fallback_settings(path, false));
     };
@@ -97,7 +97,7 @@ pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
             warn!("Failed to parse settings file ({e}), scanner will wait for recovery");
             return SettingsLoadOutcome::Corrupt {
                 settings: fallback_settings(path, false),
-                path: path.clone(),
+                path: path.to_path_buf(),
             };
         }
     };
@@ -109,7 +109,7 @@ pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
             warn!("Failed to deserialize settings file ({e}), scanner will wait for recovery");
             return SettingsLoadOutcome::Corrupt {
                 settings: fallback_settings(path, has_theme_setting),
-                path: path.clone(),
+                path: path.to_path_buf(),
             };
         }
     };
@@ -118,9 +118,10 @@ pub fn create_settings(path: &PathBuf) -> SettingsLoadOutcome {
     SettingsLoadOutcome::Loaded(settings)
 }
 
-/// Trailing-edge debounce for the disk write, and each write also runs off the
-/// UI thread: settings sliders call `save_settings` on every drag increment,
-/// and the file watcher applies each write back with a full-window refresh.
+/// 磁盘写的尾沿防抖，每次写盘经 spawn_blocking 离开 UI 线程。滑条拖动经
+/// DebouncedSave（ui/settings/debounced_save.rs）与各视图内 300ms 防抖后只在
+/// 尾沿调用一次 `save_settings`；这里的 500ms 吸收连续开关/多源快速变更。
+/// 文件监视器回读每次写盘，内容有变才触发全窗口刷新。
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 static SETTINGS_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 

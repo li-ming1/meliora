@@ -249,12 +249,7 @@ impl PlaylistTrackItem {
         track_path: std::path::PathBuf,
         drag_enabled: bool,
     ) -> Entity<Self> {
-        cx.new(|cx| {
-            cx.observe(&drag_drop_manager, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
+        cx.new(|_| {
             // drag payload prebuilt once: `on_drag` takes it by value every
             // frame, so render clones this small struct instead of re-running
             // `from_track` (a per-frame `PathBuf` allocation)
@@ -313,6 +308,9 @@ impl Render for PlaylistTrackItem {
 
 pub struct PlaylistView {
     playlist: Arc<Playlist>,
+    /// Summary line derived from `playlist` on construction and reload;
+    /// render only clones it (precomputed field, same as `ReleaseView`).
+    collection_summary: SharedString,
     playlist_track_ids: Arc<Vec<PlaylistTrackRow>>,
     /// Bumped on every load so a slow load that finishes after a newer one
     /// cannot overwrite it (same guard as `Table::reload_rows`).
@@ -384,11 +382,6 @@ impl PlaylistView {
             )
             .detach();
 
-            cx.observe(&drag_drop_manager, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
             let focus_handle = cx.focus_handle();
 
             cx.register_command(
@@ -416,8 +409,13 @@ impl PlaylistView {
             }));
             let prefetch_state = Rc::new(Cell::new((0, 0)));
 
+            let placeholder = Arc::new(placeholder_playlist(playlist_id));
+            let collection_summary =
+                format_collection_summary(placeholder.track_count, placeholder.total_duration);
+
             let mut this = Self {
-                playlist: Arc::new(placeholder_playlist(playlist_id)),
+                playlist: placeholder,
+                collection_summary,
                 playlist_track_ids: Arc::new(Vec::new()),
                 load_generation: 0,
                 views,
@@ -471,6 +469,8 @@ impl PlaylistView {
                 }
 
                 if let Some(playlist) = loaded.0 {
+                    this.collection_summary =
+                        format_collection_summary(playlist.track_count, playlist.total_duration);
                     this.playlist = playlist;
                 }
                 if let Some(tracks) = loaded.1 {
@@ -696,8 +696,7 @@ impl Render for PlaylistView {
         let playlist_id = self.playlist.id;
         let is_custom_sort = self.is_custom_sort();
         let current_sort = self.sort_method;
-        let collection_summary =
-            format_collection_summary(self.playlist.track_count, self.playlist.total_duration);
+        let collection_summary = self.collection_summary.clone();
 
         if self.first_render {
             self.first_render = false;

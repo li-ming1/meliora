@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
-};
+use std::path::{Path, PathBuf};
 
 use gpui::{App, SharedString};
 use rustc_hash::FxHashMap;
@@ -13,8 +10,6 @@ use crate::{
 };
 
 use super::model::{RawEntry, TrackRef};
-
-pub(super) type DirBridge = Arc<OnceLock<Vec<RawEntry>>>;
 
 fn sort_entries(entries: &mut [RawEntry]) {
     entries.sort_by_cached_key(|entry| (entry_sort_group(entry), entry.name.to_lowercase()));
@@ -89,11 +84,14 @@ pub(super) async fn load_dir_entries(path: PathBuf, pool: sqlx::SqlitePool) -> V
 
     let mut track_map = lookup_tracks(&audio_locs, &pool).await;
 
-    for entry in &mut raw {
-        if entry.is_audio {
-            let loc = entry.path.to_string_lossy();
-            entry.track = track_map.remove(loc.as_ref());
-        }
+    // audio_locs 与下方 filter 同源同序同长，zip 保序回填免去第二次
+    // to_string_lossy。
+    for (entry, loc) in raw
+        .iter_mut()
+        .filter(|entry| entry.is_audio)
+        .zip(audio_locs.iter())
+    {
+        entry.track = track_map.remove(loc.as_str());
     }
 
     raw

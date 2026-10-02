@@ -244,12 +244,27 @@ impl Storage {
     }
 
     /// Save `StorageData` on file system
+    ///
+    /// 先写同目录临时文件再 rename 原子替换（Windows 侧为
+    /// MOVEFILE_REPLACE_EXISTING），断电/崩溃不会留下截断的 `app_data.json`。
     pub fn save(&self, data: &StorageData) {
-        let result = fs::File::create(&self.path)
-            .and_then(|file| serde_json::to_writer(file, &data).map_err(|e| e.into()));
-        // ignore error, but log it
+        // 临时文件放同目录保证同卷 rename；`.tmp` 后缀拼接原文件名，避开真实扩展名
+        let mut tmp_name = self.path.file_name().unwrap_or_default().to_os_string();
+        tmp_name.push(".tmp");
+        let tmp_path = self.path.with_file_name(tmp_name);
+
+        let result = fs::File::create(&tmp_path)
+            .and_then(|file| {
+                serde_json::to_writer(&file, data)
+                    .map_err(|e| e.into())
+                    .and_then(|()| file.sync_all())
+            })
+            // file 已在此前闭包结束时 drop，Windows rename 替换不受句柄阻塞
+            .and_then(|()| fs::rename(&tmp_path, &self.path));
         if let Err(e) = result {
             warn!("could not save `AppState` {:?}", e);
+            // 旧文件原样保留，只清理残留临时文件
+            let _ = fs::remove_file(&tmp_path);
         }
     }
 

@@ -506,8 +506,10 @@ fn update_drag_move_state<V: 'static>(
         None
     };
 
-    // Single update: every `manager.update` notifies all row observers of
-    // this list, so all state changes are coalesced into one.
+    // 单次 update 仅合并状态写入、不 notify：Entity::update 直接转发
+    // App::update_entity，无任何通知（此处闭包忽略 cx，manager 从不
+    // notify）。active-drag 期间每次 MouseMoveEvent 由 gpui refresh 整个
+    // 窗口，行重绘由该机制驱动，不依赖观察者。
     manager.update(cx, |m, _| {
         m.state.is_dragging = true;
         if let Some(indices) = dragging_indices {

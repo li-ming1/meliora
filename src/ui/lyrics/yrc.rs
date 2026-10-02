@@ -35,13 +35,12 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
         let Some((times, body)) = rest.split_once(']') else {
             continue;
         };
-        let Some((start, duration)) = times.split_once(',') else {
+        let Some((start, _)) = times.split_once(',') else {
             continue;
         };
         let Ok(time_ms) = start.trim().parse::<u64>() else {
             continue;
         };
-        let _line_duration = duration.trim().parse::<u64>().unwrap_or(0);
 
         let mut words = Vec::new();
         let mut plain = String::new();
@@ -68,7 +67,7 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
                 words.push(LrcWord {
                     time_ms: word_start,
                     duration_ms: word_duration,
-                    text: SharedString::from(text.to_string()),
+                    text: SharedString::from(text),
                 });
             }
             rest = remainder;

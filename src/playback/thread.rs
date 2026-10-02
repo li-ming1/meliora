@@ -284,7 +284,7 @@ impl PlaybackThread {
                 PlaybackCommand::SetShuffle(v) => self.set_shuffle(v),
                 PlaybackCommand::SetRepeat(v) => self.set_repeat(v),
                 PlaybackCommand::RemoveItem(idx) => self.remove(idx),
-                PlaybackCommand::RemoveItems(indices) => self.remove_many(&indices),
+                PlaybackCommand::RemoveItems(indices) => self.remove_many(indices),
                 PlaybackCommand::MoveItem { from, to } => self.move_item(from, to),
                 PlaybackCommand::MoveItems { indices, to } => self.move_items(indices, to),
                 PlaybackCommand::Undo => self.undo(),
@@ -340,9 +340,8 @@ impl PlaybackThread {
 
         // If stopped and queue is not empty, start playing from the beginning
         if current_state == PlaybackState::Stopped
-            && let Some((first, index)) = self.queue.first_with_index()
+            && let Some((path, index)) = self.queue.first_playable_path()
         {
-            let path = first.get_path().clone();
             self.open_or_log(&path);
             self.queue.set_position(index);
             self.send_event(PlaybackEvent::QueuePositionChanged(index));
@@ -619,8 +618,7 @@ impl PlaybackThread {
 
         // Handle stopped state - start playing from the last track
         if self.state() == PlaybackState::Stopped {
-            if let Some((last, _)) = self.queue.last_with_index() {
-                let path = last.get_path().clone();
+            if let Some((path, _)) = self.queue.last_playable_path() {
                 self.open_or_log(&path);
                 let last_index = self.queue.len().saturating_sub(1);
                 self.queue.set_position(last_index);
@@ -703,18 +701,23 @@ impl PlaybackThread {
 
         info!("Adding {} files to queue", items.len());
 
-        let first = items
-            .iter()
-            .enumerate()
-            .find(|(_, item)| path_playable(item.get_path()))
-            .map(|(idx, item)| (idx, item.clone()));
+        // 逐曲 exists() 是同步系统调用，只有 Stopped 分支消费其结果：先判
+        // 状态再探测，播放中批量入队不再阻塞 playback 线程做 N 次 stat。
+        // state 在命令单线程处理内不被 queue_items 改变，判定前移语义等价。
+        let first = (self.state() == PlaybackState::Stopped)
+            .then(|| {
+                items
+                    .iter()
+                    .enumerate()
+                    .find(|(_, item)| path_playable(item.get_path()))
+                    .map(|(idx, item)| (idx, item.clone()))
+            })
+            .flatten();
         let first_index = self.queue.queue_items(items);
         self.refresh_rg_auto_hint();
 
-        // If stopped, start playing the first item
-        if self.state() == PlaybackState::Stopped
-            && let Some((relative_idx, first)) = first
-        {
+        // `first` 已内含 Stopped 判定
+        if let Some((relative_idx, first)) = first {
             let path = first.get_path();
             self.open_or_log(path);
             let position = first_index + relative_idx;
@@ -857,8 +860,8 @@ impl PlaybackThread {
         }
     }
 
-    fn remove_many(&mut self, indices: &[usize]) {
-        match self.queue.dequeue_many(indices.to_vec()) {
+    fn remove_many(&mut self, indices: Vec<usize>) {
+        match self.queue.dequeue_many(indices) {
             DequeueManyResult::Removed { new_position } => {
                 self.refresh_rg_auto_hint();
                 self.send_event(PlaybackEvent::QueueUpdated);
@@ -914,11 +917,17 @@ impl PlaybackThread {
             position
         );
 
-        let first = items
-            .iter()
-            .enumerate()
-            .find(|(_, item)| path_playable(item.get_path()))
-            .map(|(idx, item)| (idx, item.clone()));
+        // 同 queue_list：exists() 探测前移到 Stopped 判定之后，只在确实
+        // 需要起播时才做逐曲 stat；消费点内部的 Stopped 短路保持不变。
+        let first = (self.state() == PlaybackState::Stopped)
+            .then(|| {
+                items
+                    .iter()
+                    .enumerate()
+                    .find(|(_, item)| path_playable(item.get_path()))
+                    .map(|(idx, item)| (idx, item.clone()))
+            })
+            .flatten();
 
         match self.queue.insert_items(position, items) {
             InsertResult::Inserted { first_index } => {
@@ -1014,12 +1023,12 @@ impl PlaybackThread {
     /// Replace the current queue with the given paths.
     fn replace_queue(&mut self, paths: Vec<QueueItemData>) {
         debug!(
-            "Replacing queue with: '{}'",
-            paths
-                .iter()
-                .map(|path| path.to_string())
-                .collect::<Vec<_>>()
-                .join(":")
+            count = paths.len(),
+            first = %paths
+                .first()
+                .map(|item| item.get_path().display().to_string())
+                .unwrap_or_default(),
+            "Replacing queue"
         );
         self.set_stop_after_current(false);
 
@@ -1027,7 +1036,7 @@ impl PlaybackThread {
             ReplaceResult::Replaced { first_item } => {
                 self.refresh_rg_auto_hint();
                 if first_item.is_some()
-                    && let Some((_, first_index)) = self.queue.first_with_index()
+                    && let Some(first_index) = self.queue.first_playable_index()
                 {
                     self.jump(first_index);
                 }

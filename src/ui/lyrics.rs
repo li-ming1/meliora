@@ -56,8 +56,14 @@ const LYRIC_CACHE_CAP: usize = 16;
 /// 条目、零图集瓦片，像素在提取任务结束时就地释放。
 const ACCENT_THUMB_PX: u32 = 256;
 
+/// 单曲歌词加载结果：纯文本原文 + 解析后的时间行（行数据 Arc 共享）。
+type CachedLyric = (Option<String>, Option<Arc<Vec<LrcLine>>>);
+
 pub struct Lyrics {
-    content: Option<String>,
+    /// 纯文本回退分支的全文（无可解析时间行时）。SharedString（Arc<str>）
+    /// 在 `apply_loaded_lyrics` 落地时一次转换，render 每帧克隆只是引用
+    /// 计数 bump，滚动逐帧重绘零拷贝。
+    content: Option<SharedString>,
     /// Arc 共享：面板、`lyric_cache` 与沉浸页镜像引用同一份行数据，
     /// 传递全程只付引用计数（LrcLine 含逐字 Vec，深拷贝代价可观）。
     parsed: Option<Arc<Vec<LrcLine>>>,
@@ -75,7 +81,7 @@ pub struct Lyrics {
     /// online requests). Cleared when a library scan completes (the only
     /// writer of DB lyrics). Online entries are keyed by stream URL, so a
     /// refreshed URL for the same song fetches once more.
-    lyric_cache: FxHashMap<PathBuf, (Option<String>, Option<Arc<Vec<LrcLine>>>)>,
+    lyric_cache: FxHashMap<PathBuf, CachedLyric>,
     /// Insertion order for `lyric_cache` FIFO eviction.
     lyric_cache_order: Vec<PathBuf>,
     /// Latest playback position snapshot (ms), refreshed by the position
@@ -432,7 +438,9 @@ impl Lyrics {
         parsed: Option<Arc<Vec<LrcLine>>>,
         cx: &mut Context<Self>,
     ) {
-        self.content = content;
+        // 全文在此一次转 SharedString（Arc<str>）：render 每帧克隆只是引用
+        // 计数 bump，滚动逐帧重绘不再对全文做两份 memcpy。
+        self.content = content.map(SharedString::from);
         self.parsed = parsed;
         self.parsed_generation += 1;
         let line_count = self.parsed.as_ref().map_or(0, |parsed| parsed.len());
@@ -931,7 +939,7 @@ impl Render for Lyrics {
                         .line_height(rems(1.6))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(normal)
-                        .child(SharedString::from(text)),
+                        .child(text),
                 )
                 .child(fade_top)
                 .child(fade_bottom)

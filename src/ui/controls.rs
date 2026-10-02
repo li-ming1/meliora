@@ -372,7 +372,11 @@ impl InfoSection {
         if let Some(name) = metadata.name.clone() {
             self.track_name = Some(SharedString::from(name));
         }
-        if let Some(artist) = metadata.artist.clone().or(metadata.album_artist.clone()) {
+        if let Some(artist) = metadata
+            .artist
+            .clone()
+            .or_else(|| metadata.album_artist.clone())
+        {
             self.artist_name = Some(SharedString::from(artist));
         }
     }

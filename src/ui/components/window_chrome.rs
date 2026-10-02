@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use gpui::{prelude::FluentBuilder, *};
 
@@ -8,6 +8,11 @@ use crate::ui::{constants::APP_SHADOW_SIZE, theme::Theme};
 /// than the resize trigger (`APP_SHADOW_SIZE`, passed to `on_mouse_down`
 /// below) so the pointer signals the edge before a drag engages.
 const RESIZE_CURSOR_ZONE: Pixels = px(30.0);
+
+/// 窗口根文本统一走等宽数字（tnum）。FontFeatures 本体就是 Arc 包装，全窗口
+/// 共享一份，render 每帧免重建 Arc+Vec+String。
+static TNUM_FEATURES: LazyLock<FontFeatures> =
+    LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".to_owned(), 1)])));
 
 #[derive(IntoElement)]
 pub struct WindowChrome {
@@ -145,7 +150,7 @@ impl RenderOnce for WindowChrome {
 
         let text_styles = element.text_style();
         let ff = &mut text_styles.font_features;
-        *ff = Some(FontFeatures(Arc::new(vec![("tnum".to_string(), 1)])));
+        *ff = Some(TNUM_FEATURES.clone());
 
         element
     }

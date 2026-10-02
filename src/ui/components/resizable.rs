@@ -273,7 +273,10 @@ impl Element for Resizable {
 
                 let state_down = state.clone();
                 let size_entity_down = size_entity.clone();
-                cx.on_mouse_event(move |ev: &MouseDownEvent, _, window, cx| {
+                cx.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
                     if ev.button != MouseButton::Left {
                         return;
                     }
@@ -302,7 +305,10 @@ impl Element for Resizable {
 
                 let state_move = state.clone();
                 let size_entity_move = size_entity.clone();
-                cx.on_mouse_event(move |ev: &MouseMoveEvent, _, _window, cx| {
+                cx.on_mouse_event(move |ev: &MouseMoveEvent, phase, _window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
                     let drag_state = state_move.borrow();
                     if !drag_state.is_dragging {
                         return;
@@ -336,7 +342,10 @@ impl Element for Resizable {
                 });
 
                 let state_up = state.clone();
-                cx.on_mouse_event(move |ev: &MouseUpEvent, _, _, _| {
+                cx.on_mouse_event(move |ev: &MouseUpEvent, phase, _, _| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
                     if ev.button != MouseButton::Left {
                         return;
                     }

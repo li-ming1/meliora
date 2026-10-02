@@ -106,9 +106,6 @@ impl PlaylistList {
                 DragDropListConfig::new(PLAYLIST_SIDEBAR_LIST_ID, px(PLAYLIST_SIDEBAR_ITEM_HEIGHT));
             let drag_drop_manager = DragDropListManager::new(cx, drag_drop_config);
 
-            cx.observe(&drag_drop_manager, |_, _, cx| cx.notify())
-                .detach();
-
             let mut this = Self {
                 playlists: Arc::new(Vec::new()),
                 playlists_generation: 0,

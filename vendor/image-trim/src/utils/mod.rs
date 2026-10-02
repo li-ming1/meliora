@@ -64,6 +64,8 @@ pub(crate) fn expand_bits(bit_depth: u8, row_size: u32, buf: &[u8]) -> Vec<u8> {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
+// When no image formats that use it are enabled
 pub(crate) fn interleave_planes(out: &mut [u8], color: crate::ColorType, planes: &[&[u8]]) {
     #[track_caller]
     pub(crate) fn trampoline<const PLANES: usize, const N: usize>(
@@ -95,6 +97,8 @@ pub(crate) fn interleave_planes(out: &mut [u8], color: crate::ColorType, planes:
 }
 
 #[inline(always)]
+#[allow(dead_code)]
+// When no image formats that use it are enabled
 fn interleave_planes_inner<const PLANES: usize, const N: usize>(
     out: &mut [[u8; N]],
     planes: [&[[u8; N]]; PLANES],

@@ -9,7 +9,7 @@ use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use gpui::*;
@@ -35,7 +35,7 @@ use crate::{
 };
 
 use file_row::{FileRowItem, ROW_HEIGHT};
-use loader::{DirBridge, collect_audio_recursive, load_dir_entries, queue_items_from_entries};
+use loader::{collect_audio_recursive, load_dir_entries, queue_items_from_entries};
 pub use model::{FlatRow, RawEntry, TrackRef};
 use tree::{ChildState, FileNode, FileTree, collect_expanded_paths};
 
@@ -74,7 +74,8 @@ fn set_scroll_top(handle: &UniformListScrollHandle, top: f32) {
 pub struct FilesView {
     tree: FileTree,
     flat: Arc<Vec<FlatRow>>,
-    pending: FxHashMap<PathBuf, DirBridge>,
+    /// 在途目录加载标记：仅用于回调幂等与 refresh_all 取消，不携带数据。
+    pending: FxHashSet<PathBuf>,
     selected: FxHashSet<PathBuf>,
     anchor: Option<PathBuf>,
     scroll_handle: UniformListScrollHandle,
@@ -117,7 +118,7 @@ impl FilesView {
             FilesView {
                 tree,
                 flat,
-                pending: FxHashMap::default(),
+                pending: FxHashSet::default(),
                 selected: FxHashSet::default(),
                 anchor: None,
                 scroll_handle,
@@ -347,33 +348,24 @@ impl FilesView {
         node.children = ChildState::Loading;
         node.expanded = true;
 
-        let bridge: DirBridge = Arc::new(OnceLock::new());
-        let bridge_clone = bridge.clone();
         let pool = cx.global::<Pool>().0.clone();
 
         let handle = crate::RUNTIME.spawn({
             let path = path.clone();
-            async move {
-                let entries = load_dir_entries(path, pool).await;
-                bridge_clone.set(entries.clone()).ok();
-                entries
-            }
+            async move { load_dir_entries(path, pool).await }
         });
 
-        self.pending.insert(path.clone(), bridge);
+        self.pending.insert(path.clone());
         self.rebuild_flat(cx);
 
-        cx.spawn({
-            let path = path.clone();
-            async move |this, cx| {
-                let entries = handle.await.unwrap_or_default();
-                this.update(cx, |view: &mut FilesView, cx| {
-                    if view.pending.contains_key(&path) {
-                        view.install_entries(path, entries, cx);
-                    }
-                })
-                .ok();
-            }
+        cx.spawn(async move |this, cx| {
+            let entries = handle.await.unwrap_or_default();
+            this.update(cx, |view: &mut FilesView, cx| {
+                if view.pending.contains(&path) {
+                    view.install_entries(path, entries, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -465,20 +457,6 @@ impl FilesView {
         self.render_counter.update(cx, |c, _| *c = 0);
     }
 
-    fn poll_bridges(&mut self, cx: &mut Context<Self>) {
-        let ready: Vec<(PathBuf, Vec<RawEntry>)> = self
-            .pending
-            .iter()
-            .filter_map(|(path, bridge)| {
-                bridge.get().map(|entries| (path.clone(), entries.clone()))
-            })
-            .collect();
-
-        for (path, entries) in ready {
-            self.install_entries(path, entries, cx);
-        }
-    }
-
     fn process_restore(&mut self, cx: &mut Context<Self>) {
         if self.restore_expanded.is_empty() {
             return;
@@ -502,7 +480,6 @@ impl FilesView {
 
 impl Render for FilesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.poll_bridges(cx);
         self.process_restore(cx);
 
         // Build the multi-selection batch once per frame; every selected row's

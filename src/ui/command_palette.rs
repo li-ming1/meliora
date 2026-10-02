@@ -96,7 +96,7 @@ impl CommandAction {
         match self {
             Self::Value(action) => Some(f(cx, &**action)),
             Self::Named { name, cached } => {
-                let mut slot = cached.lock().expect("poisoned command palette action");
+                let mut slot = cached.lock().unwrap_or_else(|e| e.into_inner());
                 let mut guard = slot.take();
                 if guard.is_none() {
                     // A failed build leaves the slot empty, so the next call
@@ -165,13 +165,27 @@ impl CommandSpec {
         self
     }
 
-    fn build(self) -> ((&'static str, i64), Arc<Command>) {
+    fn build(self, cx: &mut App) -> ((&'static str, i64), Arc<Command>) {
         let id = self.id;
+        // 快捷键标签构建期一次算清：load_default_keymap 先于窗口创建执行
+        // （ui::app），标签只依赖 action 与启动期键位表；未来支持热改键时
+        // 再挂键位失效事件重算。
+        let binding_hint = self
+            .action
+            .with_action(cx, |cx, action| {
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(action)
+                    .last()
+                    .map(binding_label)
+            })
+            .flatten();
         let command = Arc::new(Command {
             category: self.category,
             name: self.name,
             action: self.action,
             focus_handle: self.focus_handle,
+            binding_hint,
         });
         (id, command)
     }
@@ -182,6 +196,7 @@ pub struct Command {
     name: SharedString,
     action: CommandAction,
     focus_handle: Option<FocusHandle>,
+    binding_hint: Option<SharedString>,
 }
 
 impl PartialEq for Command {
@@ -221,14 +236,8 @@ impl PaletteItem for Command {
         self.name.clone()
     }
 
-    fn right_content(&self, cx: &mut gpui::App) -> Option<SharedString> {
-        self.action.with_action(cx, |cx, action| {
-            cx.key_bindings()
-                .borrow()
-                .bindings_for_action(action)
-                .last()
-                .map(binding_label)
-        })?
+    fn right_content(&self, _: &mut gpui::App) -> Option<SharedString> {
+        self.binding_hint.clone()
     }
 }
 
@@ -278,11 +287,10 @@ fn load_builtin_commands(cx: &mut App) -> Vec<CommandSpec> {
                 .build_action(&e.action, None)
                 .unwrap_or_else(|err| panic!("unknown action {}: {err}", e.action));
 
-            let name =
-                I18N_MANAGER
-                    .read()
-                    .unwrap()
-                    .lookup(&e.name_key, &[], env!("CARGO_PKG_NAME"), None);
+            let name = I18N_MANAGER
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .lookup(&e.name_key, &[], env!("CARGO_PKG_NAME"), None);
 
             // The id and action name key `items` for the process lifetime and
             // `build_action` wants `&'static str`, so leak the one-shot,
@@ -358,7 +366,7 @@ impl CommandPalette {
             .detach();
 
             for spec in load_builtin_commands(cx) {
-                let (id, command) = spec.build();
+                let (id, command) = spec.build(cx);
                 items.insert(id, command);
             }
 
@@ -439,7 +447,7 @@ pub trait CommandManager {
 
 impl CommandManager for App {
     fn register_command(&mut self, spec: CommandSpec) {
-        let (id, command) = spec.build();
+        let (id, command) = spec.build(self);
         let commands = self.global::<CommandPaletteHolder>().0.clone();
         commands.update(self, move |_, cx| {
             cx.emit(CommandEvent::NewCommand(id, command));

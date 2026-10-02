@@ -245,13 +245,17 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
     cx.observe(&position, |e, cx| {
         let &pos = e.read(cx);
         let secs = pos / 1_000;
-        let handle = cx.global_mut::<PbcHandle>();
         // Position broadcasts arrive every 33-250 ms, but the second value
         // only changes once per second. Skip the hundreds of duplicate
-        // forwards so the SMTC timeline isn't rebuilt at 4-30 Hz.
+        // forwards so the SMTC timeline isn't rebuilt at 4-30 Hz. 先用只读
+        // global() 比较再取可变借用：global_mut 每次调用都入队一个
+        // NotifyGlobalObservers effect（本仓未注册任何 global 观察者），
+        // 30Hz 下去重通过也推空 effect。
+        let handle = cx.global::<PbcHandle>();
         if handle.last_position_secs == secs {
             return;
         }
+        let handle = cx.global_mut::<PbcHandle>();
         handle.last_position_secs = secs;
         send_pbc_event(&handle.event_tx, PbcEvent::PositionChanged(secs));
     })

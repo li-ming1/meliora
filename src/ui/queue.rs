@@ -217,12 +217,6 @@ impl QueueItem {
             })
             .detach();
 
-            // Observe drag-drop state changes to update visual feedback
-            cx.observe(&drag_drop_manager, |_, _, cx| {
-                cx.notify();
-            })
-            .detach();
-
             cx.observe(&selection, |_, _, cx| {
                 cx.notify();
             })

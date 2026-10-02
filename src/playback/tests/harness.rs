@@ -16,7 +16,8 @@ use crate::{
 
 pub fn engine_lock() -> MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
-    // currently the lock gets poisoned cause stuff's broken
+    // 测试间互斥；前序测试 panic 使锁中毒后仍以 into_inner 恢复，套件继续
+    // 运行（与 devices/dummy.rs 的锁惯例一致）。
     LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 

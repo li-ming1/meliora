@@ -11,11 +11,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    playback::{
-        events::RepeatState,
-        queue::QueueItemData,
-        session_storage::PlaybackSessionData,
-    },
+    playback::{events::RepeatState, queue::QueueItemData, session_storage::PlaybackSessionData},
     settings::playback::PlaybackSettings,
 };
 // 唯一消费者 `current_display` 为 online_sources gated，与 queue.rs 里该类型
@@ -25,6 +21,13 @@ use crate::{
 use crate::playback::queue::PersistedDisplay;
 
 const UNDO_STACK_CAPACITY: usize = 30;
+
+/// 持全量队列快照的动作（`UndoAction::Replaced`）的独立驻留上限：快照经
+/// `Arc` 共享零拷贝，但每条仍驻留一整份旧队列（10 万项可达数十 MB），
+/// 30 层满栈会威胁 500MB 内存硬上限（见 AGENTS.md）。撤销整队替换的可用
+/// 深度随之变浅属有意取舍；单项操作（Removed/Inserted/Moved）维持
+/// UNDO_STACK_CAPACITY 不变。
+const UNDO_SNAPSHOT_CAPACITY: usize = 6;
 
 /// Minimum interval between queue-snapshot sends to the session storage worker.
 /// A send deep-copies the whole queue (see `send_session_with_queue`), so burst
@@ -293,7 +296,7 @@ impl QueueManager {
         super::path_playable(item.get_path())
     }
 
-    fn first_playable_index(queue: &[QueueItemData]) -> Option<usize> {
+    fn first_playable_index_in(queue: &[QueueItemData]) -> Option<usize> {
         queue.iter().position(Self::item_is_playable)
     }
 
@@ -348,8 +351,21 @@ impl QueueManager {
     }
 
     fn push_undo_action(&mut self, action: UndoAction) {
-        if self.undo_stack.len() >= UNDO_STACK_CAPACITY {
-            self.undo_stack.pop_front();
+        // 淘汰只从最旧端进行，保证剩余撤销历史连续（撤销按 LIFO 逐条回放，
+        // 从中间挖洞会让后续 undo 跳过中间步骤的逆操作）。
+        let is_snapshot = matches!(action, UndoAction::Replaced { .. });
+        while self.undo_stack.len() >= UNDO_STACK_CAPACITY
+            || (is_snapshot
+                && self
+                    .undo_stack
+                    .iter()
+                    .filter(|entry| matches!(entry, UndoAction::Replaced { .. }))
+                    .count()
+                    >= UNDO_SNAPSHOT_CAPACITY)
+        {
+            if self.undo_stack.pop_front().is_none() {
+                break;
+            }
         }
 
         self.undo_stack.push_back(action);
@@ -641,16 +657,22 @@ impl QueueManager {
             .all(|item| item.get_db_album_id() == Some(first_album))
     }
 
-    /// Get the first playable item in the queue along with its index.
-    pub fn first_with_index(&self) -> Option<(QueueItemData, usize)> {
+    /// Get the first playable item's path and index without cloning the item.
+    pub fn first_playable_path(&self) -> Option<(PathBuf, usize)> {
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
-        Self::first_playable_index(&queue).map(|index| (queue[index].clone(), index))
+        Self::first_playable_index_in(&queue).map(|index| (queue[index].get_path().clone(), index))
     }
 
-    /// Get the last item in the queue along with its index, if the queue is non-empty.
-    pub fn last_with_index(&self) -> Option<(QueueItemData, usize)> {
+    /// Get the last playable item's path and index without cloning the item.
+    pub fn last_playable_path(&self) -> Option<(PathBuf, usize)> {
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
-        Self::last_playable_index(&queue).map(|index| (queue[index].clone(), index))
+        Self::last_playable_index(&queue).map(|index| (queue[index].get_path().clone(), index))
+    }
+
+    /// Index of the first playable item, for callers that need only the slot.
+    pub fn first_playable_index(&self) -> Option<usize> {
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        Self::first_playable_index_in(&queue)
     }
 
     /// Set the queue position directly (used after opening a track).
@@ -705,7 +727,7 @@ impl QueueManager {
                     Arc::make_mut(&mut queue).shuffle(&mut rng());
                     self.undo_stack.clear();
                 }
-                if let Some(index) = Self::first_playable_index(&queue) {
+                if let Some(index) = Self::first_playable_index_in(&queue) {
                     self.queue_next = index + 1;
                     QueueNavigationResult::Changed {
                         index,
@@ -1349,7 +1371,7 @@ impl QueueManager {
             *queue = Arc::new(items);
         }
 
-        let first_item = Self::first_playable_index(&queue).map(|idx| queue[idx].clone());
+        let first_item = Self::first_playable_index_in(&queue).map(|idx| queue[idx].clone());
 
         drop(queue);
 

@@ -255,7 +255,10 @@ impl Element for Slider {
         let hitbox = hitbox.clone();
         let func_down = func.clone();
 
-        window.on_mouse_event(move |ev: &MouseDownEvent, _, window, cx| {
+        window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
             if !hitbox.is_hovered(window) {
                 return;
             }
@@ -285,7 +288,10 @@ impl Element for Slider {
         let drag_state_move = drag_entity.clone();
         let func_move = func.clone();
 
-        window.on_mouse_event(move |ev: &MouseMoveEvent, _, window, cx| {
+        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
             let emit = drag_state_move.update(cx, |state, _| {
                 if !state.dragging {
                     return None;
@@ -311,7 +317,10 @@ impl Element for Slider {
         let func_release = func.clone();
         let flush_on_release = change_interval.is_some();
 
-        window.on_mouse_event(move |_ev: &MouseUpEvent, _, window, cx| {
+        window.on_mouse_event(move |_ev: &MouseUpEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
             let flushed = drag_state_up.update(cx, |state, _| {
                 if !state.dragging {
                     return None;

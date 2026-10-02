@@ -197,7 +197,7 @@ async fn fetch_lyrics(
 fn embed_tags(
     path: &Path,
     track: &NeteaseTrackInfo,
-    cover: Option<Vec<u8>>,
+    cover: Option<&[u8]>,
     lrc: Option<&str>,
 ) -> Result<(), String> {
     let tag_type = match path.extension().and_then(|ext| ext.to_str()) {
@@ -227,7 +227,9 @@ fn embed_tags(
         } else {
             MimeType::Png
         };
-        let picture = Picture::unchecked(bytes)
+        // lofty 的 Picture::unchecked 只收 owned Vec（内部 Cow::Owned），
+        // 这一次拷贝是封面全量在下载链路上的唯一一份。
+        let picture = Picture::unchecked(bytes.to_vec())
             .pic_type(PictureType::CoverFront)
             .mime_type(mime)
             .build();
@@ -276,9 +278,10 @@ pub async fn download_track(
 
     // Lyric sidecars + tags/cover are best-effort: the audio file is already saved.
     let (lrc, yrc) = fetch_lyrics(client, track).await;
-    let tag_lrc = lrc.clone();
     let sidecar_dir = dir.to_path_buf();
-    let _ = crate::RUNTIME
+    // lrc 随闭包落盘一趟后原样归还，省一次整段歌词克隆；落盘任务若 panic
+    // 则按 best-effort 丢弃（不嵌入标签）。
+    let tag_lrc = crate::RUNTIME
         .spawn_blocking(move || {
             if let Some(yrc) = &yrc {
                 let _ = std::fs::write(sidecar_dir.join(format!("{stem}.yrc")), yrc);
@@ -286,8 +289,11 @@ pub async fn download_track(
             if let Some(lrc) = &lrc {
                 let _ = std::fs::write(sidecar_dir.join(format!("{stem}.lrc")), lrc);
             }
+            lrc
         })
-        .await;
+        .await
+        .ok()
+        .flatten();
     let cover = if track.cover_url.is_empty() {
         None
     } else {
@@ -296,7 +302,9 @@ pub async fn download_track(
     let tag_path = audio_path.clone();
     let tag_track = track.clone();
     let _ = crate::RUNTIME
-        .spawn_blocking(move || embed_tags(&tag_path, &tag_track, cover, tag_lrc.as_deref()))
+        .spawn_blocking(move || {
+            embed_tags(&tag_path, &tag_track, cover.as_deref(), tag_lrc.as_deref())
+        })
         .await;
 
     Ok(audio_path)
