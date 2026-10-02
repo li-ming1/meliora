@@ -176,9 +176,11 @@ fn linux_physical_device_id(device: &str) -> Option<String> {
     });
 
     // if the device cannot be resolved, use its full identifier instead of grouping by major alone
-    device_name
-        .map(|name| format!("linux:{name}"))
-        .unwrap_or_else(|| format!("linux:{device}"))
+    Some(
+        device_name
+            .map(|name| format!("linux:{name}"))
+            .unwrap_or_else(|| format!("linux:{device}")),
+    )
 }
 
 /// Physical drive number via IOCTL. None if the volume can't be opened or spans multiple disks.
