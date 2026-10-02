@@ -46,17 +46,27 @@ Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的
 
 - ReplayGain 响度归一化
 
-- 歌词支持：LRC / KRC / YRC
+- 歌词支持：LRC / KRC / YRC 逐字卡拉OK
 
 ### 播放
 
 - 多格式解码（基于 [Symphonia](https://crates.io/crates/symphonia)）：MP3、FLAC、AAC、ALAC、OGG、WAV 等
 
-- 10 段均衡器与实时频谱可视化
+- 参数均衡器（最多 16 段自定义频点）与实时频谱可视化
 
 - 高质量重采样（[Rubato](https://crates.io/crates/rubato)）
 
 - 播放队列管理与会话恢复
+
+### 沉浸模式
+
+一键进入系统全屏的沉浸播放页（快捷键、侧边栏开关或双击播放信息栏），当前封面铺满整面背景：
+
+- **全出血封面背景**：按窗口设备像素精确重采样（4096 源优先、中值去噪、阈值锐化），清晰度与圆盘小封面同级；切歌以 400ms crossfade 换背景，下一首预取命中时零解码等待
+
+- **圆盘唱片 + 歌词跟随**：歌词随播放逐行跟随，滚轮自由浏览、停留后自动回位；KRC / YRC 逐字高亮，翻译对照显示
+
+- **每歌主题色**：自动从封面提取主色为歌词着色；系统开启"减少动态效果"时动画自动降级
 
 ### 在线服务（feature）
 
