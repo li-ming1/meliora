@@ -63,12 +63,31 @@ fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
 static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
 
+/// Serializes the immersive-backdrop heavy pipeline end to end (full-size
+/// decode → crop band → resample → sharpen). One pipeline transiently peaks
+/// at ~105 MB of heap — a 4096² RGBA source alone is 67 MB, its crop band
+/// another ~38 MB — and `arm_backdrop` (current track) plus
+/// `prefetch_next_track_art` (next track) launch one per track change. They
+/// used to overlap freely: `DECODE_PERMITS` only gates the decode step, the
+/// sharpen pass ran outside any cap, and fast switching left superseded tasks
+/// finishing in the background. Two or three concurrent pipelines stacked
+/// ~250 MB of transient on top of the heavy-mode plateau and drove private
+/// commit past the hard cap for two consecutive samples (2026-10-02 restart:
+/// 180 s ramp 341→521 MB while switching tracks in immersive). A capacity-1
+/// gate turns the stack into a FIFO queue: the current track's arm enqueues
+/// first and swaps in ~1 s, the prefetch runs behind it, and the peak is
+/// exactly one pipeline. Cache-hit retrieves bypass entirely — their lookup
+/// happens before the acquire, so prefetched/back-visited backdrops stay
+/// instant even while a fresh pipeline is queued.
+static BACKDROP_PIPELINE_GATE: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
+
 /// Swaps R and B channels in place so `image` crate buffers match GPUI's
 /// expected BGRA ordering.
 pub(crate) fn rgb_to_bgr(image: &mut image::RgbaImage) {
     image.pixels_mut().for_each(|v| {
-        let slice = v.channels();
-        *v = *image::Rgba::from_slice(&[slice[2], slice[1], slice[0], slice[3]]);
+        let ch = v.channels_mut();
+        ch.swap(0, 2);
     });
 }
 
@@ -277,6 +296,34 @@ pub fn render_cache_entries() -> usize {
     cache.cache.len()
 }
 
+/// LRU budget the pressure shed and the immersive activation trim shrink the
+/// render cache to: half the steady 32-entry window. Keeps the current
+/// track's covers (almost certainly the LRU tail) and the last couple of
+/// grid rows; everything else re-decodes from the disk cache on demand.
+pub(crate) const RENDER_CACHE_PRESSURE_KEEP: usize = 12;
+
+/// Shrinks the decoded-cover LRU to at most `keep` entries, evicting from the
+/// oldest end into the reclaim funnel's normal age gates (60s covers / 3s
+/// large images) — the gates are never shortened; that would gamble with the
+/// 2026-09-08 dangling-scene crash class, so evicted tiles' driver commit
+/// comes back on minute scale. Two callers: the [mem] probe's pressure shed
+/// when private commit crosses the soft cap (exactly the sustained regime the
+/// hard valve measures), and immersive activation — the backdrop pipeline is
+/// about to pay a ~105 MB transient, so the general-purpose cover tiles yield
+/// first. Kept entries are the LRU tail (most recently used).
+pub(crate) fn render_cache_shrink(keep: usize) {
+    let mut cache = lock_render_cache();
+    while cache.usage.len() > keep {
+        let Some(oldest) = cache.usage.pop_front() else {
+            break;
+        };
+        if let Some((old, old_bytes)) = cache.cache.remove(&oldest) {
+            cache.bytes = cache.bytes.saturating_sub(old_bytes);
+            queue_tile_drop(oldest, old);
+        }
+    }
+}
+
 /// Resident bytes of the immersive-backdrop LRU, in MiB, plus entry count.
 /// Reported by the [mem] periodic probe: immersive-active sits at ~3 sets,
 /// after leaving the immersive view it must fall back to 1 (the
@@ -403,6 +450,26 @@ pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
         load(&s.kept_by_holders),
         0,
     )
+}
+
+/// Process-wide memory-pressure flag (0 = nominal, 1 = private commit past
+/// the soft cap), set and hysteresis-cleared by the `[mem]` probe. Under
+/// pressure the immersive view skips its next-track prefetch (saves a whole
+/// heavy pipeline plus a backdrop cache slot; switching still decodes on
+/// demand), and the probe sheds both image caches once. Relaxed is enough —
+/// this is an advisory signal, missing one sample window has no correctness
+/// consequence.
+static MEMORY_PRESSURE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+// Only the non-test probe sets the flag (test builds drop the probe), same
+// as `tile_drop_stats` above; the read side lives in the immersive view.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn set_memory_pressure(on: bool) {
+    MEMORY_PRESSURE.store(u8::from(on), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn memory_pressure() -> bool {
+    MEMORY_PRESSURE.load(std::sync::atomic::Ordering::Relaxed) != 0
 }
 
 /// 把不属于 RENDER_CACHE 的图（如 `MelioraImageCache` 的驱逐/释放、登录二
@@ -660,6 +727,18 @@ impl ManagedImageKey {
             }
             ImageCacheMode::None => None,
         };
+        // 串行化整条背景重管线（见 [`BACKDROP_PIPELINE_GATE`]）：解码、
+        // 裁剪带与锐化全程只允许一条在飞。缓存命中的 retrieve 在上面就
+        // 返回了，不经过这里——预取命中/回跳不被排队的新管线拖住。
+        let _backdrop_pipeline = match cache {
+            ImageCacheMode::Backdrop(_) => Some(
+                BACKDROP_PIPELINE_GATE
+                    .acquire()
+                    .await
+                    .expect("semaphore is never closed"),
+            ),
+            _ => None,
+        };
 
         // 目标尺寸模式解码全尺寸原图（≥目标的源不被 thumbnail 压缩，裁剪
         // 与重采样只做一次），旧路径按方阵 bound 解码。
@@ -680,16 +759,22 @@ impl ManagedImageKey {
                 // 阻塞线程池执行：内联在运行时 worker 上会与音频流/封面
                 // 下载等异步任务抢线程，切歌即卡顿（2026-09-29 "切换不
                 // 丝滑" 的根因之一）。
+                // decoded 按 move 交出所有权：4096² 全尺寸源（~67MB）只在
+                // 裁剪带搬运时有用了，sharp_fill 内部搬完即 drop——去噪/
+                // 重采样/锐化的数百 ms 里不再驻留，串行化后的单管线瞬态
+                // 峰值从 ~121MB 压到 ~105MB。
+                let src_size = decoded.size(0);
                 let rendered = crate::RUNTIME.spawn_blocking({
-                    let decoded = Arc::clone(&decoded);
-                    move || backdrop_sharp_fill(&decoded, w, h).unwrap_or_else(|| decoded.clone())
+                    move || match backdrop_sharp_fill(decoded, w, h) {
+                        Ok(rendered) => rendered,
+                        Err(original) => original,
+                    }
                 });
                 let resampled: Arc<RenderImage> = rendered.await?;
                 // 每首歌背景解码一次的唯一观测点：来源小图回退（大图变体
                 // 404 后阶梯取到的尺寸）或内嵌小封面在这里现形——
                 // 2026-09-29 "背景还是糊" 投诉的取证通道。
                 let size = resampled.size(0);
-                let src_size = decoded.size(0);
                 info!(
                     target: "backdrop",
                     key = ?self,
@@ -796,8 +881,7 @@ impl ManagedImageKey {
             }
             #[cfg(feature = "online_sources")]
             ManagedImageKey::HttpCover(url) => {
-                let url = url.to_string();
-                let bytes = crate::media::http_source::http_cover_bytes_cached(&url).await?;
+                let bytes = crate::media::http_source::http_cover_bytes_cached(url).await?;
                 let Some(bytes) = bytes else { return Ok(None) };
                 Ok(decode_bounded_with_permit(bytes, thumb_size).await?)
             }
@@ -1379,16 +1463,23 @@ const ENHANCE_SHARPEN_THRESHOLD: f32 = 3.0;
 /// 补），放大保持 Lanczos3。本函数是数百 ms 级同步 CPU，**必须经
 /// `spawn_blocking` 执行**（见 `retrieve` 的 Backdrop 分支），不得在异
 /// 步运行时线程内联调用——否则音频流/封面下载与它抢 worker，切歌卡顿。
+///
+/// 所有权语义：按值吃下源 `Arc`，成功路径在裁剪带搬运完成后立即 `drop`
+/// 源（~67MB 的 4096² 全尺寸缓冲不陪跑后半程）；失败路径原样把源还給
+/// 调用方（`Err`），调用方按原 fallback 语义直接采用它。整条调用由
+/// [`BACKDROP_PIPELINE_GATE`] 串行化——同刻至多一条管线在飞。
 fn backdrop_sharp_fill(
-    image: &Arc<RenderImage>,
+    image: Arc<RenderImage>,
     target_w: u32,
     target_h: u32,
-) -> Option<Arc<RenderImage>> {
-    let bytes = image.as_bytes(0)?;
+) -> Result<Arc<RenderImage>, Arc<RenderImage>> {
+    let Some(bytes) = image.as_bytes(0) else {
+        return Err(image);
+    };
     let size = image.size(0);
     let (sw, sh) = (u32::from(size.width), u32::from(size.height));
     if sw == 0 || sh == 0 || target_w == 0 || target_h == 0 {
-        return None;
+        return Err(image);
     }
     // cover: 保留能铺满目标纵横比的最大居中区域。
     let crop_w = (f64::from(sw).min(f64::from(sh) * f64::from(target_w) / f64::from(target_h)))
@@ -1401,7 +1492,7 @@ fn backdrop_sharp_fill(
     // 整幅 from_raw 复制——4096² 源那 67MB 全尺寸过路拷贝只有裁剪带用得上。
     let stride = sw as usize * 4;
     if bytes.len() < sh as usize * stride {
-        return None;
+        return Err(image);
     }
     let x0 = ((sw - crop_w) / 2) as usize;
     let y0 = ((sh - crop_h) / 2) as usize;
@@ -1411,6 +1502,11 @@ fn backdrop_sharp_fill(
         let sy = y0 + row;
         dst.copy_from_slice(&bytes[sy * stride + x0 * 4..][..row_bytes]);
     }
+    // 早释放：全尺寸源字节到这里已经没有第二个读者，drop 归还 ~67MB——
+    // 去噪/重采样/锐化占管线后半程的数百 ms，不为其多驻留一个许可周期。
+    // Err 返回发生在搬运之前（原样交还所有权），Ok 之后不存在失败路径，
+    // 所以后半程无需再持有源。
+    drop(image);
     // 中值去噪只在实际需要时执行：缩采样比 <2×（块边会在输出中存活）或
     // 放大（块会被拉伸涂抹）。≥2× 时重采样的平均效应接管，跳过省一半时间。
     let band_long = crop_w.max(crop_h);
@@ -1436,7 +1532,7 @@ fn backdrop_sharp_fill(
     } else {
         sharpen_rgba_with(&mut out, 0.5, 1.0);
     }
-    Some(Arc::new(RenderImage::new(smallvec![Frame::new(out)])))
+    Ok(Arc::new(RenderImage::new(smallvec![Frame::new(out)])))
 }
 
 /// Fixed-size backdrop enhancement — the [`ImageCacheMode::Backdrop(None)`]
@@ -1687,7 +1783,7 @@ mod tests {
                 source,
                 |x, y| { image::Rgba([((x / 8) % 255) as u8, ((y / 8) % 255) as u8, 90, 255]) }
             ))]));
-            let out = backdrop_sharp_fill(&image, 1920, 1020).unwrap();
+            let out = backdrop_sharp_fill(image, 1920, 1020).ok().unwrap();
             let size = out.size(0);
             assert_eq!(
                 (u32::from(size.width), u32::from(size.height)),
@@ -1711,7 +1807,7 @@ mod tests {
                 image::Rgba([if on { 255 } else { 0 }, 0, 0, 255])
             }
         ))]));
-        let out = backdrop_sharp_fill(&image, 1920, 1020).unwrap();
+        let out = backdrop_sharp_fill(image, 1920, 1020).ok().unwrap();
         let bytes = out.as_bytes(0).unwrap().to_vec();
         let sharp = RgbaImage::from_raw(1920, 1020, bytes).unwrap();
         let mut max_diff = 0u8;
@@ -2096,7 +2192,7 @@ mod tests {
         });
         let source = Arc::new(RenderImage::new(smallvec![Frame::new(src)]));
 
-        let out = backdrop_sharp_fill(&source, 1920, 1028).expect("render succeeds");
+        let out = backdrop_sharp_fill(source.clone(), 1920, 1028).expect("render succeeds");
         let size = out.size(0);
         assert_eq!(u32::from(size.width), 1920);
         assert_eq!(u32::from(size.height), 1028);
@@ -2109,9 +2205,10 @@ mod tests {
             "cover crop must exclude the top red band; flat green survives denoise+resize"
         );
 
-        // Degenerate targets fall back to None (caller keeps the original).
-        assert!(backdrop_sharp_fill(&source, 0, 100).is_none());
-        assert!(backdrop_sharp_fill(&source, 100, 0).is_none());
+        // Degenerate targets return Err (the caller falls back to the
+        // returned original).
+        assert!(backdrop_sharp_fill(source.clone(), 0, 100).is_err());
+        assert!(backdrop_sharp_fill(source, 100, 0).is_err());
     }
 
     /// Small sources (ladder fallback) must still render to the exact target
@@ -2123,7 +2220,7 @@ mod tests {
             360,
             |x, y| { image::Rgba([((x * 7 + y) % 255) as u8, 60, 90, 255]) }
         ))]));
-        let out = backdrop_sharp_fill(&source, 1920, 1440).expect("render succeeds");
+        let out = backdrop_sharp_fill(source, 1920, 1440).expect("render succeeds");
         let size = out.size(0);
         assert_eq!(u32::from(size.width), 1920);
         assert_eq!(u32::from(size.height), 1440);

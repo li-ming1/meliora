@@ -379,6 +379,10 @@ fn spawn_memory_probe() {
     const MEMORY_HARD_CAP_MB: u64 = 500;
     const HARD_CAP_CONSECUTIVE_SAMPLES: u32 = 2;
     const HARD_CAP_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(300);
+    /// Hysteresis margin below the soft cap before the pressure flag clears:
+    /// after a shed the caches refill on demand, and clearing only at
+    /// cap − 30 MB keeps the flag from flapping around the boundary.
+    const PRESSURE_CLEAR_MARGIN_MB: u64 = 30;
 
     fn env_override(name: &str, default: u64) -> u64 {
         std::env::var(name)
@@ -399,6 +403,10 @@ fn spawn_memory_probe() {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut baseline: Option<(std::time::Instant, u64)> = None;
         let mut tick_count: u64 = 0;
+        // Pressure-shed bookkeeping: consecutive over-cap samples and the
+        // rising edge (previous sample was under the cap).
+        let mut over_cap_streak: u32 = 0;
+        let mut was_over_cap = false;
         loop {
             tick.tick().await;
             let (private, working) = process_memory_mb();
@@ -441,6 +449,53 @@ fn spawn_memory_probe() {
                     "mem watchdog: private commit over soft cap, forced mimalloc purge"
                 );
             }
+            // Pressure shed: the soft cap is the early-warning line the hard
+            // valve counts from (two consecutive samples ≥60s apart). On the
+            // rising edge, yield the general-purpose image caches — render
+            // LRU to half its window, backdrop LRU to the current track only
+            // — and raise the pressure flag so the immersive view stops
+            // prefetching the next track (a whole 4096 pipeline saved).
+            // Sustained over-cap re-sheds every 4th sample (~2 min) to catch
+            // post-shed cache refill. Evictions ride the funnel's normal age
+            // gates (60s covers / 3s large), so driver-side commit relief
+            // lands on minute scale — precisely the sustained regime the hard
+            // valve requires: the 2026-10-02 restart ramp (341→521 MB over
+            // 3 min of immersive track switching) would have shed ~60 MB at
+            // the first crossing, two samples before the breach. The flag
+            // clears only below cap − margin (hysteresis).
+            if watchdog_purge {
+                over_cap_streak += 1;
+                let rising = !was_over_cap;
+                if rising || over_cap_streak % 4 == 0 {
+                    crate::ui::components::managed_image::render_cache_shrink(
+                        crate::ui::components::managed_image::RENDER_CACHE_PRESSURE_KEEP,
+                    );
+                    crate::ui::components::managed_image::backdrop_cache_shrink(1);
+                }
+                if rising {
+                    tracing::warn!(
+                        private_mb = private,
+                        soft_cap_mb = MEMORY_SOFT_CAP_MB,
+                        render_cache_entries =
+                            crate::ui::components::managed_image::render_cache_entries(),
+                        "mem pressure: shedding image caches (render LRU → 12, \
+                         backdrop LRU → 1) and suspending next-track prefetch"
+                    );
+                }
+                crate::ui::components::managed_image::set_memory_pressure(true);
+            } else {
+                over_cap_streak = 0;
+                if private + PRESSURE_CLEAR_MARGIN_MB < MEMORY_SOFT_CAP_MB
+                    && crate::ui::components::managed_image::memory_pressure()
+                {
+                    crate::ui::components::managed_image::set_memory_pressure(false);
+                    tracing::info!(
+                        private_mb = private,
+                        "mem pressure cleared; caches refill on demand"
+                    );
+                }
+            }
+            was_over_cap = watchdog_purge;
             // Same cadence as the forced collect: mimalloc's own size-bin
             // statistics read right after a full purge, where stranded pages
             // are at their minimum. A large stranded commit there is

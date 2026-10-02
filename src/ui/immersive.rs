@@ -72,8 +72,9 @@ use crate::{
         components::{
             icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
             managed_image::{
-                ImageCacheMode, ManagedImageKey, backdrop_cache_contains, backdrop_cache_shrink,
-                backdrop_decode_allowed, managed_image,
+                ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
+                backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
+                managed_image, memory_pressure, render_cache_shrink,
             },
             slider::slider,
             tooltip::build_tooltip,
@@ -409,6 +410,12 @@ impl ImmersiveView {
     }
 
     fn activate(&mut self, cx: &mut Context<Self>) {
+        // 进入重模式先让位：背景管线即将支付 ~105MB 瞬态（4096² 解码 +
+        // 裁剪带，2026-10-02 硬上限重启复盘），普通界面的封面瓦片收缩到
+        // 半个近期窗口，驱动侧提交经回收漏斗 60s 年龄门分钟级归还。保留
+        // 的是 LRU 尾部——当前曲目封面大概率在内，沉浸页圆盘标签不受
+        // 影响；退出后浏览库视图时被逐出的封面按需重解码（磁盘缓存命中）。
+        render_cache_shrink(RENDER_CACHE_PRESSURE_KEEP);
         self.resolve_track_presentation(cx);
         // 重进沉浸页：resolve 可能因签名守卫早退（同一首歌），这里兜底
         // 重新布防背景 settle（退出时已失显/中止）。
@@ -611,6 +618,13 @@ impl ImmersiveView {
     /// 当前曲目时跳过。
     fn prefetch_next_track_art(&mut self, cx: &mut Context<Self>) {
         if !self.active {
+            return;
+        }
+        // 内存压力下不预取：省掉一整条 4096 重管线 + 一个背景缓存槽。
+        // 切歌照常即时解码（arm_backdrop 不受压力旗标影响），代价只是
+        // 换歌瞬间多付 ~1s 解码——压力态下这是正确的取舍。不写预取记忆，
+        // 压力清除后下次 resolve 自然恢复预取。
+        if memory_pressure() {
             return;
         }
         let Some((target_w, target_h)) = self.backdrop_target else {
