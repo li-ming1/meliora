@@ -173,10 +173,12 @@ jobs:
 
             ### 主要功能 / Features
 
-            - 本地音乐库：扫描与管理、元数据解析、内嵌封面、歌单、ReplayGain、歌词（LRC/KRC/YRC）
-            - Local library: scanning, metadata, embedded covers, playlists, ReplayGain, lyrics (LRC/KRC/YRC)
+            - 本地音乐库：扫描与管理、元数据解析、内嵌封面、歌单、ReplayGain、歌词（LRC/KRC/YRC 逐字卡拉OK）
+            - Local library: scanning, metadata, embedded covers, playlists, ReplayGain, lyrics (LRC/KRC/YRC word-by-word karaoke)
+            - 沉浸模式：全出血封面背景、圆盘唱片与歌词逐行跟随、每歌主题色
+            - Immersive mode: full-bleed cover backdrop, vinyl disc with line-following lyrics, per-track accent color
             - 网易云音乐 / 酷狗音乐在线：扫码登录、搜索、歌单、榜单、在线播放与下载
             - NetEase Cloud Music / KuGou online: QR login, search, playlists, charts, streaming and downloading
-            - 10 段均衡器与实时频谱可视化 / 10-band equalizer and real-time spectrum
+            - 参数均衡器（最多 16 段）与实时频谱可视化 / Parametric equalizer (up to 16 bands) and real-time spectrum
 
             **完整变更见下方自动生成的 Release Notes / Full changelog is generated below.**
