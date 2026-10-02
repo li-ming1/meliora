@@ -124,8 +124,8 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$STAGE/"
           cp README.md LICENSE "$STAGE/"
           tar -czf "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" -C "$STAGE" .
-        # Bare binary for the in-app updater
-        cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.bin"
+          # Bare binary for the in-app updater
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.bin"
 
       - name: Upload artifact
         if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
