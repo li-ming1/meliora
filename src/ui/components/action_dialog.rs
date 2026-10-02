@@ -314,7 +314,7 @@ fn render_details(details: ActionDialogDetails, theme: &Theme) -> impl IntoEleme
             .gap(px(4.0))
             .children(items.into_iter().enumerate().map(move |(idx, item)| {
                 div()
-                    .id(format!("action-dialog-item-{idx}"))
+                    .id(("action-dialog-item", idx))
                     .flex()
                     .items_center()
                     .gap(px(8.0))

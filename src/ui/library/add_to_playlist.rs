@@ -179,9 +179,9 @@ impl AddToPlaylist {
                     };
                     // 一次集合查询取代逐歌单的 playlist_has_track block_on
                     let existing = track_playlist_ids(&current, cx);
-                    let new_playlists = (*playlists)
-                        .clone()
-                        .into_iter()
+                    let new_playlists = playlists
+                        .iter()
+                        .cloned()
                         .map(|playlist| {
                             let has_track = existing
                                 .as_ref()

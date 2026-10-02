@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use tracing::{info, warn};
 
 use crate::devices::channels::{ChannelLabel, ChannelLayout, ChannelPosition};
@@ -432,8 +433,9 @@ impl ChannelMixer {
                 }
             }
         } else {
-            // 慢路径（仅短平面输入）：缺失平面按静音，防短平面语义保留
-            let planes: Vec<Option<&[f64]>> = (0..self.in_channels)
+            // 慢路径（仅短平面输入）：缺失平面按静音，防短平面语义保留。
+            // SmallVec 栈上内联（≤8 声道平面覆盖常见配置），防御性分支不付堆分配。
+            let planes: SmallVec<[Option<&[f64]>; 8]> = (0..self.in_channels)
                 .map(|ch| input.get(ch).map(|p| p.as_slice()))
                 .collect();
             for i in 0..frames {

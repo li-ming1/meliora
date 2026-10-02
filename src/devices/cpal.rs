@@ -25,7 +25,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 macro_rules! make_unknown_error {
     ($from:ty, $to:ty) => {
@@ -256,12 +256,9 @@ impl CpalDevice {
         let channels = format.channels.count();
         let ring_buffer_frames = frames_for_duration(config.sample_rate, RING_BUFFER_TARGET);
         let buffer_size = ring_buffer_frames as usize * channels as usize;
-        debug!(
-            "CPAL buffer size {buffer_size}, \
-            ring buffer {ring_buffer_frames} frames ({buffer_size} samples)",
-        );
         info!(
-            "audio ring: {ring_buffer_frames} frames ({} ms) × {channels} ch; device buffer target {} ms",
+            "audio ring: {ring_buffer_frames} frames ({} ms) × {channels} ch, \
+            CPAL buffer {buffer_size} samples; device buffer target {} ms",
             RING_BUFFER_TARGET.as_millis(),
             DEVICE_BUFFER_TARGET.as_millis()
         );
@@ -572,7 +569,11 @@ where
             &[&self.interleave_buffer],
             self.interleave_buffer.len(),
         )
-        .map_err(|_| SubmissionError::WriteTimeout)?;
+        .map_err(|e| {
+            // 超时路径透传实际写入量：诊断停滞场景时不再只看到总量口径。
+            warn!(written = e.written, "ring write timed out");
+            SubmissionError::WriteTimeout
+        })?;
         // Samples are in the ring: from here on a starving callback is a
         // real underrun and gets counted.
         self.primed.store(true, Ordering::Relaxed);

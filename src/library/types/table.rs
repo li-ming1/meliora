@@ -177,11 +177,6 @@ fn artist_row_cache() -> &'static Mutex<RowCache<i64, ArtistWithCounts>> {
 /// 同 db.rs 的 `PLAYLIST_IN_CHUNK` 先例。
 const ROW_PREFETCH_IN_CHUNK: usize = 900;
 
-/// `?,?,?` —— n 个绑定槽位（db.rs 的同名先例为私有，此处就地同型）。
-fn in_placeholders(n: usize) -> String {
-    vec!["?"; n].join(",")
-}
-
 /// 分块预取的行契约：SELECT 前缀与主键读取由各类型自带，与 queries/ 下
 /// 对应单行查询互引防漂移。
 trait PrefetchRow: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> {
@@ -252,9 +247,14 @@ async fn prefetch_rows_chunked<Row: PrefetchRow + Send + Unpin>(
     ids: Vec<i64>,
 ) {
     let mut pending = ids;
-    pending.retain(|id| cached_row(cache, *id).is_none());
-
-    let generation = row_cache_generation(cache);
+    // 一次临界区同时完成"过滤已缓存 id + 快照代际"：逐 id 调 cached_row 是
+    // O(n) 次锁获取（快速滚动时 n 达数百）。std Mutex 不可重入，guard 内
+    // 不能调用 cached_row / row_cache_generation，判定就地内联。
+    let generation = {
+        let cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|id| !cache.rows.contains_key(id));
+        cache.generation
+    };
 
     for chunk in pending.chunks(ROW_PREFETCH_IN_CHUNK) {
         // 每块之间校验代际：缓存已被清空（重载）则不再发过期查询
@@ -267,7 +267,7 @@ async fn prefetch_rows_chunked<Row: PrefetchRow + Send + Unpin>(
             "{} WHERE {} IN ({})",
             Row::CHUNK_SQL_PREFIX,
             Row::ID_COLUMN,
-            in_placeholders(chunk.len())
+            db::in_placeholders(chunk.len())
         );
         let mut query = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(sql));
         for &id in chunk {

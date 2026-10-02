@@ -20,9 +20,6 @@ pub struct LabeledSlider {
     default_value: Option<f32>,
     on_change: Option<Rc<RefCell<ChangeHandler>>>,
     formatter: Rc<ValueFormatter>,
-    /// 端点标签缓存：由 min/max/format_value setter 一次性预格式化。
-    min_label: Option<SharedString>,
-    max_label: Option<SharedString>,
     div: Div,
 }
 
@@ -34,13 +31,11 @@ impl LabeledSlider {
 
     pub fn min(mut self, min: f32) -> Self {
         self.min = min;
-        self.recompute_static_labels();
         self
     }
 
     pub fn max(mut self, max: f32) -> Self {
         self.max = max;
-        self.recompute_static_labels();
         self
     }
 
@@ -64,17 +59,7 @@ impl LabeledSlider {
 
     pub fn format_value(mut self, formatter: impl Fn(f32) -> SharedString + 'static) -> Self {
         self.formatter = Rc::new(formatter);
-        self.recompute_static_labels();
         self
-    }
-
-    /// 端点标签只依赖 min/max/formatter：按 low/high 交换规则预格式化并失效
-    /// 重算，拖动期 render 不再逐帧对不变的端点做 format! 堆分配。
-    fn recompute_static_labels(&mut self) {
-        let low = self.min.min(self.max);
-        let high = self.min.max(self.max);
-        self.min_label = Some((self.formatter)(low));
-        self.max_label = Some((self.formatter)(high));
     }
 }
 
@@ -96,8 +81,10 @@ impl RenderOnce for LabeledSlider {
         let right_flex = (1.0 - normalized).max(0.0);
 
         let formatter = self.formatter.clone();
-        let min_text = self.min_label.clone().unwrap_or_else(|| (formatter)(low));
-        let max_text = self.max_label.clone().unwrap_or_else(|| (formatter)(high));
+        // RenderOnce 每 render 重建整个结构体——端点标签直算 2 次，比经
+        // setter 预缓存（每帧 3 个 setter 触发 6 次格式化）更省。
+        let min_text = (formatter)(low);
+        let max_text = (formatter)(high);
         let current_text = (formatter)(clamped);
 
         // Maps a 0..1 track position back onto the [low, high] value range.
@@ -180,8 +167,6 @@ pub fn labeled_slider(id: impl Into<ElementId>) -> LabeledSlider {
         default_value: None,
         on_change: None,
         formatter: Rc::new(|value| format!("{value:.2}").into()),
-        min_label: None,
-        max_label: None,
         div: div(),
     }
 }

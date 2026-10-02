@@ -62,11 +62,7 @@ impl UpdatePlaylist {
                         error!("Failed to load playlists for the update dialog");
                         return;
                     };
-                    let new_playlists = (*playlists)
-                        .clone()
-                        .into_iter()
-                        .map(Arc::new)
-                        .collect::<Vec<_>>();
+                    let new_playlists = playlists.iter().cloned().map(Arc::new).collect::<Vec<_>>();
 
                     cx.emit(new_playlists);
 
@@ -90,14 +86,11 @@ impl UpdatePlaylist {
 
             let items = cx
                 .get_all_playlists()
-                .map(|playlists| (*playlists).clone())
+                .map(|playlists| playlists.iter().cloned().map(Arc::new).collect::<Vec<_>>())
                 .unwrap_or_else(|e| {
                     error!("Failed to load playlists for the update dialog: {}", e);
                     Vec::new()
-                })
-                .into_iter()
-                .map(Arc::new)
-                .collect();
+                });
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 

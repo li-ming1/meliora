@@ -494,14 +494,13 @@ impl Render for Sidebar {
         #[cfg(feature = "kugou")]
         let kugou_pill = {
             let profile = shared_client().cached_user_profile();
-            let logged_in = profile.as_ref().is_some_and(|p| !p.nickname.is_empty());
-            let nickname = logged_in
-                .then(|| {
-                    profile
-                        .as_ref()
-                        .map(|p| SharedString::from(p.nickname.clone()))
-                })
-                .flatten();
+            // 登录态 = 非空昵称：filter+map 直取 Option<SharedString>，不走
+            // then+flatten 的 Option<Option<T>> 绕行。
+            let nickname = profile
+                .as_ref()
+                .filter(|p| !p.nickname.is_empty())
+                .map(|p| SharedString::from(p.nickname.clone()));
+            let logged_in = nickname.is_some();
             let label: SharedString = nickname.clone().unwrap_or_else(login_label);
             let tooltip_text = nickname.unwrap_or_else(|| tr!("KUGOU_LOGIN").into());
 
@@ -527,14 +526,11 @@ impl Render for Sidebar {
         #[cfg(feature = "netease")]
         let netease_pill = {
             let profile = netease_shared_client().cached_user_profile();
-            let logged_in = profile.as_ref().is_some_and(|p| !p.nickname.is_empty());
-            let nickname = logged_in
-                .then(|| {
-                    profile
-                        .as_ref()
-                        .map(|p| SharedString::from(p.nickname.clone()))
-                })
-                .flatten();
+            let nickname = profile
+                .as_ref()
+                .filter(|p| !p.nickname.is_empty())
+                .map(|p| SharedString::from(p.nickname.clone()));
+            let logged_in = nickname.is_some();
             let label: SharedString = nickname.clone().unwrap_or_else(login_label);
             let tooltip_text = nickname.unwrap_or_else(|| tr!("NETEASE_LOGIN").into());
 

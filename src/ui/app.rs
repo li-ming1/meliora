@@ -810,16 +810,16 @@ fn refresh_restored_online_urls(
     // the current one first, cap the startup burst, let the fallback handle
     // the tail instead of burning a serial HTTP round trip per queued track.
     const STARTUP_REFRESH_CAP: usize = 8;
-    if let Some(current) = current_track_path.as_ref()
-        && let Some(pos) = stale.iter().position(|(idx, _)| {
-            queue
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(*idx)
-                .is_some_and(|item| item.get_path() == current)
-        })
-    {
-        stale.swap(0, pos);
+    // 单次拿锁完成全部位置匹配：闭包里逐元素重锁在长队列下是 O(n) 次
+    // 获取，且两次持有之间纯同步、无 await，合并安全。
+    if let Some(current) = current_track_path.as_ref() {
+        let q = queue.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(pos) = stale
+            .iter()
+            .position(|(idx, _)| q.get(*idx).is_some_and(|item| item.get_path() == current))
+        {
+            stale.swap(0, pos);
+        }
     }
     stale.truncate(STARTUP_REFRESH_CAP);
 
