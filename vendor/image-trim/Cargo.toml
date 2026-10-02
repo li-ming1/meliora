@@ -70,7 +70,11 @@ benchmarks = []
 bmp = []
 color_quant = ["dep:color_quant"]
 dds = []
-default = ["gif"]
+# default 必须自带 Meliora 实际渲染的五个格式：gpui 硬导入 webp/gif，且
+# 依赖方请求的 feature 能否经跨 crate 统一存活并不可靠（cargo 1.99 的
+# resolver 上 [patch] 过滤后的副本丢了 webp，CI 三平台编译失败）——
+# 格式开关落在本 manifest 的 default 里才是版本免疫的。
+default = ["bmp", "gif", "jpeg", "png", "webp"]
 default-formats = [
     "avif",
     "bmp",
