@@ -176,7 +176,6 @@ anyhow = "1"
 cntp_i18n_gen = "0.3"
 dotenvy = "0.15"
 embed-resource = "3"
-vergen = { version = "10", features = ["build"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
@@ -187,9 +186,12 @@ windows = { version = "0.62", features = [
     "Storage_Search",
     "Storage_Streams",
     "Win32_Foundation",
+    # 零字面引用但不可删：CreateFileW 的签名（scan/decode、disk.rs）引用
+    # Security::SECURITY_ATTRIBUTES，整个 Security 模块被本 feature 门控。
     "Win32_Security",
     "Win32_Storage_FileSystem",
-    "Win32_System_Com",
+    # 零字面引用：本仓不直接用 COM（windows::core 无条件编译，BSTR/IUnknown
+    # 不需要 feature）；accesskit_windows / cpal / sysinfo 的统一化已启用它。
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_SystemServices",

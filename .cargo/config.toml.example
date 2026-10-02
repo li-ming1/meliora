@@ -13,7 +13,9 @@ CFLAGS_aarch64_pc_windows_msvc = "-D__x86__"
 # unregistered VS install, so use the serial NMake generator
 CMAKE_GENERATOR = "NMake Makefiles"
 
-# 把下面的占位符替换为本机实际路径；或改成引用环境变量（${VAR}）并在 build-release.cmd 里 set
+# 把下面的占位符替换为本机实际路径（推荐直接硬编码完整路径）。
+# 注意：cargo 配置里的 ${VAR} 插值读取的是进程环境变量，不是上面的 [env] 表——
+# 若要改用 ${VAR} 引用，必须先在 build-release.cmd 里 set 这些变量再构建。
 VCToolsInstallDir = "<MSVC_INSTALL_DIR>"
 WindowsSdkDir = "<WINDOWS_SDK_DIR>"
 WindowsSDKVersion = "<SDK_VERSION>"
@@ -21,4 +23,6 @@ INCLUDE = "${VCToolsInstallDir}\\include;${WindowsSdkDir}\\Include\\${WindowsSDK
 LIB = "${VCToolsInstallDir}\\lib\\x64;${WindowsSdkDir}\\Lib\\${WindowsSDKVersion}\\ucrt\\x64;${WindowsSdkDir}\\Lib\\${WindowsSDKVersion}\\um\\x64"
 
 [target.x86_64-pc-windows-msvc]
-linker = "${VCToolsInstallDir}\\bin\\Hostx64\\x64\\link.exe"
+# rustc 1.90 起此目标默认 rust-lld 链接，上面的 INCLUDE/LIB 供其取用；
+# link.exe 不再钉死。链接失败时取消下行注释回退（原值保留备查）。
+# linker = "${VCToolsInstallDir}\\bin\\Hostx64\\x64\\link.exe"

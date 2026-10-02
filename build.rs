@@ -1,7 +1,6 @@
-use std::{env, path::PathBuf};
+use std::{collections::hash_map::DefaultHasher, env, hash::Hasher, io, path::PathBuf};
 
 use anyhow::{Context as _, Result};
-use vergen::{Build, Emitter};
 
 fn option_env(var: &str) -> Option<Result<String>> {
     println!("cargo:rerun-if-env-changed={var}");
@@ -47,14 +46,6 @@ fn main() -> Result<()> {
         println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
     }
 
-    // set build time information
-    let build = Build::builder()
-        .build_timestamp(true)
-        .use_local(false)
-        .build();
-
-    Emitter::default().add_instructions(&build)?.emit()?;
-
     // read env from an optional local .env file (never created automatically)
     if let Ok(envfile) = std::fs::read_to_string(".env") {
         println!("cargo:rerun-if-changed=.env");
@@ -66,8 +57,15 @@ fn main() -> Result<()> {
     }
 
     // embed the application icon into the Windows executable
+    // 本 build.rs 已发射多条 rerun 指令（i18n 生成器），embed-resource
+    // 依赖的"无指令则扫描全包"默认随之失效，图标资源必须显式追踪；
+    // rc 编译失败必须上抛，静默吞掉会拿旧图标出包。
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
-        let _ = embed_resource::compile("assets/icon.rc", embed_resource::NONE);
+        println!("cargo:rerun-if-changed=assets/icon.rc");
+        println!("cargo:rerun-if-changed=assets/app.ico");
+        embed_resource::compile("assets/icon.rc", embed_resource::NONE)
+            .manifest_required()
+            .context("failed to compile assets/icon.rc")?;
     }
 
     // generate translations
@@ -76,6 +74,33 @@ fn main() -> Result<()> {
         .into();
 
     cntp_i18n_gen::generate_default(&path);
+
+    // 翻译词条指纹：tr_load! 是 proc-macro，在宏展开期读盘，stable 的 dep-info
+    // 不追踪 proc-macro 的文件读取，而生成器只发射 rerun-if-changed=src——纯翻译
+    // 提交原本静默丢失。逐文件发射 rerun-if-changed 只能让 build.rs 重跑，重跑后
+    // 输出不变则主 crate 仍 fresh，故再把词条内容哈希注入 rustc-env：值变即失效
+    // 主 crate 指纹，tr_load! 才会重新展开读入新词条。meta.json 是生成器产物
+    // （含 src 行号引用，随源码变动重写），排除以免无谓重编，且照常不被本段改写。
+    // 注意：新增词条文件不自带 rerun 指令，需 touch 现有词条或改动代码触发。
+    let mut translations: Vec<(String, PathBuf)> = std::fs::read_dir(path.join("translations"))
+        .context("failed to read translations directory")?
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (name, entry.path())
+        })
+        .filter(|(name, file)| file.is_file() && name.ends_with(".json") && name != "meta.json")
+        .collect();
+    translations.sort();
+    let mut stamp = DefaultHasher::new();
+    for (name, file) in &translations {
+        println!("cargo:rerun-if-changed=translations/{name}");
+        stamp.write(
+            &std::fs::read(file).with_context(|| format!("failed to read translation '{name}'"))?,
+        );
+    }
+    println!("cargo:rustc-env=MELIORA_I18N_STAMP={:016x}", stamp.finish());
 
     // prefer env over file, default to `stable`
     let channel = option_env("MELIORA_RELEASE_CHANNEL").unwrap_or_else(|| {
