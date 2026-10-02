@@ -37,14 +37,22 @@ Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummin
 - Embedded cover-art extraction and caching, with Album / Artist / Track browsing
 - Playlist management: create, reorder, drag-and-drop, import/export
 - ReplayGain loudness normalization
-- Lyrics support: LRC / KRC / YRC
+- Lyrics support: LRC / KRC / YRC word-by-word karaoke
 
 ### Playback
 
 - Multi-format decoding (via [Symphonia](https://crates.io/crates/symphonia)): MP3, FLAC, AAC, ALAC, OGG, WAV, and more
-- 10-band equalizer with real-time spectrum visualization
+- Parametric equalizer (up to 16 custom bands) with real-time spectrum visualization
 - High-quality resampling ([Rubato](https://crates.io/crates/rubato))
 - Play queue management and session persistence
+
+### Immersive Mode
+
+Press `F`, flip the sidebar toggle next to the lyrics button, or double-click the now-playing cover to enter a fullscreen immersive player where the current cover fills the entire screen (`Esc` exits):
+
+- **Full-bleed cover backdrop**: resampled precisely to the window's device pixels (4096px source preferred, median denoise, thresholded sharpening) — as sharp as the vinyl-disc label; track changes crossfade the backdrop over 400ms, and a prefetched next track swaps in with zero decode wait
+- **Vinyl disc + following lyrics**: lyrics follow playback line by line; scroll to browse freely, with automatic return after you stop; KRC / YRC word-by-word highlighting with translation lines
+- **Per-track accent color**: extracted automatically from the cover to tint the lyrics; animations degrade gracefully when the system "reduce motion" setting is on
 
 ### Online Services (features)
 
@@ -63,7 +71,7 @@ Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummin
 
 ![Dark theme](screenshots/dark.png)
 
-![Settings](screenshots/settings.png)
+![Immersive mode](screenshots/immersive.png)
 
 ## Building
 
