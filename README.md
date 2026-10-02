@@ -78,7 +78,7 @@ Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的
 
 ![深色主题](screenshots/dark.png)
 
-![设置界面](screenshots/settings.png)
+![沉浸模式](screenshots/immersive.png)
 
 ## 构建
 
