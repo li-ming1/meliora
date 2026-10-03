@@ -557,10 +557,6 @@ impl NeteaseRanksView {
         )
     }
 
-    /// Rows are built from inside the uniform_list render closure where only
-    /// `&App` is available, so there is no `cx.listener` here: the like
-    /// handler reaches the view through a weak handle instead (same pattern
-    /// as kugou_ranks).
     /// The rows the virtualized container renders: the open rank's tracks, or
     /// the daily-recommend list while that tab is showing. Both lists used to
     /// render from their own state; the container reads a single slice, so
@@ -575,6 +571,10 @@ impl NeteaseRanksView {
         }
     }
 
+    /// Rows are built from inside the uniform_list render closure where only
+    /// `&App` is available, so there is no `cx.listener` here: the like
+    /// handler reaches the view through a weak handle instead (same pattern
+    /// as kugou_ranks).
     fn render_track_row(
         &self,
         track: &Arc<NeteaseTrackInfo>,
@@ -632,23 +632,15 @@ impl NeteaseRanksView {
 
         match self.tab {
             Tab::Ranks => match &self.ranks {
-                RanksState::Loading => div()
-                    .text_sm()
-                    .text_color(theme.text_secondary)
-                    .py(px(24.0))
-                    .child(tr!("NETEASE_LOADING", "Loading..."))
-                    .into_any_element(),
+                RanksState::Loading => {
+                    muted_line(tr!("NETEASE_LOADING", "Loading..."), theme).into_any_element()
+                }
                 RanksState::Failed(message) => div()
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
                     .py(px(12.0))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.status_error)
-                            .child(message.clone()),
-                    )
+                    .child(error_line(message.clone(), theme))
                     .child(
                         div().flex().justify_center().child(
                             button()
@@ -666,12 +658,9 @@ impl NeteaseRanksView {
                 RanksState::Ready(_) => div().into_any_element(),
             },
             Tab::DailyRecommend => match &self.recommend {
-                RecommendState::Idle | RecommendState::Loading => div()
-                    .text_sm()
-                    .text_color(theme.text_secondary)
-                    .py(px(24.0))
-                    .child(tr!("NETEASE_LOADING"))
-                    .into_any_element(),
+                RecommendState::Idle | RecommendState::Loading => {
+                    muted_line(tr!("NETEASE_LOADING"), theme).into_any_element()
+                }
                 RecommendState::LoginRequired => div()
                     .flex()
                     .flex_col()
@@ -699,12 +688,7 @@ impl NeteaseRanksView {
                     .flex_col()
                     .gap(px(12.0))
                     .py(px(12.0))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.status_error)
-                            .child(message.clone()),
-                    )
+                    .child(error_line(message.clone(), theme))
                     .child(
                         div().flex().justify_center().child(
                             button()

@@ -32,7 +32,10 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
         },
-        models::{Models, PlaybackInfo, PlaylistEvent, is_track_available_snapshot},
+        models::{
+            LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
+            is_track_available_snapshot,
+        },
         theme::Theme,
         util::prune_views,
     },
@@ -175,7 +178,7 @@ impl ArtistDetailView {
             let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
             cx.subscribe(&playlist_tracker, move |this: &mut Self, _, ev, cx| {
-                if let PlaylistEvent::PlaylistUpdated(1) = ev {
+                if let PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID) = ev {
                     this.reload_liked_tracks(cx);
                 }
             })
