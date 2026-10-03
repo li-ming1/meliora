@@ -1,6 +1,6 @@
 use std::{
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
 };
@@ -15,7 +15,7 @@ use crate::{
     playback::queue::QueueItemData,
     settings::SettingsGlobal,
     ui::{
-        availability::is_track_path_available,
+        availability::{available_paths, is_track_path_available},
         components::{
             context::context,
             icons::{
@@ -139,8 +139,7 @@ impl FileRowItem {
                 {
                     let audio_items = audio_items.clone();
                     move |_, _, cx| {
-                        let data = batch_queue_items(cx, &audio_items);
-                        play_items_now(cx, data);
+                        queue_batch_items(audio_items.clone(), BatchAction::PlayNow, cx);
                     }
                 },
             ))
@@ -151,8 +150,7 @@ impl FileRowItem {
                 {
                     let audio_items = audio_items.clone();
                     move |_, _, cx| {
-                        let data = batch_queue_items(cx, &audio_items);
-                        play_items_next(cx, data);
+                        queue_batch_items(audio_items.clone(), BatchAction::PlayNext, cx);
                     }
                 },
             ))
@@ -168,8 +166,7 @@ impl FileRowItem {
                 {
                     let audio_items = audio_items.clone();
                     move |_, _, cx| {
-                        let data = batch_queue_items(cx, &audio_items);
-                        queue_items(cx, data);
+                        queue_batch_items(audio_items.clone(), BatchAction::Enqueue, cx);
                     }
                 },
             ))
@@ -227,19 +224,51 @@ impl FileRowItem {
     }
 }
 
-fn batch_queue_items(cx: &mut App, items: &[(Arc<Path>, Option<TrackRef>)]) -> Vec<QueueItemData> {
-    let mut data = Vec::with_capacity(items.len());
-    for (path, track) in items {
-        if is_track_path_available(path) {
-            data.push(QueueItemData::new(
-                cx,
-                path.to_path_buf(),
-                track.as_ref().map(|track| track.id),
-                track.as_ref().and_then(|track| track.album_id),
-            ));
-        }
-    }
-    data
+enum BatchAction {
+    PlayNow,
+    PlayNext,
+    Enqueue,
+}
+
+/// Availability for a whole selection, resolved in one blocking-task batch:
+/// the synchronous loop used to stat one file per selected row on the UI
+/// thread, and a single `Path::exists` on a stale network mount can take
+/// milliseconds. The available subset then queues exactly as before, one
+/// task-hop later.
+fn queue_batch_items(
+    items: Rc<Vec<(Arc<Path>, Option<TrackRef>)>>,
+    action: BatchAction,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        let paths: Vec<PathBuf> = items.iter().map(|(path, _)| path.to_path_buf()).collect();
+        let available = crate::RUNTIME
+            .spawn_blocking(move || available_paths(paths))
+            .await
+            .unwrap_or_default();
+
+        cx.update(|cx| {
+            let data = items
+                .iter()
+                .filter(|(path, _)| available.contains(path.as_ref()))
+                .map(|(path, track)| {
+                    QueueItemData::new(
+                        cx,
+                        path.to_path_buf(),
+                        track.as_ref().map(|track| track.id),
+                        track.as_ref().and_then(|track| track.album_id),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            match action {
+                BatchAction::PlayNow => play_items_now(cx, data),
+                BatchAction::PlayNext => play_items_next(cx, data),
+                BatchAction::Enqueue => queue_items(cx, data),
+            }
+        });
+    })
+    .detach();
 }
 
 impl HasLikedState for FileRowItem {

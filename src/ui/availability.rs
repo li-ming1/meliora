@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -33,6 +33,17 @@ pub fn is_online_path(path: &Path) -> bool {
 
 pub fn is_track_available(track: &Track) -> bool {
     is_track_path_available(&track.location)
+}
+
+/// Which of `paths` are available (same probe as
+/// [`is_track_path_available`]), one stat per path. Pure so callers can batch
+/// a whole selection's stats into one blocking task — `Path::exists` is a
+/// syscall and must stay off the UI thread.
+pub fn available_paths(paths: Vec<PathBuf>) -> FxHashSet<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| is_track_path_available(path))
+        .collect()
 }
 
 /// Path -> "does it still exist" memo. Every availability set is grouped from

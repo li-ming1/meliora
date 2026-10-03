@@ -23,7 +23,7 @@ use crate::{
     settings::SettingsGlobal,
     ui::{
         app::Pool,
-        availability::is_track_path_available,
+        availability::available_paths,
         components::{
             icons::{MINIMIZE, REFRESH},
             nav_button::nav_button,
@@ -247,7 +247,7 @@ impl FilesView {
 
         let audio_entries: SmallVec<[(PathBuf, Option<TrackRef>); 16]> = entries
             .iter()
-            .filter(|entry| entry.entry.is_audio && is_track_path_available(&entry.entry.path))
+            .filter(|entry| entry.entry.is_audio)
             .map(|entry| (entry.entry.path.clone(), entry.entry.track.clone()))
             .collect();
 
@@ -255,14 +255,40 @@ impl FilesView {
             return;
         }
 
-        let items = queue_items_from_entries(cx, &audio_entries);
+        // The per-entry availability stats run on the blocking pool (see
+        // available_paths) instead of one stat per sibling on the UI thread;
+        // the queue swap then happens exactly as before, one task-hop later.
+        let paths: Vec<PathBuf> = audio_entries
+            .iter()
+            .map(|(entry_path, _)| entry_path.clone())
+            .collect();
+        cx.spawn(async move |_this, cx| {
+            let available = crate::RUNTIME
+                .spawn_blocking(move || available_paths(paths))
+                .await
+                .unwrap_or_default();
 
-        let playback = cx.global::<PlaybackInterface>();
-        if let Some(idx) = audio_entries.iter().position(|(p, _)| *p == path) {
-            playback.replace_queue_with_index(items, idx);
-        } else {
-            playback.replace_queue(items);
-        }
+            cx.update(|cx| {
+                let audio_entries: Vec<(PathBuf, Option<TrackRef>)> = audio_entries
+                    .into_iter()
+                    .filter(|(entry_path, _)| available.contains(entry_path.as_path()))
+                    .collect();
+
+                if audio_entries.is_empty() {
+                    return;
+                }
+
+                let items = queue_items_from_entries(cx, &audio_entries);
+
+                let playback = cx.global::<PlaybackInterface>();
+                if let Some(idx) = audio_entries.iter().position(|(p, _)| *p == path) {
+                    playback.replace_queue_with_index(items, idx);
+                } else {
+                    playback.replace_queue(items);
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn play_folder_recursive(&mut self, path: PathBuf, cx: &mut Context<Self>) {
