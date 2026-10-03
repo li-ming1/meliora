@@ -161,7 +161,7 @@ pub fn import_playlist(cx: &App, playlist_id: i64) {
         let task = crate::RUNTIME.spawn(async move {
             let Some(path) = path_future.await??.and_then(|v| v.into_iter().next()) else {
                 info!("Playlist import cancelled by user");
-                return anyhow::Ok(());
+                return anyhow::Ok(false);
             };
 
             let span = tracing::debug_span!("import_playlist", playlist_id, path = %path.display());
@@ -214,6 +214,11 @@ pub fn import_playlist(cx: &App, playlist_id: i64) {
                 .instrument(debug_span!(parent: &span, "lookup_tracks"))
                 .await;
 
+            if ids.is_empty() {
+                warn!("M3U import for playlist {playlist_id} resolved to no tracks; leaving playlist untouched");
+                return anyhow::Ok(false);
+            }
+
             let mut tx = pool.begin().await?;
 
             let reset_query = include_str!("../../queries/playlist/empty_playlist.sql");
@@ -234,11 +239,18 @@ pub fn import_playlist(cx: &App, playlist_id: i64) {
 
             tx.commit().await?;
 
-            anyhow::Ok(())
+            anyhow::Ok(true)
         });
 
-        if let Err(err) = task.err_into().await.flatten() {
-            error!(?err, "Failed to import playlist: {err}");
+        let updated = match task.err_into().await.flatten() {
+            Ok(updated) => updated,
+            Err(err) => {
+                error!(?err, "Failed to import playlist: {err}");
+                return;
+            }
+        };
+
+        if !updated {
             return;
         }
 

@@ -538,25 +538,24 @@ pub async fn add_playlist_items(
     // 歌单顶由 ~4.5 万行降为 ~3 千行）。(playlist_id, position) 仅普通索引
     // （idx_playlist_item_playlist_position），平移中间态无唯一约束冲突。
     // 等于块顶即已在目标位，跳过（对齐 move_playlist_item 的同位早退）。
-    if let (Some(new_position), Some(first_position)) = (target_position, first_position) {
-        let last_position = first_position + item_ids.len() as i64 - 1;
-        if new_position < last_position {
-            sqlx::query(
-                "UPDATE playlist_item SET position = position + ? \
+    if let (Some(new_position), Some(first_position)) = (target_position, first_position)
+        && new_position < first_position
+    {
+        sqlx::query(
+            "UPDATE playlist_item SET position = position + ? \
                  WHERE playlist_id = ? AND position >= ?",
-            )
-            .bind(item_ids.len() as i64)
-            .bind(playlist_id)
-            .bind(new_position)
-            .execute(&mut *tx)
-            .await?;
-            for (offset, &item_id) in item_ids.iter().enumerate() {
-                sqlx::query("UPDATE playlist_item SET position = ? WHERE id = ?")
-                    .bind(new_position + offset as i64)
-                    .bind(item_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
+        )
+        .bind(item_ids.len() as i64)
+        .bind(playlist_id)
+        .bind(new_position)
+        .execute(&mut *tx)
+        .await?;
+        for (offset, &item_id) in item_ids.iter().enumerate() {
+            sqlx::query("UPDATE playlist_item SET position = ? WHERE id = ?")
+                .bind(new_position + offset as i64)
+                .bind(item_id)
+                .execute(&mut *tx)
+                .await?;
         }
     }
 
