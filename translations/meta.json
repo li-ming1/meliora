@@ -313,13 +313,13 @@
   },
   "CLEAR_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1049",
+    "definedIn": "src/ui/queue.rs:1062",
     "plural": false,
     "description": null
   },
   "CLOSE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1067",
+    "definedIn": "src/ui/queue.rs:1080",
     "plural": false,
     "description": null
   },
@@ -463,43 +463,43 @@
   },
   "EQ_BAND_DISABLED": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:218",
+    "definedIn": "src/ui/equalizer/band_editor.rs:220",
     "plural": false,
     "description": null
   },
   "EQ_BAND_ENABLED": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:216",
+    "definedIn": "src/ui/equalizer/band_editor.rs:218",
     "plural": false,
     "description": null
   },
   "EQ_BAND_FREQ": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:147",
+    "definedIn": "src/ui/equalizer/band_editor.rs:149",
     "plural": false,
     "description": null
   },
   "EQ_BAND_GAIN": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:160",
+    "definedIn": "src/ui/equalizer/band_editor.rs:162",
     "plural": false,
     "description": null
   },
   "EQ_BAND_NUMBER": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:245",
+    "definedIn": "src/ui/equalizer/band_editor.rs:247",
     "plural": false,
     "description": null
   },
   "EQ_BAND_Q": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:180",
+    "definedIn": "src/ui/equalizer/band_editor.rs:182",
     "plural": false,
     "description": null
   },
   "EQ_BAND_REMOVE": {
     "context": "band_editor.rs",
-    "definedIn": "src/ui/equalizer/band_editor.rs:231",
+    "definedIn": "src/ui/equalizer/band_editor.rs:233",
     "plural": false,
     "description": null
   },
@@ -1747,13 +1747,13 @@
   },
   "QUEUE_SUMMARY_TRACKS": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:972",
+    "definedIn": "src/ui/queue.rs:984",
     "plural": true,
     "description": null
   },
   "QUEUE_TITLE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1034",
+    "definedIn": "src/ui/queue.rs:1047",
     "plural": false,
     "description": null
   },
