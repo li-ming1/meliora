@@ -586,7 +586,7 @@ impl Column for TrackColumn {
 }
 
 impl TableData<TrackColumn> for Track {
-    type Identifier = (i64, String, Option<i64>, String);
+    type Identifier = (i64, Option<i64>, String);
     type ContextMenuContext = TrackContextMenuContext;
 
     fn get_table_name() -> SharedString {
@@ -697,7 +697,6 @@ impl TableData<TrackColumn> for Track {
     fn get_table_id(&self) -> Self::Identifier {
         (
             self.id,
-            self.title.0.clone().into(),
             self.album_id,
             self.location.to_string_lossy().to_string(),
         )

@@ -189,7 +189,7 @@ pub async fn list_albums(
 pub async fn list_tracks(
     pool: &SqlitePool,
     sort_method: TrackSortMethod,
-) -> sqlx::Result<Vec<(i64, String, Option<i64>, String)>> {
+) -> sqlx::Result<Vec<(i64, Option<i64>, String)>> {
     let query = match sort_method {
         TrackSortMethod::TitleAsc => {
             include_str!("../../queries/library/find_tracks_title_asc.sql")
@@ -223,7 +223,7 @@ pub async fn list_tracks(
         }
     };
 
-    sqlx::query_as::<_, (i64, String, Option<i64>, String)>(query)
+    sqlx::query_as::<_, (i64, Option<i64>, String)>(query)
         .fetch_all(pool)
         .await
 }
