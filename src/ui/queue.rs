@@ -832,6 +832,12 @@ pub struct Queue {
     /// these (keeping the reactive dependency on their metadata entities)
     /// instead of re-scanning the whole queue every frame.
     pending_durations: Vec<usize>,
+    /// Slot-window `(start, end)` the row-view prune last ran for. The list
+    /// closure skips rebuilding its keep set while unchanged;
+    /// `rescan_views_and_summary` resets this on every queue change, because
+    /// slot keys move with their items — an unchanged slot window can hold a
+    /// different key set after a mutation.
+    last_prune_window: (usize, usize),
     /// Set when a queue notify arrived while the panel was hidden: the
     /// row-view prune and summary rescan are deferred to the first render
     /// after the panel is shown again.
@@ -889,6 +895,9 @@ impl Queue {
                 cached_summary: (usize::MAX, 0, SharedString::default()),
                 summary_total: 0,
                 pending_durations: Vec::new(),
+                // usize::MAX can never match a real slot window: forces the
+                // first render to prune
+                last_prune_window: (usize::MAX, usize::MAX),
                 // the first render builds the summary state from scratch
                 needs_queue_rescan: true,
             }
@@ -921,6 +930,9 @@ impl Queue {
         self.views_model.update(cx, |m, _| {
             m.retain(|k, _| key_set.contains(k));
         });
+        // slot keys move with their items: force the next window prune to
+        // re-run even when the slot window itself is unchanged
+        self.last_prune_window = (usize::MAX, usize::MAX);
         self.summary_total = total;
         self.pending_durations = pending;
     }
@@ -980,6 +992,7 @@ impl Render for Queue {
                 summary
             };
         let views_model = self.views_model.clone();
+        let this_entity = cx.entity();
         let scroll_handle = self.scroll_handle.clone();
         let item_scroll_handle = scroll_handle.clone();
         let drag_drop_manager = self.drag_drop_manager.clone();
@@ -1257,17 +1270,36 @@ impl Render for Queue {
                                 // live row entity (with its observers) per slot ever
                                 // rendered. Keep only the visible window ± the same
                                 // band the table uses; pruned rows rebuild on demand.
+                                // The keep set is only rebuilt when the window moved;
+                                // queue changes reset `last_prune_window` (in
+                                // `rescan_views_and_summary`) so a mutation always
+                                // re-prunes even at an unchanged slot window.
+                                let last_prune_window = this_entity.read(cx).last_prune_window;
                                 let prune_start = start.saturating_sub(VIEW_KEEP_AROUND);
                                 let prune_end = (range.end + VIEW_KEEP_AROUND).min(queue.len());
-                                let keep: FxHashSet<usize> = (prune_start..prune_end)
-                                    .filter_map(|i| {
-                                        queue.get(i).and_then(|item| item.existing_slot_key())
-                                    })
-                                    .collect();
+                                let keep = if last_prune_window != (prune_start, prune_end) {
+                                    Some(
+                                        (prune_start..prune_end)
+                                            .filter_map(|i| {
+                                                queue
+                                                    .get(i)
+                                                    .and_then(|item| item.existing_slot_key())
+                                            })
+                                            .collect::<FxHashSet<usize>>(),
+                                    )
+                                } else {
+                                    None
+                                };
 
                                 drop(queue);
 
-                                views_model.update(cx, |m, _| m.retain(|k, _| keep.contains(k)));
+                                if let Some(keep) = keep {
+                                    views_model
+                                        .update(cx, |m, _| m.retain(|k, _| keep.contains(k)));
+                                    this_entity.update(cx, |this, _| {
+                                        this.last_prune_window = (prune_start, prune_end);
+                                    });
+                                }
 
                                 keys.into_iter()
                                     .filter_map(|(idx, existing_key)| {

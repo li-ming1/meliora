@@ -460,6 +460,9 @@ impl Element for Scrollbar {
                 let needs_hide_check = opacity == 1.0
                     && !is_dragging
                     && !currently_hovered
+                    // always-visible scrollbars never fade: there is no hide
+                    // window to wait out, so don't poll every frame
+                    && !always_visible
                     && last_interaction.is_some();
 
                 if needs_fade_refresh || needs_hide_check {

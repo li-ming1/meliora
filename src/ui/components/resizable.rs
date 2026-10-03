@@ -332,6 +332,13 @@ impl Element for Resizable {
 
                     drop(drag_state);
 
+                    // Only update+notify on a real change: an unmoved pointer
+                    // or a clamp-swallowed delta would otherwise pay an entity
+                    // notification and a full repaint per mouse move.
+                    if clamped_size == *size_entity_move.read(cx) {
+                        return;
+                    }
+
                     size_entity_move.update(cx, |size, cx| {
                         *size = clamped_size;
                         cx.notify();
