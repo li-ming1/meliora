@@ -214,7 +214,7 @@ fn peak_response_db(biquads: &[Biquad], centers: &[f64], sample_rate: f64) -> f6
     peak
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct SmoothedParams {
     frequency: f64,
     gain_db: f64,
@@ -382,6 +382,14 @@ struct Crossfade {
     remaining: usize,
 }
 
+/// Cached composite-response peak: the grid sweep only reads the band targets and the sample
+/// rate, so an unchanged band set (pure toggles, settings echoes) reuses the previous result.
+struct CompensationCache {
+    key: Vec<(EqBandKind, bool, SmoothedParams)>,
+    sample_rate: f64,
+    target_db: f64,
+}
+
 /// Serial cascade of smoothed biquads. No allocation in the streaming path.
 pub struct EqualizerProcessor {
     sample_rate: f64,
@@ -394,6 +402,10 @@ pub struct EqualizerProcessor {
     smoothing_coeff: f64,
     crossfade: Option<Crossfade>,
     scratch: Vec<Vec<f64>>, // [channel][SUB_BLOCK_FRAMES] crossfade buffer
+    /// Last applied config: an identical re-push short-circuits to a no-op.
+    last_config: Option<EqualizerSettings>,
+    /// Peak-scan cache backing `compensation_target`.
+    compensation_cache: Option<CompensationCache>,
 }
 
 impl EqualizerProcessor {
@@ -409,6 +421,8 @@ impl EqualizerProcessor {
             smoothing_coeff: smoothing_coeff(sample_rate),
             crossfade: None,
             scratch: vec![vec![0.0; SUB_BLOCK_FRAMES]; channels],
+            last_config: None,
+            compensation_cache: None,
         }
     }
 
@@ -418,6 +432,11 @@ impl EqualizerProcessor {
     }
 
     pub fn set_config(&mut self, config: &EqualizerSettings) {
+        // an identical re-push (settings echoes, drag ticks that didn't move a value) would
+        // retarget every band onto its current value - skip straight through as a no-op
+        if self.last_config.as_ref() == Some(config) {
+            return;
+        }
         let was_audible = self.audible();
         let mut bands = config.bands.clone();
         bands.truncate(MAX_EQ_BANDS);
@@ -478,6 +497,7 @@ impl EqualizerProcessor {
         self.compensate = config.volume_compensation;
         self.bands = new_bands;
         self.states = new_states;
+        self.last_config = Some(config.clone());
 
         // a crossfade or silence masks the level jump, and the incoming configuration must
         // arrive fully compensated rather than settle audibly after the fade
@@ -490,9 +510,22 @@ impl EqualizerProcessor {
     }
 
     /// Compensation for the current band targets, so an in-flight ramp lands on the right level.
-    fn compensation_target(&self) -> f64 {
+    /// The grid sweep only reads the band targets, so an unchanged band set at the same rate
+    /// reuses the cached peak instead.
+    fn compensation_target(&mut self) -> f64 {
         if !self.compensate {
             return 0.0;
+        }
+        let key: Vec<_> = self
+            .bands
+            .iter()
+            .map(|band| (band.kind, band.enabled, band.target))
+            .collect();
+        if let Some(cache) = &self.compensation_cache
+            && cache.key == key
+            && cache.sample_rate == self.sample_rate
+        {
+            return cache.target_db;
         }
         let mut biquads = Vec::new();
         let mut centers = Vec::new();
@@ -507,7 +540,13 @@ impl EqualizerProcessor {
             ));
             centers.push(clamp_frequency(params.frequency, self.sample_rate));
         }
-        -peak_response_db(&biquads, &centers, self.sample_rate)
+        let target = -peak_response_db(&biquads, &centers, self.sample_rate);
+        self.compensation_cache = Some(CompensationCache {
+            key,
+            sample_rate: self.sample_rate,
+            target_db: target,
+        });
+        target
     }
 
     fn begin_crossfade(&mut self, was_audible: bool) {
@@ -660,7 +699,8 @@ impl EqualizerProcessor {
             band.recompute_coeffs(sample_rate);
         }
         // Nyquist clamping shifts responses, and the hard reset already masks the jump
-        self.comp.snap(self.compensation_target());
+        let target = self.compensation_target();
+        self.comp.snap(target);
         self.reset();
     }
 
@@ -1456,5 +1496,61 @@ mod tests {
             "{}",
             proc.comp.target_db
         );
+    }
+
+    /// The compensation cache must recompute when a band target moves and ride through pure
+    /// flag toggles unchanged: a stale peak shifts levels, a missed reuse re-runs the sweep.
+    #[test]
+    fn compensation_cache_invalidates_on_band_change_and_survives_toggles() {
+        let bell = band(EqBandKind::Bell, 1_000.0, 6.0, 1.0);
+        let mut proc = EqualizerProcessor::new(FS, 1);
+        proc.set_config(&comp_config(true, std::slice::from_ref(&bell)));
+        let boost_target = proc.comp.target_db;
+        assert!((boost_target + 6.0).abs() < 0.05, "{boost_target}");
+
+        // global bypass toggle: bands untouched, the cached peak is reused unchanged
+        proc.set_config(&comp_config(false, std::slice::from_ref(&bell)));
+        assert_eq!(proc.comp.target_db, boost_target);
+
+        // compensation off zeroes the target, back on restores the cached peak
+        proc.set_config(&config(true, std::slice::from_ref(&bell)));
+        assert_eq!(proc.comp.target_db, 0.0);
+        proc.set_config(&comp_config(true, std::slice::from_ref(&bell)));
+        assert_eq!(proc.comp.target_db, boost_target);
+
+        // a band parameter change invalidates the cache: the peak follows the new gain
+        proc.set_config(&comp_config(
+            true,
+            &[band(EqBandKind::Bell, 1_000.0, 12.0, 1.0)],
+        ));
+        assert!((proc.comp.target_db + 12.0).abs() < 0.05);
+        assert_ne!(proc.comp.target_db, boost_target);
+    }
+
+    /// An identical re-push must be a state no-op: no crossfade, no retarget of a mid-ramp
+    /// smoother, no comp gain move.
+    #[test]
+    fn identical_config_repush_is_a_state_no_op() {
+        let cfg = comp_config(true, &[band(EqBandKind::Bell, 1_000.0, 12.0, 1.0)]);
+        let mut proc = EqualizerProcessor::new(FS, 1);
+        proc.set_config(&cfg);
+        // half-settle the ramp-in smoother so the state is visibly mid-ramp
+        let mut block = noise_planar(1, SUB_BLOCK_FRAMES);
+        proc.process(&mut block, SUB_BLOCK_FRAMES);
+        assert!(proc.bands[0].moving);
+        let (state_before, coeffs_before, comp_before) = (
+            proc.states[0][0],
+            proc.bands[0].coeffs,
+            proc.comp.current_db,
+        );
+
+        proc.set_config(&cfg);
+        proc.set_config(&cfg);
+        assert_eq!(proc.states[0][0].s1, state_before.s1);
+        assert_eq!(proc.states[0][0].s2, state_before.s2);
+        assert_eq!(proc.bands[0].coeffs, coeffs_before);
+        assert_eq!(proc.comp.current_db, comp_before);
+        assert!(proc.crossfade.is_none());
+        assert!(proc.bands[0].moving);
     }
 }

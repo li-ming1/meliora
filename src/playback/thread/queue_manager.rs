@@ -9,6 +9,7 @@ use std::{
 use rand::{rng, seq::SliceRandom};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
+use tracing::info;
 
 use crate::{
     playback::{events::RepeatState, queue::QueueItemData, session_storage::PlaybackSessionData},
@@ -25,9 +26,18 @@ const UNDO_STACK_CAPACITY: usize = 30;
 /// 持全量队列快照的动作（`UndoAction::Replaced`）的独立驻留上限：快照经
 /// `Arc` 共享零拷贝，但每条仍驻留一整份旧队列（10 万项可达数十 MB），
 /// 30 层满栈会威胁 500MB 内存硬上限（见 AGENTS.md）。撤销整队替换的可用
-/// 深度随之变浅属有意取舍；单项操作（Removed/Inserted/Moved）维持
-/// UNDO_STACK_CAPACITY 不变。
+/// 深度随之变浅属有意取舍；单项操作（Inserted/Moved）维持
+/// UNDO_STACK_CAPACITY 不变，Removed 另受 UNDO_REMOVED_ITEM_CAP 约束。
 const UNDO_SNAPSHOT_CAPACITY: usize = 6;
+
+/// 单条 `UndoAction::Removed`（dequeue_many 批删）携带的项数上限：undo
+/// 记录全量 (index, item) 实件，UNDO_STACK_CAPACITY 只限条数不限大小，
+/// 一次 5 万项的批删即单条数十 MB 驻留——内存硬上限唯一无界的驻留口子。
+/// 超限时不记录该动作并清空整个 undo 栈（该批删不可撤销）：LIFO 纪律下
+/// 旧动作不能叠在不可撤销的大删除之后被单独 undo（其逆操作基于删除前的
+/// 队列状态），整栈清空是唯一一致做法。批删不可撤销、撤销深度随之变浅
+/// 同属有意取舍；恰好等于上限仍正常记录。
+const UNDO_REMOVED_ITEM_CAP: usize = 1000;
 
 /// Minimum interval between queue-snapshot sends to the session storage worker.
 /// A send deep-copies the whole queue (see `send_session_with_queue`), so burst
@@ -368,6 +378,19 @@ impl QueueManager {
     }
 
     fn push_undo_action(&mut self, action: UndoAction) {
+        // 超限批删不入栈且整栈清空，取舍见 UNDO_REMOVED_ITEM_CAP 的注释。
+        if let UndoAction::Removed { queue_items, .. } = &action
+            && queue_items.len() > UNDO_REMOVED_ITEM_CAP
+        {
+            info!(
+                items = queue_items.len(),
+                cap = UNDO_REMOVED_ITEM_CAP,
+                "batch removal exceeds the undo item cap; clearing undo history, this removal is not undoable"
+            );
+            self.undo_stack.clear();
+            return;
+        }
+
         // 淘汰只从最旧端进行，保证剩余撤销历史连续（撤销按 LIFO 逐条回放，
         // 从中间挖洞会让后续 undo 跳过中间步骤的逆操作）。
         let is_snapshot = matches!(action, UndoAction::Replaced { .. });
@@ -735,46 +758,82 @@ impl QueueManager {
     /// Advance to the next track in the queue.
     ///
     /// Returns information about what track to play next, or if playback should stop.
+    ///
+    /// Navigation is three-phase: snapshot the queue under the read lock,
+    /// decide outside all locks, apply. The playability scans call
+    /// `path.exists()` — a stat that reaches ~100 ms on a stalled UNC/SMB
+    /// mount and must never run under the write lock the UI queue/lyrics
+    /// panels read every frame. The split is safe because the playback thread
+    /// is the queue's only mutator: between snapshot and apply the state
+    /// cannot drift, so indices decided on the snapshot stay valid against
+    /// the live queue.
     pub fn next(&mut self, user_initiated: bool) -> QueueNavigationResult {
-        let result = {
-            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let (queue, queue_next) = {
+            let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+            (Arc::clone(&queue), self.queue_next)
+        };
 
-            if !user_initiated
-                && let Some(path) = Self::repeat_one_target(self.repeat, &queue, self.queue_next)
-            {
-                return QueueNavigationResult::Unchanged {
-                    path: path.get_path().clone(),
-                };
-            }
+        // Decide, outside all locks.
+        if !user_initiated
+            && let Some(path) = Self::repeat_one_target(self.repeat, &queue, queue_next)
+        {
+            return QueueNavigationResult::Unchanged {
+                path: path.get_path().clone(),
+            };
+        }
 
-            if let Some(index) = Self::next_playable_from(&queue, self.queue_next) {
-                self.queue_next = index + 1;
-                QueueNavigationResult::Changed {
-                    index,
-                    path: queue[index].get_path().clone(),
-                    reshuffled: Reshuffled::NotReshuffled,
-                }
-            } else if self.repeat == RepeatState::Repeating {
-                if self.shuffle {
-                    // The wrap reshuffles the whole queue, so every recorded
-                    // undo entry's indices refer to a stale ordering; applying
-                    // them later would remove or re-insert the wrong items.
-                    Arc::make_mut(&mut queue).shuffle(&mut rng());
-                    self.undo_stack.clear();
-                }
-                if let Some(index) = Self::first_playable_index_in(&queue) {
-                    self.queue_next = index + 1;
-                    QueueNavigationResult::Changed {
-                        index,
-                        path: queue[index].get_path().clone(),
-                        reshuffled: Self::reshuffle_state(self.shuffle),
-                    }
-                } else {
-                    QueueNavigationResult::EndOfQueue
-                }
+        // (landing index + result reshuffle flag, plus a reshuffled queue to
+        // write back in the apply phase)
+        let (new_queue, landing) = if let Some(index) = Self::next_playable_from(&queue, queue_next)
+        {
+            (None, Some((index, Reshuffled::NotReshuffled)))
+        } else if self.repeat == RepeatState::Repeating {
+            // Repeat-all wrap. With shuffle on the whole queue is reshuffled
+            // first: shuffle a local copy here and write it back below (the
+            // `replace_queue` snapshot → work outside the lock → write-back
+            // pattern). Playability is order-independent, so the landing scan
+            // runs on that copy without re-statting under the write lock.
+            let new_queue = if self.shuffle {
+                let mut reshuffled = (*queue).clone();
+                reshuffled.shuffle(&mut rng());
+                Some(Arc::new(reshuffled))
             } else {
-                QueueNavigationResult::EndOfQueue
+                None
+            };
+            let landing = Self::first_playable_index_in(new_queue.as_deref().unwrap_or(&queue))
+                .map(|index| (index, Self::reshuffle_state(self.shuffle)));
+            (new_queue, landing)
+        } else {
+            (None, None)
+        };
+
+        let landing_path = landing.as_ref().map(|(index, _)| {
+            new_queue.as_deref().unwrap_or(&queue)[*index]
+                .get_path()
+                .clone()
+        });
+
+        // Apply, keeping the old in-lock ordering: queue contents first, then
+        // the undo history, then the cursor.
+        if let Some(new_queue) = new_queue {
+            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+            *queue = new_queue;
+            drop(queue);
+            // The wrap reshuffles the whole queue, so every recorded undo
+            // entry's indices refer to a stale ordering; applying them later
+            // would remove or re-insert the wrong items.
+            self.undo_stack.clear();
+        }
+
+        let result = if let Some((index, reshuffled)) = landing {
+            self.queue_next = index + 1;
+            QueueNavigationResult::Changed {
+                index,
+                path: landing_path.expect("landing index implies a path"),
+                reshuffled,
             }
+        } else {
+            QueueNavigationResult::EndOfQueue
         };
 
         self.persist_after_navigation(&result);
@@ -797,40 +856,59 @@ impl QueueManager {
     }
 
     /// Go to the previous track in the queue.
+    ///
+    /// Three-phase like `next()`: snapshot under the read lock, decide outside
+    /// all locks, apply.
     pub fn previous(&mut self) -> QueueNavigationResult {
-        let result = {
-            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let (queue, queue_next) = {
+            let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+            (Arc::clone(&queue), self.queue_next)
+        };
 
-            if self.queue_next > 1
-                && let Some(index) = Self::prev_playable_before(&queue, self.queue_next - 1)
-            {
-                self.queue_next = index + 1;
-                QueueNavigationResult::Changed {
-                    index,
-                    path: queue[index].get_path().clone(),
-                    reshuffled: Reshuffled::NotReshuffled,
-                }
-            } else if self.repeat == RepeatState::Repeating
-                && !queue.is_empty()
-                && let Some(index) = {
-                    if self.shuffle {
-                        // Same stale-undo concern as the wrap in `next()`:
-                        // recorded indices refer to the pre-reshuffle ordering.
-                        Arc::make_mut(&mut queue).shuffle(&mut rng());
-                        self.undo_stack.clear();
-                    }
-                    Self::last_playable_index(&queue)
-                }
-            {
-                self.queue_next = index + 1;
-                QueueNavigationResult::Changed {
-                    index,
-                    path: queue[index].get_path().clone(),
-                    reshuffled: Self::reshuffle_state(self.shuffle),
-                }
+        let (new_queue, landing) = if queue_next > 1
+            && let Some(index) = Self::prev_playable_before(&queue, queue_next - 1)
+        {
+            (None, Some((index, Reshuffled::NotReshuffled)))
+        } else if self.repeat == RepeatState::Repeating && !queue.is_empty() {
+            let new_queue = if self.shuffle {
+                let mut reshuffled = (*queue).clone();
+                reshuffled.shuffle(&mut rng());
+                Some(Arc::new(reshuffled))
             } else {
-                QueueNavigationResult::EndOfQueue
+                None
+            };
+            // Same stale-undo concern as the wrap in `next()`: recorded
+            // indices refer to the pre-reshuffle ordering. Cleared together
+            // with the write-back in the apply phase.
+            let landing = Self::last_playable_index(new_queue.as_deref().unwrap_or(&queue))
+                .map(|index| (index, Self::reshuffle_state(self.shuffle)));
+            (new_queue, landing)
+        } else {
+            (None, None)
+        };
+
+        let landing_path = landing.as_ref().map(|(index, _)| {
+            new_queue.as_deref().unwrap_or(&queue)[*index]
+                .get_path()
+                .clone()
+        });
+
+        if let Some(new_queue) = new_queue {
+            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+            *queue = new_queue;
+            drop(queue);
+            self.undo_stack.clear();
+        }
+
+        let result = if let Some((index, reshuffled)) = landing {
+            self.queue_next = index + 1;
+            QueueNavigationResult::Changed {
+                index,
+                path: landing_path.expect("landing index implies a path"),
+                reshuffled,
             }
+        } else {
+            QueueNavigationResult::EndOfQueue
         };
 
         self.persist_after_navigation(&result);
@@ -1002,6 +1080,11 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
+        // 移除本身在写锁内完成；随后的下一可播项扫描会做 path.exists() 同步
+        // stat（UNC/SMB 上一次可达百 ms 级），必须放在写锁外——这把写锁被
+        // UI 队列面板/歌词面板每帧读取。drop 写锁后 `post` 就是准确的移除后
+        // 状态：播放线程是队列唯一 mutator，两段之间不存在状态漂移（见
+        // `next()` 的三段化说明）。
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         if index >= queue.len() {
@@ -1019,6 +1102,8 @@ impl QueueManager {
         }
 
         let current = self.queue_next.checked_sub(1);
+        let post = Arc::clone(&queue);
+        drop(queue);
 
         let res = match current {
             Some(current) if index == current => {
@@ -1027,11 +1112,11 @@ impl QueueManager {
                 // `current_position()` is what the thread reports via
                 // QueuePositionChanged, so it must match the opened path or the UI
                 // resolves the wrong (or no) queue item for the new track.
-                match Self::next_playable_from(&queue, current) {
+                match Self::next_playable_from(&post, current) {
                     Some(new_index) => {
                         self.queue_next = new_index + 1;
                         DequeueResult::RemovedCurrent {
-                            new_path: Some(queue[new_index].get_path().clone()),
+                            new_path: Some(post[new_index].get_path().clone()),
                         }
                     }
                     None => DequeueResult::RemovedCurrent { new_path: None },
@@ -1053,7 +1138,6 @@ impl QueueManager {
             },
         };
 
-        drop(queue);
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Removed {
@@ -1074,6 +1158,10 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
+        // 批量移除本身在写锁内完成；随后的下一可播项扫描会做 path.exists()
+        // 同步 stat，必须放在写锁外（同 `dequeue`，见 `next()` 的三段化）。
+        // drop 写锁后 `post` 就是准确的移除后状态——播放线程是队列唯一
+        // mutator，两段之间不存在状态漂移。
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         indices.retain(|idx| *idx < queue.len());
@@ -1169,6 +1257,8 @@ impl QueueManager {
         let items_before_current = current
             .map(|c| indices.iter().filter(|&&idx| idx < c).count())
             .unwrap_or(0);
+        let post = Arc::clone(&queue);
+        drop(queue);
 
         let res = if removed_current {
             let current = current.expect("removed_current implies current is Some");
@@ -1178,11 +1268,11 @@ impl QueueManager {
             // `current_position()` report the removed slot (or None), so no
             // QueuePositionChanged reached the UI and the info section kept
             // the cleared metadata of the removed track ("Unknown Track").
-            match Self::next_playable_from(&queue, current - items_before_current) {
+            match Self::next_playable_from(&post, current - items_before_current) {
                 Some(new_index) => {
                     self.queue_next = new_index + 1;
                     DequeueManyResult::RemovedCurrent {
-                        new_path: Some(queue[new_index].get_path().clone()),
+                        new_path: Some(post[new_index].get_path().clone()),
                     }
                 }
                 None => DequeueManyResult::RemovedCurrent { new_path: None },
@@ -1196,7 +1286,6 @@ impl QueueManager {
             DequeueManyResult::Removed { new_position: 0 }
         };
 
-        drop(queue);
         self.persist_session_with_queue();
 
         self.push_undo_action(UndoAction::Removed {
@@ -1488,24 +1577,35 @@ impl QueueManager {
     pub fn toggle_shuffle(&mut self) -> ShuffleResult {
         let previous_queue_next = self.queue_next;
         let result = {
-            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
-
             self.shuffle = !self.shuffle;
 
             if self.shuffle {
-                self.original_queue = Arc::clone(&queue);
-
-                let start = self.queue_next.min(queue.len());
-                if start < queue.len() {
-                    Arc::make_mut(&mut queue)[start..].shuffle(&mut rng());
+                // 光标之后的整段 Fisher-Yates 在大库上是真实工作量：按
+                // replace_queue 的成熟模式，锁外对快照副本洗牌、再拿一次
+                // 写锁写回。洗牌前的快照入 original_queue，与旧实现原地
+                // `Arc::clone` 捕获的内容一致；洗牌只动 [start..]，光标
+                // 槽位不变，queue_next 无需重指（与旧实现一致）。
+                let snapshot = {
+                    let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+                    Arc::clone(&queue)
+                };
+                let mut queue_vec = (*snapshot).clone();
+                let start = self.queue_next.min(queue_vec.len());
+                if start < queue_vec.len() {
+                    queue_vec[start..].shuffle(&mut rng());
                 }
 
+                self.original_queue = snapshot;
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                *queue = Arc::new(queue_vec);
                 drop(queue);
 
                 self.push_undo_action(UndoAction::Shuffled);
 
                 ShuffleResult::Shuffled
             } else {
+                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+
                 let current_item = Self::cursor_item(&queue, self.queue_next);
 
                 let had_current = current_item.is_some();
@@ -1834,6 +1934,54 @@ mod tests {
 
         assert!(matches!(manager.undo_last_action(), UndoResult::None));
         assert_eq!(snapshot(&manager), after_first_insert);
+    }
+
+    /// 超过 UNDO_REMOVED_ITEM_CAP 的批删不记录 undo 且整栈清空（取舍见
+    /// UNDO_REMOVED_ITEM_CAP 注释）：先记一条小动作，验证它随大删除一并
+    /// 丢弃——LIFO 纪律下旧动作不能叠在不可撤销删除之后被单独 undo。
+    #[test]
+    fn dequeue_many_above_undo_item_cap_clears_the_undo_stack() {
+        use super::UNDO_REMOVED_ITEM_CAP;
+
+        let count = UNDO_REMOVED_ITEM_CAP as i64 + 1;
+        let items: Vec<_> = (1..=count).map(item).collect();
+        let mut manager = manager_with_queue(items);
+        manager.set_position(0);
+
+        manager.insert_item(0, item(10_000));
+        assert_eq!(manager.undo_stack.len(), 1);
+
+        let res = manager.dequeue_many((0..count as usize).collect());
+
+        match res {
+            DequeueManyResult::RemovedCurrent { new_path } => assert_eq!(new_path, None),
+            other => panic!("expected RemovedCurrent, got {other:?}"),
+        }
+        assert!(manager.undo_stack.is_empty());
+        assert!(matches!(manager.undo_last_action(), UndoResult::None));
+    }
+
+    /// 恰好等于上限的批删仍正常记录、正常撤销（严格大于上限才触发清栈）。
+    #[test]
+    fn dequeue_many_at_undo_item_cap_is_still_undoable() {
+        use super::UNDO_REMOVED_ITEM_CAP;
+
+        let count = UNDO_REMOVED_ITEM_CAP as i64;
+        let items: Vec<_> = (1..=count).map(item).collect();
+        let mut manager = manager_with_queue(items);
+
+        let res = manager.dequeue_many((0..count as usize).collect());
+
+        match res {
+            DequeueManyResult::Removed { new_position } => assert_eq!(new_position, 0),
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(manager.undo_stack.len(), 1);
+        assert!(matches!(
+            manager.undo_last_action(),
+            UndoResult::OkNoCurrent { .. }
+        ));
+        assert_eq!(manager.len(), count as usize);
     }
 
     #[test]
@@ -2285,6 +2433,42 @@ mod tests {
             other => panic!("expected RemovedCurrent, got {other:?}"),
         }
         assert_eq!(manager.current_position(), Some(1));
+    }
+
+    /// 候选路径跨不可播项：导航的前向扫描必须跳过缺失文件（本地路径
+    /// `path.exists()` 为假），落在其后第一个可播项上。三段化后该判定在
+    /// 锁外快照上完成，断言游标算式与旧实现一致（cursor = 落点 index + 1）。
+    #[test]
+    fn next_skips_unplayable_candidates_and_lands_on_the_next_playable_track() {
+        let dir = TestDir::new("meliora-queue-next-skip-unplayable");
+        let mut items = playable_items(&dir, &[1]);
+        // 中间两项指向不存在的文件（文件名与 playable_items 的实文件不重名）
+        for id in [2_i64, 3] {
+            let missing = dir.join(&format!("meliora-next-missing-{id}.flac"));
+            items.push(
+                serde_json::from_value(json!({
+                    "db_id": id,
+                    "db_album_id": 0,
+                    "path": missing.to_string_lossy(),
+                }))
+                .expect("valid queue item"),
+            );
+        }
+        items.extend(playable_items(&dir, &[4]));
+
+        let mut manager = manager_with_queue(items);
+        manager.set_position(0); // current = index 0 (item 1)
+
+        let res = manager.next(true);
+
+        match res {
+            QueueNavigationResult::Changed { index, .. } => {
+                // index 1/2 均不可播，前进必须落到 index 3（item 4）
+                assert_eq!(index, 3);
+            }
+            other => panic!("expected Changed, got {other:?}"),
+        }
+        assert_eq!(manager.current_position(), Some(3));
     }
 
     /// Regression: the take-based snapshot refactor emptied the queue Vec
