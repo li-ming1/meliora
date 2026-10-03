@@ -6,12 +6,14 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::{tr, trn};
+use futures::{StreamExt as _, stream};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     kugou,
@@ -40,6 +42,12 @@ const PLAYLISTS_PER_PAGE: i64 = 100;
 
 /// Songs are uploaded into the new playlist in chunks of this size.
 const PLAYLIST_ADD_CHUNK: usize = 100;
+
+/// Concurrent KuGou song searches while matching an imported playlist.
+/// Deliberately small: one shared client against the signed web search
+/// endpoint, where a throttled search silently drops the song (the local
+/// M3U lookup tolerates 8).
+const KUGOU_MATCH_CONCURRENCY: usize = 4;
 
 /// uniform_list strides rows by one fixed height measured from the first
 /// row, so track rows are pinned to their natural height: 8px vertical
@@ -87,6 +95,13 @@ enum ImportOutcome {
     CreateFailed(String),
     NotFound,
     NoMatch,
+}
+
+/// Messages the import pipeline streams to the UI while it runs: per-song
+/// match progress and the final outcome (which also closes the channel).
+enum ImportEvent {
+    Progress { done: usize, total: usize },
+    Finished(ImportOutcome),
 }
 
 #[derive(Clone)]
@@ -523,71 +538,103 @@ impl KugouPlaylistsView {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            // every step below is a network call; they MUST all run on the
+            // every pipeline step is a network call; they all run on the
             // Tokio runtime — reqwest's DNS resolver panics on the gpui
-            // executor (see `ui::kugou::fetch_online_lyric`)
-            let outcome = match crate::RUNTIME.spawn(run_import(text, default_name)).await {
-                Ok(outcome) => outcome,
-                // the runtime only shuts down with the app; nothing to update
-                Err(_) => return,
-            };
+            // executor (see `ui::kugou::fetch_online_lyric`). The task owns
+            // the channel sender, so this loop ends when the pipeline sends
+            // its final outcome (or dies, which leaves the stale busy state
+            // exactly as the old JoinHandle-error path did).
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+            crate::RUNTIME.spawn(async move {
+                let outcome = run_import(text, default_name, &progress_tx).await;
+                let _ = progress_tx.send(ImportEvent::Finished(outcome));
+            });
 
-            let done_toast = this
-                .update(cx, |this, cx| {
-                    this.import_busy = false;
-                    let done_toast = match outcome {
-                        ImportOutcome::Done { matched, total } => {
-                            let summary = tr!(
-                                "KUGOU_IMPORT_DONE",
-                                "Imported: matched {{matched}}/{{total}}",
-                                matched = matched,
-                                total = total
-                            );
-                            this.import_status = summary.clone().into();
-                            this.refresh_playlists(cx);
-                            Some(Toast::success(summary))
-                        }
-                        ImportOutcome::ParseFailed(err) => {
-                            this.import_status = SharedString::from(
-                                tr!("KUGOU_IMPORT_FAILED", "导入失败：{{err}}", err = err)
-                                    .to_string(),
-                            );
-                            None
-                        }
-                        ImportOutcome::CreateFailed(err) => {
-                            this.import_status = SharedString::from(
-                                tr!(
-                                    "KUGOU_IMPORT_CREATE_FAILED",
-                                    "Could not create playlist: {{err}}",
-                                    err = err
-                                )
-                                .to_string(),
-                            );
-                            None
-                        }
-                        ImportOutcome::NotFound => {
-                            this.import_status = SharedString::from(
-                                tr!("KUGOU_IMPORT_NOT_FOUND", "Created playlist not found")
-                                    .to_string(),
-                            );
-                            None
-                        }
-                        ImportOutcome::NoMatch => {
-                            this.import_status = SharedString::from(
-                                tr!("KUGOU_IMPORT_NO_MATCH", "No tracks matched").to_string(),
-                            );
-                            this.refresh_playlists(cx);
-                            None
-                        }
-                    };
-                    cx.notify();
-                    done_toast
-                })
-                .ok()
-                .flatten();
+            while let Some(event) = progress_rx.recv().await {
+                // a burst of match completions collapses into one status update
+                let mut event = event;
+                while let Ok(next) = progress_rx.try_recv() {
+                    event = next;
+                }
 
-            if let Some(toast) = done_toast {
-                emit_toast(toast);
+                let done_toast = this
+                    .update(cx, |this, cx| {
+                        let done_toast = match event {
+                            ImportEvent::Progress { done, total } => {
+                                // matching progress reuses the generic
+                                // "Importing…" entry (a dedicated key would
+                                // have to be added to the catalogs too)
+                                this.import_status =
+                                    format!("{} {}/{}", tr!("KUGOU_IMPORT_RUNNING"), done, total)
+                                        .into();
+                                None
+                            }
+                            ImportEvent::Finished(outcome) => {
+                                this.import_busy = false;
+                                match outcome {
+                                    ImportOutcome::Done { matched, total } => {
+                                        let summary = tr!(
+                                            "KUGOU_IMPORT_DONE",
+                                            "Imported: matched {{matched}}/{{total}}",
+                                            matched = matched,
+                                            total = total
+                                        );
+                                        this.import_status = summary.clone().into();
+                                        this.refresh_playlists(cx);
+                                        Some(Toast::success(summary))
+                                    }
+                                    ImportOutcome::ParseFailed(err) => {
+                                        this.import_status = SharedString::from(
+                                            tr!(
+                                                "KUGOU_IMPORT_FAILED",
+                                                "导入失败：{{err}}",
+                                                err = err
+                                            )
+                                            .to_string(),
+                                        );
+                                        None
+                                    }
+                                    ImportOutcome::CreateFailed(err) => {
+                                        this.import_status = SharedString::from(
+                                            tr!(
+                                                "KUGOU_IMPORT_CREATE_FAILED",
+                                                "Could not create playlist: {{err}}",
+                                                err = err
+                                            )
+                                            .to_string(),
+                                        );
+                                        None
+                                    }
+                                    ImportOutcome::NotFound => {
+                                        this.import_status = SharedString::from(
+                                            tr!(
+                                                "KUGOU_IMPORT_NOT_FOUND",
+                                                "Created playlist not found"
+                                            )
+                                            .to_string(),
+                                        );
+                                        None
+                                    }
+                                    ImportOutcome::NoMatch => {
+                                        this.import_status = SharedString::from(
+                                            tr!("KUGOU_IMPORT_NO_MATCH", "No tracks matched")
+                                                .to_string(),
+                                        );
+                                        this.refresh_playlists(cx);
+                                        None
+                                    }
+                                }
+                            }
+                        };
+                        cx.notify();
+                        done_toast
+                    })
+                    .ok()
+                    .flatten();
+
+                if let Some(toast) = done_toast {
+                    emit_toast(toast);
+                }
             }
         })
         .detach();
@@ -1172,8 +1219,14 @@ async fn find_playlist_id(client: &kugou::KugouClient, name: &str) -> Option<i64
 
 /// The whole import pipeline (resolve share link → create playlist → match
 /// every song → upload in chunks), run on the Tokio runtime so none of the
-/// network awaits touch the gpui executor.
-async fn run_import(text: String, default_name: String) -> ImportOutcome {
+/// network awaits touch the gpui executor. Match progress streams through
+/// `progress`; the caller forwards the returned outcome as the channel's
+/// final event.
+async fn run_import(
+    text: String,
+    default_name: String,
+    progress: &UnboundedSender<ImportEvent>,
+) -> ImportOutcome {
     let client = kugou::shared_client();
 
     let parsed = match kugou::import::parse_share_link(&text).await {
@@ -1195,12 +1248,29 @@ async fn run_import(text: String, default_name: String) -> ImportOutcome {
         return ImportOutcome::NotFound;
     };
 
-    let total = parsed.songs.len() as i64;
+    let total = parsed.songs.len();
     let mut matched: Vec<(String, String, i64, i64)> = Vec::new();
-    for song in &parsed.songs {
-        if let Some(m) = kugou_match(&client, song).await {
-            matched.push(m);
-        }
+    // bounded, order-preserving concurrency: `buffered` yields results in
+    // `parsed.songs` order no matter which search answers first, and a
+    // `None` (failed search or no hit) still just skips the song
+    let _ = progress.send(ImportEvent::Progress { done: 0, total });
+    // owned songs + a per-future `Arc` clone: nothing in the stream borrows
+    // from the surrounding frame, so the buffered futures stay sendable
+    let mut searches = stream::iter(parsed.songs)
+        .map(|song| {
+            let client = client.clone();
+            async move { kugou_match(&client, &song).await }
+        })
+        .buffered(KUGOU_MATCH_CONCURRENCY)
+        .filter_map(std::future::ready);
+    let mut processed = 0usize;
+    while let Some(m) = searches.next().await {
+        matched.push(m);
+        processed += 1;
+        let _ = progress.send(ImportEvent::Progress {
+            done: processed,
+            total,
+        });
     }
 
     if matched.is_empty() {
@@ -1213,6 +1283,6 @@ async fn run_import(text: String, default_name: String) -> ImportOutcome {
 
     ImportOutcome::Done {
         matched: matched.len() as i64,
-        total,
+        total: total as i64,
     }
 }
