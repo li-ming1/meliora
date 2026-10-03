@@ -437,7 +437,7 @@ fn spawn_memory_probe() {
             // bought back: large reclaim = idle-page fragmentation, ~0 = the
             // growth is live data and the leak is real.
             tick_count += 1;
-            let scheduled_collect = tick_count % 10 == 0;
+            let scheduled_collect = tick_count.is_multiple_of(10);
             // Memory-cap watchdog: past the soft private-commit budget, purge
             // on every sample instead of waiting for the 5-minute cadence, and
             // say so in the log. The budget sits above the measured steady
@@ -447,7 +447,7 @@ fn spawn_memory_probe() {
             let watchdog_purge = private >= MEMORY_SOFT_CAP_MB;
             let mi_collect_reclaim_mb = (scheduled_collect || watchdog_purge)
                 .then(|| mimalloc_force_collect_reclaim_mb(mi_commit_mb));
-            if watchdog_purge && tick_count % 4 == 0 {
+            if watchdog_purge && tick_count.is_multiple_of(4) {
                 tracing::warn!(
                     private_mb = private,
                     soft_cap_mb = MEMORY_SOFT_CAP_MB,
@@ -472,7 +472,7 @@ fn spawn_memory_probe() {
             if watchdog_purge {
                 over_cap_streak += 1;
                 let rising = !was_over_cap;
-                if rising || over_cap_streak % 4 == 0 {
+                if rising || over_cap_streak.is_multiple_of(4) {
                     crate::ui::components::managed_image::render_cache_shrink(
                         crate::ui::components::managed_image::RENDER_CACHE_PRESSURE_KEEP,
                     );
@@ -507,7 +507,7 @@ fn spawn_memory_probe() {
             // are at their minimum. A large stranded commit there is
             // fragmentation the collector cannot return; a large live total
             // is real retained data, and the top bins say which sizes.
-            if tick_count % 10 == 0 {
+            if tick_count.is_multiple_of(10) {
                 crate::mimalloc_stats::log_snapshot(mi_collect_reclaim_mb);
             }
 

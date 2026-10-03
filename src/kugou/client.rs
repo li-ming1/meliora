@@ -245,9 +245,9 @@ pub struct UserProfile {
 }
 
 /// Narrow copy of the session fields the API methods build their signed
-/// requests from. `session_snapshot()` clones the whole session including
-/// the potentially large `vip_detail` JSON tree; request-building callers
-/// only ever read these scalars.
+/// requests from. Cloning the whole session would drag along the potentially
+/// large `vip_detail` JSON tree; request-building callers only ever read
+/// these scalars.
 #[derive(Clone, Debug)]
 pub struct KugouCredentials {
     pub guid: String,
@@ -291,10 +291,6 @@ impl KugouClient {
     /// the UI.
     fn session_guard(&self) -> std::sync::MutexGuard<'_, KugouSession> {
         self.session.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn session_snapshot(&self) -> KugouSession {
-        self.session_guard().clone()
     }
 
     /// Narrow credential read for request-building callers (see

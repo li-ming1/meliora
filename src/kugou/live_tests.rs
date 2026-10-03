@@ -54,7 +54,7 @@ fn live_offline_flow() {
         let mut report = String::new();
 
         // device registration happens implicitly inside the client session
-        report.push_str(&format!("dfid: {}\n", client.session_snapshot().dfid));
+        report.push_str(&format!("dfid: {}\n", client.credentials().dfid));
 
         let search = client.search("周杰伦", 1, 5).await;
         let song = match search {
