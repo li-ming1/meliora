@@ -260,17 +260,34 @@ impl QueueManager {
         }
     }
 
-    /// Undo a removal: re-insert the removed `(index, item)` pairs in
-    /// ascending index order so earlier indices stay valid while inserting.
+    /// Undo a removal: merge the removed `(index, item)` pairs back in one
+    /// ascending pass（逐对 insert 是 k 次 O(n) memmove，k 大的多选删除在
+    /// undo 时会退回 dequeue_many 修掉的那类冻结；归并重建只付一遍）.
     fn undo_reinsert_items(
         queue: &mut Vec<QueueItemData>,
         removed: SmallVec<[(usize, QueueItemData); 1]>,
     ) {
         let mut removed = removed.into_vec();
         removed.sort_unstable_by_key(|(idx, _)| *idx);
-        for (idx, item) in removed {
-            queue.insert(idx, item);
+        let extra = removed.len();
+        let mut removed = removed.into_iter().peekable();
+        let mut restored = Vec::with_capacity(queue.len() + extra);
+        for q_item in queue.drain(..) {
+            while removed
+                .peek()
+                .is_some_and(|(idx, _)| *idx <= restored.len())
+            {
+                let (_, item) = removed.next().expect("just peeked");
+                restored.push(item);
+            }
+            restored.push(q_item);
         }
+        for (idx, item) in removed {
+            if idx <= restored.len() {
+                restored.push(item);
+            }
+        }
+        *queue = restored;
     }
 
     /// Undo an insertion: drain the recorded contiguous range in one move
@@ -492,17 +509,35 @@ impl QueueManager {
                 let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
                 let queue = Arc::make_mut(&mut queue);
 
-                for _ in 0..items.len() {
-                    if destination < queue.len() {
-                        queue.remove(destination);
+                // 单遍重建替代逐项 remove+insert（与 dequeue_many/move_items
+                // 同型）：旧实现对每个移动项各做一次 O(n) memmove（k 项即
+                // O(k×n)），全程持有 UI 队列面板/歌词面板每帧读取的同一把写
+                // 锁。move_items 记录 pristine 升序 (idx, item)：一次 drain
+                // 重排——目标块内的克隆件让位，payload 原件按 pristine 索引
+                // 归位，其余项照序保留，整体 O(n)。
+                let mut moved = items.into_vec();
+                moved.sort_unstable_by_key(|(idx, _)| *idx);
+                let block_end = destination.saturating_add(moved.len());
+                let mut moved = moved.into_iter().peekable();
+                let mut restored = Vec::with_capacity(queue.len());
+                for (post_idx, q_item) in queue.drain(..).enumerate() {
+                    while moved.peek().is_some_and(|(idx, _)| *idx <= restored.len()) {
+                        let (_, item) = moved.next().expect("just peeked");
+                        restored.push(item);
+                    }
+                    if post_idx >= destination && post_idx < block_end {
+                        continue;
+                    }
+                    restored.push(q_item);
+                }
+                // 整块落在队尾等场景下 pristine 索引尚未轮到的余项在此按序
+                // 补齐；越界项沿用旧实现的守卫语义丢弃（不 panic）。
+                for (idx, item) in moved {
+                    if idx <= restored.len() {
+                        restored.push(item);
                     }
                 }
-
-                for (original_idx, item) in items {
-                    if original_idx <= queue.len() {
-                        queue.insert(original_idx, item);
-                    }
-                }
+                *queue = restored;
 
                 self.queue_next = previous_queue_next;
                 self.shuffle = previous_shuffle;
@@ -1350,6 +1385,21 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
+        // 洗牌与首个可播项扫描只依赖传入的 items，不读任何被锁保护的队列
+        // 状态，全部挪到锁外：这把写锁被 UI 队列面板/歌词面板每帧读取，
+        // 整队 clone + Fisher-Yates（外加逐项 path_playable 的存在性扫描）
+        // 留在临界区会在大库上冻住渲染一帧以上。items 仍按值消费且只
+        // clone 一次（洗牌件入队列、原件入 original_queue）。
+        let (new_queue, new_original_queue) = if previous_shuffle {
+            let mut shuffled = items.clone();
+            shuffled.shuffle(&mut rng());
+            (Arc::new(shuffled), Arc::new(items))
+        } else {
+            (Arc::new(items), Arc::new(Vec::new()))
+        };
+        let first_item =
+            Self::first_playable_index_in(&new_queue).map(|idx| new_queue[idx].clone());
+
         let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
 
         // Snapshot by taking the live Arcs out instead of cloning: the write lock is held for the
@@ -1358,20 +1408,8 @@ impl QueueManager {
         let old_queue = take(&mut *queue);
         let old_original_queue = take(&mut self.original_queue);
 
-        if self.shuffle {
-            // Consume `items` by value: cloning it twice per replace put three
-            // full-queue copies inside the write lock on large libraries.
-            let mut shuffled = items.clone();
-            shuffled.shuffle(&mut rng());
-
-            self.original_queue = Arc::new(items);
-            *queue = Arc::new(shuffled);
-        } else {
-            self.original_queue = Arc::new(Vec::new());
-            *queue = Arc::new(items);
-        }
-
-        let first_item = Self::first_playable_index_in(&queue).map(|idx| queue[idx].clone());
+        self.original_queue = new_original_queue;
+        *queue = new_queue;
 
         drop(queue);
 
@@ -2061,6 +2099,33 @@ mod tests {
         manager.move_items(vec![0, 2], 1);
 
         assert_undo_round_trip(&mut manager, before);
+    }
+
+    /// 多段（不相邻索引）批量移动的 undo 必须逐项还原：内容与顺序和移动
+    /// 前完全一致（MovedMany 还原改单遍重建后的回归断言）。
+    #[test]
+    fn undo_move_items_many_segments_restores_every_item_in_order() {
+        let original: Vec<_> = (1..=8).map(item).collect();
+        let mut manager = manager_with_queue(original.clone());
+        manager.set_position(5); // current = index 5 (item 6)
+
+        let res = manager.move_items(vec![0, 3, 7], 2);
+
+        assert_eq!(res, MoveItemsResult::MovedCurrent { new_position: 6 });
+        assert_eq!(queue_ids(&manager), vec![2, 3, 1, 4, 8, 5, 6, 7]);
+
+        let undo = manager.undo_last_action();
+        assert!(matches!(undo, UndoResult::Ok { .. }));
+
+        assert_eq!(queue_ids(&manager), (1..=8).collect::<Vec<i64>>());
+        let queue = manager.queue.read().expect("poisoned queue lock");
+        assert_eq!(queue.len(), original.len());
+        for (idx, (restored, expected)) in queue.iter().zip(original.iter()).enumerate() {
+            assert_eq!(restored, expected, "restored item at index {idx} differs");
+        }
+        drop(queue);
+        assert_eq!(manager.queue_next, 6);
+        assert!(!manager.shuffle);
     }
 
     #[test]
