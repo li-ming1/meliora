@@ -111,6 +111,10 @@ pub struct KugouPlaylistsView {
     track_page: i64,
     /// whether the playlist has more tracks than currently loaded
     has_more_tracks: bool,
+    /// Bumped on every track-list (re)load; in-flight page responses whose
+    /// generation no longer matches are dropped, so quickly closing and
+    /// reopening the same playlist cannot append a stale page twice.
+    track_generation: u64,
     /// hashes of tracks liked during this session (drives the star icon)
     liked: HashSet<String>,
     /// hashes the user explicitly unliked during this session. Only relevant
@@ -146,6 +150,7 @@ impl KugouPlaylistsView {
                 tracks_state: TracksState::Idle,
                 track_page: 0,
                 has_more_tracks: false,
+                track_generation: 0,
                 liked: HashSet::new(),
                 unliked: HashSet::new(),
                 like_in_flight: HashSet::new(),
@@ -221,6 +226,9 @@ impl KugouPlaylistsView {
         self.tracks_state = TracksState::Loading;
         self.track_page = 0;
         self.has_more_tracks = false;
+        // invalidates pages still in flight from a previous session of this
+        // or another playlist
+        self.track_generation += 1;
         self.unliked.clear();
         self.scroll_handle = ScrollHandle::new();
         self.playlists_scroll_handle = UniformListScrollHandle::new();
@@ -266,6 +274,8 @@ impl KugouPlaylistsView {
         let Some(selected) = self.selected.clone() else {
             return;
         };
+        self.track_generation += 1;
+        let generation = self.track_generation;
 
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
@@ -305,11 +315,13 @@ impl KugouPlaylistsView {
 
             let _ = this
                 .update(cx, |this, cx| {
-                    // the selection may have changed while the request was in flight
-                    let still_current = this
-                        .selected
-                        .as_ref()
-                        .is_some_and(|s| s.global_collection_id == selected.global_collection_id);
+                    // the selection may have changed, or the playlist may have
+                    // been closed and reopened, while this request was in
+                    // flight; a stale response must not clobber the new state
+                    let still_current =
+                        this.selected.as_ref().is_some_and(|s| {
+                            s.global_collection_id == selected.global_collection_id
+                        }) && this.track_generation == generation;
 
                     match request {
                         Ok(Ok((response, total_pages))) if still_current => {
@@ -342,6 +354,8 @@ impl KugouPlaylistsView {
         let Some(selected) = self.selected.clone() else {
             return;
         };
+        self.track_generation += 1;
+        let generation = self.track_generation;
 
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
@@ -352,11 +366,13 @@ impl KugouPlaylistsView {
 
             let _ = this
                 .update(cx, |this, cx| {
-                    // the selection may have changed while the request was in flight
-                    let still_current = this
-                        .selected
-                        .as_ref()
-                        .is_some_and(|s| s.global_collection_id == selected.global_collection_id);
+                    // the selection may have changed, or the playlist may have
+                    // been closed and reopened, while this request was in
+                    // flight; a stale response must not clobber the new state
+                    let still_current =
+                        this.selected.as_ref().is_some_and(|s| {
+                            s.global_collection_id == selected.global_collection_id
+                        }) && this.track_generation == generation;
 
                     match request {
                         Ok(Ok(response)) if still_current => {
@@ -395,18 +411,20 @@ impl KugouPlaylistsView {
         self.tracks_state = TracksState::Idle;
         self.track_page = 0;
         self.has_more_tracks = false;
+        self.track_generation += 1;
         cx.notify();
     }
 
-    /// Whether `hash` should show as liked right now. Inside the "liked songs"
-    /// playlist (listid 2) every row is liked by default unless the user
-    /// unliked it this session; elsewhere it's the set of tracks liked this
-    /// session.
+    /// Whether `hash` should show as liked right now. Everywhere but the
+    /// "liked songs" playlist (listid 2) that's the session set OR the
+    /// process-wide liked-set (which the shared like/unlike helpers keep in
+    /// sync); inside listid 2 the global set decides, minus hashes the user
+    /// unliked this session.
     fn is_track_liked(&self, hash: &str) -> bool {
         if self.selected.as_ref().is_some_and(|s| s.listid == 2) {
-            !self.unliked.contains(hash)
+            crate::ui::kugou::liked_set_contains(hash) && !self.unliked.contains(hash)
         } else {
-            self.liked.contains(hash)
+            self.liked.contains(hash) || crate::ui::kugou::liked_set_contains(hash)
         }
     }
 

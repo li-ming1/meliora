@@ -244,6 +244,10 @@ pub struct StatsSettings {
     top_tab: TopTab,
     top_range: TopRange,
     top_items: Vec<TopItem>,
+    /// Bumped on every Top query start; a finished query whose snapshot no
+    /// longer matches was superseded by a newer tab/range switch and is
+    /// dropped instead of overwriting fresher rows.
+    top_generation: u64,
 }
 
 impl StatsSettings {
@@ -273,6 +277,7 @@ impl StatsSettings {
             top_tab: TopTab::Tracks,
             top_range: TopRange::Week,
             top_items: Vec::new(),
+            top_generation: 0,
         });
         entity.update(cx, |this, cx| {
             this.load_base(cx, true);
@@ -382,6 +387,8 @@ impl StatsSettings {
     }
 
     fn load_top(&mut self, cx: &mut Context<Self>) {
+        self.top_generation += 1;
+        let generation = self.top_generation;
         let pool = cx.global::<Pool>().0.clone();
         let (tab, since) = (self.top_tab, self.top_range.since());
         cx.spawn(async move |this, cx| {
@@ -410,6 +417,11 @@ impl StatsSettings {
                 .await;
             if let Ok(Some(rows)) = rows {
                 let _ = this.update(cx, |this, cx| {
+                    // A newer tab/range switch superseded this query; drop its
+                    // rows instead of overwriting fresher data.
+                    if this.top_generation != generation {
+                        return;
+                    }
                     this.apply_top(rows);
                     cx.notify();
                 });

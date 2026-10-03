@@ -577,9 +577,23 @@ impl KugouRanksView {
         match self.tab {
             Tab::Ranks => match &self.ranks {
                 RanksState::Loading => muted_line(tr!("KUGOU_LOADING"), theme).into_any_element(),
-                RanksState::Failed(message) => {
-                    error_line(message.clone(), theme).into_any_element()
-                }
+                RanksState::Failed(message) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .py(px(12.0))
+                    .child(error_line(message.clone(), theme))
+                    .child(
+                        div().flex().justify_center().child(
+                            button()
+                                .id("kugou-ranks-retry")
+                                .child(tr!("KUGOU_RETRY"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.load_ranks(cx);
+                                })),
+                        ),
+                    )
+                    .into_any_element(),
                 // unreachable in practice: Render::render routes a Ready rank
                 // grid to the virtualized container below; this arm only
                 // keeps the match exhaustive
@@ -589,9 +603,23 @@ impl KugouRanksView {
                 RecommendState::Idle | RecommendState::Loading => {
                     muted_line(tr!("KUGOU_LOADING"), theme).into_any_element()
                 }
-                RecommendState::Failed(message) => {
-                    error_line(message.clone(), theme).into_any_element()
-                }
+                RecommendState::Failed(message) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .py(px(12.0))
+                    .child(error_line(message.clone(), theme))
+                    .child(
+                        div().flex().justify_center().child(
+                            button()
+                                .id("kugou-recommend-retry")
+                                .child(tr!("KUGOU_RETRY"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.load_recommend(cx);
+                                })),
+                        ),
+                    )
+                    .into_any_element(),
                 RecommendState::Ready(tracks) => {
                     // unreachable in practice: Render::render routes a Ready
                     // daily-recommend to the virtualized container below; this
