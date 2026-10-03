@@ -16,7 +16,7 @@ use tokio::{sync::mpsc::WeakSender, task::spawn_blocking};
 use tracing::{error, info, warn};
 
 use crate::{
-    library::scan::control::ScanCommand,
+    library::scan::{control::ScanCommand, decode::is_folder_art_name},
     media::{lookup_table::can_be_read, traits::MediaProviderFeatures},
     settings::scan::ScanSettings,
 };
@@ -212,8 +212,7 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
         .iter()
         .flat_map(|e| e.event.paths.iter().cloned())
         .collect();
-    let force_rescan = paths.iter().any(|path| is_album_art(path));
-    let targets = affected_targets(&paths);
+    let (targets, force_rescan) = affected_targets(&paths);
     if targets.is_empty() {
         return;
     }
@@ -234,9 +233,12 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
     }
 }
 
-/// Map event paths to rescan targets: media/art/lyrics use the parent folder, directories use themselves.
-fn affected_targets(paths: &[PathBuf]) -> FxHashSet<Utf8PathBuf> {
+/// Map event paths to rescan targets: media/art/lyrics use the parent folder, directories use
+/// themselves. The flag reports whether any path was album art, which forces a rescan that
+/// ignores the scan record.
+fn affected_targets(paths: &[PathBuf]) -> (FxHashSet<Utf8PathBuf>, bool) {
     let mut targets = FxHashSet::default();
+    let mut force_rescan = false;
     let mut non_utf8: usize = 0;
 
     for path in paths {
@@ -256,6 +258,7 @@ fn affected_targets(paths: &[PathBuf]) -> FxHashSet<Utf8PathBuf> {
         let is_album_art = is_album_art(path.as_std_path());
 
         if is_media || is_lyrics || is_album_art {
+            force_rescan |= is_album_art;
             if let Some(parent) = path.parent() {
                 targets.insert(parent.to_path_buf());
             }
@@ -279,24 +282,16 @@ fn affected_targets(paths: &[PathBuf]) -> FxHashSet<Utf8PathBuf> {
         warn!("Dropped {} non-UTF-8 watcher event path(s)", non_utf8);
     }
 
-    targets
+    (targets, force_rescan)
 }
 
 fn is_album_art(path: &Path) -> bool {
     let stem = path.file_stem().and_then(|stem| stem.to_str());
     let extension = path.extension().and_then(|extension| extension.to_str());
 
-    stem.is_some_and(|stem| {
-        matches!(
-            stem.to_ascii_lowercase().as_str(),
-            "folder" | "cover" | "front"
-        )
-    }) && extension.is_some_and(|extension| {
-        matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "jpg" | "jpeg" | "png"
-        )
-    })
+    stem.zip(extension)
+        .and_then(|(stem, extension)| is_folder_art_name(stem, extension))
+        .is_some()
 }
 
 /// Holds watcher state that persists between scans.
@@ -454,7 +449,7 @@ mod tests {
                 std::fs::write(&file, contents).unwrap();
             }
 
-            let targets = affected_targets(std::slice::from_ref(&file));
+            let (targets, force_rescan) = affected_targets(std::slice::from_ref(&file));
             let mut expected = FxHashSet::default();
             // `affected_targets` maps events to the plain parent directory (no
             // canonicalization), so compare against the non-verbatim spelling
@@ -463,6 +458,7 @@ mod tests {
                 dir.utf8_path().canonicalize_utf8().unwrap(),
             ));
             assert_eq!(targets, expected);
+            assert_eq!(force_rescan, name == "cover.JPG");
         }
     }
 
@@ -473,7 +469,7 @@ mod tests {
         let file = dir.join("notes.txt");
         std::fs::write(&file, b"").unwrap();
 
-        assert!(affected_targets(&[file]).is_empty());
+        assert!(affected_targets(&[file]).0.is_empty());
     }
 
     #[test]
@@ -481,7 +477,7 @@ mod tests {
         register_test_media_providers();
         let dir = TestDir::new("watch-test");
 
-        let targets = affected_targets(&[dir.join("artist")]);
+        let targets = affected_targets(&[dir.join("artist")]).0;
         assert_eq!(targets.len(), 1);
         assert!(targets.contains(&dir.utf8_join("artist")));
     }
@@ -493,7 +489,7 @@ mod tests {
         let sub = dir.join("album");
         std::fs::create_dir(&sub).unwrap();
 
-        let targets = affected_targets(std::slice::from_ref(&sub));
+        let targets = affected_targets(std::slice::from_ref(&sub)).0;
         assert_eq!(targets.len(), 1);
         assert!(targets.contains(&Utf8PathBuf::try_from(sub).unwrap()));
     }

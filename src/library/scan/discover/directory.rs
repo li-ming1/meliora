@@ -16,7 +16,7 @@ use tracing::error;
 use super::FolderArtCandidate;
 use crate::{
     library::scan::{
-        decode::{folder_art_rank, is_hidden_file},
+        decode::{is_folder_art_name, is_hidden_file},
         fs_case::is_case_insensitive,
     },
     media::{lookup_table::can_be_read, traits::MediaProviderFeatures},
@@ -203,9 +203,6 @@ struct PendingDirectoryEntry {
     is_symlink: bool,
 }
 
-/// Image extensions recognized as folder art, matched case-insensitively.
-const FOLDER_ART_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
-
 fn normalized_file_name(path: &Utf8Path, case_insensitive: bool) -> Option<String> {
     let name = path.file_name()?;
     Some(if case_insensitive {
@@ -302,16 +299,10 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
             lyrics_timestamps.insert(name, modified);
         }
 
-        let has_art_extension = raw_path.extension().is_some_and(|extension| {
-            FOLDER_ART_EXTENSIONS
-                .iter()
-                .any(|supported| extension.eq_ignore_ascii_case(supported))
-        });
-        let art_rank = if has_art_extension {
-            raw_path.file_stem().and_then(folder_art_rank)
-        } else {
-            None
-        };
+        let art_rank = raw_path
+            .extension()
+            .zip(raw_path.file_stem())
+            .and_then(|(extension, stem)| is_folder_art_name(stem, extension));
         if metadata.is_file()
             && let Some(rank) = art_rank
             && !is_hidden_file(&metadata)

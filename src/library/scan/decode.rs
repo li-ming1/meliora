@@ -31,12 +31,27 @@ const RANK_COVER: u8 = 1;
 const RANK_FOLDER: u8 = 2;
 const RANK_FRONT: u8 = 3;
 
+/// Image extensions recognized as folder art, matched case-insensitively.
+const FOLDER_ART_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
+
 pub(crate) fn folder_art_rank(stem: &str) -> Option<u8> {
     match stem.to_ascii_lowercase().as_str() {
         "cover" => Some(RANK_COVER),
         "folder" => Some(RANK_FOLDER),
         "front" => Some(RANK_FRONT),
         _ => None,
+    }
+}
+
+/// Rank for a file whose extension and stem both identify it as folder art, or `None`.
+pub(crate) fn is_folder_art_name(stem: &str, extension: &str) -> Option<u8> {
+    if FOLDER_ART_EXTENSIONS
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
+    {
+        folder_art_rank(stem)
+    } else {
+        None
     }
 }
 
@@ -257,10 +272,10 @@ fn process_source_image(image: SourceImage<'_>) -> anyhow::Result<(ProcessedImag
         .into_rgb8();
 
     let thumb_rgb = imageops::thumbnail(&decoded, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
-    let thumb_rgba = DynamicImage::ImageRgb8(thumb_rgb).into_rgba8();
 
     let mut thumb_buf: Vec<u8> = Vec::new();
-    thumb_rgba.write_to(&mut Cursor::new(&mut thumb_buf), image::ImageFormat::Bmp)?;
+    DynamicImage::ImageRgb8(thumb_rgb)
+        .write_to(&mut Cursor::new(&mut thumb_buf), image::ImageFormat::Bmp)?;
 
     // leave small images alone, scale larger ones to fit in 1024x1024
     let (w, h) = decoded.dimensions();
