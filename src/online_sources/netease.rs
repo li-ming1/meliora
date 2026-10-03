@@ -16,7 +16,7 @@ use gpui::SharedString;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::stream_registry::StreamMapPersistence;
+use super::stream_registry::{STREAM_MAP_CAP, StreamMapPersistence};
 use crate::netease;
 
 /// One online track as shown in search results and playlists. `id` is the
@@ -68,8 +68,6 @@ pub(crate) struct StreamMapEntry {
     #[serde(default)]
     pub(crate) cover_url: String,
 }
-
-const STREAM_MAP_CAP: usize = 200;
 
 fn stream_map_path() -> PathBuf {
     crate::paths::data_dir().join("netease_stream_map.json")
@@ -131,16 +129,9 @@ pub fn remember_online_track(url: String, track: NeteaseTrackInfo) {
         guard.truncate(STREAM_MAP_CAP);
         guard.clone()
     };
-    let Some(json) = serde_json::to_vec(&snapshot).ok() else {
-        return;
-    };
     // Off-thread and outside the lock; the gate serialization and the
     // failure-rollback rationale live on the shared persist helpers.
-    if let Some(json) = STREAM_MAP_PERSISTENCE.persist_if_changed(json) {
-        STREAM_MAP_PERSISTENCE.spawn_persist(stream_map_path(), json, |err| {
-            tracing::warn!(%err, "failed to persist netease stream map");
-        });
-    }
+    STREAM_MAP_PERSISTENCE.persist_snapshot(stream_map_path(), &snapshot, "netease");
 }
 
 /// If `path` is a stream reached through this app, returns the remembered

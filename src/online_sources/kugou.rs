@@ -16,7 +16,7 @@ use std::{
 use gpui::SharedString;
 use serde_json::Value;
 
-use super::stream_registry::StreamMapPersistence;
+use super::stream_registry::{STREAM_MAP_CAP, StreamMapPersistence};
 use crate::kugou;
 
 /// One online track as shown in search results and playlists.
@@ -99,8 +99,6 @@ impl StreamMapEntry {
     }
 }
 
-const STREAM_MAP_CAP: usize = 200;
-
 fn stream_map_path() -> PathBuf {
     crate::paths::data_dir().join("kugou_stream_map.json")
 }
@@ -134,16 +132,9 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
         guard.truncate(STREAM_MAP_CAP);
         guard.clone()
     };
-    let Some(json) = serde_json::to_vec(&snapshot).ok() else {
-        return;
-    };
     // Write off-thread and outside the lock. Two racing writers may persist
     // in either order; a stale file only costs a URL refresh on next launch.
-    if let Some(json) = STREAM_MAP_PERSISTENCE.persist_if_changed(json) {
-        STREAM_MAP_PERSISTENCE.spawn_persist(stream_map_path(), json, |err| {
-            tracing::warn!(%err, "failed to persist kugou stream map");
-        });
-    }
+    STREAM_MAP_PERSISTENCE.persist_snapshot(stream_map_path(), &snapshot, "kugou");
 }
 
 /// If `path` is a stream reached through this app, returns the remembered
@@ -212,11 +203,17 @@ pub async fn fetch_stream_url(
     {
         return Some(url);
     }
+    tracing::warn!(hash, quality, "kugou: no playable URL at requested quality");
     if quality != FALLBACK_QUALITY {
         let Ok(resp) = client
             .song_url(hash, mix_song_id, album_id, FALLBACK_QUALITY, free_part)
             .await
         else {
+            tracing::warn!(
+                hash,
+                quality = FALLBACK_QUALITY,
+                "kugou: fallback URL request failed"
+            );
             return None;
         };
         return extract_song_url(&resp.body);

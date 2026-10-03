@@ -8,6 +8,9 @@
 
 use std::{path::PathBuf, sync::Mutex};
 
+/// 注册表条目上限：LRU 语义，最新条目在头部。两侧 provider 共用同一口径。
+pub(crate) const STREAM_MAP_CAP: usize = 200;
+
 /// 一个 provider 的流注册表持久化设施。见模块文档：每个 provider 各持一份。
 pub struct StreamMapPersistence {
     /// Bytes of the stream-map JSON last handed to the persistence task. Kept
@@ -69,5 +72,24 @@ impl StreamMapPersistence {
                 on_error(&err);
             }
         });
+    }
+
+    /// 两侧 `remember_online_track` 的持久化尾部：序列化 → 去重 → 门控写，
+    /// 单点维护。`provider` 仅进失败日志文案。序列化失败按两侧既有语义
+    /// 静默跳过（缓存是优化，显示不依赖它）。
+    pub fn persist_snapshot(
+        &'static self,
+        path: PathBuf,
+        snapshot: &impl serde::Serialize,
+        provider: &'static str,
+    ) {
+        let Ok(json) = serde_json::to_vec(snapshot) else {
+            return;
+        };
+        if let Some(json) = self.persist_if_changed(json) {
+            self.spawn_persist(path, json, move |err| {
+                tracing::warn!(%err, "failed to persist {provider} stream map");
+            });
+        }
     }
 }
