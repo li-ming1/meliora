@@ -116,11 +116,11 @@ struct EqCurvePaths {
     composite_stroke: Option<Path<Pixels>>,
 }
 
-/// Spectrum paths keyed on the analyzer Rc pointers plus the plot geometry.
+/// Spectrum paths keyed on the analyzer Rc pointers plus the plot geometry
+/// (no scale: `build_spectrum_paths` only consumes plot geometry).
 struct SpectrumPathCache {
     origin: Point<Pixels>,
     size: Size<Pixels>,
-    scale: f32,
     spectrum_pre: Rc<Vec<f32>>,
     spectrum_post: Rc<Vec<f32>>,
     paths: Rc<EqSpectrumPaths>,
@@ -673,7 +673,6 @@ impl Element for EqGraph {
                     let stale = state_ref.spectrum_paths.as_ref().is_none_or(|cache| {
                         cache.origin != plot.origin
                             || cache.size != plot.size
-                            || cache.scale != scale
                             || !Rc::ptr_eq(&cache.spectrum_pre, &self.spectrum_pre)
                             || !Rc::ptr_eq(&cache.spectrum_post, &self.spectrum_post)
                     });
@@ -683,7 +682,6 @@ impl Element for EqGraph {
                         state_ref.spectrum_paths = Some(SpectrumPathCache {
                             origin: plot.origin,
                             size: plot.size,
-                            scale,
                             spectrum_pre: self.spectrum_pre.clone(),
                             spectrum_post: self.spectrum_post.clone(),
                             paths: Rc::new(paths),
