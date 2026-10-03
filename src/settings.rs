@@ -146,9 +146,19 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
             return;
         }
         let result = tokio::task::spawn_blocking(move || {
-            File::create(path).and_then(|file| {
-                serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into())
-            })
+            // 先写同目录临时文件再 rename 原子替换（同 session_io::save）：
+            // 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态
+            // 还会把正常会话误标为 Corrupt。
+            let tmp = path.with_extension("json.tmp");
+            File::create(&tmp)
+                .and_then(|file| {
+                    serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into())
+                })
+                .and_then(|()| fs::rename(&tmp, &path))
+                // 旧文件原样保留，只清理残留临时文件
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&tmp);
+                })
         })
         .await;
         match result {
