@@ -36,8 +36,8 @@ use tracing::error;
 use super::{
     components::button::{ButtonSize, ButtonStyle, button},
     models::{
-        HasLikedState, Models, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_like,
-        toggle_like_by_id,
+        HasLikedState, Models, PlaybackInfo, is_song_liked, subscribe_liked_updates,
+        toggle_album_like, toggle_like,
     },
     scroll_follow::SmoothScrollFollow,
     theme::Theme,
@@ -595,7 +595,6 @@ impl Render for QueueItem {
                             })
                             .when(!selected_track_ids.is_empty(), |menu| {
                                 let track_ids_for_like = selected_track_ids.clone();
-                                let liked_ids = liked_ids.clone();
                                 menu.item(menu_item(
                                     "toggle_like",
                                     Some(if any_liked { STAR_FILLED } else { STAR }),
@@ -605,18 +604,15 @@ impl Render for QueueItem {
                                         tr!("LIKE")
                                     },
                                     move |_, _, cx| {
-                                        if any_liked {
-                                            // Unlike deletes by track id (see
-                                            // toggle_like_by_id): the inner id
-                                            // is ignored, so pass the track id.
-                                            for &track_id in &liked_ids {
-                                                toggle_like_by_id(track_id, Some(track_id), cx);
-                                            }
-                                        } else {
-                                            for &track_id in &track_ids_for_like {
-                                                toggle_like_by_id(track_id, None, cx);
-                                            }
-                                        }
+                                        // One batched toggle: the unlike DELETE
+                                        // is a no-op for ids that were never
+                                        // liked, so only the liked subset moves
+                                        // either way (see toggle_album_like).
+                                        toggle_album_like(
+                                            track_ids_for_like.clone(),
+                                            any_liked,
+                                            cx,
+                                        );
                                     },
                                 ))
                                 .item(menu_separator())

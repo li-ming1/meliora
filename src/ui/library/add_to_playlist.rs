@@ -251,10 +251,7 @@ impl AddToPlaylist {
                 } else {
                     cx.spawn(async move |cx| {
                         let task = crate::RUNTIME.spawn(async move {
-                            for track_id in &track_ids {
-                                db::add_playlist_item(&pool, playlist_id, *track_id).await?;
-                            }
-                            Ok::<(), sqlx::Error>(())
+                            db::add_playlist_items(&pool, playlist_id, &track_ids, None).await
                         });
 
                         if await_playlist_task(
@@ -324,9 +321,8 @@ impl AddToPlaylist {
                         cx.spawn(async move |cx| {
                             let task = crate::RUNTIME.spawn(async move {
                                 let playlist_id = db::create_playlist(&pool, &name_string).await?;
-                                for track_id in &create_track_ids {
-                                    db::add_playlist_item(&pool, playlist_id, *track_id).await?;
-                                }
+                                db::add_playlist_items(&pool, playlist_id, &create_track_ids, None)
+                                    .await?;
                                 Ok::<i64, sqlx::Error>(playlist_id)
                             });
 

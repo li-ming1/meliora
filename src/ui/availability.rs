@@ -73,6 +73,16 @@ fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashS
     available
 }
 
+/// `available_ids` for row sets whose ids are already unique (the track rows
+/// of `compute_availability`): one path per id, so the grouping map is pure
+/// overhead — keep the ids whose single path still exists.
+fn available_unique_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashSet<i64> {
+    rows.into_iter()
+        .filter(|(_, location)| paths.exists(location))
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Ids of albums that still have at least one track on disk, from a
 /// `(album_id, track location)` row set. Replaces the per-album
 /// `list_tracks_in_album` N+1 with one query plus one `exists()` stat per
@@ -97,7 +107,7 @@ pub fn compute_availability(
     let mut paths = PathExistence::default();
     let albums = available_ids(album_rows, &mut paths);
     let artists = available_ids(artist_rows, &mut paths);
-    let tracks = available_ids(track_rows, &mut paths);
+    let tracks = available_unique_ids(track_rows, &mut paths);
     (albums, artists, tracks)
 }
 
