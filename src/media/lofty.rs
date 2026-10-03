@@ -319,17 +319,21 @@ fn finalize_album_artist_keys(metadata: &mut Metadata, album_artists: &[String])
             .collect();
         // a multi-part sort is only trusted when each part claims a track artist, a single
         // artist's sort name can itself contain "&" (Simon & Garfunkel); a single-part sort is
-        // trusted only when no individual credits exist to contradict it
-        let artist_keys: Vec<String> = metadata
-            .artists
-            .iter()
-            .map(|name| token_key(name))
-            .collect();
-        let claimed = |part: &str| {
-            let part_key = token_key(part);
-            artist_keys.contains(&part_key)
+        // trusted only when no individual credits exist to contradict it.
+        // the key list is only built for the multi-part path — the common
+        // single-part album keeps its zero-allocation fast path
+        let multi_part_all_claimed = parts.len() > 1 && {
+            let artist_keys: Vec<String> = metadata
+                .artists
+                .iter()
+                .map(|name| token_key(name))
+                .collect();
+            let claimed = |part: &str| {
+                let part_key = token_key(part);
+                artist_keys.contains(&part_key)
+            };
+            parts.iter().all(|part| claimed(part))
         };
-        let multi_part_all_claimed = parts.len() > 1 && parts.iter().all(|part| claimed(part));
         let single_part_without_credits = parts.len() == 1 && album_artists.is_empty();
         // both rules imply `parts` is non-empty, so no extra emptiness check is needed
         let trusted = multi_part_all_claimed || single_part_without_credits;
