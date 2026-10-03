@@ -52,7 +52,7 @@ impl KugouClient {
 
     /// Step 2 of QR login: poll the key until the mobile app confirms.
     pub async fn qr_check(&self, key: &str) -> Result<QrStatus, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let mut spec = KugouRequest::new("https://login-user.kugou.com", "/v2/get_userinfo_qrcode")
             .web()
             .param("plat", 4)
@@ -130,7 +130,7 @@ impl KugouClient {
 
     /// Profile of the logged-in user (nickname, vip state...).
     pub async fn user_detail(&self) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let clienttime = unix_now_secs();
         let pk = crypto::rsa_raw_encrypt(
             &serde_json::json!({
@@ -170,7 +170,7 @@ impl KugouClient {
         page: i64,
         pagesize: i64,
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
         let spec = KugouRequest::new(GATEWAY, "/v7/get_all_list")
@@ -202,7 +202,7 @@ impl KugouClient {
         page: i64,
         pagesize: i64,
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
         let spec = KugouRequest::new(GATEWAY, "/v4/get_list_all_file")
@@ -233,7 +233,7 @@ impl KugouClient {
         listid: i64,
         songs: &[(String, String, i64, i64)],
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
         let clienttime = unix_now_secs();
@@ -282,7 +282,7 @@ impl KugouClient {
         listid: i64,
         fileids: &[i64],
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
 
@@ -312,7 +312,7 @@ impl KugouClient {
     /// `request`, callers normally resolve the new numeric `listid` from a
     /// subsequent `user_playlists` call by name.
     pub async fn create_playlist(&self, name: &str) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let userid = session.userid.unwrap_or(0);
         let token = session.token.clone().unwrap_or_default();
         let clienttime = unix_now_secs();
@@ -350,7 +350,7 @@ impl KugouClient {
         page: i64,
         pagesize: i64,
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let clienttime_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -496,7 +496,7 @@ impl KugouClient {
     /// everyday-recommend upstream via `x-router`. Mirrors
     /// `RawDiscoveryApi.GetRecommendSongAsync`.
     pub async fn everyday_recommend(&self) -> Result<KugouResponse, KugouError> {
-        let userid = self.session_snapshot().userid.unwrap_or(0).to_string();
+        let userid = self.credentials().userid.unwrap_or(0).to_string();
         let spec = KugouRequest::new(GATEWAY, "/everyday_song_recommend")
             .post()
             .router("everydayrec.service.kugou.com")
@@ -574,7 +574,7 @@ impl KugouClient {
     /// Upgrade the day's VIP reward (tvip -> dvip/svip). Mirrors
     /// `youth_day_vip_upgrade.js`.
     pub async fn upgrade_vip_reward(&self) -> Result<KugouResponse, KugouError> {
-        let session = self.session_snapshot();
+        let session = self.credentials();
         let spec = KugouRequest::new(GATEWAY, "/youth/v1/listen_song/upgrade_vip_reward")
             .post()
             .param("kugouid", session.userid.unwrap_or(0))

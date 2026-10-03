@@ -89,6 +89,10 @@ pub enum KugouError {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KugouSession {
     pub guid: String,
+    /// Request-time mid: `calculate_mid(dfid)`, refreshed whenever the
+    /// session enters memory (older files stored `calculate_mid(guid)`,
+    /// a value no request ever signed with).
+    #[serde(default)]
     pub mid: String,
     pub dev: String,
     pub dfid: String,
@@ -110,15 +114,17 @@ pub struct KugouSession {
 
 impl KugouSession {
     /// Fresh random device identity (mirrors the cookie bootstrap in
-    /// server.js: guid = md5(uuid4), mid = calculate_mid(guid), dev random).
+    /// server.js: guid = md5(uuid4), dev random). Requests sign with
+    /// `mid = calculate_mid(dfid)`, so the stored mid derives from the
+    /// dfid (initially "-"), not the guid.
     pub fn generate() -> Self {
         let guid = crypto::md5_hex(&crypto::uuid_v4());
-        let mid = crypto::calculate_mid(&guid);
+        let dfid = "-".to_string();
         Self {
             guid,
-            mid,
+            mid: crypto::calculate_mid(&dfid),
             dev: crypto::random_string(10).to_uppercase(),
-            dfid: "-".to_string(),
+            dfid,
             token: None,
             userid: None,
             t1: None,
@@ -238,6 +244,19 @@ pub struct UserProfile {
     pub avatar_url: String,
 }
 
+/// Narrow copy of the session fields the API methods build their signed
+/// requests from. `session_snapshot()` clones the whole session including
+/// the potentially large `vip_detail` JSON tree; request-building callers
+/// only ever read these scalars.
+#[derive(Clone, Debug)]
+pub struct KugouCredentials {
+    pub guid: String,
+    pub dev: String,
+    pub dfid: String,
+    pub token: Option<String>,
+    pub userid: Option<i64>,
+}
+
 pub struct KugouClient {
     http: Client,
     session: Mutex<KugouSession>,
@@ -247,8 +266,11 @@ pub struct KugouClient {
 impl KugouClient {
     pub fn new(data_dir: &Path) -> Self {
         let session_path = data_dir.join("kugou_session.json");
-        let session =
+        let mut session =
             session_io::load(&session_path, "kugou").unwrap_or_else(KugouSession::generate);
+        // The dfid never changes in-process, so this rebuild is the one
+        // per-launch cost that lets `build_signed` trust the cached mid.
+        session.mid = crypto::calculate_mid(&session.dfid);
         Self {
             // a hung gateway request must not pin `pending_fetches` forever:
             // without a timeout a track that fails to resolve can never be
@@ -273,6 +295,19 @@ impl KugouClient {
 
     pub fn session_snapshot(&self) -> KugouSession {
         self.session_guard().clone()
+    }
+
+    /// Narrow credential read for request-building callers (see
+    /// [`KugouCredentials`]); avoids cloning `vip_detail` per request.
+    pub fn credentials(&self) -> KugouCredentials {
+        let session = self.session_guard();
+        KugouCredentials {
+            guid: session.guid.clone(),
+            dev: session.dev.clone(),
+            dfid: session.dfid.clone(),
+            token: session.token.clone(),
+            userid: session.userid,
+        }
     }
 
     pub fn logged_in(&self) -> bool {
@@ -401,8 +436,14 @@ impl KugouClient {
 
         let mut params = BTreeMap::new();
         // The lite client derives mid from the (usually random) dfid at
-        // request time rather than a fixed device mid.
-        let mid = crypto::calculate_mid(&dfid);
+        // request time rather than a fixed device mid. Only the random-dfid
+        // path recomputes: the session dfid is fixed for the process, so its
+        // mid is cached on the session (refreshed in `new`/`generate`).
+        let mid = if spec.random_dfid {
+            crypto::calculate_mid(&dfid)
+        } else {
+            session.mid.clone()
+        };
         if !spec.clear_default_params {
             params.insert("dfid".to_string(), dfid.clone());
             params.insert("mid".to_string(), mid.clone());
@@ -486,16 +527,34 @@ impl KugouClient {
     /// page) is an explicit error, not an all-empty successful payload.
     pub async fn request(&self, spec: KugouRequest) -> Result<KugouResponse, KugouError> {
         let body = spec.body_string();
-        let response = self.build_signed(&spec, body)?.send().await?;
-        let bytes = response.bytes().await?;
-        let body: Value = serde_json::from_slice(&bytes)
+        let response = self
+            .build_signed(&spec, body)?
+            .send()
+            .await
+            .inspect_err(|err| {
+                tracing::debug!(path = spec.path, error = %err, "kugou request failed");
+            })?;
+        let bytes = response.bytes().await.inspect_err(|err| {
+            tracing::debug!(path = spec.path, error = %err, "kugou request failed");
+        })?;
+        let body: Value = match serde_json::from_slice(&bytes)
             .ok()
             .or_else(|| parse_jsonp(&bytes))
-            .ok_or_else(|| KugouError::Api {
-                status: -1,
-                msg: format!("response is not JSON/JSONP ({} bytes)", bytes.len()),
-                error_code: None,
-            })?;
+        {
+            Some(body) => body,
+            None => {
+                tracing::warn!(
+                    path = spec.path,
+                    bytes = bytes.len(),
+                    "kugou response is not JSON/JSONP"
+                );
+                return Err(KugouError::Api {
+                    status: -1,
+                    msg: format!("response is not JSON/JSONP ({} bytes)", bytes.len()),
+                    error_code: None,
+                });
+            }
+        };
         if let Err(err) = check_payload_status(&body) {
             if is_login_expired(&err) {
                 notify_login_expired();
@@ -563,7 +622,7 @@ mod tests {
     #[test]
     fn generated_session_has_consistent_identity() {
         let session = KugouSession::generate();
-        assert_eq!(session.mid, crypto::calculate_mid(&session.guid));
+        assert_eq!(session.mid, crypto::calculate_mid(&session.dfid));
         assert_eq!(session.dfid, "-");
         assert_eq!(session.dev.len(), 10);
         assert!(
