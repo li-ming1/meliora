@@ -23,7 +23,7 @@ use crate::{
     settings::SettingsGlobal,
     ui::{
         app::Pool,
-        availability::available_paths,
+        availability::{BATCH_ACTION_TICKET, available_paths},
         components::{
             icons::{MINIMIZE, REFRESH},
             nav_button::nav_button,
@@ -262,11 +262,17 @@ impl FilesView {
             .iter()
             .map(|(entry_path, _)| entry_path.clone())
             .collect();
+        let ticket = BATCH_ACTION_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         cx.spawn(async move |_this, cx| {
             let available = crate::RUNTIME
                 .spawn_blocking(move || available_paths(paths))
                 .await
                 .unwrap_or_default();
+            // a newer click supersedes this one (last-click-wins, see
+            // BATCH_ACTION_TICKET)
+            if ticket != BATCH_ACTION_TICKET.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
 
             cx.update(|cx| {
                 let audio_entries: Vec<(PathBuf, Option<TrackRef>)> = audio_entries

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -45,6 +46,13 @@ pub fn available_paths(paths: Vec<PathBuf>) -> FxHashSet<PathBuf> {
         .filter(|path| is_track_path_available(path))
         .collect()
 }
+
+/// Monotonic ticket serializing the file-view batch actions: moving their
+/// availability stats off the UI thread made completion order
+/// nondeterministic, so each click takes a ticket and the async apply drops
+/// itself when a newer click exists — the synchronous "last click wins"
+/// ordering, restored.
+pub static BATCH_ACTION_TICKET: AtomicU64 = AtomicU64::new(0);
 
 /// Path -> "does it still exist" memo. Every availability set is grouped from
 /// the same track paths, so sharing one cache across sets means one `exists()`

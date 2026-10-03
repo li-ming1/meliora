@@ -15,7 +15,7 @@ use crate::{
     playback::queue::QueueItemData,
     settings::SettingsGlobal,
     ui::{
-        availability::{available_paths, is_track_path_available},
+        availability::{BATCH_ACTION_TICKET, available_paths, is_track_path_available},
         components::{
             context::context,
             icons::{
@@ -240,12 +240,18 @@ fn queue_batch_items(
     action: BatchAction,
     cx: &mut App,
 ) {
+    let ticket = BATCH_ACTION_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     cx.spawn(async move |cx| {
         let paths: Vec<PathBuf> = items.iter().map(|(path, _)| path.to_path_buf()).collect();
         let available = crate::RUNTIME
             .spawn_blocking(move || available_paths(paths))
             .await
             .unwrap_or_default();
+        // a newer click supersedes this one (last-click-wins, see
+        // BATCH_ACTION_TICKET)
+        if ticket != BATCH_ACTION_TICKET.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
 
         cx.update(|cx| {
             let data = items
