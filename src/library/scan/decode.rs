@@ -1,4 +1,4 @@
-use crate::library::scan::discover::sidecar_lyrics_path;
+use crate::library::scan::discover::{SidecarLyrics, sidecar_lyrics_path};
 use std::{io::Cursor, sync::Arc};
 
 use camino::Utf8Path;
@@ -228,10 +228,18 @@ fn scan_path(path: &Utf8Path) -> Result<FileInformation, ScanReadError> {
     Ok((metadata, len, art))
 }
 
-fn resolve_lyrics(path: &Utf8Path, embedded_lyrics: Option<String>) -> Option<String> {
-    let sidecar_lyrics = sidecar_lyrics_path(path)
-        .and_then(|lrc_path| std::fs::read_to_string(lrc_path).ok())
-        .filter(|content| !content.trim().is_empty());
+fn resolve_lyrics(
+    path: &Utf8Path,
+    sidecar_lyrics: SidecarLyrics,
+    embedded_lyrics: Option<String>,
+) -> Option<String> {
+    let sidecar_lyrics = match sidecar_lyrics {
+        // the directory listing proved the sidecar absent - skip the probe
+        SidecarLyrics::Absent => None,
+        SidecarLyrics::Unknown | SidecarLyrics::Present => sidecar_lyrics_path(path)
+            .and_then(|lrc_path| std::fs::read_to_string(lrc_path).ok())
+            .filter(|content| !content.trim().is_empty()),
+    };
 
     sidecar_lyrics.or(embedded_lyrics)
 }
@@ -321,14 +329,17 @@ pub fn process_owned_album_art(image: RawArt) -> anyhow::Result<(ProcessedImage,
 }
 
 /// Read metadata and embedded art, and mark tracks suitable for assigning folder art.
-pub fn read_metadata_for_path(path: &Utf8Path) -> Result<FileInformation, ScanReadError> {
+pub fn read_metadata_for_path(
+    path: &Utf8Path,
+    sidecar_lyrics: SidecarLyrics,
+) -> Result<FileInformation, ScanReadError> {
     let (mut metadata, len, mut art) = scan_path(path)?;
 
     let is_representative = metadata.track_current.is_none_or(|t| matches!(t, 0 | 1))
         && metadata.disc_current.is_none_or(|d| matches!(d, 0 | 1));
     art.representative = is_representative;
 
-    metadata.lyrics = resolve_lyrics(path, metadata.lyrics.take());
+    metadata.lyrics = resolve_lyrics(path, sidecar_lyrics, metadata.lyrics.take());
 
     Ok((metadata, len, art))
 }

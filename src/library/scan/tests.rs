@@ -9,7 +9,9 @@ use crate::library::scan::{
     control::ScanMode,
     database::{WriteCaches, update_metadata},
     decode::{ArtSource, FileArt, RawArt, ScanReadError, ScannedArt},
-    discover::{DirectoryReadPolicy, DiscoveredPath, FolderArtObservations, discover},
+    discover::{
+        DirectoryReadPolicy, DiscoveredPath, FolderArtObservations, SidecarLyrics, discover,
+    },
     execution::finalize_artwork,
     record::ScanRecord,
 };
@@ -240,6 +242,7 @@ async fn artwork_pipeline_processes_and_forwards_metadata() {
                 path: path.clone(),
                 timestamp: UNIX_EPOCH,
                 folder_art: None,
+                sidecar_lyrics: SidecarLyrics::Unknown,
             },
             info: (Metadata::default(), 1, art),
         })
@@ -296,6 +299,7 @@ fn metadata_pipeline_forwards_decode_failure() {
             path: nonexistent.clone(),
             timestamp: ts,
             folder_art: None,
+            sidecar_lyrics: SidecarLyrics::Unknown,
         })
         .unwrap();
     drop(input_tx);

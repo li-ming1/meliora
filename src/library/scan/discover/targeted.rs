@@ -17,7 +17,7 @@ use tracing::error;
 use crate::library::scan::{
     discover::{
         DirectoryReadPolicy, DiscoverAction, DiscoveredPath, FoldedIndex, FolderArtCandidate,
-        FolderArtObservations, PendingDirectoryRead, Relocation, apply_relocation,
+        FolderArtObservations, PendingDirectoryRead, Relocation, SidecarLyrics, apply_relocation,
         canonicalize_or_keep, classify, delete_tracks, fold_excluded_roots, is_missing,
         is_under_excluded, missing_paths, schedule_directory_read,
     },
@@ -269,6 +269,9 @@ async fn emit_rescan_path(
             path: path.to_path_buf(),
             timestamp,
             folder_art,
+            // targeted scans have no directory-level lrc listing - keep the
+            // decode-side probe
+            sidecar_lyrics: SidecarLyrics::Unknown,
         })
         .await
         .is_err()

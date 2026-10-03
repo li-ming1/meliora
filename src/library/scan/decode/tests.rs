@@ -9,7 +9,11 @@ fn resolve_lyrics_prefers_sidecar() {
     fs::write(&track, b"").unwrap();
     fs::write(dir.join("track.lrc"), "[00:00.00] sidecar lyrics").unwrap();
 
-    let result = resolve_lyrics(&track, Some("[00:00.00] embedded lyrics".to_string()));
+    let result = resolve_lyrics(
+        &track,
+        SidecarLyrics::Present,
+        Some("[00:00.00] embedded lyrics".to_string()),
+    );
     assert_eq!(result.as_deref(), Some("[00:00.00] sidecar lyrics"));
 }
 
@@ -19,7 +23,11 @@ fn resolve_lyrics_falls_back_to_embedded() {
     let track = dir.utf8_join("track.flac");
     fs::write(&track, b"").unwrap();
 
-    let result = resolve_lyrics(&track, Some("[00:00.00] embedded lyrics".to_string()));
+    let result = resolve_lyrics(
+        &track,
+        SidecarLyrics::Unknown,
+        Some("[00:00.00] embedded lyrics".to_string()),
+    );
     assert_eq!(result.as_deref(), Some("[00:00.00] embedded lyrics"));
 }
 
@@ -30,7 +38,27 @@ fn resolve_lyrics_ignores_empty_sidecar() {
     fs::write(&track, b"").unwrap();
     fs::write(dir.join("track.lrc"), "   \n").unwrap();
 
-    let result = resolve_lyrics(&track, Some("[00:00.00] embedded lyrics".to_string()));
+    let result = resolve_lyrics(
+        &track,
+        SidecarLyrics::Unknown,
+        Some("[00:00.00] embedded lyrics".to_string()),
+    );
+    assert_eq!(result.as_deref(), Some("[00:00.00] embedded lyrics"));
+}
+
+#[test]
+fn resolve_lyrics_absent_hint_skips_the_sidecar_probe() {
+    let dir = TestDir::new("decode-lyrics-absent-test");
+    let track = dir.utf8_join("track.flac");
+    fs::write(&track, b"").unwrap();
+    // the sidecar exists on disk: embedded winning proves Absent skipped the read
+    fs::write(dir.join("track.lrc"), "[00:00.00] sidecar lyrics").unwrap();
+
+    let result = resolve_lyrics(
+        &track,
+        SidecarLyrics::Absent,
+        Some("[00:00.00] embedded lyrics".to_string()),
+    );
     assert_eq!(result.as_deref(), Some("[00:00.00] embedded lyrics"));
 }
 
@@ -121,7 +149,7 @@ fn read_metadata_for_path_prefers_sidecar_lyrics() {
     .unwrap();
     fs::write(dir.join("track.lrc"), "[00:00.00] override lyrics").unwrap();
 
-    let info = read_metadata_for_path(&track).unwrap();
+    let info = read_metadata_for_path(&track, SidecarLyrics::Unknown).unwrap();
     assert_eq!(info.0.lyrics.as_deref(), Some("[00:00.00] override lyrics"));
 }
 
@@ -148,7 +176,7 @@ fn read_metadata_for_nonexistent_path_is_missing() {
     let dir = TestDir::new("decode-missing-test");
     let track = dir.utf8_join("nonexistent.flac");
 
-    let err = read_metadata_for_path(&track).unwrap_err();
+    let err = read_metadata_for_path(&track, SidecarLyrics::Unknown).unwrap_err();
     assert_eq!(err, ScanReadError::Missing);
 }
 
@@ -159,7 +187,7 @@ fn read_metadata_for_garbage_file_is_corrupt() {
     let track = dir.utf8_join("garbage.flac");
     fs::write(&track, b"this is definitely not a flac stream").unwrap();
 
-    let err = read_metadata_for_path(&track).unwrap_err();
+    let err = read_metadata_for_path(&track, SidecarLyrics::Unknown).unwrap_err();
     assert_eq!(err, ScanReadError::Corrupt);
 }
 
@@ -172,7 +200,7 @@ fn read_metadata_for_truncated_file_is_corrupt() {
     let bytes = crate::test_support::audio_fixtures::fixture("fixture.flac");
     fs::write(&track, &bytes[..bytes.len() / 4]).unwrap();
 
-    let err = read_metadata_for_path(&track).unwrap_err();
+    let err = read_metadata_for_path(&track, SidecarLyrics::Unknown).unwrap_err();
     assert_eq!(err, ScanReadError::Corrupt);
 }
 
@@ -195,7 +223,7 @@ fn read_metadata_for_unreadable_file_is_transient() {
         return;
     }
 
-    let err = read_metadata_for_path(&track).unwrap_err();
+    let err = read_metadata_for_path(&track, SidecarLyrics::Unknown).unwrap_err();
     assert_eq!(err, ScanReadError::Transient);
 }
 

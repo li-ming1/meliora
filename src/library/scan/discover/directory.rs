@@ -13,7 +13,7 @@ use tokio::{
 };
 use tracing::error;
 
-use super::FolderArtCandidate;
+use super::{FolderArtCandidate, SidecarLyrics};
 use crate::{
     library::scan::{
         decode::{is_folder_art_name, is_hidden_file},
@@ -184,6 +184,7 @@ pub(super) struct ScanDirectoryEntry {
     pub(super) path: Utf8PathBuf,
     pub(super) metadata: Metadata,
     pub(super) scan_timestamp: Option<SystemTime>,
+    pub(super) sidecar_lyrics: SidecarLyrics,
 }
 
 pub(crate) struct ScanDirectorySnapshot {
@@ -332,15 +333,28 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
         .map(|entry| {
             // a symlink target may live outside this directory, so stat its
             // sidecar directly instead of trusting this directory's listing
-            let lyrics_timestamp = if entry.is_symlink {
-                sidecar_modified(&entry.path)
+            let (lyrics_timestamp, sidecar_lyrics) = if entry.is_symlink {
+                let lyrics_timestamp = sidecar_modified(&entry.path);
+                // a failed stat isn't proof of absence - keep the decode probe
+                let sidecar_lyrics = if lyrics_timestamp.is_some() {
+                    SidecarLyrics::Present
+                } else {
+                    SidecarLyrics::Unknown
+                };
+                (lyrics_timestamp, sidecar_lyrics)
             } else if lyrics_timestamps.is_empty() {
                 // 绝大多数目录没有 .lrc：空表短路，省去每文件三次堆分配
-                None
+                (None, SidecarLyrics::Absent)
             } else {
-                sidecar_lyrics_path(&entry.raw_path)
+                let lyrics_timestamp = sidecar_lyrics_path(&entry.raw_path)
                     .and_then(|path| normalized_file_name(&path, case_insensitive))
-                    .and_then(|name| lyrics_timestamps.get(&name).copied())
+                    .and_then(|name| lyrics_timestamps.get(&name).copied());
+                let sidecar_lyrics = if lyrics_timestamp.is_some() {
+                    SidecarLyrics::Present
+                } else {
+                    SidecarLyrics::Absent
+                };
+                (lyrics_timestamp, sidecar_lyrics)
             };
             let scan_timestamp = entry
                 .metadata
@@ -351,6 +365,7 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
                 path: entry.path,
                 metadata: entry.metadata,
                 scan_timestamp,
+                sidecar_lyrics,
             }
         })
         .collect();

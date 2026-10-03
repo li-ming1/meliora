@@ -43,11 +43,25 @@ pub(crate) struct FolderArtCandidate {
     pub(crate) rank: u8,
 }
 
+/// Directory-listing knowledge about a track's `.lrc` sidecar, carried along so
+/// the decode pass can skip probing for a file the listing already proved absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidecarLyrics {
+    /// Nothing backs this path with directory-level lrc knowledge (targeted
+    /// scans, direct file targets) - the decode pass keeps its probe.
+    Unknown,
+    /// The listing (or a direct stat for symlinks) found the sidecar.
+    Present,
+    /// The listing proves no sidecar exists next to the track.
+    Absent,
+}
+
 #[derive(Debug)]
 pub(crate) struct DiscoveredPath {
     pub(crate) path: Utf8PathBuf,
     pub(crate) timestamp: SystemTime,
     pub(crate) folder_art: Option<FolderArtCandidate>,
+    pub(crate) sidecar_lyrics: SidecarLyrics,
 }
 
 pub(crate) type FolderArtObservationMap = FxHashMap<Utf8PathBuf, Option<FolderArtCandidate>>;

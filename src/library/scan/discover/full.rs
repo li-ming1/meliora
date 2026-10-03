@@ -147,6 +147,7 @@ pub async fn discover(
                     path,
                     timestamp: ts,
                     folder_art: directory_art.clone(),
+                    sidecar_lyrics: entry.sidecar_lyrics,
                 })
                 .await
                 .is_err()
@@ -208,7 +209,10 @@ async fn cleanup_stale_tracks_paged(
 
     let excluded = fold_excluded_roots(excluded_roots);
 
-    let mut pending: FxHashSet<Utf8PathBuf> = scan_record.records.keys().cloned().collect();
+    // record keys are tracked by borrowed reference instead of cloning the
+    // whole record into a scratch set; ghosts are collected owned below so the
+    // borrow ends before `delete_tracks` takes the record mutably
+    let mut seen: FxHashSet<&Utf8PathBuf> = FxHashSet::default();
     let mut to_delete: Vec<Utf8PathBuf> = Vec::new();
 
     let mut last_id: i64 = 0;
@@ -238,7 +242,9 @@ async fn cleanup_stale_tracks_paged(
         for (id, location) in &page {
             last_id = *id;
             let path = Utf8PathBuf::from(location);
-            pending.remove(&path);
+            if let Some((recorded, _)) = scan_record.records.get_key_value(&path) {
+                seen.insert(recorded);
+            }
             if is_under_excluded(&path, &excluded) {
                 continue;
             }
@@ -255,8 +261,16 @@ async fn cleanup_stale_tracks_paged(
         }
     }
 
-    let mut existence_candidates: Vec<Utf8PathBuf> = Vec::with_capacity(pending.len());
-    for path in pending.drain() {
+    // ghost record entries no DB location accounted for (usually tiny)
+    let ghosts: Vec<Utf8PathBuf> = scan_record
+        .records
+        .keys()
+        .filter(|recorded| !seen.contains(recorded))
+        .cloned()
+        .collect();
+
+    let mut existence_candidates: Vec<Utf8PathBuf> = Vec::with_capacity(ghosts.len());
+    for path in ghosts {
         if is_under_excluded(&path, &excluded) {
             continue;
         }

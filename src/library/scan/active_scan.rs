@@ -314,7 +314,10 @@ pub(super) async fn run_metadata_pipeline(
                 match discovered {
                     Some(discovered) => {
                         pending.push(spawn_blocking(move || {
-                            let result = read_metadata_for_path(&discovered.path);
+                            let result = read_metadata_for_path(
+                                &discovered.path,
+                                discovered.sidecar_lyrics,
+                            );
                             (discovered, result)
                         }));
                     }
