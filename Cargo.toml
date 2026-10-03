@@ -41,6 +41,9 @@ async-compression = { version = "0.4", features = ["zlib", "tokio"] }
 async-trait = "0.1"
 base64 = "0.22"
 bitflags = "2"
+# Named directly so http_cover_bytes can return the aggregated body without a
+# full-buffer copy (zed-reqwest re-exports it only as an unnameable impl trait).
+bytes = "1"
 camino = { version = "1", features = ["serde1"] }
 cbc = { version = "0.1", optional = true, features = ["alloc"] }
 chrono = "0.4"
@@ -68,7 +71,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 indexmap = { version = "2", features = ["serde"] }
 intx = "0.1"
 lofty = "0.25"
-md-5 = { version = "0.10", optional = true }
+md-5 = { version = "0.11", optional = true }
 num-bigint-dig = { version = "0.9", optional = true, default-features = false, features = ["std"] }
 qrcode = { version = "0.14", optional = true, default-features = false, features = ["image"] }
 notify = "8"
@@ -87,7 +90,7 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # Update artifact integrity (updater.rs): sha256 of the downloaded bare
 # binary against the release's checksums.txt. Pulled in by `online` only.
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 smallvec = "1"
 sqlx = { version = "0.9", default-features = false, features = [
     "chrono",

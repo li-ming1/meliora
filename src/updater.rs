@@ -524,7 +524,11 @@ async fn download_and_swap(
     let _ = progress.send((received, total));
 
     if let Some(expected) = &expected_hash {
-        let actual = format!("{:x}", hasher.finalize());
+        let actual = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         if !actual.eq_ignore_ascii_case(expected) {
             let _ = tokio::fs::remove_file(&staged_path).await;
             return Err(format!(
