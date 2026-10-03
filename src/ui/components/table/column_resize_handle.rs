@@ -15,6 +15,7 @@ struct ResizeState {
     is_dragging: bool,
     start_x: Pixels,
     start_width: f32,
+    last_width: f32,
 }
 
 pub struct ColumnResizeHandle<C>
@@ -196,6 +197,7 @@ where
                     state.is_dragging = true;
                     state.start_x = ev.position.x;
                     state.start_width = current_width;
+                    state.last_width = current_width;
                 });
 
                 // change width on drag
@@ -213,7 +215,16 @@ where
                     let delta_x: f32 = (ev.position.x - state_ref.start_x).into();
                     let new_width = (state_ref.start_width + delta_x).max(COLUMN_MIN_WIDTH);
 
+                    // 真变化才 clone+notify：x 未变或向左过冲被 clamp 到最小
+                    // 宽度后宽度恒定，每个鼠标事件重快照全部可见行并整表
+                    // 重渲染纯属浪费
+                    if new_width == state_ref.last_width {
+                        return;
+                    }
+
                     drop(state_ref);
+
+                    state_move.borrow_mut().last_width = new_width;
 
                     columns_move.update(cx, |columns, cx| {
                         // should be cheap

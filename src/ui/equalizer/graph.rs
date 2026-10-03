@@ -98,26 +98,44 @@ const DRAG_PUSH_INTERVAL: Duration = Duration::from_millis(33);
 /// (paint_path takes it by value), but a cache hit skips PathBuilder's
 /// intermediate buffers and the curve sampling a rebuild would redo — a
 /// static page (paused spectrum, no drag) then tessellates nothing at all.
+/// Split into two independently keyed halves: a playing spectrum swaps its
+/// Rc pointers every frame and rebuilds only the spectrum half, never the
+/// untouched curve half ([`EqCurvePaths`]).
 #[derive(Default)]
-struct EqGraphPaths {
-    spectrum_pre_fill: Option<Path<Pixels>>,
-    spectrum_post_fill: Option<Path<Pixels>>,
-    spectrum_post_stroke: Option<Path<Pixels>>,
+struct EqSpectrumPaths {
+    pre_fill: Option<Path<Pixels>>,
+    post_fill: Option<Path<Pixels>>,
+    post_stroke: Option<Path<Pixels>>,
+}
+
+/// Curve half of the tessellation cache; see [`EqSpectrumPaths`].
+#[derive(Default)]
+struct EqCurvePaths {
     band_stroke: Option<Path<Pixels>>,
     composite_fill: Option<Path<Pixels>>,
     composite_stroke: Option<Path<Pixels>>,
 }
 
-struct PathCache {
+/// Spectrum paths keyed on the analyzer Rc pointers plus the plot geometry.
+struct SpectrumPathCache {
+    origin: Point<Pixels>,
+    size: Size<Pixels>,
+    scale: f32,
+    spectrum_pre: Rc<Vec<f32>>,
+    spectrum_post: Rc<Vec<f32>>,
+    paths: Rc<EqSpectrumPaths>,
+}
+
+/// Curve paths invalidated alongside the curve cache
+/// (config/selected/geometry/rate).
+struct CurvePathCache {
     config: EqualizerSettings,
     selected: Option<usize>,
     origin: Point<Pixels>,
     size: Size<Pixels>,
     scale: f32,
     rate: f64,
-    spectrum_pre: Rc<Vec<f32>>,
-    spectrum_post: Rc<Vec<f32>>,
-    paths: Rc<EqGraphPaths>,
+    paths: Rc<EqCurvePaths>,
 }
 
 #[derive(Default)]
@@ -130,7 +148,8 @@ struct GraphState {
     last_push: Option<(Instant, usize, f64, f64)>,
     cache: Option<CurveCache>,
     label_cache: Option<LabelCache>,
-    paths: Option<PathCache>,
+    spectrum_paths: Option<SpectrumPathCache>,
+    curve_paths: Option<CurvePathCache>,
 }
 
 /// Summed response of the enabled bands. Bypass ignored so the curve stays
@@ -266,28 +285,32 @@ fn spectrum_fill_path(points: &[f32], plot: Bounds<Pixels>) -> Option<Path<Pixel
     fill.build().ok()
 }
 
-/// Tessellates the six paintable paths from the cached curves and the latest
-/// spectrum data. Same shapes the paint path used to build per frame.
-fn build_paths(
-    curves: &CurveCache,
+/// Tessellates the three spectrum paths from the latest analyzer data. Same
+/// shapes the paint path used to build per frame.
+fn build_spectrum_paths(
     spectrum_pre: &[f32],
     spectrum_post: &[f32],
     plot: Bounds<Pixels>,
-    scale: f32,
-) -> EqGraphPaths {
-    let plot_height: f32 = plot.size.height.into();
-    let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
-    let right = plot.origin.x + plot.size.width;
-    let mut paths = EqGraphPaths {
-        spectrum_pre_fill: spectrum_fill_path(spectrum_pre, plot),
-        spectrum_post_fill: spectrum_fill_path(spectrum_post, plot),
-        ..Default::default()
+) -> EqSpectrumPaths {
+    let mut paths = EqSpectrumPaths {
+        pre_fill: spectrum_fill_path(spectrum_pre, plot),
+        post_fill: spectrum_fill_path(spectrum_post, plot),
+        post_stroke: None,
     };
     if !spectrum_post.is_empty() {
         let mut edge = PathBuilder::stroke(px(1.5));
         spectrum_path(&mut edge, spectrum_post, plot);
-        paths.spectrum_post_stroke = edge.build().ok();
+        paths.post_stroke = edge.build().ok();
     }
+    paths
+}
+
+/// Tessellates the three response-curve paths from the cached curves.
+fn build_curve_paths(curves: &CurveCache, plot: Bounds<Pixels>, scale: f32) -> EqCurvePaths {
+    let plot_height: f32 = plot.size.height.into();
+    let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
+    let right = plot.origin.x + plot.size.width;
+    let mut paths = EqCurvePaths::default();
 
     if let Some(band) = &curves.band {
         let mut builder = PathBuilder::stroke(px(1.5));
@@ -490,7 +513,8 @@ impl IntoElement for EqGraph {
 pub struct EqGraphPrepaint {
     hitbox: Hitbox,
     plot: Bounds<Pixels>,
-    paths: Rc<EqGraphPaths>,
+    spectrum_paths: Rc<EqSpectrumPaths>,
+    curve_paths: Rc<EqCurvePaths>,
     labels: Rc<Vec<(ShapedLine, Point<Pixels>)>>,
     dots: Vec<Point<Pixels>>,
     hover: Option<Hover>,
@@ -554,8 +578,8 @@ impl Element for EqGraph {
         let config = &self.config;
         let selected = self.selected;
         let rate = self.sample_rate;
-        let (drag, hover, q_flash, labels, paths) =
-            window.with_optional_element_state(id, |v, window| {
+        let (drag, hover, q_flash, labels, spectrum_paths, curve_paths) = window
+            .with_optional_element_state(id, |v, window| {
                 let state: Rc<RefCell<GraphState>> = v.flatten().unwrap_or_default();
                 {
                     let mut state_ref = state.borrow_mut();
@@ -640,45 +664,65 @@ impl Element for EqGraph {
                         .clone()
                 };
 
-                // tessellated paths: rebuilt only when the curves, the
-                // spectrum data or the plot geometry moved
-                let paths = {
+                // tessellated paths, two independently keyed halves: the
+                // spectrum side rebuilds only when the analyzer data or the
+                // plot geometry moved, the curve side follows the curve
+                // cache — a playing spectrum leaves the response curves alone
+                let spectrum_paths = {
                     let mut state_ref = state.borrow_mut();
-                    let stale = state_ref.paths.as_ref().is_none_or(|cache| {
-                        cache.config != *config
-                            || cache.selected != selected
-                            || cache.origin != plot.origin
+                    let stale = state_ref.spectrum_paths.as_ref().is_none_or(|cache| {
+                        cache.origin != plot.origin
                             || cache.size != plot.size
                             || cache.scale != scale
-                            || cache.rate != rate
                             || !Rc::ptr_eq(&cache.spectrum_pre, &self.spectrum_pre)
                             || !Rc::ptr_eq(&cache.spectrum_post, &self.spectrum_post)
                     });
                     if stale {
-                        let cache = &state_ref.cache.as_ref().expect("curve cache fresh");
-                        let paths = build_paths(
-                            cache,
-                            &self.spectrum_pre,
-                            &self.spectrum_post,
-                            plot,
-                            scale,
-                        );
-                        state_ref.paths = Some(PathCache {
-                            config: config.clone(),
-                            selected,
+                        let paths =
+                            build_spectrum_paths(&self.spectrum_pre, &self.spectrum_post, plot);
+                        state_ref.spectrum_paths = Some(SpectrumPathCache {
                             origin: plot.origin,
                             size: plot.size,
                             scale,
-                            rate,
                             spectrum_pre: self.spectrum_pre.clone(),
                             spectrum_post: self.spectrum_post.clone(),
                             paths: Rc::new(paths),
                         });
                     }
                     state_ref
-                        .paths
+                        .spectrum_paths
                         .as_ref()
-                        .expect("path cache just rebuilt")
+                        .expect("spectrum path cache just rebuilt")
+                        .paths
+                        .clone()
+                };
+                let curve_paths = {
+                    let mut state_ref = state.borrow_mut();
+                    let stale = state_ref.curve_paths.as_ref().is_none_or(|cache| {
+                        cache.config != *config
+                            || cache.selected != selected
+                            || cache.origin != plot.origin
+                            || cache.size != plot.size
+                            || cache.scale != scale
+                            || cache.rate != rate
+                    });
+                    if stale {
+                        let cache = &state_ref.cache.as_ref().expect("curve cache fresh");
+                        let paths = build_curve_paths(cache, plot, scale);
+                        state_ref.curve_paths = Some(CurvePathCache {
+                            config: config.clone(),
+                            selected,
+                            origin: plot.origin,
+                            size: plot.size,
+                            scale,
+                            rate,
+                            paths: Rc::new(paths),
+                        });
+                    }
+                    state_ref
+                        .curve_paths
+                        .as_ref()
+                        .expect("curve path cache just rebuilt")
                         .paths
                         .clone()
                 };
@@ -688,7 +732,7 @@ impl Element for EqGraph {
                     (state_ref.drag, state_ref.hover, state_ref.q_flash)
                 };
                 (
-                    (drag, hover, q_flash, labels, paths),
+                    (drag, hover, q_flash, labels, spectrum_paths, curve_paths),
                     if id.is_some() { Some(state) } else { None },
                 )
             });
@@ -723,7 +767,8 @@ impl Element for EqGraph {
         EqGraphPrepaint {
             hitbox,
             plot,
-            paths,
+            spectrum_paths,
+            curve_paths,
             labels,
             dots,
             hover,
@@ -805,14 +850,14 @@ impl Element for EqGraph {
             // paint_path takes the path by value, so each painted path is one
             // clone from the tessellation cache; the cache hit still saves the
             // PathBuilder churn and, with the spectrum paused, the rebuilds.
-            let paths = &prepaint.paths;
-            if let Some(path) = &paths.spectrum_pre_fill {
+            let paths = &prepaint.spectrum_paths;
+            if let Some(path) = &paths.pre_fill {
                 window.paint_path(path.clone(), spectrum_pre);
             }
-            if let Some(path) = &paths.spectrum_post_fill {
+            if let Some(path) = &paths.post_fill {
                 window.paint_path(path.clone(), spectrum_post);
             }
-            if let Some(path) = &paths.spectrum_post_stroke {
+            if let Some(path) = &paths.post_stroke {
                 // dimmed alongside the response curve while the EQ is bypassed
                 let mut edge_color: Hsla = spectrum_edge.into_color();
                 if !self.config.enabled {
@@ -821,6 +866,7 @@ impl Element for EqGraph {
                 window.paint_path(path.clone(), edge_color);
             }
 
+            let paths = &prepaint.curve_paths;
             if let Some(path) = &paths.band_stroke {
                 window.paint_path(path.clone(), band_color);
             }

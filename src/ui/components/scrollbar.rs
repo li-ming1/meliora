@@ -764,6 +764,14 @@ impl Element for Scrollbar {
                             .clamp(px(0.0), max_offset_move);
 
                         let current_offset = scroll_handle_move.offset();
+                        let current_positive_scroll = match axis {
+                            ScrollbarAxis::Vertical => -current_offset.y,
+                            ScrollbarAxis::Horizontal => -current_offset.x,
+                        };
+                        if (new_positive_scroll - current_positive_scroll).abs() <= px(0.1) {
+                            return;
+                        }
+
                         let new_offset = match axis {
                             ScrollbarAxis::Vertical => gpui::Point {
                                 x: current_offset.x,
@@ -775,6 +783,9 @@ impl Element for Scrollbar {
                             },
                         };
                         scroll_handle_move.set_offset(new_offset);
+                        // 仅偏移真的变化时才重绘：拖拽中纯横向移动或已过冲钉
+                        // 在端点时每个鼠标事件都会进入处理器，重绘全窗口视觉
+                        // 零变化（与上方滚轮分支同款守卫）
                         window.refresh();
                     }
                 });

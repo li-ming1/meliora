@@ -27,6 +27,10 @@ const DRAG_PIXELS: f32 = 200.0;
 /// Fine-adjustment scale applied to drag/scroll displacement while shift is held.
 const SHIFT_SCALE: f32 = 0.1;
 const SCROLL_STEP: f32 = 0.01;
+/// How often a drag pushes new values downstream: mouse moves arrive at
+/// 125-1000 Hz and every push re-runs the band edit chain (EQ DSP channel,
+/// compensation grid, curve resampling, view repaints).
+const DRAG_PUSH_INTERVAL: Duration = Duration::from_millis(33);
 /// Stroke width of the track and value arcs, and of the position tick.
 const ARC_STROKE_WIDTH: f32 = 2.5;
 const TICK_STROKE_WIDTH: f32 = 2.0;
@@ -234,6 +238,8 @@ impl IntoElement for Knob {
 #[derive(Default)]
 struct KnobState {
     drag: Option<(Pixels, f32, bool)>,
+    /// The last value a drag pushed downstream, for the push coalescing.
+    drag_emitted: Option<(Instant, f32)>,
     textbox: Option<Entity<Textbox>>,
     parse_error: Option<Instant>,
     refocus: bool,
@@ -532,6 +538,7 @@ impl Element for Knob {
                                 }
                             }
                             state.drag = Some((ev.position.y, position, ev.modifiers.shift));
+                            state.drag_emitted = None;
                         }
                         MouseButton::Right => {
                             if let Some(default) = default_value {
@@ -570,17 +577,57 @@ impl Element for Knob {
                     };
                     let position =
                         drag_position(start_position, start_y, ev.position.y, drag_scale(shift));
-                    (on_change.borrow_mut())(position, cx);
+                    // coalesce the push to ~30 Hz and skip repeat values: each
+                    // push re-runs the band edit chain and repaints the views
+                    let now = Instant::now();
+                    let (due, unchanged) = {
+                        let state = state.borrow();
+                        (
+                            state
+                                .drag_emitted
+                                .is_none_or(|(at, _)| now.duration_since(at) >= DRAG_PUSH_INTERVAL),
+                            state.drag_emitted.is_some_and(|(_, v)| v == position),
+                        )
+                    };
+                    if due && !unchanged {
+                        state.borrow_mut().drag_emitted = Some((now, position));
+                        (on_change.borrow_mut())(position, cx);
+                    }
                 });
             }
 
             {
                 let state = state.clone();
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, _| {
+                let on_change = on_change.clone();
+                window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
                     }
-                    state.borrow_mut().drag = None;
+                    // the drag ends, flush the tail: a final move inside the
+                    // push interval was merged away, so emit the release
+                    // position unless it already matches the last pushed value
+                    let flush = {
+                        let mut state = state.borrow_mut();
+                        let Some((start_y, start_position, start_shift)) = state.drag else {
+                            return;
+                        };
+                        state.drag = None;
+                        let position = drag_position(
+                            start_position,
+                            start_y,
+                            ev.position.y,
+                            drag_scale(start_shift),
+                        );
+                        if state.drag_emitted.is_some_and(|(_, v)| v != position) {
+                            state.drag_emitted = Some((Instant::now(), position));
+                            Some(position)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(position) = flush {
+                        (on_change.borrow_mut())(position, cx);
+                    }
                 });
             }
 

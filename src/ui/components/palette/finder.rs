@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::Cell, marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
 
 use cntp_i18n::{I18nString, trn};
 use gpui::{
@@ -644,6 +644,13 @@ where
         let current_selection = self.current_selection.clone();
         let weak_finder = cx.weak_entity();
 
+        use crate::ui::util::prune_views;
+
+        // 每次渲染只 prune 一次（首行触发；闭包随渲染每帧重建，Cell 天然
+        // 逐帧复位），render_counter 仍逐行推进，band 演化与原逐行调用一致，
+        // 删除集合与现状一致（同 table.rs 的 prune_gate）
+        let prune_gate = Cell::new(false);
+
         div()
             .w_full()
             .h_full()
@@ -653,13 +660,18 @@ where
             .p(px(4.0))
             .child(
                 list(self.list_state.clone(), move |idx, _, cx| {
+                    if prune_gate.replace(true) {
+                        render_counter.update(cx, |m, _| *m = idx);
+                    } else {
+                        prune_views(&views_model, &render_counter, idx, cx);
+                    }
+
                     let extras_len = extra_items.len();
                     if idx < extras_len {
                         render_extra_item(
                             &extra_items[idx],
                             idx,
                             &views_model,
-                            &render_counter,
                             &current_selection,
                             &weak_finder,
                             cx,
@@ -672,7 +684,6 @@ where
                                 item,
                                 idx,
                                 &views_model,
-                                &render_counter,
                                 &current_selection,
                                 &weak_finder,
                                 cx,
@@ -715,7 +726,6 @@ fn render_extra_item<T, MatcherFunc, OnAccept>(
     extra: &ExtraItem,
     idx: usize,
     views_model: &ViewsModel<T, MatcherFunc, OnAccept>,
-    render_counter: &Entity<usize>,
     current_selection: &Entity<usize>,
     weak_finder: &WeakEntity<Finder<T, MatcherFunc, OnAccept>>,
     cx: &mut App,
@@ -725,9 +735,7 @@ where
     MatcherFunc: Fn(&Arc<T>, &mut App) -> Utf32String + 'static,
     OnAccept: Fn(&Arc<T>, &mut App) + 'static,
 {
-    use crate::ui::util::{create_or_retrieve_view, prune_views};
-
-    prune_views(views_model, render_counter, idx, cx);
+    use crate::ui::util::create_or_retrieve_view;
 
     let current_selection = current_selection.clone();
     let weak_finder = weak_finder.clone();
@@ -757,7 +765,6 @@ fn render_item<T, MatcherFunc, OnAccept>(
     item: &Arc<T>,
     idx: usize,
     views_model: &ViewsModel<T, MatcherFunc, OnAccept>,
-    render_counter: &Entity<usize>,
     current_selection: &Entity<usize>,
     weak_finder: &WeakEntity<Finder<T, MatcherFunc, OnAccept>>,
     cx: &mut App,
@@ -767,9 +774,8 @@ where
     MatcherFunc: Fn(&Arc<T>, &mut App) -> Utf32String + 'static,
     OnAccept: Fn(&Arc<T>, &mut App) + 'static,
 {
-    use crate::ui::util::{create_or_retrieve_view, prune_views};
+    use crate::ui::util::create_or_retrieve_view;
 
-    prune_views(views_model, render_counter, idx, cx);
     let item: Arc<T> = item.clone();
     let current_selection = current_selection.clone();
     let weak_finder = weak_finder.clone();
