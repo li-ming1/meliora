@@ -289,25 +289,36 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
                 });
 
             if let Some(index) = existing {
-                // Re-check under the write lock (the queue may have changed
-                // since the read above): skip the refresh if the item is gone
-                // instead of panicking.
+                // Re-verify identity under the write lock: the queue may have
+                // changed between the read above and here, so `index` can now
+                // point at a different row — refreshing blindly would write
+                // this track's URL into another song's entry and jump there.
+                // Same predicate as the scan above; on mismatch (or a gone
+                // item) treat the hit as absent and fall through to the
+                // insert branch.
                 let mut guard = queue_data.write().unwrap_or_else(|e| e.into_inner());
-                let replaced = Arc::make_mut(&mut guard)
-                    .get_mut(index)
-                    .map(|item| item.replace_path(PathBuf::from(url)))
-                    .is_some();
-                if !replaced {
-                    tracing::warn!(
-                        index,
-                        "netease play_track: queue item gone before URL refresh"
-                    );
-                }
+                let still_this_track = guard.get(index).is_some_and(|item| {
+                    let path = item.get_path();
+                    if !crate::media::is_http_path(path) {
+                        return false;
+                    }
+                    let path_str = path.to_string_lossy();
+                    map.iter()
+                        .any(|entry| entry.id == track.id && entry.url == path_str.as_ref())
+                });
+                if still_this_track {
+                    Arc::make_mut(&mut guard)[index].replace_path(PathBuf::from(url));
 
-                if matches!(intent, PlayIntent::Now) {
-                    cx.global::<crate::playback::interface::PlaybackInterface>().jump(index);
+                    if matches!(intent, PlayIntent::Now) {
+                        cx.global::<crate::playback::interface::PlaybackInterface>()
+                            .jump(index);
+                    }
+                    return;
                 }
-                return;
+                tracing::warn!(
+                    index,
+                    "netease play_track: queue changed before URL refresh; inserting fresh entry"
+                );
             }
 
             let item = online_queue_item(cx, url, &track);

@@ -493,7 +493,12 @@ impl NeteaseClient {
 
         let (url, body, user_agent, referer) = match crypto_type {
             Crypto::Weapi => {
-                let object = data.as_object_mut().expect("request data is an object");
+                let Some(object) = data.as_object_mut() else {
+                    return Err(NeteaseError::Api {
+                        status: -1,
+                        msg: "request data must be a JSON object".into(),
+                    });
+                };
                 object.insert(
                     "csrf_token".into(),
                     Value::String(session.csrf.clone().unwrap_or_default()),
