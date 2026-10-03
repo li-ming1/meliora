@@ -82,10 +82,12 @@ pub fn parse_krc(content: &str) -> Option<Vec<LrcLine>> {
                 continue;
             };
             if let Some(container) = decode_language_block(encoded) {
-                for section in &container.content {
+                // 消费式迭代：lyric_content 直接 move，免去全表深拷贝；
+                // 同 type 多 section 仍取最后一份（赋值覆盖语义不变）。
+                for section in container.content {
                     match section.kind {
-                        1 => translations = Some(section.lyric_content.clone()),
-                        0 => romanizations = Some(section.lyric_content.clone()),
+                        1 => translations = Some(section.lyric_content),
+                        0 => romanizations = Some(section.lyric_content),
                         _ => {}
                     }
                 }

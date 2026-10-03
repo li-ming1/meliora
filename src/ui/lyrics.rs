@@ -270,11 +270,15 @@ impl Lyrics {
                         }
                     } else if visible
                         && this.last_active_line.is_some_and(|line| {
-                            parsed.get(line).is_some_and(|l| !l.words.is_empty())
+                            // 激活行带逐字歌词：最后一个词仍在飞行才需要按字
+                            // 进度重绘（position 每 ~33ms 广播一次）；尾音
+                            // 窗口渲染输出与上一帧相同，不再 notify。
+                            parsed
+                                .get(line)
+                                .and_then(|l| l.words.last())
+                                .is_some_and(|last| pos_ms < last.time_ms + last.duration_ms)
                         })
                     {
-                        // 激活行带逐字歌词：position 每 ~33ms 广播一次，
-                        // 需要按字进度持续重绘。
                         cx.notify();
                     }
                 }
@@ -668,8 +672,12 @@ impl Lyrics {
                     return;
                 }
 
-                let parsed = lyric.as_ref().map(|lyric| Arc::new(lyric.lines.clone()));
-                let content = lyric.as_ref().map(|lyric| lyric.content.clone());
+                // lyric 在 runtime 上已解析完毕且此后不再使用，整体 move
+                // 免掉主线程深拷贝（lines 含逐字 words，YRC 曲上千次堆分配）。
+                let (content, parsed) = match lyric {
+                    Some(lyric) => (Some(lyric.content), Some(Arc::new(lyric.lines))),
+                    None => (None, None),
+                };
                 this.apply_online_lyrics(expected.as_deref(), (content, parsed), cx);
             })
             .ok();
