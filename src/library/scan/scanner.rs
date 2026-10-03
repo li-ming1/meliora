@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use tokio::{
     fs::try_exists,
     sync::mpsc::{Receiver, UnboundedSender, WeakSender},
+    task::spawn_blocking,
 };
 use tracing::{info, warn};
 
@@ -312,6 +313,15 @@ struct ScanPreparation {
     tracks_deleted: bool,
 }
 
+/// Check root availability on a blocking thread so dead network mounts don't
+/// stall the scanner loop or its Stop handling. Returns (available, missing).
+async fn split_available_roots(paths: &[Utf8PathBuf]) -> (Vec<Utf8PathBuf>, Vec<Utf8PathBuf>) {
+    let paths = paths.to_vec();
+    spawn_blocking(move || paths.into_iter().partition(|path| path.exists()))
+        .await
+        .expect("root availability probe panicked")
+}
+
 struct ScanPreparationContext<'a> {
     pool: &'a SqlitePool,
     scan_settings: &'a mut ScanSettings,
@@ -390,12 +400,8 @@ impl ScanPreparationContext<'_> {
 
         match mode {
             ScanMode::Full { is_force } => {
-                let (available_paths, missing_paths): (Vec<Utf8PathBuf>, Vec<Utf8PathBuf>) =
-                    scan_settings
-                        .paths
-                        .iter()
-                        .cloned()
-                        .partition(|path| path.exists());
+                let (available_paths, missing_paths) =
+                    split_available_roots(&scan_settings.paths).await;
 
                 let missing_action = if missing_paths.is_empty() {
                     MissingFolderPolicy::DeleteFromLibrary
@@ -455,12 +461,7 @@ impl ScanPreparationContext<'_> {
             }
             ScanMode::Targeted { paths, .. } => {
                 // targeted rescans never prompt about missing library roots
-                let missing_roots: Vec<Utf8PathBuf> = scan_settings
-                    .paths
-                    .iter()
-                    .filter(|path| !path.exists())
-                    .cloned()
-                    .collect();
+                let missing_roots = split_available_roots(&scan_settings.paths).await.1;
 
                 let records_before_cleanup = scan_record.records.len();
                 let updated_playlists =
