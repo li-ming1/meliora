@@ -9,6 +9,7 @@ use gpui::{
     ScrollHandle, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
     actions, div, fill, hsla, point, prelude::*, px, relative, size,
 };
+use tracing::error;
 use unicode_segmentation::*;
 
 use crate::ui::{global_actions::PlayPause, theme::Theme};
@@ -834,15 +835,16 @@ impl Element for TextElement {
             window.paint_quad(selection)
         }
         let line = prepaint.line.take().unwrap();
-        line.paint(
+        if let Err(e) = line.paint(
             bounds.origin,
             window.line_height(),
             gpui::TextAlign::Left,
             None,
             window,
             cx,
-        )
-        .unwrap();
+        ) {
+            error!("Failed to paint text input line: {e:?}");
+        }
 
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
