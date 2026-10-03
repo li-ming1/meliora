@@ -12,7 +12,7 @@ use gpui::{
     UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder, px, rems, rgba,
     uniform_list,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::error;
 
 use crate::{
@@ -171,20 +171,55 @@ fn schedule_row_prefetch(
     // dropping the JoinHandle detaches the task
     #[allow(clippy::let_underscore_future)]
     let _ = crate::RUNTIME.spawn(async move {
+        // skip rows the cache already holds: overlapping windows stay cheap;
+        // dedup repeated ids so a track listed twice costs a single fetch
+        let mut seen = FxHashSet::default();
+        let mut to_fetch = Vec::new();
         for track_id in track_ids {
-            // skip rows the cache already holds: overlapping windows stay cheap
-            if prefetched_track(&rows_cache, track_id).is_some() {
-                continue;
+            if seen.insert(track_id) && prefetched_track(&rows_cache, track_id).is_none() {
+                to_fetch.push(track_id);
             }
-            match db::get_track_by_id(&pool, track_id).await {
-                Ok(track) => {
-                    if !insert_prefetched(&rows_cache, track, generation) {
-                        // cache was cleared (reload): stop writing stale rows
-                        break;
+        }
+
+        // Locations are bound in chunks so one statement never exceeds the
+        // backend's host-parameter limit.
+        const SQL_BIND_CHUNK: usize = 900;
+        for chunk in to_fetch.chunks(SQL_BIND_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                include_str!("../../../queries/library/find_tracks_by_ids.sql"),
+                placeholders
+            );
+            let mut query = sqlx::query_as::<_, Track>(sqlx::AssertSqlSafe(sql));
+            for track_id in chunk {
+                query = query.bind(track_id);
+            }
+
+            match query.fetch_all(&pool).await {
+                Ok(fetched) => {
+                    let mut fetched: FxHashMap<i64, Track> =
+                        fetched.into_iter().map(|track| (track.id, track)).collect();
+                    // write back in window order so the FIFO cache keeps the
+                    // eviction order of the old row-by-row prefetch
+                    for track_id in chunk {
+                        let Some(track) = fetched.remove(track_id) else {
+                            continue;
+                        };
+                        if !insert_prefetched(&rows_cache, Arc::new(track), generation) {
+                            // cache was cleared (reload): stop writing stale rows
+                            return;
+                        }
+                    }
+                    if !fetched.is_empty() {
+                        tracing::debug!(count = fetched.len(), "playlist row prefetch missed");
                     }
                 }
                 Err(err) => {
-                    tracing::debug!(track_id, error = %err, "playlist row prefetch missed");
+                    tracing::debug!(
+                        count = chunk.len(),
+                        error = %err,
+                        "playlist row prefetch failed"
+                    );
                 }
             }
         }
