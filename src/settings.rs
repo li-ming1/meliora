@@ -148,8 +148,9 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
         let result = tokio::task::spawn_blocking(move || {
             // 先写同目录临时文件再 rename 原子替换（同 session_io::save）：
             // 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态
-            // 还会把正常会话误标为 Corrupt。
-            let tmp = path.with_extension("json.tmp");
+            // 还会把正常会话误标为 Corrupt。tmp 名带 generation：防抖不保证
+            // 上一次写盘已结束，固定名会让两代写盘截断同一个 tmp 交错写。
+            let tmp = path.with_extension(format!("json.tmp{generation}"));
             File::create(&tmp)
                 .and_then(|file| {
                     serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into())
