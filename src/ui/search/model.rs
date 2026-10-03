@@ -11,8 +11,11 @@ use tracing::debug;
 use crate::{
     library::{db, scan::ScanEvent},
     ui::{
-        app::Pool, availability::compute_available_albums, components::palette::Palette,
-        library::ViewSwitchMessage, models::Models,
+        app::Pool,
+        availability::compute_available_albums,
+        components::palette::{Palette, SplitItems},
+        library::ViewSwitchMessage,
+        models::Models,
     },
 };
 
@@ -24,7 +27,9 @@ type OnAccept = Box<dyn Fn(&Arc<SearchPaletteItem>, &mut App) + 'static>;
 pub struct SearchModel {
     palette: Entity<Palette<SearchPaletteItem, MatcherFunc, OnAccept>>,
     /// Local (library) items, kept around so online results can be merged in.
-    local_items: Vec<Arc<SearchPaletteItem>>,
+    /// Shared as one `Arc`: online-only updates re-emit the segment without
+    /// touching its (library-sized) contents.
+    local_items: Arc<Vec<Arc<SearchPaletteItem>>>,
     /// Bumped when the local index is invalidated; an in-flight background
     /// load compares against it so a stale load can't overwrite a newer one.
     load_generation: u64,
@@ -149,7 +154,7 @@ impl SearchModel {
 
             let search_model = SearchModel {
                 palette,
-                local_items: Vec::new(),
+                local_items: Arc::new(Vec::new()),
                 load_generation: 0,
                 local_items_loaded: false,
                 #[cfg(feature = "kugou")]
@@ -208,7 +213,7 @@ impl SearchModel {
                     // whole library for results nobody is looking at.
                     // Invalidate (dropping any in-flight background load) and
                     // only reload now if the panel is actually open.
-                    this.local_items.clear();
+                    this.local_items = Arc::new(Vec::new());
                     this.local_items_loaded = false;
                     this.load_generation += 1;
                     if !*show_for_scan.read(cx) {
@@ -224,14 +229,19 @@ impl SearchModel {
         })
     }
 
-    /// Local items followed by online (KuGou, then NetEase) items.
-    fn merged_items(&self) -> Vec<Arc<SearchPaletteItem>> {
-        self.local_items
-            .iter()
-            .chain(self.kugou_iter())
-            .chain(self.netease_iter())
-            .cloned()
-            .collect()
+    /// The stable local segment followed by the volatile online (KuGou, then
+    /// NetEase) results. Emitting this clones only the online pages — the
+    /// local prefix is re-shared as one `Arc`, not per item (see
+    /// `SplitItems`).
+    fn merged_items(&self) -> SplitItems<SearchPaletteItem> {
+        SplitItems {
+            stable: self.local_items.clone(),
+            volatile: self
+                .kugou_iter()
+                .chain(self.netease_iter())
+                .cloned()
+                .collect(),
+        }
     }
 
     /// Loads the local index on the background runtime and pushes the merged
@@ -254,7 +264,7 @@ impl SearchModel {
                 if this.load_generation != generation {
                     return;
                 }
-                this.local_items = new_items;
+                this.local_items = Arc::new(new_items);
                 this.local_items_loaded = true;
                 let emitted = this.merged_items();
                 this.palette.update(cx, |_, cx| {
