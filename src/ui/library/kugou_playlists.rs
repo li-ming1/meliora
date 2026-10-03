@@ -1261,11 +1261,14 @@ async fn run_import(
             let client = client.clone();
             async move { kugou_match(&client, &song).await }
         })
-        .buffered(KUGOU_MATCH_CONCURRENCY)
-        .filter_map(std::future::ready);
+        .buffered(KUGOU_MATCH_CONCURRENCY);
+    // progress counts every handled song, not just matches — with a low hit
+    // rate a match-only counter stalls and reads as a hung import
     let mut processed = 0usize;
     while let Some(m) = searches.next().await {
-        matched.push(m);
+        if let Some(m) = m {
+            matched.push(m);
+        }
         processed += 1;
         let _ = progress.send(ImportEvent::Progress {
             done: processed,
