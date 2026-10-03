@@ -153,12 +153,12 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 /// differs from the URL that produced it.
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();
+    let path_mix = mixsongid_in_url(&path_str);
     let guard = stream_map().read().unwrap_or_else(|e| e.into_inner());
     guard
         .iter()
         .find(|entry| {
-            entry.url == path_str.as_ref()
-                || mixsongid_in_url(&path_str).is_some_and(|id| id == entry.mix_song_id)
+            entry.url == path_str.as_ref() || path_mix.is_some_and(|id| id == entry.mix_song_id)
         })
         .map(StreamMapEntry::to_track)
 }

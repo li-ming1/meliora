@@ -368,7 +368,8 @@ impl KugouClient {
     /// (`busi_vip[*].is_vip == 1`). The top-level `is_vip` on that endpoint
     /// stays 0 even while products are active, so this scans the array.
     pub fn has_active_vip(&self) -> bool {
-        let Some(detail) = self.vip_detail() else {
+        let session = self.session_guard();
+        let Some(detail) = session.vip_detail.as_ref() else {
             return false;
         };
         detail
