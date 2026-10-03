@@ -1,18 +1,20 @@
 use std::{
-    io::{Error, ErrorKind},
-    path::Path,
+    fs::File,
+    io::{Error, ErrorKind, Write},
+    path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
 };
 
 use async_compression::tokio::bufread::ZlibDecoder;
-use async_compression::tokio::write::ZlibEncoder;
 use camino::Utf8PathBuf;
+use flate2::{Compression, write::ZlibEncoder};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, BufReader},
     sync::Mutex,
+    task::spawn_blocking,
 };
 use tracing::{error, info};
 
@@ -86,6 +88,51 @@ fn log_write_failure(stage: &str, error: &Error, failure_hint: Option<&'static s
     }
 }
 
+/// Compress `data` with zlib and atomically replace `path` via a temp file,
+/// keeping the per-stage failure logging of the write pipeline. Runs on the
+/// blocking pool through `write_record_atomic`.
+fn compress_write_rename(
+    path: PathBuf,
+    data: Vec<u8>,
+    label: String,
+    failure_hint: Option<&'static str>,
+) -> Result<(), ()> {
+    let tmp_path = path.with_extension("hsr.tmp");
+
+    let file = match File::create(&tmp_path) {
+        Ok(file) => file,
+        // nothing was created, so there is no temp file to clean up
+        Err(e) => {
+            log_write_failure(&format!("create {label} file"), &e, failure_hint);
+            return Err(());
+        }
+    };
+    let mut encoder = ZlibEncoder::new(file, Compression::default());
+
+    if let Err(e) = encoder.write_all(&data) {
+        log_write_failure(&format!("write {label}"), &e, failure_hint);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(());
+    }
+    let file = match encoder.finish() {
+        Ok(file) => file,
+        Err(e) => {
+            log_write_failure(&format!("close {label}"), &e, failure_hint);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(());
+        }
+    };
+    // close the handle before the rename so Windows never sees an open source
+    drop(file);
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        log_write_failure(&format!("rename {label} into place"), &e, failure_hint);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(());
+    }
+    Ok(())
+}
+
 async fn write_record_atomic(
     path: &Path,
     data: Vec<u8>,
@@ -93,37 +140,33 @@ async fn write_record_atomic(
     log_success: bool,
     failure_hint: Option<&'static str>,
 ) {
+    let label = label.to_string();
+    let path = path.to_path_buf();
+
+    // zlib is ~97% of the record write cost at 100k records, so the
+    // compress+write+rename tail runs on the blocking pool instead of a scan
+    // worker; stage failures are logged (and the temp file removed) inside.
+    // tmp path and a second label clone stay outside the move closure: the
+    // join-panic arm below still has to clean up and log.
     let tmp_path = path.with_extension("hsr.tmp");
-
-    let mut file = match tokio::fs::File::create(&tmp_path)
-        .await
-        .map(ZlibEncoder::new)
+    let task_label = label.clone();
+    match spawn_blocking(move || compress_write_rename(path, data, task_label, failure_hint)).await
     {
-        Ok(file) => file,
-        // nothing was created, so there is no temp file to clean up
-        Err(e) => {
-            log_write_failure(&format!("create {label} file"), &e, failure_hint);
-            return;
+        Ok(Ok(())) => {
+            if log_success {
+                info!("Scan record saved successfully");
+            }
         }
-    };
-
-    if let Err(e) = file.write_all(&data).await {
-        log_write_failure(&format!("write {label}"), &e, failure_hint);
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return;
-    }
-    if let Err(e) = file.shutdown().await {
-        log_write_failure(&format!("close {label}"), &e, failure_hint);
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return;
-    }
-    if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
-        log_write_failure(&format!("rename {label} into place"), &e, failure_hint);
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return;
-    }
-    if log_success {
-        info!("Scan record saved successfully");
+        Ok(Err(())) => {}
+        // the blocking task panicked before the rename - drop a possibly
+        // half-written temp file and keep the old record
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            error!("Could not write {label}: {:?}", error);
+            if let Some(hint) = failure_hint {
+                error!("{hint}");
+            }
+        }
     }
 }
 
@@ -222,8 +265,8 @@ mod tests {
     /// 1. `postcard::to_allocvec` of the full map - this is the portion where
     ///    the checkpoint `Mutex` is held, so it also blocks `commit_batch`'s
     ///    `merge_checkpoint_records` for that long;
-    /// 2. zlib compression through the same `async_compression` tokio
-    ///    `ZlibEncoder` pipeline used by `write_record_atomic`.
+    /// 2. zlib compression through the same `flate2` `ZlibEncoder` pipeline
+    ///    used by `write_record_atomic`.
     ///
     /// Decision rule from the perf audit: <50 ms per checkpoint at 100k records
     /// -> keep per-batch checkpointing and record the numbers here;
@@ -274,16 +317,17 @@ mod tests {
                     let serialize_ms = start.elapsed().as_secs_f64() * 1e3;
 
                     let start = std::time::Instant::now();
-                    let mut encoder = ZlibEncoder::new(Vec::with_capacity(raw.len() / 4));
-                    encoder.write_all(&raw).await.unwrap();
-                    encoder.shutdown().await.unwrap();
+                    let mut encoder =
+                        ZlibEncoder::new(Vec::with_capacity(raw.len() / 4), Compression::default());
+                    encoder.write_all(&raw).unwrap();
+                    let compressed = encoder.finish().unwrap();
                     let zlib_ms = start.elapsed().as_secs_f64() * 1e3;
 
                     if round >= WARMUP_ROUNDS {
                         serialize_samples.push(serialize_ms);
                         serialize_zlib_samples.push(serialize_ms + zlib_ms);
                         raw_len = raw.len();
-                        zlib_len = encoder.into_inner().len();
+                        zlib_len = compressed.len();
                     }
                 }
 

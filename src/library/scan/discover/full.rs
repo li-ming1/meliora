@@ -11,7 +11,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures::{StreamExt, stream::FuturesUnordered};
 use rustc_hash::{FxHashMap, FxHashSet};
 use sqlx::SqlitePool;
-use tokio::sync::{Mutex, mpsc::Sender};
+use tokio::{
+    sync::{Mutex, mpsc::Sender},
+    task::spawn_blocking,
+};
 use tracing::error;
 
 use crate::{
@@ -254,7 +257,12 @@ async fn cleanup_stale_tracks_paged(
                 existence_candidates.push(path);
             }
         }
-        to_delete.extend(missing_paths(existence_candidates));
+        // exists-probes are blocking FS work: keep them off the scan worker,
+        // and keep this page's rows when the probe fails (the next scan retries)
+        let missing = spawn_blocking(move || missing_paths(existence_candidates))
+            .await
+            .unwrap_or_default();
+        to_delete.extend(missing);
 
         if page.len() < page_size as usize {
             break;
@@ -281,7 +289,10 @@ async fn cleanup_stale_tracks_paged(
         }
     }
 
-    to_delete.extend(missing_paths(existence_candidates));
+    let missing = spawn_blocking(move || missing_paths(existence_candidates))
+        .await
+        .unwrap_or_default();
+    to_delete.extend(missing);
     delete_tracks(pool, scan_record, &to_delete).await
 }
 

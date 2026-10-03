@@ -11,7 +11,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures::{StreamExt, stream::FuturesUnordered};
 use rustc_hash::{FxHashMap, FxHashSet};
 use sqlx::SqlitePool;
-use tokio::sync::{Mutex, mpsc::Sender};
+use tokio::{
+    sync::{Mutex, mpsc::Sender},
+    task::spawn_blocking,
+};
 use tracing::error;
 
 use crate::library::scan::{
@@ -371,7 +374,12 @@ pub async fn reconcile_rescan_paths(
         );
     }
 
-    let to_delete: Vec<Utf8PathBuf> = missing_paths(candidates).into_iter().collect();
+    // exists-probes are blocking FS work: keep them off the scan worker, and
+    // keep the rows when the probe fails (the next scan retries)
+    let missing = spawn_blocking(move || missing_paths(candidates))
+        .await
+        .unwrap_or_default();
+    let to_delete: Vec<Utf8PathBuf> = missing.into_iter().collect();
     delete_tracks(pool, scan_record, &to_delete).await
 }
 

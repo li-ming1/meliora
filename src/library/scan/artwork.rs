@@ -60,8 +60,10 @@ pub async fn examine_folder_art(
     .fetch_all(pool)
     .await?;
     let mut claims_by_dir: FxHashMap<String, Vec<i64>> = FxHashMap::default();
+    let mut claim_counts: FxHashMap<i64, usize> = FxHashMap::default();
     for (album_id, path) in claims {
         claims_by_dir.entry(path).or_default().push(album_id);
+        *claim_counts.entry(album_id).or_default() += 1;
     }
 
     let mut conn = pool.acquire().await?;
@@ -69,6 +71,20 @@ pub async fn examine_folder_art(
         let Some(album_ids) = claims_by_dir.get(directory.as_str()) else {
             continue;
         };
+
+        // Tracks committed this scan already carried this directory's folder
+        // candidate, so albums settled in `candidates` would only recompute an
+        // identical hash here - skip the re-read (weak loader handles have
+        // expired by now, forcing a full file read + decode). Albums shared
+        // with another folder could still be outranked by that folder's art,
+        // so those always re-examine. `examined` still records the check for
+        // finalize's keep-existing branch.
+        if album_ids.iter().all(|&album_id| {
+            candidates.contains_key(&album_id) && claim_counts.get(&album_id) == Some(&1)
+        }) {
+            examined.extend(album_ids.iter().copied());
+            continue;
+        }
 
         let mut art = match observation {
             Some(candidate) => loader.load(candidate.clone()).await,
