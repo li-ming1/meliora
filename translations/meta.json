@@ -901,31 +901,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:664",
+    "definedIn": "src/ui/kugou.rs:675",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:676",
+    "definedIn": "src/ui/kugou.rs:687",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:791",
+    "definedIn": "src/ui/kugou.rs:802",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:796",
+    "definedIn": "src/ui/kugou.rs:807",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:690",
+    "definedIn": "src/ui/kugou.rs:701",
     "plural": false,
     "description": null
   },
@@ -1117,19 +1117,19 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:801",
+    "definedIn": "src/ui/kugou.rs:812",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_CLAIMED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:175",
+    "definedIn": "src/ui/kugou.rs:178",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_CLAIM_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:191",
+    "definedIn": "src/ui/kugou.rs:194",
     "plural": false,
     "description": null
   },
@@ -1279,31 +1279,31 @@
   },
   "NETEASE_LIKE_ADDED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:466",
+    "definedIn": "src/ui/netease.rs:477",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:472",
+    "definedIn": "src/ui/netease.rs:483",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:507",
+    "definedIn": "src/ui/netease.rs:518",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:513",
+    "definedIn": "src/ui/netease.rs:524",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:479",
+    "definedIn": "src/ui/netease.rs:490",
     "plural": false,
     "description": null
   },
@@ -1339,7 +1339,7 @@
   },
   "NETEASE_LOGIN_REQUIRED_LIKE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:442",
+    "definedIn": "src/ui/netease.rs:453",
     "plural": false,
     "description": null
   },
@@ -1519,7 +1519,7 @@
   },
   "NETEASE_UNLIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:520",
+    "definedIn": "src/ui/netease.rs:531",
     "plural": false,
     "description": null
   },
