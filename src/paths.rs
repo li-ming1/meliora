@@ -30,47 +30,55 @@ pub fn log_dir() -> PathBuf {
 /// Moves the data and log directories left behind by the legacy
 /// `li-ming1/meliora` naming under the current `meliora` one.
 /// Rerunning is a no-op once the new directories exist, and the whole move is
-/// skipped when either source is missing.
-pub fn migrate_legacy_li_ming1_dirs() {
-    migrate_legacy_dirs_from("li-ming1", "meliora");
+/// skipped when either source is missing. Returns one entry per failed tree
+/// move so `main` can log them once the logger is up (this runs before
+/// `logging::init`).
+pub fn migrate_legacy_li_ming1_dirs() -> Vec<std::io::Error> {
+    migrate_legacy_dirs_from("li-ming1", "meliora")
 }
 
 /// Moves the data and log directories left behind by the legacy
 /// `mailliw/hummingbird` naming under the current `meliora` one.
 /// Rerunning is a no-op once the new directories exist, and the whole move is
-/// skipped when either source is missing.
-pub fn migrate_legacy_dirs() {
-    migrate_legacy_dirs_from("mailliw", "hummingbird");
+/// skipped when either source is missing. Returns one entry per failed tree
+/// move so `main` can log them once the logger is up (this runs before
+/// `logging::init`).
+pub fn migrate_legacy_dirs() -> Vec<std::io::Error> {
+    migrate_legacy_dirs_from("mailliw", "hummingbird")
 }
 
 /// Shared body of the two legacy-directory migrations: moves `org/app`'s data
-/// and local-data directories under the current `meliora` ones.
-fn migrate_legacy_dirs_from(org: &str, app: &str) {
+/// and local-data directories under the current `meliora` ones. Both trees are
+/// always attempted; each failure is returned separately.
+fn migrate_legacy_dirs_from(org: &str, app: &str) -> Vec<std::io::Error> {
     let legacy = dirs_for(org, app);
-    migrate_tree(legacy.data_dir(), &data_dir());
-    migrate_tree(legacy.data_local_dir(), &log_dir_for_current());
+    let mut failures = Vec::new();
+    if let Err(err) = migrate_tree(legacy.data_dir(), &data_dir()) {
+        failures.push(err);
+    }
+    if let Err(err) = migrate_tree(legacy.data_local_dir(), &log_dir_for_current()) {
+        failures.push(err);
+    }
+    failures
 }
 
 fn log_dir_for_current() -> PathBuf {
     log_dir_in(project_dirs(), None)
 }
 
-fn migrate_tree(old: &Path, new: &Path) {
+fn migrate_tree(old: &Path, new: &Path) -> std::io::Result<()> {
     if !old.is_dir() || new.exists() {
-        return;
+        return Ok(());
     }
     if let Some(parent) = new.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     if std::fs::rename(old, new).is_err() {
         // fall back to copy-then-remove for cross-volume moves
-        match copy_recursive(old, new) {
-            Ok(()) => {
-                let _ = std::fs::remove_dir_all(old);
-            }
-            Err(err) => tracing::warn!(%err, "failed to migrate legacy data dir"),
-        }
+        copy_recursive(old, new)?;
+        let _ = std::fs::remove_dir_all(old);
     }
+    Ok(())
 }
 
 fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {

@@ -369,8 +369,9 @@ fn spawn_memory_probe() {
     /// mechanism against *unknown* future bugs, and no in-process action can
     /// reclaim, e.g., glyph atlas pages (eviction trips the 2026-09-08
     /// dangling-scene crash class). So the terminal valve restarts the
-    /// process: two consecutive samples (≥60 s) past the cap mean the
-    /// commit is sustained past the line — spawn a replacement exe (session
+    /// process: two consecutive 30 s samples (the commit stays above the cap
+    /// for at least the 30 s between them) mean it is sustained past the
+    /// line — spawn a replacement exe (session
     /// state lives in playback_session.json, settings save on change) and
     /// exit. Growth between samples is single-digit MB at post-fix rates,
     /// so the bound holds to within ~10 MB regardless of the bug. Guarded by
@@ -450,7 +451,7 @@ fn spawn_memory_probe() {
                 );
             }
             // Pressure shed: the soft cap is the early-warning line the hard
-            // valve counts from (two consecutive samples ≥60s apart). On the
+            // valve counts from (two consecutive samples 30 s apart). On the
             // rising edge, yield the general-purpose image caches — render
             // LRU to half its window, backdrop LRU to the current track only
             // — and raise the pressure flag so the immersive view stops
@@ -646,12 +647,18 @@ fn main() -> anyhow::Result<()> {
     tune_mimalloc_page_reset();
 
     // move any data/log dirs left under the legacy `li-ming1/meliora` and
-    // `mailliw/hummingbird` names so logins and caches survive the renames
-    crate::paths::migrate_legacy_li_ming1_dirs();
-    crate::paths::migrate_legacy_dirs();
+    // `mailliw/hummingbird` names so logins and caches survive the renames.
+    // Runs before logging::init because every later init reads these paths;
+    // failures are collected here and logged right after the logger is up.
+    let mut migration_failures = crate::paths::migrate_legacy_li_ming1_dirs();
+    migration_failures.extend(crate::paths::migrate_legacy_dirs());
 
     I18N_MANAGER.load_source(tr_load!());
     crate::logging::init()?;
+
+    for err in migration_failures {
+        tracing::warn!(%err, "failed to migrate legacy data dir");
+    }
 
     tracing::info!("version {VERSION_STRING}");
 
