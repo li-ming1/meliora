@@ -3,8 +3,8 @@ use std::rc::Rc;
 use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
-    Anchor, App, InteractiveElement, IntoElement, ParentElement, Pixels, Point, RenderOnce, Styled,
-    Window, anchored, deferred, div, point, px,
+    Anchor, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
+    RenderOnce, Styled, Window, anchored, deferred, div, point, px,
 };
 
 use crate::{
@@ -141,9 +141,11 @@ impl RenderOnce for BandEditor {
             move |kind, _, cx| on_edit(BandEdit::Kind(*kind), cx)
         });
 
-        // per-band ids keep knob state from bleeding across bands when the popover re-targets
+        // per-band ids keep knob state from bleeding across bands when the
+        // popover re-targets; composite (name, index) ids avoid a per-frame
+        // format! allocation (same pattern as ColumnResizeHandle::new)
         let index = self.index;
-        let freq_knob = knob(format!("eq-band-freq-{index}"))
+        let freq_knob = knob(ElementId::named_usize("eq-band-freq", index))
             .label(tr!("EQ_BAND_FREQ", "Freq"))
             .value(freq_to_norm(band.frequency))
             .default_value(freq_to_norm(DEFAULT_BAND_FREQ_HZ))
@@ -156,7 +158,7 @@ impl RenderOnce for BandEditor {
                 let on_edit = on_edit.clone();
                 move |v, cx| on_edit(BandEdit::Frequency(norm_to_freq(v)), cx)
             });
-        let gain_knob = knob(format!("eq-band-gain-{index}"))
+        let gain_knob = knob(ElementId::named_usize("eq-band-gain", index))
             .label(tr!("EQ_BAND_GAIN", "Gain"))
             .bipolar()
             .value(gain_to_norm(band.gain_db))
@@ -176,7 +178,7 @@ impl RenderOnce for BandEditor {
                 let on_edit = on_edit.clone();
                 move |v, cx| on_edit(BandEdit::Gain(norm_to_gain(v)), cx)
             });
-        let q_knob = knob(format!("eq-band-q-{index}"))
+        let q_knob = knob(ElementId::named_usize("eq-band-q", index))
             .label(tr!("EQ_BAND_Q", "Q"))
             .value(q_to_norm(band.q))
             .default_value(q_to_norm(band.kind.default_q()))

@@ -34,6 +34,8 @@ const DRAG_PUSH_INTERVAL: Duration = Duration::from_millis(33);
 /// Stroke width of the track and value arcs, and of the position tick.
 const ARC_STROKE_WIDTH: f32 = 2.5;
 const TICK_STROKE_WIDTH: f32 = 2.0;
+/// Font size of the label and readout captions.
+const CAPTION_SIZE: f32 = 12.0;
 const ERROR_FLASH: Duration = Duration::from_millis(600);
 
 // Arc runs clockwise from 7 o'clock to 5 o'clock, straight up is zero
@@ -125,10 +127,10 @@ fn drag_position(start_position: f32, start_y: Pixels, current_y: Pixels, scale:
     (start_position + dy / DRAG_PIXELS * scale).clamp(0.0, 1.0)
 }
 
-fn shape_caption(window: &mut Window, text: SharedString, color: Hsla) -> ShapedLine {
+fn shape_caption(window: &mut Window, text: SharedString, color: Hsla, font: Font) -> ShapedLine {
     let run = TextRun {
         len: text.len(),
-        font: window.text_style().font(),
+        font,
         color,
         background_color: None,
         underline: None,
@@ -137,7 +139,54 @@ fn shape_caption(window: &mut Window, text: SharedString, color: Hsla) -> Shaped
     };
     window
         .text_system()
-        .shape_line(text, px(12.0), &[run], None)
+        .shape_line(text, px(CAPTION_SIZE), &[run], None)
+}
+
+/// One cached shaped caption (label or readout): the key fields cover
+/// everything the shaping consumes, so an unchanged caption is never
+/// re-shaped across frames. Stored on [`KnobState`], which persists across
+/// frames only for id'd knobs.
+struct CaptionCache {
+    text: SharedString,
+    color: Hsla,
+    font: Font,
+    font_size: Pixels,
+    scale_factor: f32,
+    line: ShapedLine,
+}
+
+/// Returns the cached caption for `slot` while its key still matches,
+/// otherwise reshapes via [`shape_caption`] and refills the slot: prepaint
+/// runs every frame but only real text/style changes need re-shaping (a
+/// drag changes the readout text and misses on purpose).
+fn cached_caption(
+    slot: &mut Option<CaptionCache>,
+    text: SharedString,
+    color: Hsla,
+    font: Font,
+    scale_factor: f32,
+    window: &mut Window,
+) -> ShapedLine {
+    let font_size = px(CAPTION_SIZE);
+    if let Some(cache) = slot
+        && cache.text == text
+        && cache.color == color
+        && cache.font == font
+        && cache.font_size == font_size
+        && cache.scale_factor == scale_factor
+    {
+        return cache.line.clone();
+    }
+    let line = shape_caption(window, text.clone(), color, font.clone());
+    *slot = Some(CaptionCache {
+        text,
+        color,
+        font,
+        font_size,
+        scale_factor,
+        line: line.clone(),
+    });
+    line
 }
 
 fn arc_center(bounds: Bounds<Pixels>) -> Point<Pixels> {
@@ -244,6 +293,8 @@ struct KnobState {
     parse_error: Option<Instant>,
     refocus: bool,
     scroll_position: Option<f32>,
+    label_caption: Option<CaptionCache>,
+    readout_caption: Option<CaptionCache>,
 }
 
 pub struct KnobPrepaint {
@@ -329,15 +380,27 @@ impl Element for Knob {
             (theme.text_secondary, theme.text)
         };
 
-        let label = self
-            .label
-            .clone()
-            .map(|text| shape_caption(window, text, label_color.into_color()));
-        let readout = if textbox.is_none() {
-            Some(shape_caption(
+        let font = window.text_style().font();
+        let scale_factor = window.scale_factor();
+
+        let label = self.label.clone().map(|text| {
+            cached_caption(
+                &mut state.borrow_mut().label_caption,
+                text,
+                label_color.into_color(),
+                font.clone(),
+                scale_factor,
                 window,
+            )
+        });
+        let readout = if textbox.is_none() {
+            Some(cached_caption(
+                &mut state.borrow_mut().readout_caption,
                 (self.format)(self.value),
                 readout_color.into_color(),
+                font.clone(),
+                scale_factor,
+                window,
             ))
         } else {
             None

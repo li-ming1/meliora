@@ -1,11 +1,14 @@
 // adapted from https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 
-use std::ops::Range;
+use std::{
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ScrollHandle, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
     actions, div, fill, hsla, point, prelude::*, px, relative, size,
 };
@@ -13,6 +16,13 @@ use tracing::error;
 use unicode_segmentation::*;
 
 use crate::ui::{global_actions::PlayPause, theme::Theme};
+
+/// `TextElement::paint` runs per frame per line and the `error!` writer
+/// flushes synchronously, so a failing paint would otherwise hit the log
+/// 60-120x per second. Paint failures are persistent (font/atlas backend
+/// state), so only the first one logs; once painting recovers the input
+/// simply renders again, which needs no log line.
+static PAINT_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 actions!(
     text_input,
@@ -127,6 +137,7 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    shaped_line: Option<ShapedLineCache>,
     is_selecting: bool,
     selection_drag_mode: SelectionDragMode,
     word_drag_anchor: usize,
@@ -681,6 +692,21 @@ struct PrepaintState {
     selection: Option<PaintQuad>,
 }
 
+/// Cached `shape_line` output for [`TextElement`], keyed on everything the
+/// shaping and its decoration runs consume: an unchanged input then skips
+/// re-shaping (and the per-frame run vector) on every frame it re-renders.
+/// The key must stay complete or a stale line (wrong glyphs, underline or
+/// color) gets painted.
+struct ShapedLineCache {
+    display_text: SharedString,
+    font: Font,
+    font_size: Pixels,
+    color: Hsla,
+    marked_range: Option<Range<usize>>,
+    scale_factor: f32,
+    line: ShapedLine,
+}
+
 impl IntoElement for TextElement {
     type Element = Self;
 
@@ -727,6 +753,7 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
+        let marked_range = input.marked_range.clone();
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
@@ -735,46 +762,78 @@ impl Element for TextElement {
             (content, style.color)
         };
 
-        let run = TextRun {
-            len: display_text.len(),
-            font: style.font(),
-            color: text_color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-            letter_spacing: None,
-        };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            vec![
-                TextRun {
-                    len: marked_range.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked_range.end - marked_range.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - marked_range.end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect()
-        } else {
-            vec![run]
-        };
-
+        let font = style.font();
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_line(display_text, font_size, &runs, None);
+        let scale_factor = window.scale_factor();
+
+        let cached = input
+            .shaped_line
+            .as_ref()
+            .filter(|cache| {
+                cache.display_text == display_text
+                    && cache.font == font
+                    && cache.font_size == font_size
+                    && cache.color == text_color
+                    && cache.marked_range == marked_range
+                    && cache.scale_factor == scale_factor
+            })
+            .map(|cache| cache.line.clone());
+        let line = if let Some(line) = cached {
+            line
+        } else {
+            let run = TextRun {
+                len: display_text.len(),
+                font: font.clone(),
+                color: text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+                letter_spacing: None,
+            };
+            let runs = if let Some(marked_range) = marked_range.as_ref() {
+                vec![
+                    TextRun {
+                        len: marked_range.start,
+                        ..run.clone()
+                    },
+                    TextRun {
+                        len: marked_range.end - marked_range.start,
+                        underline: Some(UnderlineStyle {
+                            color: Some(run.color),
+                            thickness: px(1.0),
+                            wavy: false,
+                        }),
+                        ..run.clone()
+                    },
+                    TextRun {
+                        len: display_text.len() - marked_range.end,
+                        ..run
+                    },
+                ]
+                .into_iter()
+                .filter(|run| run.len > 0)
+                .collect()
+            } else {
+                vec![run]
+            };
+
+            let line =
+                window
+                    .text_system()
+                    .shape_line(display_text.clone(), font_size, &runs, None);
+            self.input.update(cx, |input, _cx| {
+                input.shaped_line = Some(ShapedLineCache {
+                    display_text,
+                    font,
+                    font_size,
+                    color: text_color,
+                    marked_range,
+                    scale_factor,
+                    line: line.clone(),
+                });
+            });
+            line
+        };
 
         let theme = cx.global::<Theme>();
 
@@ -842,7 +901,8 @@ impl Element for TextElement {
             None,
             window,
             cx,
-        ) {
+        ) && !PAINT_FAILURE_LOGGED.swap(true, Ordering::Relaxed)
+        {
             error!("Failed to paint text input line: {e:?}");
         }
 
@@ -876,6 +936,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            shaped_line: None,
             is_selecting: false,
             selection_drag_mode: SelectionDragMode::Char,
             word_drag_anchor: 0,
