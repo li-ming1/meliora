@@ -198,14 +198,17 @@ pub struct SymphoniaStream {
 }
 
 impl SymphoniaStream {
-    fn break_metadata(&mut self, tags: &[Tag]) {
+    /// Free-standing so the decode loop can fold a mid-stream revision in
+    /// while the format reader (which owns the metadata log) is still
+    /// mutably borrowed.
+    fn apply_tags(tags: &[Tag], metadata: &mut Metadata) {
         for tag in tags {
             let meta_tag = match &tag.std {
                 Some(std_tag) => map_standard_tag(std_tag),
                 None => map_raw_tag(tag),
             };
             if let Some(meta_tag) = meta_tag {
-                apply_tag(meta_tag, &mut self.current_metadata);
+                apply_tag(meta_tag, metadata);
             }
         }
     }
@@ -218,7 +221,7 @@ impl SymphoniaStream {
 
         // only update metadata if something useful was actually read
         let found_metadata = if let Some(metadata) = meta_queue.skip_to_latest() {
-            self.break_metadata(&metadata.media.tags);
+            Self::apply_tags(&metadata.media.tags, &mut self.current_metadata);
             if !metadata.media.visuals.is_empty() {
                 self.last_image = Some(metadata.media.visuals[0].clone());
             }
@@ -598,7 +601,21 @@ impl MediaStream for SymphoniaStream {
                 Err(err) => return classify_next_packet_error(err),
             };
 
-            format.metadata().skip_to_latest();
+            // A demuxer can push fresh metadata revisions mid-stream (e.g. a
+            // chained OGG stream announcing new tags). The common case costs
+            // one len comparison; on a revision change, consume the log, fold
+            // the latest revision's tags into the current metadata, and let
+            // playback re-read them through check_metadata_update.
+            if !format.metadata().is_latest() {
+                let mut meta_queue = format.metadata();
+                if let Some(revision) = meta_queue.skip_to_latest() {
+                    Self::apply_tags(&revision.media.tags, &mut self.current_metadata);
+                    if !revision.media.visuals.is_empty() {
+                        self.last_image = Some(revision.media.visuals[0].clone());
+                    }
+                    self.pending_metadata_update = true;
+                }
+            }
 
             if packet.track_id != self.current_track {
                 continue;
