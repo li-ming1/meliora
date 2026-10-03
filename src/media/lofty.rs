@@ -24,8 +24,8 @@ use crate::media::{
 
 fn item_value_to_string(value: &ItemValue) -> Option<String> {
     let value = match value {
-        ItemValue::Text(s) | ItemValue::Locator(s) => Some(s.clone()),
-        ItemValue::Binary(v) => String::from_utf8(v.clone()).ok(),
+        ItemValue::Text(s) | ItemValue::Locator(s) => Some(s.as_str()),
+        ItemValue::Binary(v) => str::from_utf8(v).ok(),
     };
     let value = value?;
     let trimmed = value.trim();
@@ -320,11 +320,14 @@ fn finalize_album_artist_keys(metadata: &mut Metadata, album_artists: &[String])
         // a multi-part sort is only trusted when each part claims a track artist, a single
         // artist's sort name can itself contain "&" (Simon & Garfunkel); a single-part sort is
         // trusted only when no individual credits exist to contradict it
+        let artist_keys: Vec<String> = metadata
+            .artists
+            .iter()
+            .map(|name| token_key(name))
+            .collect();
         let claimed = |part: &str| {
-            metadata
-                .artists
-                .iter()
-                .any(|name| token_key(name) == token_key(part))
+            let part_key = token_key(part);
+            artist_keys.contains(&part_key)
         };
         let multi_part_all_claimed = parts.len() > 1 && parts.iter().all(|part| claimed(part));
         let single_part_without_credits = parts.len() == 1 && album_artists.is_empty();
