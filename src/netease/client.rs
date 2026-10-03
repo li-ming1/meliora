@@ -483,6 +483,14 @@ impl NeteaseClient {
             object.insert("e_r".into(), Value::Bool(false));
         }
 
+        // eapi embeds one device header object (requestId included) in both
+        // the encrypted payload and the `Cookie` header, so it is built once
+        // up front — mirroring the reference client.
+        let cookie_pairs = match crypto_type {
+            Crypto::Weapi => self.weapi_cookie_map(&session, now_ms),
+            Crypto::Eapi => self.eapi_header(&session, now_ms),
+        };
+
         let (url, body, user_agent, referer) = match crypto_type {
             Crypto::Weapi => {
                 let object = data.as_object_mut().expect("request data is an object");
@@ -503,12 +511,11 @@ impl NeteaseClient {
                 (url, body, WEAPI_UA, Some(DOMAIN))
             }
             Crypto::Eapi => {
-                let header = self.eapi_header(&session, now_ms);
                 if let Some(object) = data.as_object_mut() {
                     object.insert(
                         "header".into(),
                         Value::Object(
-                            header
+                            cookie_pairs
                                 .iter()
                                 .map(|(k, v)| (k.clone(), Value::String(v.clone())))
                                 .collect(),
@@ -523,11 +530,6 @@ impl NeteaseClient {
                 let body = format!("params={}", urlencoding::encode(&params));
                 (url, body, EAPI_UA, None)
             }
-        };
-
-        let cookie_pairs = match crypto_type {
-            Crypto::Weapi => self.weapi_cookie_map(&session, now_ms),
-            Crypto::Eapi => self.eapi_header(&session, now_ms),
         };
 
         let mut headers = HeaderMap::new();
@@ -565,7 +567,15 @@ impl NeteaseClient {
             .collect();
         let http_status = response.status().as_u16() as i64;
         let bytes = response.bytes().await?;
-        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            tracing::warn!(
+                uri,
+                status = http_status,
+                bytes = bytes.len(),
+                "netease response is not JSON"
+            );
+            Value::Null
+        });
         // Payload-size telemetry: the parsed `Value` tree costs a multiple of
         // this, so an endpoint that quietly ships megabytes shows up here
         // before it shows up as a memory step in the `[mem]` probe. (The
