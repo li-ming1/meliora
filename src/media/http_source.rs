@@ -74,13 +74,9 @@ const COVER_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// treats that as "no artwork". Uses a fresh request with a short timeout so
 /// cover fetches never block on the long-lived streaming client above.
 ///
-/// 返回聚合缓冲本体（zed-reqwest 未重导出 `Bytes`，以 `impl trait` 命名），
-/// 调用方按需取用/克隆（`Bytes` 的 clone 即引用计数），不再整体复制。
-pub async fn http_cover_bytes(
-    url: &str,
-) -> anyhow::Result<
-    Option<impl AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Clone + Send + 'static>,
-> {
+/// 返回聚合缓冲本体（`bytes::Bytes`，clone 即引用计数），调用方按需取用，
+/// 不再整体复制。
+pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<bytes::Bytes>> {
     // Reuse the shared pooled client (TLS config + connection pool) with a
     // per-request timeout. A fresh Client per cover built a new rustls
     // config and pool per track and left idle-connection teardown work on
@@ -338,9 +334,9 @@ fn release_inflight_cover_gate(url: &str, gate: &Arc<AsyncMutex<()>>) {
 /// 并发控制：同 URL 的并发调用经 per-URL 闸门合并为一次下载，等待方
 /// 复用磁盘缓存结果；不同 URL 的在途下载受 `COVER_FETCH_PERMITS`
 /// 限制。下载失败仍返回 `Ok(None)`，调用方走无图占位回退。
-pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<bytes::Bytes>> {
     if let Some(bytes) = read_cached_cover(url).await {
-        return Ok(Some(bytes));
+        return Ok(Some(bytes.into()));
     }
 
     let (gate, _creator_guard) = inflight_cover_gate(url);
@@ -348,7 +344,7 @@ pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<Vec<u8>
 
     // 拿到闸门后再查一次盘：前一个持有者可能已经把这张图下载写盘了。
     if let Some(bytes) = read_cached_cover(url).await {
-        return Ok(Some(bytes));
+        return Ok(Some(bytes.into()));
     }
 
     // 真正的 HTTP 下载限制在 4 个并发（写盘不占许可）。所有退出路径的
@@ -363,7 +359,7 @@ pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<Vec<u8>
     if let Some(bytes) = &bytes {
         write_cached_cover(url, bytes.clone()).await;
     }
-    Ok(bytes.map(|b| b.as_ref().to_vec()))
+    Ok(bytes)
 }
 
 /// Opens the HTTP(S) URL stored in `path` and probes it with the Symphonia

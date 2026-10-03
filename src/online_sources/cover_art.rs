@@ -123,7 +123,7 @@ fn rewrite_netease_param_with(url: &str, param: &str) -> String {
 pub async fn fetch_display_cover_bytes_capped(
     url: &str,
     max_side: u32,
-) -> anyhow::Result<Option<Vec<u8>>> {
+) -> anyhow::Result<Option<bytes::Bytes>> {
     let mut last_error = None;
     for rung in display_cover_candidates(url) {
         if variant_missed(&rung) {

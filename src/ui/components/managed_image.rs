@@ -116,7 +116,7 @@ fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<
 /// path-based `TrackFile` branch of `retrieve_uncached` acquires the same
 /// semaphore directly and must keep doing so.
 async fn decode_bounded_with_permit(
-    data: Vec<u8>,
+    data: impl AsRef<[u8]> + Send + 'static,
     bound: u32,
 ) -> anyhow::Result<Option<Arc<RenderImage>>> {
     let _permit = DECODE_PERMITS
@@ -124,7 +124,7 @@ async fn decode_bounded_with_permit(
         .await
         .expect("semaphore is never closed");
     crate::RUNTIME
-        .spawn_blocking(move || decode_to_render_image_scaled(&data, bound).map(Some))
+        .spawn_blocking(move || decode_to_render_image_scaled(data.as_ref(), bound).map(Some))
         .await?
 }
 
