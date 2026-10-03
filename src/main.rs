@@ -408,6 +408,11 @@ fn spawn_memory_probe() {
         // rising edge (previous sample was under the cap).
         let mut over_cap_streak: u32 = 0;
         let mut was_over_cap = false;
+        // 启动分级：interval 首个 tick 立即完成，t=0 全量枚举 image-cache 目录
+        // （数千文件的 metadata）会与首帧窗口争盘，先推迟 60s 再进入采样循环
+        // （间隔 30s，对内存观测无实质损失；看门狗晚 60s 相对 300s 最小存活
+        // 守卫可忽略）。
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         loop {
             tick.tick().await;
             let (private, working) = process_memory_mb();

@@ -236,6 +236,10 @@ pub(crate) fn prime_online_liked_cache<L, R, Fut>(
     Fut: Future<Output = ()> + Send + 'static,
 {
     crate::RUNTIME.spawn(async move {
+        // Startup staging: wait out the first-frame window before firing this
+        // whole-liked-list prime, same discipline as the updater's startup
+        // delay — it is background warming, not first-frame work.
+        tokio::time::sleep(Duration::from_secs(2)).await;
         // Same lock as the lazy load in `online_track_is_liked` so the two
         // entry points cannot double-fetch the whole liked list.
         let _guard = liked_load_lock().lock().await;

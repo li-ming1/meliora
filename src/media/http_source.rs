@@ -206,6 +206,10 @@ fn record_cache_write() {
 /// hit; one sweep at boot keeps them bounded by the 30-day age window.
 pub fn prune_image_cache_background() {
     crate::RUNTIME.spawn(async {
+        // 启动分级：全量清扫要 read_dir + metadata 数千个缓存文件，t=0 跑会
+        // 撞首帧窗口。对齐本文件/启动路径的分级先例（updater
+        // STARTUP_CHECK_DELAY 8s），这里推迟 30s，让首帧与库扫描先行。
+        tokio::time::sleep(Duration::from_secs(30)).await;
         let _ = crate::RUNTIME.spawn_blocking(prune_image_cache).await;
     });
 }
