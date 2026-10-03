@@ -15,7 +15,7 @@ pub fn download_label() -> cntp_i18n::I18nString {
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use cntp_i18n::tr;
@@ -167,6 +167,9 @@ impl OnlineLyric {
 pub fn claim_daily_vip_async() {
     let client = kugou::shared_client();
     crate::RUNTIME.spawn(async move {
+        // Startup staggering: the claim is the least urgent boot-time
+        // request; yield briefly so scan/updater traffic goes first.
+        tokio::time::sleep(Duration::from_secs(2)).await;
         use crate::kugou::api::VipClaimOutcome;
         match client.ensure_daily_vip().await {
             VipClaimOutcome::Claimed => {
@@ -377,10 +380,7 @@ pub fn parse_ranks(body: &Value) -> Vec<KugouRank> {
 /// playlist and rank endpoints. Rank audio data lives under `deprecated`
 /// (hash + duration in ms), the cover under `album_info`.
 fn parse_track(item: &Value) -> KugouTrackInfo {
-    let audio = item
-        .get("deprecated")
-        .cloned()
-        .unwrap_or_else(|| item.clone());
+    let audio = item.get("deprecated").unwrap_or(item);
     let album_cover = item
         .pointer("/album_info/sizable_cover")
         .or_else(|| item.get("sizable_cover"))
@@ -395,7 +395,7 @@ fn parse_track(item: &Value) -> KugouTrackInfo {
         if secs > 0 {
             secs
         } else {
-            let deprecated_ms = i64_field(&audio, &["Duration", "duration"]);
+            let deprecated_ms = i64_field(audio, &["Duration", "duration"]);
             if deprecated_ms > 0 {
                 deprecated_ms / 1000
             } else {
@@ -425,11 +425,11 @@ fn parse_track(item: &Value) -> KugouTrackInfo {
         artist: SharedString::from(artist),
         album: SharedString::from(album_field(item)),
         duration,
-        hash: string_field(&audio, &["FileHash", "hash"]),
+        hash: string_field(audio, &["FileHash", "hash"]),
         mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
         album_id: i64_field(item, ALBUM_ID_KEYS),
         cover_url: if album_cover.is_empty() {
-            cover_url_field(&audio)
+            cover_url_field(audio)
         } else {
             album_cover
         },
@@ -562,25 +562,36 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
 
             if let Some(index) = existing {
                 // Re-check under the write lock (the queue may have changed
-                // since the read above): skip the refresh if the item is gone
-                // instead of panicking.
+                // since the read above): only refresh when the entry at this
+                // index is still the same track, or an interleaved mutation
+                // could land this URL on a different song.
                 let mut guard = queue_data.write().unwrap_or_else(|e| e.into_inner());
-                let replaced = Arc::make_mut(&mut guard)
-                    .get_mut(index)
-                    .map(|item| item.replace_path(PathBuf::from(url)))
-                    .is_some();
+                let entries = Arc::make_mut(&mut guard);
+                let same_track = entries.get(index).is_some_and(|item| {
+                    crate::media::is_http_path(item.get_path())
+                        && mixsongid_in_url(&item.get_path().to_string_lossy())
+                            .is_some_and(|id| id == track.mix_song_id)
+                });
+                let replaced = same_track
+                    && entries
+                        .get_mut(index)
+                        .map(|item| item.replace_path(PathBuf::from(&url)))
+                        .is_some();
                 if !replaced {
                     tracing::warn!(
                         index,
-                        "kugou play_track: queue item gone before URL refresh"
+                        "kugou play_track: queue item changed before URL refresh"
                     );
                 }
 
-                if matches!(intent, PlayIntent::Now) {
-                    cx.global::<crate::playback::interface::PlaybackInterface>()
-                        .jump(index);
+                if replaced {
+                    if matches!(intent, PlayIntent::Now) {
+                        cx.global::<crate::playback::interface::PlaybackInterface>()
+                            .jump(index);
+                    }
+                    return;
                 }
-                return;
+                // identity drifted: fall through and insert a fresh entry
             }
 
             let item = online_queue_item(cx, url, &track);
