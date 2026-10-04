@@ -3,20 +3,21 @@ use std::{ffi::OsStr, path::PathBuf};
 use anyhow::Context as _;
 use cntp_i18n::tr;
 use futures::{StreamExt as _, TryFutureExt as _, TryStreamExt as _};
-use gpui::{App, EventEmitter, PathPromptOptions};
+use gpui::{App, Entity, EventEmitter, PathPromptOptions};
 use sqlx::{Sqlite, SqlitePool};
 use tokio::{fs::File, io::BufWriter};
 use tracing::{Instrument as _, debug_span, error, info, warn};
 
 use crate::library::Pool;
-use crate::ui::models::Models;
 
 // Playlist change notifications. These used to live in `ui::models` (audit:
 // `library::scan` and this module had to reverse-import the UI layer just to
 // emit them); they are playlist-domain state, so they live here now. The
 // tracker entity itself is still created by the UI layer (`build_models`) and
-// held by `Models.playlist_tracker`; `ui::models` re-exports both types for
-// the existing `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` consumers.
+// held by `Models.playlist_tracker`; callers pass it into `import_playlist`
+// (the same pattern as `scan::control::start_broadcast`), keeping this module
+// free of `crate::ui` imports. `ui::models` re-exports both types for the
+// existing `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` consumers.
 pub struct PlaylistInfoTransfer;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -162,7 +163,12 @@ fn parse_m3u(file: File) -> impl futures::Stream<Item = anyhow::Result<M3UEntry>
     })
 }
 
-pub fn import_playlist(cx: &App, playlist_id: i64) {
+/// Imports tracks from a user-selected M3U file into `playlist_id`. The
+/// playlist tracker is passed in by the UI caller (read from the global
+/// `Models` in the adjacent statement before the call, the same execution
+/// point at which this function used to fetch it itself) so this module
+/// keeps no `crate::ui` import.
+pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<PlaylistInfoTransfer>) {
     let path_future = cx.prompt_for_paths(PathPromptOptions {
         files: true,
         directories: false,
@@ -171,7 +177,6 @@ pub fn import_playlist(cx: &App, playlist_id: i64) {
     });
 
     let pool = cx.global::<Pool>().0.clone();
-    let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
     cx.spawn(async move |cx| {
         let task = crate::RUNTIME.spawn(async move {

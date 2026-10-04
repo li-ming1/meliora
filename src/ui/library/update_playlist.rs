@@ -20,6 +20,7 @@ use crate::{
             palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
         },
         library_access::LibraryAccess,
+        models::Models,
     },
 };
 
@@ -82,7 +83,8 @@ impl UpdatePlaylist {
             let show_on_accept = show.clone();
 
             let on_accept: OnAccept = Box::new(move |playlist, cx| {
-                import_playlist(cx, playlist.id);
+                let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+                import_playlist(cx, playlist.id, playlist_tracker);
                 show_on_accept.write(cx, false);
             });
 
@@ -128,7 +130,8 @@ impl UpdatePlaylist {
                             }
                         };
 
-                        import_playlist(cx, playlist_id);
+                        let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+                        import_playlist(cx, playlist_id, playlist_tracker);
 
                         show_on_create.write(cx, false);
                     }),
