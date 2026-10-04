@@ -332,7 +332,7 @@ impl Element for Slider {
             }
         });
 
-        let drag_state_up = drag_entity.clone();
+        let drag_state_up = drag_entity;
         let func_release = func.clone();
         let flush_on_release = change_interval.is_some();
 

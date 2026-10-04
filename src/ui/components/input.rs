@@ -993,9 +993,7 @@ impl Render for TextInput {
                     .w_full()
                     .pr(px(2.0))
                     .pb(px(2.0))
-                    .child(TextElement {
-                        input: cx.entity().clone(),
-                    }),
+                    .child(TextElement { input: cx.entity() }),
             )
     }
 }

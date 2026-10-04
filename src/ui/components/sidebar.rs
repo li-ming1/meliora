@@ -326,7 +326,6 @@ impl RenderOnce for SidebarItem {
                 .id(self.state_id)
                 .child(item)
                 .on_hover({
-                    let state = state.clone();
                     move |hover, _, cx| {
                         state.write(cx, *hover);
                     }

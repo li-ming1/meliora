@@ -388,7 +388,7 @@ impl Render for TrackItem {
                                                 })
                                                 .on_click(cx.listener(move |_, _, _, cx| {
                                                     cx.stop_propagation();
-                                                    toggle_like(track_id, cx.entity().clone(), cx);
+                                                    toggle_like(track_id, cx.entity(), cx);
                                                 }))
                                             }),
                                     )
@@ -412,7 +412,6 @@ impl Render for TrackItem {
                         let track = self.track.clone();
                         let track_menu_context = track_menu_context;
                         let pl_info = self.pl_info;
-                        let show_add_to = show_add_to.clone();
                         let is_liked = self.is_liked;
                         move |_, cx| {
                             div()

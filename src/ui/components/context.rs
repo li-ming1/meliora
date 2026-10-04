@@ -92,7 +92,7 @@ impl RenderOnce for ContextMenu {
         let state_open = state.clone();
         let state_click = state.clone();
         let state_out = state.clone();
-        let state_esc = state.clone();
+        let state_esc = state;
         let on_click_close = self.on_close.clone();
         let on_out_close = self.on_close.clone();
         let on_esc_close = self.on_close.clone();

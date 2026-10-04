@@ -440,7 +440,6 @@ impl ReleaseView {
                 let album = Rc::new((*self.album).clone());
                 let weak_self = cx.entity().downgrade();
                 let close = {
-                    let weak_self = weak_self.clone();
                     move |cx: &mut App| {
                         weak_self.update(cx, |this, cx| this.close_menu(cx)).ok();
                     }

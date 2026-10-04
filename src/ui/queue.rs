@@ -321,7 +321,7 @@ impl Render for QueueItem {
             let selection_read = selection.read(cx);
             let is_multi_selected = selection_read.is_multi() && selection_read.contains(idx);
             let single_track_id = self.track_id;
-            let queue_item_entity = cx.entity().clone();
+            let queue_item_entity = cx.entity();
             // add_to is created lazily on first menu use; its presence no
             // longer distinguishes library tracks from online ones
             let has_add_to = self.track_id.is_some();
@@ -505,7 +505,7 @@ impl Render for QueueItem {
                                         // reuse the per-frame `track_name`
                                         // computed above instead of calling
                                         // tr! again on every frame
-                                        .child(track_name.clone()),
+                                        .child(track_name),
                                 )
                                 .child(
                                     div()
@@ -1050,7 +1050,7 @@ impl Render for Queue {
                                 div()
                                     .text_sm()
                                     .text_color(theme.text_secondary)
-                                    .child(queue_summary.clone()),
+                                    .child(queue_summary),
                             ),
                     )
                     .child(

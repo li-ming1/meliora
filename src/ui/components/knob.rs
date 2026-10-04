@@ -409,7 +409,7 @@ impl Element for Knob {
                 &mut state.borrow_mut().readout_caption,
                 (self.format)(self.value),
                 readout_color.into_color(),
-                font.clone(),
+                font,
                 scale_factor,
                 window,
             ))

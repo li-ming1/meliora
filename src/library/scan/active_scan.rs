@@ -161,7 +161,7 @@ impl ActiveScan {
             slow_discover_task = Some(discover_task);
 
             let router_cancel = Arc::clone(&cancel_flag);
-            let router_disk_txs = disk_txs.clone();
+            let router_disk_txs = disk_txs;
             let router = spawn_blocking(move || {
                 let mut dir_cache: FxHashMap<Utf8PathBuf, usize> = FxHashMap::default();
                 let mut routed: u64 = 0;

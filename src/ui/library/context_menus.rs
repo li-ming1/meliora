@@ -125,7 +125,7 @@ pub(crate) fn add_album_to_playlist_state(
         let add_to = AddToPlaylist::new(cx, show.clone(), Vec::new());
 
         let loaded = Rc::new(std::cell::Cell::new(false));
-        let loaded_for_load = loaded.clone();
+        let loaded_for_load = loaded;
         let add_to_for_load = add_to.clone();
         cx.observe(&show, move |_, show, cx| {
             if !*show.read(cx) || loaded_for_load.get() {

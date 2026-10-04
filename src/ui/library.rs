@@ -730,7 +730,7 @@ impl Library {
                 left_view: None,
                 right_view: None,
                 section,
-                update_playlist: UpdatePlaylist::new(cx, show_update_playlist.clone()),
+                update_playlist: UpdatePlaylist::new(cx, show_update_playlist),
                 focus_handle,
                 scroll_state,
                 reclaim_focus: true,

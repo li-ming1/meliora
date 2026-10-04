@@ -114,7 +114,7 @@ impl Lyrics {
         cx.new(|cx| {
             let playback_info = cx.global::<PlaybackInfo>().clone();
             let current_track = playback_info.current_track.clone();
-            let position = playback_info.position.clone();
+            let position = playback_info.position;
 
             let initial_track = current_track.read(cx).clone();
             let initial_track_path = initial_track.as_ref().map(|t| t.get_path().clone());
@@ -607,7 +607,6 @@ impl Lyrics {
         let Some(track) = path.and_then(crate::ui::kugou::online_track_matching_path) else {
             return;
         };
-        let track = track.clone();
         let expected = path.map(|p| p.to_string_lossy().into_owned());
 
         cx.spawn(async move |this, cx| {
@@ -660,7 +659,6 @@ impl Lyrics {
         let Some(track) = path.and_then(crate::ui::netease::online_track_matching_path) else {
             return;
         };
-        let track = track.clone();
         let expected = path.map(|p| p.to_string_lossy().into_owned());
 
         cx.spawn(async move |this, cx| {

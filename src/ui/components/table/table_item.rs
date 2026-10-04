@@ -164,7 +164,6 @@ where
                 this.opacity(0.5)
             })
             .on_aux_click({
-                let row_data = row_data.clone();
                 move |ev, window, cx| {
                     if let Some(row_data) = row_data.as_ref()
                         && ev.is_middle_click()

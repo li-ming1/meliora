@@ -546,7 +546,7 @@ impl InfoSection {
                 })
                 .on_click(cx.listener(move |_this, _, _, cx| {
                     if let Some(track_id) = track_id {
-                        toggle_like(track_id, cx.entity().clone(), cx);
+                        toggle_like(track_id, cx.entity(), cx);
                         return;
                     }
                     #[cfg(any(feature = "kugou", feature = "netease"))]

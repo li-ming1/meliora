@@ -710,7 +710,6 @@ pub fn run() -> anyhow::Result<()> {
 
         // Update `StorageData` and save it to file system while quitting the app.
         cx.on_app_quit({
-            let storage = storage.clone();
             move |cx| {
                 let data = StorageData::new(cx);
                 let storage = storage.clone();
@@ -744,10 +743,11 @@ pub fn run() -> anyhow::Result<()> {
         .detach();
 
         if let Some(window_information) = storage_data.window_information {
-            cx.global::<Models>()
-                .window_information
-                .clone()
-                .write(cx, Some(window_information.clone()));
+            // The intermediate binding ends the shared borrow of `cx` before
+            // `write` takes it mutably — chaining global() straight into
+            // write() does not compile.
+            let window_information_entity = cx.global::<Models>().window_information.clone();
+            window_information_entity.write(cx, Some(window_information));
         }
 
         let main_window = ensure_main_window(cx, toast_layer_entity).unwrap();

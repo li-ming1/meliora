@@ -126,7 +126,7 @@ impl RenderOnce for InfoSectionContextMenu {
                     move |_, _, cx| download(cx),
                 ))
             })
-            .when_some(track.clone(), |menu, track_for_like| {
+            .when_some(track, |menu, track_for_like| {
                 let is_liked = self.is_liked;
                 let track_id = track_for_like.id;
                 let (like_icon, like_label) = like_toggle_icon_and_label(is_liked);

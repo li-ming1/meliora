@@ -1203,9 +1203,7 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
         cx.spawn({
             let data_dir = data_dir.clone();
             let themes_dir = themes_dir.clone();
-            let selected_theme_state = selected_theme_state.clone();
             let theme_transmitter = theme_transmitter.clone();
-            let theme_options_model = theme_options_model.clone();
             async move |cx: &mut AsyncApp| {
                 loop {
                     while let Ok(event) = rx.try_recv() {

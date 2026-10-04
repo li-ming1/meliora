@@ -253,7 +253,7 @@ fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource)
             version: release.tag_name.clone(),
             url: release.html_url.clone(),
             binary_url: binary_url.clone(),
-            checksums_url: checksums_url.clone(),
+            checksums_url,
         },
     );
 
@@ -263,7 +263,7 @@ fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource)
             Toast::info(tr!(
                 "UPDATE_AVAILABLE_TOAST",
                 "Meliora {{version}} is available",
-                version = release.tag_name.clone()
+                version = release.tag_name
             ))
             .with_duration(UPDATE_TOAST_DURATION)
             .with_action(tr!("UPDATE_OPEN_RELEASE"), move |cx| cx.open_url(&page_url)),

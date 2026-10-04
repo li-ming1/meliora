@@ -164,7 +164,6 @@ impl FileRowItem {
                     count = count
                 ),
                 {
-                    let audio_items = audio_items.clone();
                     move |_, _, cx| {
                         queue_batch_items(audio_items.clone(), BatchAction::Enqueue, cx);
                     }
@@ -179,7 +178,6 @@ impl FileRowItem {
                         Some(PLAYLIST_ADD),
                         tr!("ADD_TO_PLAYLIST"),
                         {
-                            let track_ids = track_ids.clone();
                             move |_, _, cx| {
                                 entity_for_add.update(cx, |item, cx| {
                                     match &item.add_to {
@@ -503,8 +501,7 @@ impl Render for FileRowItem {
                 }
             })
             .on_aux_click({
-                let fv = files_view.clone();
-                let path = path.clone();
+                let fv = files_view;
                 move |ev: &ClickEvent, _, cx| {
                     if ev.is_right_click() && !fv.read(cx).selection_contains(&path) {
                         fv.update(cx, |view, cx| view.select(path.to_path_buf(), cx));

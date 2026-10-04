@@ -524,7 +524,7 @@ fn spawn_library_load(
             // artist information left blank, try retrieving the metadata from
             // disk (the fallback the old inline path ran)
             if data.artist_name.is_none() {
-                spawn_metadata_load(path, cx.entity(), duration.clone(), cx);
+                spawn_metadata_load(path, cx.entity(), duration, cx);
             }
         });
     })

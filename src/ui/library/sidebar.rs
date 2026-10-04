@@ -433,7 +433,6 @@ impl Render for Sidebar {
             .w(px(36.0))
             .h(px(34.0))
             .on_click({
-                let sidebar_collapsed_entity = sidebar_collapsed_entity.clone();
                 let sidebar_width = sidebar_width.clone();
                 let animated_sidebar_width = animated_sidebar_width.clone();
                 cx.listener(move |this, _, _window, cx| {
@@ -587,17 +586,13 @@ impl Render for Sidebar {
                 .child(sidebar_content)
                 .into_any_element()
         } else {
-            resizable(
-                "main-sidebar-resizable",
-                sidebar_width.clone(),
-                ResizeEdge::Right,
-            )
-            .min_size(px(175.0))
-            .max_size(px(350.0))
-            .default_size(DEFAULT_SIDEBAR_WIDTH)
-            .h_full()
-            .child(sidebar_content)
-            .into_any_element()
+            resizable("main-sidebar-resizable", sidebar_width, ResizeEdge::Right)
+                .min_size(px(175.0))
+                .max_size(px(350.0))
+                .default_size(DEFAULT_SIDEBAR_WIDTH)
+                .h_full()
+                .child(sidebar_content)
+                .into_any_element()
         }
     }
 }
