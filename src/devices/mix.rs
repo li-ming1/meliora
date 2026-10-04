@@ -159,7 +159,7 @@ fn position_index(haystack: ChannelPosition, needle: ChannelPosition) -> Option<
 
 fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions) -> MixMatrix {
     // Some decoders report mono as FRONT_LEFT; normalize so it plays in both channels.
-    let src = if src.bits().count_ones() == 1 {
+    let src = if src.bits().is_power_of_two() {
         ChannelPosition::FRONT_CENTER
     } else {
         src
@@ -474,7 +474,7 @@ pub fn layout_from_labels(labels: Vec<ChannelLabel>) -> ChannelLayout {
     for label in &labels {
         match label {
             ChannelLabel::Positioned(p) => {
-                if p.bits().count_ones() == 1 && !pos.contains(*p) {
+                if p.bits().is_power_of_two() && !pos.contains(*p) {
                     pos |= *p;
                 } else {
                     all_positioned = false;

@@ -543,7 +543,7 @@ impl MediaStream for SymphoniaStream {
                     .enumerate()
                     .map(|(index, label)| match label {
                         SymLabel::Positioned(p) => ChannelPosition::from_bits(p.bits())
-                            .filter(|position| position.bits().count_ones() == 1)
+                            .filter(|position| position.bits().is_power_of_two())
                             .map(ChannelLabel::Positioned)
                             .unwrap_or_else(|| fallback_discrete(index)),
                         SymLabel::Discrete(n) | SymLabel::Ambisonic(n) => {

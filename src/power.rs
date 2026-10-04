@@ -46,7 +46,7 @@ impl PlatformPower {
                 Reason: REASON_CONTEXT_0 {
                     // very cool that this requires a mut pointer even though the string is never
                     // mutated! i love windows
-                    SimpleReasonString: PWSTR(reason.as_ptr() as *mut _),
+                    SimpleReasonString: PWSTR(reason.as_ptr().cast_mut()),
                 },
             };
 
