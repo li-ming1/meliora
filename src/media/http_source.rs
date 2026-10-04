@@ -51,15 +51,17 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
         .expect("media HTTP client build failed")
 });
 
-/// Upper bound on waiting for any single network event while feeding the
-/// decoder (response headers, one body chunk). The client deliberately has no
-/// total request timeout — a range body stays open for the whole track — but
-/// the reads below run on the playback thread: without this bound a server
-/// that stalls mid-body blocks the playback main loop forever, commands stop
-/// being consumed, the no-progress skip never fires and playback sits silent
-/// on a "playing" UI. Surfacing it as an IO error lets the engine skip the
-/// track like any other decode failure.
-const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
+// Upper bound on waiting for any single network event while feeding the
+// decoder (response headers, one body chunk). The constant now lives in
+// `media::download` next to `http_download_to_file` — same per-event bound,
+// one shared definition. The client deliberately has no total request
+// timeout — a range body stays open for the whole track — but the reads
+// below run on the playback thread: without this bound a server that stalls
+// mid-body blocks the playback main loop forever, commands stop being
+// consumed, the no-progress skip never fires and playback sits silent on a
+// "playing" UI. Surfacing it as an IO error lets the engine skip the track
+// like any other decode failure.
+use super::download::STREAM_IO_TIMEOUT;
 
 /// Per-request cap for one-shot cover downloads (`http_cover_bytes`).
 const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);

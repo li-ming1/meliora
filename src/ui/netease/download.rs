@@ -6,21 +6,16 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{LazyLock, OnceLock, RwLock},
-    time::Duration,
 };
 
 use cntp_i18n::tr;
-use lofty::{
-    config::WriteOptions,
-    picture::{MimeType, Picture, PictureType},
-    prelude::ItemKey,
-    tag::{Accessor, ItemValue, Tag, TagExt, TagItem, TagType},
-};
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
 
 use crate::{
-    media::http_source::{http_cover_bytes, shared_http_client},
+    media::{
+        download::{embed_tags, http_download_to_file, sanitize_filename},
+        http_source::http_cover_bytes,
+    },
     netease::NeteaseClient,
     toasts::{Toast, emit_toast},
     ui::netease::NeteaseTrackInfo,
@@ -43,85 +38,6 @@ fn pending_downloads() -> &'static RwLock<HashSet<i64>> {
 /// Quality ladder tried in order; the first tier that yields a full-track URL
 /// wins. Trial clips (`freeTrialInfo`) are never saved.
 const QUALITY_LADDER: [&str; 5] = ["hires", "lossless", "exhigh", "higher", "standard"];
-
-/// Replaces characters that are illegal in Windows file names, trims stray
-/// whitespace and leading/trailing dots, and falls back to `track` when
-/// nothing remains.
-fn sanitize_filename(raw: &str) -> String {
-    let cleaned: String = raw
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.');
-    if trimmed.is_empty() { "track" } else { trimmed }.to_string()
-}
-
-/// Upper bound on waiting for any single network event (response headers,
-/// one body chunk). 请求级不设总死线：整曲 FLAC 几十至上百 MB，慢速链路下
-/// 固定总超时必然误杀正常下载，改为按单次网络事件限时、停滞即报错。
-const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Streams `url` straight into `dest` through a fixed ~64KB write buffer:
-/// the whole track is never held in memory. Returns the accumulated byte
-/// count. Any failure — including fewer than 1KB downloaded — removes the
-/// partial file first, so an `Err` never leaves debris on disk.
-///
-/// 走 `chunk()` 而非 `bytes_stream()`：后者被 reqwest 的 `stream` feature
-/// 门控（本仓未启用），`chunk()` 无 feature 门，同为逐块拉取。
-async fn http_download_to_file(url: &str, dest: &Path) -> Result<u64, String> {
-    let request = shared_http_client().get(url);
-    let mut response = tokio::time::timeout(STREAM_IO_TIMEOUT, request.send())
-        .await
-        .map_err(|_| format!("network stalled: no response for {STREAM_IO_TIMEOUT:?}"))?
-        .map_err(|err| err.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
-    }
-
-    let mut total = 0u64;
-    let result = async {
-        let mut file = tokio::io::BufWriter::with_capacity(
-            // 固定 ~64KB：落盘系统调用粒度与网络块到达节奏解耦。
-            64 * 1024,
-            tokio::fs::File::create(dest)
-                .await
-                .map_err(|err| format!("write audio: {err}"))?,
-        );
-        loop {
-            let chunk = tokio::time::timeout(STREAM_IO_TIMEOUT, response.chunk())
-                .await
-                .map_err(|_| format!("network stalled: no data for {STREAM_IO_TIMEOUT:?}"))?
-                .map_err(|err| err.to_string())?;
-            let Some(chunk) = chunk else { break };
-            file.write_all(&chunk)
-                .await
-                .map_err(|err| format!("write audio: {err}"))?;
-            total += chunk.len() as u64;
-        }
-        // BufWriter 被 drop 不会自动冲刷，成功路径必须显式冲刷并关闭。
-        file.flush()
-            .await
-            .map_err(|err| format!("write audio: {err}"))?;
-        file.shutdown()
-            .await
-            .map_err(|err| format!("write audio: {err}"))?;
-        Ok::<(), String>(())
-    }
-    .await;
-
-    if let Err(err) = result {
-        let _ = tokio::fs::remove_file(dest).await;
-        return Err(err);
-    }
-    if total < 1024 {
-        let _ = tokio::fs::remove_file(dest).await;
-        return Err("downloaded file is empty".into());
-    }
-    Ok(total)
-}
 
 /// Best-quality full-track URL for `track` (hires -> ... -> standard),
 /// rejecting trial clips so downloads never save the ~30s preview.
@@ -202,52 +118,6 @@ async fn fetch_lyrics(
     (lrc, yrc)
 }
 
-/// Writes title/artist/album, lyrics and the cover into the downloaded file.
-fn embed_tags(
-    path: &Path,
-    track: &NeteaseTrackInfo,
-    cover: Option<&[u8]>,
-    lrc: Option<&str>,
-) -> Result<(), String> {
-    let tag_type = match path.extension().and_then(|ext| ext.to_str()) {
-        Some("flac") => TagType::VorbisComments,
-        _ => TagType::Id3v2,
-    };
-    let mut tag = Tag::new(tag_type);
-    if !track.title.is_empty() {
-        tag.set_title(track.title.to_string());
-    }
-    if !track.artist.is_empty() {
-        tag.set_artist(track.artist.to_string());
-    }
-    if !track.album.is_empty() {
-        tag.set_album(track.album.to_string());
-    }
-    if let Some(lrc) = lrc {
-        tag.insert(TagItem::new(
-            ItemKey::UnsyncLyrics,
-            ItemValue::Text(lrc.to_string()),
-        ));
-    }
-    if let Some(bytes) = cover {
-        // JPEG magic bytes; anything else is assumed to be PNG.
-        let mime = if bytes.len() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
-            MimeType::Jpeg
-        } else {
-            MimeType::Png
-        };
-        // lofty 的 Picture::unchecked 只收 owned Vec（内部 Cow::Owned），
-        // 这一次拷贝是封面全量在下载链路上的唯一一份。
-        let picture = Picture::unchecked(bytes.to_vec())
-            .pic_type(PictureType::CoverFront)
-            .mime_type(mime)
-            .build();
-        tag.push_picture(picture);
-    }
-    tag.save_to_path(path, WriteOptions::default())
-        .map_err(|err| err.to_string())
-}
-
 /// Downloads `track` into `dir` and returns the saved audio file path.
 pub async fn download_track(
     client: &NeteaseClient,
@@ -283,7 +153,7 @@ pub async fn download_track(
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|err| format!("create download dir: {err}"))?;
-    http_download_to_file(&url, &audio_path).await?;
+    http_download_to_file(&url, &audio_path, &[]).await?;
 
     // Lyric sidecars + tags/cover are best-effort: the audio file is already saved.
     let (lrc, yrc) = fetch_lyrics(client, track).await;
@@ -309,10 +179,21 @@ pub async fn download_track(
         http_cover_bytes(&track.cover_url).await.ok().flatten()
     };
     let tag_path = audio_path.clone();
-    let tag_track = track.clone();
+    // spawn_blocking needs 'static: the borrowed tag fields are cloned into
+    // owned strings (only title/artist/album are embedded).
+    let tag_title = track.title.to_string();
+    let tag_artist = track.artist.to_string();
+    let tag_album = track.album.to_string();
     let _ = crate::RUNTIME
         .spawn_blocking(move || {
-            embed_tags(&tag_path, &tag_track, cover.as_deref(), tag_lrc.as_deref())
+            embed_tags(
+                &tag_path,
+                &tag_title,
+                &tag_artist,
+                &tag_album,
+                cover.as_deref(),
+                tag_lrc.as_deref(),
+            )
         })
         .await;
 
@@ -349,7 +230,7 @@ pub fn download_track_ui(cx: &mut gpui::App, track: NeteaseTrackInfo) {
         .effective_download_dir();
     cx.spawn(async move |cx| {
         let client = crate::netease::shared_client();
-        let result = crate::RUNTIME
+        let joined = crate::RUNTIME
             .spawn(async move {
                 // 排队等待许可也在 RUNTIME 上，不占下载线程。
                 let _permit = DOWNLOAD_PERMITS
@@ -358,10 +239,16 @@ pub fn download_track_ui(cx: &mut gpui::App, track: NeteaseTrackInfo) {
                     .expect("semaphore is never closed");
                 download_track(&client, &track, &dir).await
             })
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .ok_or_else(|| "download task panicked".to_string());
+            .await;
+        // Keep the business error (HTTP status, empty file, …) distinct from a
+        // genuinely panicked task; flattening both into one string used to
+        // report every failure as "download task panicked".
+        let result = match joined {
+            Ok(Ok(path)) => Ok(path),
+            Ok(Err(err)) => Err(err),
+            Err(err) if err.is_panic() => Err("download task panicked".to_string()),
+            Err(err) => Err(err.to_string()),
+        };
 
         // 无论成败都移除进行中标记（防失败后永远无法重下），再发提示。
         pending_downloads()

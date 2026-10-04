@@ -1,4 +1,7 @@
 pub mod errors;
+// Shared download IO layer for the online sources (kugou / netease).
+#[cfg(feature = "online_sources")]
+pub mod download;
 // HTTP(S) range-request media source for online sources (kugou et al.)
 #[cfg(feature = "online_sources")]
 pub mod http_source;

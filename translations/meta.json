@@ -805,19 +805,19 @@
   },
   "KUGOU_DOWNLOADED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:397",
+    "definedIn": "src/ui/kugou/download.rs:258",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_FAILED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:402",
+    "definedIn": "src/ui/kugou/download.rs:263",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_NO_URL": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:170",
+    "definedIn": "src/ui/kugou/download.rs:65",
     "plural": false,
     "description": null
   },
@@ -901,31 +901,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:675",
+    "definedIn": "src/ui/kugou.rs:685",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:687",
+    "definedIn": "src/ui/kugou.rs:697",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:802",
+    "definedIn": "src/ui/kugou.rs:812",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:807",
+    "definedIn": "src/ui/kugou.rs:817",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:701",
+    "definedIn": "src/ui/kugou.rs:711",
     "plural": false,
     "description": null
   },
@@ -1003,7 +1003,7 @@
   },
   "KUGOU_NO_URL": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:528",
+    "definedIn": "src/ui/kugou.rs:538",
     "plural": false,
     "description": null
   },
@@ -1117,19 +1117,19 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:812",
+    "definedIn": "src/ui/kugou.rs:822",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_CLAIMED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:178",
+    "definedIn": "src/ui/kugou.rs:188",
     "plural": false,
     "description": null
   },
   "KUGOU_VIP_CLAIM_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:194",
+    "definedIn": "src/ui/kugou.rs:204",
     "plural": false,
     "description": null
   },
@@ -1249,7 +1249,7 @@
   },
   "NETEASE_DOWNLOADED": {
     "context": "download.rs",
-    "definedIn": "src/ui/netease/download.rs:374",
+    "definedIn": "src/ui/netease/download.rs:261",
     "plural": false,
     "description": null
   },
@@ -1267,13 +1267,13 @@
   },
   "NETEASE_DOWNLOAD_FAILED": {
     "context": "download.rs",
-    "definedIn": "src/ui/netease/download.rs:379",
+    "definedIn": "src/ui/netease/download.rs:266",
     "plural": false,
     "description": null
   },
   "NETEASE_DOWNLOAD_NO_URL": {
     "context": "download.rs",
-    "definedIn": "src/ui/netease/download.rs:141",
+    "definedIn": "src/ui/netease/download.rs:57",
     "plural": false,
     "description": null
   },
