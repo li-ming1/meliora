@@ -146,28 +146,25 @@ fn parse_spki_pem(pem: &str) -> Option<(BigUint, BigUint)> {
 /// returns lowercase hex. Callers that need uppercase do it themselves.
 ///
 /// The input is zero-padded into a single fixed `key_len` (128-byte) RSA
-/// block, so `data` must not exceed 128 bytes (debug-asserted; the pad
-/// copy cannot fit regardless). The sole caller sends a ~36-byte envelope
-/// plus the session token, well under the cap — anything longer means the
-/// server changed its token format.
-pub fn rsa_raw_encrypt(data: &str) -> String {
+/// block, so `data` must not exceed 128 bytes; oversized input returns None
+/// (the sole caller maps that to `KugouError::Api` instead of panicking —
+/// the token in the envelope is server-controlled, and `panic = "abort"`
+/// would kill the whole process on a poisoned persisted session).
+pub fn rsa_raw_encrypt(data: &str) -> Option<String> {
     let (n, e) = service_key();
     let key_len = n.bits().div_ceil(8);
     let bytes = data.as_bytes();
-    debug_assert!(
-        bytes.len() <= key_len,
-        "rsa_raw_encrypt input {} bytes exceeds the {}-byte RSA block",
-        bytes.len(),
-        key_len
-    );
+    if bytes.len() > key_len {
+        return None;
+    }
     let mut padded = vec![0u8; key_len];
     padded[..bytes.len()].copy_from_slice(bytes);
     let encrypted = BigUint::from_bytes_be(&padded).modpow(e, n);
-    format!(
+    Some(format!(
         "{:0>width$}",
         encrypted.to_str_radix(16),
         width = key_len * 2
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -199,7 +196,7 @@ mod tests {
 
     #[test]
     fn rsa_raw_encrypt_is_128_bytes_hex() {
-        let hex = rsa_raw_encrypt(r#"{"token":"abc","clienttime":123}"#);
+        let hex = rsa_raw_encrypt(r#"{"token":"abc","clienttime":123}"#).unwrap();
         assert_eq!(hex.len(), 256);
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -207,14 +204,13 @@ mod tests {
     #[test]
     fn rsa_raw_encrypt_accepts_full_block() {
         // 128 bytes = key_len, the documented upper bound, still encrypts.
-        let hex = rsa_raw_encrypt(&"a".repeat(128));
+        let hex = rsa_raw_encrypt(&"a".repeat(128)).unwrap();
         assert_eq!(hex.len(), 256);
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
-    #[should_panic]
     fn rsa_raw_encrypt_rejects_input_over_one_block() {
-        rsa_raw_encrypt(&"a".repeat(129));
+        assert!(rsa_raw_encrypt(&"a".repeat(129)).is_none());
     }
 }

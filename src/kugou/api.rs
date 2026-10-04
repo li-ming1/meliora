@@ -132,14 +132,26 @@ impl KugouClient {
     pub async fn user_detail(&self) -> Result<KugouResponse, KugouError> {
         let session = self.credentials();
         let clienttime = unix_now_secs();
-        let pk = crypto::rsa_raw_encrypt(
-            &serde_json::json!({
-                "token": session.token.clone().unwrap_or_default(),
-                "clienttime": clienttime,
-            })
-            .to_string(),
-        )
-        .to_uppercase();
+        // The envelope is fixed except for the server-controlled token; if it
+        // no longer fits the 128-byte RSA block, fail this request instead of
+        // panicking the process (the token is persisted, so a panic would
+        // reproduce on every start until re-login).
+        let envelope = serde_json::json!({
+            "token": session.token.clone().unwrap_or_default(),
+            "clienttime": clienttime,
+        })
+        .to_string();
+        let envelope_len = envelope.len();
+        let pk = crypto::rsa_raw_encrypt(&envelope)
+            .ok_or_else(|| KugouError::Api {
+                status: -1,
+                msg: format!(
+                    "user_detail envelope is {envelope_len} bytes, exceeds the \
+                     128-byte RSA block (server token format changed?)"
+                ),
+                error_code: None,
+            })?
+            .to_uppercase();
         let spec = KugouRequest::new(GATEWAY, "/v3/get_my_info")
             .post()
             .router("usercenter.kugou.com")
