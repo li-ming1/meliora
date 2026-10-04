@@ -895,6 +895,26 @@ where
     MatcherFunc: Fn(&Arc<T>, &mut App) -> Utf32String + 'static,
     OnAccept: Fn(&Arc<T>, &mut App) + 'static,
 {
+    /// Shared selection observer for both constructors: a row's render output
+    /// depends only on "selected", so only a flip of that predicate needs a
+    /// repaint; arrow-key moves fan out to every row and N-2 of them would
+    /// otherwise re-render for no visual change.
+    fn observe_selection_flip(cx: &mut Context<Self>, current_selection: &Entity<usize>) {
+        cx.observe(
+            current_selection,
+            |this: &mut Self, selection_model, cx: &mut Context<Self>| {
+                let sel = *selection_model.read(cx);
+                let was_selected = this.current_selection == this.idx;
+                let is_selected = sel == this.idx;
+                this.current_selection = sel;
+                if was_selected != is_selected {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+    }
+
     pub fn new(
         cx: &mut App,
         id: impl Into<ElementId>,
@@ -905,23 +925,7 @@ where
         item_data: Arc<T>,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            cx.observe(
-                current_selection,
-                |this: &mut Self, selection_model, cx: &mut Context<Self>| {
-                    // The row's render output depends only on "selected",
-                    // so only a flip of that predicate needs a repaint;
-                    // arrow-key moves fan out to every row and N-2 of them
-                    // would otherwise re-render for no visual change.
-                    let sel = *selection_model.read(cx);
-                    let was_selected = this.current_selection == this.idx;
-                    let is_selected = sel == this.idx;
-                    this.current_selection = sel;
-                    if was_selected != is_selected {
-                        cx.notify();
-                    }
-                },
-            )
-            .detach();
+            Self::observe_selection_flip(cx, current_selection);
 
             let left = item.left_content(cx);
             let middle = item.middle_content(cx);
@@ -953,23 +957,7 @@ where
         extra: ExtraItem,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            cx.observe(
-                current_selection,
-                |this: &mut Self, selection_model, cx: &mut Context<Self>| {
-                    // The row's render output depends only on "selected",
-                    // so only a flip of that predicate needs a repaint;
-                    // arrow-key moves fan out to every row and N-2 of them
-                    // would otherwise re-render for no visual change.
-                    let sel = *selection_model.read(cx);
-                    let was_selected = this.current_selection == this.idx;
-                    let is_selected = sel == this.idx;
-                    this.current_selection = sel;
-                    if was_selected != is_selected {
-                        cx.notify();
-                    }
-                },
-            )
-            .detach();
+            Self::observe_selection_flip(cx, current_selection);
 
             Self {
                 id: id.into(),

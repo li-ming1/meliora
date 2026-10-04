@@ -588,16 +588,16 @@ fn lyric_pointer_text(body: &Value, kind: &str) -> String {
 
 /// Fetches the lyric for an online track via `lyric_new`: prefers the
 /// word-level YRC karaoke payload (translations merged from `tlyric`),
-/// falling back to plain LRC. Returns `Ok(None)` when the service has no
-/// lyrics for the track.
+/// falling back to plain LRC. Returns `None` when the service has no lyrics
+/// for the track; fetch errors are logged and yield `None`.
 ///
 /// The HTTP calls MUST run on the Tokio runtime (see `fetch_online_lyric` in
 /// `ui::kugou` for why).
-pub async fn fetch_online_lyric(track: &NeteaseTrackInfo) -> Result<Option<NeteaseLyric>, String> {
+pub async fn fetch_online_lyric(track: &NeteaseTrackInfo) -> Option<NeteaseLyric> {
     let client = crate::netease::shared_client();
     let track = track.clone();
 
-    crate::RUNTIME
+    match crate::RUNTIME
         .spawn(async move {
             let response = client
                 .lyric_new(track.id)
@@ -630,10 +630,20 @@ pub async fn fetch_online_lyric(track: &NeteaseTrackInfo) -> Result<Option<Netea
                 }
             }
 
-            Ok(None)
+            Ok::<_, String>(None)
         })
         .await
-        .map_err(|err| err.to_string())?
+    {
+        Ok(Ok(lyric)) => lyric,
+        Ok(Err(err)) => {
+            tracing::debug!("netease: lyric fetch failed: {err}");
+            None
+        }
+        Err(err) => {
+            tracing::debug!("netease: lyric fetch task failed: {err}");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

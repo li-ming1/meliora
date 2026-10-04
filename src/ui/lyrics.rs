@@ -610,7 +610,7 @@ impl Lyrics {
         let expected = path.map(|p| p.to_string_lossy().into_owned());
 
         cx.spawn(async move |this, cx| {
-            let lyric = fetch_online_lyric(&track).await.ok().flatten();
+            let lyric = fetch_online_lyric(&track).await;
 
             // Parse off the UI thread: KRC is two full-text passes plus JSON
             // block deserialization, and the fetch above already runs on the
@@ -662,7 +662,7 @@ impl Lyrics {
         let expected = path.map(|p| p.to_string_lossy().into_owned());
 
         cx.spawn(async move |this, cx| {
-            let lyric = fetch_netease_lyric(&track).await.ok().flatten();
+            let lyric = fetch_netease_lyric(&track).await;
 
             this.update(cx, |this, cx| {
                 // ignore the result if the user has already switched tracks

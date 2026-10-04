@@ -98,18 +98,18 @@ fn first_lyric_candidate(search_body: &Value) -> Option<(String, String)> {
 /// Fetches the eligible lyric for an online track via `search_lyric` →
 /// `lyric_krc` (karaoke, with per-word timing and translations), falling back
 /// to `lyric_lrc` when the karaoke payload is missing or decrypts to nothing.
-/// Returns the lyric source that should be shown, or `Ok(None)` when the
-/// service has no lyrics for the track.
+/// Returns the lyric source that should be shown, or `None` when the service
+/// has no lyrics for the track; fetch errors are logged and yield `None`.
 ///
 /// The HTTP calls MUST run on the Tokio runtime: reqwest's DNS resolver
 /// panics ("there is no reactor running") when polled outside of one, e.g.
 /// from the gpui main-thread executor. That panic crashed the whole app, so
 /// the request is wrapped in `RUNTIME::spawn` like every other kugou call.
-pub async fn fetch_online_lyric(track: &KugouTrackInfo) -> Result<Option<OnlineLyric>, String> {
+pub async fn fetch_online_lyric(track: &KugouTrackInfo) -> Option<OnlineLyric> {
     let client = kugou::shared_client();
     let track = track.clone();
 
-    crate::RUNTIME
+    match crate::RUNTIME
         .spawn(async move {
             let keyword = lyric_search_keyword(&track);
 
@@ -137,10 +137,20 @@ pub async fn fetch_online_lyric(track: &KugouTrackInfo) -> Result<Option<OnlineL
                 .lyric_lrc(&id, &accesskey)
                 .await
                 .map_err(|err| err.to_string())?;
-            Ok((!lrc.is_empty()).then_some(OnlineLyric::Lrc(lrc)))
+            Ok::<_, String>((!lrc.is_empty()).then_some(OnlineLyric::Lrc(lrc)))
         })
         .await
-        .map_err(|err| err.to_string())?
+    {
+        Ok(Ok(lyric)) => lyric,
+        Ok(Err(err)) => {
+            tracing::debug!("kugou: lyric fetch failed: {err}");
+            None
+        }
+        Err(err) => {
+            tracing::debug!("kugou: lyric fetch task failed: {err}");
+            None
+        }
+    }
 }
 
 /// A fetched online lyric: plain LRC text or decrypted KRC plain text.

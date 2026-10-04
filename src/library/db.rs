@@ -21,6 +21,27 @@ use super::{
     types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track},
 };
 
+/// Migration versions whose recorded checksum can mismatch purely because an
+/// old Windows database wrote them with different line endings; the open path
+/// rewrites those checksums and retries instead of failing.
+fn windows_line_ending_recovery_versions() -> &'static [i64] {
+    &[
+        20240730163128,
+        20240730163151,
+        20240730163200,
+        20240817201809,
+        20240817201912,
+        20240917084650,
+        20250424090924,
+        20250512214434,
+        20250512231103,
+        20250825224757,
+        20250825225240,
+        20250825234341,
+        20251022214837,
+    ]
+}
+
 pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
     debug!("Creating database pool at {:?}", path.as_ref());
     let options = SqliteConnectOptions::new()
@@ -45,23 +66,7 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
         // rewrite their checksums and retry, any other migration failure is fatal
         let recoverable = match &e {
             sqlx::migrate::MigrateError::VersionMismatch(v) => {
-                cfg!(target_os = "windows")
-                    && matches!(
-                        v,
-                        20240730163128
-                            | 20240730163151
-                            | 20240730163200
-                            | 20240817201809
-                            | 20240817201912
-                            | 20240917084650
-                            | 20250424090924
-                            | 20250512214434
-                            | 20250512231103
-                            | 20250825224757
-                            | 20250825225240
-                            | 20250825234341
-                            | 20251022214837
-                    )
+                cfg!(target_os = "windows") && windows_line_ending_recovery_versions().contains(v)
             }
             _ => false,
         };
