@@ -30,7 +30,7 @@ use crate::{
         library::{
             context_menus::{AlbumContextMenuContext, queue_items_from_tracks},
             detail_close_button,
-            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
+            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
         },
         models::{
             LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
@@ -75,15 +75,17 @@ fn track_items(
             TrackItem::new(
                 cx,
                 track.clone(),
-                false,
                 ArtistNameVisibility::OnlyIfDifferent(artist_name.cloned()),
                 TrackItemLeftField::Art,
                 None,
-                false,
                 None,
                 Some(tracks.clone()),
-                false,
-                false,
+                TrackItemOptions {
+                    is_start: false,
+                    vinyl_numbering: false,
+                    show_go_to_album: false,
+                    show_go_to_artist: false,
+                },
             )
         })
         .collect()

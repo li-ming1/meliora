@@ -32,7 +32,7 @@ use crate::{
                 navigate_to_album_artists, queue_items_from_tracks,
             },
             detail_close_button,
-            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
+            track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
         },
         models::{
             LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
@@ -91,19 +91,21 @@ impl TrackListing {
                         TrackItem::new(
                             cx,
                             track.clone(),
-                            index == 0
-                                || track.track_number == Some(1)
-                                || tracks_for_closure
-                                    .get(index - 1)
-                                    .is_some_and(|t| t.disc_number != track.disc_number),
                             artist_name_visibility.clone(),
                             TrackItemLeftField::TrackNum,
                             None,
-                            vinyl_numbering,
                             max_track_num_str.clone(),
                             None,
-                            show_go_to_album,
-                            show_go_to_artist,
+                            TrackItemOptions {
+                                is_start: index == 0
+                                    || track.track_number == Some(1)
+                                    || tracks_for_closure
+                                        .get(index - 1)
+                                        .is_some_and(|t| t.disc_number != track.disc_number),
+                                vinyl_numbering,
+                                show_go_to_album,
+                                show_go_to_artist,
+                            },
                         )
                     })
                     .collect()
@@ -145,6 +147,15 @@ pub struct ReleaseView {
     track_ids: std::rc::Rc<[i64]>,
     /// Parsed once; the footer renders it every frame otherwise.
     release_date_utc: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Header render flags for [`ReleaseView::render_header`], bundled so the
+/// method doesn't take a pile of positional bools.
+struct HeaderState {
+    has_available_tracks: bool,
+    current_track_in_album: bool,
+    is_playing: bool,
+    show_close_button: bool,
 }
 
 impl ReleaseView {
@@ -261,17 +272,20 @@ impl ReleaseView {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_header(
         &self,
         theme: &Theme,
-        has_available_tracks: bool,
-        current_track_in_album: bool,
-        is_playing: bool,
-        show_close_button: bool,
+        state: HeaderState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let HeaderState {
+            has_available_tracks,
+            current_track_in_album,
+            is_playing,
+            show_close_button,
+        } = state;
+
         div()
             .pt(px(52.0))
             .flex_shrink(1.0)
@@ -685,10 +699,12 @@ impl Render for ReleaseView {
                     .overflow_x_hidden()
                     .child(self.render_header(
                         &theme,
-                        has_available_tracks,
-                        current_track_in_album,
-                        is_playing,
-                        two_column,
+                        HeaderState {
+                            has_available_tracks,
+                            current_track_in_album,
+                            is_playing,
+                            show_close_button: two_column,
+                        },
                         window,
                         cx,
                     ))

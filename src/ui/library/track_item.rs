@@ -68,6 +68,16 @@ pub enum TrackItemLeftField {
     Art,
 }
 
+/// Display flags for [`TrackItem::new`], bundled so the constructor doesn't
+/// take a pile of positional bools.
+#[derive(Default)]
+pub(crate) struct TrackItemOptions {
+    pub(crate) is_start: bool,
+    pub(crate) vinyl_numbering: bool,
+    pub(crate) show_go_to_album: bool,
+    pub(crate) show_go_to_artist: bool,
+}
+
 fn measure_track_number_width(window: &mut Window, text: &SharedString) -> Pixels {
     let style = window.text_style();
     let font_size = style.font_size.to_pixels(window.rem_size());
@@ -94,15 +104,12 @@ impl TrackItem {
     pub fn new(
         cx: &mut App,
         track: Track,
-        is_start: bool,
         anv: ArtistNameVisibility,
         left_field: TrackItemLeftField,
         pl_info: Option<TrackPlaylistInfo>,
-        vinyl_numbering: bool,
         max_track_num_str: Option<SharedString>,
         queue_context: Option<Arc<Vec<Track>>>,
-        show_go_to_album: bool,
-        show_go_to_artist: bool,
+        opts: TrackItemOptions,
     ) -> Entity<Self> {
         cx.new(|cx| {
             let track_id = track.id;
@@ -140,15 +147,15 @@ impl TrackItem {
                 }),
                 is_available: is_track_available_snapshot(cx, &track),
                 track: Rc::new(track),
-                is_start,
+                is_start: opts.is_start,
                 artist_name_visibility: anv,
                 left_field,
                 pl_info,
-                vinyl_numbering,
+                vinyl_numbering: opts.vinyl_numbering,
                 max_track_num_str,
                 queue_context,
-                show_go_to_album,
-                show_go_to_artist,
+                show_go_to_album: opts.show_go_to_album,
+                show_go_to_artist: opts.show_go_to_artist,
             }
         })
     }

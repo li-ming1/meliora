@@ -42,7 +42,9 @@ use crate::{
             tooltip::build_tooltip,
         },
         library::collection_summary::format_collection_summary,
-        library::track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField},
+        library::track_item::{
+            ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions,
+        },
         models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaylistEvent},
         theme::Theme,
         util::{create_or_retrieve_view, prune_views},
@@ -1192,18 +1194,21 @@ impl Render for PlaylistView {
                                                             let track_item = TrackItem::new(
                                                                 cx,
                                                                 track,
-                                                                false,
                                                                 ArtistNameVisibility::Always,
                                                                 TrackItemLeftField::Art,
                                                                 Some(TrackPlaylistInfo {
                                                                     id: pl_id,
                                                                     item_id: playlist_item_id,
                                                                 }),
-                                                                false, // vinyl_numbering - not applicable for playlists
                                                                 None, // max_track_num - not needed for Art left field
                                                                 None, // queue_context - playlist uses pl_id instead
-                                                                true, // show_go_to_album
-                                                                true, // show_go_to_artist
+                                                                TrackItemOptions {
+                                                                    is_start: false,
+                                                                    // vinyl_numbering - not applicable for playlists
+                                                                    vinyl_numbering: false,
+                                                                    show_go_to_album: true,
+                                                                    show_go_to_artist: true,
+                                                                },
                                                             );
 
                                                             PlaylistTrackItem::new(
