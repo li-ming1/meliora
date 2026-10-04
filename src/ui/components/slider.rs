@@ -69,6 +69,10 @@ pub struct Slider {
 }
 
 impl Slider {
+    /// Sets the element id. **Required for interaction**: the drag state is
+    /// keyed by this id (`use_keyed_state`); without it every mouse handler
+    /// is silently skipped (paint and cursor still work, so the failure is
+    /// invisible). A handler-less slider (pure display bar) may omit it.
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.id = Some(id.into());
         self
@@ -246,6 +250,17 @@ impl Element for Slider {
             None => prop_value,
         };
         paint_fill(fill, window);
+
+        debug_assert!(
+            self.id.is_some() || (self.on_change.is_none() && self.on_double_click.is_none()),
+            "Slider: on_change/on_double_click set without .id() — keyed drag state cannot \
+             be created and all mouse handling (click, drag, double-click) silently no-ops; \
+             call .id(...) on interactive sliders"
+        );
+        debug_assert!(
+            self.on_double_click.is_none() || self.on_change.is_some(),
+            "Slider: on_double_click without on_change is never registered"
+        );
 
         let (Some(func), Some(drag_entity)) = (self.on_change.as_ref(), drag_entity) else {
             return;

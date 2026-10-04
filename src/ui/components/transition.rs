@@ -85,13 +85,33 @@ impl RenderOnce for HoverTransition {
             .on_hover(move |hovered, _window, cx| {
                 // `Entity::update` + `Context::notify` is safe outside rendering;
                 // `window.request_animation_frame()` is not (empty current_view).
+                // Decorative motion self-checks the motion preference (same
+                // discipline as drag_drop.rs / immersive.rs; gpui's
+                // request_animation_frame docs require it and this app never
+                // arms App::set_reduce_motion).
+                let reduced_motion = cx
+                    .global::<crate::settings::SettingsGlobal>()
+                    .model
+                    .read(cx)
+                    .interface
+                    .reduced_motion;
                 state.update(cx, |s, cx| {
                     let target = if *hovered { 1.0 } else { 0.0 };
-                    if (s.value - target).abs() > SETTLE_EPSILON {
+                    if (s.value - target).abs() <= SETTLE_EPSILON {
+                        return;
+                    }
+                    if reduced_motion {
+                        // Hard cut: land exactly on the target and drop any
+                        // in-flight animation so the state converges in one
+                        // step — no frame requests, no half-way value.
+                        s.value = target;
+                        s.target = target;
+                        s.animating = None;
+                    } else {
                         s.target = target;
                         s.animating = Some((Instant::now(), s.value));
-                        cx.notify();
                     }
+                    cx.notify();
                 });
             })
     }
