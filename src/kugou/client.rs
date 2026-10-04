@@ -329,6 +329,10 @@ impl KugouClient {
         // retrying until tomorrow even though the user just signed in again.
         session.last_claim_day = None;
         session_io::save(&*session, &self.session_path, "kugou");
+        // The toast path takes its own throttle lock and touches the UI layer;
+        // don't make concurrent request builders wait on the session mutex
+        // while that runs.
+        drop(session);
         // A fresh login may outlive the previous throttle window's start.
         reset_login_expired_toast();
     }
