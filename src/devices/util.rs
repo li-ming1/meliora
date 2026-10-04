@@ -1,101 +1,6 @@
-use rtrb::{Consumer, Producer};
 use std::sync::atomic::AtomicU64;
-use std::time::{Duration, Instant};
 
 use super::resample::{SampleFrom, SampleInto};
-
-/// How long a ring-buffer producer sleeps between retries when the buffer is full.
-pub const RING_WRITE_PARK: Duration = Duration::from_millis(1);
-/// How long `write_bounded_planar` keeps retrying a full ring before giving
-/// up and reporting [`RingWriteTimeout`].
-pub const RING_WRITE_DEADLINE: Duration = Duration::from_millis(250);
-
-/// The consumer of a ring buffer stopped draining before the write deadline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RingWriteTimeout {
-    /// Samples written to each ring before the deadline expired.
-    pub written: usize,
-}
-
-/// Write as many samples of equal-length planes as currently fit, never
-/// blocking or parking. Returns the total samples written (may be less than
-/// `total`). Use this when the consumer drains on the *same* thread — a
-/// blocking retry loop there can never make progress.
-pub fn try_write_planar<T: Copy>(
-    producers: &mut [Producer<T>],
-    planes: &[&[T]],
-    total: usize,
-) -> usize {
-    let mut written = 0;
-
-    while written < total {
-        let writable = producers
-            .iter()
-            .map(Producer::slots)
-            .min()
-            .unwrap_or(0)
-            .min(total - written);
-
-        if writable == 0 {
-            break;
-        }
-
-        for (producer, plane) in producers.iter_mut().zip(planes) {
-            if let Ok(chunk) = producer.write_chunk_uninit(writable) {
-                chunk.fill_from_iter(plane[written..written + writable].iter().copied());
-            }
-        }
-        written += writable;
-    }
-
-    written
-}
-
-/// Write the first `total` samples of equal-length planes to their producers in lockstep, so the
-/// channels never desync
-pub fn write_bounded_planar<T: Copy>(
-    producers: &mut [Producer<T>],
-    planes: &[&[T]],
-    total: usize,
-) -> Result<(), RingWriteTimeout> {
-    let mut written = try_write_planar(producers, planes, total);
-    let deadline = Instant::now() + RING_WRITE_DEADLINE;
-
-    while written < total {
-        if Instant::now() >= deadline {
-            return Err(RingWriteTimeout { written });
-        }
-        std::thread::sleep(RING_WRITE_PARK);
-        // retry from where the previous attempt stopped: `try_write_planar`
-        // counts from the front of the planes it is given, so hand it the
-        // remaining subslices — passing the full planes again would re-copy
-        // the packet's prefix into the ring (audible as static garbage)
-        // Stack-allocated for realistic channel counts: this runs once per
-        // 1ms retry while the ring is full, and a heap Vec per retry is
-        // allocator churn on the realtime-adjacent path.
-        let mut remaining = smallvec::SmallVec::<[&[T]; 8]>::with_capacity(planes.len());
-        remaining.extend(planes.iter().map(|plane| &plane[written..]));
-        written += try_write_planar(producers, &remaining, total - written);
-    }
-
-    Ok(())
-}
-
-pub fn read_available<T: Copy>(consumer: &mut Consumer<T>, data: &mut [T]) -> usize {
-    let readable = consumer.slots().min(data.len());
-    if readable == 0 {
-        return 0;
-    }
-    let Ok(chunk) = consumer.read_chunk(readable) else {
-        return 0;
-    };
-    let (first, second) = chunk.as_slices();
-    data[..first.len()].copy_from_slice(first);
-    data[first.len()..first.len() + second.len()].copy_from_slice(second);
-    let read = first.len() + second.len();
-    chunk.commit_all();
-    read
-}
 
 pub trait Scale: Sized {
     fn scale(self, factor: f64) -> Self;
@@ -274,38 +179,7 @@ impl GainRamp {
 
 #[cfg(test)]
 mod tests {
-    use super::{GainRamp, LIMITER_KNEE, read_available, soft_limit, tpdf, write_bounded_planar};
-    use rtrb::RingBuffer;
-    use std::time::Duration;
-
-    /// Ring smaller than the payload forces the blocking write to park and
-    /// retry; the continuations must append the plane's REMAINDER, not re-copy
-    /// its prefix (regression: duplicated prefixes were audible as static).
-    #[test]
-    fn write_bounded_planar_retries_continue_at_the_write_offset() {
-        const TOTAL: usize = 10;
-        let (mut producer, mut consumer) = RingBuffer::<u32>::new(8);
-
-        let drainer = std::thread::spawn(move || {
-            let mut out = Vec::with_capacity(TOTAL);
-            let mut staging = [0u32; 4];
-            while out.len() < TOTAL {
-                let n = read_available(&mut consumer, &mut staging);
-                out.extend_from_slice(&staging[..n]);
-                if n == 0 {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            }
-            out
-        });
-
-        let plane: Vec<u32> = (0..TOTAL as u32).collect();
-        write_bounded_planar(std::slice::from_mut(&mut producer), &[&plane], TOTAL)
-            .expect("consumer drains concurrently, write must complete");
-
-        let out = drainer.join().unwrap();
-        assert_eq!(out, plane, "retry continuations must preserve sample order");
-    }
+    use super::{GainRamp, LIMITER_KNEE, soft_limit, tpdf};
 
     fn assert_approx_eq(lhs: f32, rhs: f32) {
         assert!((lhs - rhs).abs() < 1e-6, "left={lhs}, right={rhs}");

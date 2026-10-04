@@ -1,6 +1,7 @@
 //! Full-screen immersive listening view, laid out like a hi-fi lyrics
 //! presentation: the artwork fills the screen as a sharp cover-band backdrop
-//! (see `managed_image::backdrop_sharp_fill` — center-cropped to the window
+//! (see `managed_image::backdrop_pipeline::backdrop_sharp_fill` —
+//! center-cropped to the window
 //! aspect, median-denoised, Lanczos-resampled to the exact device-pixel size
 //! and unsharp-masked; the KuGou ladder now leads with 4096 so the resample
 //! averages noise like the disc label does; one vertical + one horizontal

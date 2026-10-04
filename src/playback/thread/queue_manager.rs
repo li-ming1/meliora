@@ -3,7 +3,7 @@ use std::{
     mem::take,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use rand::{rng, seq::SliceRandom};
@@ -20,6 +20,7 @@ use crate::{
 #[cfg(feature = "online_sources")]
 use crate::playback::queue::PersistedDisplay;
 
+mod session;
 mod undo;
 
 pub use self::undo::{UndoAction, UndoResult};
@@ -41,11 +42,6 @@ const UNDO_SNAPSHOT_CAPACITY: usize = 6;
 /// 队列状态），整栈清空是唯一一致做法。批删不可撤销、撤销深度随之变浅
 /// 同属有意取舍；恰好等于上限仍正常记录。
 const UNDO_REMOVED_ITEM_CAP: usize = 1000;
-
-/// Minimum interval between queue-snapshot sends to the session storage worker.
-/// A send deep-copies the whole queue (see `send_session_with_queue`), so burst
-/// mutations (batch drops, rapid skips) coalesce into one snapshot per window.
-const SESSION_PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reshuffled {
@@ -1364,82 +1360,6 @@ impl QueueManager {
 
         self.persist_session_with_queue();
         result
-    }
-
-    /// Persist the queue session when only playback state changed.
-    ///
-    /// This reuses the stored queue snapshot and updates fields like
-    /// the current position, shuffle mode, and repeat mode. A pending
-    /// debounced queue snapshot is upgraded to a full send so the stored
-    /// position never references stale queue contents.
-    fn persist_session_state(&mut self) {
-        if self.session_dirty {
-            self.send_session_with_queue();
-            return;
-        }
-
-        let queue_position = self.current_position();
-        let shuffle = self.shuffle;
-        let repeat = self.repeat;
-
-        self.storage_tx.send_modify(|session| {
-            session.queue_position = queue_position;
-            session.shuffle = shuffle;
-            session.repeat = repeat;
-        });
-    }
-
-    /// Persist the queue session when queue contents or ordering changed.
-    ///
-    /// Sends are debounced: the first mutation after an idle window sends
-    /// immediately (leading edge), further mutations within the window only
-    /// mark the session dirty and are flushed by `flush_pending_session` from
-    /// the playback main loop. Sending snapshots the whole queue, so this keeps
-    /// batch mutations at one snapshot per window instead of one per item.
-    fn persist_session_with_queue(&mut self) {
-        let due = self
-            .last_session_send
-            .is_none_or(|sent| sent.elapsed() >= SESSION_PERSIST_DEBOUNCE);
-        if due {
-            self.send_session_with_queue();
-        } else {
-            self.session_dirty = true;
-        }
-    }
-
-    /// Flush a debounced queue-session snapshot if one is pending. Cheap no-op
-    /// otherwise; called every playback main-loop iteration.
-    pub fn flush_pending_session(&mut self) {
-        if self.session_dirty {
-            self.send_session_with_queue();
-        }
-    }
-
-    /// Take and send a consistent queue snapshot to the session storage worker.
-    ///
-    /// With the copy-on-write queue this is two refcount bumps under the read
-    /// lock — the worker serializes from its own ref after the lock is
-    /// released. Call sites debounce to keep it off burst paths.
-    fn send_session_with_queue(&mut self) {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
-        let queue_snapshot = Arc::clone(&queue);
-        let queue_position = Self::cursor_index(queue.len(), self.queue_next);
-        drop(queue);
-
-        let original_queue = self.original_queue.clone();
-        let shuffle = self.shuffle;
-        let repeat = self.repeat;
-
-        self.storage_tx.send_modify(move |session| {
-            session.queue = queue_snapshot;
-            session.original_queue = original_queue;
-            session.queue_position = queue_position;
-            session.shuffle = shuffle;
-            session.repeat = repeat;
-        });
-
-        self.session_dirty = false;
-        self.last_session_send = Some(Instant::now());
     }
 }
 

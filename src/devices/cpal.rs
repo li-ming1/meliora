@@ -6,12 +6,11 @@ use crate::{
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         resample::SampleFrom,
         traits::{Device, DeviceProvider, OutputStream},
-        util::{
-            AtomicF64, DitherLsb, GainRamp, Scale, read_available, soft_limit, tpdf,
-            write_bounded_planar,
-        },
+        util::{AtomicF64, DitherLsb, GainRamp, Scale, soft_limit, tpdf},
     },
-    media::pipeline::{ChannelConsumers, DEFAULT_BUFFER_FRAMES},
+    media::pipeline::{
+        ChannelConsumers, DEFAULT_BUFFER_FRAMES, read_available, write_bounded_planar,
+    },
 };
 use cpal::{
     Host, SizedSample,
