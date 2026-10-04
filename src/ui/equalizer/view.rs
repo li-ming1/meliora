@@ -332,7 +332,7 @@ impl Render for EqualizerView {
             }
         }
 
-        let view = cx.entity().clone();
+        let view = cx.entity();
 
         let plot = self.plot_slot.get();
         let dot = self
@@ -454,7 +454,6 @@ impl Render for EqualizerView {
                 }
             })
             .on_drag_active({
-                let view = view.clone();
                 move |active, cx| {
                     view.update(cx, |this, cx| {
                         this.dragging = active;
@@ -522,7 +521,7 @@ impl Render for EqualizerView {
                 )
             })
             .when_some(editor, |this, (index, point, band)| {
-                let view = cx.entity().clone();
+                let view = cx.entity();
                 this.child(
                     band_editor(index, band, point)
                         .on_edit({

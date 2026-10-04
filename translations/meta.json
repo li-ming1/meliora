@@ -505,13 +505,13 @@
   },
   "EQ_CLIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:520",
+    "definedIn": "src/ui/equalizer/view.rs:519",
     "plural": false,
     "description": null
   },
   "EQ_CLIP_TOOLTIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:511",
+    "definedIn": "src/ui/equalizer/view.rs:510",
     "plural": false,
     "description": null
   },
@@ -1537,7 +1537,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:760",
+    "definedIn": "src/ui/lyrics.rs:758",
     "plural": false,
     "description": null
   },
@@ -1771,13 +1771,13 @@
   },
   "RELEASED_DATE": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:493",
+    "definedIn": "src/ui/library/release_view.rs:492",
     "plural": false,
     "description": null
   },
   "RELEASED_YEAR": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:518",
+    "definedIn": "src/ui/library/release_view.rs:517",
     "plural": false,
     "description": null
   },
