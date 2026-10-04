@@ -9,7 +9,7 @@ use gpui::{
 };
 use nucleo::{
     Config, Matcher, Nucleo, Utf32String,
-    pattern::{CaseMatching, Normalization, Pattern},
+    pattern::{CaseMatching, Normalization},
 };
 use rustc_hash::FxHashMap;
 use tokio::sync::mpsc::channel;
@@ -534,7 +534,10 @@ where
         // against the live query here. Their count is a page of results per
         // provider, keeping this microsecond-scale even while the index
         // itself is still re-matching in the background.
-        let pattern = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
+        // `set_query` keeps the index pattern in sync with `self.query`
+        // (reparse is the same atom pipeline as `Pattern::parse`), so reuse
+        // it instead of re-parsing the query on every poll tick.
+        let pattern = self.matcher.pattern.column_pattern(0);
         let mut dynamic: Vec<(u32, Arc<T>)> = Vec::with_capacity(self.dynamic_items.len());
         for (item, text) in &self.dynamic_items {
             if let Some(score) = pattern.score(text.slice(..), &mut self.dynamic_matcher) {
@@ -905,8 +908,17 @@ where
             cx.observe(
                 current_selection,
                 |this: &mut Self, selection_model, cx: &mut Context<Self>| {
-                    this.current_selection = *selection_model.read(cx);
-                    cx.notify();
+                    // The row's render output depends only on "selected",
+                    // so only a flip of that predicate needs a repaint;
+                    // arrow-key moves fan out to every row and N-2 of them
+                    // would otherwise re-render for no visual change.
+                    let sel = *selection_model.read(cx);
+                    let was_selected = this.current_selection == this.idx;
+                    let is_selected = sel == this.idx;
+                    this.current_selection = sel;
+                    if was_selected != is_selected {
+                        cx.notify();
+                    }
                 },
             )
             .detach();
@@ -944,8 +956,17 @@ where
             cx.observe(
                 current_selection,
                 |this: &mut Self, selection_model, cx: &mut Context<Self>| {
-                    this.current_selection = *selection_model.read(cx);
-                    cx.notify();
+                    // The row's render output depends only on "selected",
+                    // so only a flip of that predicate needs a repaint;
+                    // arrow-key moves fan out to every row and N-2 of them
+                    // would otherwise re-render for no visual change.
+                    let sel = *selection_model.read(cx);
+                    let was_selected = this.current_selection == this.idx;
+                    let is_selected = sel == this.idx;
+                    this.current_selection = sel;
+                    if was_selected != is_selected {
+                        cx.notify();
+                    }
                 },
             )
             .detach();
