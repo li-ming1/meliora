@@ -639,7 +639,7 @@ impl TableData<TrackColumn> for Track {
 
                 match (self.disc_number, self.track_number) {
                     (Some(disc), Some(track)) => {
-                        if vinyl_numbering {
+                        if vinyl_numbering && (1..=26).contains(&disc) {
                             let side = (b'A' + (disc - 1) as u8) as char;
                             Some(format!("{}{}", side, track).into())
                         } else {

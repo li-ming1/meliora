@@ -241,7 +241,7 @@ impl Render for TrackItem {
                                         .pb(px(6.0))
                                         .text_ellipsis()
                                         .when_some(self.track.disc_number, |this, num| {
-                                            if self.vinyl_numbering {
+                                            if self.vinyl_numbering && (1..=26).contains(&num) {
                                                 let side = (b'A' + (num - 1) as u8) as char;
                                                 // i18n interpolation only takes strings
                                                 let side = side.to_string();
