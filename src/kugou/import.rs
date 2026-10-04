@@ -5,6 +5,7 @@
 
 use std::{sync::OnceLock, time::Duration};
 
+use cntp_i18n::tr;
 use serde_json::Value;
 use zed_reqwest::{
     Client,
@@ -45,7 +46,8 @@ fn browser_headers(referer: &str) -> HeaderMap {
 
 /// Parses a pasted NetEase/QQ share text into an `ExternalPlaylist`.
 pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
-    let url = extract_url(text).ok_or_else(|| "未识别到有效链接".to_string())?;
+    let url = extract_url(text)
+        .ok_or_else(|| tr!("KUGOU_IMPORT_NO_VALID_LINK", "No valid link found").to_string())?;
     if hosted(&url, &["music.163.com", "163cn.tv"]) {
         netease(&url).await
     } else if hosted(
@@ -54,7 +56,11 @@ pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
     ) {
         qq(&url).await
     } else {
-        Err("仅支持网易云和 QQ 音乐歌单链接".to_string())
+        Err(tr!(
+            "KUGOU_IMPORT_UNSUPPORTED_LINK",
+            "Only NetEase Cloud Music and QQ Music playlist links are supported"
+        )
+        .to_string())
     }
 }
 
@@ -130,11 +136,14 @@ fn bare_id_value(haystack: &str) -> Option<&str> {
 
 /// Follows a short link and returns its final URL.
 async fn resolve(url: &str) -> Result<String, String> {
-    let resp = http()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("短链解析失败：{e}"))?;
+    let resp = http().get(url).send().await.map_err(|e| {
+        tr!(
+            "KUGOU_IMPORT_SHORTLINK_FAILED",
+            "Failed to resolve short link: {{err}}",
+            err = e.to_string()
+        )
+        .to_string()
+    })?;
     Ok(resp.url().to_string())
 }
 
@@ -170,7 +179,13 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
     } else {
         raw.to_string()
     };
-    let id = netease_id(&url).ok_or_else(|| "未在网易云链接中解析到歌单ID".to_string())?;
+    let id = netease_id(&url).ok_or_else(|| {
+        tr!(
+            "KUGOU_IMPORT_NETEASE_NO_ID",
+            "Could not parse a playlist ID from the NetEase Cloud Music link"
+        )
+        .to_string()
+    })?;
     let headers = browser_headers("https://music.163.com/");
 
     let resp = http()
@@ -179,23 +194,44 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
         .body(format!("id={id}"))
         .send()
         .await
-        .map_err(|e| format!("请求网易云歌单失败：{e}"))?;
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取响应失败：{e}"))?;
-    let body: Value =
-        serde_json::from_str(&text).map_err(|e| format!("网易云响应解析失败：{e}"))?;
+        .map_err(|e| {
+            tr!(
+                "KUGOU_IMPORT_NETEASE_REQUEST_FAILED",
+                "NetEase Cloud Music playlist request failed: {{err}}",
+                err = e.to_string()
+            )
+            .to_string()
+        })?;
+    let text = resp.text().await.map_err(|e| {
+        tr!(
+            "KUGOU_IMPORT_RESPONSE_READ_FAILED",
+            "Failed to read the response: {{err}}",
+            err = e.to_string()
+        )
+        .to_string()
+    })?;
+    let body: Value = serde_json::from_str(&text).map_err(|e| {
+        tr!(
+            "KUGOU_IMPORT_NETEASE_PARSE_FAILED",
+            "Failed to parse the NetEase Cloud Music response: {{err}}",
+            err = e.to_string()
+        )
+        .to_string()
+    })?;
 
-    let playlist = body
-        .get("playlist")
-        .ok_or_else(|| "网易云响应异常，未找到歌单信息".to_string())?;
+    let playlist = body.get("playlist").ok_or_else(|| {
+        tr!(
+            "KUGOU_IMPORT_NETEASE_BAD_RESPONSE",
+            "Unexpected NetEase Cloud Music response: no playlist information"
+        )
+        .to_string()
+    })?;
     let name = playlist
         .get("name")
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "导入歌单".to_string());
+        .unwrap_or_else(|| tr!("KUGOU_IMPORT_DEFAULT_NAME").to_string());
 
     let ids: Vec<i64> = playlist
         .get("trackIds")
@@ -223,7 +259,11 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
 
     let songs = dedupe(songs);
     if songs.is_empty() {
-        return Err("网易云歌单未解析到歌曲，可能为私密歌单".to_string());
+        return Err(tr!(
+            "KUGOU_IMPORT_NETEASE_NO_SONGS",
+            "No songs found in the NetEase Cloud Music playlist; it may be private"
+        )
+        .to_string());
     }
     Ok(ExternalPlaylist { name, songs })
 }
@@ -354,12 +394,18 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
     } else {
         raw.to_string()
     };
-    let id = qq_id(&url).ok_or_else(|| "未在 QQ 音乐链接中解析到歌单ID".to_string())?;
+    let id = qq_id(&url).ok_or_else(|| {
+        tr!(
+            "KUGOU_IMPORT_QQ_NO_ID",
+            "Could not parse a playlist ID from the QQ Music link"
+        )
+        .to_string()
+    })?;
     let headers = browser_headers("https://y.qq.com/");
 
     let first = qq_page(&headers, id, 0, QQ_PAGE_SIZE).await?;
     let name = if first.name.is_empty() {
-        "导入歌单".to_string()
+        tr!("KUGOU_IMPORT_DEFAULT_NAME").to_string()
     } else {
         first.name
     };
@@ -383,7 +429,11 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
 
     let songs = dedupe(songs);
     if songs.is_empty() {
-        return Err("QQ 音乐歌单未解析到歌曲".to_string());
+        return Err(tr!(
+            "KUGOU_IMPORT_QQ_NO_SONGS",
+            "No songs found in the QQ Music playlist"
+        )
+        .to_string());
     }
     Ok(ExternalPlaylist { name, songs })
 }
@@ -435,7 +485,11 @@ async fn qq_page(headers: &HeaderMap, id: i64, begin: i64, num: i64) -> Result<Q
         begin,
         "all QQ platforms failed to fetch the playlist page"
     );
-    Err("QQ 音乐歌单数据获取失败".to_string())
+    Err(tr!(
+        "KUGOU_IMPORT_QQ_FETCH_FAILED",
+        "Failed to fetch the QQ Music playlist data"
+    )
+    .to_string())
 }
 
 fn qq_parse(json: &str) -> Option<QqPage> {
