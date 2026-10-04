@@ -7,8 +7,8 @@ use prelude::FluentBuilder;
 
 use crate::{
     library::types::{
-        Album, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR, DATE_PRECISION_YEAR_MONTH,
-        DBString, Track,
+        Album, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR, DATE_PRECISION_YEAR_MONTH, DBString,
+        Track,
     },
     playback::thread::PlaybackState,
     ui::{

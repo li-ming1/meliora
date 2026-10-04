@@ -433,7 +433,7 @@
   },
   "CREATE_PLAYLIST": {
     "context": "update_playlist.rs",
-    "definedIn": "src/ui/library/update_playlist.rs:109",
+    "definedIn": "src/ui/library/update_playlist.rs:111",
     "plural": false,
     "description": null
   },
@@ -1081,7 +1081,7 @@
   },
   "KUGOU_ONLINE_RESULTS": {
     "context": "search_item.rs",
-    "definedIn": "src/ui/search/search_item.rs:209",
+    "definedIn": "src/ui/search/search_item.rs:207",
     "plural": false,
     "description": null
   },
@@ -1453,7 +1453,7 @@
   },
   "NETEASE_ONLINE_RESULTS": {
     "context": "search_item.rs",
-    "definedIn": "src/ui/search/search_item.rs:212",
+    "definedIn": "src/ui/search/search_item.rs:210",
     "plural": false,
     "description": null
   },
@@ -2179,7 +2179,7 @@
   },
   "SELECT_M3U": {
     "context": "playlist.rs",
-    "definedIn": "src/library/playlist.rs:170",
+    "definedIn": "src/library/playlist.rs:176",
     "plural": false,
     "description": null
   },
@@ -2677,7 +2677,7 @@
   },
   "UPDATE_PLAYLIST": {
     "context": "update_playlist.rs",
-    "definedIn": "src/ui/library/update_playlist.rs:36",
+    "definedIn": "src/ui/library/update_playlist.rs:37",
     "plural": false,
     "description": null
   },

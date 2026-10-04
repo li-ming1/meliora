@@ -71,7 +71,7 @@ pub enum TrackItemLeftField {
 /// Display flags for [`TrackItem::new`], bundled so the constructor doesn't
 /// take a pile of positional bools.
 #[derive(Default)]
-pub(crate) struct TrackItemOptions {
+pub struct TrackItemOptions {
     pub(crate) is_start: bool,
     pub(crate) vinyl_numbering: bool,
     pub(crate) show_go_to_album: bool,

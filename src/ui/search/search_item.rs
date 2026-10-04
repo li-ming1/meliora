@@ -3,21 +3,19 @@ use std::{rc::Rc, sync::Arc};
 use cntp_i18n::{I18nString, tr};
 use gpui::{AnyView, App, IntoElement, SharedString, Window, div};
 
-use crate::{
-    ui::{
-        components::{
-            context::ContextMenuBuilder,
-            icons::{DISC, USERS},
-            palette::{FinderItemLeft, PaletteItem},
-        },
-        library::context_menus::{
-            AlbumContextMenuContext, TrackContextMenuContext, add_album_to_playlist_state,
-            add_to_playlist_state, album::AlbumContextMenu, play_album_next, play_track_next,
-            track::TrackContextMenu,
-        },
-        library_access::LibraryAccess,
-        models::is_song_liked,
+use crate::ui::{
+    components::{
+        context::ContextMenuBuilder,
+        icons::{DISC, USERS},
+        palette::{FinderItemLeft, PaletteItem},
     },
+    library::context_menus::{
+        AlbumContextMenuContext, TrackContextMenuContext, add_album_to_playlist_state,
+        add_to_playlist_state, album::AlbumContextMenu, play_album_next, play_track_next,
+        track::TrackContextMenu,
+    },
+    library_access::LibraryAccess,
+    models::is_song_liked,
 };
 // 与 ui.rs 的 `mod online_track_row` 同 gate：trait 仅服务下方 kugou/netease
 // 匹配臂的 `detail_label()`（trait 方法，需在作用域内）。use 树嵌套段上不能

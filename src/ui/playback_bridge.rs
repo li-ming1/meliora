@@ -9,7 +9,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use gpui::{App, AsyncApp, Entity};
-use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::library::Pool;
 use crate::{
@@ -145,14 +144,12 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
                             update_if_changed(&playback_info.prev_volume, cx, v);
                         }
                     }
-                    PlaybackEvent::QueuePositionChanged(v) => {
-                        queue_model.update(cx, |m, cx| {
-                            if m.position != v {
-                                m.position = v;
-                                cx.notify();
-                            }
-                        })
-                    }
+                    PlaybackEvent::QueuePositionChanged(v) => queue_model.update(cx, |m, cx| {
+                        if m.position != v {
+                            m.position = v;
+                            cx.notify();
+                        }
+                    }),
                     PlaybackEvent::RepeatChanged(v) => {
                         update_if_changed(&playback_info.repeating, cx, v);
                     }
