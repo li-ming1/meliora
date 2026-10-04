@@ -77,7 +77,7 @@ qrcode = { version = "0.14", optional = true, default-features = false, features
 notify = "8"
 nucleo = "0.5"
 palette = "0.7"
-postcard = { version = "1", features = ["use-std"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 rand = "0.10"
 raw-window-handle = "0.6"
 realfft = "3"
