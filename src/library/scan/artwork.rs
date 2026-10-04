@@ -107,11 +107,7 @@ pub async fn examine_folder_art(
                 let hash = art.hash;
 
                 if let Entry::Vacant(e) = art_ids.entry(hash) {
-                    let data = art
-                        .processed
-                        .as_deref()
-                        .map(ArtworkData::Processed)
-                        .or_else(|| art.raw.as_ref().map(|raw| ArtworkData::Raw(raw.as_ref())));
+                    let data = art.processed.as_deref().map(ArtworkData::Processed);
                     let id = get_or_create_artwork(&mut conn, hash as i64, data).await;
                     e.insert(id);
                 }

@@ -3,7 +3,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use tracing::warn;
 
 use super::ArtIdCache;
-use crate::library::scan::decode::{ProcessedArt, process_album_art};
+use crate::library::scan::decode::ProcessedArt;
 
 /// Logs a failed DB read under `context` and maps it to `None`.
 fn logged<T>(result: sqlx::Result<T>, context: &str) -> Option<T> {
@@ -29,7 +29,6 @@ pub async fn load_art_ids(pool: &SqlitePool) -> ArtIdCache {
 }
 
 pub enum ArtworkData<'a> {
-    Raw(&'a [u8]),
     Processed(&'a ProcessedArt),
 }
 
@@ -55,19 +54,8 @@ pub(crate) async fn get_or_create_artwork(
     }
 
     let data = data?;
-    let processed_raw;
     let (image, thumb) = match data {
         ArtworkData::Processed(processed) => (processed.image.as_ref(), processed.thumb.as_slice()),
-        ArtworkData::Raw(bytes) => {
-            processed_raw = match process_album_art(bytes) {
-                Ok(processed) => processed,
-                Err(e) => {
-                    warn!("Failed to process album art: {:?}", e);
-                    return None;
-                }
-            };
-            (processed_raw.0.as_slice(), processed_raw.1.as_slice())
-        }
     };
 
     let adopt: Option<(i64,)> = logged(

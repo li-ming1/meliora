@@ -244,22 +244,19 @@ fn resolve_lyrics(
     sidecar_lyrics.or(embedded_lyrics)
 }
 
-enum SourceImage<'a> {
-    Borrowed(&'a [u8]),
+enum SourceImage {
     Owned(RawArt),
 }
 
-impl SourceImage<'_> {
+impl SourceImage {
     fn bytes(&self) -> &[u8] {
         match self {
-            Self::Borrowed(bytes) => bytes,
             Self::Owned(raw) => raw.as_ref(),
         }
     }
 
     fn into_processed(self) -> ProcessedImage {
         match self {
-            Self::Borrowed(bytes) => ProcessedImage::Owned(bytes.to_vec()),
             Self::Owned(RawArt::Owned(bytes)) => ProcessedImage::Owned(bytes.into_vec()),
             Self::Owned(RawArt::Shared(bytes)) => ProcessedImage::Shared(bytes),
         }
@@ -273,7 +270,7 @@ const THUMBNAIL_SIZE: u32 = 70;
 /// JPEG quality for the rescaled full-size image (only used when it shrank).
 const RESIZED_JPEG_QUALITY: u8 = 70;
 
-fn process_source_image(image: SourceImage<'_>) -> anyhow::Result<(ProcessedImage, Vec<u8>)> {
+fn process_source_image(image: SourceImage) -> anyhow::Result<(ProcessedImage, Vec<u8>)> {
     let decoded = image::ImageReader::new(Cursor::new(image.bytes()))
         .with_guessed_format()?
         .decode()?
@@ -312,15 +309,6 @@ fn process_source_image(image: SourceImage<'_>) -> anyhow::Result<(ProcessedImag
     };
 
     Ok((resized, thumb_buf))
-}
-
-/// Downscale and encode album art to a full-size JPEG and a 70x70 BMP thumbnail.
-pub fn process_album_art(image: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let (image, thumb) = process_source_image(SourceImage::Borrowed(image))?;
-    let ProcessedImage::Owned(image) = image else {
-        unreachable!("borrowed artwork always produces an owned image");
-    };
-    Ok((image, thumb))
 }
 
 /// Process artwork while reusing its original allocation when no resize is needed.

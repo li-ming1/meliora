@@ -91,10 +91,10 @@ fn missing_or_zero_metadata_duration_uses_the_decoder_fallback() {
 }
 
 #[test]
-fn process_album_art_creates_thumbnail() {
+fn process_owned_album_art_creates_thumbnail() {
     let image = crate::test_support::audio_fixtures::fixture("cover.jpg");
-    let (full, thumb) = process_album_art(&image).unwrap();
-    assert!(!full.is_empty());
+    let (full, thumb) = process_owned_album_art(RawArt::Owned(image.into_boxed_slice())).unwrap();
+    assert!(!full.as_ref().is_empty());
     assert!(thumb.starts_with(b"BM"));
 }
 

@@ -63,16 +63,7 @@ async fn stage_artwork(
     if let Some(&cached) = caches.art_ids.get(&candidate.hash) {
         return cached;
     }
-    let data = candidate
-        .processed
-        .as_deref()
-        .map(ArtworkData::Processed)
-        .or_else(|| {
-            candidate
-                .raw
-                .as_ref()
-                .map(|raw| ArtworkData::Raw(raw.as_ref()))
-        });
+    let data = candidate.processed.as_deref().map(ArtworkData::Processed);
     let id = get_or_create_artwork(conn, candidate.hash as i64, data).await;
     caches.art_ids.insert(candidate.hash, id);
     id
