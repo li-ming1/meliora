@@ -59,6 +59,11 @@ fn sanitize_filename(raw: &str) -> String {
     if trimmed.is_empty() { "track" } else { trimmed }.to_string()
 }
 
+/// Upper bound on waiting for any single network event (response headers,
+/// one body chunk). 请求级不设总死线：整曲 FLAC 几十至上百 MB，慢速链路下
+/// 固定总超时必然误杀正常下载，改为按单次网络事件限时、停滞即报错。
+const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Streams `url` straight into `dest` through a fixed ~64KB write buffer:
 /// the whole track is never held in memory. Returns the accumulated byte
 /// count. Any failure — including fewer than 1KB downloaded — removes the
@@ -67,11 +72,10 @@ fn sanitize_filename(raw: &str) -> String {
 /// 走 `chunk()` 而非 `bytes_stream()`：后者被 reqwest 的 `stream` feature
 /// 门控（本仓未启用），`chunk()` 无 feature 门，同为逐块拉取。
 async fn http_download_to_file(url: &str, dest: &Path) -> Result<u64, String> {
-    let mut response = shared_http_client()
-        .get(url)
-        .timeout(Duration::from_secs(120))
-        .send()
+    let request = shared_http_client().get(url);
+    let mut response = tokio::time::timeout(STREAM_IO_TIMEOUT, request.send())
         .await
+        .map_err(|_| format!("network stalled: no response for {STREAM_IO_TIMEOUT:?}"))?
         .map_err(|err| err.to_string())?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
@@ -86,7 +90,12 @@ async fn http_download_to_file(url: &str, dest: &Path) -> Result<u64, String> {
                 .await
                 .map_err(|err| format!("write audio: {err}"))?,
         );
-        while let Some(chunk) = response.chunk().await.map_err(|err| err.to_string())? {
+        loop {
+            let chunk = tokio::time::timeout(STREAM_IO_TIMEOUT, response.chunk())
+                .await
+                .map_err(|_| format!("network stalled: no data for {STREAM_IO_TIMEOUT:?}"))?
+                .map_err(|err| err.to_string())?;
+            let Some(chunk) = chunk else { break };
             file.write_all(&chunk)
                 .await
                 .map_err(|err| format!("write audio: {err}"))?;

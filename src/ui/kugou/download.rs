@@ -15,6 +15,7 @@ use lofty::{
     prelude::ItemKey,
     tag::{Accessor, ItemValue, Tag, TagExt, TagItem, TagType},
 };
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     kugou::KugouClient,
@@ -78,23 +79,70 @@ fn sanitize_filename(raw: &str) -> String {
     }
 }
 
-/// Fetches `url` into memory (audio files are a few tens of MB, fine to hold).
-/// 返回聚合缓冲本体（zed-reqwest 未重导出 `Bytes`，以 `impl trait` 命名）：
-/// 几十 MB 的音频不再整体 `to_vec` 复制一遍，消费点直接 Deref/落盘。
-async fn http_get_bytes(
-    url: &str,
-) -> Result<impl AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Send + 'static, String> {
-    let response = shared_http_client()
+/// Upper bound on waiting for any single network event (response headers,
+/// one body chunk). 请求级不设总死线：整曲 FLAC 几十至上百 MB，慢速链路下
+/// 固定总超时必然误杀正常下载，改为按单次网络事件限时、停滞即报错。
+const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Streams `url` straight into `dest` through a fixed ~64KB write buffer:
+/// the whole track is never held in memory. Returns the accumulated byte
+/// count. Any failure — including fewer than 1KB downloaded — removes the
+/// partial file first, so an `Err` never leaves debris on disk.
+///
+/// 走 `chunk()` 而非 `bytes_stream()`：后者被 reqwest 的 `stream` feature
+/// 门控（本仓未启用），`chunk()` 无 feature 门，同为逐块拉取。
+async fn http_download_to_file(url: &str, dest: &Path) -> Result<u64, String> {
+    let request = shared_http_client()
         .get(url)
-        .header(USER_AGENT, HeaderValue::from_static(KUGOU_UA))
-        .timeout(Duration::from_secs(120))
-        .send()
+        .header(USER_AGENT, HeaderValue::from_static(KUGOU_UA));
+    let mut response = tokio::time::timeout(STREAM_IO_TIMEOUT, request.send())
         .await
+        .map_err(|_| format!("network stalled: no response for {STREAM_IO_TIMEOUT:?}"))?
         .map_err(|err| err.to_string())?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    response.bytes().await.map_err(|err| err.to_string())
+
+    let mut total = 0u64;
+    let result = async {
+        let mut file = tokio::io::BufWriter::with_capacity(
+            // 固定 ~64KB：落盘系统调用粒度与网络块到达节奏解耦。
+            64 * 1024,
+            tokio::fs::File::create(dest)
+                .await
+                .map_err(|err| format!("write audio: {err}"))?,
+        );
+        loop {
+            let chunk = tokio::time::timeout(STREAM_IO_TIMEOUT, response.chunk())
+                .await
+                .map_err(|_| format!("network stalled: no data for {STREAM_IO_TIMEOUT:?}"))?
+                .map_err(|err| err.to_string())?;
+            let Some(chunk) = chunk else { break };
+            file.write_all(&chunk)
+                .await
+                .map_err(|err| format!("write audio: {err}"))?;
+            total += chunk.len() as u64;
+        }
+        // BufWriter 被 drop 不会自动冲刷，成功路径必须显式冲刷并关闭。
+        file.flush()
+            .await
+            .map_err(|err| format!("write audio: {err}"))?;
+        file.shutdown()
+            .await
+            .map_err(|err| format!("write audio: {err}"))?;
+        Ok::<(), String>(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err(err);
+    }
+    if total < 1024 {
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err("downloaded file is empty".into());
+    }
+    Ok(total)
 }
 
 /// Best-quality playable URL for `track` (flac -> 320 -> 128), asking for the
@@ -223,22 +271,12 @@ pub async fn download_track(
     ));
     let audio_path = dir.join(format!("{stem}.{ext}"));
 
-    let bytes = http_get_bytes(&url).await?;
-    if bytes.len() < 1024 {
-        return Err("downloaded file is empty".into());
-    }
-    // 建目录/写音频/标签重写都是几十 MB 级同步 IO，必须搬进阻塞池：
-    // 内联在 RUNTIME worker 上会与播放流泵/DB 查询抢仅有的 2 个 worker。
-    let write_dir = dir.to_path_buf();
-    let audio_path = crate::RUNTIME
-        .spawn_blocking(move || -> Result<PathBuf, String> {
-            std::fs::create_dir_all(&write_dir)
-                .map_err(|err| format!("create download dir: {err}"))?;
-            std::fs::write(&audio_path, &bytes).map_err(|err| format!("write audio: {err}"))?;
-            Ok(audio_path)
-        })
+    // 建目录与音频落盘都走 tokio::fs（内部在阻塞池执行，不占 RUNTIME 仅有的
+    // 2 个 worker）；音频边下边写，整首曲子不再整份驻留内存。
+    tokio::fs::create_dir_all(dir)
         .await
-        .map_err(|err| format!("write audio: {err}"))??;
+        .map_err(|err| format!("create download dir: {err}"))?;
+    http_download_to_file(&url, &audio_path).await?;
 
     // Lyric sidecar + tags/cover are best-effort: the audio file is already saved.
     let (lrc, krc) = fetch_lyrics(client, track).await.unwrap_or((None, None));
