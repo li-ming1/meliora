@@ -103,6 +103,31 @@ fn query_value(query: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Value of a bare `id=NNN` whose key ends exactly at `id`: the char before
+/// the match must not be `[A-Za-z0-9_]` (else it is the tail of a longer key
+/// such as `mid=`/`tid=`/`songid=`/`userid=`), and scanning continues past
+/// such longer keys instead of returning their value.
+fn bare_id_value(haystack: &str) -> Option<&str> {
+    let mut from = 0;
+    while let Some(pos) = haystack[from..].find("id=") {
+        let abs = from + pos;
+        let boundary = abs == 0
+            || !haystack[..abs]
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if boundary {
+            let rest = &haystack[abs + 3..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            return (end > 0).then(|| &rest[..end]);
+        }
+        from = abs + 3;
+    }
+    None
+}
+
 /// Follows a short link and returns its final URL.
 async fn resolve(url: &str) -> Result<String, String> {
     let resp = http()
@@ -136,13 +161,7 @@ fn netease_id(url: &str) -> Option<String> {
         return Some(id);
     }
     let after = url.find("playlist").or_else(|| url.find("songlist"))?;
-    let sub = &url[after..];
-    let start = sub.find("id=")? + 3;
-    let rest = &sub[start..];
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    (!rest[..end].is_empty()).then(|| rest[..end].to_string())
+    bare_id_value(&url[after..]).map(str::to_string)
 }
 
 async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
@@ -304,17 +323,8 @@ fn qq_id(url: &str) -> Option<i64> {
     {
         return Some(id);
     }
-    // generic trailing `id=NNN`
-    let start = url.find("id=")? + 3;
-    let rest = &url[start..];
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    if end > 0 {
-        rest[..end].parse().ok()
-    } else {
-        None
-    }
+    // generic trailing `id=NNN`, ignoring longer keys like `mid=`/`songid=`
+    bare_id_value(url)?.parse().ok()
 }
 
 const QQ_PLATFORMS: [&str; 7] = [
@@ -388,25 +398,43 @@ async fn qq_page(headers: &HeaderMap, id: i64, begin: i64, num: i64) -> Result<Q
             .unwrap_or(0);
         let url = format!("https://u6.y.qq.com/cgi-bin/musics.fcg?sign={sign}&_={ms}");
 
-        let Ok(resp) = http()
+        let resp = match http()
             .post(&url)
             .headers(headers.clone())
             .body(body)
             .send()
             .await
-        else {
-            continue;
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::debug!(platform, %err, "QQ playlist page request failed");
+                continue;
+            }
         };
         if !resp.status().is_success() {
+            tracing::debug!(platform, status = %resp.status(), "QQ playlist page returned non-success status");
             continue;
         }
-        let Ok(text) = resp.text().await else {
-            continue;
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::debug!(platform, %err, "failed to read QQ playlist page body");
+                continue;
+            }
         };
         if let Some(page) = qq_parse(&text) {
             return Ok(page);
         }
+        tracing::debug!(
+            platform,
+            "QQ playlist page response unusable (bad JSON, non-zero code, or missing data)"
+        );
     }
+    tracing::warn!(
+        id,
+        begin,
+        "all QQ platforms failed to fetch the playlist page"
+    );
     Err("QQ 音乐歌单数据获取失败".to_string())
 }
 
@@ -492,4 +520,33 @@ fn qq_sign(param: &str) -> String {
 
     let t2: String = ls3.chars().filter(|&c| c != '/' && c != '+').collect();
     format!("zzb{t1}{t2}{t3}").to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bare_id_value;
+
+    #[test]
+    fn bare_id_matches_exact_keys_and_skips_longer_key_tails() {
+        // exact `id=` keys keep working, including first-param links where
+        // `query_value` cannot match because the host shares the first segment
+        assert_eq!(
+            bare_id_value("https://y.qq.com/taoge.html?id=456&host=1"),
+            Some("456")
+        );
+        assert_eq!(
+            bare_id_value("…/playlist?id=7217666066&userid=123"),
+            Some("7217666066")
+        );
+        assert_eq!(bare_id_value("id=1"), Some("1"));
+        assert_eq!(bare_id_value("…#id=456"), Some("456"));
+        // longer keys ending in `id=` are skipped, not mistaken for the id
+        assert_eq!(bare_id_value("…/playlist?mid=88"), None);
+        assert_eq!(bare_id_value("…taoge.html?songid=456"), None);
+        assert_eq!(bare_id_value("…?userid=123"), None);
+        // a real `id=` after a longer key is still found
+        assert_eq!(bare_id_value("…?mid=1&id=2"), Some("2"));
+        // empty value terminates as None
+        assert_eq!(bare_id_value("…?id=&tid=5"), None);
+    }
 }
