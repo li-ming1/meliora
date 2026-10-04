@@ -57,7 +57,7 @@ impl FileTree {
                     FileNode {
                         entry: RawEntry {
                             name,
-                            path,
+                            path: Arc::from(path),
                             is_dir: true,
                             is_audio: false,
                             track: None,
@@ -81,13 +81,13 @@ impl FileTree {
     /// Finds a node path (the indexes of successive children) for a given filesystem path.
     fn locate(&self, target: &Path) -> Option<NodePath> {
         'roots: for (root_idx, root) in self.roots.iter().enumerate() {
-            if !target.starts_with(&root.entry.path) {
+            if !target.starts_with(root.entry.path.as_ref()) {
                 continue;
             }
             let mut indices = smallvec![root_idx];
             let mut node = root;
             loop {
-                if node.entry.path == target {
+                if node.entry.path.as_ref() == target {
                     return Some(indices);
                 }
                 let ChildState::Loaded(children) = &node.children else {
@@ -96,7 +96,7 @@ impl FileTree {
                 let Some((child_idx, child)) = children
                     .iter()
                     .enumerate()
-                    .find(|(_, c)| target.starts_with(&c.entry.path))
+                    .find(|(_, c)| target.starts_with(c.entry.path.as_ref()))
                 else {
                     continue 'roots;
                 };
@@ -177,7 +177,7 @@ fn flatten_node(node: &FileNode, depth: usize, rows: &mut Vec<FlatRow>) {
     };
 
     rows.push(FlatRow {
-        path: Arc::from(node.entry.path.clone()),
+        path: node.entry.path.clone(),
         name: node.entry.name.clone(),
         depth,
         is_dir: node.entry.is_dir,
@@ -203,7 +203,7 @@ fn collect_loaded_dirs(node: &FileNode, out: &mut FxHashSet<PathBuf>) {
         return;
     }
     if let ChildState::Loaded(children) = &node.children {
-        out.insert(node.entry.path.clone());
+        out.insert(node.entry.path.to_path_buf());
         for c in children {
             collect_loaded_dirs(c, out);
         }
@@ -227,14 +227,14 @@ fn collect_protected_loaded_dirs(node: &FileNode, out: &mut FxHashSet<PathBuf>) 
 
     let protected = node.entry.is_dir && (node.expanded || has_expanded_descendant);
     if protected {
-        out.insert(node.entry.path.clone());
+        out.insert(node.entry.path.to_path_buf());
     }
     protected
 }
 
 pub(crate) fn collect_expanded_paths(node: &FileNode, out: &mut Vec<PathBuf>) {
     if node.entry.is_dir && node.expanded {
-        out.push(node.entry.path.clone());
+        out.push(node.entry.path.to_path_buf());
     }
     if let ChildState::Loaded(children) = &node.children {
         for c in children {

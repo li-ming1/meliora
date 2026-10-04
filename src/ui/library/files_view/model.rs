@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use gpui::SharedString;
@@ -14,7 +14,7 @@ pub struct TrackRef {
 #[derive(Clone, Debug)]
 pub struct RawEntry {
     pub name: SharedString,
-    pub path: PathBuf,
+    pub path: Arc<Path>,
     pub is_dir: bool,
     pub is_audio: bool,
     pub track: Option<TrackRef>,

@@ -248,7 +248,7 @@ impl FilesView {
         let audio_entries: SmallVec<[(PathBuf, Option<TrackRef>); 16]> = entries
             .iter()
             .filter(|entry| entry.entry.is_audio)
-            .map(|entry| (entry.entry.path.clone(), entry.entry.track.clone()))
+            .map(|entry| (entry.entry.path.to_path_buf(), entry.entry.track.clone()))
             .collect();
 
         if audio_entries.is_empty() {
@@ -321,9 +321,7 @@ impl FilesView {
                 if replace {
                     playback.replace_queue(items);
                 } else {
-                    for item in items {
-                        playback.queue(item);
-                    }
+                    playback.queue_list(items);
                 }
             });
         })
@@ -455,10 +453,10 @@ impl FilesView {
             .iter()
             .filter(|c| {
                 c.entry.is_dir
-                    && self.restore_expanded.contains(&c.entry.path)
+                    && self.restore_expanded.contains(c.entry.path.as_ref())
                     && matches!(c.children, ChildState::Unloaded)
             })
-            .map(|c| c.entry.path.clone())
+            .map(|c| c.entry.path.to_path_buf())
             .collect();
 
         for child_path in children_to_load {
@@ -497,10 +495,10 @@ impl FilesView {
             .roots
             .iter()
             .filter(|r| {
-                self.restore_expanded.contains(&r.entry.path)
+                self.restore_expanded.contains(r.entry.path.as_ref())
                     && matches!(r.children, ChildState::Unloaded)
             })
-            .map(|r| r.entry.path.clone())
+            .map(|r| r.entry.path.to_path_buf())
             .collect();
         for path in roots_to_load {
             self.start_loading(path, cx);

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{App, SharedString};
 use rustc_hash::FxHashMap;
@@ -62,7 +63,7 @@ pub(super) async fn load_dir_entries(path: PathBuf, pool: sqlx::SqlitePool) -> V
                     };
                     RawEntry {
                         name,
-                        path: entry_path,
+                        path: Arc::from(entry_path),
                         is_dir,
                         is_audio,
                         track: None,
