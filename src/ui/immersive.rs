@@ -76,7 +76,7 @@ use crate::{
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
                 managed_image, memory_pressure, render_cache_shrink,
             },
-            slider::slider,
+            slider::{SLIDER_CHANGE_INTERVAL, slider},
             tooltip::build_tooltip,
         },
         lyrics::{Lyrics, lerp_color, word_progress},
@@ -1010,6 +1010,7 @@ impl Render for ImmersiveProgress {
                     .flex_1()
                     .h(px(6.0))
                     .rounded_full()
+                    .change_interval(SLIDER_CHANGE_INTERVAL)
                     .value(progress)
                     .on_change(move |v, _, cx| {
                         if duration_ms > 0 {
@@ -1278,6 +1279,7 @@ impl Render for ImmersiveView {
                         .w(px(90.0))
                         .h(px(6.0))
                         .rounded_full()
+                        .change_interval(SLIDER_CHANGE_INTERVAL)
                         .value(volume as f32)
                         .on_change(move |v, _, cx| {
                             cx.global::<PlaybackInterface>().set_volume(v as f64);

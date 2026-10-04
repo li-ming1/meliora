@@ -30,7 +30,7 @@ use crate::{
             managed_image::{ManagedImageKey, managed_image},
             menu::{menu, menu_check_item, menu_item},
             resizable::{ResizeEdge, resizable},
-            slider::slider,
+            slider::{SLIDER_CHANGE_INTERVAL, slider},
             tooltip::{build_tooltip, tooltip_container},
             transition::{HoverTransition, TransitionExt},
         },
@@ -50,7 +50,7 @@ use crate::{
 };
 use cntp_i18n::tr;
 use gpui::{InteractiveElement, prelude::FluentBuilder, *};
-use std::{path::PathBuf, rc::Rc, time::Duration};
+use std::{path::PathBuf, rc::Rc};
 
 use self::replaygain::ReplayGainButton;
 
@@ -135,10 +135,6 @@ where
         .hover(|this| this.bg(theme.playback_button_hover))
         .active(|this| this.bg(theme.playback_button_active))
 }
-
-/// Debounce for slider change events: without it, every mouse move during a
-/// drag would send a command down the playback channel (SetVolume / seek).
-const SLIDER_CHANGE_INTERVAL: Duration = Duration::from_millis(33);
 
 /// The currently playing online track, if any: the running stream URL is
 /// mapped back to its source through the per-source registries.
@@ -623,13 +619,11 @@ impl InfoSection {
                         .ok()
                         .flatten();
                     let track = track?;
-                    let can_navigate_to_artist = match track.album_id {
-                        Some(album_id) => crate::library::db::artist_ids_for_album(&pool, album_id)
+                    let can_navigate_to_artist =
+                        crate::library::db::artist_ids_for_track(&pool, track.id)
                             .await
                             .map(|v| !v.is_empty())
-                            .unwrap_or(false),
-                        None => false,
-                    };
+                            .unwrap_or(false);
                     let is_liked = crate::library::db::playlist_has_track(
                         &pool,
                         LIKED_SONGS_PLAYLIST_ID,
@@ -912,6 +906,7 @@ impl Render for InfoSection {
                             .child(InfoSectionContextMenu::new(
                                 self.current_track_path.clone(),
                                 self.current_library_track.clone(),
+                                self.can_navigate_to_artist,
                                 self.is_liked,
                                 show_add_to,
                                 online_download,

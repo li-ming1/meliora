@@ -45,6 +45,9 @@ const ECHO_EPSILON: f32 = 0.005;
 /// Emit interval used when no `change_interval` was set: at most one
 /// `on_change` per millisecond of dragging.
 const DEFAULT_CHANGE_INTERVAL: Duration = Duration::from_millis(1);
+/// Debounce for slider change events: without it, every mouse move during a
+/// drag would send a command down the playback channel (SetVolume / seek).
+pub const SLIDER_CHANGE_INTERVAL: Duration = Duration::from_millis(33);
 /// Hitbox padding above and below the bar, so drags stay live while the
 /// cursor slips a few pixels off the thin track.
 const HITBOX_VERTICAL_PAD: Pixels = px(4.0);

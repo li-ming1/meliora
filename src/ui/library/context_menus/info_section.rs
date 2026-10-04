@@ -5,14 +5,14 @@ use gpui::prelude::FluentBuilder;
 use gpui::{Entity, IntoElement, RenderOnce, SharedString, Window};
 
 use crate::{
-    library::{db::LibraryAccess, types::Track},
+    library::types::Track,
     ui::{
         availability::{is_online_path, is_track_path_available},
         components::{
             icons::{DISC, DOWNLOAD, FOLDER_SEARCH, PLAYLIST_ADD, USERS},
             menu::{menu, menu_item, menu_separator},
         },
-        models::toggle_like_by_id,
+        models::{is_track_available_snapshot, toggle_like_by_id},
         util::reveal_path_for_file_manager,
     },
 };
@@ -26,6 +26,10 @@ use super::{
 pub struct InfoSectionContextMenu {
     current_path: Option<PathBuf>,
     track: Option<Rc<Track>>,
+    /// Artist navigability of `track`, resolved by the parent's background
+    /// job and handed over at construction: menu construction must not run
+    /// the DB's `block_on` query per frame the menu stays open.
+    can_go_to_artist: bool,
     is_liked: Option<i64>,
     show_add_to: Option<Entity<bool>>,
     /// Present only for online (KuGou) tracks: label plus a fire-and-forget
@@ -41,6 +45,7 @@ impl InfoSectionContextMenu {
     pub fn new(
         current_path: Option<PathBuf>,
         track: Option<Rc<Track>>,
+        can_go_to_artist: bool,
         is_liked: Option<i64>,
         show_add_to: Option<Entity<bool>>,
         online_download: Option<OnlineDownloadAction>,
@@ -48,6 +53,7 @@ impl InfoSectionContextMenu {
         Self {
             current_path,
             track,
+            can_go_to_artist,
             is_liked,
             show_add_to,
             online_download,
@@ -59,15 +65,20 @@ impl RenderOnce for InfoSectionContextMenu {
     fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
         let reveal_path = self.current_path;
         let is_online = reveal_path.as_deref().is_some_and(is_online_path);
-        let can_reveal_track =
-            !is_online && reveal_path.as_deref().is_some_and(is_track_path_available);
         let track = self.track;
+        // availability snapshot read: a per-render `path.exists()` syscall here
+        // would block the UI thread every frame the menu stays open. Without a
+        // library row yet (resolve window, non-library file) the fresh stat
+        // stays, so a path that exists is not read as missing until the next
+        // snapshot reload lands.
+        let can_reveal_track = match track.as_deref() {
+            Some(t) => is_track_available_snapshot(cx, t),
+            None => !is_online && reveal_path.as_deref().is_some_and(is_track_path_available),
+        };
 
         menu()
             .when_some(track.clone(), |menu, track_for_artist| {
-                let can_go_to_artist = cx
-                    .artist_ids_for_track(track_for_artist.id)
-                    .is_ok_and(|ids| !ids.is_empty());
+                let can_go_to_artist = self.can_go_to_artist;
                 menu.item(
                     menu_item(
                         "info_section_go_to_artist",

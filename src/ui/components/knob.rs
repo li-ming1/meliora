@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -99,6 +100,14 @@ fn paint_stroked_path(
     }
 }
 
+/// Caption paints run per frame per knob (the EQ screen shows three, label
+/// and readout each) and the `error!` writer flushes synchronously, so a
+/// failing paint would otherwise hit the log at frame rate. Paint failures
+/// are persistent (font/atlas backend state), so only the first one logs;
+/// once painting recovers the knob simply renders again, which needs no log
+/// line.
+static PAINT_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Paints a pre-shaped caption horizontally centered within `bounds`, at the
 /// given top edge, logging under `what` on failure.
 fn paint_centered_caption(
@@ -110,7 +119,9 @@ fn paint_centered_caption(
     cx: &mut App,
 ) {
     let x = bounds.origin.x + (bounds.size.width - caption.width) / 2.0;
-    if let Err(e) = caption.paint(point(x, top), px(14.0), TextAlign::Left, None, window, cx) {
+    if let Err(e) = caption.paint(point(x, top), px(14.0), TextAlign::Left, None, window, cx)
+        && !PAINT_FAILURE_LOGGED.swap(true, Ordering::Relaxed)
+    {
         error!("Failed to paint knob {what}: {:?}", e);
     }
 }
