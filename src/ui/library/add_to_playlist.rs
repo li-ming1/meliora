@@ -30,7 +30,10 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 enum TrackList {
     Single(i64),
-    Multi(Vec<i64>),
+    // Shared: every row of the dialog snapshots the selection, and the
+    // snapshot's ids are never read back (accept reads the live list), so
+    // handing each row a fresh Vec clone is O(playlists x selection) dead data.
+    Multi(Arc<[i64]>),
 }
 
 impl TrackList {
@@ -38,7 +41,7 @@ impl TrackList {
         if ids.len() == 1 {
             TrackList::Single(ids[0])
         } else {
-            TrackList::Multi(ids)
+            TrackList::Multi(ids.into())
         }
     }
 
