@@ -90,7 +90,13 @@ fn main() -> Result<()> {
             let name = entry.file_name().to_string_lossy().into_owned();
             (name, entry.path())
         })
-        .filter(|(name, file)| file.is_file() && name.ends_with(".json") && name != "meta.json")
+        .filter(|(name, file)| {
+            file.is_file()
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                && !name.eq_ignore_ascii_case("meta.json")
+        })
         .collect();
     translations.sort();
     let mut stamp = DefaultHasher::new();
