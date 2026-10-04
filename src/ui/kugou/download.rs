@@ -279,31 +279,62 @@ pub async fn download_track(
     http_download_to_file(&url, &audio_path).await?;
 
     // Lyric sidecar + tags/cover are best-effort: the audio file is already saved.
-    let (lrc, krc) = fetch_lyrics(client, track).await.unwrap_or((None, None));
+    let (lrc, krc) = match fetch_lyrics(client, track).await {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(hash = %track.hash, error = %err, "kugou download: lyrics fetch failed");
+            (None, None)
+        }
+    };
     let tag_lrc = lrc.clone();
     let sidecar_dir = dir.to_path_buf();
-    let _ = crate::RUNTIME
+    // spawn_blocking needs 'static: the track reference can't cross the
+    // closure, so the hash is cloned out first.
+    let sidecar_hash = track.hash.clone();
+    if let Err(err) = crate::RUNTIME
         .spawn_blocking(move || {
-            if let Some(krc) = &krc {
-                let _ = std::fs::write(sidecar_dir.join(format!("{stem}.krc")), krc);
+            if let Some(krc) = &krc
+                && let Err(err) = std::fs::write(sidecar_dir.join(format!("{stem}.krc")), krc)
+            {
+                tracing::warn!(hash = %sidecar_hash, error = %err, "kugou download: failed to write .krc lyrics sidecar");
             }
-            if let Some(lrc) = &lrc {
-                let _ = std::fs::write(sidecar_dir.join(format!("{stem}.lrc")), lrc);
+            if let Some(lrc) = &lrc
+                && let Err(err) = std::fs::write(sidecar_dir.join(format!("{stem}.lrc")), lrc)
+            {
+                tracing::warn!(hash = %sidecar_hash, error = %err, "kugou download: failed to write .lrc lyrics sidecar");
             }
         })
-        .await;
+        .await
+    {
+        tracing::warn!(hash = %track.hash, error = %err, "kugou download: lyrics sidecar task did not complete");
+    }
     let cover = if track.cover_url.is_empty() {
         None
     } else {
-        http_cover_bytes(&track.cover_url).await.ok().flatten()
+        match http_cover_bytes(&track.cover_url).await {
+            Ok(cover) => cover,
+            Err(err) => {
+                tracing::warn!(hash = %track.hash, error = %err, "kugou download: cover fetch failed");
+                None
+            }
+        }
     };
     let tag_path = audio_path.clone();
     let tag_track = track.clone();
-    let _ = crate::RUNTIME
+    match crate::RUNTIME
         .spawn_blocking(move || {
             embed_tags(&tag_path, &tag_track, cover.as_deref(), tag_lrc.as_deref())
         })
-        .await;
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            tracing::warn!(hash = %track.hash, error = %err, "kugou download: failed to embed tags/cover into audio file");
+        }
+        Err(err) => {
+            tracing::warn!(hash = %track.hash, error = %err, "kugou download: tag embedding task did not complete");
+        }
+    }
 
     Ok(audio_path)
 }
@@ -336,7 +367,7 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
         .effective_download_dir();
     cx.spawn(async move |cx| {
         let client = crate::kugou::shared_client();
-        let result = crate::RUNTIME
+        let joined = crate::RUNTIME
             .spawn(async move {
                 // 排队等待许可也在 RUNTIME 上，不占下载线程。
                 let _permit = DOWNLOAD_PERMITS
@@ -345,11 +376,16 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
                     .expect("semaphore is never closed");
                 download_track(&client, &track, &dir).await
             })
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .ok_or_else(|| "download task panicked".to_string());
-
+            .await;
+        // Keep the business error (HTTP status, empty file, …) distinct from a
+        // genuinely panicked task; flattening both into one string used to
+        // report every failure as "download task panicked".
+        let result = match joined {
+            Ok(Ok(path)) => Ok(path),
+            Ok(Err(err)) => Err(err),
+            Err(err) if err.is_panic() => Err("download task panicked".to_string()),
+            Err(err) => Err(err.to_string()),
+        };
         // 无论成败都移除进行中标记（防失败后永远无法重下），再发提示。
         pending_downloads()
             .write()
