@@ -94,10 +94,13 @@ impl Render for SearchView {
 
             modal()
                 .on_exit(move |_, cx| {
-                    weak.update(cx, |this, cx| {
+                    // The view entity may already be gone when the modal exits
+                    // (normal teardown timing) - log and move on, do not abort.
+                    if let Err(err) = weak.update(cx, |this, cx| {
                         this.reset(cx);
-                    })
-                    .expect("failed to update search view")
+                    }) {
+                        tracing::debug!(%err, "search view gone on modal exit");
+                    }
                 })
                 .child(div().w(px(550.0)).h(px(500.0)).child(self.search.clone()))
                 .into_any_element()

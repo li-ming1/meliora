@@ -19,7 +19,11 @@ pub fn is_case_insensitive(path: &Utf8Path) -> bool {
     let Some(key) = volume_key(path) else {
         return OS_DEFAULT_CASE_INSENSITIVE;
     };
-    if let Some(result) = CASE_CACHE.read().expect("case cache poisoned").get(&key) {
+    if let Some(result) = CASE_CACHE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
         return *result;
     }
 
@@ -37,7 +41,7 @@ pub fn is_case_insensitive(path: &Utf8Path) -> bool {
     };
     CASE_CACHE
         .write()
-        .expect("case cache poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(key, result);
     result
 }

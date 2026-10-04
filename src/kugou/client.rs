@@ -33,7 +33,7 @@ fn login_expired_toast_state() -> &'static Mutex<Option<Instant>> {
 
 fn notify_login_expired() {
     let last = login_expired_toast_state();
-    let mut guard = last.lock().unwrap();
+    let mut guard = last.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(at) = *guard
         && at.elapsed() < LOGIN_EXPIRED_TOAST_THROTTLE
     {
@@ -48,7 +48,9 @@ fn notify_login_expired() {
 }
 
 fn reset_login_expired_toast() {
-    *login_expired_toast_state().lock().unwrap() = None;
+    *login_expired_toast_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 pub const GATEWAY: &str = "https://gateway.kugou.com";

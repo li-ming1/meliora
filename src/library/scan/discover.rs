@@ -75,15 +75,12 @@ impl FolderArtObservations {
     pub(crate) fn record(&self, directory: Utf8PathBuf, candidate: Option<FolderArtCandidate>) {
         self.inner
             .lock()
-            .expect("folder art observations mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(directory, candidate);
     }
 
     pub(crate) fn snapshot(&self) -> FolderArtObservationMap {
-        self.inner
-            .lock()
-            .expect("folder art observations mutex poisoned")
-            .clone()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The last observation for `directory`. The outer `None` means the
@@ -92,7 +89,7 @@ impl FolderArtObservations {
     pub(crate) fn get(&self, directory: &Utf8Path) -> Option<Option<FolderArtCandidate>> {
         self.inner
             .lock()
-            .expect("folder art observations mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(directory)
             .cloned()
     }

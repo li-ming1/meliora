@@ -48,10 +48,7 @@ impl FolderArtLoader {
     pub async fn load(&self, candidate: FolderArtCandidate) -> Option<ScannedArt> {
         let path = candidate.path;
         let future = {
-            let mut states = self
-                .states
-                .lock()
-                .expect("folder art loader mutex poisoned");
+            let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
             match states.entry(path.clone()) {
                 Entry::Occupied(mut entry) => match entry.get() {
                     FolderArtLoadState::Loading(future) => future.clone(),
@@ -81,14 +78,14 @@ impl FolderArtLoader {
                 // Ready handle above).
                 self.states
                     .lock()
-                    .expect("folder art loader mutex poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .remove(&path);
                 return None;
             }
         };
         self.states
             .lock()
-            .expect("folder art loader mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(path, FolderArtLoadState::Ready(Arc::downgrade(&bytes)));
         Some(ScannedArt::folder(bytes, candidate.rank))
     }
@@ -176,7 +173,7 @@ impl ArtworkProcessor {
     fn prepare(&self, candidate: &mut ScannedArt) -> Option<ArtworkFuture> {
         let raw = candidate.raw.take()?;
 
-        let mut states = self.states.lock().expect("artwork state mutex poisoned");
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         match states.entry(candidate.hash) {
             Entry::Occupied(entry) => match entry.get() {
                 ArtworkState::Existing => None,
@@ -212,7 +209,7 @@ impl ArtworkProcessor {
 
     /// Drop processed buffers after their hash has been resolved by the database writer.
     pub fn mark_resolved(&self, art: &FileArt, ids: &ArtIdCache) {
-        let mut states = self.states.lock().expect("artwork state mutex poisoned");
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         for candidate in [&art.embedded, &art.folder].into_iter().flatten() {
             if ids.contains_key(&candidate.hash) {
                 states.insert(candidate.hash, ArtworkState::Existing);
