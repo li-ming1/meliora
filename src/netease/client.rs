@@ -329,11 +329,14 @@ impl NeteaseClient {
         if nmtid.is_none() && csrf.is_none() && music_a.is_none() && music_u.is_none() {
             return;
         }
-        if let Some(nmtid) = nmtid {
-            self.session_guard().nmtid = Some(nmtid);
-        }
         let mut session = self.session_guard();
         let mut changed = false;
+        if let Some(nmtid) = nmtid
+            && session.nmtid.as_deref() != Some(nmtid.as_str())
+        {
+            session.nmtid = Some(nmtid);
+            changed = true;
+        }
         if let Some(csrf) = csrf
             && session.csrf.as_deref() != Some(csrf.as_str())
         {
@@ -654,5 +657,16 @@ mod tests {
         assert!(client.logged_in());
         let snapshot = client.session_snapshot();
         assert_eq!(snapshot.csrf.as_deref(), Some("csrf9"));
+    }
+
+    #[test]
+    fn nmtid_only_capture_is_persisted() {
+        let dir = crate::test_support::TestDir::new("netease-nmtid-test");
+        let client = NeteaseClient::new(dir.path());
+        client.capture_cookies(&["NMTID=nm123".to_string()]);
+        let loaded =
+            session_io::load::<NeteaseSession>(&dir.join("netease_session.json"), "netease")
+                .expect("NMTID-only change must still hit the disk");
+        assert_eq!(loaded.nmtid.as_deref(), Some("nm123"));
     }
 }
