@@ -1,11 +1,11 @@
 use camino::Utf8PathBuf;
-use gpui::{App, Global};
+use gpui::{App, Entity, Global};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tracing::error;
 
 use crate::{
+    library::playlist::{PlaylistEvent, PlaylistInfoTransfer},
     settings::scan::{MissingFolderPolicy, ScanSettings},
-    ui::models::{Models, PlaylistEvent},
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -128,10 +128,16 @@ impl ScanInterface {
         );
     }
 
-    pub fn start_broadcast(&self, mut events_rx: UnboundedReceiver<ScanEvent>, cx: &mut App) {
-        let state_model = cx.global::<Models>().scan_state.clone();
-        let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-
+    /// Starts the scan-event bridge. The mirrored UI entities (`scan_state`,
+    /// `playlist_tracker`) are passed in by the UI caller so this module keeps
+    /// no `crate::ui` import; the loop body itself is unchanged.
+    pub fn start_broadcast(
+        &self,
+        mut events_rx: UnboundedReceiver<ScanEvent>,
+        scan_state: Entity<ScanEvent>,
+        playlist_tracker: Entity<PlaylistInfoTransfer>,
+        cx: &mut App,
+    ) {
         cx.spawn(async move |cx| {
             while let Some(event) = events_rx.recv().await {
                 if let ScanEvent::PlaylistsUpdated(playlist_ids) = event {
@@ -145,7 +151,7 @@ impl ScanInterface {
                     continue;
                 }
 
-                state_model.update(cx, |m, cx| {
+                scan_state.update(cx, |m, cx| {
                     *m = event;
                     cx.notify()
                 });

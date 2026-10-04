@@ -1,6 +1,5 @@
 use crate::ui::design::ICON_SM;
 use crate::{
-    library::db::LibraryAccess,
     playback::{interface::PlaybackInterface, queue::QueueItemData},
     settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
@@ -24,6 +23,7 @@ use crate::{
         library::{
             ViewSwitchMessage, add_to_playlist::AddToPlaylist, context_menus::navigate_to_artists,
         },
+        library_access::LibraryAccess,
     },
 };
 use cntp_i18n::{tr, trn};
@@ -1210,7 +1210,7 @@ impl Render for Queue {
                     // album drops
                     .on_drop(cx.listener(
                         move |this: &mut Queue, drag_data: &AlbumDragData, _, cx| {
-                            use crate::library::db::LibraryAccess;
+                            use crate::ui::library_access::LibraryAccess;
 
                             if let Ok(tracks) = cx.list_tracks_in_album(drag_data.album_id) {
                                 let queue_items: Vec<QueueItemData> = tracks

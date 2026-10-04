@@ -14,7 +14,7 @@ use tracing::{debug, warn};
 
 use crate::{
     library::{
-        db::{self, LibraryAccess, LikedTrackSortMethod, PlaylistTrackSortMethod},
+        db::{self, LikedTrackSortMethod, PlaylistTrackSortMethod},
         scan::ScanEvent,
         types::{Album, Track},
     },
@@ -33,8 +33,13 @@ use crate::{
         assets::db::clear_shrunk_thumb_cache,
         availability::{compute_availability, is_track_available},
         library::{NavigationHistory, ViewSwitchMessage},
+        library_access::LibraryAccess,
     },
 };
+
+// SettingsHealth moved to the settings layer (it describes settings.json's
+// state); re-exported here for the existing `ui::models::SettingsHealth` users.
+pub use crate::settings::SettingsHealth;
 
 // yes this looks a little silly
 impl EventEmitter<Metadata> for Metadata {}
@@ -48,12 +53,6 @@ impl EventEmitter<ImageEvent> for Option<Arc<RenderImage>> {}
 pub struct WindowInformation {
     pub maximized: bool,
     pub size: Size<Pixels>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SettingsHealth {
-    Ok,
-    Corrupt { path: PathBuf },
 }
 
 // Click position and artist choices for the artist picker overlay
@@ -84,7 +83,7 @@ pub struct Models {
     pub available_albums: Entity<Option<Arc<FxHashSet<i64>>>>,
     /// Cached set of artist ids that still have at least one credited track on
     /// disk, reloaded at startup and on scan completion. Lets artist rows test
-    /// availability without a per-row `get_all_tracks_by_artist` query plus a
+    /// availability without a per-row `list_all_tracks_by_artist` query plus a
     /// stat per track.
     pub available_artists: Entity<Option<Arc<FxHashSet<i64>>>>,
     /// Cached set of track ids whose file still exists on disk, computed in
@@ -169,15 +168,11 @@ pub struct Queue {
     pub position: usize,
 }
 
-pub struct PlaylistInfoTransfer;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PlaylistEvent {
-    PlaylistUpdated(i64),
-    PlaylistDeleted(i64),
-}
-
-impl EventEmitter<PlaylistEvent> for PlaylistInfoTransfer {}
+// PlaylistInfoTransfer / PlaylistEvent moved to the library layer (they are
+// playlist-domain state; library/scan no longer reverse-imports ui::models
+// to emit them); re-exported here for the existing
+// `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` users.
+pub use crate::library::playlist::{PlaylistEvent, PlaylistInfoTransfer};
 
 fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
     match startup_view {
@@ -185,7 +180,7 @@ fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
         StartupLibraryView::Artists => ViewSwitchMessage::Artists,
         StartupLibraryView::Tracks => ViewSwitchMessage::Tracks,
         StartupLibraryView::Files => ViewSwitchMessage::Files,
-        // Liked Songs needs the get_all_playlists aggregate to resolve its
+        // Liked Songs needs the list_all_playlists aggregate to resolve its
         // playlist id; that query runs on the runtime now (see build_models),
         // so start on the Albums fallback and navigate once it lands.
         StartupLibraryView::LikedSongs => ViewSwitchMessage::Albums,
@@ -316,7 +311,7 @@ pub fn build_models(
     });
 
     // Startup view = Liked Songs: resolving its playlist id needs the
-    // get_all_playlists aggregate, which used to block startup on the UI
+    // list_all_playlists aggregate, which used to block startup on the UI
     // thread. Resolve it on the runtime and navigate once it lands; if the
     // user has already navigated away by then, leave the current view alone.
     if matches!(startup_setting, StartupLibraryView::LikedSongs) {
@@ -324,7 +319,7 @@ pub fn build_models(
         let pool = cx.global::<Pool>().0.clone();
         cx.spawn(async move |cx| {
             let playlists = crate::RUNTIME
-                .spawn(async move { db::get_all_playlists(&pool).await })
+                .spawn(async move { db::list_all_playlists(&pool).await })
                 .await
                 .ok()
                 .and_then(|result| result.ok());
@@ -758,13 +753,13 @@ pub(crate) fn reload_availability(cx: &mut App) {
         else {
             return;
         };
-        // `get_all_tracks` (not the album rows) is the only complete source:
+        // `list_all_tracks` (not the album rows) is the only complete source:
         // `find_album_availability` filters album-less tracks out, and those
         // must not grey out in the tracks table
         let Some(track_rows) = query_rows(
             "track rows",
             crate::RUNTIME.spawn(async move {
-                db::get_all_tracks(&pool).await.map(|rows| {
+                db::list_all_tracks(&pool).await.map(|rows| {
                     rows.into_iter()
                         .map(|(location, id, _)| (id, location))
                         .collect()

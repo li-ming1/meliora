@@ -252,7 +252,7 @@ fn shuffle_all(_: &ShuffleAll, cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
     cx.spawn(async move |cx| {
         let tracks = crate::RUNTIME
-            .spawn(async move { db::get_all_tracks(&pool).await })
+            .spawn(async move { db::list_all_tracks(&pool).await })
             .await
             .map(|result| result.unwrap_or_default())
             .unwrap_or_default();

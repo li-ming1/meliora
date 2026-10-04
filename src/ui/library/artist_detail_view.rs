@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     library::{
-        db::{self, LibraryAccess, LikedTrackSortMethod},
+        db::{self, LikedTrackSortMethod},
         types::{Album, DBString, Track, table::AlbumColumn},
     },
     playback::thread::PlaybackState,
@@ -32,6 +32,7 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
         },
+        library_access::LibraryAccess,
         models::{
             LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
             is_track_available_snapshot,
@@ -155,14 +156,14 @@ impl ArtistDetailView {
             let album_ids = Arc::new(cx.list_albums_by_artist(artist_id).unwrap_or_default());
 
             let all_tracks = cx
-                .get_all_tracks_by_artist(artist_id)
+                .list_all_tracks_by_artist(artist_id)
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
             let all_tracks_available = availability_map(cx, &all_tracks);
 
             let liked_sort = *cx.global::<Models>().liked_tracks_sort_method.read(cx);
 
             let liked_tracks = cx
-                .get_liked_tracks_by_artist(artist_id, liked_sort)
+                .list_liked_tracks_by_artist(artist_id, liked_sort)
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
             let liked_tracks_available = availability_map(cx, &liked_tracks);
 
@@ -171,7 +172,7 @@ impl ArtistDetailView {
             let standalone_sort = LikedTrackSortMethod::ReleaseOrder;
 
             let standalone_tracks = cx
-                .get_standalone_tracks_by_artist(artist_id, standalone_sort)
+                .list_standalone_tracks_by_artist(artist_id, standalone_sort)
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
             let standalone_tracks_available = availability_map(cx, &standalone_tracks);
 
@@ -232,7 +233,7 @@ impl ArtistDetailView {
         cx.spawn(async move |this, cx| {
             let liked_tracks = crate::RUNTIME
                 .spawn(async move {
-                    db::get_liked_tracks_by_artist(&pool, artist_id, sort)
+                    db::list_liked_tracks_by_artist(&pool, artist_id, sort)
                         .await
                         .unwrap_or_else(|_| Arc::new(Vec::new()))
                 })
@@ -293,7 +294,7 @@ impl ArtistDetailView {
         self.standalone_sort = next_sort;
 
         let standalone_tracks = cx
-            .get_standalone_tracks_by_artist(self.artist_id, self.standalone_sort)
+            .list_standalone_tracks_by_artist(self.artist_id, self.standalone_sort)
             .unwrap_or_else(|_| Arc::new(Vec::new()));
 
         self.set_standalone_tracks(standalone_tracks, cx);
@@ -315,7 +316,7 @@ impl ArtistDetailView {
     fn toggle_standalone_sort_order(&mut self, cx: &mut Context<Self>) {
         self.standalone_sort = Self::toggled_sort(self.standalone_sort);
         let standalone_tracks = cx
-            .get_standalone_tracks_by_artist(self.artist_id, self.standalone_sort)
+            .list_standalone_tracks_by_artist(self.artist_id, self.standalone_sort)
             .unwrap_or_else(|_| Arc::new(Vec::new()));
         self.set_standalone_tracks(standalone_tracks, cx);
     }

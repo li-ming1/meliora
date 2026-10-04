@@ -10,7 +10,7 @@ use tracing::error;
 
 use crate::{
     library::{
-        db::{self, LibraryAccess},
+        db::{self},
         playlist::export_playlist,
         types::{Playlist, PlaylistType},
     },
@@ -35,6 +35,7 @@ use crate::{
             textbox::Textbox,
         },
         library::{NavigationHistory, ViewSwitchMessage, playlist_view::find_playlist_tracks},
+        library_access::LibraryAccess,
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
     },
@@ -144,7 +145,7 @@ impl PlaylistList {
 
         cx.spawn(async move |this, cx| {
             let playlists = crate::RUNTIME
-                .spawn(async move { db::get_all_playlists(&pool).await })
+                .spawn(async move { db::list_all_playlists(&pool).await })
                 .await;
 
             let _ = this.update(cx, |this, cx| {

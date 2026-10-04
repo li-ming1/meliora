@@ -1,13 +1,5 @@
-use std::{
-    collections::HashSet,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::HashSet, path::Path, sync::Arc};
 
-use gpui::App;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -16,10 +8,7 @@ use sqlx::{
 };
 use tracing::debug;
 
-use super::{
-    Pool,
-    types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track},
-};
+use super::types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track};
 
 /// Migration versions whose recorded checksum can mismatch purely because an
 /// old Windows database wrote them with different line endings; the open path
@@ -320,7 +309,7 @@ pub async fn get_artist_with_counts(
     ))
 }
 
-pub async fn get_liked_tracks_by_artist(
+pub async fn list_liked_tracks_by_artist(
     pool: &SqlitePool,
     artist_id: i64,
     sort_method: LikedTrackSortMethod,
@@ -354,7 +343,7 @@ pub async fn get_liked_tracks_by_artist(
     ))
 }
 
-pub async fn get_all_tracks_by_artist(
+pub async fn list_all_tracks_by_artist(
     pool: &SqlitePool,
     artist_id: i64,
 ) -> sqlx::Result<Arc<Vec<Track>>> {
@@ -368,7 +357,7 @@ pub async fn get_all_tracks_by_artist(
     ))
 }
 
-pub async fn get_standalone_tracks_by_artist(
+pub async fn list_standalone_tracks_by_artist(
     pool: &SqlitePool,
     artist_id: i64,
     sort_method: LikedTrackSortMethod,
@@ -467,7 +456,7 @@ pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64
 
 /// Every (artist id, track location) pair, used to compute artist availability
 /// (any credited track still on disk) in a single query instead of one
-/// full `get_all_tracks_by_artist` fetch per artist row.
+/// full `list_all_tracks_by_artist` fetch per artist row.
 ///
 /// The query must mirror `find_all_tracks_by_artist`: an artist is credited
 /// through BOTH `album_artist` (album-level) and `track_artist` (track-level).
@@ -598,7 +587,7 @@ pub async fn rename_playlist(pool: &SqlitePool, playlist_id: i64, name: &str) ->
     Ok(())
 }
 
-pub async fn get_all_playlists(pool: &SqlitePool) -> sqlx::Result<Arc<Vec<Playlist>>> {
+pub async fn list_all_playlists(pool: &SqlitePool) -> sqlx::Result<Arc<Vec<Playlist>>> {
     let query = include_str!("../../queries/playlist/get_all_playlists.sql");
 
     Ok(Arc::new(sqlx::query_as(query).fetch_all(pool).await?))
@@ -624,7 +613,7 @@ pub struct PlaylistTrackRow {
     pub location: String,
 }
 
-pub async fn get_playlist_tracks(
+pub async fn list_playlist_tracks(
     pool: &SqlitePool,
     playlist_id: i64,
 ) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
@@ -638,14 +627,14 @@ pub async fn get_playlist_tracks(
     ))
 }
 
-pub async fn get_playlist_tracks_sorted(
+pub async fn list_playlist_tracks_sorted(
     pool: &SqlitePool,
     playlist_id: i64,
     sort_method: PlaylistTrackSortMethod,
 ) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
     let query = match sort_method {
         PlaylistTrackSortMethod::Custom => {
-            return get_playlist_tracks(pool, playlist_id).await;
+            return list_playlist_tracks(pool, playlist_id).await;
         }
         PlaylistTrackSortMethod::TitleAsc => {
             include_str!("../../queries/playlist/get_track_listing_title_asc.sql")
@@ -959,7 +948,7 @@ pub async fn artist_ids_for_track(
         .await
 }
 
-pub async fn get_all_tracks(pool: &SqlitePool) -> sqlx::Result<Vec<(String, i64, i64)>> {
+pub async fn list_all_tracks(pool: &SqlitePool) -> sqlx::Result<Vec<(String, i64, i64)>> {
     let query = include_str!("../../queries/library/get_all_tracks.sql");
 
     sqlx::query_as(query).fetch_all(pool).await
@@ -983,291 +972,6 @@ pub async fn lyrics_for_track(pool: &SqlitePool, track_id: i64) -> sqlx::Result<
         .await?;
 
     Ok(row.map(|(content,)| content))
-}
-
-pub trait LibraryAccess {
-    fn list_tracks_in_album(&self, album_id: i64) -> sqlx::Result<Arc<Vec<Track>>>;
-    fn get_album_by_id(&self, album_id: i64) -> sqlx::Result<Arc<Album>>;
-    fn get_artist_by_id(&self, artist_id: i64) -> sqlx::Result<Arc<Artist>>;
-    fn get_track_by_id(&self, track_id: i64) -> sqlx::Result<Arc<Track>>;
-    fn get_track_by_path(&self, path: &Path) -> sqlx::Result<Option<Arc<Track>>>;
-    fn create_playlist(&self, name: &str) -> sqlx::Result<i64>;
-    fn delete_playlist(&self, playlist_id: i64) -> sqlx::Result<()>;
-    fn rename_playlist(&self, playlist_id: i64, name: &str) -> sqlx::Result<()>;
-    fn get_all_playlists(&self) -> sqlx::Result<Arc<Vec<Playlist>>>;
-    fn get_playlist_tracks(&self, playlist_id: i64) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>>;
-    fn get_playlist_tracks_sorted(
-        &self,
-        playlist_id: i64,
-        sort_method: PlaylistTrackSortMethod,
-    ) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>>;
-    fn move_playlist_item(&self, item_id: i64, new_position: i64) -> sqlx::Result<()>;
-    fn reorder_playlist(&self, playlist_id: i64, new_position: i64) -> sqlx::Result<()>;
-    fn get_playlist_item(&self, item_id: i64) -> sqlx::Result<PlaylistItem>;
-    fn playlist_has_track(&self, playlist_id: i64, track_id: i64) -> sqlx::Result<Option<i64>>;
-    fn playlist_ids_for_track(&self, track_id: i64) -> sqlx::Result<FxHashSet<i64>>;
-    fn playlist_contains_all_tracks(
-        &self,
-        playlist_id: i64,
-        track_ids: &[i64],
-    ) -> sqlx::Result<bool>;
-    fn list_albums_by_artist(&self, artist_id: i64) -> sqlx::Result<Vec<(u32, String)>>;
-    fn get_artist_with_counts(&self, artist_id: i64) -> sqlx::Result<Arc<ArtistWithCounts>>;
-    fn get_liked_tracks_by_artist(
-        &self,
-        artist_id: i64,
-        sort_method: LikedTrackSortMethod,
-    ) -> sqlx::Result<Arc<Vec<Track>>>;
-    fn get_standalone_tracks_by_artist(
-        &self,
-        artist_id: i64,
-        sort_method: LikedTrackSortMethod,
-    ) -> sqlx::Result<Arc<Vec<Track>>>;
-    fn get_all_tracks_by_artist(&self, artist_id: i64) -> sqlx::Result<Arc<Vec<Track>>>;
-    fn artist_ids_for_album(&self, album_id: i64) -> sqlx::Result<Vec<(i64, String)>>;
-    fn artist_ids_for_track(&self, track_id: i64) -> sqlx::Result<Vec<(i64, String)>>;
-    fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>>;
-}
-
-// ---------------------------------------------------------------------------
-// UI-thread database blocking measurement
-//
-// Every `LibraryAccess for App` method parks the UI thread on
-// `RUNTIME.block_on`. Doctrine §2.3 forbids blocking the main thread and §14
-// forbids database access on the UI hot path, so those `block_on`s are debt —
-// but which of them is worth converting to a background load is a question for
-// data, not intuition (§1/§36). The methods routed through `blocking_query`
-// below are the ones the row- and view-construction paths call, which is where
-// the call volume is; the remaining methods can be added the same way.
-// ---------------------------------------------------------------------------
-
-/// A single query slower than this is logged with its method name.
-const UI_QUERY_SLOW_MICROS: u64 = 2_000;
-/// Two log lines per accumulated quarter-second of UI-thread blocking: silent
-/// while the total stays small, a growing curve when it does not.
-const UI_QUERY_REPORT_STEP_MICROS: u64 = 250_000;
-
-static UI_QUERY_CALLS: AtomicU64 = AtomicU64::new(0);
-static UI_QUERY_TOTAL_MICROS: AtomicU64 = AtomicU64::new(0);
-static UI_QUERY_PEAK_MICROS: AtomicU64 = AtomicU64::new(0);
-
-/// Runs a UI-thread database query, recording how long it parked the UI thread.
-fn blocking_query<T>(method: &'static str, future: impl std::future::Future<Output = T>) -> T {
-    let started = std::time::Instant::now();
-    let result = crate::RUNTIME.block_on(future);
-    let micros = started.elapsed().as_micros() as u64;
-
-    let calls = UI_QUERY_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    let total = UI_QUERY_TOTAL_MICROS.fetch_add(micros, Ordering::Relaxed) + micros;
-    let peak = UI_QUERY_PEAK_MICROS
-        .fetch_max(micros, Ordering::Relaxed)
-        .max(micros);
-
-    if micros >= UI_QUERY_SLOW_MICROS {
-        tracing::warn!(method, micros, "[db] slow ui-thread query");
-    }
-
-    if total / UI_QUERY_REPORT_STEP_MICROS != (total - micros) / UI_QUERY_REPORT_STEP_MICROS {
-        tracing::info!(
-            calls,
-            total_ms = total / 1000,
-            peak_ms = peak / 1000,
-            "[db] ui-thread query total"
-        );
-    }
-
-    result
-}
-
-impl LibraryAccess for App {
-    fn list_tracks_in_album(&self, album_id: i64) -> sqlx::Result<Arc<Vec<Track>>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "list_tracks_in_album",
-            list_tracks_in_album(&pool.0, album_id),
-        )
-    }
-
-    fn get_album_by_id(&self, album_id: i64) -> sqlx::Result<Arc<Album>> {
-        let pool: &Pool = self.global();
-        blocking_query("get_album_by_id", get_album_by_id(&pool.0, album_id))
-    }
-
-    fn get_artist_by_id(&self, artist_id: i64) -> sqlx::Result<Arc<Artist>> {
-        let pool: &Pool = self.global();
-        blocking_query("get_artist_by_id", get_artist_by_id(&pool.0, artist_id))
-    }
-
-    fn get_track_by_id(&self, track_id: i64) -> sqlx::Result<Arc<Track>> {
-        let pool: &Pool = self.global();
-        blocking_query("get_track_by_id", get_track_by_id(&pool.0, track_id))
-    }
-
-    fn get_track_by_path(&self, path: &Path) -> sqlx::Result<Option<Arc<Track>>> {
-        let pool: &Pool = self.global();
-        blocking_query("get_track_by_path", get_track_by_path(&pool.0, path))
-    }
-
-    fn create_playlist(&self, name: &str) -> sqlx::Result<i64> {
-        let pool: &Pool = self.global();
-        blocking_query("create_playlist", create_playlist(&pool.0, name))
-    }
-
-    fn delete_playlist(&self, playlist_id: i64) -> sqlx::Result<()> {
-        let pool: &Pool = self.global();
-        blocking_query("delete_playlist", delete_playlist(&pool.0, playlist_id))
-    }
-
-    fn rename_playlist(&self, playlist_id: i64, name: &str) -> sqlx::Result<()> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "rename_playlist",
-            rename_playlist(&pool.0, playlist_id, name),
-        )
-    }
-
-    fn get_all_playlists(&self) -> sqlx::Result<Arc<Vec<Playlist>>> {
-        let pool: &Pool = self.global();
-        blocking_query("get_all_playlists", get_all_playlists(&pool.0))
-    }
-
-    fn get_playlist_tracks(&self, playlist_id: i64) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "get_playlist_tracks",
-            get_playlist_tracks(&pool.0, playlist_id),
-        )
-    }
-
-    fn get_playlist_tracks_sorted(
-        &self,
-        playlist_id: i64,
-        sort_method: PlaylistTrackSortMethod,
-    ) -> sqlx::Result<Arc<Vec<PlaylistTrackRow>>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "get_playlist_tracks_sorted",
-            get_playlist_tracks_sorted(&pool.0, playlist_id, sort_method),
-        )
-    }
-
-    fn move_playlist_item(&self, item_id: i64, new_position: i64) -> sqlx::Result<()> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "move_playlist_item",
-            move_playlist_item(&pool.0, item_id, new_position),
-        )
-    }
-
-    fn reorder_playlist(&self, playlist_id: i64, new_position: i64) -> sqlx::Result<()> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "reorder_playlist",
-            reorder_playlist(&pool.0, playlist_id, new_position),
-        )
-    }
-
-    fn get_playlist_item(&self, item_id: i64) -> sqlx::Result<PlaylistItem> {
-        let pool: &Pool = self.global();
-        blocking_query("get_playlist_item", get_playlist_item(&pool.0, item_id))
-    }
-
-    fn playlist_has_track(&self, playlist_id: i64, track_id: i64) -> sqlx::Result<Option<i64>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "playlist_has_track",
-            playlist_has_track(&pool.0, playlist_id, track_id),
-        )
-    }
-
-    fn playlist_ids_for_track(&self, track_id: i64) -> sqlx::Result<FxHashSet<i64>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "playlist_ids_for_track",
-            playlist_ids_for_track(&pool.0, track_id),
-        )
-    }
-
-    fn playlist_contains_all_tracks(
-        &self,
-        playlist_id: i64,
-        track_ids: &[i64],
-    ) -> sqlx::Result<bool> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "playlist_contains_all_tracks",
-            playlist_contains_all_tracks(&pool.0, playlist_id, track_ids),
-        )
-    }
-
-    fn list_albums_by_artist(&self, artist_id: i64) -> sqlx::Result<Vec<(u32, String)>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "list_albums_by_artist",
-            list_albums_by_artist(&pool.0, artist_id),
-        )
-    }
-
-    fn get_artist_with_counts(&self, artist_id: i64) -> sqlx::Result<Arc<ArtistWithCounts>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "get_artist_with_counts",
-            get_artist_with_counts(&pool.0, artist_id),
-        )
-    }
-
-    fn get_liked_tracks_by_artist(
-        &self,
-        artist_id: i64,
-        sort_method: LikedTrackSortMethod,
-    ) -> sqlx::Result<Arc<Vec<Track>>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "get_liked_tracks_by_artist",
-            get_liked_tracks_by_artist(&pool.0, artist_id, sort_method),
-        )
-    }
-
-    fn get_standalone_tracks_by_artist(
-        &self,
-        artist_id: i64,
-        sort_method: LikedTrackSortMethod,
-    ) -> sqlx::Result<Arc<Vec<Track>>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "get_standalone_tracks_by_artist",
-            get_standalone_tracks_by_artist(&pool.0, artist_id, sort_method),
-        )
-    }
-
-    fn get_all_tracks_by_artist(&self, artist_id: i64) -> sqlx::Result<Arc<Vec<Track>>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "get_all_tracks_by_artist",
-            get_all_tracks_by_artist(&pool.0, artist_id),
-        )
-    }
-
-    fn artist_ids_for_album(&self, album_id: i64) -> sqlx::Result<Vec<(i64, String)>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "artist_ids_for_album",
-            artist_ids_for_album(&pool.0, album_id),
-        )
-    }
-
-    fn artist_ids_for_track(&self, track_id: i64) -> sqlx::Result<Vec<(i64, String)>> {
-        let pool: &Pool = self.global();
-        blocking_query(
-            "artist_ids_for_track",
-            artist_ids_for_track(&pool.0, track_id),
-        )
-    }
-
-    fn list_album_paths(&self, album_id: i64) -> sqlx::Result<Vec<String>> {
-        let pool: &Pool = self.global();
-        blocking_query("list_album_paths", list_album_paths(&pool.0, album_id))
-    }
 }
 
 #[cfg(test)]

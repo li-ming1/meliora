@@ -156,9 +156,9 @@ fn report_row_build_query_costs() {
             .block_on(db::get_artist_with_counts(&pool, next_artist_id()))
             .unwrap();
     });
-    summarize("get_all_tracks_by_artist", || {
+    summarize("list_all_tracks_by_artist", || {
         let _: Arc<Vec<_>> = crate::RUNTIME
-            .block_on(db::get_all_tracks_by_artist(&pool, next_artist_id()))
+            .block_on(db::list_all_tracks_by_artist(&pool, next_artist_id()))
             .unwrap();
     });
 }

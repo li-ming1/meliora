@@ -633,7 +633,11 @@ pub fn run() -> anyhow::Result<()> {
         } else {
             tracing::warn!("Settings file is corrupt; holding scanner until resolved");
         }
-        scan_interface.start_broadcast(scan_events, cx);
+        // 扫描事件桥的镜像实体由 UI 侧传入（架构审计：library::scan 不再
+        // 反向 import ui::models），取实体的时机与原先桥内取用完全一致。
+        let scan_state = cx.global::<Models>().scan_state.clone();
+        let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+        scan_interface.start_broadcast(scan_events, scan_state, playlist_tracker, cx);
 
         cx.set_global(scan_interface);
 
@@ -671,7 +675,9 @@ pub fn run() -> anyhow::Result<()> {
             playback_session,
             queue_tx,
         );
-        playback_interface.start_broadcast(cx);
+        // 事件消费循环在 UI 层（ui::playback_bridge）：图集回收漏斗的帧间
+        // drain 是 UI 职责，playback 层只保留纯命令发送端。
+        super::playback_bridge::start_broadcast(&mut playback_interface, cx);
 
         if !parse_args_and_prepare(cx, &playback_interface)
             && let Some(pos) = initial_position

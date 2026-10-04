@@ -83,6 +83,15 @@ impl SettingsLoadOutcome {
     }
 }
 
+/// Health of the settings file as observed at load/reload time: `Ok` when it
+/// parses, `Corrupt` carrying the offending path when it does not (surfaced by
+/// the UI's corrupt-settings notice; see `SettingsGlobal::initial_corrupt_path`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingsHealth {
+    Ok,
+    Corrupt { path: PathBuf },
+}
+
 /// Read the settings file at `path`, applying the legacy `theme.json`
 /// migration to the result. A missing file counts as `Loaded` defaults; a
 /// parse or deserialize failure yields `Corrupt` carrying the path.
@@ -277,7 +286,7 @@ fn apply_settings_outcome(
     current: &mut Settings,
     outcome: SettingsLoadOutcome,
 ) {
-    use crate::ui::models::{Models, SettingsHealth};
+    use crate::ui::models::Models;
 
     let next_health = match outcome {
         SettingsLoadOutcome::Loaded(settings) => {

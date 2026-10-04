@@ -6,12 +6,9 @@ use gpui::*;
 use prelude::FluentBuilder;
 
 use crate::{
-    library::{
-        db::LibraryAccess,
-        types::{
-            Album, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR, DATE_PRECISION_YEAR_MONTH,
-            DBString, Track,
-        },
+    library::types::{
+        Album, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR, DATE_PRECISION_YEAR_MONTH,
+        DBString, Track,
     },
     playback::thread::PlaybackState,
     ui::{
@@ -34,6 +31,7 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
         },
+        library_access::LibraryAccess,
         models::{
             LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
             is_track_available_snapshot, toggle_album_like,

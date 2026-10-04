@@ -5,12 +5,13 @@ use gpui::prelude::FluentBuilder;
 use gpui::{Entity, IntoElement, RenderOnce, SharedString, Window};
 
 use crate::{
-    library::{db::LibraryAccess, types::Track},
+    library::types::Track,
     ui::{
         components::{
             icons::{DISC, FOLDER_SEARCH, PLAY, PLAYLIST_ADD, PLAYLIST_REMOVE, PLUS, USERS},
             menu::{menu, menu_item, menu_separator},
         },
+        library_access::LibraryAccess,
         models::{Models, is_track_available_snapshot, toggle_like_by_id},
         util::reveal_path_for_file_manager,
     },

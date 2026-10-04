@@ -11,7 +11,7 @@ use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 use crate::{
-    library::{db::LibraryAccess, types::Track},
+    library::types::Track,
     playback::queue::QueueItemData,
     settings::SettingsGlobal,
     ui::{
@@ -36,6 +36,7 @@ use crate::{
                 BatchItems, FilesView, FlatRow, TrackRef, file_context_menu::FileContextMenu,
             },
         },
+        library_access::LibraryAccess,
         models::{
             HasLikedState, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_album_like,
         },

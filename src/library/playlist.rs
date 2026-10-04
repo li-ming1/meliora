@@ -3,13 +3,29 @@ use std::{ffi::OsStr, path::PathBuf};
 use anyhow::Context as _;
 use cntp_i18n::tr;
 use futures::{StreamExt as _, TryFutureExt as _, TryStreamExt as _};
-use gpui::{App, PathPromptOptions};
+use gpui::{App, EventEmitter, PathPromptOptions};
 use sqlx::{Sqlite, SqlitePool};
 use tokio::{fs::File, io::BufWriter};
 use tracing::{Instrument as _, debug_span, error, info, warn};
 
 use crate::library::Pool;
-use crate::ui::models::{Models, PlaylistEvent};
+use crate::ui::models::Models;
+
+// Playlist change notifications. These used to live in `ui::models` (audit:
+// `library::scan` and this module had to reverse-import the UI layer just to
+// emit them); they are playlist-domain state, so they live here now. The
+// tracker entity itself is still created by the UI layer (`build_models`) and
+// held by `Models.playlist_tracker`; `ui::models` re-exports both types for
+// the existing `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` consumers.
+pub struct PlaylistInfoTransfer;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PlaylistEvent {
+    PlaylistUpdated(i64),
+    PlaylistDeleted(i64),
+}
+
+impl EventEmitter<PlaylistEvent> for PlaylistInfoTransfer {}
 
 #[cfg(windows)]
 const LINE_ENDING: &str = "\r\n";

@@ -4,7 +4,6 @@ use cntp_i18n::{I18nString, tr};
 use gpui::{AnyView, App, IntoElement, SharedString, Window, div};
 
 use crate::{
-    library::db::LibraryAccess,
     ui::{
         components::{
             context::ContextMenuBuilder,
@@ -16,6 +15,7 @@ use crate::{
             add_to_playlist_state, album::AlbumContextMenu, play_album_next, play_track_next,
             track::TrackContextMenu,
         },
+        library_access::LibraryAccess,
         models::is_song_liked,
     },
 };

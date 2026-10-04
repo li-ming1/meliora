@@ -10,14 +10,16 @@ use tracing::error;
 
 use crate::{
     library::{
-        db::LibraryAccess,
         playlist::import_playlist,
         types::{Playlist, PlaylistType},
     },
-    ui::components::{
-        icons::{PLAYLIST, PLAYLIST_ADD, STAR_FILLED},
-        modal::modal,
-        palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
+    ui::{
+        components::{
+            icons::{PLAYLIST, PLAYLIST_ADD, STAR_FILLED},
+            modal::modal,
+            palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
+        },
+        library_access::LibraryAccess,
     },
 };
 
@@ -58,7 +60,7 @@ impl UpdatePlaylist {
                 this.palette.update(cx, |this, cx| {
                     // a failed query keeps the palette's current list instead
                     // of panicking the observer
-                    let Ok(playlists) = cx.get_all_playlists() else {
+                    let Ok(playlists) = cx.list_all_playlists() else {
                         error!("Failed to load playlists for the update dialog");
                         return;
                     };
@@ -85,7 +87,7 @@ impl UpdatePlaylist {
             });
 
             let items = cx
-                .get_all_playlists()
+                .list_all_playlists()
                 .map(|playlists| playlists.iter().cloned().map(Arc::new).collect::<Vec<_>>())
                 .unwrap_or_else(|e| {
                     error!("Failed to load playlists for the update dialog: {}", e);

@@ -115,7 +115,7 @@ pub fn compute_available_albums(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
 /// stat cache. Album rows and artist rows describe the same track paths, so
 /// computing the sets separately statted every path twice — and on a large
 /// library that pass is the expensive part of startup. The track rows come
-/// from `get_all_tracks` (every track, album-less ones included — the
+/// from `list_all_tracks` (every track, album-less ones included — the
 /// album-availability rows filter those out); each track id appears once, so
 /// its slot in the result means exactly "this track's file still exists".
 pub fn compute_availability(

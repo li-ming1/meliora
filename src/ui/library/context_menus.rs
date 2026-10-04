@@ -10,7 +10,7 @@ use gpui::{AnyElement, App, AppContext, Entity, IntoElement, Pixels, Point, Shar
 
 use crate::{
     library::{
-        db::{self, LibraryAccess},
+        db::{self},
         scan::ScanInterface,
         types::{Album, Track},
     },
@@ -30,6 +30,7 @@ use crate::{
             add_to_playlist::AddToPlaylist,
             context_menus::{album::AlbumContextMenu, track::TrackContextMenu},
         },
+        library_access::LibraryAccess,
         models::{Models, PlaybackInfo, PlaylistEvent, PlaylistInfoTransfer, is_song_liked},
     },
 };
@@ -238,7 +239,7 @@ pub fn play_from_track_listing(
     } else if let Some(playlist_id) = playlist_id {
         // no per-row exists() probe: playlists can be thousands of rows and
         // the playback engine skips missing files
-        cx.get_playlist_tracks(playlist_id)
+        cx.list_playlist_tracks(playlist_id)
             .unwrap_or_default()
             .iter()
             .map(|row| {

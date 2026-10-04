@@ -17,7 +17,7 @@ use tracing::error;
 
 use crate::{
     library::{
-        db::{self, LibraryAccess, PlaylistTrackRow, PlaylistTrackSortMethod},
+        db::{self, PlaylistTrackRow, PlaylistTrackSortMethod},
         playlist::export_playlist,
         types::{DBString, Playlist, PlaylistType, Track},
     },
@@ -45,6 +45,7 @@ use crate::{
         library::track_item::{
             ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions,
         },
+        library_access::LibraryAccess,
         models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaylistEvent},
         theme::Theme,
         util::{create_or_retrieve_view, prune_views},
@@ -491,7 +492,7 @@ impl PlaylistView {
             let loaded = crate::RUNTIME
                 .spawn(async move {
                     let playlist = db::get_playlist(&pool, playlist_id).await.ok();
-                    let tracks = db::get_playlist_tracks_sorted(&pool, playlist_id, sort_method)
+                    let tracks = db::list_playlist_tracks_sorted(&pool, playlist_id, sort_method)
                         .await
                         .ok();
                     (playlist, tracks)
@@ -874,7 +875,7 @@ impl Render for PlaylistView {
                                                     move |cx| {
                                                         let playlist_tracks =
                                                             if snapshot.is_empty() {
-                                                                cx.get_playlist_tracks_sorted(
+                                                                cx.list_playlist_tracks_sorted(
                                                                     playlist_id,
                                                                     current_sort,
                                                                 )
@@ -1310,7 +1311,7 @@ impl Render for PlaylistView {
 }
 
 pub fn find_playlist_tracks(cx: &mut App, playlist_id: i64) -> Vec<QueueItemData> {
-    let playlist_tracks = cx.get_playlist_tracks(playlist_id).unwrap_or_default();
+    let playlist_tracks = cx.list_playlist_tracks(playlist_id).unwrap_or_default();
 
     playlist_tracks
         .iter()

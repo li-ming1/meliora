@@ -12,7 +12,7 @@ use track_view::TrackView;
 
 use super::models::Models;
 use crate::{
-    library::{db::LibraryAccess, scan::ScanEvent},
+    library::scan::ScanEvent,
     settings::storage::DEFAULT_SPLIT_FRACTION,
     ui::{
         command_palette::{CommandCategory, CommandManager, CommandSpec},
@@ -24,6 +24,7 @@ use crate::{
             playlist_view::{Import, PlaylistView},
             update_playlist::UpdatePlaylist,
         },
+        library_access::LibraryAccess,
     },
 };
 

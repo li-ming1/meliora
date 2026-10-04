@@ -13,7 +13,7 @@ use super::{
     DATE_PRECISION_YEAR_MONTH, DBString, Track,
 };
 use crate::{
-    library::db::{self, AlbumSortMethod, ArtistSortMethod, LibraryAccess, TrackSortMethod},
+    library::db::{self, AlbumSortMethod, ArtistSortMethod, TrackSortMethod},
     ui::{
         availability::is_online_path,
         components::{
@@ -27,6 +27,7 @@ use crate::{
             AlbumContextMenuContext, TrackContextMenuContext, album_menu_for_table_shared,
             play_album_next, play_track_next, track_menu_for_table_shared,
         },
+        library_access::LibraryAccess,
         models::{Models, cached_album},
         util::format_duration,
     },
@@ -931,7 +932,7 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
 
     fn is_available(&self, cx: &mut App) -> bool {
         // cached availability snapshot (reloaded at startup and on scan
-        // completion): the per-row `get_all_tracks_by_artist` query plus a
+        // completion): the per-row `list_all_tracks_by_artist` query plus a
         // stat per track stalled row construction on every scroll
         cx.global::<Models>()
             .available_artists

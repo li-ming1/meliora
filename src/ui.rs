@@ -17,6 +17,7 @@ mod keymap;
 #[cfg(feature = "kugou")]
 mod kugou;
 pub mod library;
+pub mod library_access;
 mod lyrics;
 pub mod models;
 #[cfg(feature = "netease")]
@@ -25,6 +26,7 @@ mod netease;
 mod online_common;
 #[cfg(any(feature = "kugou", feature = "netease"))]
 mod online_track_row;
+mod playback_bridge;
 mod queue;
 mod right_sidebar;
 mod scroll_follow;

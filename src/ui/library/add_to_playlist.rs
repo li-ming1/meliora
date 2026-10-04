@@ -13,7 +13,7 @@ use tracing::error;
 
 use crate::{
     library::{
-        db::{self, LibraryAccess},
+        db::{self},
         types::Playlist,
     },
     ui::{
@@ -23,6 +23,7 @@ use crate::{
             modal::modal,
             palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
         },
+        library_access::LibraryAccess,
         models::{Models, PlaylistEvent},
     },
 };
@@ -176,7 +177,7 @@ impl AddToPlaylist {
                 this.palette.update(cx, |palette, cx| {
                     // a failed query keeps the palette's current list instead
                     // of panicking the observer
-                    let Ok(playlists) = cx.get_all_playlists() else {
+                    let Ok(playlists) = cx.list_all_playlists() else {
                         error!("Failed to load playlists for the add-to-playlist dialog");
                         return;
                     };
@@ -281,7 +282,7 @@ impl AddToPlaylist {
             // is true, and every open path flips `show` after creation, which
             // makes the observer above rebuild the full list — with a fresh
             // per-playlist `has_track` — in the same effect flush, before the
-            // modal's first frame. Resolving here cost one `get_all_playlists`
+            // modal's first frame. Resolving here cost one `list_all_playlists`
             // block_on plus one `playlist_has_track` block_on per playlist on
             // every keyed-state creation; that state is dropped whenever the
             // row scrolls out of the virtualized list (gpui `Frame::finish`
