@@ -121,9 +121,10 @@ pub(crate) async fn delete_tracks(
 
         let mut deleted: Vec<&Utf8PathBuf> = Vec::with_capacity(chunk.len());
         let mut affected_albums: FxHashSet<i64> = FxHashSet::default();
+        let mut chunk_playlists: FxHashSet<i64> = FxHashSet::default();
         for path in chunk {
             debug!("removing stale track: {:?}", path);
-            if cleanup_track(&mut tx, path, &mut updated_playlists, &mut affected_albums).await {
+            if cleanup_track(&mut tx, path, &mut chunk_playlists, &mut affected_albums).await {
                 deleted.push(path);
             }
         }
@@ -134,6 +135,9 @@ pub(crate) async fn delete_tracks(
             continue;
         }
 
+        // only report playlists of committed chunks - a rollback above also
+        // discards this chunk's deletions
+        updated_playlists.extend(chunk_playlists);
         for path in deleted {
             scan_record.records.remove(path);
         }
