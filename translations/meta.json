@@ -505,13 +505,13 @@
   },
   "EQ_CLIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:516",
+    "definedIn": "src/ui/equalizer/view.rs:520",
     "plural": false,
     "description": null
   },
   "EQ_CLIP_TOOLTIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:507",
+    "definedIn": "src/ui/equalizer/view.rs:511",
     "plural": false,
     "description": null
   },
@@ -805,13 +805,13 @@
   },
   "KUGOU_DOWNLOADED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:361",
+    "definedIn": "src/ui/kugou/download.rs:397",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_FAILED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:366",
+    "definedIn": "src/ui/kugou/download.rs:402",
     "plural": false,
     "description": null
   },

@@ -71,12 +71,12 @@ impl KugouSettings {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let detail_client = client.clone();
-            let request = crate::RUNTIME
-                .spawn(async move { client.user_profile().await })
-                .await;
-            let vip_refreshed = crate::RUNTIME
-                .spawn(async move { detail_client.refresh_vip_detail().await })
-                .await;
+            // 两个请求互不依赖（不同端点、写 session 不相交字段），先全部
+            // spawn 再按序 await：登录 Loading 时长从 RTT1+RTT2 变为 max。
+            let request = crate::RUNTIME.spawn(async move { client.user_profile().await });
+            let vip_refreshed =
+                crate::RUNTIME.spawn(async move { detail_client.refresh_vip_detail().await });
+            let (request, vip_refreshed) = (request.await, vip_refreshed.await);
 
             this.update(cx, |this, cx| {
                 match request {

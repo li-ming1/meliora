@@ -271,6 +271,10 @@ impl EqualizerView {
                 .timer(Duration::from_millis(500))
                 .await;
             this.update(cx, |this, cx| {
+                // Clear the handle so the release guard's "nothing pending &&
+                // no diff" fast path works again; a newer edit re-arms a fresh
+                // task (dropping this one cancels it before this body runs).
+                this.save_task = None;
                 this.settings
                     .update(cx, |settings, cx| save_settings(cx, settings));
             })
