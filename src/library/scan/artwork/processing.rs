@@ -72,7 +72,20 @@ impl FolderArtLoader {
             }
         };
 
-        let bytes = future.await?;
+        let bytes = match future.await {
+            Some(bytes) => bytes,
+            None => {
+                // Read failure: drop the dead entry so the next request starts
+                // a fresh load instead of forever joining a shared future that
+                // already resolved to None (same retry semantics as an expired
+                // Ready handle above).
+                self.states
+                    .lock()
+                    .expect("folder art loader mutex poisoned")
+                    .remove(&path);
+                return None;
+            }
+        };
         self.states
             .lock()
             .expect("folder art loader mutex poisoned")

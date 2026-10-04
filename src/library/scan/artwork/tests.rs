@@ -8,7 +8,7 @@ use super::*;
 use crate::library::scan::{
     artist_match::ArtistMatcher,
     database::{WriteCaches, flush_album_artists, flush_track_artists, update_metadata},
-    decode::{ArtSource, FileArt, RawArt, ScannedArt},
+    decode::{ArtSource, FileArt, ProcessedArt, RawArt, ScannedArt, process_owned_album_art},
     discover::{FolderArtCandidate, FolderArtObservationMap, read_scan_directory},
 };
 use crate::media::metadata::Metadata;
@@ -37,11 +37,26 @@ fn blue() -> Vec<u8> {
 }
 
 fn scanned(bytes: Vec<u8>, source: ArtSource) -> ScannedArt {
+    let hash = xxh3_64(&bytes);
+    let (image, thumb) = process_owned_album_art(RawArt::Owned(bytes.into_boxed_slice())).unwrap();
     ScannedArt {
-        hash: xxh3_64(&bytes),
-        raw: Some(RawArt::Owned(bytes.into_boxed_slice())),
-        processed: None,
+        hash,
+        raw: None,
+        processed: Some(Arc::new(ProcessedArt { image, thumb })),
         source,
+    }
+}
+
+fn raw_embedded(bytes: Vec<u8>) -> FileArt {
+    FileArt {
+        embedded: Some(ScannedArt {
+            hash: xxh3_64(&bytes),
+            raw: Some(RawArt::Owned(bytes.into_boxed_slice())),
+            processed: None,
+            source: ArtSource::Embedded,
+        }),
+        folder: None,
+        representative: false,
     }
 }
 
@@ -75,8 +90,8 @@ fn folder_candidates_keep_the_best_rank_then_lowest_hash() {
 async fn artwork_processor_reuses_each_hash_until_it_is_resolved() {
     let processor = ArtworkProcessor::new([]);
     let bytes = red();
-    let mut first = embedded_art(bytes.clone());
-    let mut duplicate = embedded_art(bytes);
+    let mut first = raw_embedded(bytes.clone());
+    let mut duplicate = raw_embedded(bytes);
 
     processor.process_file_art(&mut first).await;
     processor.process_file_art(&mut duplicate).await;
@@ -95,7 +110,7 @@ async fn artwork_processor_reuses_each_hash_until_it_is_resolved() {
     ids.insert(first.embedded.as_ref().unwrap().hash, Some(1));
     processor.mark_resolved(&first, &ids);
 
-    let mut after_resolve = embedded_art(red());
+    let mut after_resolve = raw_embedded(red());
     processor.process_file_art(&mut after_resolve).await;
     let after_resolve = after_resolve.embedded.unwrap();
     assert!(after_resolve.raw.is_none());
@@ -107,7 +122,7 @@ async fn artwork_processor_skips_preexisting_hashes() {
     let bytes = red();
     let hash = xxh3_64(&bytes);
     let processor = ArtworkProcessor::new([hash]);
-    let mut existing = embedded_art(bytes);
+    let mut existing = raw_embedded(bytes);
 
     processor.process_file_art(&mut existing).await;
 
@@ -616,4 +631,26 @@ async fn examine_folder_art_with_unchanged_cover_keeps_incumbent_stable() {
 
     assert_eq!(before, (album_row(&pool).await, track_art(&pool).await));
     assert_eq!(count_rows(&pool, "artwork").await, 2);
+}
+
+#[tokio::test]
+async fn folder_art_loader_retries_after_read_failure() {
+    let loader = FolderArtLoader::new(1);
+    let dir = TestDir::new("folder-art-retry");
+    let path = dir.utf8_join("cover.jpg");
+    let candidate = FolderArtCandidate {
+        path: path.clone(),
+        rank: 1,
+    };
+
+    // the file does not exist yet: the load fails and the dead entry must be
+    // dropped, not left as a Loading row that forever joins a None future
+    assert!(loader.load(candidate.clone()).await.is_none());
+
+    std::fs::write(&path, red()).unwrap();
+    let loaded = loader
+        .load(candidate)
+        .await
+        .expect("retry after failure should read the now-existing file");
+    assert_eq!(loaded.hash, xxh3_64(&red()));
 }
