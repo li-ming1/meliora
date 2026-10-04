@@ -40,11 +40,12 @@ where
         }
     }
 
-    for idx in to_remove {
-        did_remove = true;
+    if !to_remove.is_empty() {
         views_model.update(cx, |m, _| {
-            debug!("Removing view at index: {}", idx);
-            m.remove(&idx);
+            for idx in to_remove {
+                debug!("Removing view at index: {}", idx);
+                did_remove |= m.remove(&idx).is_some();
+            }
         });
     }
 
@@ -167,10 +168,7 @@ fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
     const PIXEL_STRIDE: usize = 3;
     let mut buckets: FxHashMap<u16, (u64, u64, u64, u64)> = FxHashMap::default();
     let mut sampled = 0usize;
-    for (n, pixel) in bytes.as_chunks::<4>().0.iter().enumerate() {
-        if n % PIXEL_STRIDE != 0 {
-            continue;
-        }
+    for pixel in bytes.as_chunks::<4>().0.iter().step_by(PIXEL_STRIDE) {
         let (b, g, r, a) = (
             pixel[0] as u32,
             pixel[1] as u32,

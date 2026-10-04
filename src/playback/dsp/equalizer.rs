@@ -191,27 +191,17 @@ pub fn config_response_db(config: &EqualizerSettings, sample_rate: f64, at_frequ
         .sum()
 }
 
-/// Peak of the summed responses in dB, sampled over a log grid plus each band's center so narrow
-/// bells between grid points are still caught. Never negative - a cut-only curve needs no headroom.
-fn peak_response_db(biquads: &[Biquad], centers: &[f64], sample_rate: f64) -> f64 {
-    if biquads.is_empty() {
-        return 0.0;
-    }
-    let response = |frequency: f64| -> f64 {
-        let w = omega(frequency, sample_rate);
-        biquads.iter().map(|biquad| biquad.magnitude_db(w)).sum()
-    };
+/// Angular frequencies of the shared log response grid, precomputed once per sample rate and
+/// reused by every band's cached table.
+fn log_grid_omega(sample_rate: f64) -> Vec<f64> {
     let max = frequency_ceiling(sample_rate);
     let ratio = max / MIN_FREQUENCY;
-    let mut peak = 0.0f64;
-    for i in 0..COMP_GRID_POINTS {
-        let frequency = MIN_FREQUENCY * ratio.powf(i as f64 / (COMP_GRID_POINTS - 1) as f64);
-        peak = peak.max(response(frequency));
-    }
-    for &center in centers {
-        peak = peak.max(response(center));
-    }
-    peak
+    (0..COMP_GRID_POINTS)
+        .map(|i| {
+            let frequency = MIN_FREQUENCY * ratio.powf(i as f64 / (COMP_GRID_POINTS - 1) as f64);
+            omega(frequency, sample_rate)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -382,12 +372,55 @@ struct Crossfade {
     remaining: usize,
 }
 
-/// Cached composite-response peak: the grid sweep only reads the band targets and the sample
-/// rate, so an unchanged band set (pure toggles, settings echoes) reuses the previous result.
-struct CompensationCache {
-    key: Vec<(EqBandKind, bool, SmoothedParams)>,
+/// Cached response of one band over the shared log grid. The response depends only on the band
+/// kind, the clamp-corrected parameters and the sample rate, so an unchanged band reuses its table
+/// and a parameter drag rescans just that band.
+struct BandResponse {
+    kind: EqBandKind,
+    /// Clamp-corrected center frequency: the raw target saturates at the rate ceiling, where
+    /// distinct requests share one response, and a rate change re-anchors the clamp.
+    center: f64,
+    gain_db: f64,
+    q: f64,
     sample_rate: f64,
-    target_db: f64,
+    biquad: Biquad,
+    /// Magnitudes in dB over the `COMP_GRID_POINTS` grid points, f32 to keep the cache tiny.
+    table: Vec<f32>,
+}
+
+impl BandResponse {
+    fn new(kind: EqBandKind, sample_rate: f64, params: SmoothedParams, grid: &[f64]) -> Self {
+        let biquad = Biquad::new(
+            kind,
+            sample_rate,
+            params.frequency,
+            params.gain_db,
+            params.q,
+        );
+        Self {
+            kind,
+            center: clamp_frequency(params.frequency, sample_rate),
+            gain_db: params.gain_db,
+            q: params.q,
+            sample_rate,
+            biquad,
+            table: grid
+                .iter()
+                .map(|&w| biquad.magnitude_db(w) as f32)
+                .collect(),
+        }
+    }
+
+    /// Whether this cached response still matches the band's response inputs.
+    fn matches(&self, kind: EqBandKind, params: &SmoothedParams, sample_rate: f64) -> bool {
+        self.kind == kind
+            && self.sample_rate == sample_rate
+            && self.gain_db == params.gain_db
+            && self.q == params.q
+            // the clamp-corrected frequency, not the raw target: keying on the raw value would
+            // hand an over-ceiling band a stale table across rate changes
+            && self.center == clamp_frequency(params.frequency, sample_rate)
+    }
 }
 
 /// Serial cascade of smoothed biquads. No allocation in the streaming path.
@@ -404,8 +437,12 @@ pub struct EqualizerProcessor {
     scratch: Vec<Vec<f64>>, // [channel][SUB_BLOCK_FRAMES] crossfade buffer
     /// Last applied config: an identical re-push short-circuits to a no-op.
     last_config: Option<EqualizerSettings>,
-    /// Peak-scan cache backing `compensation_target`.
-    compensation_cache: Option<CompensationCache>,
+    /// Per-band grid responses backing `compensation_target`, aligned with `bands`: only bands
+    /// whose response inputs changed are recomputed, so a drag no longer rescans every band.
+    comp_tables: Vec<Option<BandResponse>>,
+    /// Angular frequencies of the response grid for `grid_rate`, precomputed once per sample rate.
+    grid_omega: Vec<f64>,
+    grid_rate: f64,
 }
 
 impl EqualizerProcessor {
@@ -422,7 +459,9 @@ impl EqualizerProcessor {
             crossfade: None,
             scratch: vec![vec![0.0; SUB_BLOCK_FRAMES]; channels],
             last_config: None,
-            compensation_cache: None,
+            comp_tables: Vec::new(),
+            grid_omega: Vec::new(),
+            grid_rate: 0.0,
         }
     }
 
@@ -510,43 +549,59 @@ impl EqualizerProcessor {
     }
 
     /// Compensation for the current band targets, so an in-flight ramp lands on the right level.
-    /// The grid sweep only reads the band targets, so an unchanged band set at the same rate
-    /// reuses the cached peak instead.
+    /// Each band's response over the log grid is cached per band and only recomputed when that
+    /// band's response inputs change; the peak is the per-point sum over enabled bands plus each
+    /// band's center, so a single-band drag no longer rescans every band.
     fn compensation_target(&mut self) -> f64 {
         if !self.compensate {
             return 0.0;
         }
-        let key: Vec<_> = self
+        if self.grid_rate != self.sample_rate || self.grid_omega.len() != COMP_GRID_POINTS {
+            self.grid_omega = log_grid_omega(self.sample_rate);
+            self.grid_rate = self.sample_rate;
+        }
+        self.comp_tables.resize_with(self.bands.len(), || None);
+        for (slot, band) in self.bands.iter().enumerate() {
+            if !band.enabled {
+                continue;
+            }
+            if self.comp_tables[slot]
+                .as_ref()
+                .is_none_or(|cached| !cached.matches(band.kind, &band.target, self.sample_rate))
+            {
+                self.comp_tables[slot] = Some(BandResponse::new(
+                    band.kind,
+                    self.sample_rate,
+                    band.target,
+                    &self.grid_omega,
+                ));
+            }
+        }
+
+        let enabled: Vec<&BandResponse> = self
             .bands
             .iter()
-            .map(|band| (band.kind, band.enabled, band.target))
+            .zip(self.comp_tables.iter())
+            .filter(|(band, _)| band.enabled)
+            .map(|(_, table)| table.as_ref().expect("enabled band refreshed above"))
             .collect();
-        if let Some(cache) = &self.compensation_cache
-            && cache.key == key
-            && cache.sample_rate == self.sample_rate
-        {
-            return cache.target_db;
+        let mut peak = 0.0f64;
+        for i in 0..COMP_GRID_POINTS {
+            let mut sum = 0.0;
+            for response in &enabled {
+                sum += response.table[i] as f64;
+            }
+            peak = peak.max(sum);
         }
-        let mut biquads = Vec::new();
-        let mut centers = Vec::new();
-        for band in self.bands.iter().filter(|band| band.enabled) {
-            let params = band.target;
-            biquads.push(Biquad::new(
-                band.kind,
-                self.sample_rate,
-                params.frequency,
-                params.gain_db,
-                params.q,
-            ));
-            centers.push(clamp_frequency(params.frequency, self.sample_rate));
+        for response in &enabled {
+            let w = omega(response.center, self.sample_rate);
+            let mut sum = 0.0;
+            for other in &enabled {
+                sum += other.biquad.magnitude_db(w);
+            }
+            peak = peak.max(sum);
         }
-        let target = -peak_response_db(&biquads, &centers, self.sample_rate);
-        self.compensation_cache = Some(CompensationCache {
-            key,
-            sample_rate: self.sample_rate,
-            target_db: target,
-        });
-        target
+        -peak
     }
 
     fn begin_crossfade(&mut self, was_audible: bool) {
@@ -1525,6 +1580,148 @@ mod tests {
         ));
         assert!((proc.comp.target_db + 12.0).abs() < 0.05);
         assert_ne!(proc.comp.target_db, boost_target);
+    }
+
+    /// Fresh per-band response: biquad from the raw settings, f64 magnitudes over the grid
+    /// quantized to the cached f32 precision, plus the clamp-corrected center.
+    fn direct_response(
+        band: &EqBandSettings,
+        sample_rate: f64,
+        grid: &[f64],
+    ) -> (Vec<f32>, f64, Biquad) {
+        let biquad = Biquad::new(band.kind, sample_rate, band.frequency, band.gain_db, band.q);
+        let table = grid
+            .iter()
+            .map(|&w| biquad.magnitude_db(w) as f32)
+            .collect::<Vec<_>>();
+        (table, clamp_frequency(band.frequency, sample_rate), biquad)
+    }
+
+    /// Composite peak from per-band direct responses: per-point sum over the enabled bands in slot
+    /// order, then each enabled band's center - the processor's accumulation order.
+    fn direct_peak(responses: &[(Vec<f32>, f64, Biquad)], enabled: &[usize]) -> f64 {
+        let mut peak = 0.0f64;
+        for i in 0..COMP_GRID_POINTS {
+            let sum = enabled
+                .iter()
+                .map(|&b| responses[b].0[i] as f64)
+                .sum::<f64>();
+            peak = peak.max(sum);
+        }
+        for &b in enabled {
+            let w = omega(responses[b].1, FS);
+            let sum = enabled
+                .iter()
+                .map(|&o| responses[o].2.magnitude_db(w))
+                .sum::<f64>();
+            peak = peak.max(sum);
+        }
+        peak
+    }
+
+    /// The per-band cached tables and the composite they produce must equal a fresh per-band
+    /// computation point for point, including after a single band's parameters change: only that
+    /// band's entry is recomputed, and the result still matches a from-scratch sweep.
+    #[test]
+    fn compensation_tables_match_direct_per_band_computation() {
+        let mut disabled = band(EqBandKind::LowPass, 2_000.0, 0.0, 0.707);
+        disabled.enabled = false;
+        let bands = [
+            band(EqBandKind::Bell, 100.0, 6.0, 1.2),
+            band(EqBandKind::HighPass, 500.0, 0.0, 4.0),
+            band(EqBandKind::Bell, 25_000.0, 8.0, 2.0), // clamps to 0.45 × FS
+            disabled,
+            band(EqBandKind::Notch, 9_000.0, -6.0, 8.0),
+        ];
+        let grid = log_grid_omega(FS);
+        let direct: Vec<_> = bands
+            .iter()
+            .map(|b| direct_response(b, FS, &grid))
+            .collect();
+        let enabled: Vec<usize> = (0..bands.len()).filter(|&i| bands[i].enabled).collect();
+
+        let mut proc = EqualizerProcessor::new(FS, 1);
+        proc.set_config(&comp_config(true, &bands));
+
+        // every enabled slot's cached table equals the fresh per-band computation, point for point
+        for &i in &enabled {
+            let cached = proc.comp_tables[i].as_ref().unwrap();
+            assert_eq!(cached.table, direct[i].0, "band {i} grid table");
+            assert_eq!(cached.center, direct[i].1, "band {i} center");
+        }
+
+        // the composite peak equals the direct per-band sum over the grid plus the center samples
+        let expected = -direct_peak(&direct, &enabled);
+        assert_eq!(proc.comp.target_db, expected);
+
+        // changing one band's parameters recomputes that band's entry onto the new response
+        let mut changed = bands;
+        changed[0].gain_db = 12.0;
+        proc.set_config(&comp_config(true, &changed));
+        let mut cold = EqualizerProcessor::new(FS, 1);
+        cold.set_config(&comp_config(true, &changed));
+
+        for (i, band) in changed.iter().enumerate() {
+            if !band.enabled {
+                continue;
+            }
+            let (table, ..) = direct_response(band, FS, &grid);
+            assert_eq!(
+                proc.comp_tables[i].as_ref().unwrap().table,
+                table,
+                "band {i} after change"
+            );
+        }
+        assert_eq!(proc.comp.target_db, cold.comp.target_db);
+    }
+
+    /// A band above the ceiling keeps its requested frequency in the settings, so the cached
+    /// response must key on the clamp-corrected frequency: a rate change re-anchors it instead of
+    /// serving the stale table for the unchanged raw target, while distinct over-ceiling requests
+    /// at one rate share one entry.
+    #[test]
+    fn compensation_cache_keys_on_clamped_frequency() {
+        let mut proc = EqualizerProcessor::new(44_100.0, 1);
+        proc.set_config(&comp_config(
+            true,
+            &[band(EqBandKind::Bell, 25_000.0, 12.0, 1.0)],
+        ));
+        let clamped_44k = clamp_frequency(25_000.0, 44_100.0);
+        let cached = proc.comp_tables[0].as_ref().unwrap();
+        assert_eq!(cached.center, clamped_44k);
+        let target_44k = proc.comp.target_db;
+        assert!((target_44k + 12.0).abs() < 0.05, "{target_44k}");
+
+        // a different raw target saturating to the same clamp shares the cached response
+        proc.set_config(&comp_config(
+            true,
+            &[band(EqBandKind::Bell, 30_000.0, 12.0, 1.0)],
+        ));
+        assert_eq!(proc.comp_tables[0].as_ref().unwrap().center, clamped_44k);
+        assert_eq!(proc.comp.target_db, target_44k);
+
+        // same raw target, new rate: the clamp moves and the entry must follow it
+        proc.set_config(&comp_config(
+            true,
+            &[band(EqBandKind::Bell, 25_000.0, 12.0, 1.0)],
+        ));
+        proc.set_sample_rate(96_000.0);
+        let clamped_96k = clamp_frequency(25_000.0, 96_000.0);
+        assert_ne!(clamped_44k, clamped_96k);
+        let cached = proc.comp_tables[0].as_ref().unwrap();
+        assert_eq!(cached.center, clamped_96k);
+        let grid = log_grid_omega(96_000.0);
+        let (table, ..) = direct_response(
+            &band(EqBandKind::Bell, 25_000.0, 12.0, 1.0),
+            96_000.0,
+            &grid,
+        );
+        assert_eq!(cached.table, table);
+        assert!(
+            (proc.comp.target_db + 12.0).abs() < 0.05,
+            "{}",
+            proc.comp.target_db
+        );
     }
 
     /// An identical re-push must be a state no-op: no crossfade, no retarget of a mid-ramp

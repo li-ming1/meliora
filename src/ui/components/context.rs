@@ -9,9 +9,10 @@ actions!(context, [CloseContextMenu]);
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
-/// Shared lazy context-menu builder: invoked only when the user opens the
-/// menu, so menu construction (items, translations, DB queries, stats) never
-/// runs on the per-row repaint path.
+/// Shared context-menu builder contract: the builder runs on every render
+/// while the menu is open (including hover-driven repaints), so its body may
+/// only read caches and snapshots — never issue blocking queries or system
+/// calls.
 pub type ContextMenuBuilder = MenuBuilder;
 
 /// Notify the optional close handler, then hide the menu by clearing the
@@ -32,8 +33,8 @@ fn dismiss_menu(
     });
 }
 
-/// A right-click context menu attached to `div`. The menu body is built
-/// lazily on first open (see [`ContextMenuBuilder`]) and shown as an
+/// A right-click context menu attached to `div`. The menu body is rebuilt on
+/// every render while open (see [`ContextMenuBuilder`]) and shown as an
 /// anchored overlay until dismissed by clicking the menu, clicking outside
 /// it, or the `CloseContextMenu` action.
 #[derive(IntoElement)]

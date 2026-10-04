@@ -48,7 +48,7 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
         .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
         .build()
-        .unwrap_or_else(|_| zed_reqwest::Client::new())
+        .expect("media HTTP client build failed")
 });
 
 /// Upper bound on waiting for any single network event while feeding the
@@ -64,9 +64,10 @@ const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request cap for one-shot cover downloads (`http_cover_bytes`).
 const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// `http_cover_bytes` 收集响应体前的硬上限。正常封面（4096px 档）只有几
-/// MB，超限只可能是异常/重定向 CDN 响应；这里在收集开始前拒绝，而不是
-/// 收集完再丢弃——写盘路径的容量检查发生在收集之后，拦不住内存峰值。
+/// `http_cover_bytes` 收集响应体的硬上限。正常封面（4096px 档）只有几
+/// MB，超限只可能是异常/重定向 CDN 响应；Content-Length 超限在收集开始
+/// 前拒绝，头缺失（chunked）时在收集途中截断，而不是收集完再丢弃——写
+/// 盘路径的容量检查发生在收集之后，拦不住内存峰值。
 const COVER_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Downloads the bytes of a small remote resource (e.g. a KuGou album-cover
@@ -83,22 +84,33 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<bytes::Bytes>>
     // the runtime after every fetch.
     let request = HTTP_CLIENT.get(url).timeout(COVER_FETCH_TIMEOUT);
 
-    let response = match request.send().await {
+    let mut response = match request.send().await {
         Ok(response) if response.status().is_success() => response,
         _ => return Ok(None),
     };
-    // 内存契约上唯一无上界的响应体收集点：Content-Length 超限直接按
-    // "无图" 返回，不开始收集。
-    if let Some(len) = response.content_length()
-        && len > COVER_MAX_BYTES
-    {
+    // Content-Length 超限直接按 "无图" 返回，不开始收集；头缺失或被压缩
+    // 代理改写成 chunked 时该检查失效，由收集循环按累计大小兜底截断。
+    let content_len = response.content_length();
+    if content_len.is_some_and(|len| len > COVER_MAX_BYTES) {
         return Ok(None);
     }
-    let bytes = match response.bytes().await {
-        Ok(bytes) if !bytes.is_empty() => bytes,
-        _ => return Ok(None),
-    };
-    Ok(Some(bytes))
+    let mut collected = Vec::with_capacity(content_len.unwrap_or(0) as usize);
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if collected.len() as u64 + chunk.len() as u64 > COVER_MAX_BYTES {
+                    return Ok(None);
+                }
+                collected.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(_) => return Ok(None),
+        }
+    }
+    if collected.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(bytes::Bytes::from(collected)))
 }
 
 /// 共享 client 的只读访问器：零散的冷路径请求（下载等）复用同一份 rustls

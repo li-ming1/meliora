@@ -194,7 +194,8 @@ fn render_toast(
                 .size(ButtonSize::Regular)
                 .intent(match toast.severity {
                     Severity::Info => ButtonIntent::Secondary,
-                    // TODO: if we actually use this we need to make a green button
+                    // Success toasts with actions (updater restart) render as
+                    // Primary; there is no dedicated green intent button.
                     Severity::Success => ButtonIntent::Primary,
                     Severity::Warning => ButtonIntent::Warning,
                     Severity::Error => ButtonIntent::Danger,

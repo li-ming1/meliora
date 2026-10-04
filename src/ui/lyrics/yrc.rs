@@ -71,9 +71,6 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
                 });
             }
             rest = remainder;
-            if rest.is_empty() {
-                break;
-            }
         }
 
         lines.push(LrcLine {
@@ -84,6 +81,7 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
         });
     }
 
+    lines.sort_by_key(|l| l.time_ms);
     (!lines.is_empty()).then_some(lines)
 }
 
@@ -169,6 +167,29 @@ mod tests {
         assert_eq!(lines[2].text, "都是勇敢的");
         assert_eq!(lines[2].words.len(), 5);
         assert_eq!(lines[2].words[4].text, "的");
+    }
+
+    /// Real payloads can carry out-of-order lines and a trailing `{"t":0,...}`
+    /// credit; `partition_point` consumers (lyrics pane / immersive view)
+    /// binary-search on `time_ms`, so lines must come back sorted.
+    #[test]
+    fn sorts_unordered_lines_and_trailing_credit() {
+        let sample = "[1315,6740](1315,545,0)都(1860,240,0)是\n\
+                      [9000,1000](9000,1000,0)勇\n\
+                      {\"t\":0,\"c\":[{\"tx\":\"作词: 唐恬\"}]}\n";
+        let lines = parse_yrc(sample).expect("parses");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].time_ms, 0);
+        assert_eq!(lines[0].text, "作词: 唐恬");
+        assert_eq!(lines[1].time_ms, 1315);
+        assert_eq!(lines[1].text, "都是");
+        assert_eq!(lines[2].time_ms, 9000);
+
+        // Same lookup as lyrics.rs / immersive.rs: last line with time <= pos.
+        let pos_ms = 5_000;
+        let idx = lines.partition_point(|l| l.time_ms <= pos_ms);
+        assert_eq!(idx, 2);
+        assert_eq!(lines[idx - 1].time_ms, 1315);
     }
 
     #[test]

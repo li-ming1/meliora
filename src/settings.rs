@@ -176,6 +176,9 @@ pub struct SettingsGlobal {
     /// `Some(path)` when the initial load at startup found a corrupt settings file.
     /// Consumed by `build_models` to set up `SettingsHealth`, is `None` afterwards.
     pub initial_corrupt_path: Option<PathBuf>,
+    /// Never read: exists only so the notify watcher stays alive through
+    /// ownership — dropping it unregisters the watch and silently breaks
+    /// settings.json hot reload.
     #[allow(dead_code)]
     pub watcher: Option<Box<dyn Watcher>>,
 }

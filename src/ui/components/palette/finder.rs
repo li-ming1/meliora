@@ -50,8 +50,10 @@ pub trait PaletteItem {
         None
     }
     fn on_middle_click(&self, _cx: &mut App) {}
-    /// Lazy context-menu builder: invoked only when the menu opens, so menu
-    /// construction (and anything it queries) stays off the repaint path.
+    /// Context-menu builder: called on every render of the row, whether or not
+    /// the menu ever opens; the returned builder only runs when the menu
+    /// actually opens. Both may only read caches and snapshots — never issue
+    /// blocking queries or system calls.
     fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<ContextMenuBuilder> {
         None
     }
@@ -89,18 +91,6 @@ pub enum DisplayEntry<T> {
     Header(I18nString),
     Item(Arc<T>),
     ShowMore(I18nString, usize),
-}
-
-// Manual `Clone`: `Arc<T>` clones regardless of `T`, while a derive would
-// wrongly require `T: Clone`.
-impl<T> Clone for DisplayEntry<T> {
-    fn clone(&self) -> Self {
-        match self {
-            DisplayEntry::Header(h) => DisplayEntry::Header(h.clone()),
-            DisplayEntry::Item(i) => DisplayEntry::Item(i.clone()),
-            DisplayEntry::ShowMore(cat, count) => DisplayEntry::ShowMore(cat.clone(), *count),
-        }
-    }
 }
 
 pub struct Finder<T, MatcherFunc, OnAccept>
@@ -569,13 +559,18 @@ where
     /// 由调用方提供匹配集重建展示列表与滚动状态；`matches` 通常就是
     /// `last_match`，借切片免二次收集。
     fn rebuild_display_list(&mut self, matches: &[Arc<T>], cx: &mut Context<Self>) {
+        let display_list =
+            Self::build_display_list(matches, &self.expanded_categories, self.query.is_empty());
+        self.apply_display_list(display_list, cx);
+    }
+
+    /// 安装构建好的展示列表并重置滚动/视图状态。计算与安装分开，调用方
+    /// （如 `expand_category`）才能用 `&self` 只读借用先算出列表、再整体
+    /// 突变 `self`，免去克隆整份匹配集。
+    fn apply_display_list(&mut self, display_list: Vec<DisplayEntry<T>>, cx: &mut Context<Self>) {
         let curr_scroll = self.list_state.logical_scroll_top();
 
-        self.display_list = Arc::new(Self::build_display_list(
-            matches,
-            &self.expanded_categories,
-            self.query.is_empty(),
-        ));
+        self.display_list = Arc::new(display_list);
 
         self.views_model = cx.new(|_| FxHashMap::default());
         self.render_counter = cx.new(|_| 0);
@@ -590,8 +585,12 @@ where
             self.expanded_categories.push(category);
         }
         // 展开分类不改匹配集，直接复用 `last_match`，不重新 snapshot。
-        let matches = self.last_match.clone();
-        self.rebuild_display_list(&matches, cx);
+        let display_list = Self::build_display_list(
+            &self.last_match,
+            &self.expanded_categories,
+            self.query.is_empty(),
+        );
+        self.apply_display_list(display_list, cx);
         cx.notify();
     }
 

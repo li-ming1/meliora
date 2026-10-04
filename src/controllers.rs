@@ -87,13 +87,9 @@ pub trait PlaybackController: Send {
 /// initialized successfully.
 type ControllerList = Option<Box<dyn PlaybackController>>;
 
-// has to be held in memory
-#[allow(dead_code)]
 pub struct PbcHandle {
     /// Sender half that the observers below write playback-controller events into.
     event_tx: Sender<PbcEvent>,
-    /// Handle of the task draining [`PbcEvent`]s into the playback controller.
-    task: tokio::task::JoinHandle<()>,
     /// `Arc` identity of the artwork last handed to the playback controller.
     /// The playback thread re-emits the same embedded cover for every track
     /// of an album; without this, each emission rebuilt the WinRT thumbnail
@@ -315,7 +311,7 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
         .as_ref()
         .map(|c| c.handles_volume())
         .unwrap_or(true);
-    let task = crate::RUNTIME.spawn(async move {
+    crate::RUNTIME.spawn(async move {
         let span = debug_span!("pbc_task");
 
         while let Some(event) = pbc_rx.recv().await {
@@ -335,7 +331,6 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
 
     cx.set_global(PbcHandle {
         event_tx: pbc_tx,
-        task,
         last_art: None,
         last_position_secs: 0,
         handles_volume,

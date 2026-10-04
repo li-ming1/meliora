@@ -202,6 +202,8 @@ struct HoursChart {
     /// Precomputed hour-bar tooltips and element ids.
     hours_labels: [Option<SharedString>; 24],
     hours_ids: [SharedString; 24],
+    /// Normalized polyline points, one per hour (x, y in 0..1 of the box).
+    hours_points: [(f32, f32); 24],
     /// Hour currently hovered (drives the chart crosshair), `None` = none.
     hover_hour: Option<usize>,
 }
@@ -215,7 +217,19 @@ impl HoursChart {
             let secs = hours[hour];
             (secs > 0).then(|| SharedString::from(format!("{hour:02}:00 · {}", fmt_duration(secs))))
         });
+        self.hours_points = Self::normalized_points(&self.hours, self.hours_max);
         cx.notify();
+    }
+
+    /// Normalized polyline points, one per hour (x, y in 0..1 of the box).
+    fn normalized_points(hours: &[i64; 24], hours_max: i64) -> [(f32, f32); 24] {
+        let max = hours_max.max(1) as f32;
+        std::array::from_fn(|hour| {
+            (
+                (hour as f32 + 0.5) / 24.0,
+                0.93 - (hours[hour] as f32 / max) * 0.86,
+            )
+        })
     }
 }
 
@@ -262,6 +276,7 @@ impl StatsSettings {
                 hours_max: 0,
                 hours_labels: std::array::from_fn(|_| None),
                 hours_ids: std::array::from_fn(|h| SharedString::from(format!("hb-{h}"))),
+                hours_points: HoursChart::normalized_points(&[0; 24], 0),
                 hover_hour: None,
             }),
             heat_weeks: Vec::new(),
@@ -971,20 +986,7 @@ impl Render for HoursChart {
         // Theme-derived colors resolve per frame: caching them leaked the
         // light palette into the dark theme after a live theme switch.
         let theme = cx.global::<Theme>();
-        let max = self.hours_max.max(1) as f32;
-
-        // Normalized polyline points, one per hour (x, y in 0..1 of the box).
-        let points: Vec<(f32, f32)> = self
-            .hours
-            .iter()
-            .enumerate()
-            .map(|(hour, secs)| {
-                (
-                    (hour as f32 + 0.5) / 24.0,
-                    0.93 - (*secs as f32 / max) * 0.86,
-                )
-            })
-            .collect();
+        let points = self.hours_points;
 
         let area_color = lerp_rgba(theme.background_secondary, theme.button_primary, 0.14);
         let line_color = theme.button_primary;

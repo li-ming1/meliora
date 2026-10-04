@@ -64,7 +64,13 @@ impl PlaybackSettings {
 
 impl Render for PlaybackSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let playback = self.settings.read(cx).playback.clone();
+        let playback = &self.settings.read(cx).playback;
+        let always_repeat = playback.always_repeat;
+        let prev_track_jump_first = playback.prev_track_jump_first;
+        let keep_current_on_queue_clear = playback.keep_current_on_queue_clear;
+        let consume = playback.consume;
+        let fallback_preamp_db = playback.replaygain.fallback_preamp_db;
+        let prevent_idle = playback.prevent_idle;
 
         div()
             .flex()
@@ -83,7 +89,7 @@ impl Render for PlaybackSettings {
                     )
                     .into(),
                 ),
-                playback.always_repeat,
+                always_repeat,
                 |playback| playback.always_repeat = !playback.always_repeat,
             ))
             .child(toggle_row(
@@ -96,7 +102,7 @@ impl Render for PlaybackSettings {
                     more than 5 seconds has elapsed"
                 ),
                 None,
-                playback.prev_track_jump_first,
+                prev_track_jump_first,
                 |playback| playback.prev_track_jump_first = !playback.prev_track_jump_first,
             ))
             .child(toggle_row(
@@ -114,7 +120,7 @@ impl Render for PlaybackSettings {
                     )
                     .into(),
                 ),
-                playback.keep_current_on_queue_clear,
+                keep_current_on_queue_clear,
                 |playback| {
                     playback.keep_current_on_queue_clear = !playback.keep_current_on_queue_clear;
                 },
@@ -131,7 +137,7 @@ impl Render for PlaybackSettings {
                     )
                     .into(),
                 ),
-                playback.consume,
+                consume,
                 |playback| playback.consume = !playback.consume,
             ))
             .child({
@@ -151,7 +157,7 @@ impl Render for PlaybackSettings {
                         .w(px(250.0))
                         .min(-6.0)
                         .max(6.0)
-                        .value(playback.replaygain.fallback_preamp_db as f32)
+                        .value(fallback_preamp_db as f32)
                         .default_value(0.0)
                         .format_value(|v| -> SharedString { format!("{:+.1} dB", v).into() })
                         .on_change({
@@ -196,10 +202,7 @@ impl Render for PlaybackSettings {
                     let power = cx.global::<PowerManager>().clone();
                     power.set_prevent_idle(cx, prevent_idle);
                 }))
-                .child(checkbox(
-                    "playback-prevent-idle-check",
-                    playback.prevent_idle,
-                )),
+                .child(checkbox("playback-prevent-idle-check", prevent_idle)),
             )
     }
 }

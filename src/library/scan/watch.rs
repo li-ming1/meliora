@@ -407,7 +407,9 @@ impl WatcherState {
         }
     }
 
-    /// Drop an in-flight probe so its watcher stops sending events.
+    /// Detach an in-flight probe: the spawned task is not cancelled, its
+    /// watcher keeps sending events until the probe finishes naturally, and a
+    /// rearm within that window may double-listen the same roots until then.
     pub(super) fn stop_probe(&mut self) {
         self.probe = None;
     }

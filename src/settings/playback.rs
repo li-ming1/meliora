@@ -148,7 +148,6 @@ pub fn default_download_dir() -> PathBuf {
     PathBuf::from(home).join("Downloads")
 }
 
-#[allow(clippy::derivable_impls)]
 impl Default for PlaybackSettings {
     fn default() -> Self {
         Self {

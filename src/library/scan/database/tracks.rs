@@ -162,8 +162,8 @@ pub(super) async fn insert_track(
 
     let name = metadata
         .name
-        .clone()
-        .or_else(|| path.file_name().map(|v| v.to_string()))
+        .as_deref()
+        .or_else(|| path.file_name())
         .ok_or_else(|| anyhow::anyhow!("failed to retrieve filename"))?;
 
     let (release_date, date_precision) = bind_release_date(metadata);
@@ -172,8 +172,8 @@ pub(super) async fn insert_track(
 
     let result: Result<(i64,), sqlx::Error> =
         sqlx::query_as(include_str!("../../../../queries/scan/create_track.sql"))
-            .bind(&name)
-            .bind(&name)
+            .bind(name)
+            .bind(name)
             .bind(album_id)
             .bind(metadata.track_current.map(|x| x as i32))
             .bind(metadata.disc_current.map(|x| x as i32))

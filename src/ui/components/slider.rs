@@ -214,9 +214,10 @@ impl Element for Slider {
         ));
 
         // Drag state, shared between this paint pass (fill position) and the
-        // mouse handlers below. Keyed by the slider id; `use_keyed_state`
-        // observes the entity and notifies the owning view on change, so
-        // drags repaint even when the engine echo is silent (paused).
+        // mouse handlers below. Keyed by the slider id. Nothing here notifies:
+        // repaints during a drag and the released_at grace window are driven
+        // by the `on_change` callback's side effects (engine echo, settings
+        // writes), not by any observer.
         let drag_entity = self
             .id
             .clone()

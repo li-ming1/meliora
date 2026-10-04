@@ -332,7 +332,6 @@ impl FilesView {
 
     pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.tree.collapse_all();
-        self.flat = self.tree.flatten();
         self.evict_lru();
         self.rebuild_flat(cx);
     }

@@ -187,10 +187,12 @@ pub(super) async fn collect_audio_recursive(
         .collect();
     let mut track_map = lookup_tracks(&locs, &pool).await;
 
+    // locs 与 files 同源同序同长，zip 保序回填免去第二次 to_string_lossy。
     files
         .into_iter()
-        .map(|p| {
-            let track = track_map.remove(p.to_string_lossy().as_ref());
+        .zip(locs)
+        .map(|(p, loc)| {
+            let track = track_map.remove(loc.as_str());
             (p, track)
         })
         .collect()

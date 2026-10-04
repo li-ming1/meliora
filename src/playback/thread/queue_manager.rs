@@ -648,7 +648,7 @@ impl QueueManager {
     #[cfg(feature = "online_sources")]
     pub fn current_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
         let position = self.current_position()?;
-        let queue = self.queue.read().ok()?;
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         queue.get(position)?.online_identity().cloned()
     }
 
@@ -657,14 +657,14 @@ impl QueueManager {
     #[cfg(feature = "online_sources")]
     pub fn current_display(&self) -> Option<PersistedDisplay> {
         let position = self.current_position()?;
-        let queue = self.queue.read().ok()?;
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         queue.get(position)?.persisted_display()
     }
 
     /// Path of the currently playing item, if any.
     pub fn current_path(&self) -> Option<PathBuf> {
         let position = self.current_position()?;
-        let queue = self.queue.read().ok()?;
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
         Some(queue.get(position)?.get_path().clone())
     }
 

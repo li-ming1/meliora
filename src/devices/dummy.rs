@@ -73,6 +73,12 @@ fn capture_samples<T: Copy + Into<f64>>(staging: &[Vec<T>], read: usize) {
 /// - `HB_DUMMY_CHANNELS`: The number of channels of the dummy device. Defaults to 2.
 /// - `HB_DUMMY_BUFFER_SIZE`: The buffer size of the dummy device. Defaults to 4096.
 ///   - This doesn't actually do anything: no samples are ever loaded into a buffer.
+/// - `HB_DUMMY_BOUNDED_FRAMES`: Capacity of the modelled bounded hardware ring. No default: when
+///   set, `open_device` returns a [`BoundedDummyStream`] instead, modelling back-pressure.
+/// - `HB_DUMMY_DRAIN_FRAMES`: Frames the bounded ring drains per `consume_from` call. Defaults
+///   to 1024.
+/// - `HB_DUMMY_DIE_AFTER_FRAMES`: Fault the stream once after this many consumed frames (see
+///   [`arm_device_death`]). No default: unset means the stream never dies.
 pub struct DummyDeviceProvider {}
 
 impl DummyDeviceProvider {

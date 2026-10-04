@@ -162,13 +162,6 @@ fn parse_song(item: &Value) -> Option<NeteaseTrackInfo> {
         // `dt`/`duration` are milliseconds
         duration: i64_field(item, &["dt", "duration"]) / 1000,
         id,
-        album_id: item
-            .get("al")
-            .or_else(|| item.get("album"))
-            .and_then(|album| album.get("id"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        fee: i64_field(item, &["fee"]),
         cover_url: cover_url_field(item),
     })
 }
@@ -269,9 +262,14 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
             // (each locking + scanning up to STREAM_MAP_CAP entries). Map
             // URLs are unique (see `remember_online_track`), so "an entry
             // with this url and id exists" matches the old per-item
-            // `track_id_for_path` lookup. Nesting the map lock under the
-            // queue lock is safe: nothing takes the queue lock while
-            // holding the map lock.
+            // `track_id_for_path` lookup. Lock order: the map lock is taken
+            // before the queue data locks below; safety rests on the
+            // whole-repo invariant that nobody acquires the map lock while
+            // holding a queue data guard (`refresh_expired_online_url`
+            // clones the path out of the queue first and only then calls
+            // `identify_path`; the stats / lyrics / controls registry
+            // lookups never hold a queue lock) — reversing the order here
+            // would risk a deadlock.
             let queue_data = cx.global::<crate::ui::models::Models>().queue.read(cx).data.clone();
             let map = stream_map().lock().unwrap_or_else(|e| e.into_inner());
             let existing = queue_data
@@ -728,5 +726,24 @@ mod tests {
         );
         assert_eq!(tracks[0].duration, 269);
         assert_eq!(tracks[0].artist, "周杰伦");
+    }
+
+    #[test]
+    fn stream_map_entry_ignores_legacy_fee_album_id_keys() {
+        // Entries persisted before the fee/album_id fields were dropped must
+        // still deserialize; serde discards the now-unknown keys.
+        let legacy = r#"{
+            "url": "https://music.163.com/song?id=186016",
+            "id": 186016,
+            "title": "晴天",
+            "album_id": 18918,
+            "fee": 8,
+            "duration": 269
+        }"#;
+        let entry: crate::online_sources::netease::StreamMapEntry =
+            serde_json::from_str(legacy).unwrap();
+        assert_eq!(entry.id, 186016);
+        assert_eq!(entry.title, "晴天");
+        assert_eq!(entry.duration, 269);
     }
 }

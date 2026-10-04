@@ -148,6 +148,36 @@ struct ScrollbarState {
     last_scroll_offset: Pixels,
     last_interaction_time: Option<Instant>,
     is_hovered: bool,
+    /// Bumped on every interaction; a scheduled hide wake whose generation
+    /// no longer matches no-ops instead of refreshing.
+    hide_wake_generation: u64,
+    /// Wake target of the currently scheduled hide wake, so repeated paints
+    /// of the same wait window reuse it instead of respawning every frame.
+    hide_wake_scheduled_for: Option<Instant>,
+}
+
+impl ScrollbarState {
+    /// When the next hide wake should fire: the scrollbar sits fully opaque
+    /// in its wait window (not hovered, not dragged, not always visible, with
+    /// a past interaction) and no wake for this window is scheduled yet.
+    /// Returns the wake target and the time left until it.
+    fn pending_hide_wake(
+        &self,
+        opacity: f32,
+        always_visible: bool,
+        now: Instant,
+        hide_delay: Duration,
+    ) -> Option<(Instant, Duration)> {
+        if opacity != 1.0 || self.dragging || self.is_hovered || always_visible {
+            return None;
+        }
+        let interaction_time = self.last_interaction_time?;
+        let wake_at = interaction_time + hide_delay;
+        if self.hide_wake_scheduled_for == Some(wake_at) {
+            return None;
+        }
+        Some((wake_at, wake_at.saturating_duration_since(now)))
+    }
 }
 
 type InteractionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -381,6 +411,10 @@ impl Element for Scrollbar {
         let slim_scrollbars = settings.interface.slim_scrollbars;
         let slim = self.slim && slim_scrollbars;
 
+        // Shared reborrow: the element-state closure below spawns the hide
+        // wake through `Window::spawn`, which needs an `&App`.
+        let cx: &App = cx;
+
         window.with_optional_element_state(
             id,
             move |state: Option<Option<Rc<RefCell<ScrollbarState>>>>, window| {
@@ -426,6 +460,8 @@ impl Element for Scrollbar {
                     state.is_hovered = is_hovered;
 
                     if is_hovered || state.dragging || scroll_changed {
+                        // Any new interaction invalidates a pending hide wake.
+                        state.hide_wake_generation += 1;
                         state.last_interaction_time = Some(now);
                     }
 
@@ -457,16 +493,42 @@ impl Element for Scrollbar {
 
                 // setup fade animation refresh
                 let needs_fade_refresh = opacity > 0.0 && opacity < 1.0;
-                let needs_hide_check = opacity == 1.0
-                    && !is_dragging
-                    && !currently_hovered
-                    // always-visible scrollbars never fade: there is no hide
-                    // window to wait out, so don't poll every frame
-                    && !always_visible
-                    && last_interaction.is_some();
-
-                if needs_fade_refresh || needs_hide_check {
+                if needs_fade_refresh {
                     window.request_animation_frame();
+                }
+
+                // The hide wait before the fade stays frame-silent (every
+                // pixel identical): instead of polling at full refresh rate,
+                // one generation-guarded task sleeps out the remaining delay
+                // and refreshes once to hand over to the fade above. New
+                // interactions bump the generation, so a wake scheduled for
+                // an older wait window becomes a no-op.
+                let pending_wake = scrollbar_state.borrow().pending_hide_wake(
+                    opacity,
+                    always_visible,
+                    now,
+                    hide_delay,
+                );
+                if let Some((wake_at, remaining)) = pending_wake {
+                    let wake_generation = {
+                        let mut state = scrollbar_state.borrow_mut();
+                        state.hide_wake_generation += 1;
+                        state.hide_wake_scheduled_for = Some(wake_at);
+                        state.hide_wake_generation
+                    };
+
+                    let wake_state = scrollbar_state.clone();
+                    window
+                        .spawn(cx, async move |window_cx| {
+                            window_cx.background_executor().timer(remaining).await;
+                            if wake_state.borrow().hide_wake_generation != wake_generation {
+                                return;
+                            }
+                            // The window may be gone by now; that just fails the
+                            // update, which is the harmless case.
+                            let _ = window_cx.update(|window, _| window.refresh());
+                        })
+                        .detach();
                 }
 
                 if opacity > 0.01 {
@@ -589,6 +651,9 @@ impl Element for Scrollbar {
                         state.last_interaction_time = Some(Instant::now());
                         if !state.is_hovered {
                             state.is_hovered = true;
+                            // Entering hover invalidates a pending hide wake;
+                            // leaving re-arms one at the refreshed paint.
+                            state.hide_wake_generation += 1;
                             window.refresh();
                         }
                     } else if state.is_hovered {
@@ -927,5 +992,129 @@ pub fn floating_scrollbar(
         on_interaction: None,
         axis: ScrollbarAxis::Vertical,
         inset: Edges::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HIDE_DELAY: Duration = Duration::from_millis(800);
+
+    fn interacting_state(interaction: Instant) -> ScrollbarState {
+        ScrollbarState {
+            last_interaction_time: Some(interaction),
+            ..ScrollbarState::default()
+        }
+    }
+
+    #[test]
+    fn wake_is_scheduled_for_the_end_of_the_wait_window() {
+        let now = Instant::now();
+        let interaction = now - Duration::from_millis(300);
+
+        let state = interacting_state(interaction);
+        let (wake_at, remaining) = state
+            .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+            .unwrap();
+
+        assert_eq!(wake_at, interaction + HIDE_DELAY);
+        assert_eq!(remaining, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn wake_needs_full_opacity_and_a_past_interaction() {
+        let now = Instant::now();
+        let state = interacting_state(now - Duration::from_millis(300));
+
+        assert!(
+            state
+                .pending_hide_wake(0.5, false, now, HIDE_DELAY)
+                .is_none()
+        );
+        assert!(
+            state
+                .pending_hide_wake(0.0, false, now, HIDE_DELAY)
+                .is_none()
+        );
+        assert!(
+            ScrollbarState::default()
+                .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn wake_is_skipped_while_hovered_dragging_or_always_visible() {
+        let now = Instant::now();
+        let fresh = now - Duration::from_millis(300);
+
+        let mut hovered = interacting_state(fresh);
+        hovered.is_hovered = true;
+        let mut dragged = interacting_state(fresh);
+        dragged.dragging = true;
+
+        assert!(
+            hovered
+                .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+                .is_none()
+        );
+        assert!(
+            dragged
+                .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+                .is_none()
+        );
+        assert!(
+            interacting_state(fresh)
+                .pending_hide_wake(1.0, true, now, HIDE_DELAY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn wake_dedupes_an_already_scheduled_target() {
+        let now = Instant::now();
+        let interaction = now - Duration::from_millis(300);
+
+        let mut state = interacting_state(interaction);
+        state.hide_wake_scheduled_for = Some(interaction + HIDE_DELAY);
+
+        assert!(
+            state
+                .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_new_interaction_reschedules_the_wake() {
+        let now = Instant::now();
+        let old_interaction = now - Duration::from_millis(600);
+
+        let mut state = interacting_state(old_interaction);
+        state.hide_wake_scheduled_for = Some(old_interaction + HIDE_DELAY);
+        let new_interaction = now - Duration::from_millis(100);
+        state.last_interaction_time = Some(new_interaction);
+
+        let (wake_at, remaining) = state
+            .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+            .unwrap();
+
+        assert_eq!(wake_at, new_interaction + HIDE_DELAY);
+        assert_eq!(remaining, Duration::from_millis(700));
+    }
+
+    #[test]
+    fn a_lapsed_window_degenerates_to_an_immediate_wake() {
+        // elapsed == hide_delay still renders opacity 1.0 (zero fade progress)
+        let now = Instant::now();
+        let interaction = now - HIDE_DELAY;
+
+        let state = interacting_state(interaction);
+        let (_, remaining) = state
+            .pending_hide_wake(1.0, false, now, HIDE_DELAY)
+            .unwrap();
+
+        assert_eq!(remaining, Duration::ZERO);
     }
 }

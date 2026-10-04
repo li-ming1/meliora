@@ -157,11 +157,11 @@ impl DragDropState {
         Self::default()
     }
 
-    pub fn update_drop_target(&mut self, index: usize, position: DropPosition) {
+    fn update_drop_target(&mut self, index: usize, position: DropPosition) {
         self.drop_target = Some((index, position));
     }
 
-    pub fn clear_drop_target(&mut self) {
+    fn clear_drop_target(&mut self) {
         self.drop_target = None;
     }
 
@@ -172,7 +172,7 @@ impl DragDropState {
         self.drag_mouse_y = None;
     }
 
-    pub fn set_mouse_y(&mut self, y: Pixels) {
+    fn set_mouse_y(&mut self, y: Pixels) {
         self.drag_mouse_y = Some(y);
     }
 }
@@ -336,7 +336,7 @@ impl Render for DragPreview {
     }
 }
 
-pub fn calculate_drop_position(mouse_y: Pixels, item_bounds: Bounds<Pixels>) -> DropPosition {
+fn calculate_drop_position(mouse_y: Pixels, item_bounds: Bounds<Pixels>) -> DropPosition {
     let item_center_y = item_bounds.origin.y + (item_bounds.size.height / 2.0);
     if mouse_y < item_center_y {
         DropPosition::Before
@@ -370,7 +370,7 @@ pub fn calculate_move_target(
 
 /// Calculate which item index the mouse is over and the drop position. If the mouse is not over
 /// any valid item, returns None.
-pub fn calculate_drop_target(
+fn calculate_drop_target(
     mouse_pos: Point<Pixels>,
     container_bounds: Bounds<Pixels>,
     scroll_offset_y: Pixels,
@@ -402,7 +402,7 @@ pub enum EdgeScrollDirection {
     None,
 }
 
-pub fn get_edge_scroll_direction(
+fn get_edge_scroll_direction(
     mouse_y: Pixels,
     container_bounds: Bounds<Pixels>,
     config: &EdgeScrollConfig,
@@ -423,7 +423,7 @@ pub fn get_edge_scroll_direction(
 }
 
 /// Performs edge scrolling if needed, returns true if scrolling occurred.
-pub fn perform_edge_scroll(
+fn perform_edge_scroll(
     scroll_handle: &ScrollableHandle,
     direction: EdgeScrollDirection,
     config: &EdgeScrollConfig,
@@ -840,10 +840,7 @@ pub fn schedule_edge_scroll(
 /// Continue edge scrolling during an animation frame.
 ///
 /// Returns `true` if scrolling should continue (caller should schedule another frame).
-pub fn continue_edge_scroll(
-    manager: &DragDropListManager,
-    scroll_handle: &ScrollableHandle,
-) -> bool {
+fn continue_edge_scroll(manager: &DragDropListManager, scroll_handle: &ScrollableHandle) -> bool {
     if !manager.state.is_dragging {
         return false;
     }

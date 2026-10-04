@@ -38,8 +38,10 @@ impl ArtistPickerView {
                         | ScanEvent::TargetedRescanComplete
                 ) {
                     picker.update(cx, |m, cx| {
-                        *m = None;
-                        cx.notify();
+                        if m.is_some() {
+                            *m = None;
+                            cx.notify();
+                        }
                     });
                 }
             })
@@ -57,8 +59,10 @@ impl ArtistPickerView {
 pub(crate) fn close(cx: &mut App) {
     let model = cx.global::<Models>().artist_picker_model.clone();
     model.update(cx, |m, cx| {
-        *m = None;
-        cx.notify();
+        if m.is_some() {
+            *m = None;
+            cx.notify();
+        }
     });
 }
 

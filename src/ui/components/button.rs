@@ -76,10 +76,7 @@ impl ButtonStyle {
     where
         T: Styled,
     {
-        match self {
-            ButtonStyle::Regular => dest,
-            ButtonStyle::Minimal => dest.background_opacity(0.5),
-        }
+        self.hover(dest)
     }
 }
 
@@ -107,19 +104,6 @@ impl ButtonSize {
                 .text_sm()
                 .line_height(px(14.0))
                 .gap(px(8.0)),
-        }
-    }
-
-    // i have no idea what this is about but the text size changes when you click on it unless we
-    // have this
-    fn active<T>(&self, dest: T) -> T
-    where
-        T: Styled,
-    {
-        match self {
-            ButtonSize::Small => dest,
-            ButtonSize::Regular => dest,
-            ButtonSize::Large => dest,
         }
     }
 }
@@ -332,7 +316,7 @@ impl RenderOnce for InteractiveButton {
                 intent.base(
                     self.div
                         .hover(|v| style.hover(intent.hover(v, cx)))
-                        .active(|v| style.active(size.active(intent.active(v, cx)))),
+                        .active(|v| style.active(intent.active(v, cx))),
                     cx,
                 ),
             ),

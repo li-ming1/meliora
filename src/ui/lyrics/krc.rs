@@ -50,17 +50,16 @@ struct KrcLanguageSection {
 /// 非 UTF-8）返回 `None`。
 #[cfg(feature = "kugou")]
 pub fn decrypt_krc(base64_content: &str) -> Option<String> {
-    let bytes = STANDARD.decode(base64_content.trim()).ok()?;
+    let mut bytes = STANDARD.decode(base64_content.trim()).ok()?;
     if bytes.len() <= 4 {
         return None;
     }
 
-    let mut data = bytes[4..].to_vec();
-    for (i, byte) in data.iter_mut().enumerate() {
+    for (i, byte) in bytes[4..].iter_mut().enumerate() {
         *byte ^= KRC_KEY[i % KRC_KEY.len()];
     }
 
-    let mut decoder = ZlibDecoder::new(&data[..]);
+    let mut decoder = ZlibDecoder::new(&bytes[4..]);
     let mut out = Vec::new();
     decoder.read_to_end(&mut out).ok()?;
     // 解压不出任何内容（坏数据/空流）时视为无效，让调用方回退 LRC。
@@ -120,7 +119,9 @@ pub fn parse_krc(content: &str) -> Option<Vec<LrcLine>> {
         if let Some(romanization) = romanization
             && !romanization.is_empty()
         {
-            text.push_str(&format!("  〔{romanization}〕"));
+            text.push_str("  〔");
+            text.push_str(&romanization);
+            text.push('〕');
         }
 
         lines.push(LrcLine {

@@ -203,7 +203,7 @@ pub async fn fetch_stream_url(
     {
         return Some(url);
     }
-    tracing::warn!(hash, quality, "kugou: no playable URL at requested quality");
+    tracing::debug!(hash, quality, "kugou: no playable URL at requested quality");
     if quality != FALLBACK_QUALITY {
         let Ok(resp) = client
             .song_url(hash, mix_song_id, album_id, FALLBACK_QUALITY, free_part)

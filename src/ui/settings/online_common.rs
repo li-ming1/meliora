@@ -109,10 +109,15 @@ impl QrLogin {
         self.generation != generation
     }
 
-    fn set_phase(&mut self, phase: QrPhase) {
-        if let Some(state) = &mut self.state {
+    /// Sets the modal phase; returns whether the value actually changed.
+    fn set_phase(&mut self, phase: QrPhase) -> bool {
+        if let Some(state) = &mut self.state
+            && state.phase != phase
+        {
             state.phase = phase;
+            return true;
         }
+        false
     }
 }
 
@@ -252,11 +257,15 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
                     match check {
                         Ok(QrPoll::Waiting) => {
                             failures = 0;
-                            this.qr_login().set_phase(QrPhase::Waiting);
+                            if this.qr_login().set_phase(QrPhase::Waiting) {
+                                cx.notify();
+                            }
                         }
                         Ok(QrPoll::Scanned) => {
                             failures = 0;
-                            this.qr_login().set_phase(QrPhase::Scanned);
+                            if this.qr_login().set_phase(QrPhase::Scanned) {
+                                cx.notify();
+                            }
                         }
                         Ok(QrPoll::Expired) => {
                             this.qr_login().set_phase(QrPhase::Expired);
@@ -284,7 +293,6 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
                         return false;
                     }
 
-                    cx.notify();
                     true
                 })
                 .unwrap_or(false);

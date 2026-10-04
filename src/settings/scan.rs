@@ -73,7 +73,13 @@ fn retrieve_default_paths() -> Vec<Utf8PathBuf> {
                     None
                 }
             })
-            .flat_map(|path| path.canonicalize_utf8())
+            .filter_map(|path| match path.canonicalize_utf8() {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    warn!("Couldn't canonicalize a Music library folder path ({e}): skipping it.");
+                    None
+                }
+            })
             .collect()
     }
 

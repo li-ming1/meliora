@@ -29,9 +29,6 @@ pub struct NeteaseTrackInfo {
     /// Duration in seconds (0 when unknown).
     pub duration: i64,
     pub id: i64,
-    pub album_id: i64,
-    /// `fee` field: 0 free, 1 VIP-only, 4 album purchase, 8 low quality free.
-    pub fee: i64,
     /// Absolute album-art URL from the API. Empty when there is none.
     pub cover_url: SharedString,
 }
@@ -59,10 +56,6 @@ pub(crate) struct StreamMapEntry {
     pub(crate) artist: String,
     #[serde(default)]
     pub(crate) album: String,
-    #[serde(default)]
-    pub(crate) album_id: i64,
-    #[serde(default)]
-    pub(crate) fee: i64,
     #[serde(default)]
     pub(crate) duration: i64,
     #[serde(default)]
@@ -94,8 +87,6 @@ fn entry_to_track(entry: &StreamMapEntry) -> NeteaseTrackInfo {
         album: SharedString::from(entry.album.clone()),
         duration: entry.duration,
         id: entry.id,
-        album_id: entry.album_id,
-        fee: entry.fee,
         cover_url: SharedString::from(entry.cover_url.clone()),
     }
 }
@@ -113,8 +104,6 @@ pub fn remember_online_track(url: String, track: NeteaseTrackInfo) {
         title: track.title.to_string(),
         artist: track.artist.to_string(),
         album: track.album.to_string(),
-        album_id: track.album_id,
-        fee: track.fee,
         duration: track.duration,
         cover_url: track.cover_url.to_string(),
     };
@@ -208,8 +197,6 @@ pub async fn refresh_restored_url(
         album: SharedString::default(),
         duration: duration.unwrap_or(0),
         id,
-        album_id: 0,
-        fee: 0,
         cover_url: SharedString::from(cover_url.unwrap_or_default()),
     };
     remember_online_track(url.clone(), track);
@@ -246,15 +233,17 @@ impl super::OnlineSourceProvider for NeteaseSource {
         let super::OnlineIdentity::Netease { id } = identity else {
             return None;
         };
-        let (name, artist, duration, cover_url) = &ctx.display;
-        refresh_restored_url(
-            *id,
-            ctx.netease_quality,
-            name.clone(),
-            artist.clone(),
-            *duration,
-            cover_url.clone(),
-        )
-        .await
+        let id = *id;
+        let (name, artist, duration, cover_url) = ctx.display.clone();
+        let netease_quality = ctx.netease_quality.to_string();
+        // HTTP (and its DNS resolution) must not run on the gpui executor -
+        // see the invariant on `NeteaseClient::request`.
+        crate::RUNTIME
+            .spawn(async move {
+                refresh_restored_url(id, &netease_quality, name, artist, duration, cover_url).await
+            })
+            .await
+            .ok()
+            .flatten()
     }
 }

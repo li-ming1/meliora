@@ -74,9 +74,8 @@ pub struct NeteaseSession {
     pub user_id: Option<i64>,
     pub nickname: Option<String>,
     pub avatar_url: Option<String>,
-    /// Server-issued `NMTID` cookie; captured per-process like the reference
-    /// client (a fresh fallback is generated for every launch), so it is not
-    /// persisted.
+    /// Server-issued `NMTID` cookie, persisted with the session (the fresh
+    /// fallback is only used while no captured value exists).
     #[serde(default)]
     pub nmtid: Option<String>,
 }
@@ -125,8 +124,8 @@ fn unix_millis() -> u128 {
         .unwrap_or(0)
 }
 
-/// The persisted `NMTID` cookie, or a fresh random fallback for a session
-/// that has none yet (regenerated per launch, like the reference client).
+/// The persisted `NMTID` cookie, or a fresh random fallback while the
+/// session has none captured yet.
 fn nmtid_or_fresh(session: &NeteaseSession) -> String {
     session
         .nmtid
@@ -303,8 +302,7 @@ impl NeteaseClient {
 
     /// Picks login-relevant cookies (`NMTID`, `__csrf`, `MUSIC_A`, `MUSIC_U`)
     /// out of a response's Set-Cookie headers and merges them into the
-    /// session. `NMTID` stays in-memory (regenerated per launch, like the
-    /// reference client); the rest are persisted.
+    /// session; `NMTID` is persisted with it like the rest.
     fn capture_cookies(&self, set_cookies: &[String]) {
         let mut nmtid = None;
         let mut csrf = None;
@@ -332,7 +330,6 @@ impl NeteaseClient {
             return;
         }
         if let Some(nmtid) = nmtid {
-            // in-memory only: regenerated per launch like the reference client
             self.session_guard().nmtid = Some(nmtid);
         }
         let mut session = self.session_guard();
@@ -448,7 +445,9 @@ impl NeteaseClient {
 
     /// Executes an encrypted POST against the NetEase web APIs. Every call
     /// MUST run on the Tokio runtime (`crate::RUNTIME`) - reqwest's DNS
-    /// resolver panics on the gpui main-thread executor.
+    /// resolver panics on the gpui main-thread executor. Both provider
+    /// refresh impls (online_sources/kugou.rs, online_sources/netease.rs)
+    /// wrap their fetches in `crate::RUNTIME.spawn` for this reason.
     pub async fn request(
         &self,
         crypto_type: Crypto,

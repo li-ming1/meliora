@@ -17,6 +17,10 @@ const BASE62: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123
 /// Fixed XOR key for the anonymous-token device fingerprint.
 const ID_XOR_KEY: &[u8] = b"3go8&$8*3*3h0k(2)2";
 
+/// Hex digit tables for the byte→hex encoders (eapi output is uppercase).
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+
 /// 1024-bit RSA modulus of the weapi web key (`publicKey` in crypto.js),
 /// exponent 0x10001. The web client encrypts the reversed random AES key with
 /// it using no padding at all.
@@ -36,9 +40,11 @@ pub fn base62_string(len: usize) -> String {
 /// `len` random lowercase hex characters (2*len random bytes -> hex is fine
 /// for identifiers; the JS client also just draws WordArray.random bytes).
 pub fn random_hex(len: usize) -> String {
-    (0..len)
-        .map(|_| format!("{:x}", rand::random_range(0..16u8)))
-        .collect()
+    let mut out = String::with_capacity(len);
+    for _ in 0..len {
+        out.push(HEX_LOWER[rand::random_range(0..16u8) as usize] as char);
+    }
+    out
 }
 
 /// 52 random uppercase hex characters, mirroring `generateDeviceId()`.
@@ -56,7 +62,13 @@ pub fn md5_bytes(data: &[u8]) -> [u8; 16] {
 }
 
 pub fn md5_hex(data: &[u8]) -> String {
-    md5_bytes(data).iter().map(|b| format!("{b:02x}")).collect()
+    let digest = md5_bytes(data);
+    let mut out = String::with_capacity(2 * digest.len());
+    for byte in digest {
+        out.push(HEX_LOWER[(byte >> 4) as usize] as char);
+        out.push(HEX_LOWER[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn aes_cbc_encrypt_b64(data: &[u8], key: &[u8; 16]) -> String {
@@ -66,11 +78,13 @@ fn aes_cbc_encrypt_b64(data: &[u8], key: &[u8; 16]) -> String {
 }
 
 fn aes_ecb_encrypt_hex_upper(data: &[u8], key: &[u8; 16]) -> String {
-    Aes128EcbEnc::new(key.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(data)
-        .iter()
-        .map(|b| format!("{b:02X}"))
-        .collect()
+    let encrypted = Aes128EcbEnc::new(key.into()).encrypt_padded_vec_mut::<Pkcs7>(data);
+    let mut out = String::with_capacity(2 * encrypted.len());
+    for byte in encrypted {
+        out.push(HEX_UPPER[(byte >> 4) as usize] as char);
+        out.push(HEX_UPPER[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Textbook RSA (no padding) with the web public key: the input is

@@ -213,16 +213,16 @@ where
         None
     }
 
-    /// Returns a lazy builder for this row's context menu, plus an optional
+    /// Returns a builder for this row's context menu, plus an optional
     /// overlay (e.g. a modal) rendered outside the context popup so it is not
     /// nested inside `deferred`.
     ///
-    /// The builder is invoked only when the user actually opens the menu, so
-    /// the menu tree (and anything its render touches — DB queries, filesystem
-    /// stats, translations) stays off the per-row repaint path. `is_available`
-    /// is the availability the row view already resolved once at construction;
-    /// impls must capture it instead of re-running `is_available` (which would
-    /// stat the filesystem or hit the database).
+    /// The builder runs on every render while the menu is open, so its body
+    /// may only read caches and snapshots — never issue blocking queries or
+    /// system calls. `is_available` is the availability the row view already
+    /// resolved once at construction; impls must capture it instead of
+    /// re-running `is_available` (which would stat the filesystem or hit the
+    /// database).
     fn get_context_menu(
         &self,
         _window: &mut Window,

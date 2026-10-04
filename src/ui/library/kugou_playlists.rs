@@ -809,8 +809,6 @@ fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
     .into()
 }
 
-/// Muted placeholder line for the loading and empty states of both the
-/// overview and the track list.
 /// Total 1-based page count for `count` items at `TRACKS_PER_PAGE` per page.
 fn page_count(count: i64) -> i64 {
     (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE

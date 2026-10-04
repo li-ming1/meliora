@@ -385,6 +385,7 @@ impl PlaybackController for MprisController {
         let original_position = data.last_position;
 
         data.last_position = Some(new_position);
+        drop(data);
 
         if let Some(original_position) = original_position {
             let position_diff = new_position as i64 - original_position as i64;

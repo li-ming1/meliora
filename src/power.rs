@@ -2,7 +2,7 @@ use gpui::{AppContext, Entity, Global};
 
 use crate::playback::thread::PlaybackState;
 
-// --- Windows: Win32 PowerRequest (PowerRequestExecutionRequired) ---
+// --- Windows: Win32 PowerRequest (DisplayRequired + SystemRequired) ---
 
 #[cfg(target_os = "windows")]
 use windows::{
@@ -10,8 +10,8 @@ use windows::{
         Foundation::{CloseHandle, HANDLE},
         System::{
             Power::{
-                PowerClearRequest, PowerCreateRequest, PowerRequestExecutionRequired,
-                PowerSetRequest,
+                PowerClearRequest, PowerCreateRequest, PowerRequestDisplayRequired,
+                PowerRequestSystemRequired, PowerSetRequest,
             },
             SystemServices::POWER_REQUEST_CONTEXT_VERSION,
             Threading::{POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT, REASON_CONTEXT_0},
@@ -55,19 +55,36 @@ impl PlatformPower {
                 return;
             };
 
-            if let Err(e) = PowerSetRequest(handle, PowerRequestExecutionRequired) {
-                tracing::error!("Failed to set power request: {:?}", e)
+            // DisplayRequired 挡屏保与显示关闭,SystemRequired 挡空闲休眠
+            // (DisplayRequired 不覆盖休眠),两个请求叠加在同一句柄上。
+            let display = PowerSetRequest(handle, PowerRequestDisplayRequired);
+            let system = PowerSetRequest(handle, PowerRequestSystemRequired);
+
+            if let Err(e) = &display {
+                tracing::error!("Failed to set display power request: {:?}", e)
+            }
+            if let Err(e) = &system {
+                tracing::error!("Failed to set system power request: {:?}", e)
             }
 
-            self.handle = Some(handle);
+            if display.is_ok() && system.is_ok() {
+                self.handle = Some(handle);
+            } else {
+                // 任一请求失败立即释放句柄并保持 handle 为 None,下次 update() 重试。
+                if let Err(e) = CloseHandle(handle) {
+                    tracing::error!("Failed to close power request handle: {:?}", e)
+                }
+            }
         }
     }
 
     fn uninhibit(&mut self) {
         unsafe {
             if let Some(handle) = self.handle.take() {
-                if let Err(e) = PowerClearRequest(handle, PowerRequestExecutionRequired) {
-                    tracing::error!("Failed to clear power request: {:?}", e)
+                for request_type in [PowerRequestDisplayRequired, PowerRequestSystemRequired] {
+                    if let Err(e) = PowerClearRequest(handle, request_type) {
+                        tracing::error!("Failed to clear power request: {:?}", e)
+                    }
                 }
 
                 if let Err(e) = CloseHandle(handle) {

@@ -75,7 +75,14 @@ fn migrate_tree(old: &Path, new: &Path) -> std::io::Result<()> {
     }
     if std::fs::rename(old, new).is_err() {
         // fall back to copy-then-remove for cross-volume moves
-        copy_recursive(old, new)?;
+        if let Err(err) = copy_recursive(old, new) {
+            // a mid-copy failure leaves a half-built `new` behind; remove it so
+            // the next start retries instead of skipping the move forever. Safe
+            // to delete wholesale: the `new.exists()` gate above guarantees
+            // nothing pre-existing here.
+            let _ = std::fs::remove_dir_all(new);
+            return Err(err);
+        }
         let _ = std::fs::remove_dir_all(old);
     }
     Ok(())
@@ -153,5 +160,46 @@ mod tests {
             log_dir_in(&dirs, Some(OsStr::new(""))),
             default_log_dir(&dirs),
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn copy_fallback_failure_removes_partial_destination() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let base = std::env::temp_dir().join("meliora-mig-test-partial");
+        let old = base.join("old");
+        let new = base.join("new");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(old.join("nested")).unwrap();
+        std::fs::write(old.join("a.txt"), b"a").unwrap();
+        let locked = old.join("nested").join("locked.bin");
+        std::fs::write(&locked, b"locked").unwrap();
+
+        // holding the file open with no sharing flags denies the rename of
+        // `old` (open descendant) and the copy of the file itself, driving
+        // migrate_tree into a copy-then-remove attempt that fails midway
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)
+            .unwrap();
+
+        let err = migrate_tree(&old, &new).expect_err("mid-copy failure should propagate");
+        drop(lock);
+        assert!(
+            !new.exists(),
+            "half-built destination must be removed so the next start can \
+             retry (copy error: {err})"
+        );
+        assert!(old.is_dir());
+
+        // with the lock released, the next start completes the move
+        migrate_tree(&old, &new).unwrap();
+        assert!(new.join("a.txt").exists());
+        assert!(new.join("nested").join("locked.bin").exists());
+        assert!(!old.exists());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

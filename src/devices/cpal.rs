@@ -187,7 +187,7 @@ trait CpalSample: SizedSample + Default + Send + Sized + 'static + Scale {}
 
 impl<T> CpalSample for T where T: SizedSample + Default + Send + Sized + 'static + Scale {}
 
-fn create_stream_internal<T: CpalSample>(
+fn create_stream_internal<T: CpalSample + SampleFrom<f64>>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     buffer_size: usize,
@@ -208,9 +208,12 @@ fn create_stream_internal<T: CpalSample>(
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             let read = read_available(&mut cons, data);
             if read < data.len() {
-                // Zero the tail so an underrun plays silence instead of
-                // whatever stale samples the device buffer still holds.
-                data[read..].fill(T::default());
+                // Fill the tail with digital silence so an underrun plays
+                // silence instead of whatever stale samples the device buffer
+                // still holds. Quantized 0.0 rather than `T::default()`:
+                // unsigned formats keep silence at the midpoint, while zero
+                // reads back as full-scale negative DC.
+                data[read..].fill(T::sample_from(0.0));
                 // Before the producer's first submit the silence is the
                 // expected open->prime gap (device stream runs while the
                 // pipeline is still preparing the first track), not an
@@ -587,3 +590,41 @@ make_unknown_error!(cpal::Error, StateError);
 make_unknown_error!(cpal::Error, InfoError);
 make_unknown_error!(cpal::Error, OpenError);
 make_unknown_error!(cpal::Error, FindError);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::resample::SampleInto;
+
+    /// The underrun tail fill must read back as digital silence in every
+    /// dispatched sample format. `T::default()` only does that for signed and
+    /// float targets: unsigned formats place silence at the midpoint, where
+    /// zero reads back as full-scale negative DC, so the value has to come
+    /// from quantizing 0.0 (the sign-bit flip in `SampleFrom`/`SampleInto`).
+    #[test]
+    fn underrun_silence_fill_reads_zero_in_every_format() {
+        fn assert_silent<T: CpalSample + SampleFrom<f64> + SampleInto<f64>>() {
+            // stale buffer first, then the exact fill the callback performs
+            let mut data = [T::default(); 8];
+            data.fill(T::sample_from(0.0));
+            for (i, sample) in data.iter().enumerate() {
+                let value = sample.sample_into();
+                assert_eq!(
+                    value,
+                    0.0,
+                    "{} sample {i} reads {value}",
+                    std::any::type_name::<T>()
+                );
+            }
+        }
+
+        assert_silent::<u8>();
+        assert_silent::<u16>();
+        assert_silent::<u32>();
+        assert_silent::<i8>();
+        assert_silent::<i16>();
+        assert_silent::<i32>();
+        assert_silent::<f32>();
+        assert_silent::<f64>();
+    }
+}

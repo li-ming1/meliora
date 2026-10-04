@@ -54,11 +54,19 @@ pub struct SearchModel {
 /// seconds on a 100k library, and this used to run synchronously inside the
 /// first palette-open frame.
 async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchPaletteItem>> {
-    let availability_rows = db::list_album_availability(&pool).await.unwrap_or_default();
+    let availability_rows = db::list_album_availability(&pool)
+        .await
+        .unwrap_or_else(|e| {
+            debug!("Failed to load album availability for search: {:?}", e);
+            Vec::new()
+        });
     let available_albums =
         tokio::task::spawn_blocking(move || compute_available_albums(availability_rows))
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                debug!("Failed to compute album availability for search: {:?}", e);
+                Default::default()
+            });
 
     let albums = db::list_albums_search(&pool)
         .await
@@ -310,93 +318,32 @@ impl SearchModel {
     /// and merge the results behind the local ones.
     #[cfg(feature = "kugou")]
     fn on_kugou_query(&mut self, query: &str, cx: &mut Context<Self>) {
-        use tracing::warn;
-
-        self.kugou_query_generation += 1;
-        let generation = self.kugou_query_generation;
-
-        let query = query.trim().to_string();
-        if query.chars().count() < 2 {
-            // only re-merge when something actually went away, or every
-            // keystroke below two chars re-emits the whole library to the finder
-            if !self.kugou_items.is_empty() {
-                self.kugou_items.clear();
-                self.emit_merged_items(cx);
-            }
-            return;
-        }
-
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(350))
-                .await;
-
-            // a newer keystroke superseded this one; bail before hitting the
-            // network so fast typing doesn't fire one request per character
-            if this
-                .update(cx, |this, _| this.kugou_query_generation != generation)
-                .unwrap_or(true)
-            {
-                return;
-            }
-
-            let client = crate::kugou::shared_client();
-            let request = crate::RUNTIME
-                .spawn(async move { client.search(&query, 1, 15).await })
-                .await;
-
-            this.update(cx, |this, cx| {
-                if this.kugou_query_generation != generation {
-                    return;
-                }
-
-                match request {
-                    Ok(Ok(response)) => {
-                        this.kugou_items =
-                            crate::ui::kugou::parse_tracks(&response.body, "/data/lists")
-                                .into_iter()
-                                .map(|track| {
-                                    let search_text: Arc<str> =
-                                        format!("{} {}", track.title, track.artist).into();
-                                    Arc::new(SearchPaletteItem::KugouTrack { track, search_text })
-                                })
-                                .collect();
-                        this.emit_merged_items(cx);
-                    }
-                    // a failed search keeps the previous results: wiping them
-                    // makes the palette flash empty on a transient network
-                    // error, and the stale items are dropped on the next
-                    // generation change / reset anyway
-                    Ok(Err(err)) => {
-                        warn!("kugou online search failed: {err}");
-                    }
-                    Err(err) => {
-                        warn!("kugou online search task failed: {err}");
-                    }
-                }
-            })
-            .ok();
-        })
-        .detach();
+        self.on_online_query::<KugouSearch>(query, cx);
     }
 
     /// Debounced online search: 350ms after the last keystroke, query NetEase
     /// and merge the results behind the local and KuGou ones.
     #[cfg(feature = "netease")]
     fn on_netease_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.on_online_query::<NeteaseSearch>(query, cx);
+    }
+
+    /// Shared skeleton behind `on_kugou_query`/`on_netease_query`: bump the
+    /// provider's query generation, drop stale results for short queries,
+    /// then 350ms after the last keystroke fetch, parse and merge the results
+    /// behind the local ones. Provider state and endpoints come from `P` so
+    /// each feature stays independently compilable.
+    #[cfg(any(feature = "kugou", feature = "netease"))]
+    fn on_online_query<P: OnlineSearchProvider>(&mut self, query: &str, cx: &mut Context<Self>) {
         use tracing::warn;
 
-        self.netease_query_generation += 1;
-        let generation = self.netease_query_generation;
+        let generation = P::bump_generation(self);
 
         let query = query.trim().to_string();
         if query.chars().count() < 2 {
             // only re-merge when something actually went away, or every
             // keystroke below two chars re-emits the whole library to the finder
-            if !self.netease_items.is_empty() {
-                self.netease_items.clear();
-                self.emit_merged_items(cx);
-            }
+            P::clear_stale_items(self, cx);
             return;
         }
 
@@ -408,33 +355,24 @@ impl SearchModel {
             // a newer keystroke superseded this one; bail before hitting the
             // network so fast typing doesn't fire one request per character
             if this
-                .update(cx, |this, _| this.netease_query_generation != generation)
+                .update(cx, |this, _| P::current_generation(this) != generation)
                 .unwrap_or(true)
             {
                 return;
             }
 
-            let client = crate::netease::shared_client();
             let request = crate::RUNTIME
-                .spawn(async move { client.cloudsearch(&query, 1, 15, 0).await })
+                .spawn(async move { P::fetch(query).await })
                 .await;
 
             this.update(cx, |this, cx| {
-                if this.netease_query_generation != generation {
+                if P::current_generation(this) != generation {
                     return;
                 }
 
                 match request {
                     Ok(Ok(response)) => {
-                        this.netease_items =
-                            crate::ui::netease::parse_tracks(&response.body, "/result/songs")
-                                .into_iter()
-                                .map(|track| {
-                                    let search_text: Arc<str> =
-                                        format!("{} {}", track.title, track.artist).into();
-                                    Arc::new(SearchPaletteItem::NeteaseTrack { track, search_text })
-                                })
-                                .collect();
+                        P::store_items(this, P::parse_items(&response));
                         this.emit_merged_items(cx);
                     }
                     // a failed search keeps the previous results: wiping them
@@ -442,10 +380,10 @@ impl SearchModel {
                     // error, and the stale items are dropped on the next
                     // generation change / reset anyway
                     Ok(Err(err)) => {
-                        warn!("netease online search failed: {err}");
+                        warn!("{} online search failed: {err}", P::LABEL);
                     }
                     Err(err) => {
-                        warn!("netease online search task failed: {err}");
+                        warn!("{} online search task failed: {err}", P::LABEL);
                     }
                 }
             })
@@ -481,7 +419,127 @@ impl SearchModel {
     }
 }
 
-impl EventEmitter<String> for SearchModel {}
+/// Hooks by which `on_online_query` reaches the per-provider search state,
+/// client endpoint and item construction. Each impl lives under its own
+/// feature so `kugou` and `netease` stay independently compilable.
+#[cfg(any(feature = "kugou", feature = "netease"))]
+trait OnlineSearchProvider: 'static {
+    /// Label used verbatim in the failure log lines.
+    const LABEL: &'static str;
+
+    /// Error type of the provider's search endpoint.
+    type Error: std::fmt::Display + Send + 'static;
+
+    /// Bumps and returns the provider's query generation.
+    fn bump_generation(model: &mut SearchModel) -> u64;
+    /// Drops the provider's stale results (if any) and re-emits the merge.
+    fn clear_stale_items(model: &mut SearchModel, cx: &mut Context<SearchModel>);
+    /// The provider's current query generation.
+    fn current_generation(model: &SearchModel) -> u64;
+    /// Stores parsed results into the provider's item buffer.
+    fn store_items(model: &mut SearchModel, items: Vec<Arc<SearchPaletteItem>>);
+    /// Runs the provider's search endpoint, resolving to the response body.
+    fn fetch(
+        query: String,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, Self::Error>> + Send;
+    /// Builds palette items from the response body.
+    fn parse_items(body: &serde_json::Value) -> Vec<Arc<SearchPaletteItem>>;
+}
+
+#[cfg(feature = "kugou")]
+struct KugouSearch;
+
+#[cfg(feature = "kugou")]
+impl OnlineSearchProvider for KugouSearch {
+    type Error = crate::kugou::KugouError;
+
+    const LABEL: &'static str = "kugou";
+
+    fn bump_generation(model: &mut SearchModel) -> u64 {
+        model.kugou_query_generation += 1;
+        model.kugou_query_generation
+    }
+
+    fn clear_stale_items(model: &mut SearchModel, cx: &mut Context<SearchModel>) {
+        if !model.kugou_items.is_empty() {
+            model.kugou_items.clear();
+            model.emit_merged_items(cx);
+        }
+    }
+
+    fn current_generation(model: &SearchModel) -> u64 {
+        model.kugou_query_generation
+    }
+
+    fn store_items(model: &mut SearchModel, items: Vec<Arc<SearchPaletteItem>>) {
+        model.kugou_items = items;
+    }
+
+    async fn fetch(query: String) -> Result<serde_json::Value, Self::Error> {
+        crate::kugou::shared_client()
+            .search(&query, 1, 15)
+            .await
+            .map(|response| response.body)
+    }
+
+    fn parse_items(body: &serde_json::Value) -> Vec<Arc<SearchPaletteItem>> {
+        crate::ui::kugou::parse_tracks(body, "/data/lists")
+            .into_iter()
+            .map(|track| {
+                let search_text: Arc<str> = format!("{} {}", track.title, track.artist).into();
+                Arc::new(SearchPaletteItem::KugouTrack { track, search_text })
+            })
+            .collect()
+    }
+}
+
+#[cfg(feature = "netease")]
+struct NeteaseSearch;
+
+#[cfg(feature = "netease")]
+impl OnlineSearchProvider for NeteaseSearch {
+    type Error = crate::netease::client::NeteaseError;
+
+    const LABEL: &'static str = "netease";
+
+    fn bump_generation(model: &mut SearchModel) -> u64 {
+        model.netease_query_generation += 1;
+        model.netease_query_generation
+    }
+
+    fn clear_stale_items(model: &mut SearchModel, cx: &mut Context<SearchModel>) {
+        if !model.netease_items.is_empty() {
+            model.netease_items.clear();
+            model.emit_merged_items(cx);
+        }
+    }
+
+    fn current_generation(model: &SearchModel) -> u64 {
+        model.netease_query_generation
+    }
+
+    fn store_items(model: &mut SearchModel, items: Vec<Arc<SearchPaletteItem>>) {
+        model.netease_items = items;
+    }
+
+    async fn fetch(query: String) -> Result<serde_json::Value, Self::Error> {
+        crate::netease::shared_client()
+            .cloudsearch(&query, 1, 15, 0)
+            .await
+            .map(|response| response.body)
+    }
+
+    fn parse_items(body: &serde_json::Value) -> Vec<Arc<SearchPaletteItem>> {
+        crate::ui::netease::parse_tracks(body, "/result/songs")
+            .into_iter()
+            .map(|track| {
+                let search_text: Arc<str> = format!("{} {}", track.title, track.artist).into();
+                Arc::new(SearchPaletteItem::NeteaseTrack { track, search_text })
+            })
+            .collect()
+    }
+}
+
 impl EventEmitter<ViewSwitchMessage> for SearchModel {}
 
 impl Render for SearchModel {

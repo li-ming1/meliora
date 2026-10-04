@@ -746,8 +746,6 @@ impl Render for ArtistDetailView {
                                                     cx,
                                                 );
 
-                                                let item_id = album_ids[idx].clone();
-
                                                 // Fallible equivalent of
                                                 // `create_or_retrieve_view`: an album
                                                 // can vanish between
@@ -765,6 +763,7 @@ impl Render for ArtistDetailView {
                                                         .child(view)
                                                         .into_any_element(),
                                                     None => {
+                                                        let item_id = album_ids[idx].clone();
                                                         match GridItem::<Album, AlbumColumn>::new(
                                                             cx,
                                                             item_id,

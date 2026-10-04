@@ -235,10 +235,11 @@ fn mark_check_failed(cx: &mut App, error: String) {
 }
 
 fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource) {
-    let Some(Ordering::Greater) = compare_versions(env!("CARGO_PKG_VERSION"), &release.tag_name)
+    let Some(Ordering::Less) = compare_versions(env!("CARGO_PKG_VERSION"), &release.tag_name)
     else {
-        // Equal or older, or a tag that doesn't parse into three numeric
-        // components — "cannot judge" must never offer an update.
+        // Equal or older than the running version, or a tag that doesn't
+        // parse into three numeric components — "cannot judge" must never
+        // offer an update.
         info!(tag = %release.tag_name, "updater: no update over the running version");
         set_status(cx, UpdateStatus::UpToDate);
         return;
@@ -520,6 +521,9 @@ async fn download_and_swap(
     file.flush()
         .await
         .map_err(|error| format!("flushing staged update failed: {error}"))?;
+    file.sync_all()
+        .await
+        .map_err(|error| format!("syncing staged update failed: {error}"))?;
     drop(file);
     let _ = progress.send((received, total));
 
@@ -652,8 +656,10 @@ fn parse_version_tag(tag: &str) -> Option<[u64; 3]> {
     Some(out)
 }
 
-/// `Some(Greater)` means the tag is a newer release than the running version;
-/// `None` means either side didn't parse and no conclusion may be drawn.
+/// `Some(Greater)` means the running version is newer than the tag (an older
+/// release); `Some(Less)` means the tag is a newer release than the running
+/// version; `None` means either side didn't parse and no conclusion may be
+/// drawn.
 fn compare_versions(current: &str, tag: &str) -> Option<Ordering> {
     Some(parse_version_tag(current)?.cmp(&parse_version_tag(tag)?))
 }

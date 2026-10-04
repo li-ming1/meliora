@@ -620,20 +620,10 @@ impl KugouRanksView {
                         ),
                     )
                     .into_any_element(),
-                RecommendState::Ready(tracks) => {
-                    // unreachable in practice: Render::render routes a Ready
-                    // daily-recommend to the virtualized container below; this
-                    // arm only keeps the match exhaustive
-                    let entity = cx.entity();
-                    div()
-                        .flex()
-                        .flex_col()
-                        .children(tracks.iter().enumerate().map(|(index, track)| {
-                            self.render_track_row(track, index, &entity, cx)
-                                .into_any_element()
-                        }))
-                        .into_any_element()
-                }
+                // unreachable in practice: Render::render routes a Ready
+                // daily-recommend to the virtualized container below; this arm
+                // only keeps the match exhaustive
+                RecommendState::Ready(_) => div().into_any_element(),
             },
         }
     }

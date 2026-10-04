@@ -2,6 +2,8 @@
 //! the corresponding modules in `NeteaseCloudMusicApi/module/`. All requests
 //! are POSTs; the crypto type of each endpoint matches the reference module.
 
+use std::fmt::Write;
+
 use serde_json::{Value, json};
 
 use super::client::{Crypto, NeteaseClient, NeteaseError, NeteaseResponse, UserProfile};
@@ -221,13 +223,15 @@ impl NeteaseClient {
     /// Song objects for up to ~1000 ids. Mirrors `song_detail.js`
     /// (`/api/v3/song/detail`, weapi, `c: '[{"id":...},...]'`).
     pub async fn song_detail(&self, ids: &[i64]) -> Result<NeteaseResponse, NeteaseError> {
-        let c = format!(
-            "[{}]",
-            ids.iter()
-                .map(|id| format!(r#"{{"id":{id}}}"#))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let mut c = String::with_capacity(ids.len() * 12 + 2);
+        c.push('[');
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                c.push(',');
+            }
+            write!(c, r#"{{"id":{id}}}"#).unwrap();
+        }
+        c.push(']');
         self.request(Crypto::Weapi, "/api/v3/song/detail", json!({ "c": c }))
             .await
     }

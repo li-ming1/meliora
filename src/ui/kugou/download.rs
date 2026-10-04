@@ -45,7 +45,16 @@ const KUGOU_UA: &str = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi";
 /// Quality ladder tried in order; the first tier that yields a playable URL wins.
 const QUALITY_LADDER: [&str; 3] = ["flac", "320", "128"];
 
-/// Strips characters that are illegal in Windows file names.
+/// Windows 保留设备名：文件名首个点号前的 stem 命中（不区分大小写）即被
+/// Win32 当作设备引用，即使带扩展名（如 "CON.flac"）。
+const WINDOWS_RESERVED_DEVICES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Strips characters that are illegal in Windows file names, and prefixes an
+/// underscore to reserved device-name stems (CON, COM1-9, ...), which Win32
+/// resolves to a device even when a file extension follows.
 fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
@@ -56,7 +65,14 @@ fn sanitize_filename(raw: &str) -> String {
         .collect();
     let trimmed = cleaned.trim().trim_matches('.');
     if trimmed.is_empty() {
-        "track".into()
+        return "track".into();
+    }
+    let stem = trimmed.split('.').next().unwrap_or_default();
+    if WINDOWS_RESERVED_DEVICES
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
+    {
+        format!("_{trimmed}")
     } else {
         trimmed.to_string()
     }
@@ -316,4 +332,44 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_device_stems_get_underscore_prefix() {
+        for name in ["CON", "PRN", "AUX", "NUL"] {
+            assert_eq!(sanitize_filename(name), format!("_{name}"));
+        }
+        for n in 1..=9u8 {
+            for prefix in ["COM", "LPT"] {
+                let name = format!("{prefix}{n}");
+                assert_eq!(sanitize_filename(&name), format!("_{name}"));
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_device_stems_match_case_insensitively() {
+        assert_eq!(sanitize_filename("con"), "_con");
+        assert_eq!(sanitize_filename("Nul"), "_Nul");
+        assert_eq!(sanitize_filename("cOm5"), "_cOm5");
+    }
+
+    #[test]
+    fn reserved_stem_with_extension() {
+        assert_eq!(sanitize_filename("CON.flac"), "_CON.flac");
+        assert_eq!(sanitize_filename("lpt3.mp3"), "_lpt3.mp3");
+    }
+
+    #[test]
+    fn legal_names_pass_through_unchanged() {
+        assert_eq!(sanitize_filename("Congo - Live"), "Congo - Live");
+        assert_eq!(sanitize_filename("com10"), "com10");
+        assert_eq!(sanitize_filename("my.CON"), "my.CON");
+        assert_eq!(sanitize_filename("a<b:c"), "a_b_c");
+        assert_eq!(sanitize_filename(""), "track");
+    }
 }

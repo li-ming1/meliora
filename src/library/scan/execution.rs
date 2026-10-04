@@ -575,7 +575,7 @@ impl<'a> ScanExecution<'a> {
                 },
                 CommitOptions {
                     update_checkpoint: true,
-                    update_record: false,
+                    update_record: true,
                     run_retry: true,
                     label: "cancelled scan",
                 },
@@ -791,7 +791,8 @@ struct PendingCommitState<'a> {
 
 struct CommitOptions {
     update_checkpoint: bool,
-    /// When false, leave the shared scan record alone and keep pending lists for the caller.
+    /// When true, a successful commit merges the batch into the shared scan
+    /// record, draining both pending lists.
     update_record: bool,
     run_retry: bool,
     label: &'static str,

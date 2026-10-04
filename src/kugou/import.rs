@@ -113,10 +113,14 @@ async fn resolve(url: &str) -> Result<String, String> {
     Ok(resp.url().to_string())
 }
 
-fn dedupe(mut v: Vec<String>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    v.retain(|s| seen.insert(s.clone()));
-    v
+fn dedupe(v: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(v.len());
+    let mut keep: Vec<bool> = Vec::with_capacity(v.len());
+    for s in &v {
+        keep.push(seen.insert(s.as_str()));
+    }
+    let mut flags = keep.into_iter();
+    v.into_iter().filter(|_| flags.next().unwrap()).collect()
 }
 
 // ==== NetEase Cloud Music ====

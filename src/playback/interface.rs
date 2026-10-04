@@ -33,10 +33,10 @@ const IDLE_TILE_DRAIN_INTERVAL: Duration = Duration::from_secs(30);
 /// function (so long as it is running on the main thread) to send commands to the playback thread.
 ///
 /// This interface takes advantage of GPUI's asynchronous runtime to read messages without blocking
-/// rendering. Messages are read at quickest every 10ms, however the runtime may choose to run the
-/// function that reads events less frequently, depending on the current workload. Because of this,
-/// event handling should not perform any heavy operations, which should be instead sent to the
-/// data thread for any required additional processing.
+/// rendering. Events are read via `recv().await` as soon as they arrive; a backlog left by a busy
+/// frame is coalesced to the newest event of each kind, though the executor may still delay the
+/// wakeup under load. Because of this, event handling should not perform any heavy operations,
+/// which should be instead sent to the data thread for any required additional processing.
 ///
 /// For the functions provided by this interface, see the documentation for the playback thread.
 pub struct PlaybackInterface {

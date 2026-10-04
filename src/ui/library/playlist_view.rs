@@ -857,26 +857,43 @@ impl Render for PlaylistView {
                                                 !self.playlist_track_ids.is_empty(),
                                                 false,
                                                 false,
-                                                move |cx| {
-                                                    let playlist_tracks = cx
-                                                        .get_playlist_tracks_sorted(
-                                                            playlist_id,
-                                                            current_sort,
-                                                        )
-                                                        .unwrap_or_default();
+                                                {
+                                                    // The click builds the queue from the
+                                                    // on-screen snapshot (WYSIWYG): it plays
+                                                    // exactly the order the user sees instead
+                                                    // of re-running the sorted aggregate query
+                                                    // under a UI-thread block_on. reload() on
+                                                    // PlaylistUpdated keeps the snapshot's
+                                                    // staleness window tiny; the blocking
+                                                    // fallback below is purely defensive (with
+                                                    // an empty list the buttons render without
+                                                    // on_click and cannot fire).
+                                                    let snapshot = items_clone.clone();
+                                                    move |cx| {
+                                                        let playlist_tracks =
+                                                            if snapshot.is_empty() {
+                                                                cx.get_playlist_tracks_sorted(
+                                                                    playlist_id,
+                                                                    current_sort,
+                                                                )
+                                                                .unwrap_or_default()
+                                                            } else {
+                                                                snapshot.clone()
+                                                            };
 
-                                                     playlist_tracks
-                                                        .iter()
-                                                        .map(|row| {
-                                                            QueueItemData::new(
-                                                                cx,
-                                                                row.location.clone().into(),
-                                                                Some(row.track_id),
-                                                                Some(row.album_id),
-                                                            )
-                                                        })
-                                                        .collect()
-                                                },
+                                                        playlist_tracks
+                                                            .iter()
+                                                            .map(|row| {
+                                                                QueueItemData::new(
+                                                                    cx,
+                                                                    row.location.clone().into(),
+                                                                    Some(row.track_id),
+                                                                    Some(row.album_id),
+                                                                )
+                                                            })
+                                                            .collect()
+                                                    }
+                                                }
                                             ))
                                             .child(
                                                 div()

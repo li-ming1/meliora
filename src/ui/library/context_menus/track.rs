@@ -7,12 +7,11 @@ use gpui::{Entity, IntoElement, RenderOnce, SharedString, Window};
 use crate::{
     library::{db::LibraryAccess, types::Track},
     ui::{
-        availability::is_track_path_available,
         components::{
             icons::{DISC, FOLDER_SEARCH, PLAY, PLAYLIST_ADD, PLAYLIST_REMOVE, PLUS, USERS},
             menu::{menu, menu_item, menu_separator},
         },
-        models::{Models, toggle_like_by_id},
+        models::{Models, is_track_available_snapshot, toggle_like_by_id},
         util::reveal_path_for_file_manager,
     },
 };
@@ -69,7 +68,9 @@ impl RenderOnce for TrackContextMenu {
                 .artist_ids_for_track(track_for_artist.id)
                 .is_ok_and(|ids| !ids.is_empty());
         let can_go_to_album = track_for_album.album_id.is_some();
-        let can_reveal_track = is_track_path_available(track_for_reveal.location.as_path());
+        // availability snapshot read: a per-render `path.exists()` syscall here
+        // would block the UI thread every frame the menu stays open
+        let can_reveal_track = is_track_available_snapshot(cx, &track_for_reveal);
         let show_add_to = self.show_add_to;
         let play_from_here = self.context.play_from_here.clone();
         let playlist_info = self.playlist_info;

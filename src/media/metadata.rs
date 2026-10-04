@@ -314,13 +314,13 @@ fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> 
             Ok(Some(ParsedReleaseDate::YearMonth(year, month)))
         }
         (Some(month), Some(day)) => {
-            parse_fixed_digits::<u16>(first, 4).ok_or(())?;
-            parse_fixed_digits::<u8>(month, 2).ok_or(())?;
-            parse_fixed_digits::<u8>(day, 2).ok_or(())?;
+            let year = parse_fixed_digits::<u16>(first, 4).ok_or(())?;
+            let month = parse_fixed_digits::<u8>(month, 2).ok_or(())?;
+            let day = parse_fixed_digits::<u8>(day, 2).ok_or(())?;
 
-            NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            NaiveDate::from_ymd_opt(year.into(), month.into(), day.into())
                 .map(|date| Some(ParsedReleaseDate::FullDate(utc_midnight(date))))
-                .map_err(|_| ())
+                .ok_or(())
         }
         (None, Some(_)) => Err(()),
     }
@@ -505,6 +505,23 @@ mod tests {
                 Utc.with_ymd_and_hms(1995, 6, 24, 0, 0, 0).single().unwrap(),
             ))
         );
+    }
+
+    #[test]
+    fn parses_full_release_dates_with_alternate_separators() {
+        let expected = Some(ParsedReleaseDate::FullDate(
+            Utc.with_ymd_and_hms(1995, 6, 24, 0, 0, 0).single().unwrap(),
+        ));
+
+        assert_eq!(parse_release_date("1995.06.24"), expected);
+        assert_eq!(parse_release_date("1995/06/24"), expected);
+        assert_eq!(parse_release_date("1995_06_24"), expected);
+    }
+
+    #[test]
+    fn rejects_invalid_full_release_dates() {
+        assert_eq!(parse_release_date("1995-13-01"), None);
+        assert_eq!(parse_release_date("1995-06-31"), None);
     }
 
     #[test]

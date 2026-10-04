@@ -24,8 +24,8 @@ use crate::{
 
 pub use control::{MissingFolderDecision, ScanEvent, ScanInterface};
 
-/// Capacity of the scanner command queue; sends beyond it wait for the
-/// scanner to catch up.
+/// Capacity of the scanner command queue; sends beyond it are dropped (logged
+/// by the sender) instead of blocking the UI thread.
 const COMMAND_CHANNEL_CAPACITY: usize = 10;
 
 #[cfg(test)]

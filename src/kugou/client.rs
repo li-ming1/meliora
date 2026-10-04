@@ -123,7 +123,7 @@ impl KugouSession {
         Self {
             guid,
             mid: crypto::calculate_mid(&dfid),
-            dev: crypto::random_string(10).to_uppercase(),
+            dev: crypto::random_string(10),
             dfid,
             token: None,
             userid: None,

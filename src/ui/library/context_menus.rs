@@ -168,9 +168,10 @@ pub(crate) fn track_menu_for_table_shared(
     let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track.id, window, cx);
 
     let context = context.clone();
-    // the menu tree — including everything TrackContextMenu::render touches
-    // (artist lookup query, path stat, translations) — is built only when the
-    // menu opens, keeping it off the per-row repaint path
+    // the builder reruns on every render while the menu is open, so its body
+    // may only read caches/snapshots — no blocking queries or system calls
+    // (TrackContextMenu::render's artist lookup is the one remaining query,
+    // left for a dedicated caching change)
     let builder: ContextMenuBuilder = Rc::new(move |_, cx| {
         // cached liked set: a DB query here would block the UI thread (see is_song_liked docs)
         let is_liked = is_song_liked(cx, track.id);

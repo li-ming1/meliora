@@ -95,19 +95,6 @@ fn live_offline_flow() {
                 Err(e) => report.push_str(&format!("song_url: FAILED {e}\n")),
             }
 
-            {
-                match client.search_lyric(hash, "", 0).await {
-                    Ok(resp) => report.push_str(&format!(
-                        "search_lyric body: {}\n",
-                        serde_json::to_string(&resp.body)
-                            .unwrap_or_default()
-                            .chars()
-                            .take(300)
-                            .collect::<String>()
-                    )),
-                    Err(e) => report.push_str(&format!("search_lyric: FAILED {e}\n")),
-                }
-            }
             match client.search_lyric(hash, "", 0).await {
                 Ok(resp) => {
                     report.push_str(&format!(

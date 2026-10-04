@@ -708,47 +708,85 @@ pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
 /// (Re)loads the album-, artist- and track-availability snapshots on the async
 /// runtime: two `(id, location)` queries plus one full `(location, id)` scan,
 /// then a single blocking pass that stats each distinct track path once for
-/// all three sets. Startup and scan completion only.
+/// all three sets. Startup and scan completion only. All-or-nothing like
+/// `reload_liked_ids`: a failed query or task leaves the three previous
+/// snapshots in place instead of publishing empty sets.
 pub(crate) fn reload_availability(cx: &mut App) {
+    // Yields the rows only when the spawned query fully succeeded; every
+    // failure is logged so the caller can keep the previous snapshots.
+    async fn query_rows<T>(
+        what: &'static str,
+        task: tokio::task::JoinHandle<sqlx::Result<T>>,
+    ) -> Option<T> {
+        match task.await {
+            Ok(Ok(rows)) => Some(rows),
+            Ok(Err(err)) => {
+                warn!("could not load {what}: {err}, keeping previous availability snapshots");
+                None
+            }
+            Err(err) => {
+                warn!("{what} task failed: {err}, keeping previous availability snapshots");
+                None
+            }
+        }
+    }
+
     let pool = cx.global::<Pool>().0.clone();
     let albums = cx.global::<Models>().available_albums.clone();
     let artists = cx.global::<Models>().available_artists.clone();
     let tracks = cx.global::<Models>().available_tracks.clone();
     cx.spawn(async move |cx| {
-        let album_rows = crate::RUNTIME
-            .spawn({
+        let Some(album_rows) = query_rows(
+            "album availability rows",
+            crate::RUNTIME.spawn({
                 let pool = pool.clone();
                 async move { db::list_album_availability(&pool).await }
-            })
-            .await
-            .map(|result| result.unwrap_or_default())
-            .unwrap_or(vec![]);
-        let artist_rows = crate::RUNTIME
-            .spawn({
+            }),
+        )
+        .await
+        else {
+            return;
+        };
+        let Some(artist_rows) = query_rows(
+            "artist availability rows",
+            crate::RUNTIME.spawn({
                 let pool = pool.clone();
                 async move { db::list_artist_availability(&pool).await }
-            })
-            .await
-            .map(|result| result.unwrap_or_default())
-            .unwrap_or(vec![]);
+            }),
+        )
+        .await
+        else {
+            return;
+        };
         // `get_all_tracks` (not the album rows) is the only complete source:
         // `find_album_availability` filters album-less tracks out, and those
         // must not grey out in the tracks table
-        let track_rows = crate::RUNTIME
-            .spawn(async move {
+        let Some(track_rows) = query_rows(
+            "track rows",
+            crate::RUNTIME.spawn(async move {
                 db::get_all_tracks(&pool).await.map(|rows| {
                     rows.into_iter()
                         .map(|(location, id, _)| (id, location))
                         .collect()
                 })
-            })
-            .await
-            .map(|result| result.unwrap_or_default())
-            .unwrap_or(vec![]);
-        let (album_set, artist_set, track_set) = crate::RUNTIME
+            }),
+        )
+        .await
+        else {
+            return;
+        };
+        let (album_set, artist_set, track_set) = match crate::RUNTIME
             .spawn_blocking(move || compute_availability(album_rows, artist_rows, track_rows))
             .await
-            .unwrap_or_default();
+        {
+            Ok(sets) => sets,
+            Err(err) => {
+                warn!(
+                    "availability stat pass task failed: {err}, keeping previous availability snapshots"
+                );
+                return;
+            }
+        };
         albums.update(cx, |slot, cx| {
             *slot = Some(Arc::new(album_set));
             cx.notify();

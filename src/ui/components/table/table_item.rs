@@ -62,12 +62,21 @@ where
         let drag_data = row.as_ref().and_then(|row| row.get_drag_data());
         cx.new(|cx| {
             cx.observe(columns, |this: &mut TableItem<T, C>, m, cx| {
-                this.columns = m.read(cx).clone();
+                // 列宽通知（拖拽）远多于结构变化；get_column 取值只依赖列
+                // 身份，仅结构变化（hide/show/reorder）才重快照单元格，
+                // 镜像 Table 侧观察者的 structural 判定
+                let new = m.read(cx).clone();
+                let structural = new.len() != this.columns.len()
+                    || new.keys().zip(this.columns.keys()).any(|(a, b)| a != b);
 
-                this.data = this
-                    .row
-                    .clone()
-                    .map(|row| Self::snapshot_cells(&row, &this.columns, cx));
+                this.columns = new;
+
+                if structural {
+                    this.data = this
+                        .row
+                        .clone()
+                        .map(|row| Self::snapshot_cells(&row, &this.columns, cx));
+                }
 
                 cx.notify();
             })

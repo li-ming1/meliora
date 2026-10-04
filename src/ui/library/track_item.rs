@@ -232,7 +232,7 @@ impl Render for TrackItem {
                                         .text_color(theme.text_secondary)
                                         .text_sm()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        // 22px (from track # width) + 18 + 11
+                                        // 22px (from track # width) + 18 + 13
                                         .px(px(track_num_width.to_f64() as f32 + 18.0 + 13.0))
                                         .border_b_1()
                                         .w_full()

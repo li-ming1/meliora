@@ -16,7 +16,7 @@ use crate::{
             add_to_playlist_state, album::AlbumContextMenu, play_album_next, play_track_next,
             track::TrackContextMenu,
         },
-        models::LIKED_SONGS_PLAYLIST_ID,
+        models::is_song_liked,
     },
 };
 // 与 ui.rs 的 `mod online_track_row` 同 gate：trait 仅服务下方 kugou/netease
@@ -275,9 +275,8 @@ impl PaletteItem for SearchPaletteItem {
                         });
 
                     if let Ok(track) = track.read(cx) {
-                        let is_liked = cx
-                            .playlist_has_track(LIKED_SONGS_PLAYLIST_ID, track.id)
-                            .unwrap_or_default();
+                        // cached liked set: a DB query here would block the UI thread (see is_song_liked docs)
+                        let is_liked = is_song_liked(cx, track.id);
                         TrackContextMenu::new(
                             Rc::new((**track).clone()),
                             true,
