@@ -33,7 +33,7 @@ use super::{
     queue::QueueItemData,
 };
 
-use audio_engine::{AudioEngine, EngineCycleResult, EngineState};
+use audio_engine::{AudioEngine, EngineCycleResult, EngineState, OnlineRefresh};
 use queue_manager::{
     DequeueManyResult, DequeueResult, InsertResult, JumpResult, MoveResult, QueueManager,
     QueueNavigationResult, ReplaceResult, Reshuffled, ShuffleResult, UndoResult,
@@ -201,8 +201,19 @@ impl PlaybackThread {
         // Finish any deferred device work (e.g. an async pause fade) without blocking intake.
         self.engine.poll();
 
-        // Collect a finished gapless pre-open, if any.
-        self.engine.poll_prepared();
+        // Collect a finished gapless pre-open, if any. A prepare that
+        // succeeded with a path other than the requested one recovered an
+        // expired online URL on the prepare thread: write the fresh URL back
+        // to the queue entry the prepare was requested for, so the EOF
+        // advance opens the ready stream instead of the expired URL.
+        // `replace_next_path` silently drops the write when the resolved
+        // next entry no longer matches the request.
+        if let Some(report) = self.engine.poll_prepared()
+            && report.succeeded
+            && report.path != report.requested
+        {
+            self.queue.replace_next_path(&report.requested, report.path);
+        }
 
         if self.engine.state() == EngineState::Playing {
             if self.play_audio() {
@@ -389,43 +400,102 @@ impl PlaybackThread {
             .queue
             .current_display()
             .unwrap_or((None, None, None, None));
-        #[cfg(feature = "kugou")]
-        let kugou_quality = self.playback_settings.online_quality.as_str();
-        #[cfg(feature = "netease")]
-        let netease_quality = self.playback_settings.netease_quality.as_str();
-        let ctx = crate::online_sources::RefreshContext {
-            #[cfg(feature = "kugou")]
-            kugou_quality,
-            #[cfg(feature = "netease")]
-            netease_quality,
-            display,
-        };
-
-        let url = crate::RUNTIME
-            .block_on(async {
-                tokio::time::timeout(
-                    STREAM_REFRESH_TIMEOUT,
-                    crate::online_sources::refresh_online_url(&identity, &ctx),
-                )
-                .await
-                .ok()
-                .flatten()
-            })
-            .or_else(|| {
-                warn!(
-                    identity = ?identity,
-                    title = ctx.display.0.as_deref().unwrap_or("?"),
-                    "failed to refresh expired stream URL; skipping track"
-                );
-                None
-            })?;
-        let path = PathBuf::from(url);
+        let refresh = self.build_refresh_closure(identity, display);
+        let path = refresh()?;
         self.queue.replace_current_path(path.clone());
         Some(path)
     }
 
     #[cfg(not(feature = "online_sources"))]
     fn refresh_expired_online_url(&mut self) -> Option<PathBuf> {
+        None
+    }
+
+    /// The shared core of both expired-URL refresh sites — the transition's
+    /// synchronous retry ([`Self::refresh_expired_online_url`]) and the
+    /// background prepare's on-error hook
+    /// ([`Self::build_prepare_refresh`]) — so the provider call, its timeout
+    /// and the quality settings live in exactly one place. Returns the fresh
+    /// path, or `None` when the provider can no longer produce one.
+    ///
+    /// The closure blocks on the provider refresh, bounded by
+    /// [`STREAM_REFRESH_TIMEOUT`], and must only run where blocking is
+    /// acceptable: the playback thread (the transition gap is already
+    /// audible) or the dedicated media-prepare std thread. Both are plain
+    /// threads, so `block_on` parks that thread alone — it can never occupy
+    /// a tokio worker and starve the runtime.
+    #[cfg(feature = "online_sources")]
+    fn build_refresh_closure(
+        &self,
+        identity: crate::online_sources::OnlineIdentity,
+        display: crate::online_sources::OnlineDisplay,
+    ) -> Box<dyn FnOnce() -> Option<PathBuf> + Send> {
+        // `as_str` yields `&'static str`, so the quality snapshot rides in
+        // the closure without borrowing `self`.
+        #[cfg(feature = "kugou")]
+        let kugou_quality = self.playback_settings.online_quality.as_str();
+        #[cfg(feature = "netease")]
+        let netease_quality = self.playback_settings.netease_quality.as_str();
+        Box::new(move || {
+            let ctx = crate::online_sources::RefreshContext {
+                #[cfg(feature = "kugou")]
+                kugou_quality,
+                #[cfg(feature = "netease")]
+                netease_quality,
+                display,
+            };
+            let fresh = crate::RUNTIME
+                .block_on(async {
+                    tokio::time::timeout(
+                        STREAM_REFRESH_TIMEOUT,
+                        crate::online_sources::refresh_online_url(&identity, &ctx),
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                })
+                .map(PathBuf::from);
+            if fresh.is_none() {
+                warn!(
+                    identity = ?identity,
+                    title = ctx.display.0.as_deref().unwrap_or("?"),
+                    "failed to refresh expired stream URL"
+                );
+            }
+            fresh
+        })
+    }
+
+    /// Arms the background prepare with the on-error hook for `next_path`:
+    /// present only for HTTP paths with a resolvable provider identity (the
+    /// queue item's persisted identity, or the stream-registry fallback).
+    /// Everything the hook needs is captured before the prepare spawn; it
+    /// runs on the dedicated media-prepare std thread, where blocking on the
+    /// provider refresh cannot stall the playback loop.
+    #[cfg(feature = "online_sources")]
+    fn build_prepare_refresh(&self, next_path: &Path) -> Option<OnlineRefresh> {
+        if !crate::media::is_http_path(next_path) {
+            return None;
+        }
+        let identity = self.queue.peek_next_online_identity().or_else(|| {
+            // Same fallback as the transition retry: playlist items persist
+            // only the plain stream URL, and every provider's stream
+            // registry remembers the tracks behind those URLs.
+            crate::online_sources::identify_path(next_path).map(|m| m.identity)
+        })?;
+        let display = self
+            .queue
+            .peek_next_display()
+            .unwrap_or((None, None, None, None));
+        Some(OnlineRefresh {
+            retry: self.build_refresh_closure(identity, display),
+        })
+    }
+
+    /// Local files never need a URL refresh; the prepare behaves exactly as
+    /// before this hook existed.
+    #[cfg(not(feature = "online_sources"))]
+    fn build_prepare_refresh(&self, _next_path: &Path) -> Option<OnlineRefresh> {
         None
     }
 
@@ -488,7 +558,10 @@ impl PlaybackThread {
     /// Pre-open the next track's media stream when the current one is about
     /// to end, so the EOF transition attaches a ready stream instead of
     /// blocking on connect+probe (the audible part of track gaps on online
-    /// sources). Queue mutations invalidate the prepared stream.
+    /// sources). Queue mutations invalidate the prepared stream. For an HTTP
+    /// next entry the prepare is armed with a URL-refresh hook, so an
+    /// expired signed URL is recovered — refresh + reopen — on the prepare
+    /// thread inside this lead window instead of blocking the transition.
     fn maybe_prepare_next(&mut self) {
         if self.stop_after_current || self.playback_settings.consume {
             return;
@@ -508,7 +581,8 @@ impl PlaybackThread {
         let Some(next_path) = self.queue.peek_next_path() else {
             return;
         };
-        self.engine.prepare_next(&next_path);
+        let on_open_error = self.build_prepare_refresh(&next_path);
+        self.engine.prepare_next(&next_path, on_open_error);
     }
 
     fn process_metadata_update(&mut self) {

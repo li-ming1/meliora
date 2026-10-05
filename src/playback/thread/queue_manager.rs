@@ -223,17 +223,19 @@ impl QueueManager {
     }
 
     /// In repeat-one mode the track the cursor sits on replays instead of
-    /// advancing. `None` when not repeat-one or the slot is gone/unplayable.
+    /// advancing. Returns the cursor's slot index. `None` when not
+    /// repeat-one or the slot is gone/unplayable.
     fn repeat_one_target(
         repeat: RepeatState,
         queue: &[QueueItemData],
         queue_next: usize,
-    ) -> Option<&QueueItemData> {
+    ) -> Option<usize> {
         if repeat != RepeatState::RepeatingOne {
             return None;
         }
-        let current = queue.get(queue_next.saturating_sub(1))?;
-        Self::item_is_playable(current).then_some(current)
+        let index = queue_next.saturating_sub(1);
+        let current = queue.get(index)?;
+        Self::item_is_playable(current).then_some(index)
     }
 
     /// Whether a navigation step reshuffled the queue (a repeat-all wrap with
@@ -392,6 +394,37 @@ impl QueueManager {
         }
     }
 
+    /// Swaps the stored path of the item `peek_next_path` resolves to — the
+    /// write-back of a gapless prepare that recovered the next entry's
+    /// expired stream URL on the background thread. Only fires while that
+    /// slot still holds `expected`, the path the prepare was requested with:
+    /// between the request and its completion the resolved "next" can move
+    /// (a repeat-mode toggle re-aims `next` at the current slot), and
+    /// stamping the fresh URL onto a different entry would corrupt its path.
+    /// On any mismatch the fresh URL is silently dropped — the transition's
+    /// own synchronous refresh retry still recovers it. Like
+    /// [`Self::replace_current_path`], the swap itself does not mark the
+    /// session dirty; the refreshed URL rides along with the next snapshot.
+    pub fn replace_next_path(&self, expected: &Path, fresh: PathBuf) -> bool {
+        let index = {
+            let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+            match self.peek_next_index(&queue) {
+                Some(index) if queue[index].get_path().as_path() == expected => index,
+                _ => return false,
+            }
+        };
+        let Ok(mut guard) = self.queue.write() else {
+            return false;
+        };
+        match Arc::make_mut(&mut guard).get_mut(index) {
+            Some(item) => {
+                item.replace_path(fresh);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Get the current repeat state.
     pub fn repeat_state(&self) -> RepeatState {
         self.repeat
@@ -479,10 +512,10 @@ impl QueueManager {
 
         // Decide, outside all locks.
         if !user_initiated
-            && let Some(path) = Self::repeat_one_target(self.repeat, &queue, queue_next)
+            && let Some(index) = Self::repeat_one_target(self.repeat, &queue, queue_next)
         {
             return QueueNavigationResult::Unchanged {
-                path: path.get_path().clone(),
+                path: queue[index].get_path().clone(),
             };
         }
 
@@ -545,18 +578,45 @@ impl QueueManager {
         result
     }
 
+    /// The queue slot `peek_next_path` resolves to, decided on the given
+    /// queue snapshot: the repeat-one target's slot when repeat-one is
+    /// active, else the next playable item. Kept in lockstep with
+    /// `next(false)`'s landing decision so the gapless prepare request, its
+    /// URL-refresh hook and the refreshed-path write-back all address the
+    /// same entry. `None` when the advance is not predictable (queue end,
+    /// repeat-wrap with shuffle reshuffles).
+    fn peek_next_index(&self, queue: &[QueueItemData]) -> Option<usize> {
+        Self::repeat_one_target(self.repeat, queue, self.queue_next)
+            .or_else(|| Self::next_playable_from(queue, self.queue_next))
+    }
+
     /// The path `next(false)` would open, without advancing any state (used
     /// by gapless pre-open). Returns `None` when the advance is not
     /// predictable (queue end, repeat-wrap with shuffle reshuffles).
     pub fn peek_next_path(&self) -> Option<PathBuf> {
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
-
-        if let Some(path) = Self::repeat_one_target(self.repeat, &queue, self.queue_next) {
-            return Some(path.get_path().clone());
-        }
-
-        Self::next_playable_from(&queue, self.queue_next)
+        self.peek_next_index(&queue)
             .map(|index| queue[index].get_path().clone())
+    }
+
+    /// Online-provider identity of the item `peek_next_path` would return,
+    /// if it carries one (lets the gapless prepare arm its on-error hook with
+    /// a URL refresh for the *next* entry, not the current one).
+    #[cfg(feature = "online_sources")]
+    pub fn peek_next_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let index = self.peek_next_index(&queue)?;
+        queue.get(index)?.online_identity().cloned()
+    }
+
+    /// Persisted display metadata `(name, artist, duration, cover)` of the
+    /// item `peek_next_path` would return, for stream-registry
+    /// re-registration during the prepare's URL refresh.
+    #[cfg(feature = "online_sources")]
+    pub fn peek_next_display(&self) -> Option<PersistedDisplay> {
+        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let index = self.peek_next_index(&queue)?;
+        queue.get(index)?.persisted_display()
     }
 
     /// Go to the previous track in the queue.

@@ -140,7 +140,10 @@ pub struct AudioEngine {
     /// `prepare_next` skips re-spawning for the same path within
     /// [`PREPARE_FAILURE_COOLDOWN`]. Without this, a next track whose URL can
     /// never open (e.g. an expired signed URL the refresh can't renew) is
-    /// re-requested once per playback cycle until it becomes current.
+    /// re-requested once per playback cycle until it becomes current. Keyed
+    /// on the *requested* path: a failed refresh-retry reports the fresh URL
+    /// as the outcome's path, but the caller keeps requesting the queue's
+    /// stale URL until the write-back lands.
     failed_prepare: Option<(PathBuf, std::time::Instant)>,
 }
 
@@ -158,6 +161,30 @@ const PREPARE_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_
 struct PrepareOutcome {
     path: PathBuf,
     result: Result<(Box<dyn MediaStream>, Option<u64>), String>,
+}
+
+/// One-shot retry hook handed to a background prepare: when opening the next
+/// track's media fails (an expired signed URL), the hook re-fetches a fresh
+/// path from the provider. Built by the playback thread, which owns the queue
+/// and the quality settings; the engine stays provider-agnostic — the prepare
+/// thread sees only the closure, so the retry (a blocking provider call,
+/// bounded by the caller's own timeout) runs on that dedicated std thread
+/// where it cannot stall the playback loop.
+pub struct OnlineRefresh {
+    pub retry: Box<dyn FnOnce() -> Option<PathBuf> + Send>,
+}
+
+/// A finished background prepare, reported by [`AudioEngine::poll_prepared`]
+/// so the playback thread can write a refresh-recovered path back to the
+/// queue entry the prepare was requested for.
+pub struct PrepareReport {
+    /// Path the prepare was requested with.
+    pub requested: PathBuf,
+    /// Final path of the prepared stream: differs from `requested` when the
+    /// on-open-error refresh produced a fresh URL.
+    pub path: PathBuf,
+    /// Whether a stream was opened (directly, or after the refresh retry).
+    pub succeeded: bool,
 }
 
 impl AudioEngine {
@@ -220,8 +247,14 @@ impl AudioEngine {
 
     /// Pre-open `path`'s media stream on a background thread so the track
     /// swap at end-of-track doesn't wait on connect+probe (online sources).
+    /// `on_open_error` arms the prepare with a one-shot URL-refresh retry:
+    /// when the open fails (an expired signed URL), the hook fetches a fresh
+    /// path and the open runs once more against it — all on the prepare
+    /// thread, so the recovery completes inside the prepare lead window
+    /// instead of blocking the transition itself. `None` (local files,
+    /// unidentifiable streams) keeps the previous behavior unchanged.
     /// Ignored when that track is already prepared or being prepared.
-    pub fn prepare_next(&mut self, path: &Path) {
+    pub fn prepare_next(&mut self, path: &Path, on_open_error: Option<OnlineRefresh>) {
         if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
             return;
         }
@@ -252,7 +285,21 @@ impl AudioEngine {
         let spawned = std::thread::Builder::new()
             .name("media-prepare".into())
             .spawn(move || {
-                let result = MediaController::open_stream(&path).map_err(|e| e.to_string());
+                // Expired signed URL: the first open fails, the hook
+                // re-fetches a fresh path, and the open is retried once
+                // against it. The outcome reports the final path so the
+                // caller can write it back to the queue.
+                let (path, result) = match MediaController::open_stream(&path) {
+                    Ok(stream) => (path, Ok(stream)),
+                    Err(err) => match on_open_error.and_then(|hook| (hook.retry)()) {
+                        Some(fresh) => {
+                            let result =
+                                MediaController::open_stream(&fresh).map_err(|e| e.to_string());
+                            (fresh, result)
+                        }
+                        None => (path, Err(err.to_string())),
+                    },
+                };
                 let _ = tx.send(PrepareOutcome { path, result });
             });
         if spawned.is_err() {
@@ -262,15 +309,25 @@ impl AudioEngine {
         }
     }
 
-    /// Collect a finished background prepare. Call once per playback cycle.
-    pub fn poll_prepared(&mut self) {
+    /// Collect a finished background prepare. Call once per playback cycle;
+    /// returns a report for every completed prepare (success or failure) so
+    /// the caller can write a refresh-recovered path back to the queue.
+    pub fn poll_prepared(&mut self) -> Option<PrepareReport> {
         let Some(rx) = &self.prepare_rx else {
-            return;
+            return None;
         };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.prepare_rx = None;
-                self.prepare_request = None;
+                // Key the failure backoff and the refresh write-back on the
+                // requested path: with a refresh retry the outcome's path is
+                // the *fresh* URL, while `prepare_next`'s guards (and the
+                // queue entry to repair) compare against what was — and will
+                // again be — requested.
+                let requested = self
+                    .prepare_request
+                    .take()
+                    .unwrap_or_else(|| outcome.path.clone());
                 match outcome.result {
                     Ok((stream, duration_ms)) => {
                         info!(
@@ -278,10 +335,15 @@ impl AudioEngine {
                             "next track pre-opened for gapless advance"
                         );
                         self.prepared = Some(PreparedMedia {
-                            path: outcome.path,
+                            path: outcome.path.clone(),
                             stream,
                             duration_ms,
                         });
+                        Some(PrepareReport {
+                            requested,
+                            path: outcome.path,
+                            succeeded: true,
+                        })
                     }
                     Err(e) => {
                         // The transition re-runs the normal open path (with
@@ -290,14 +352,20 @@ impl AudioEngine {
                         // Back off this path: without the record, the next
                         // cycle re-requests the same unopenable URL (a real
                         // HTTP round-trip per cycle while it stays next).
-                        self.failed_prepare = Some((outcome.path, std::time::Instant::now()));
+                        self.failed_prepare = Some((requested.clone(), std::time::Instant::now()));
+                        Some(PrepareReport {
+                            requested,
+                            path: outcome.path,
+                            succeeded: false,
+                        })
                     }
                 }
             }
-            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.prepare_rx = None;
                 self.prepare_request = None;
+                None
             }
         }
     }
