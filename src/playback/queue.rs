@@ -1,17 +1,9 @@
 use std::fmt::Display;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use futures::TryFutureExt as _;
-use gpui::{App, AppContext, Entity, SharedString};
-use tracing::{error, trace_span};
-
-use crate::library::Pool;
-use crate::library::db;
-use crate::media::{
-    lookup_table::try_open_media, metadata::Metadata, traits::MediaProviderFeatures,
-};
+use gpui::SharedString;
 
 /// Sentinel for "length not known yet" in [`QueueItemData`]'s duration slot.
 pub const UNKNOWN_DURATION: i64 = i64::MIN;
@@ -20,7 +12,7 @@ pub const UNKNOWN_DURATION: i64 = i64::MIN;
 /// assigned once at construction (including deserialization), copied by
 /// `Clone`, never serialized and never compared by [`PartialEq`]; they key the
 /// UI-side metadata side table (`ui::queue_metadata`) so a lookup survives
-/// clones, which all share one legacy entity slot.
+/// clones, which carry the same uid.
 static NEXT_UID: AtomicU64 = AtomicU64::new(0);
 
 /// Display metadata persisted with an online queue item:
@@ -31,16 +23,9 @@ pub type PersistedDisplay = (Option<String>, Option<String>, Option<i64>, Option
 
 #[derive(Clone, Debug)]
 pub struct QueueItemData {
-    // hardcore: three layers are all required — `Arc` shares one entity slot
-    // across every clone of this item (the entity is only creatable on the UI
-    // thread), `RwLock` for lazy creation + `drop_data` reset, `Option` marks
-    // "entity not created yet" after deserialization.
-    /// The UI data associated with the queue item.
-    data: Arc<RwLock<Option<Entity<Option<QueueItemUIData>>>>>,
     /// Per-instance identity (see [`NEXT_UID`]): keys the UI-side metadata
-    /// side table so every clone of this item resolves to the same entry,
-    /// mirroring how clones already share the entity slot above. Copied by
-    /// `Clone`, excluded from serialization and content equality.
+    /// side table so every clone of this item resolves to the same entry.
+    /// Copied by `Clone`, excluded from serialization and content equality.
     uid: u64,
     /// The database ID of track the item is from, if it exists.
     db_id: Option<i64>,
@@ -49,9 +34,9 @@ pub struct QueueItemData {
     /// The path to the track file.
     path: PathBuf,
     /// Track length in seconds once known: written at queue-build time (from
-    /// the library track / online metadata) and written back whenever the
-    /// per-item metadata entity loads, so the queue summary never needs to
-    /// touch those entities. [`UNKNOWN_DURATION`] until then.
+    /// the library track / online metadata) and written back when the item's
+    /// UI metadata load lands (`ui::queue_metadata`), so the queue summary
+    /// never needs to touch those entities. [`UNKNOWN_DURATION`] until then.
     duration: Arc<AtomicI64>,
     /// Online (KuGou) tracks have no db id, so their display metadata would be
     /// lost across a restart unless persisted explicitly alongside the path.
@@ -130,7 +115,6 @@ impl<'de> serde::Deserialize<'de> for QueueItemData {
             .and_then(|p| p.duration)
             .or(raw.duration);
         Ok(QueueItemData {
-            data: Arc::new(RwLock::new(None)),
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             db_id: raw.db_id,
             db_album_id: raw.db_album_id,
@@ -205,18 +189,17 @@ impl PartialEq for QueueItemData {
 
 impl QueueItemData {
     /// Creates a new `QueueItemData` instance with the given information. No
-    /// UI metadata entity is created here — [`Self::get_data`] (or the
-    /// `ui::queue_metadata` side table) creates one lazily on first use,
-    /// mirroring the deserialization path. Usable off the UI thread (bulk
-    /// builds like Shuffle All): one GPUI entity per track would be pure
-    /// startup cost, and eagerly building an empty shell entity bought
-    /// nothing — the former separate `lazy` constructor merged into this one.
+    /// UI metadata entity is created here — the `ui::queue_metadata` side
+    /// table creates one lazily on first use, mirroring the deserialization
+    /// path. Usable off the UI thread (bulk builds like Shuffle All): one
+    /// GPUI entity per track would be pure startup cost, and eagerly building
+    /// an empty shell entity bought nothing — the former separate `lazy`
+    /// constructor merged into this one.
     pub fn new(path: PathBuf, db_id: Option<i64>, db_album_id: Option<i64>) -> Self {
         QueueItemData {
             path,
             db_id,
             db_album_id,
-            data: Arc::new(RwLock::new(None)),
             persisted_ui: None,
             duration: Arc::new(AtomicI64::new(UNKNOWN_DURATION)),
             // Single allocation point for all non-deserialized constructions:
@@ -231,11 +214,11 @@ impl QueueItemData {
     /// tracks fetched from a remote service), so no database or disk lookup
     /// is scheduled later. No entity is created here either: the metadata is
     /// seeded into `persisted_ui` (plus the duration cell), and the first
-    /// `get_data` / side-table resolution rebuilds the entity content from it
-    /// via the persisted-restore branch — field-for-field identical to the
-    /// eager fill this constructor used to perform (`album_id: None` and
-    /// `source: Metadata` are what both call sites pass and what the branch
-    /// restores).
+    /// side-table resolution (`ui::queue_metadata`) rebuilds the entity
+    /// content from it via the persisted-restore branch — field-for-field
+    /// identical to the eager fill this constructor used to perform
+    /// (`album_id: None` and `source: Metadata` are what both call sites pass
+    /// and what the branch restores).
     #[cfg(feature = "online_sources")]
     pub fn with_ui_data(path: PathBuf, ui_data: QueueItemUIData) -> Self {
         let duration = Arc::new(AtomicI64::new(ui_data.duration.unwrap_or(UNKNOWN_DURATION)));
@@ -290,8 +273,8 @@ impl QueueItemData {
 
     /// The persisted UI payload (name, artist, duration, cover) as a plain
     /// tuple, decoupled from the private `PersistedQueueUIData` so the
-    /// UI-side metadata table can run the same restore branch as
-    /// [`Self::get_data`]. Not feature-gated: `persisted_ui` itself is not.
+    /// UI-side metadata table (`ui::queue_metadata`) can run the same
+    /// restore branch. Not feature-gated: `persisted_ui` itself is not.
     pub(crate) fn persisted_restore(
         &self,
     ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
@@ -320,114 +303,6 @@ impl QueueItemData {
             .store(secs.unwrap_or(UNKNOWN_DURATION), Ordering::Relaxed);
     }
 
-    /// Duration from the metadata entity, but only if that entity already
-    /// exists: never spawns one as a side effect. Reading it during the queue
-    /// summary's render registers a dependency, so the summary recomputes as
-    /// metadata loads land.
-    pub fn loaded_duration(&self, cx: &App) -> Option<i64> {
-        let entity = self.lock_data().as_ref()?.clone();
-        entity.read(cx).as_ref()?.duration
-    }
-
-    /// Read-locks the UI data slot, recovering from a poisoned lock instead
-    /// of propagating the panic: a panic elsewhere while the slot was locked
-    /// must not permanently brick this queue item.
-    fn lock_data(&self) -> RwLockReadGuard<'_, Option<Entity<Option<QueueItemUIData>>>> {
-        self.data.read().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Helper to lazily initialize the UI data entity if it was deserialized.
-    fn ensure_entity(&self, cx: &mut App) {
-        if self.lock_data().is_none() {
-            let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
-            if data.is_none() {
-                *data = Some(cx.new(|_| None));
-            }
-        }
-    }
-
-    /// Returns a copy of the UI data after ensuring that the metadata is loaded (or going to be
-    /// loaded).
-    pub fn get_data(&self, cx: &mut App) -> Entity<Option<QueueItemUIData>> {
-        self.ensure_entity(cx);
-        let model = self.lock_data().as_ref().unwrap().clone();
-
-        // Fast path: the metadata entity already holds its data, so return the
-        // handle without cloning the path/persisted-ui/duration payloads (those
-        // are only needed by the loading path below).
-        if model.read(cx).is_some() {
-            return model;
-        }
-
-        let track_id = self.db_id;
-        let album_id = self.db_album_id;
-        let path = self.path.clone();
-        let persisted = self.persisted_ui.clone();
-        let duration = self.duration.clone();
-        model.update(cx, move |m, cx| {
-            // if we already have the data, exit the function
-            if m.is_some() {
-                return;
-            }
-
-            // online (KuGou) tracks carry no db id, so restore the metadata that
-            // was persisted with the queue item instead of failing a disk read
-            if let Some(persisted) = persisted
-                && track_id.is_none()
-            {
-                duration.store(
-                    persisted.duration.unwrap_or(UNKNOWN_DURATION),
-                    Ordering::Relaxed,
-                );
-                *m = Some(QueueItemUIData {
-                    album_id: None,
-                    name: persisted.name.map(SharedString::from),
-                    artist_name: persisted.artist_name.map(SharedString::from),
-                    source: DataSource::Metadata,
-                    duration: persisted.duration,
-                    cover_url: persisted.cover_url.map(SharedString::from),
-                });
-                return;
-            }
-
-            *m = Some(QueueItemUIData {
-                album_id: None,
-                name: None,
-                artist_name: None,
-                source: DataSource::Library,
-                duration: None,
-                cover_url: None,
-            });
-
-            // if the database ids are known we can get the data from the database
-            if let (Some(track_id), Some(album_id)) = (track_id, album_id) {
-                // the two library queries left the UI thread (doctrine
-                // §2.3/§14): the placeholder renders until the background load
-                // backfills, exactly like the disk-metadata path below
-                cx.notify();
-                spawn_library_load(track_id, album_id, path, cx.entity(), duration.clone(), cx);
-                return;
-            }
-
-            // vital information left blank, try retriving the metadata from disk
-            // much slower, especially on windows
-            spawn_metadata_load(path, cx.entity(), duration.clone(), cx);
-        });
-
-        model
-    }
-
-    /// Drop the UI data from the queue item. This means the data must be retrieved again from disk
-    /// if the item is used with get_data again.
-    pub fn drop_data(&self, cx: &mut App) {
-        if let Some(model) = self.lock_data().as_ref() {
-            model.update(cx, |m, cx| {
-                *m = None;
-                cx.notify();
-            });
-        }
-    }
-
     /// Returns the file path of the queue item.
     pub fn get_path(&self) -> &PathBuf {
         &self.path
@@ -449,135 +324,4 @@ impl QueueItemData {
     pub fn get_db_id(&self) -> Option<i64> {
         self.db_id
     }
-
-    /// Stable key for this item's UI state slot (the GPUI entity id),
-    /// creating the entity if it does not exist yet.
-    pub fn slot_key(&self, cx: &mut App) -> usize {
-        self.ensure_entity(cx);
-        self.lock_data().as_ref().unwrap().entity_id().as_u64() as usize
-    }
-
-    /// The same key as [`Self::slot_key`], but `None` while no entity was
-    /// ever created (deserialized or freshly constructed items before first
-    /// use).
-    pub fn existing_slot_key(&self) -> Option<usize> {
-        self.lock_data()
-            .as_ref()
-            .map(|e| e.entity_id().as_u64() as usize)
-    }
-}
-
-#[tracing::instrument(level = "trace")]
-pub(crate) fn read_metadata(path: &Path) -> anyhow::Result<QueueItemUIData> {
-    let mut stream = try_open_media(path, MediaProviderFeatures::PROVIDES_METADATA)?
-        .ok_or_else(|| anyhow::anyhow!("no metadata provider for {}", path.display()))?;
-    stream.start_playback()?;
-
-    let mut metadata = stream.read_metadata()?;
-    // online (KuGou) paths are URLs — a filename fallback would parse the URL
-    if !crate::media::is_http_path(path) {
-        metadata.fill_from_filename(path);
-    }
-    let Metadata {
-        name,
-        artist,
-        album_artist,
-        ..
-    } = metadata;
-    let ui_data = QueueItemUIData {
-        name: name.as_ref().map(Into::into),
-        artist_name: artist.as_ref().or(album_artist.as_ref()).map(Into::into),
-        source: DataSource::Metadata,
-        album_id: None,
-        duration: stream.duration_ms().ok().map(|ms| ms as i64 / 1_000),
-        cover_url: None,
-    };
-
-    Ok(ui_data)
-}
-
-/// Background-loads a queue item's display metadata from disk, filling `entity`
-/// when done. Avoids blocking the UI thread on slow Windows reads.
-pub(crate) fn spawn_metadata_load(
-    path: PathBuf,
-    entity: Entity<Option<QueueItemUIData>>,
-    duration: Arc<AtomicI64>,
-    cx: &mut App,
-) {
-    let span = trace_span!("read_metadata_outer", path = %path.display());
-    let task = crate::RUNTIME.spawn_blocking(move || read_metadata(&path));
-    cx.spawn(async move |cx| match task.err_into().await.flatten() {
-        Err(err) => error!(parent: span, ?err, "Failed to read metadata: {err}"),
-        Ok(metadata) => {
-            duration.store(
-                metadata.duration.unwrap_or(UNKNOWN_DURATION),
-                Ordering::Relaxed,
-            );
-            entity.update(cx, |m, cx| {
-                *m = Some(metadata);
-                cx.notify();
-            });
-        }
-    })
-    .detach();
-}
-
-/// Background-loads a queue item's display metadata from the library database
-/// (one track row plus one album row), filling `entity` when done. Mirrors
-/// [`spawn_metadata_load`]: the synchronous `LibraryAccess` calls this replaces
-/// parked the UI thread on two `RUNTIME.block_on`s per queue row's first
-/// render (doctrine §2.3/§14). A row that vanished from the library, or one
-/// whose artist stays blank after the load, falls back to the disk metadata
-/// load exactly as the previous inline path did.
-pub(crate) fn spawn_library_load(
-    track_id: i64,
-    album_id: i64,
-    path: PathBuf,
-    entity: Entity<Option<QueueItemUIData>>,
-    duration: Arc<AtomicI64>,
-    cx: &mut App,
-) {
-    let pool = cx.global::<Pool>().0.clone();
-    let task = crate::RUNTIME.spawn(async move {
-        let track = db::get_track_by_id(&pool, track_id).await;
-        let album = db::get_album_by_id(&pool, album_id).await;
-        (track.ok(), album.ok())
-    });
-    cx.spawn(async move |cx| {
-        let Ok((track, album)) = task.await else {
-            return; // the load task panicked: the placeholder stays
-        };
-        entity.update(cx, |m, cx| {
-            let (Some(track), Some(album)) = (track, album) else {
-                spawn_metadata_load(path, cx.entity(), duration, cx);
-                return;
-            };
-
-            let Some(data) = m.as_mut() else {
-                // the entity was dropped meanwhile; nothing to fill
-                return;
-            };
-            data.name = Some(track.title.clone().0);
-            data.album_id = Some(album.id);
-            data.duration = Some(track.duration);
-            duration.store(track.duration, Ordering::Relaxed);
-
-            if let Some(artist_name) = track
-                .artist_names
-                .clone()
-                .or_else(|| album.artist_display_override.clone())
-            {
-                data.artist_name = Some(artist_name.0);
-            }
-
-            cx.notify();
-
-            // artist information left blank, try retrieving the metadata from
-            // disk (the fallback the old inline path ran)
-            if data.artist_name.is_none() {
-                spawn_metadata_load(path, cx.entity(), duration, cx);
-            }
-        });
-    })
-    .detach();
 }

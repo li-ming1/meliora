@@ -246,9 +246,9 @@ fn issues(_: &Issues, cx: &mut App) {
 fn shuffle_all(_: &ShuffleAll, cx: &mut App) {
     // the whole-library query and the per-track item construction used to run
     // on the UI thread; on a 100k library that froze the main thread for
-    // hundreds of ms. Items are built with no metadata entity — `get_data`
-    // creates one lazily on first use — so nothing GPUI-owned is constructed
-    // off the main thread.
+    // hundreds of ms. Items carry pure data — per-row UI metadata lives in
+    // the queue_metadata side table, resolved on the UI thread on first use
+    // — so nothing GPUI-owned is constructed off the main thread.
     let pool = cx.global::<Pool>().0.clone();
     cx.spawn(async move |cx| {
         let tracks = crate::RUNTIME
