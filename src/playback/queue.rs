@@ -325,3 +325,65 @@ impl QueueItemData {
         self.db_id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_item(tag: &str) -> QueueItemData {
+        QueueItemData::new(
+            PathBuf::from(format!("/tmp/meliora-uid-test-{tag}.flac")),
+            Some(7),
+            None,
+        )
+    }
+
+    #[test]
+    fn uid_is_unique_per_construction() {
+        // every construction gets a fresh instance identity even for
+        // content-equal items — the ui::queue_metadata side table keys on it
+        let a = sample_item("a");
+        let b = sample_item("a");
+        assert_ne!(a.uid(), b.uid());
+        // content equality deliberately ignores uid
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn uid_is_shared_by_clones() {
+        let a = sample_item("a");
+        assert_eq!(a.uid(), a.clone().uid());
+    }
+
+    #[test]
+    fn deserialization_allocates_a_fresh_uid() {
+        let a = sample_item("a");
+        let json = serde_json::to_string(&a).unwrap();
+        let restored: QueueItemData = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, a);
+        assert_ne!(restored.uid(), a.uid());
+    }
+
+    #[cfg(feature = "online_sources")]
+    #[test]
+    fn with_ui_data_seeds_persisted_ui_for_first_frame_restore() {
+        // since the eager entity shell was removed, an online track's display
+        // metadata is restored from the persisted seed on the side table's
+        // first frame — this test locks the seed itself
+        let item = QueueItemData::with_ui_data(
+            PathBuf::from("/tmp/meliora-online.flac"),
+            QueueItemUIData {
+                album_id: None,
+                name: Some("Track".into()),
+                artist_name: Some("Artist".into()),
+                source: DataSource::Metadata,
+                duration: Some(42),
+                cover_url: None,
+            },
+        );
+        let (name, artist, duration, _cover) = item.persisted_restore().expect("seeded");
+        assert_eq!(name.as_deref(), Some("Track"));
+        assert_eq!(artist.as_deref(), Some("Artist"));
+        assert_eq!(duration, Some(42));
+    }
+}
