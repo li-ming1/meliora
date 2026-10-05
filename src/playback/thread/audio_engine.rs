@@ -574,6 +574,12 @@ impl AudioEngine {
         }
     }
 
+    /// Whether deferred device work is pending and `poll` must run soon (currently: an async
+    /// pause fade). Drives the playback thread's idle wait.
+    pub fn has_deferred_work(&self) -> bool {
+        self.device.has_deferred_work()
+    }
+
     /// Stop playback and clear all state.
     pub fn stop(&mut self) {
         // flush the resampler's tail to the device so the last track isn't truncated

@@ -228,6 +228,14 @@ impl DeviceController {
         Ok(())
     }
 
+    /// Whether the stream has deferred work pending and `poll` must run soon (see
+    /// `OutputStream::has_deferred_work`). No stream means no deferred work.
+    pub fn has_deferred_work(&self) -> bool {
+        self.stream
+            .as_ref()
+            .is_some_and(|stream| stream.has_deferred_work())
+    }
+
     /// Reset the stream buffer.
     pub fn reset(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;

@@ -127,6 +127,9 @@ pub struct PlaybackThread {
     stop_after_current: bool,
     /// Consecutive no-progress cycles while playing; drives the backoff and skip.
     no_progress_cycles: u32,
+    /// Command pulled off the channel while parked in the idle wait, handed to
+    /// the next `command_intake` so the waking command is never dropped.
+    pending_command: Option<PlaybackCommand>,
 }
 
 impl PlaybackThread {
@@ -167,6 +170,7 @@ impl PlaybackThread {
                     duration_ms: None,
                     stop_after_current: false,
                     no_progress_cycles: 0,
+                    pending_command: None,
                 };
 
                 thread.run();
@@ -237,7 +241,6 @@ impl PlaybackThread {
             }
         } else {
             self.no_progress_cycles = 0;
-            sleep(std::time::Duration::from_millis(10));
         }
 
         // Flush debounced queue-session snapshots: batch mutations coalesce to
@@ -245,12 +248,44 @@ impl PlaybackThread {
         self.queue.flush_pending_session();
 
         self.process_metadata_update();
+
+        // Park while nothing is playing, after the session flush so a dirty
+        // snapshot can never be stranded behind a park. The legacy 10 ms
+        // cadence survives only inside idle_wait while deferred device work
+        // (the pause-fade deadline) is pending.
+        if self.engine.state() != EngineState::Playing {
+            self.idle_wait();
+        }
+    }
+
+    /// Park the thread until real work arrives while stopped or paused. Blocks
+    /// on the command channel so an idle player costs zero wakeups instead of
+    /// a 100 Hz spin; a deferred pause fade (its `poll` deadline has not fired
+    /// yet) keeps the legacy 10 ms cadence. A waking command is stashed for the
+    /// next `command_intake` — parking happens at the end of a pass, so the
+    /// command is processed on the following one at zero extra latency.
+    fn idle_wait(&mut self) {
+        if self.engine.has_deferred_work() {
+            sleep(std::time::Duration::from_millis(10));
+            return;
+        }
+        match self.commands_rx.blocking_recv() {
+            Some(command) => self.pending_command = Some(command),
+            // Senders dropped (app shutdown): keep the legacy cadence until the
+            // process exits instead of spinning on a disconnected channel.
+            None => sleep(std::time::Duration::from_millis(10)),
+        }
     }
 
     /// Read incoming commands from the command channel, and process them.
     /// Consecutive Next/Seek runs are collapsed first (see below).
     pub fn command_intake(&mut self) {
         let mut commands: Vec<PlaybackCommand> = Vec::new();
+        // The command that woke the parked idle wait leads the batch so runs of
+        // Next/Seek spanning the wake collapse as usual.
+        if let Some(command) = self.pending_command.take() {
+            commands.push(command);
+        }
         while let Ok(command) = self.commands_rx.try_recv() {
             commands.push(command);
         }

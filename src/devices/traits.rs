@@ -46,6 +46,13 @@ pub trait OutputStream {
     fn poll(&mut self) -> Result<(), StateError> {
         Ok(())
     }
+    /// Whether deferred stream work is pending and `poll()` must run again soon (e.g. a pause
+    /// fade waiting for its deadline to stop the device). The playback thread keeps its short
+    /// idle cadence while this returns true and only parks on the command channel once it is
+    /// false. Default: none.
+    fn has_deferred_work(&self) -> bool {
+        false
+    }
     /// Tells the device to reset the buffer. This is useful for restarting playback after a pause,
     /// in order to avoid playing stale data (e.g. if a user pauses before seeking or changing
     /// tracks).

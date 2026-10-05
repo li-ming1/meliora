@@ -441,6 +441,10 @@ where
         Ok(())
     }
 
+    fn has_deferred_work(&self) -> bool {
+        self.pause_at.is_some()
+    }
+
     fn reset(&mut self) -> Result<(), ResetError> {
         let pause_pending = self.pause_at.take().is_some();
         let (stream, prod, device_errored) = create_stream_internal::<T>(
