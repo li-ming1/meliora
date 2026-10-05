@@ -1,6 +1,6 @@
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use futures::TryFutureExt as _;
@@ -16,6 +16,13 @@ use crate::media::{
 /// Sentinel for "length not known yet" in [`QueueItemData`]'s duration slot.
 pub const UNKNOWN_DURATION: i64 = i64::MIN;
 
+/// Monotonic allocator for [`QueueItemData`]'s per-instance identity. Uids are
+/// assigned once at construction (including deserialization), copied by
+/// `Clone`, never serialized and never compared by [`PartialEq`]; they key the
+/// UI-side metadata side table (`ui::queue_metadata`) so a lookup survives
+/// clones, which all share one legacy entity slot.
+static NEXT_UID: AtomicU64 = AtomicU64::new(0);
+
 /// Display metadata persisted with an online queue item:
 /// `(name, artist, duration, cover)`. Shared by the queue item's
 /// `persisted_display` and the stream registry re-registration path.
@@ -30,6 +37,11 @@ pub struct QueueItemData {
     // "entity not created yet" after deserialization.
     /// The UI data associated with the queue item.
     data: Arc<RwLock<Option<Entity<Option<QueueItemUIData>>>>>,
+    /// Per-instance identity (see [`NEXT_UID`]): keys the UI-side metadata
+    /// side table so every clone of this item resolves to the same entry,
+    /// mirroring how clones already share the entity slot above. Copied by
+    /// `Clone`, excluded from serialization and content equality.
+    uid: u64,
     /// The database ID of track the item is from, if it exists.
     db_id: Option<i64>,
     /// The database ID of album the item is from, if it exists.
@@ -73,6 +85,8 @@ impl serde::Serialize for QueueItemData {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
+        // `uid` is deliberately not serialized: it is per-session instance
+        // identity, re-allocated fresh on every deserialization.
         let mut state = serializer.serialize_struct(
             "QueueItemData",
             5 + usize::from(cfg!(feature = "online_sources")),
@@ -117,6 +131,7 @@ impl<'de> serde::Deserialize<'de> for QueueItemData {
             .or(raw.duration);
         Ok(QueueItemData {
             data: Arc::new(RwLock::new(None)),
+            uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             db_id: raw.db_id,
             db_album_id: raw.db_album_id,
             path: raw.path,
@@ -179,6 +194,8 @@ pub enum DataSource {
 }
 
 impl PartialEq for QueueItemData {
+    // Content-only equality: `uid` is instance identity (two content-equal
+    // items are distinct instances), so it is deliberately excluded here.
     fn eq(&self, other: &Self) -> bool {
         self.db_id == other.db_id
             && self.db_album_id == other.db_album_id
@@ -208,6 +225,10 @@ impl QueueItemData {
             data: Arc::new(RwLock::new(None)),
             persisted_ui: None,
             duration: Arc::new(AtomicI64::new(UNKNOWN_DURATION)),
+            // `new` and `with_ui_data` build on `lazy` via struct update, so
+            // this is the single allocation point for all non-deserialized
+            // constructions: one fresh uid per constructed instance.
+            uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             #[cfg(feature = "online_sources")]
             online_identity: None,
         }
@@ -245,6 +266,37 @@ impl QueueItemData {
     /// Display metadata persisted with the item: (name, artist, duration, cover).
     #[cfg(feature = "online_sources")]
     pub fn persisted_display(&self) -> Option<PersistedDisplay> {
+        self.persisted_ui.as_ref().map(|p| {
+            (
+                p.name.clone(),
+                p.artist_name.clone(),
+                p.duration,
+                p.cover_url.clone(),
+            )
+        })
+    }
+
+    /// This item's per-instance identity: the key under which the UI-side
+    /// metadata side table (`ui::queue_metadata`) stores this item's UI state
+    /// slot. Stable across clones.
+    pub fn uid(&self) -> u64 {
+        self.uid
+    }
+
+    /// Clone of the shared duration cell, so background loaders handed out by
+    /// the side table can write the track length back without owning the item
+    /// (same cell [`Self::set_known_duration`] writes through).
+    pub fn duration_cell(&self) -> Arc<AtomicI64> {
+        self.duration.clone()
+    }
+
+    /// The persisted UI payload (name, artist, duration, cover) as a plain
+    /// tuple, decoupled from the private `PersistedQueueUIData` so the
+    /// UI-side metadata table can run the same restore branch as
+    /// [`Self::get_data`]. Not feature-gated: `persisted_ui` itself is not.
+    pub(crate) fn persisted_restore(
+        &self,
+    ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
         self.persisted_ui.as_ref().map(|p| {
             (
                 p.name.clone(),
@@ -417,7 +469,7 @@ impl QueueItemData {
 }
 
 #[tracing::instrument(level = "trace")]
-fn read_metadata(path: &Path) -> anyhow::Result<QueueItemUIData> {
+pub(crate) fn read_metadata(path: &Path) -> anyhow::Result<QueueItemUIData> {
     let mut stream = try_open_media(path, MediaProviderFeatures::PROVIDES_METADATA)?
         .ok_or_else(|| anyhow::anyhow!("no metadata provider for {}", path.display()))?;
     stream.start_playback()?;
@@ -447,7 +499,7 @@ fn read_metadata(path: &Path) -> anyhow::Result<QueueItemUIData> {
 
 /// Background-loads a queue item's display metadata from disk, filling `entity`
 /// when done. Avoids blocking the UI thread on slow Windows reads.
-pub fn spawn_metadata_load(
+pub(crate) fn spawn_metadata_load(
     path: PathBuf,
     entity: Entity<Option<QueueItemUIData>>,
     duration: Arc<AtomicI64>,
@@ -478,7 +530,7 @@ pub fn spawn_metadata_load(
 /// render (doctrine §2.3/§14). A row that vanished from the library, or one
 /// whose artist stays blank after the load, falls back to the disk metadata
 /// load exactly as the previous inline path did.
-fn spawn_library_load(
+pub(crate) fn spawn_library_load(
     track_id: i64,
     album_id: i64,
     path: PathBuf,
