@@ -149,11 +149,11 @@ pub fn queue_drop_data(cx: &mut App, item: &QueueItemData) {
     });
 }
 
-/// Retains only the slots whose uid is in `live` (the future wiring passes the
-/// uids of the queue's current items); everything else is dropped, releasing
-/// those entity handles. Takes `&mut App` because gpui offers no `&App` path
-/// that can mutate a `Global`.
-fn gc_retaining(cx: &mut App, live: impl Iterator<Item = u64>) {
+/// Retains only the slots whose uid is in `live` (the queue panel's
+/// `rescan_views_and_summary` passes the uids of the queue's current items);
+/// everything else is dropped, releasing those entity handles. Takes
+/// `&mut App` because gpui offers no `&App` path that can mutate a `Global`.
+pub(crate) fn gc_retaining(cx: &mut App, live: impl Iterator<Item = u64>) {
     let live: FxHashSet<u64> = live.collect();
     let store = cx.default_global::<QueueMetadataStore>();
     store.0.retain(|uid, _| live.contains(uid));

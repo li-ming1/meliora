@@ -24,6 +24,7 @@ use crate::{
             ViewSwitchMessage, add_to_playlist::AddToPlaylist, context_menus::navigate_to_artists,
         },
         library_access::LibraryAccess,
+        queue_metadata,
     },
 };
 use cntp_i18n::{tr, trn};
@@ -41,7 +42,7 @@ use super::{
     },
     scroll_follow::SmoothScrollFollow,
     theme::Theme,
-    util::{VIEW_KEEP_AROUND, create_or_retrieve_view},
+    util::VIEW_KEEP_AROUND,
 };
 
 /// The list identifier for queue drag-drop operations
@@ -190,7 +191,7 @@ impl QueueItem {
     ) -> Entity<Self> {
         cx.new(move |cx| {
             cx.on_release(|m: &mut QueueItem, cx| {
-                m.item.drop_data(cx);
+                queue_metadata::queue_drop_data(cx, &m.item);
             })
             .detach();
 
@@ -208,7 +209,9 @@ impl QueueItem {
             .detach();
 
             let track_id = item.get_db_id();
-            let data = item.get_data(cx);
+            // metadata lives in the ui-side side table keyed by the item's
+            // uid (same loaders, same restore branches as the legacy slot)
+            let data = queue_metadata::queue_ui_data(cx, &item);
             // one stat per row view lifetime, not once per rendered frame
             let is_available = is_track_path_available(item.get_path());
 
@@ -274,7 +277,7 @@ impl Render for QueueItem {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let album_id = self.item.get_db_album_id();
         let track_id = self.item.get_db_id();
-        let data_entity = self.item.get_data(cx);
+        let data_entity = queue_metadata::queue_ui_data(cx, &self.item);
         let ui_data = data_entity.read(cx);
         let theme = cx.global::<Theme>();
         let is_available = self.is_available;
@@ -809,7 +812,10 @@ fn queue_slot_matches(cx: &App, index: usize, track_id: Option<i64>, path: &Path
 }
 
 pub struct Queue {
-    views_model: Entity<FxHashMap<usize, Entity<QueueItem>>>,
+    /// Row views keyed by the owning item's uid (`QueueItemData::uid`) —
+    /// stable across clones and queue mutations, unlike the legacy per-item
+    /// entity-id keys, and always available without touching any entity.
+    views_model: Entity<FxHashMap<u64, Entity<QueueItem>>>,
     show_queue: Entity<bool>,
     scroll_handle: UniformListScrollHandle,
     drag_drop_manager: Entity<DragDropListManager>,
@@ -905,36 +911,66 @@ impl Queue {
     }
 
     /// One pass over the queue data, run on every queue notify while the
-    /// panel is visible: drops row views whose slot no longer exists and
-    /// rebuilds the incremental summary state (resolved total plus the
-    /// indices whose duration is still pending).
+    /// panel is visible: drops row views (and metadata side-table slots)
+    /// whose uid is no longer in the queue and rebuilds the incremental
+    /// summary state (resolved total plus the indices whose duration is
+    /// still pending).
     fn rescan_views_and_summary(&mut self, cx: &mut Context<Self>) {
         let data = cx.global::<Models>().queue.read(cx).data.clone();
         let queue = data.read().unwrap_or_else(|e| e.into_inner());
 
-        let mut valid_keys: Vec<usize> = Vec::with_capacity(queue.len());
+        // uids are always available (no per-item entity needed), so unlike
+        // the legacy entity-id keys the collection never skips rows.
+        let mut valid_keys: Vec<u64> = Vec::with_capacity(queue.len());
         let mut pending: Vec<usize> = Vec::new();
         let mut total: i64 = 0;
         for (i, item) in queue.iter().enumerate() {
-            if let Some(key) = item.existing_slot_key() {
-                valid_keys.push(key);
-            }
+            valid_keys.push(item.uid());
             match item.known_duration() {
                 Some(secs) => total += secs,
                 None => pending.push(i),
             }
         }
-        let key_set: FxHashSet<usize> = valid_keys.iter().copied().collect();
+        let key_set: FxHashSet<u64> = valid_keys.iter().copied().collect();
         drop(queue);
 
         self.views_model.update(cx, |m, _| {
             m.retain(|k, _| key_set.contains(k));
         });
+        // GC the metadata side table: entries whose item left the queue
+        // release their entity handles here (their rows were just dropped by
+        // the retain above and cleared their content on release).
+        queue_metadata::gc_retaining(cx, key_set.into_iter());
         // slot keys move with their items: force the next window prune to
         // re-run even when the slot window itself is unchanged
         self.last_prune_window = (usize::MAX, usize::MAX);
         self.summary_total = total;
         self.pending_durations = pending;
+    }
+}
+
+/// `ui::util::create_or_retrieve_view` keyed by `u64`: row views are cached
+/// under the owning `QueueItemData`'s uid, which is stable across clones and
+/// queue mutations (the legacy keys were per-item entity ids). The util
+/// helper stays pinned to `usize` keys for its other callers and this step
+/// may only touch queue.rs — generalize the util one over the key type and
+/// fold this copy back in the follow-up cleanup step.
+fn create_or_retrieve_view(
+    views_model: &Entity<FxHashMap<u64, Entity<QueueItem>>>,
+    key: u64,
+    creation_fn: impl FnOnce(&mut App) -> Entity<QueueItem>,
+    cx: &mut App,
+) -> Entity<QueueItem> {
+    let view = views_model.read(cx).get(&key).cloned();
+    match view {
+        Some(view) => view,
+        None => {
+            let view = creation_fn(cx);
+            views_model.update(cx, |m, _| {
+                m.insert(key, view.clone());
+            });
+            view
+        }
     }
 }
 
@@ -963,7 +999,10 @@ impl Render for Queue {
             let mut i = 0;
             while i < self.pending_durations.len() {
                 let idx = self.pending_durations[i];
-                match queue.get(idx).and_then(|item| item.loaded_duration(cx)) {
+                match queue
+                    .get(idx)
+                    .and_then(|item| queue_metadata::queue_loaded_duration(cx, item))
+                {
                     Some(secs) => {
                         self.summary_total += secs;
                         self.pending_durations.swap_remove(i);
@@ -1258,14 +1297,14 @@ impl Render for Queue {
                                 .unwrap_or_else(|e| e.into_inner());
 
                             if range.end <= queue.len() {
-                                // entity id if the metadata entity exists, None otherwise;
-                                // `cx` can't be used while the queue guard is held
-                                let keys: Vec<(usize, Option<usize>)> = (start..range.end)
-                                    .map(|i| (i, queue[i].existing_slot_key()))
-                                    .collect();
+                                // each row's view key is its item's uid: stable
+                                // across clones and always available — no `cx`
+                                // needed while the queue guard is held
+                                let keys: Vec<(usize, u64)> =
+                                    (start..range.end).map(|i| (i, queue[i].uid())).collect();
 
                                 // Scroll pruning: row views live in `views_model`
-                                // keyed by slot key and nothing removed them on a
+                                // keyed by the item's uid and nothing removed them on a
                                 // one-way scroll, so a long queue accumulated one
                                 // live row entity (with its observers) per slot ever
                                 // rendered. Keep only the visible window ± the same
@@ -1280,12 +1319,8 @@ impl Render for Queue {
                                 let keep = if last_prune_window != (prune_start, prune_end) {
                                     Some(
                                         (prune_start..prune_end)
-                                            .filter_map(|i| {
-                                                queue
-                                                    .get(i)
-                                                    .and_then(|item| item.existing_slot_key())
-                                            })
-                                            .collect::<FxHashSet<usize>>(),
+                                            .filter_map(|i| queue.get(i).map(|item| item.uid()))
+                                            .collect::<FxHashSet<u64>>(),
                                     )
                                 } else {
                                     None
@@ -1302,33 +1337,14 @@ impl Render for Queue {
                                 }
 
                                 keys.into_iter()
-                                    .filter_map(|(idx, existing_key)| {
+                                    .filter_map(|(idx, item_key)| {
                                         let drag_drop_manager = drag_drop_manager.clone();
                                         let scroll_handle = item_scroll_handle.clone();
                                         let item_selection = selection.clone();
 
-                                        let item_key = match existing_key {
-                                            Some(key) => key,
-                                            None => {
-                                                // never rendered before: the view cache
-                                                // can't hold it, so build the key now
-                                                let item = {
-                                                    let queue = cx
-                                                        .global::<Models>()
-                                                        .queue
-                                                        .clone()
-                                                        .read(cx)
-                                                        .data
-                                                        .read()
-                                                        .unwrap_or_else(|e| e.into_inner());
-                                                    // the queue shrank since the list length
-                                                    // was snapshotted: skip this row
-                                                    queue.get(idx)?.clone()
-                                                };
-                                                item.slot_key(cx)
-                                            }
-                                        };
-
+                                        // the uid is always in hand, so the legacy
+                                        // "build the metadata entity just to read its
+                                        // entity id" fallback is gone
                                         let view = create_or_retrieve_view(
                                             &views_model,
                                             item_key,
