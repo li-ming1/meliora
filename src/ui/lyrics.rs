@@ -498,7 +498,8 @@ impl Lyrics {
         // 解析成功后全文不再被任何消费方读取（渲染的纯文本回退分支仅在
         // parsed 为 None 时走）：缓存丢弃原文只留解析行，省 16 条 × 数百
         // KB 的 KRC/LRC 原文冗余驻留。命中后 apply_loaded_lyrics 收到的
-        // content 即 None，走的仍是 parsed 分支，行为不变。
+        // content 即 None——渲染门控以 parsed 优先判定（见 render 的三态
+        // 分支），纯文本回退仍以 content 为准，行为不变。
         let loaded = match loaded.1 {
             Some(_) => (None, loaded.1),
             None => loaded,
@@ -772,7 +773,11 @@ impl Render for Lyrics {
             self.schedule_follow_frame(window, cx);
         }
 
-        let inner: AnyElement = if self.content.is_none() {
+        // 三态渲染门控：parsed 与 content 至少有一个非空才进入歌词分支，
+        // 判定以 parsed 优先。缓存命中路径的 content 为 None（缓存丢弃了
+        // 解析后的原文，见 cache_lyrics），不能拿 content 当"有无歌词"
+        // 的判据，否则 LRC 曲目会掉进"无歌词"占位。
+        let inner: AnyElement = if self.content.is_none() && self.parsed.is_none() {
             div()
                 .h_full()
                 .w_full()
