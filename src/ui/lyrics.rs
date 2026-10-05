@@ -236,6 +236,18 @@ impl Lyrics {
             })
             .detach();
 
+            // 面板打开瞬间补一次主题色解析：隐藏期间曲目可能已切换多轮
+            // （resolve_accent 被可见性门控短路，accent_for 停留在旧曲），
+            // 键未变（隐藏期间从未解析过当前曲）时这里从陈旧键解析新曲；
+            // 已解析过当前曲则直接早退，重复开关面板无成本。
+            let show_lyrics = cx.global::<Models>().show_lyrics.clone();
+            cx.observe(&show_lyrics, |this: &mut Lyrics, flag, cx| {
+                if *flag.read(cx) {
+                    this.resolve_accent(cx);
+                }
+            })
+            .detach();
+
             cx.observe(&position, |this: &mut Lyrics, pos, cx| {
                 let pos_ms = *pos.read(cx);
                 this.position_ms = pos_ms;
@@ -483,6 +495,14 @@ impl Lyrics {
         {
             return;
         }
+        // 解析成功后全文不再被任何消费方读取（渲染的纯文本回退分支仅在
+        // parsed 为 None 时走）：缓存丢弃原文只留解析行，省 16 条 × 数百
+        // KB 的 KRC/LRC 原文冗余驻留。命中后 apply_loaded_lyrics 收到的
+        // content 即 None，走的仍是 parsed 分支，行为不变。
+        let loaded = match loaded.1 {
+            Some(_) => (None, loaded.1),
+            None => loaded,
+        };
         if self.lyric_cache.insert(path.clone(), loaded).is_none() {
             self.lyric_cache_order.push(path);
             if self.lyric_cache_order.len() > LYRIC_CACHE_CAP {
@@ -510,6 +530,14 @@ impl Lyrics {
     /// RENDER_CACHE 条目、零图集瓦片，256px 像素缓冲在提取任务结束时
     /// 就地释放；键未变化时直接返回，重复触发无成本。
     fn resolve_accent(&mut self, cx: &mut Context<Self>) {
+        // 可见性门控：取色结果只有歌词面板消费（沉浸页有独立的提取链），
+        // 面板关闭时每次切歌的封面解码/提取是纯白付。与位置观察者"隐藏
+        // 时状态照常更新"的取舍不同——那边省的只是一次缓存重放的
+        // notify，这边省的是每曲一次的全图解码。打开面板时由可见性
+        // 观察者补一次解析。
+        if !*cx.global::<Models>().show_lyrics.read(cx) {
+            return;
+        }
         let queue = cx.global::<Models>().queue.clone();
         let item = {
             let queue = queue.read(cx);
