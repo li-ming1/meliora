@@ -12,7 +12,7 @@ use crate::{
             context::context,
             icons::{
                 MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, REPEAT,
-                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, VOLUME, VOLUME_OFF, icon,
+                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, icon,
             },
             menu::{menu, menu_check_item, menu_item},
             resizable::{ResizeEdge, resizable},
@@ -24,7 +24,7 @@ use crate::{
         global_actions::{Next, PlayPause, Previous, StopAfterCurrent},
         models::{Models, PlaybackInfo},
         theme::Theme,
-        util::format_duration,
+        util::{CachedTimeText, format_duration, seek_to_fraction, volume_toggle_target},
     },
 };
 use cntp_i18n::tr;
@@ -447,22 +447,11 @@ impl Render for PlaybackSection {
     }
 }
 
-/// Cached label texts keyed by whole-second (position, duration): the
-/// labels only change once per second, but render runs at ~33Hz while
-/// playing. Invalidated by any second-boundary change.
-struct TimeLabels {
-    position_secs: u64,
-    duration_secs: u64,
-    position_text: SharedString,
-    duration_text: SharedString,
-    remaining_text: SharedString,
-}
-
 pub struct Scrubber {
     position: Entity<u64>,
     duration: Entity<u64>,
     playback_section: Entity<PlaybackSection>,
-    time_labels: TimeLabels,
+    time_labels: CachedTimeText<(SharedString, SharedString, SharedString)>,
 }
 
 impl Scrubber {
@@ -477,14 +466,8 @@ impl Scrubber {
                 position: position_model,
                 duration: duration_model,
                 playback_section: PlaybackSection::new(cx),
-                // u64::MAX never matches a real second count: forces first build
-                time_labels: TimeLabels {
-                    position_secs: u64::MAX,
-                    duration_secs: u64::MAX,
-                    position_text: SharedString::default(),
-                    duration_text: SharedString::default(),
-                    remaining_text: SharedString::default(),
-                },
+                // 整秒键缓存：u64::MAX 种子永不匹配真实秒数，强制首建。
+                time_labels: CachedTimeText::unseeded(),
             }
         })
     }
@@ -497,33 +480,23 @@ impl Render for Scrubber {
         let duration_ms = *self.duration.read(cx);
         let position_secs = position_ms / 1_000;
         let duration_secs = duration_ms / 1_000;
-        let remaining_secs = duration_secs.saturating_sub(position_secs);
 
         // reuse the formatted labels while the whole-second key is unchanged
-        let (position_text, duration_text, remaining_text) = if self.time_labels.position_secs
-            == position_secs
-            && self.time_labels.duration_secs == duration_secs
-        {
-            let labels = &self.time_labels;
-            (
-                labels.position_text.clone(),
-                labels.duration_text.clone(),
-                labels.remaining_text.clone(),
-            )
-        } else {
-            let position_text = SharedString::from(format_duration(position_secs as i64, true));
-            let duration_text = SharedString::from(format_duration(duration_secs as i64, true));
-            let remaining_text =
-                SharedString::from(format!("-{}", format_duration(remaining_secs as i64, true)));
-            self.time_labels = TimeLabels {
-                position_secs,
-                duration_secs,
-                position_text: position_text.clone(),
-                duration_text: duration_text.clone(),
-                remaining_text: remaining_text.clone(),
-            };
-            (position_text, duration_text, remaining_text)
-        };
+        let (position_text, duration_text, remaining_text) = self.time_labels.resolve(
+            position_secs,
+            duration_secs,
+            |position_secs, duration_secs| {
+                let remaining_secs = duration_secs.saturating_sub(position_secs);
+                (
+                    SharedString::from(format_duration(position_secs as i64, true)),
+                    SharedString::from(format_duration(duration_secs as i64, true)),
+                    SharedString::from(format!(
+                        "-{}",
+                        format_duration(remaining_secs as i64, true)
+                    )),
+                )
+            },
+        );
 
         let window_width = window.viewport_size().width;
 
@@ -585,14 +558,9 @@ impl Render for Scrubber {
                         0.0
                     })
                     .on_change(move |v, _, cx| {
-                        let info = cx.global::<PlaybackInfo>().clone();
-
-                        if duration_ms > 0
-                            && *info.playback_state.read(cx) != PlaybackState::Stopped
-                        {
-                            cx.global::<PlaybackInterface>()
-                                .seek(v as f64 * duration_ms as f64 / 1_000.0);
-                        }
+                        // 门控 + seek 共享实现（immersive 沉浸页进度条同款）：
+                        // duration_ms > 0 且非 Stopped 才 seek。
+                        seek_to_fraction(v as f64, duration_ms, cx);
                     }),
             )
     }
@@ -678,6 +646,9 @@ impl Render for SecondaryControls {
         let theme = cx.global::<Theme>();
         let volume = *self.info.volume.read(cx);
         let prev_volume = *self.info.prev_volume.read(cx);
+        // Mute-toggle decision (icon + target volume) shared with the
+        // immersive player card; the tooltips below stay local.
+        let (volume_target, volume_icon) = volume_toggle_target(volume, prev_volume);
         let show_queue = self.show_queue.clone();
         let show_lyrics = self.show_lyrics.clone();
         let lyrics_active = *self.show_lyrics.read(cx);
@@ -693,19 +664,15 @@ impl Render for SecondaryControls {
                 .pb(px(2.0))
                 .child(
                     playback_toggle_button(div().id("volume-button"), theme)
+                        .child(icon(volume_icon).size(ICON_SM))
+                        .on_click(move |_, _, cx| {
+                            cx.global::<PlaybackInterface>().set_volume(volume_target);
+                        })
                         .when(volume <= 0.0, |div| {
-                            div.child(icon(VOLUME_OFF).size(ICON_SM))
-                                .on_click(move |_, _, cx| {
-                                    cx.global::<PlaybackInterface>().set_volume(prev_volume);
-                                })
-                                .tooltip(build_tooltip(tr!("UNMUTE", "Unmute")))
+                            div.tooltip(build_tooltip(tr!("UNMUTE", "Unmute")))
                         })
                         .when(volume > 0.0, |div| {
-                            div.child(icon(VOLUME).size(ICON_SM))
-                                .on_click(move |_, _, cx| {
-                                    cx.global::<PlaybackInterface>().set_volume(0.0);
-                                })
-                                .tooltip(build_tooltip(tr!("MUTE", "Mute")))
+                            div.tooltip(build_tooltip(tr!("MUTE", "Mute")))
                         }),
                 )
                 .child(

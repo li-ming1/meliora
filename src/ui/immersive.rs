@@ -71,7 +71,7 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, VOLUME_OFF, icon},
+            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
@@ -85,7 +85,9 @@ use crate::{
         queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
-        util::{extract_accent, format_duration},
+        util::{
+            CachedTimeText, extract_accent, format_duration, seek_to_fraction, volume_toggle_target,
+        },
     },
 };
 
@@ -340,13 +342,8 @@ impl ImmersiveView {
                 ImmersiveProgress {
                     position: info.position.clone(),
                     duration: info.duration.clone(),
-                    // u64::MAX 永不匹配真实秒数：强制首建
-                    time_labels: ImmersiveTimeLabels {
-                        position_secs: u64::MAX,
-                        duration_secs: u64::MAX,
-                        elapsed_text: SharedString::default(),
-                        total_text: SharedString::default(),
-                    },
+                    // 整秒键缓存：u64::MAX 种子永不匹配真实秒数，强制首建。
+                    time_labels: CachedTimeText::unseeded(),
                 }
             });
 
@@ -943,24 +940,16 @@ impl ImmersiveView {
     }
 }
 
-/// 按 (整秒 position, 整秒 duration) 键缓存两个 "m:ss" 标签：文本每秒才变
-/// 一次，而播放中 render 以 ~30Hz 运行（同 controls.rs Scrubber 的
-/// TimeLabels 模式）。pad_minutes 保持 false（沉浸页 11px 紧凑风格）。
-struct ImmersiveTimeLabels {
-    position_secs: u64,
-    duration_secs: u64,
-    elapsed_text: SharedString,
-    total_text: SharedString,
-}
-
 /// Self-contained seek bar for the immersive player card. It owns the 30 Hz
 /// position observation so progress ticks repaint only this small subtree —
 /// the fullscreen view's own position observer is gated on actual lyric-pane
 /// changes (line moves, wheel-browse return, karaoke sweep in flight).
+/// Time labels use the shared whole-second cache (`util::CachedTimeText`,
+/// same mechanism as controls.rs Scrubber).
 struct ImmersiveProgress {
     position: Entity<u64>,
     duration: Entity<u64>,
-    time_labels: ImmersiveTimeLabels,
+    time_labels: CachedTimeText<(SharedString, SharedString)>,
 }
 
 impl Render for ImmersiveProgress {
@@ -977,26 +966,18 @@ impl Render for ImmersiveProgress {
         };
         let text_secondary = cx.global::<Theme>().text_secondary;
 
-        // 整秒键未变即复用已格式化标签：30Hz 重渲染里绝大多数输出逐字节相同
-        let (elapsed_text, total_text) = if self.time_labels.position_secs == position_secs
-            && self.time_labels.duration_secs == duration_secs
-        {
-            (
-                self.time_labels.elapsed_text.clone(),
-                self.time_labels.total_text.clone(),
-            )
-        } else {
-            let elapsed_text = SharedString::from(format_duration(position_secs as i64, false));
-            let total_text =
-                SharedString::from(format_duration((duration_secs as i64).max(0), false));
-            self.time_labels = ImmersiveTimeLabels {
-                position_secs,
-                duration_secs,
-                elapsed_text: elapsed_text.clone(),
-                total_text: total_text.clone(),
-            };
-            (elapsed_text, total_text)
-        };
+        // 整秒键未变即复用已格式化标签（30Hz 重渲染里绝大多数输出逐字节
+        // 相同）；pad_minutes=false（沉浸页 11px 紧凑风格）。
+        let (elapsed_text, total_text) = self.time_labels.resolve(
+            position_secs,
+            duration_secs,
+            |position_secs, duration_secs| {
+                (
+                    SharedString::from(format_duration(position_secs as i64, false)),
+                    SharedString::from(format_duration((duration_secs as i64).max(0), false)),
+                )
+            },
+        );
 
         div()
             .flex()
@@ -1018,13 +999,9 @@ impl Render for ImmersiveProgress {
                     .change_interval(SLIDER_CHANGE_INTERVAL)
                     .value(progress)
                     .on_change(move |v, _, cx| {
-                        if duration_ms > 0 {
-                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                            if state != PlaybackState::Stopped {
-                                cx.global::<PlaybackInterface>()
-                                    .seek(v as f64 * duration_ms as f64 / 1000.0);
-                            }
-                        }
+                        // 门控 + seek 共享实现（controls.rs Scrubber 同款）：
+                        // duration_ms > 0 且非 Stopped 才 seek。
+                        seek_to_fraction(v as f64, duration_ms, cx);
                     }),
             )
             .child(
@@ -1253,6 +1230,9 @@ impl Render for ImmersiveView {
                     cx.global::<PlaybackInterface>().next();
                 }),
             );
+        // Mute-toggle decision (icon + target volume) shared with the play
+        // bar's secondary controls; the button styling stays local.
+        let (volume_target, volume_icon) = volume_toggle_target(volume, prev_volume);
         let volume_group =
             div()
                 .flex()
@@ -1265,18 +1245,9 @@ impl Render for ImmersiveView {
                         .rounded(px(8.0))
                         .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
                         .on_click(move |_, _, cx| {
-                            let interface = cx.global::<PlaybackInterface>();
-                            if volume <= 0.0 {
-                                interface.set_volume(prev_volume);
-                            } else {
-                                interface.set_volume(0.0);
-                            }
+                            cx.global::<PlaybackInterface>().set_volume(volume_target);
                         })
-                        .child(
-                            icon(if volume <= 0.0 { VOLUME_OFF } else { VOLUME })
-                                .size(px(16.0))
-                                .text_color(text_secondary),
-                        ),
+                        .child(icon(volume_icon).size(px(16.0)).text_color(text_secondary)),
                 )
                 .child(
                     slider()

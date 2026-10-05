@@ -7,6 +7,14 @@ use gpui::{App, Entity, Render, RenderImage, Rgba};
 use rustc_hash::FxHashMap;
 use tracing::debug;
 
+use crate::{
+    playback::{interface::PlaybackInterface, thread::PlaybackState},
+    ui::{
+        components::icons::{VOLUME, VOLUME_OFF},
+        models::PlaybackInfo,
+    },
+};
+
 /// Rows this far outside the visible window stay cached. Scrolling back
 /// within the band reuses the existing row entities instead of re-running
 /// their DB/stat construction pipeline on the UI thread; the band must stay
@@ -150,6 +158,85 @@ pub fn format_duration(secs: i64, pad_minutes: bool) -> String {
     }
 }
 
+/// Shared scrubber seek gate: seeks to `fraction` of the current track's
+/// `duration_ms` (converted to seconds) only while a track is actually
+/// loaded (`duration_ms > 0`) and playback is not stopped. Both the play bar
+/// scrubber (`controls::Scrubber`) and the immersive player card
+/// (`immersive::ImmersiveProgress`) funnel their slider `on_change` handlers
+/// through here. Interaction-time only — never on the render path.
+pub fn seek_to_fraction(fraction: f64, duration_ms: u64, cx: &mut App) {
+    if duration_ms == 0 {
+        return;
+    }
+    if *cx.global::<PlaybackInfo>().playback_state.read(cx) == PlaybackState::Stopped {
+        return;
+    }
+    cx.global::<PlaybackInterface>()
+        .seek(fraction * duration_ms as f64 / 1_000.0);
+}
+
+/// Mute-toggle decision shared by the play bar's secondary controls and the
+/// immersive player card: `volume <= 0.0` counts as muted; toggling a muted
+/// button restores `prev_volume`, an audible one mutes (volume 0.0). Returns
+/// `(target_volume, icon_path)`; callers keep their own chrome (tooltips,
+/// sizes, hover styles) and only consume the decision. Pure, allocation-free.
+pub fn volume_toggle_target(volume: f64, prev_volume: f64) -> (f64, &'static str) {
+    if volume <= 0.0 {
+        (prev_volume, VOLUME_OFF)
+    } else {
+        (0.0, VOLUME)
+    }
+}
+
+/// Whole-second cache for formatted time labels. The labels only change once
+/// per second while the surrounding views re-render at ~30Hz on position
+/// ticks, so the formatted label set is kept keyed by the whole-second
+/// `(position_secs, duration_secs)` pair and reused verbatim until the key
+/// moves — invalidation is exactly the second boundary. Generic over the
+/// label tuple: the play bar scrubber caches three labels (position /
+/// duration / "-remaining"), the immersive player card two (elapsed / total).
+/// The `T: Clone` on the hit path is `SharedString` refcount bumps, not
+/// allocations (GPUI hot-path discipline).
+pub struct CachedTimeText<T> {
+    position_secs: u64,
+    duration_secs: u64,
+    labels: T,
+}
+
+impl<T: Clone + Default> CachedTimeText<T> {
+    /// Unseeded cache: the `u64::MAX` key never matches a real second count,
+    /// forcing the first `resolve` to build.
+    pub fn unseeded() -> Self {
+        Self {
+            position_secs: u64::MAX,
+            duration_secs: u64::MAX,
+            labels: T::default(),
+        }
+    }
+}
+
+impl<T: Clone> CachedTimeText<T> {
+    /// Returns the cached labels while the whole-second key is unchanged,
+    /// otherwise rebuilds via `build(position_secs, duration_secs)` and
+    /// stores the result. `build` runs at most once per second boundary.
+    pub fn resolve(
+        &mut self,
+        position_secs: u64,
+        duration_secs: u64,
+        build: impl FnOnce(u64, u64) -> T,
+    ) -> T {
+        if self.position_secs == position_secs && self.duration_secs == duration_secs {
+            self.labels.clone()
+        } else {
+            let labels = build(position_secs, duration_secs);
+            self.position_secs = position_secs;
+            self.duration_secs = duration_secs;
+            self.labels = labels.clone();
+            labels
+        }
+    }
+}
+
 /// 饱和度加权的封面主色提取（BGRA `RenderImage`）：沉浸页与歌词面板共用的
 /// 每首歌主题色来源。极暗的胜出色会被提亮，保证在暗色底上仍然可读。
 pub(crate) fn extract_accent(image: &RenderImage) -> Option<Rgba> {
@@ -222,6 +309,23 @@ fn dominant_accent_bgra(bytes: &[u8]) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_time_text_reuses_labels_until_second_moves() {
+        let mut cache = CachedTimeText::unseeded();
+        let first = cache.resolve(1, 60, |p, d| format!("{p}/{d}"));
+        assert_eq!(first, "1/60");
+        // Same whole-second key: the cached set is handed back, `build` is
+        // not re-run.
+        let again = cache.resolve(1, 60, |_, _| String::from("rebuilt"));
+        assert_eq!(again, "1/60");
+        // Second boundary moved: rebuild with the new key.
+        let moved = cache.resolve(2, 60, |p, d| format!("{p}/{d}"));
+        assert_eq!(moved, "2/60");
+        // Either half of the key moving invalidates.
+        let duration_moved = cache.resolve(2, 61, |p, d| format!("{p}/{d}"));
+        assert_eq!(duration_moved, "2/61");
+    }
 
     /// 把单个 BGRA 像素重复 `count` 次铺成原始字节缓冲。
     fn repeated_pixel(pixel: [u8; 4], count: usize) -> Vec<u8> {
