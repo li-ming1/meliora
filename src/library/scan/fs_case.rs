@@ -566,24 +566,21 @@ mod bench {
 
         // per-record fold pass exactly as index_records_under pays it: one
         // fold_key (strip_verbatim + to_lowercase allocation) per record
-        let (fold_min, _fold_mean, _) = time_runs(
-            "fold_key pass (1 strip+lowercase alloc/record)",
-            || {
+        let (fold_min, _fold_mean, _) =
+            time_runs("fold_key pass (1 strip+lowercase alloc/record)", || {
                 raw_keys
                     .iter()
                     .map(|raw| fold_key(Utf8Path::new(raw)))
                     .collect::<Vec<String>>()
-            },
-        );
+            });
         // allocation floor: to_lowercase alone, separating the strip/Utf8Path
         // dispatch from the per-record String allocation
-        let (lower_min, _lower_mean, _) =
-            time_runs("to_lowercase only (allocation floor)", || {
-                raw_keys
-                    .iter()
-                    .map(|raw| raw.to_lowercase())
-                    .collect::<Vec<String>>()
-            });
+        let (lower_min, _lower_mean, _) = time_runs("to_lowercase only (allocation floor)", || {
+            raw_keys
+                .iter()
+                .map(|raw| raw.to_lowercase())
+                .collect::<Vec<String>>()
+        });
 
         let (char_min, _char_mean, char_hits) =
             time_runs("folded_starts_with scan (current, per-char)", || {

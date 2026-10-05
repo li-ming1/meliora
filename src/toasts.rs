@@ -24,7 +24,7 @@ pub struct ToastAction {
 pub struct Toast {
     pub severity: Severity,
     pub message: I18nString,
-    /// 默认 5s，[`Toast::with_duration`] 可覆盖（如更新提示 12s）。
+    /// 默认 5s，`Toast::with_duration`（online 门控）可覆盖（如更新提示 12s）。
     pub duration: Option<Duration>,
     pub actions: Vec<ToastAction>,
 }
@@ -69,7 +69,9 @@ impl Toast {
 
     /// Overrides the default 5 s lifetime — the `duration` field exists for
     /// callers whose notice is easy to miss and cheap to keep up (e.g. the
-    /// updater's "restart to apply").
+    /// updater's "restart to apply"). The only callers live in the
+    /// online-gated updater, so the builder follows the same gate.
+    #[cfg(feature = "online")]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
         self

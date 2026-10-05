@@ -259,7 +259,7 @@ impl AboutSettings {
 
 impl Render for AboutSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut page = div()
+        let page = div()
             .flex()
             .flex_col()
             .gap(px(14.0))
@@ -313,37 +313,37 @@ impl Render for AboutSettings {
                 OpenLog,
             ));
 
+        // 更新区块仅随 online 特性编译：用 let 影子绑定替代 `mut page`，
+        // offline 构建里初始绑定保持不可变，两个 cfg 组合都无 unused_mut。
         #[cfg(feature = "online")]
-        {
-            page = page
-                .child(section_header(tr!("UPDATE_SECTION", "Updates")))
-                .child(self.update_status_row(cx))
-                .child(Self::toggle_row(
-                    cx,
-                    "update-auto-check-label",
-                    "update-auto-check",
-                    tr!("UPDATE_AUTO_CHECK", "Check for updates on startup"),
-                    tr!(
-                        "UPDATE_AUTO_CHECK_SUBTEXT",
-                        "Check GitHub for a new release a few seconds after the app starts."
-                    ),
-                    self.settings.read(cx).update.auto_check,
-                    |update| update.auto_check = !update.auto_check,
-                ))
-                .child(Self::toggle_row(
-                    cx,
-                    "update-auto-download-label",
-                    "update-auto-download",
-                    tr!("UPDATE_AUTO_DOWNLOAD", "Download updates automatically"),
-                    tr!(
-                        "UPDATE_AUTO_DOWNLOAD_SUBTEXT",
-                        "Download a new release in the background as soon as it is found; \
-                         installing still waits for an explicit restart."
-                    ),
-                    self.settings.read(cx).update.auto_download,
-                    |update| update.auto_download = !update.auto_download,
-                ));
-        }
+        let page = page
+            .child(section_header(tr!("UPDATE_SECTION", "Updates")))
+            .child(self.update_status_row(cx))
+            .child(Self::toggle_row(
+                cx,
+                "update-auto-check-label",
+                "update-auto-check",
+                tr!("UPDATE_AUTO_CHECK", "Check for updates on startup"),
+                tr!(
+                    "UPDATE_AUTO_CHECK_SUBTEXT",
+                    "Check GitHub for a new release a few seconds after the app starts."
+                ),
+                self.settings.read(cx).update.auto_check,
+                |update| update.auto_check = !update.auto_check,
+            ))
+            .child(Self::toggle_row(
+                cx,
+                "update-auto-download-label",
+                "update-auto-download",
+                tr!("UPDATE_AUTO_DOWNLOAD", "Download updates automatically"),
+                tr!(
+                    "UPDATE_AUTO_DOWNLOAD_SUBTEXT",
+                    "Download a new release in the background as soon as it is found; \
+                     installing still waits for an explicit restart."
+                ),
+                self.settings.read(cx).update.auto_download,
+                |update| update.auto_download = !update.auto_download,
+            ));
 
         page
     }

@@ -224,8 +224,12 @@ mod tests {
     use super::*;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
+    // 压缩样本构造只在 kugou 回环测试（encrypt_krc_for_test）里用。
+    #[cfg(feature = "kugou")]
     use flate2::Compression;
+    #[cfg(feature = "kugou")]
     use flate2::write::ZlibEncoder;
+    #[cfg(feature = "kugou")]
     use std::io::Write;
 
     /// 按真实 KRC 加密流程构造样本：压缩 → 异或 → 补 4 字节头 → base64。
@@ -243,6 +247,8 @@ mod tests {
         STANDARD.encode(data)
     }
 
+    // 只被下方 kugou 门控的回环测试消费。
+    #[cfg(feature = "kugou")]
     const KRC_SAMPLE: &str = "\
 [ar:\u{4F5C}\u{8005}]
 [ti:\u{6B4C}\u{540D}]

@@ -50,6 +50,8 @@ const MAX_NO_PROGRESS_CYCLES: u32 = 50;
 /// Cap on the online-URL refresh inside the playback loop: the provider
 /// clients carry no per-request timeout, and this retry runs synchronously on
 /// the playback thread, so an unresponsive API must not stall the audio loop.
+/// Only consumed by `build_refresh_closure` (online_sources-gated).
+#[cfg(feature = "online_sources")]
 const STREAM_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Sleep after a no-progress cycle, growing exponentially from 2 ms to 50 ms so a persistent error

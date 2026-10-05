@@ -368,6 +368,7 @@ impl QueueManager {
     }
 
     /// Path of the currently playing item, if any.
+    #[cfg(feature = "online_sources")]
     pub fn current_path(&self) -> Option<PathBuf> {
         let position = self.current_position()?;
         let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
@@ -376,6 +377,7 @@ impl QueueManager {
 
     /// Swaps the stored path of the currently playing item (used when its
     /// expired stream URL is replaced by a freshly fetched one).
+    #[cfg(feature = "online_sources")]
     pub fn replace_current_path(&self, path: PathBuf) -> bool {
         // Resolve the position before taking the write lock: computing it
         // reads the queue, and a read inside a held write lock self-deadlocks.

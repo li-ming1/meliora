@@ -134,9 +134,8 @@ mod bench {
         session.csrf = Some("c".repeat(64));
         session.user_id = Some(32953014);
         session.nickname = Some("基准用户".to_string());
-        session.avatar_url = Some(
-            "http://p1.music.126.net/AAAAAAAAAAAAAAAAAAAAAAAA/000000000000.jpg".to_string(),
-        );
+        session.avatar_url =
+            Some("http://p1.music.126.net/AAAAAAAAAAAAAAAAAAAAAAAA/000000000000.jpg".to_string());
         session.nmtid = Some(format!("00O{}", "n".repeat(38)));
         session
     }

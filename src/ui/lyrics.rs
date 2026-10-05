@@ -21,12 +21,14 @@ use crate::{
             scrollbar::{ScrollableHandle, floating_scrollbar},
         },
         models::{Models, PlaybackInfo},
-        queue_metadata,
         scroll_follow::{SmoothScrollFollow, ease_out_cubic},
         theme::Theme,
         util::extract_accent,
     },
 };
+// 取色的在线分支（resolve_accent）读旁表 cover_url；offline 构建无该分支。
+#[cfg(feature = "online_sources")]
+use crate::ui::queue_metadata;
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::*;

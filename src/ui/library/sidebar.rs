@@ -29,6 +29,8 @@ use crate::ui::components::icons::RANKING;
 use crate::ui::components::icons::icon;
 use crate::ui::components::icons::{FOLDER, MOON, MUSIC, SETTINGS, SIDEBAR, SIDEBAR_INACTIVE, SUN};
 use crate::ui::components::tooltip::build_tooltip;
+// ICON_SM 的唯二使用点在 account_pill（在线账号药丸）内。
+#[cfg(any(feature = "kugou", feature = "netease"))]
 use crate::ui::design::ICON_SM;
 use crate::ui::{
     components::{

@@ -2,9 +2,10 @@ use std::sync::Arc;
 #[cfg(feature = "online_sources")]
 use std::time::Duration;
 
-use gpui::{
-    App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Window,
-};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, Window};
+// 订阅回调的 query 参数类型，只在 online_sources 的合并段订阅里出现。
+#[cfg(feature = "online_sources")]
+use gpui::SharedString;
 use nucleo::Utf32String;
 use tracing::debug;
 

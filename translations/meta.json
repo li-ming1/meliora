@@ -277,7 +277,7 @@
   },
   "ALBUMS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:286",
+    "definedIn": "src/ui/library/sidebar.rs:288",
     "plural": false,
     "description": null
   },
@@ -289,7 +289,7 @@
   },
   "ARTISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:298",
+    "definedIn": "src/ui/library/sidebar.rs:300",
     "plural": false,
     "description": null
   },
@@ -343,7 +343,7 @@
   },
   "COLLAPSE_SIDEBAR": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:431",
+    "definedIn": "src/ui/library/sidebar.rs:433",
     "plural": false,
     "description": null
   },
@@ -589,7 +589,7 @@
   },
   "EXPAND_SIDEBAR": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:429",
+    "definedIn": "src/ui/library/sidebar.rs:431",
     "plural": false,
     "description": null
   },
@@ -613,7 +613,7 @@
   },
   "FILES": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:319",
+    "definedIn": "src/ui/library/sidebar.rs:321",
     "plural": false,
     "description": null
   },
@@ -1093,7 +1093,7 @@
   },
   "KUGOU_PLAYLISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:346",
+    "definedIn": "src/ui/library/sidebar.rs:348",
     "plural": false,
     "description": null
   },
@@ -1159,7 +1159,7 @@
   },
   "KUGOU_RANKS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:355",
+    "definedIn": "src/ui/library/sidebar.rs:357",
     "plural": false,
     "description": null
   },
@@ -1609,7 +1609,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:759",
+    "definedIn": "src/ui/lyrics.rs:761",
     "plural": false,
     "description": null
   },
@@ -2257,19 +2257,19 @@
   },
   "SIDEBAR_LIBRARY": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:277",
+    "definedIn": "src/ui/library/sidebar.rs:279",
     "plural": false,
     "description": null
   },
   "SIDEBAR_LOGIN": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:65",
+    "definedIn": "src/ui/library/sidebar.rs:67",
     "plural": false,
     "description": null
   },
   "SIDEBAR_PLAYLISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:326",
+    "definedIn": "src/ui/library/sidebar.rs:328",
     "plural": false,
     "description": null
   },
@@ -2551,7 +2551,7 @@
   },
   "TRACKS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:310",
+    "definedIn": "src/ui/library/sidebar.rs:312",
     "plural": false,
     "description": null
   },
@@ -2623,25 +2623,25 @@
   },
   "UPDATE_AUTO_CHECK": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:325",
+    "definedIn": "src/ui/settings/about.rs:326",
     "plural": false,
     "description": null
   },
   "UPDATE_AUTO_CHECK_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:327",
+    "definedIn": "src/ui/settings/about.rs:328",
     "plural": false,
     "description": null
   },
   "UPDATE_AUTO_DOWNLOAD": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:337",
+    "definedIn": "src/ui/settings/about.rs:338",
     "plural": false,
     "description": null
   },
   "UPDATE_AUTO_DOWNLOAD_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:339",
+    "definedIn": "src/ui/settings/about.rs:340",
     "plural": false,
     "description": null
   },
@@ -2701,7 +2701,7 @@
   },
   "UPDATE_SECTION": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:319",
+    "definedIn": "src/ui/settings/about.rs:320",
     "plural": false,
     "description": null
   },

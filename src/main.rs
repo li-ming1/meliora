@@ -339,6 +339,10 @@ fn atlas_probe_snapshot() -> [u64; 15] {
 /// the updater's "restart to apply" (quits through gpui so the `on_app_quit`
 /// flushes still run); session state rides in `playback_session.json`, which
 /// the storage worker persists continuously, so the restart gap is ~2 s.
+/// Gated to its two callers: the `not(test)` memory-probe valve and the
+/// `online` updater (restart-to-apply). A default test build has neither,
+/// so the fn is compiled out there instead of tripping dead_code.
+#[cfg(any(feature = "online", not(test)))]
 pub(crate) fn spawn_replacement() -> bool {
     std::env::current_exe()
         .ok()

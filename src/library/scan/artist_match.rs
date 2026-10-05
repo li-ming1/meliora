@@ -528,7 +528,12 @@ mod bench {
         for _ in 0..RESOLVE_PASSES {
             let start = Instant::now();
             for name in &names[..ARTISTS] {
-                black_box(matcher.resolve(&mut conn, black_box(name), None).await.unwrap());
+                black_box(
+                    matcher
+                        .resolve(&mut conn, black_box(name), None)
+                        .await
+                        .unwrap(),
+                );
             }
             let ms = start.elapsed().as_secs_f64() * 1_000.0;
             pass_min = pass_min.min(ms);
