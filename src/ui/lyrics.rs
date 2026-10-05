@@ -21,6 +21,7 @@ use crate::{
             scrollbar::{ScrollableHandle, floating_scrollbar},
         },
         models::{Models, PlaybackInfo},
+        queue_metadata,
         scroll_follow::{SmoothScrollFollow, ease_out_cubic},
         theme::Theme,
         util::extract_accent,
@@ -521,10 +522,10 @@ impl Lyrics {
         let mut cover_key = None;
         if let Some(item) = &item {
             // 取色只需要小图：在线曲目用缩略图变体（而非沉浸页背景的
-            // 大图变体），本地曲目读内嵌/sidecar 封面。
+            // 大图变体），本地曲目读内嵌/sidecar 封面。句柄取自旁表
+            // （P2-B step 4）：这里只一次性读 cover_url，不驻留句柄。
             #[cfg(feature = "online_sources")]
-            if let Some(url) = item
-                .get_data(cx)
+            if let Some(url) = queue_metadata::queue_ui_data(cx, item)
                 .read(cx)
                 .clone()
                 .and_then(|data| data.cover_url)

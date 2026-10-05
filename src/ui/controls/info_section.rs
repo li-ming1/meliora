@@ -29,6 +29,7 @@ use crate::{
             CurrentTrack, HasLikedState, LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo,
             subscribe_liked_updates, toggle_like,
         },
+        queue_metadata,
         theme::Theme,
     },
 };
@@ -232,7 +233,11 @@ impl InfoSection {
         // keying off `current_track_path` here breaks cover art whenever the path
         // lags the queue (e.g. an online URL refreshed after a session restore),
         // leaving the info-section thumbnail blank while the queue item shows art.
-        let data = item.get_data(cx);
+        // The handle comes from the UI-side metadata side table (P2-B step 4):
+        // the same uid always resolves to the same entity, and the current
+        // track's uid stays live in the queue, so the retained handle and the
+        // subscription below can never go stale.
+        let data = queue_metadata::queue_ui_data(cx, &item);
         self.queue_item_data = Some(data.clone());
 
         // SongChanged is broadcast before QueuePositionChanged, so this can run

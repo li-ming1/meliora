@@ -82,6 +82,7 @@ use crate::{
         },
         lyrics::{Lyrics, lerp_color, word_progress},
         models::{CurrentTrack, Models, PlaybackInfo, Queue},
+        queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
         util::{extract_accent, format_duration},
@@ -498,8 +499,7 @@ impl ImmersiveView {
             // Online tracks carry a cover URL on their queue item; local
             // files fall back to embedded art / sidecar files.
             #[cfg(feature = "online_sources")]
-            if let Some(url) = item
-                .get_data(cx)
+            if let Some(url) = queue_metadata::queue_ui_data(cx, item)
                 .read(cx)
                 .clone()
                 .and_then(|data| data.cover_url)
@@ -513,7 +513,12 @@ impl ImmersiveView {
                 cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
             }
 
-            let data = item.get_data(cx);
+            // Handle from the metadata side table (P2-B step 4): same uid
+            // always yields the same entity, so `meta_subscription` below
+            // observes the same slot the data lives in. `adopt_names` is
+            // unchanged — it consumes the entity's content, only the
+            // subscription's source moved.
+            let data = queue_metadata::queue_ui_data(cx, item);
             let item_path = item.get_path().clone();
             let is_current_slot = track_path.as_ref().is_some_and(|path| *path == item_path);
             // Names only from the slot that actually holds the playing track
@@ -600,8 +605,7 @@ impl ImmersiveView {
                 .cloned()?
         };
         #[cfg(feature = "online_sources")]
-        if let Some(url) = slot
-            .get_data(cx)
+        if let Some(url) = queue_metadata::queue_ui_data(cx, &slot)
             .read(cx)
             .clone()
             .and_then(|data| data.cover_url)
