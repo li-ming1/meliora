@@ -1222,7 +1222,6 @@ impl Render for Queue {
                                 );
                             } else {
                                 let queue_item = QueueItemData::new(
-                                    cx,
                                     drag_data.path.clone(),
                                     drag_data.track_id,
                                     drag_data.album_id,
@@ -1256,7 +1255,6 @@ impl Render for Queue {
                                     .iter()
                                     .map(|track| {
                                         let item = QueueItemData::new(
-                                            cx,
                                             track.location.clone(),
                                             Some(track.id),
                                             Some(drag_data.album_id),
@@ -1368,7 +1366,6 @@ impl Render for Queue {
                                                 let item = match item {
                                                     Some(item) => item,
                                                     None => QueueItemData::new(
-                                                        cx,
                                                         PathBuf::new(),
                                                         None,
                                                         None,

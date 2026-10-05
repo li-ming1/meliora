@@ -345,9 +345,8 @@ pub fn queue_track(cx: &mut App, track: &NeteaseTrackInfo) {
     play_track(cx, track, PlayIntent::Queue);
 }
 
-fn online_queue_item(cx: &mut App, url: String, track: &NeteaseTrackInfo) -> QueueItemData {
+fn online_queue_item(_cx: &mut App, url: String, track: &NeteaseTrackInfo) -> QueueItemData {
     QueueItemData::with_ui_data(
-        cx,
         PathBuf::from(url),
         QueueItemUIData {
             album_id: None,

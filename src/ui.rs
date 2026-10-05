@@ -20,7 +20,6 @@ pub mod library;
 pub mod library_access;
 mod lyrics;
 pub mod models;
-pub mod queue_metadata;
 #[cfg(feature = "netease")]
 mod netease;
 #[cfg(any(feature = "kugou", feature = "netease"))]
@@ -29,6 +28,7 @@ mod online_common;
 mod online_track_row;
 mod playback_bridge;
 mod queue;
+pub mod queue_metadata;
 mod right_sidebar;
 mod scroll_follow;
 mod search;

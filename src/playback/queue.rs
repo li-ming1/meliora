@@ -204,20 +204,14 @@ impl PartialEq for QueueItemData {
 }
 
 impl QueueItemData {
-    /// Creates a new `QueueItemData` instance with the given information,
-    /// eagerly creating the (still empty) UI metadata entity.
-    pub fn new(cx: &mut App, path: PathBuf, db_id: Option<i64>, db_album_id: Option<i64>) -> Self {
-        QueueItemData {
-            data: Arc::new(RwLock::new(Some(cx.new(|_| None)))),
-            ..Self::lazy(path, db_id, db_album_id)
-        }
-    }
-
-    /// Creates a queue item with no metadata entity yet; `get_data` creates
-    /// it on first use, mirroring the deserialization path. Bulk queue builds
-    /// (Shuffle All) use this off the UI thread where `cx.new` is unavailable
-    /// and one GPUI entity per track would be pure startup cost.
-    pub fn lazy(path: PathBuf, db_id: Option<i64>, db_album_id: Option<i64>) -> Self {
+    /// Creates a new `QueueItemData` instance with the given information. No
+    /// UI metadata entity is created here — [`Self::get_data`] (or the
+    /// `ui::queue_metadata` side table) creates one lazily on first use,
+    /// mirroring the deserialization path. Usable off the UI thread (bulk
+    /// builds like Shuffle All): one GPUI entity per track would be pure
+    /// startup cost, and eagerly building an empty shell entity bought
+    /// nothing — the former separate `lazy` constructor merged into this one.
+    pub fn new(path: PathBuf, db_id: Option<i64>, db_album_id: Option<i64>) -> Self {
         QueueItemData {
             path,
             db_id,
@@ -225,9 +219,8 @@ impl QueueItemData {
             data: Arc::new(RwLock::new(None)),
             persisted_ui: None,
             duration: Arc::new(AtomicI64::new(UNKNOWN_DURATION)),
-            // `new` and `with_ui_data` build on `lazy` via struct update, so
-            // this is the single allocation point for all non-deserialized
-            // constructions: one fresh uid per constructed instance.
+            // Single allocation point for all non-deserialized constructions:
+            // one fresh uid per constructed instance.
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             #[cfg(feature = "online_sources")]
             online_identity: None,
@@ -236,16 +229,21 @@ impl QueueItemData {
 
     /// Creates a queue item whose UI metadata is already known (e.g. online
     /// tracks fetched from a remote service), so no database or disk lookup
-    /// is scheduled later.
+    /// is scheduled later. No entity is created here either: the metadata is
+    /// seeded into `persisted_ui` (plus the duration cell), and the first
+    /// `get_data` / side-table resolution rebuilds the entity content from it
+    /// via the persisted-restore branch — field-for-field identical to the
+    /// eager fill this constructor used to perform (`album_id: None` and
+    /// `source: Metadata` are what both call sites pass and what the branch
+    /// restores).
     #[cfg(feature = "online_sources")]
-    pub fn with_ui_data(cx: &mut App, path: PathBuf, ui_data: QueueItemUIData) -> Self {
-        let persisted_ui = persist_from(ui_data.clone());
+    pub fn with_ui_data(path: PathBuf, ui_data: QueueItemUIData) -> Self {
         let duration = Arc::new(AtomicI64::new(ui_data.duration.unwrap_or(UNKNOWN_DURATION)));
+        let persisted_ui = persist_from(ui_data);
         QueueItemData {
-            data: Arc::new(RwLock::new(Some(cx.new(|_| Some(ui_data))))),
             persisted_ui,
             duration,
-            ..Self::lazy(path, None, None)
+            ..Self::new(path, None, None)
         }
     }
 
@@ -460,7 +458,8 @@ impl QueueItemData {
     }
 
     /// The same key as [`Self::slot_key`], but `None` while no entity was
-    /// ever created (deserialized or [`Self::lazy`] items before first use).
+    /// ever created (deserialized or freshly constructed items before first
+    /// use).
     pub fn existing_slot_key(&self) -> Option<usize> {
         self.lock_data()
             .as_ref()

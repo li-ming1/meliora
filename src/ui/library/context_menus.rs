@@ -47,12 +47,11 @@ type TrackPlayFromHereHandler = Rc<dyn Fn(&mut App, &Track) + 'static>;
 /// callers hand over whole tables/playlists (10k stats per click on a large
 /// library) and the playback engine skips files that went missing. Row
 /// availability is already visible to the user from the row data.
-pub fn queue_items_from_tracks(cx: &mut App, tracks: &[Track]) -> Vec<QueueItemData> {
+pub fn queue_items_from_tracks(_cx: &mut App, tracks: &[Track]) -> Vec<QueueItemData> {
     tracks
         .iter()
         .map(|track| {
-            let item =
-                QueueItemData::new(cx, track.location.clone(), Some(track.id), track.album_id);
+            let item = QueueItemData::new(track.location.clone(), Some(track.id), track.album_id);
             item.set_known_duration(Some(track.duration));
             item
         })
@@ -60,12 +59,12 @@ pub fn queue_items_from_tracks(cx: &mut App, tracks: &[Track]) -> Vec<QueueItemD
 }
 
 fn queue_item_data(
-    cx: &mut App,
+    _cx: &mut App,
     location: PathBuf,
     id: i64,
     album_id: Option<i64>,
 ) -> QueueItemData {
-    QueueItemData::new(cx, location, Some(id), album_id)
+    QueueItemData::new(location, Some(id), album_id)
 }
 
 #[derive(Clone, Default)]
@@ -244,7 +243,6 @@ pub fn play_from_track_listing(
             .iter()
             .map(|row| {
                 QueueItemData::new(
-                    cx,
                     row.location.clone().into(),
                     Some(row.track_id),
                     Some(row.album_id),

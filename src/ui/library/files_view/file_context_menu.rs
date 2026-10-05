@@ -32,7 +32,7 @@ fn file_menu_action(
     op: fn(&mut App, QueueItemData),
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
     move |_, _, cx| {
-        let data = QueueItemData::new(cx, path.to_path_buf(), None, None);
+        let data = QueueItemData::new(path.to_path_buf(), None, None);
         op(cx, data);
     }
 }

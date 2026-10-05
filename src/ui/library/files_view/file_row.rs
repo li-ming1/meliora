@@ -258,7 +258,6 @@ fn queue_batch_items(
                 .filter(|(path, _)| available.contains(path.as_ref()))
                 .map(|(path, track)| {
                     QueueItemData::new(
-                        cx,
                         path.to_path_buf(),
                         track.as_ref().map(|track| track.id),
                         track.as_ref().and_then(|track| track.album_id),

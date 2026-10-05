@@ -283,7 +283,7 @@
   },
   "APP_NAME": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:622",
+    "definedIn": "src/ui/controls/info_section.rs:627",
     "plural": false,
     "description": "Use the english name everywhere unless this is strictly disagreeable.\n                                "
   },
@@ -313,13 +313,13 @@
   },
   "CLEAR_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1062",
+    "definedIn": "src/ui/queue.rs:1101",
     "plural": false,
     "description": null
   },
   "CLOSE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1080",
+    "definedIn": "src/ui/queue.rs:1119",
     "plural": false,
     "description": null
   },
@@ -631,13 +631,13 @@
   },
   "GO_TO_ALBUM": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:674",
+    "definedIn": "src/ui/queue.rs:677",
     "plural": false,
     "description": null
   },
   "GO_TO_ARTIST": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:693",
+    "definedIn": "src/ui/queue.rs:696",
     "plural": false,
     "description": null
   },
@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1472",
+    "definedIn": "src/ui/immersive.rs:1476",
     "plural": false,
     "description": null
   },
@@ -973,31 +973,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:685",
+    "definedIn": "src/ui/kugou.rs:684",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:697",
+    "definedIn": "src/ui/kugou.rs:696",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:812",
+    "definedIn": "src/ui/kugou.rs:811",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:817",
+    "definedIn": "src/ui/kugou.rs:816",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:711",
+    "definedIn": "src/ui/kugou.rs:710",
     "plural": false,
     "description": null
   },
@@ -1189,7 +1189,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:822",
+    "definedIn": "src/ui/kugou.rs:821",
     "plural": false,
     "description": null
   },
@@ -1267,7 +1267,7 @@
   },
   "LIKE": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:366",
+    "definedIn": "src/ui/controls/info_section.rs:371",
     "plural": false,
     "description": null
   },
@@ -1351,31 +1351,31 @@
   },
   "NETEASE_LIKE_ADDED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:475",
+    "definedIn": "src/ui/netease.rs:474",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:481",
+    "definedIn": "src/ui/netease.rs:480",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:516",
+    "definedIn": "src/ui/netease.rs:515",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_REMOVED_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:522",
+    "definedIn": "src/ui/netease.rs:521",
     "plural": false,
     "description": null
   },
   "NETEASE_LIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:488",
+    "definedIn": "src/ui/netease.rs:487",
     "plural": false,
     "description": null
   },
@@ -1411,7 +1411,7 @@
   },
   "NETEASE_LOGIN_REQUIRED_LIKE": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:451",
+    "definedIn": "src/ui/netease.rs:450",
     "plural": false,
     "description": null
   },
@@ -1591,7 +1591,7 @@
   },
   "NETEASE_UNLIKE_TASK_FAILED": {
     "context": "netease.rs",
-    "definedIn": "src/ui/netease.rs:529",
+    "definedIn": "src/ui/netease.rs:528",
     "plural": false,
     "description": null
   },
@@ -1609,7 +1609,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:758",
+    "definedIn": "src/ui/lyrics.rs:759",
     "plural": false,
     "description": null
   },
@@ -1813,19 +1813,19 @@
   },
   "QUEUE_REMOVE_CANCELLED_STALE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:779",
+    "definedIn": "src/ui/queue.rs:782",
     "plural": false,
     "description": null
   },
   "QUEUE_SUMMARY_TRACKS": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:984",
+    "definedIn": "src/ui/queue.rs:1023",
     "plural": true,
     "description": null
   },
   "QUEUE_TITLE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1047",
+    "definedIn": "src/ui/queue.rs:1086",
     "plural": false,
     "description": null
   },
@@ -1861,7 +1861,7 @@
   },
   "REMOVE_FROM_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:737",
+    "definedIn": "src/ui/queue.rs:740",
     "plural": false,
     "description": null
   },
@@ -1873,7 +1873,7 @@
   },
   "REMOVE_N_FROM_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:624",
+    "definedIn": "src/ui/queue.rs:627",
     "plural": true,
     "description": null
   },
@@ -2233,19 +2233,19 @@
   },
   "SHOW_IN_FILE_EXPLORER": {
     "context": "context_menus.rs",
-    "definedIn": "src/ui/library/context_menus.rs:283",
+    "definedIn": "src/ui/library/context_menus.rs:281",
     "plural": false,
     "description": null
   },
   "SHOW_IN_FILE_MANAGER": {
     "context": "context_menus.rs",
-    "definedIn": "src/ui/library/context_menus.rs:285",
+    "definedIn": "src/ui/library/context_menus.rs:283",
     "plural": false,
     "description": null
   },
   "SHOW_IN_FINDER": {
     "context": "context_menus.rs",
-    "definedIn": "src/ui/library/context_menus.rs:281",
+    "definedIn": "src/ui/library/context_menus.rs:279",
     "plural": false,
     "description": null
   },
@@ -2581,19 +2581,19 @@
   },
   "UNKNOWN_ARTIST": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:677",
+    "definedIn": "src/ui/controls/info_section.rs:682",
     "plural": false,
     "description": null
   },
   "UNKNOWN_TRACK": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:663",
+    "definedIn": "src/ui/controls/info_section.rs:668",
     "plural": false,
     "description": null
   },
   "UNLIKE": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:363",
+    "definedIn": "src/ui/controls/info_section.rs:368",
     "plural": false,
     "description": null
   },

@@ -27,13 +27,12 @@ fn entry_sort_group(entry: &RawEntry) -> u8 {
 }
 
 pub(super) fn queue_items_from_entries(
-    cx: &mut App,
+    _cx: &mut App,
     entries: &[(PathBuf, Option<TrackRef>)],
 ) -> Vec<QueueItemData> {
     let mut items = Vec::with_capacity(entries.len());
     for (path, track) in entries {
         items.push(QueueItemData::new(
-            cx,
             path.clone(),
             track.as_ref().map(|track| track.id),
             track.as_ref().and_then(|track| track.album_id),

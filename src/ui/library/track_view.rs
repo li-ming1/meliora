@@ -16,12 +16,13 @@ use crate::{
 };
 /// Builds the play queue from table rows. Shared by the double-click handler
 /// and the context menu's "play from here" action below.
-fn queue_items_from_rows(cx: &mut App, items: &[(i64, Option<i64>, String)]) -> Vec<QueueItemData> {
+fn queue_items_from_rows(
+    _cx: &mut App,
+    items: &[(i64, Option<i64>, String)],
+) -> Vec<QueueItemData> {
     items
         .iter()
-        .map(|(id, album_id, path)| {
-            QueueItemData::new(cx, PathBuf::from(path), Some(*id), *album_id)
-        })
+        .map(|(id, album_id, path)| QueueItemData::new(PathBuf::from(path), Some(*id), *album_id))
         .collect()
 }
 

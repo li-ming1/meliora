@@ -259,7 +259,7 @@ fn shuffle_all(_: &ShuffleAll, cx: &mut App) {
 
         let items: Vec<QueueItemData> = tracks
             .into_iter()
-            .map(|(path, id, album_id)| QueueItemData::lazy(path.into(), Some(id), Some(album_id)))
+            .map(|(path, id, album_id)| QueueItemData::new(path.into(), Some(id), Some(album_id)))
             .collect();
 
         cx.update(|cx| {

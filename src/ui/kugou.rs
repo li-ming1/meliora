@@ -625,9 +625,8 @@ pub fn play_track_now(cx: &mut App, track: &KugouTrackInfo) {
     play_track(cx, track, PlayIntent::Now);
 }
 
-fn online_queue_item(cx: &mut App, url: String, track: &KugouTrackInfo) -> QueueItemData {
+fn online_queue_item(_cx: &mut App, url: String, track: &KugouTrackInfo) -> QueueItemData {
     QueueItemData::with_ui_data(
-        cx,
         PathBuf::from(url),
         QueueItemUIData {
             album_id: None,

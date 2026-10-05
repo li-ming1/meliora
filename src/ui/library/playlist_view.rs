@@ -888,7 +888,6 @@ impl Render for PlaylistView {
                                                             .iter()
                                                             .map(|row| {
                                                                 QueueItemData::new(
-                                                                    cx,
                                                                     row.location.clone().into(),
                                                                     Some(row.track_id),
                                                                     Some(row.album_id),
@@ -1317,7 +1316,6 @@ pub fn find_playlist_tracks(cx: &mut App, playlist_id: i64) -> Vec<QueueItemData
         .iter()
         .map(|row| {
             QueueItemData::new(
-                cx,
                 row.location.clone().into(),
                 Some(row.track_id),
                 Some(row.album_id),

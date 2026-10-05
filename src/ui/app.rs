@@ -125,7 +125,7 @@ impl Render for MainWindow {
                         let items = ev
                             .paths()
                             .iter()
-                            .map(|path| QueueItemData::new(cx, path.clone(), None, None))
+                            .map(|path| QueueItemData::new(path.clone(), None, None))
                             .collect();
 
                         let playback_interface = cx.global::<PlaybackInterface>();
@@ -892,7 +892,7 @@ struct Args {
 
 /// Parses the arguments provided by the user and handles them. Returns true if files were provided
 /// for playback as command line arguments.
-fn parse_args_and_prepare(cx: &mut App, interface: &PlaybackInterface) -> bool {
+fn parse_args_and_prepare(_cx: &mut App, interface: &PlaybackInterface) -> bool {
     let args = Args::parse();
 
     if let Some(files) = &args.files {
@@ -901,7 +901,7 @@ fn parse_args_and_prepare(cx: &mut App, interface: &PlaybackInterface) -> bool {
         interface.queue_list(
             files
                 .iter()
-                .map(|path| QueueItemData::new(cx, path.clone(), None, None))
+                .map(|path| QueueItemData::new(path.clone(), None, None))
                 .collect(),
         );
     }
