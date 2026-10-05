@@ -47,6 +47,8 @@ pub mod files_view;
 #[cfg(feature = "kugou")]
 mod kugou_playlists;
 #[cfg(feature = "kugou")]
+pub(crate) use kugou_playlists::invalidate_cached_playlists;
+#[cfg(feature = "kugou")]
 mod kugou_ranks;
 pub mod missing_folder_dialog;
 #[cfg(feature = "netease")]

@@ -5,7 +5,6 @@
 use std::{
     collections::HashSet,
     sync::{Arc, LazyLock, Mutex},
-    time::Instant,
 };
 
 use crate::ui::online_track_row::{error_line, muted_line};
@@ -25,7 +24,10 @@ use crate::{
             KugouRank, KugouTrackInfo, parse_rank_tracks, parse_ranks, parse_recommend_tracks,
         },
         library::{EscapeBack, view_header::view_header},
-        online_common::{load_more_rank_tracks, rank_tab_button, switch_ranks_tab},
+        online_common::{
+            CachedRoot, cached_root, load_more_rank_tracks, rank_tab_button, store_root,
+            switch_ranks_tab,
+        },
         theme::Theme,
     },
 };
@@ -43,41 +45,13 @@ const TRACK_ROW_HEIGHT: f32 = 60.0;
 /// update back.
 const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Session-level cache TTL for the two tab roots. The view entity is rebuilt
-/// on every tab switch, so without the cache reopening the discovery page
-/// re-fetches `rank_list` / `everyday_recommend` from scratch. Both are
-/// slow-moving content (rank lists refresh on hour/day cadences), so half an
-/// hour of staleness is invisible while re-entry becomes instant. Only
-/// successful loads are cached; failures retry on the next open.
-const ROOTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-
-struct CachedRoot<T> {
-    at: Instant,
-    value: T,
-}
-
+/// Session cache for the two tab roots (TTL + helpers in `online_common`):
+/// the view entity is rebuilt on every tab switch, so a fresh entry skips
+/// the root-list re-fetch entirely.
 static CACHED_RANKS: LazyLock<Mutex<Option<CachedRoot<Vec<KugouRank>>>>> =
     LazyLock::new(|| Mutex::new(None));
 static CACHED_RECOMMEND: LazyLock<Mutex<Option<CachedRoot<Vec<Arc<KugouTrackInfo>>>>>> =
     LazyLock::new(|| Mutex::new(None));
-
-fn cached_root<T: Clone>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) -> Option<T> {
-    let guard = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cached = guard.as_ref()?;
-    (cached.at.elapsed() < ROOTS_CACHE_TTL).then(|| cached.value.clone())
-}
-
-fn store_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>, value: T) {
-    let mut guard = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some(CachedRoot {
-        at: Instant::now(),
-        value,
-    });
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {

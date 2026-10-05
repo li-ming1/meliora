@@ -6,7 +6,7 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
-    sync::{Arc, OnceLock, RwLock, RwLockWriteGuard},
+    sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, RwLockWriteGuard},
     time::{Duration, Instant},
 };
 
@@ -245,6 +245,50 @@ pub(crate) fn prime_online_liked_cache<L, R, Fut>(
         let _guard = liked_load_lock().lock().await;
         refresh_liked_set_from_service().await;
     });
+}
+
+/// Session-level cache TTL for discovery-page root lists. The view entities
+/// are rebuilt on every tab switch, so without a cache reopening a discovery
+/// page re-fetches its root list from scratch. These lists are slow-moving
+/// content (rank lists refresh on hour/day cadences, user playlists only
+/// change on explicit mutation), so half an hour of staleness is invisible
+/// while re-entry becomes instant. Only successful loads are cached; failure
+/// paths and explicit refresh/mutation call sites bypass the cache and
+/// refill it on success.
+pub(crate) const ROOTS_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+
+pub(crate) struct CachedRoot<T> {
+    at: Instant,
+    value: T,
+}
+
+/// Fresh entry out of a root-list cache, `None` on miss or TTL expiry.
+pub(crate) fn cached_root<T: Clone>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) -> Option<T> {
+    let guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cached = guard.as_ref()?;
+    (cached.at.elapsed() < ROOTS_CACHE_TTL).then(|| cached.value.clone())
+}
+
+/// Store a successful load into a root-list cache, replacing any stale entry.
+pub(crate) fn store_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>, value: T) {
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some(CachedRoot {
+        at: Instant::now(),
+        value,
+    });
+}
+
+/// Drop a root-list cache entry entirely — for content keyed to an account
+/// (user playlists), so an in-session account switch can never be served the
+/// previous account's data however fresh the entry is.
+pub(crate) fn clear_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) {
+    *cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 #[cfg(test)]

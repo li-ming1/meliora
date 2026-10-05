@@ -2,7 +2,10 @@
 //! tracks. Tracks are streamed on double-click via a freshly fetched play URL.
 //! Gated behind the `kugou` cargo feature.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::{tr, trn};
@@ -29,6 +32,7 @@ use crate::{
         },
         kugou::{KugouPlaylistInfo, KugouTrackInfo, parse_playlists, parse_tracks},
         library::view_header::view_header,
+        online_common::{CachedRoot, cached_root, clear_root, store_root},
         settings::{SettingsSectionKind, open_settings_window_with_section},
         theme::Theme,
     },
@@ -42,6 +46,20 @@ const PLAYLISTS_PER_PAGE: i64 = 100;
 
 /// Songs are uploaded into the new playlist in chunks of this size.
 const PLAYLIST_ADD_CHUNK: usize = 100;
+
+/// Session cache for the playlist overview (TTL + helpers in
+/// `online_common`): the view entity is rebuilt on every tab switch, so a
+/// fresh entry skips the re-fetch entirely. Mutations inside this view
+/// (import, retry) go through `refresh_playlists`, which bypasses the cache
+/// and refills it, so user-driven changes are never masked.
+static CACHED_PLAYLISTS: LazyLock<Mutex<Option<CachedRoot<Vec<KugouPlaylistInfo>>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Account identity changed (login/logout, possibly to a different account):
+/// drop the cached overview so it can never be served across accounts.
+pub(crate) fn invalidate_cached_playlists() {
+    clear_root(&CACHED_PLAYLISTS);
+}
 
 /// Concurrent KuGou song searches while matching an imported playlist.
 /// Deliberately small: one shared client against the signed web search
@@ -179,7 +197,7 @@ impl KugouPlaylistsView {
             };
 
             if logged_in {
-                view.refresh_playlists(cx);
+                view.load_playlists_initial(cx);
                 view.ensure_profile(cx);
             } else {
                 view.playlists = PlaylistsState::LoggedOut;
@@ -187,6 +205,18 @@ impl KugouPlaylistsView {
 
             view
         })
+    }
+
+    /// Initial load on view construction: serve the session cache when fresh
+    /// (the entity is rebuilt on every tab switch), else fall through to the
+    /// network path, which also refills the cache.
+    fn load_playlists_initial(&mut self, cx: &mut Context<Self>) {
+        if let Some(playlists) = cached_root(&CACHED_PLAYLISTS) {
+            self.playlists = PlaylistsState::Ready(playlists);
+            cx.notify();
+            return;
+        }
+        self.refresh_playlists(cx);
     }
 
     /// Fetch the user profile once if the cache is empty, then notify so the
@@ -219,7 +249,11 @@ impl KugouPlaylistsView {
             let _ = this
                 .update(cx, |this, cx| {
                     this.playlists = match request {
-                        Ok(Ok(response)) => PlaylistsState::Ready(parse_playlists(&response.body)),
+                        Ok(Ok(response)) => {
+                            let playlists = parse_playlists(&response.body);
+                            store_root(&CACHED_PLAYLISTS, playlists.clone());
+                            PlaylistsState::Ready(playlists)
+                        }
                         Ok(Err(err)) => PlaylistsState::Failed(load_failed_message(&err)),
                         Err(err) => PlaylistsState::Failed(load_failed_message(&err)),
                     };
