@@ -704,29 +704,42 @@ where
             }
         }
 
-        let all_columns = C::all_columns();
-        let mut column_menu = menu();
-        for col in all_columns {
-            let is_visible = columns_read.contains_key(col);
-            let is_hideable = col.is_hideable();
-            let column_copy = *col;
+        // The column menu is built only when the header menu actually opens:
+        // building it here on every render allocates and drops a full menu
+        // tree per frame (column drags repaint at pointer rate) for a menu
+        // that is usually never opened.
+        let table = cx.entity();
+        let header_with_context =
+            context("table-header-context")
+                .with(header)
+                .menu_on_open(move |_, cx| {
+                    let theme = cx.global::<Theme>();
+                    let columns_read = table.read(cx).columns.read(cx);
+                    let mut column_menu = menu();
+                    for col in C::all_columns() {
+                        let is_visible = columns_read.contains_key(col);
+                        let column_copy = *col;
+                        let table = table.clone();
 
-            column_menu = column_menu.item(
-                menu_check_item(
-                    col.get_column_name(),
-                    is_visible,
-                    col.get_column_name(),
-                    cx.listener(move |this, _, _, cx| {
-                        this.toggle_column(column_copy, cx);
-                    }),
-                )
-                .disabled(!is_hideable),
-            );
-        }
-
-        let header_with_context = context("table-header-context")
-            .with(header)
-            .child(div().bg(theme.elevated_background).child(column_menu));
+                        column_menu = column_menu.item(
+                            menu_check_item(
+                                col.get_column_name(),
+                                is_visible,
+                                col.get_column_name(),
+                                move |_, _, cx| {
+                                    table.update(cx, |this, cx| {
+                                        this.toggle_column(column_copy, cx);
+                                    });
+                                },
+                            )
+                            .disabled(!col.is_hideable()),
+                        );
+                    }
+                    div()
+                        .bg(theme.elevated_background)
+                        .child(column_menu)
+                        .into_any_element()
+                });
 
         div()
             .id(T::get_table_name())
