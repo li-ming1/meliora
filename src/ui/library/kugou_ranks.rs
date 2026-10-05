@@ -2,7 +2,11 @@
 //! daily recommend playlist. Streams online tracks like the playlists page.
 //! Gated behind the `kugou` cargo feature.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, LazyLock, Mutex},
+    time::Instant,
+};
 
 use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::tr;
@@ -38,6 +42,42 @@ const TRACK_ROW_HEIGHT: f32 = 60.0;
 /// the outcome through the global liked-set before rolling the optimistic
 /// update back.
 const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Session-level cache TTL for the two tab roots. The view entity is rebuilt
+/// on every tab switch, so without the cache reopening the discovery page
+/// re-fetches `rank_list` / `everyday_recommend` from scratch. Both are
+/// slow-moving content (rank lists refresh on hour/day cadences), so half an
+/// hour of staleness is invisible while re-entry becomes instant. Only
+/// successful loads are cached; failures retry on the next open.
+const ROOTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+struct CachedRoot<T> {
+    at: Instant,
+    value: T,
+}
+
+static CACHED_RANKS: LazyLock<Mutex<Option<CachedRoot<Vec<KugouRank>>>>> =
+    LazyLock::new(|| Mutex::new(None));
+static CACHED_RECOMMEND: LazyLock<Mutex<Option<CachedRoot<Vec<Arc<KugouTrackInfo>>>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+fn cached_root<T: Clone>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) -> Option<T> {
+    let guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cached = guard.as_ref()?;
+    (cached.at.elapsed() < ROOTS_CACHE_TTL).then(|| cached.value.clone())
+}
+
+fn store_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>, value: T) {
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some(CachedRoot {
+        at: Instant::now(),
+        value,
+    });
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {
@@ -124,6 +164,14 @@ impl KugouRanksView {
     }
 
     fn load_ranks(&mut self, cx: &mut Context<Self>) {
+        // Session cache hit: the view is rebuilt on every tab switch, so a
+        // fresh cached rank list skips the network entirely.
+        if let Some(ranks) = cached_root(&CACHED_RANKS) {
+            self.ranks = RanksState::Ready(ranks);
+            cx.notify();
+            return;
+        }
+
         self.ranks = RanksState::Loading;
         cx.notify();
 
@@ -141,6 +189,7 @@ impl KugouRanksView {
                             if ranks.is_empty() {
                                 RanksState::Failed(tr!("KUGOU_NO_RANKS", "No ranks found").into())
                             } else {
+                                store_root(&CACHED_RANKS, ranks.clone());
                                 RanksState::Ready(ranks)
                             }
                         }
@@ -167,6 +216,12 @@ impl KugouRanksView {
     }
 
     fn load_recommend(&mut self, cx: &mut Context<Self>) {
+        if let Some(tracks) = cached_root(&CACHED_RECOMMEND) {
+            self.recommend = RecommendState::Ready(tracks);
+            cx.notify();
+            return;
+        }
+
         self.recommend = RecommendState::Loading;
         cx.notify();
 
@@ -186,7 +241,9 @@ impl KugouRanksView {
                                     tr!("KUGOU_NO_RECOMMEND", "No recommendations today").into(),
                                 )
                             } else {
-                                RecommendState::Ready(tracks.into_iter().map(Arc::new).collect())
+                                let tracks: Vec<_> = tracks.into_iter().map(Arc::new).collect();
+                                store_root(&CACHED_RECOMMEND, tracks.clone());
+                                RecommendState::Ready(tracks)
                             }
                         }
                         Ok(Err(err)) => RecommendState::Failed(err.to_string().into()),

@@ -653,6 +653,12 @@ impl PlaybackThread {
         let Some(next_path) = self.queue.peek_next_path() else {
             return;
         };
+        // The failure cooldown lasts 30 s and this runs per decode cycle:
+        // skip the registry scan and the closure allocation while
+        // prepare_next would only reject the attempt anyway.
+        if self.engine.prepare_rejected(&next_path) {
+            return;
+        }
         let on_open_error = self.build_prepare_refresh(&next_path);
         self.engine.prepare_next(&next_path, on_open_error);
     }

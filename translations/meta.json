@@ -793,7 +793,7 @@
   },
   "KUGOU_DAILY_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:366",
+    "definedIn": "src/ui/library/kugou_ranks.rs:423",
     "plural": false,
     "description": null
   },
@@ -1063,13 +1063,13 @@
   },
   "KUGOU_NO_RANKS": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:142",
+    "definedIn": "src/ui/library/kugou_ranks.rs:190",
     "plural": false,
     "description": null
   },
   "KUGOU_NO_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:186",
+    "definedIn": "src/ui/library/kugou_ranks.rs:241",
     "plural": false,
     "description": null
   },

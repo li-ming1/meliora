@@ -19,9 +19,15 @@ use std::time::{Duration, Instant};
 
 use symphonia::core::io::MediaSource;
 
-/// Fill ahead up to this many bytes: ~6 s of 320 kbps or ~16 s of 128 kbps
-/// audio. Bounds the memory cost per playing track.
-const HIGH_WATER_BYTES: usize = 256 * 1024;
+/// Fill ahead up to this many bytes: ~8 s of FLAC (~1 Mbps), ~25 s of
+/// 320 kbps or ~64 s of 128 kbps audio; ~1 MB live only while a track plays.
+/// Sized together with the fill reconnect cadence so a transient server
+/// stall is absorbed invisibly: the buffer rides out the reconnect window
+/// and a fresh ranged request refills before the decoder reaches the bottom.
+/// The old 256 KB high water held ~2 s of FLAC — a 13 s server pause logged
+/// as 981 callback underruns in one session (2026-10-03) with no fill error
+/// and no track change, then resumed on its own.
+const HIGH_WATER_BYTES: usize = 1024 * 1024;
 /// One fill step, taken outside every lock so a stalled read never blocks
 /// the consumer.
 const FILL_CHUNK: usize = 16 * 1024;

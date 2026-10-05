@@ -257,6 +257,30 @@ impl AudioEngine {
         self.prepare_rx.is_some() || self.prepared.is_some()
     }
 
+    /// Whether `prepare_next` would reject `path` right now: already
+    /// prepared/in flight, or inside a dropped/failed cooldown. Lets the
+    /// caller skip building the refresh hook — a queue lock, a registry scan
+    /// and a closure allocation per decode cycle during the 30 s failure
+    /// cooldown — before paying for it.
+    pub fn prepare_rejected(&self, path: &Path) -> bool {
+        if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
+            return true;
+        }
+        if let Some((dropped, at)) = &self.dropped_prepare
+            && dropped == path
+            && at.elapsed() < PREPARE_COOLDOWN
+        {
+            return true;
+        }
+        if let Some((failed, at)) = &self.failed_prepare
+            && failed == path
+            && at.elapsed() < PREPARE_FAILURE_COOLDOWN
+        {
+            return true;
+        }
+        false
+    }
+
     /// Pre-open `path`'s media stream on a background thread so the track
     /// swap at end-of-track doesn't wait on connect+probe (online sources).
     /// `on_open_error` arms the prepare with a one-shot URL-refresh retry:
