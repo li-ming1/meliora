@@ -374,7 +374,7 @@ impl ReleaseView {
                                     is_playing,
                                     {
                                         let tracks = self.track_listing.tracks().clone();
-                                        move |cx| queue_items_from_tracks(cx, &tracks)
+                                        move |_cx| queue_items_from_tracks(&tracks)
                                     },
                                 )
                                 .show_add_to_queue(false)

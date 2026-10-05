@@ -478,7 +478,7 @@ impl Render for ArtistDetailView {
                                     is_playing,
                                     {
                                         let liked_tracks = self.liked_tracks.clone();
-                                        move |cx| queue_items_from_tracks(cx, &liked_tracks)
+                                        move |_cx| queue_items_from_tracks(&liked_tracks)
                                     },
                                 ))
                                 .child(
@@ -578,7 +578,7 @@ impl Render for ArtistDetailView {
                                 is_playing,
                                 {
                                     let standalone_tracks = self.standalone_tracks.clone();
-                                    move |cx| queue_items_from_tracks(cx, &standalone_tracks)
+                                    move |_cx| queue_items_from_tracks(&standalone_tracks)
                                 },
                             ))
                             .child(
@@ -712,7 +712,7 @@ impl Render for ArtistDetailView {
                                             is_playing,
                                             {
                                                 let all_tracks = self.all_tracks.clone();
-                                                move |cx| queue_items_from_tracks(cx, &all_tracks)
+                                                move |_cx| queue_items_from_tracks(&all_tracks)
                                             },
                                         )))
                                     }),

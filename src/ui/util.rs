@@ -57,9 +57,9 @@ where
     did_remove
 }
 
-pub fn create_or_retrieve_view<T>(
-    views_model: &Entity<FxHashMap<usize, Entity<T>>>,
-    key: usize,
+pub fn create_or_retrieve_view<K: Copy + Eq + std::hash::Hash + 'static, T>(
+    views_model: &Entity<FxHashMap<K, Entity<T>>>,
+    key: K,
     creation_fn: impl FnOnce(&mut App) -> Entity<T>,
     cx: &mut App,
 ) -> Entity<T>

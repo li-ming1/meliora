@@ -604,7 +604,7 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
                 // identity drifted: fall through and insert a fresh entry
             }
 
-            let item = online_queue_item(cx, url, &track);
+            let item = online_queue_item(url, &track);
 
             match intent {
                 PlayIntent::Now => play_now(cx, item),
@@ -625,7 +625,7 @@ pub fn play_track_now(cx: &mut App, track: &KugouTrackInfo) {
     play_track(cx, track, PlayIntent::Now);
 }
 
-fn online_queue_item(_cx: &mut App, url: String, track: &KugouTrackInfo) -> QueueItemData {
+fn online_queue_item(url: String, track: &KugouTrackInfo) -> QueueItemData {
     QueueItemData::with_ui_data(
         PathBuf::from(url),
         QueueItemUIData {

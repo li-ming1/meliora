@@ -319,7 +319,7 @@ fn play_track(cx: &mut App, track: &NeteaseTrackInfo, intent: PlayIntent) {
                 );
             }
 
-            let item = online_queue_item(cx, url, &track);
+            let item = online_queue_item(url, &track);
 
             match intent {
                 PlayIntent::Now => play_now(cx, item),
@@ -345,7 +345,7 @@ pub fn queue_track(cx: &mut App, track: &NeteaseTrackInfo) {
     play_track(cx, track, PlayIntent::Queue);
 }
 
-fn online_queue_item(_cx: &mut App, url: String, track: &NeteaseTrackInfo) -> QueueItemData {
+fn online_queue_item(url: String, track: &NeteaseTrackInfo) -> QueueItemData {
     QueueItemData::with_ui_data(
         PathBuf::from(url),
         QueueItemUIData {

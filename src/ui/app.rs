@@ -679,7 +679,7 @@ pub fn run() -> anyhow::Result<()> {
         // drain 是 UI 职责，playback 层只保留纯命令发送端。
         super::playback_bridge::start_broadcast(&mut playback_interface, cx);
 
-        if !parse_args_and_prepare(cx, &playback_interface)
+        if !parse_args_and_prepare(&playback_interface)
             && let Some(pos) = initial_position
         {
             playback_interface.jump(pos);
@@ -892,7 +892,7 @@ struct Args {
 
 /// Parses the arguments provided by the user and handles them. Returns true if files were provided
 /// for playback as command line arguments.
-fn parse_args_and_prepare(_cx: &mut App, interface: &PlaybackInterface) -> bool {
+fn parse_args_and_prepare(interface: &PlaybackInterface) -> bool {
     let args = Args::parse();
 
     if let Some(files) = &args.files {

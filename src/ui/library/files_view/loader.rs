@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, SharedString};
+use gpui::SharedString;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -27,7 +27,6 @@ fn entry_sort_group(entry: &RawEntry) -> u8 {
 }
 
 pub(super) fn queue_items_from_entries(
-    _cx: &mut App,
     entries: &[(PathBuf, Option<TrackRef>)],
 ) -> Vec<QueueItemData> {
     let mut items = Vec::with_capacity(entries.len());

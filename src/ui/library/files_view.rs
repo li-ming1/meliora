@@ -284,7 +284,7 @@ impl FilesView {
                     return;
                 }
 
-                let items = queue_items_from_entries(cx, &audio_entries);
+                let items = queue_items_from_entries(&audio_entries);
 
                 let playback = cx.global::<PlaybackInterface>();
                 if let Some(idx) = audio_entries.iter().position(|(p, _)| *p == path) {
@@ -316,7 +316,7 @@ impl FilesView {
                 return;
             }
             cx.update(|cx| {
-                let items = queue_items_from_entries(cx, &collected);
+                let items = queue_items_from_entries(&collected);
                 let playback = cx.global::<PlaybackInterface>();
                 if replace {
                     playback.replace_queue(items);

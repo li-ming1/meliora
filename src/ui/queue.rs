@@ -42,7 +42,7 @@ use super::{
     },
     scroll_follow::SmoothScrollFollow,
     theme::Theme,
-    util::VIEW_KEEP_AROUND,
+    util::{VIEW_KEEP_AROUND, create_or_retrieve_view},
 };
 
 /// The list identifier for queue drag-drop operations
@@ -946,31 +946,6 @@ impl Queue {
         self.last_prune_window = (usize::MAX, usize::MAX);
         self.summary_total = total;
         self.pending_durations = pending;
-    }
-}
-
-/// `ui::util::create_or_retrieve_view` keyed by `u64`: row views are cached
-/// under the owning `QueueItemData`'s uid, which is stable across clones and
-/// queue mutations (the legacy keys were per-item entity ids). The util
-/// helper stays pinned to `usize` keys for its other callers and this step
-/// may only touch queue.rs — generalize the util one over the key type and
-/// fold this copy back in the follow-up cleanup step.
-fn create_or_retrieve_view(
-    views_model: &Entity<FxHashMap<u64, Entity<QueueItem>>>,
-    key: u64,
-    creation_fn: impl FnOnce(&mut App) -> Entity<QueueItem>,
-    cx: &mut App,
-) -> Entity<QueueItem> {
-    let view = views_model.read(cx).get(&key).cloned();
-    match view {
-        Some(view) => view,
-        None => {
-            let view = creation_fn(cx);
-            views_model.update(cx, |m, _| {
-                m.insert(key, view.clone());
-            });
-            view
-        }
     }
 }
 

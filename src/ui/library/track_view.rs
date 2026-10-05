@@ -16,10 +16,7 @@ use crate::{
 };
 /// Builds the play queue from table rows. Shared by the double-click handler
 /// and the context menu's "play from here" action below.
-fn queue_items_from_rows(
-    _cx: &mut App,
-    items: &[(i64, Option<i64>, String)],
-) -> Vec<QueueItemData> {
+fn queue_items_from_rows(items: &[(i64, Option<i64>, String)]) -> Vec<QueueItemData> {
     items
         .iter()
         .map(|(id, album_id, path)| QueueItemData::new(PathBuf::from(path), Some(*id), *album_id))
@@ -74,7 +71,7 @@ impl TrackView {
                     .position(|(row_id, _, _)| *row_id == id.0)
                     .unwrap_or(0);
 
-                let queue_items = queue_items_from_rows(cx, &items);
+                let queue_items = queue_items_from_rows(&items);
 
                 let playback = cx.global::<PlaybackInterface>();
                 playback.replace_queue_with_index(queue_items, index);
@@ -98,7 +95,7 @@ impl TrackView {
                         // no per-track exists() probe (same reason as the
                         // double-click handler above); playback skips files
                         // that went missing
-                        let queue_items = queue_items_from_rows(cx, &items);
+                        let queue_items = queue_items_from_rows(&items);
 
                         play_from_track(cx, track, queue_items);
                     }

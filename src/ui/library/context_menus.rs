@@ -47,7 +47,7 @@ type TrackPlayFromHereHandler = Rc<dyn Fn(&mut App, &Track) + 'static>;
 /// callers hand over whole tables/playlists (10k stats per click on a large
 /// library) and the playback engine skips files that went missing. Row
 /// availability is already visible to the user from the row data.
-pub fn queue_items_from_tracks(_cx: &mut App, tracks: &[Track]) -> Vec<QueueItemData> {
+pub fn queue_items_from_tracks(tracks: &[Track]) -> Vec<QueueItemData> {
     tracks
         .iter()
         .map(|track| {
@@ -58,12 +58,7 @@ pub fn queue_items_from_tracks(_cx: &mut App, tracks: &[Track]) -> Vec<QueueItem
         .collect()
 }
 
-fn queue_item_data(
-    _cx: &mut App,
-    location: PathBuf,
-    id: i64,
-    album_id: Option<i64>,
-) -> QueueItemData {
+fn queue_item_data(location: PathBuf, id: i64, album_id: Option<i64>) -> QueueItemData {
     QueueItemData::new(location, Some(id), album_id)
 }
 
@@ -234,7 +229,7 @@ pub fn play_from_track_listing(
     queue_context: Option<Arc<Vec<Track>>>,
 ) {
     let queue_items = if let Some(tracks) = queue_context {
-        queue_items_from_tracks(cx, &tracks)
+        queue_items_from_tracks(&tracks)
     } else if let Some(playlist_id) = playlist_id {
         // no per-row exists() probe: playlists can be thousands of rows and
         // the playback engine skips missing files
@@ -251,10 +246,9 @@ pub fn play_from_track_listing(
             .collect()
     } else if let Some(album_id) = track.album_id {
         let tracks = cx.list_tracks_in_album(album_id).unwrap_or_default();
-        queue_items_from_tracks(cx, &tracks)
+        queue_items_from_tracks(&tracks)
     } else {
         vec![queue_item_data(
-            cx,
             track.location.clone(),
             track.id,
             track.album_id,
@@ -374,17 +368,17 @@ pub(crate) fn queue_items(cx: &mut App, items: impl IntoIterator<Item = QueueIte
 }
 
 fn play_track_now(cx: &mut App, track: &Track) {
-    let data = queue_item_data(cx, track.location.clone(), track.id, track.album_id);
+    let data = queue_item_data(track.location.clone(), track.id, track.album_id);
     play_now(cx, data);
 }
 
 pub fn play_track_next(cx: &mut App, track: &Track) {
-    let data = queue_item_data(cx, track.location.clone(), track.id, track.album_id);
+    let data = queue_item_data(track.location.clone(), track.id, track.album_id);
     play_next(cx, data);
 }
 
 fn queue_track(cx: &mut App, track: &Track) {
-    let data = queue_item_data(cx, track.location.clone(), track.id, track.album_id);
+    let data = queue_item_data(track.location.clone(), track.id, track.album_id);
     queue_item(cx, data);
 }
 
@@ -458,7 +452,7 @@ fn available_album_queue_items(cx: &mut App, album: &Album) -> Vec<QueueItemData
     let tracks = cx
         .list_tracks_in_album(album.id)
         .unwrap_or_else(|_| Arc::new(Vec::new()));
-    queue_items_from_tracks(cx, &tracks)
+    queue_items_from_tracks(&tracks)
 }
 
 fn play_album_now(cx: &mut App, album: &Album) {
