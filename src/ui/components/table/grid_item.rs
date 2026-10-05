@@ -4,13 +4,13 @@ use gpui::{prelude::FluentBuilder, *};
 
 use super::{
     OnSelectHandler,
-    table_data::{Column, GridContext, TableData, TableDragData, with_drag_handlers},
+    table_data::{
+        Column, GridContext, TableData, TableDragData, apply_row_selection, with_drag_handlers,
+        wrap_with_context_menu,
+    },
 };
 use crate::ui::{
-    components::{
-        context::context,
-        managed_image::{ManagedImageKey, managed_image},
-    },
+    components::managed_image::{ManagedImageKey, managed_image},
     theme::Theme,
 };
 
@@ -95,41 +95,22 @@ where
             None
         };
 
-        let mut container = div()
+        let container = div()
             .w_full()
             .h_full()
             .flex()
             .flex_col()
             .p(px(8.0))
             .rounded_lg()
-            .id(self.id.clone())
-            .when_some(self.on_select.clone(), {
-                let row_data = self.row.clone();
-                move |div, on_select| {
-                    if is_available {
-                        div.on_click(move |_, _, cx| {
-                            let id = row_data.get_table_id();
-                            on_select(cx, &id)
-                        })
-                        .cursor_pointer()
-                        .hover(|this| this.bg(theme.nav_button_hover))
-                        .active(|this| this.bg(theme.nav_button_active))
-                    } else {
-                        div.cursor_default().opacity(0.5)
-                    }
-                }
-            })
-            .when(self.on_select.is_none() && !is_available, |this| {
-                this.opacity(0.5)
-            })
-            .on_aux_click({
-                let row_data = self.row.clone();
-                move |ev, window, cx| {
-                    if ev.is_middle_click() {
-                        row_data.handle_middle_mouse(window, cx, GridContext::Table);
-                    }
-                }
-            });
+            .id(self.id.clone());
+
+        let mut container = apply_row_selection(
+            container,
+            self.on_select.clone(),
+            Some(self.row.clone()),
+            is_available,
+            theme,
+        );
 
         container = with_drag_handlers(container, drag_data);
 
@@ -177,28 +158,8 @@ where
                 )
             });
 
-        if let Some((menu_builder, overlay)) = context_menu {
-            let ctx = context(self.id.clone())
-                .w_full()
-                .h_full()
-                .with(content)
-                // menu tree is built only when the menu opens
-                .menu_on_open(move |window, cx| {
-                    div()
-                        .bg(cx.global::<Theme>().elevated_background)
-                        .child(menu_builder(window, cx))
-                        .into_any_element()
-                });
-            match overlay {
-                Some(overlay) => div()
-                    .size_full()
-                    .child(ctx)
-                    .child(overlay)
-                    .into_any_element(),
-                None => ctx.into_any_element(),
-            }
-        } else {
-            content.into_any_element()
-        }
+        // grid tiles stretch the context element and the overlay wrapper to
+        // the full cell
+        wrap_with_context_menu(self.id.clone(), content, context_menu, true)
     }
 }

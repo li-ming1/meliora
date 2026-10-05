@@ -2,18 +2,21 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use futures::future::BoxFuture;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, SharedString, StatefulInteractiveElement,
-    Styled, Window,
+    AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
+    Stateful, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 
 pub use crate::ui::components::context::ContextMenuBuilder;
 
+use super::OnSelectHandler;
 use crate::ui::components::{
+    context::context,
     drag_drop::{AlbumDragData, DragPreview, TrackDragData},
     managed_image::ManagedImageKey,
 };
+use crate::ui::theme::Theme;
 
 #[derive(Clone, Debug)]
 pub enum TableDragData {
@@ -51,6 +54,118 @@ where
                 })
         }
         None => container,
+    }
+}
+
+/// Wires the shared row-selection interaction onto a stateful row/grid
+/// container (previously the verbatim-duplicated block of both
+/// `GridItem::render` and `TableItem::render`): click-to-select gated on a
+/// handler being present AND row availability, the pointer/hover/active
+/// affordances, the dimmed style for unavailable rows, and middle-click
+/// dispatch to [`TableData::handle_middle_mouse`]. `row` is `None` for
+/// renderers that may be constructed without a resolved row (`TableItem`);
+/// `GridItem` passes `Some`.
+pub fn apply_row_selection<T, C>(
+    container: Stateful<Div>,
+    on_select: Option<OnSelectHandler<T, C>>,
+    row: Option<Arc<T>>,
+    is_available: bool,
+    theme: &Theme,
+) -> Stateful<Div>
+where
+    T: TableData<C> + 'static,
+    C: Column + 'static,
+{
+    let selectable = on_select.is_some();
+    container
+        .when_some(on_select, {
+            let row = row.clone();
+            move |div, on_select| {
+                if is_available {
+                    div.on_click(move |_, _, cx| {
+                        let Some(row) = row.as_ref() else {
+                            return;
+                        };
+                        let id = row.get_table_id();
+                        on_select(cx, &id)
+                    })
+                    .cursor_pointer()
+                    .hover(|this| this.bg(theme.nav_button_hover))
+                    .active(|this| this.bg(theme.nav_button_active))
+                } else {
+                    div.cursor_default().opacity(0.5)
+                }
+            }
+        })
+        .when(!selectable && !is_available, |this| this.opacity(0.5))
+        .on_aux_click(move |ev, window, cx| {
+            if let Some(row_data) = row.as_ref()
+                && ev.is_middle_click()
+            {
+                row_data.handle_middle_mouse(window, cx, GridContext::Table);
+            }
+        })
+}
+
+/// Hosts a built context-menu tree in the standard elevated-background
+/// container. Every `menu_on_open` wrapper in the app renders its menu
+/// inside this same host div (table rows, grid items, track rows, file
+/// rows), so the paint is identical everywhere.
+pub fn elevated_menu_element(cx: &App, menu: impl IntoElement) -> AnyElement {
+    div()
+        .bg(cx.global::<Theme>().elevated_background)
+        .child(menu)
+        .into_any_element()
+}
+
+/// Wraps a fully-built row/grid content element in the shared context-menu
+/// scaffolding (previously the near-verbatim tail of both `GridItem::render`
+/// and `TableItem::render`): `context(id).with(content)` whose menu tree is
+/// built only when the menu actually opens (the
+/// [`TableData::get_context_menu`] contract), plus the optional overlay
+/// rendered as a sibling of the context element so it is not nested inside
+/// the menu's `deferred` popup. With no menu, the content is returned as-is.
+///
+/// `fill_container` picks the two call-site variants: grid items stretch the
+/// context element to the whole tile and wrap the overlay in a `size_full`
+/// div; table rows keep their own width and wrap in `w_full`.
+pub fn wrap_with_context_menu(
+    id: impl Into<ElementId>,
+    content: impl IntoElement,
+    context_menu: Option<(ContextMenuBuilder, Option<AnyElement>)>,
+    fill_container: bool,
+) -> AnyElement {
+    let Some((menu_builder, overlay)) = context_menu else {
+        return content.into_any_element();
+    };
+
+    let ctx = context(id);
+    let ctx = if fill_container {
+        ctx.w_full().h_full()
+    } else {
+        ctx
+    };
+    let ctx = ctx
+        .with(content)
+        // menu tree is built only when the menu opens
+        .menu_on_open(move |window, cx| {
+            let menu = menu_builder(window, cx);
+            elevated_menu_element(cx, menu)
+        });
+
+    match overlay {
+        Some(overlay) => {
+            if fill_container {
+                div()
+                    .size_full()
+                    .child(ctx)
+                    .child(overlay)
+                    .into_any_element()
+            } else {
+                div().w_full().child(ctx).child(overlay).into_any_element()
+            }
+        }
+        None => ctx.into_any_element(),
     }
 }
 

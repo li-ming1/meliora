@@ -97,7 +97,7 @@
   },
   "ACTION_CLOSE_DETAIL_VIEW": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:693",
+    "definedIn": "src/ui/library.rs:694",
     "plural": false,
     "description": null
   },
@@ -121,13 +121,13 @@
   },
   "ACTION_GO_BACK": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:673",
+    "definedIn": "src/ui/library.rs:674",
     "plural": false,
     "description": null
   },
   "ACTION_GO_FORWARD": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:683",
+    "definedIn": "src/ui/library.rs:684",
     "plural": false,
     "description": null
   },
@@ -169,7 +169,7 @@
   },
   "ACTION_IMPORT_PLAYLIST": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:663",
+    "definedIn": "src/ui/library.rs:664",
     "plural": false,
     "description": null
   },
@@ -253,7 +253,7 @@
   },
   "ADD_N_TO_QUEUE": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:162",
+    "definedIn": "src/ui/library/files_view/file_row.rs:163",
     "plural": true,
     "description": null
   },
@@ -325,7 +325,7 @@
   },
   "CLOSE_RELEASE_DETAIL": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:77",
+    "definedIn": "src/ui/library.rs:78",
     "plural": false,
     "description": null
   },
@@ -661,13 +661,13 @@
   },
   "IMMERSIVE_ENTER": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:797",
+    "definedIn": "src/ui/controls.rs:764",
     "plural": false,
     "description": null
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1476",
+    "definedIn": "src/ui/immersive.rs:1447",
     "plural": false,
     "description": null
   },
@@ -1291,13 +1291,13 @@
   },
   "LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:789",
+    "definedIn": "src/ui/controls.rs:756",
     "plural": false,
     "description": null
   },
   "MUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:708",
+    "definedIn": "src/ui/controls.rs:675",
     "plural": false,
     "description": null
   },
@@ -1801,7 +1801,7 @@
   },
   "PLAY_N_NOW": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:135",
+    "definedIn": "src/ui/library/files_view/file_row.rs:136",
     "plural": true,
     "description": null
   },
@@ -2605,7 +2605,7 @@
   },
   "UNMUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:701",
+    "definedIn": "src/ui/controls.rs:672",
     "plural": false,
     "description": null
   },

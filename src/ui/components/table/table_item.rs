@@ -8,10 +8,10 @@ use super::{
     OnSelectHandler,
     table_data::{
         Column, GridContext, MIN_COLUMN_WIDTH, TABLE_IMAGE_COLUMN_WIDTH, TableData, TableDragData,
-        with_drag_handlers,
+        apply_row_selection, with_drag_handlers, wrap_with_context_menu,
     },
 };
-use crate::ui::{components::context::context, theme::Theme};
+use crate::ui::theme::Theme;
 
 /// Fixed height of every row cell; matches the table header height.
 const ROW_HEIGHT: f32 = 36.0;
@@ -137,41 +137,13 @@ where
             None
         };
 
-        let mut row = div()
+        let row = div()
             .w_full()
             .flex()
-            .id(self.id.clone().unwrap_or("bad".into()))
-            .when_some(self.on_select.clone(), {
-                let row_data = row_data.clone();
-                move |div, on_select| {
-                    if is_available {
-                        div.on_click(move |_, _, cx| {
-                            let Some(row) = row_data.as_ref() else {
-                                return;
-                            };
-                            let id = row.get_table_id();
-                            on_select(cx, &id)
-                        })
-                        .cursor_pointer()
-                        .hover(|this| this.bg(theme.nav_button_hover))
-                        .active(|this| this.bg(theme.nav_button_active))
-                    } else {
-                        div.cursor_default().opacity(0.5)
-                    }
-                }
-            })
-            .when(self.on_select.is_none() && !is_available, |this| {
-                this.opacity(0.5)
-            })
-            .on_aux_click({
-                move |ev, window, cx| {
-                    if let Some(row_data) = row_data.as_ref()
-                        && ev.is_middle_click()
-                    {
-                        row_data.handle_middle_mouse(window, cx, GridContext::Table);
-                    }
-                }
-            });
+            .id(self.id.clone().unwrap_or("bad".into()));
+
+        let mut row =
+            apply_row_selection(row, self.on_select.clone(), row_data, is_available, theme);
 
         row = with_drag_handlers(row, drag_data);
 
@@ -237,22 +209,13 @@ where
             }
         }
 
-        if let Some((menu_builder, overlay)) = context_menu {
-            let ctx = context(self.id.clone().unwrap_or("bad-context".into()))
-                .with(row)
-                // menu tree is built only when the menu opens
-                .menu_on_open(move |window, cx| {
-                    div()
-                        .bg(cx.global::<Theme>().elevated_background)
-                        .child(menu_builder(window, cx))
-                        .into_any_element()
-                });
-            match overlay {
-                Some(overlay) => div().w_full().child(ctx).child(overlay).into_any_element(),
-                None => ctx.into_any_element(),
-            }
-        } else {
-            row.into_any_element()
-        }
+        // table rows keep their own width: the context element carries no
+        // sizing and the overlay wrapper is w_full
+        wrap_with_context_menu(
+            self.id.clone().unwrap_or("bad-context".into()),
+            row,
+            context_menu,
+            false,
+        )
     }
 }

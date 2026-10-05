@@ -56,6 +56,7 @@ mod netease_ranks;
 pub mod playlist_view;
 mod release_view;
 pub mod sidebar;
+mod table_shell;
 mod table_view_header;
 pub mod track_item;
 mod track_view;

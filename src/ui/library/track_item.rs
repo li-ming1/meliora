@@ -18,7 +18,7 @@ use crate::ui::util::format_duration;
 use crate::library::types::{DBString, Track};
 use crate::ui::design::ICON_SM;
 use crate::ui::{
-    components::context::context,
+    components::{context::context, table::table_data::elevated_menu_element},
     library::context_menus::{PlaylistMenuInfo, TrackContextMenuContext, play_from_track_listing},
     models::PlaybackInfo,
     theme::Theme,
@@ -421,17 +421,17 @@ impl Render for TrackItem {
                         let pl_info = self.pl_info;
                         let is_liked = self.is_liked;
                         move |_, cx| {
-                            div()
-                                .bg(cx.global::<Theme>().elevated_background)
-                                .child(TrackContextMenu::new(
+                            elevated_menu_element(
+                                cx,
+                                TrackContextMenu::new(
                                     track.clone(),
                                     is_available,
                                     is_liked,
                                     track_menu_context.clone(),
                                     pl_info,
                                     show_add_to.clone(),
-                                ))
-                                .into_any_element()
+                                ),
+                            )
                         }
                     }),
             )

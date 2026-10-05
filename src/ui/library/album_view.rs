@@ -1,22 +1,17 @@
 use std::rc::Rc;
 
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
 
 use crate::{
     library::types::{Album, table::AlbumColumn},
-    ui::{
-        components::table::{Table, table_data::TABLE_MAX_WIDTH},
-        library::{context_menus::AlbumContextMenuContext, table_view_header::TableViewHeader},
-        models::Models,
-    },
+    ui::library::{context_menus::AlbumContextMenuContext, table_shell::TableShell},
 };
 
 use super::ViewSwitchMessage;
 
 #[derive(Clone)]
 pub struct AlbumView {
-    table: Entity<Table<Album, AlbumColumn>>,
-    table_view_header: Entity<TableViewHeader<Album, AlbumColumn>>,
+    shell: Entity<TableShell<Album, AlbumColumn>>,
 }
 
 impl AlbumView {
@@ -25,59 +20,32 @@ impl AlbumView {
         view_switch_model: Entity<super::NavigationHistory>,
         initial_scroll_offset: Option<f32>,
     ) -> Entity<Self> {
-        cx.new(|cx| {
-            let state = cx.global::<Models>().scan_state.clone();
+        let handler_model = view_switch_model.clone();
+        let handler = Rc::new(move |cx: &mut App, id: &(u32, String)| {
+            handler_model.update(cx, |_, cx| {
+                cx.emit(ViewSwitchMessage::Release(id.0 as i64, None))
+            })
+        });
 
-            let table_settings = cx.global::<Models>().table_settings.clone();
-            let initial_settings = table_settings
-                .read(cx)
-                .get(Table::<Album, AlbumColumn>::get_table_name().as_str())
-                .cloned();
+        let shell: Entity<TableShell<Album, AlbumColumn>> = TableShell::new(
+            cx,
+            handler,
+            AlbumContextMenuContext::default(),
+            initial_scroll_offset,
+        );
 
-            let handler_model = view_switch_model.clone();
-            let handler = Rc::new(move |cx: &mut App, id: &(u32, String)| {
-                handler_model.update(cx, |_, cx| {
-                    cx.emit(ViewSwitchMessage::Release(id.0 as i64, None))
-                })
-            });
-
-            let table = Table::new(
-                cx,
-                Some(handler),
-                AlbumContextMenuContext::default(),
-                initial_scroll_offset,
-                initial_settings.as_ref(),
-            );
-
-            super::observe_scan_for_table(cx, &state, table.clone());
-
-            AlbumView {
-                table_view_header: TableViewHeader::new(cx, table.clone()),
-                table,
-            }
-        })
+        cx.new(|_| AlbumView { shell })
     }
 
     pub fn get_scroll_offset(&self, cx: &App) -> f32 {
-        self.table.read(cx).get_scroll_offset(cx)
+        self.shell.read(cx).get_scroll_offset(cx)
     }
 }
 
 impl Render for AlbumView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = cx
-            .global::<crate::settings::SettingsGlobal>()
-            .model
-            .read(cx);
-        let full_width = settings.interface.effective_full_width();
-
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .h_full()
-            .when(!full_width, |this: Div| this.max_w(px(TABLE_MAX_WIDTH)))
-            .child(self.table_view_header.clone())
-            .child(self.table.clone())
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Render the shell as a child view entity: calling shell.render inside
+        // an update closure would return an element borrowing window/cx.
+        self.shell.clone().into_any_element()
     }
 }

@@ -24,6 +24,7 @@ use crate::{
             },
             managed_image::{ManagedImageKey, managed_image},
             menu::{menu, menu_item, menu_separator},
+            table::table_data::elevated_menu_element,
         },
         library::{
             add_to_playlist::AddToPlaylist,
@@ -579,10 +580,7 @@ impl Render for FileRowItem {
                     .into_any_element()
                 };
 
-                div()
-                    .bg(cx.global::<Theme>().elevated_background)
-                    .child(menu)
-                    .into_any_element()
+                elevated_menu_element(cx, menu)
             });
 
         div()
