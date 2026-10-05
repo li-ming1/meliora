@@ -5,7 +5,6 @@
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
-    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -109,12 +108,9 @@ pub struct NeteaseResponse {
     pub set_cookies: Vec<String>,
 }
 
-/// Cached profile of the logged-in user (nickname + avatar).
-#[derive(Clone, Debug)]
-pub struct UserProfile {
-    pub nickname: String,
-    pub avatar_url: String,
-}
+/// Shared profile shape lives in `session_io`; re-exported so the existing
+/// `client::UserProfile` paths keep resolving.
+pub use crate::session_io::UserProfile;
 
 /// Milliseconds since the Unix epoch (0 when the clock reads before it).
 fn unix_millis() -> u128 {
@@ -167,9 +163,7 @@ impl NeteaseClient {
         Self {
             // same as the KuGou client: bound every request so a stalled
             // connection can't wedge pending fetches or login polling
-            http: Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
+            http: session_io::gateway_http_builder()
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             session: Mutex::new(session),
@@ -179,18 +173,15 @@ impl NeteaseClient {
         }
     }
 
-    /// Locks the session, recovering the inner value if the lock was poisoned
-    /// by a panicked thread rather than panicking the caller (same rationale
-    /// as the KuGou client: playback must survive panics).
+    /// Locks the session; poisoned-lock recovery lives in
+    /// [`session_io::recovered_lock`] (same rationale as the KuGou client:
+    /// playback must survive panics).
     fn session_guard(&self) -> std::sync::MutexGuard<'_, NeteaseSession> {
-        self.session.lock().unwrap_or_else(|e| e.into_inner())
+        session_io::recovered_lock(&self.session)
     }
 
     pub fn logged_in(&self) -> bool {
-        self.session_guard()
-            .music_u
-            .as_deref()
-            .is_some_and(|token| !token.is_empty())
+        session_io::credential_present(self.session_guard().music_u.as_deref())
     }
 
     fn save_session(&self, session: &NeteaseSession) {

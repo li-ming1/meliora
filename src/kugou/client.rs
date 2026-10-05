@@ -238,13 +238,9 @@ pub struct KugouResponse {
     pub body: Value,
 }
 
-/// Cached profile of the logged-in user (nickname + avatar). Persisted inside
-/// `KugouSession` so it never needs a network call after the first fetch.
-#[derive(Clone, Debug)]
-pub struct UserProfile {
-    pub nickname: String,
-    pub avatar_url: String,
-}
+/// Shared profile shape lives in `session_io`; re-exported so the existing
+/// `client::UserProfile` paths keep resolving.
+pub use crate::session_io::UserProfile;
 
 /// Narrow copy of the session fields the API methods build their signed
 /// requests from. Cloning the whole session would drag along the potentially
@@ -277,9 +273,7 @@ impl KugouClient {
             // a hung gateway request must not pin `pending_fetches` forever:
             // without a timeout a track that fails to resolve can never be
             // retried (the merge guard drops every later click)
-            http: Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
+            http: session_io::gateway_http_builder()
                 .build()
                 .expect("kugou http client"),
             session: Mutex::new(session),
@@ -287,12 +281,11 @@ impl KugouClient {
         }
     }
 
-    /// Locks the session, recovering the inner value if the lock was poisoned
-    /// by a panicked thread rather than panicking the caller. The app installs
-    /// a panic hook, so a poisoned session lock must not take down playback or
-    /// the UI.
+    /// Locks the session; poisoned-lock recovery lives in
+    /// [`session_io::recovered_lock`] (a poisoned session lock must not take
+    /// down playback or the UI).
     fn session_guard(&self) -> std::sync::MutexGuard<'_, KugouSession> {
-        self.session.lock().unwrap_or_else(|e| e.into_inner())
+        session_io::recovered_lock(&self.session)
     }
 
     /// Narrow credential read for request-building callers (see
@@ -309,10 +302,7 @@ impl KugouClient {
     }
 
     pub fn logged_in(&self) -> bool {
-        self.session_guard()
-            .token
-            .as_deref()
-            .is_some_and(|t| !t.is_empty())
+        session_io::credential_present(self.session_guard().token.as_deref())
     }
 
     pub fn store_login(&self, token: String, userid: i64, extra: LoginExtras) {

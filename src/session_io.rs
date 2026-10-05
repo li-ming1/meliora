@@ -1,7 +1,18 @@
 //! 在线音源（kugou/netease）会话凭据文件共用的读写；`provider` 只进日志
 //! 文本，其措辞是既有的日志排查口径，不要随手改写。
+//!
+//! 除凭据文件外，两个 client 逐字共享的小件也收编在此：`UserProfile`、
+//! `recovered_lock`（毒化锁恢复）、`gateway_http_builder`（网关超时）与
+//! `credential_present`。各自协议逻辑（签名/weapi/cookie 合成）不在此层，
+//! 也绝不合并。
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
+
+use zed_reqwest::{Client, ClientBuilder};
 
 pub fn load<T: serde::de::DeserializeOwned>(path: &Path, provider: &str) -> Option<T> {
     let contents = match std::fs::read_to_string(path) {
@@ -50,6 +61,42 @@ pub fn save<T: serde::Serialize + ?Sized>(value: &T, path: &Path, provider: &str
         tracing::warn!(%err, "failed to persist {provider} session");
         let _ = std::fs::remove_file(&tmp);
     }
+}
+
+/// Cached profile of the logged-in user (nickname + avatar). Each provider
+/// persists it inside its own session file (`KugouSession` / `NeteaseSession`)
+/// so it never needs a network call after the first fetch; both clients
+/// re-export this type under their `client` module, so the pre-existing
+/// `client::UserProfile` paths keep resolving.
+#[derive(Clone, Debug)]
+pub struct UserProfile {
+    pub nickname: String,
+    pub avatar_url: String,
+}
+
+/// Locks `mutex`, recovering the inner value if the lock was poisoned by a
+/// panicked thread rather than panicking the caller. The app installs a panic
+/// hook, so a poisoned session lock must not take down playback or the UI.
+pub fn recovered_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Builder for the online gateways' shared HTTP client: every request is
+/// bounded (10s connect / 30s total) so a hung gateway request can't wedge
+/// pending fetches or login polling. Returns the builder, not a finished
+/// `Client`, because the two clients keep different `.build()` failure
+/// policies (kugou panics; netease falls back to `Client::new()`).
+pub fn gateway_http_builder() -> ClientBuilder {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+}
+
+/// True when the provider's login credential is present and non-empty; an
+/// empty-string credential counts as logged out (kugou's `token`, netease's
+/// `music_u` share this predicate).
+pub fn credential_present(credential: Option<&str>) -> bool {
+    credential.is_some_and(|token| !token.is_empty())
 }
 
 /// F022 基准：`save` 单次调用（serialize pretty + 写临时文件 + rename）的真实
