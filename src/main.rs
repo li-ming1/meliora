@@ -639,7 +639,46 @@ fn init_windows_restart() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Single-instance guard: a named kernel mutex held for the whole process
+/// lifetime. A second launch would race the running instance for
+/// settings.json, playback_session.json, the library database and the audio
+/// device — none of that is designed for two writers. The kernel reclaims the
+/// mutex on crash, so a stale lock can never block the next launch.
+#[cfg(target_os = "windows")]
+fn enforce_single_instance() -> anyhow::Result<()> {
+    use windows::{
+        Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
+        Win32::System::Threading::CreateMutexW,
+        Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW},
+        core::w,
+    };
+
+    // `HANDLE` has no Drop impl: the binding alone keeps the mutex held for
+    // the whole function — i.e. the process lifetime. The kernel reclaims it
+    // at exit, so a crash can never leave a stale lock behind.
+    let _mutex = unsafe { CreateMutexW(None, false, w!("Local\\MelioraSingleInstance"))? };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // Runs before logging/i18n init, so the notice is a plain dialog with
+        // a fixed bilingual text rather than a tr! lookup.
+        unsafe {
+            MessageBoxW(
+                None,
+                w!(
+                    "Meliora is already running.\nMeliora \u{5df2}\u{7ecf}\u{5728}\u{8fd0}\u{884c}\u{3002}"
+                ),
+                w!("Meliora"),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+        std::process::exit(0);
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    enforce_single_instance()?;
+
     #[cfg(target_os = "windows")]
     init_windows_restart()?;
 
