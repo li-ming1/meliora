@@ -20,6 +20,7 @@ pub mod library;
 pub mod library_access;
 mod lyrics;
 pub mod models;
+pub mod queue_metadata;
 #[cfg(feature = "netease")]
 mod netease;
 #[cfg(any(feature = "kugou", feature = "netease"))]
