@@ -300,6 +300,15 @@ fn apply_settings_outcome(
                 cx.global::<ScanInterface>()
                     .update_settings(settings.scanning.clone());
             }
+            // prevent_idle lives outside the playback thread's SettingsChanged
+            // consumption: the power manager needs its own diff push or a
+            // hand-edited settings.json would only apply after a restart.
+            if current.playback.prevent_idle != settings.playback.prevent_idle
+                && cx.has_global::<crate::power::PowerManager>()
+            {
+                let power = cx.global::<crate::power::PowerManager>().clone();
+                power.set_prevent_idle(cx, settings.playback.prevent_idle);
+            }
             // same-content reloads (our own save echo, notify storms) must not
             // cascade into the app-wide refresh_windows observer
             let changed = *current != settings;

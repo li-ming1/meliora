@@ -16,7 +16,12 @@ pub enum ReplayGainAutoHint {
     PreferAlbum,
 }
 
+// `serde(default)` covers partial hand-edited objects: without it a JSON like
+// `{"replaygain": {"mode": "track"}}` fails field deserialization and the
+// whole settings.json is judged Corrupt, wiping every other saved setting on
+// the next save.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ReplayGainSettings {
     pub mode: ReplayGainMode,
     /// Pre-amp in dB, applied on top of RG gain. Range: -6.0 to +6.0

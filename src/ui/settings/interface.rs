@@ -318,7 +318,16 @@ impl Render for InterfaceSettings {
                     "Show navigation pages (like Artists) and content pages (like an album) side by side."
                 ),
                 interface.two_column_library,
-                |interface| interface.two_column_library = !interface.two_column_library,
+                |interface| {
+                    interface.two_column_library = !interface.two_column_library;
+                    // Keep the frozen full-width slot in sync: two_column
+                    // forces the effective value on, and without this turning
+                    // two_column off later would silently resurrect whatever
+                    // stale value the slot held before.
+                    if interface.two_column_library {
+                        interface.full_width_library = true;
+                    }
+                },
             ))
             .child(
                 label(
