@@ -859,31 +859,31 @@
   },
   "KUGOU_IMPORT_NETEASE_BAD_RESPONSE": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:224",
+    "definedIn": "src/kugou/import.rs:246",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_NETEASE_NO_ID": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:184",
+    "definedIn": "src/kugou/import.rs:57",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_NETEASE_NO_SONGS": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:263",
+    "definedIn": "src/kugou/import.rs:285",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_NETEASE_PARSE_FAILED": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:215",
+    "definedIn": "src/kugou/import.rs:237",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_NETEASE_REQUEST_FAILED": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:199",
+    "definedIn": "src/kugou/import.rs:221",
     "plural": false,
     "description": null
   },
@@ -901,7 +901,7 @@
   },
   "KUGOU_IMPORT_NO_VALID_LINK": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:50",
+    "definedIn": "src/kugou/import.rs:66",
     "plural": false,
     "description": null
   },
@@ -919,25 +919,25 @@
   },
   "KUGOU_IMPORT_QQ_FETCH_FAILED": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:489",
+    "definedIn": "src/kugou/import.rs:519",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_QQ_NO_ID": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:399",
+    "definedIn": "src/kugou/import.rs:429",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_QQ_NO_SONGS": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:433",
+    "definedIn": "src/kugou/import.rs:463",
     "plural": false,
     "description": null
   },
   "KUGOU_IMPORT_RESPONSE_READ_FAILED": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:207",
+    "definedIn": "src/kugou/import.rs:229",
     "plural": false,
     "description": null
   },
@@ -949,7 +949,7 @@
   },
   "KUGOU_IMPORT_SHORTLINK_FAILED": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:141",
+    "definedIn": "src/kugou/import.rs:157",
     "plural": false,
     "description": null
   },
@@ -967,7 +967,7 @@
   },
   "KUGOU_IMPORT_UNSUPPORTED_LINK": {
     "context": "import.rs",
-    "definedIn": "src/kugou/import.rs:60",
+    "definedIn": "src/kugou/import.rs:49",
     "plural": false,
     "description": null
   },

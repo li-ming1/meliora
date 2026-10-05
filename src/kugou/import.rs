@@ -44,6 +44,22 @@ fn browser_headers(referer: &str) -> HeaderMap {
     headers
 }
 
+fn unsupported_link_error() -> String {
+    tr!(
+        "KUGOU_IMPORT_UNSUPPORTED_LINK",
+        "Only NetEase Cloud Music and QQ Music playlist links are supported"
+    )
+    .to_string()
+}
+
+fn netease_no_id_error() -> String {
+    tr!(
+        "KUGOU_IMPORT_NETEASE_NO_ID",
+        "Could not parse a playlist ID from the NetEase Cloud Music link"
+    )
+    .to_string()
+}
+
 /// Parses a pasted NetEase/QQ share text into an `ExternalPlaylist`.
 pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
     let url = extract_url(text)
@@ -56,11 +72,7 @@ pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
     ) {
         qq(&url).await
     } else {
-        Err(tr!(
-            "KUGOU_IMPORT_UNSUPPORTED_LINK",
-            "Only NetEase Cloud Music and QQ Music playlist links are supported"
-        )
-        .to_string())
+        Err(unsupported_link_error())
     }
 }
 
@@ -95,7 +107,11 @@ fn host_of(url: &str) -> String {
 
 fn hosted(url: &str, needles: &[&str]) -> bool {
     let host = host_of(url);
-    needles.iter().any(|n| host.contains(n))
+    // Exact host or proper subdomain: a plain `contains` would let
+    // `music.163.com.evil.com` match the `music.163.com` needle.
+    needles
+        .iter()
+        .any(|n| host == *n || host.ends_with(&format!(".{n}")))
 }
 
 fn query_value(query: &str, key: &str) -> Option<String> {
@@ -175,17 +191,23 @@ fn netease_id(url: &str) -> Option<String> {
 
 async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
     let url = if hosted(raw, &["163cn.tv"]) {
-        resolve(raw).await?
+        let resolved = resolve(raw).await?;
+        // Re-verify after redirects: a shortlink must land on an expected host
+        // before we treat its contents as a NetEase playlist reference.
+        if !hosted(&resolved, &["music.163.com"]) {
+            return Err(unsupported_link_error());
+        }
+        resolved
     } else {
         raw.to_string()
     };
-    let id = netease_id(&url).ok_or_else(|| {
-        tr!(
-            "KUGOU_IMPORT_NETEASE_NO_ID",
-            "Could not parse a playlist ID from the NetEase Cloud Music link"
-        )
-        .to_string()
-    })?;
+    let id = netease_id(&url).ok_or_else(netease_no_id_error)?;
+    // The id goes straight into a form body: reject anything that could add
+    // extra parameters (the bare-id fallback already guarantees digits, but
+    // the query/fragment paths above do not).
+    if !id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(netease_no_id_error());
+    }
     let headers = browser_headers("https://music.163.com/");
 
     let resp = http()
@@ -390,7 +412,15 @@ struct QqPage {
 
 async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
     let url = if raw.contains("fcgi-bin") {
-        resolve(raw).await?
+        let resolved = resolve(raw).await?;
+        // Redirect re-verification, same rationale as the netease path.
+        if !hosted(
+            &resolved,
+            &["y.qq.com", "qqmusic.qq.com", "music.qq.com", "c.y.qq.com"],
+        ) {
+            return Err(unsupported_link_error());
+        }
+        resolved
     } else {
         raw.to_string()
     };

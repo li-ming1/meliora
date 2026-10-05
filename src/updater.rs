@@ -452,8 +452,10 @@ async fn download_and_swap(
     staged_path: PathBuf,
     progress: tokio::sync::watch::Sender<(u64, u64)>,
 ) -> Result<(), String> {
-    // checksums.txt ships with every release that also has bare binaries; a
-    // missing manifest (or entry) degrades to HTTPS-only integrity, loudly.
+    // Fail closed: the checksum manifest is the only integrity anchor this
+    // flow has (no code signing, no pinned hash). A missing manifest or entry
+    // means we cannot tell a corrupted download from a tampered one, so the
+    // auto-install is refused and the user is pointed at the release page.
     let expected_hash = match &checksums_url {
         Some(url) => {
             let manifest = http_get_text(url).await?;
@@ -461,14 +463,21 @@ async fn download_and_swap(
             match lookup_checksum(&manifest, asset_name) {
                 Some(hash) => Some(hash),
                 None => {
-                    warn!(asset = %asset_name, "updater: no checksum entry, skipping verification");
-                    None
+                    return Err(format!(
+                        "updater: checksums.txt has no entry for {asset_name}; \
+                         refusing to install an unverified binary — download it \
+                         manually from the release page instead"
+                    ));
                 }
             }
         }
         None => {
-            warn!("updater: release has no checksums.txt, skipping verification");
-            None
+            return Err(
+                "updater: release has no checksums.txt; refusing to install an \
+                 unverified binary — download it manually from the release page \
+                 instead"
+                    .to_string(),
+            );
         }
     };
 
@@ -527,18 +536,19 @@ async fn download_and_swap(
     drop(file);
     let _ = progress.send((received, total));
 
-    if let Some(expected) = &expected_hash {
-        let actual = hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        if !actual.eq_ignore_ascii_case(expected) {
-            let _ = tokio::fs::remove_file(&staged_path).await;
-            return Err(format!(
-                "checksum mismatch for staged update: expected {expected}, got {actual}"
-            ));
-        }
+    // Fail-closed guarantee: expected_hash is always Some here (the manifest
+    // check above refuses otherwise), so verification can never be skipped.
+    let expected = expected_hash.expect("fail-closed checksum presence");
+    let actual = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    if !actual.eq_ignore_ascii_case(&expected) {
+        let _ = tokio::fs::remove_file(&staged_path).await;
+        return Err(format!(
+            "checksum mismatch for staged update: expected {expected}, got {actual}"
+        ));
     }
 
     swap_install(&exe_path, &staged_path)?;
