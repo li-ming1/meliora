@@ -63,6 +63,25 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
 // like any other decode failure.
 use super::download::STREAM_IO_TIMEOUT;
 
+/// Tighter per-event bound for the background fill thread: every fill-path
+/// network event (`start_body` request, one body chunk) runs there, so a
+/// stalled event costs a reconnect (zero-delta seek → fresh ranged request)
+/// instead of burning a third of the consumer's stall budget on one blocked
+/// read. A healthy CDN delivers each event in well under a second; the
+/// consumer's 30 s stall budget tolerates ~4 reconnect cycles. `connect`
+/// (inline open on the playback/prepare thread) keeps the wider
+/// [`STREAM_IO_TIMEOUT`].
+const FILL_IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Mid-stream URL refresh hook, called once when a re-request is rejected
+/// with an HTTP 4xx (a signed URL that was valid at open time expired while
+/// the track played). Returns the fresh URL, or `None` when the provider can
+/// no longer produce one. Built by the playback layer (provider identity and
+/// quality settings live there) and installed on the source at open time;
+/// runs on the fill thread, where blocking on the provider call is bounded
+/// by the hook itself.
+pub type MediaUrlRefresh = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// Per-request cap for one-shot cover downloads (`http_cover_bytes`).
 const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -381,8 +400,12 @@ pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<bytes::
 }
 
 /// Opens the HTTP(S) URL stored in `path` and probes it with the Symphonia
-/// decoder provider.
-pub fn open_http_media(path: &Path) -> anyhow::Result<Box<dyn MediaStream>> {
+/// decoder provider. `refresh` arms the source with a mid-stream URL refresh
+/// hook (expired signed URL self-heal).
+pub fn open_http_media(
+    path: &Path,
+    refresh: Option<MediaUrlRefresh>,
+) -> anyhow::Result<Box<dyn MediaStream>> {
     let text = path
         .as_os_str()
         .to_str()
@@ -390,7 +413,7 @@ pub fn open_http_media(path: &Path) -> anyhow::Result<Box<dyn MediaStream>> {
     let url = Url::parse(text).map_err(|e| anyhow::anyhow!("invalid track URL '{text}': {e}"))?;
     let ext = url_extension(&url);
 
-    let source = HttpRangeSource::connect(url)
+    let source = HttpRangeSource::connect(url, refresh)
         .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
 
     // Background fill + reconnect so network jitter never parks the
@@ -444,12 +467,21 @@ struct HttpRangeSource {
     /// Bytes already received but not yet consumed by `read`.
     pending: Vec<u8>,
     pending_offset: usize,
+    /// Mid-stream refresh hook for a rejected (expired) signed URL, built by
+    /// the playback layer; `None` when no provider identity is known.
+    refresh: Option<MediaUrlRefresh>,
+    /// Whether the refresh hook already ran for this source: one attempt per
+    /// stream, so a failing provider API is not hammered every backoff cycle.
+    refresh_used: bool,
+    /// The current URL was rejected with a 4xx and the refresh (if any) could
+    /// not fix it: retrying can never succeed, so the filler must stop.
+    url_dead: bool,
 }
 
 impl HttpRangeSource {
     /// Opens the resource and probes range support with a `bytes=0-` request.
     /// The response body is kept as the initial stream.
-    fn connect(url: Url) -> Result<Self, String> {
+    fn connect(url: Url, refresh: Option<MediaUrlRefresh>) -> Result<Self, String> {
         let response = crate::RUNTIME
             .block_on(async {
                 tokio::time::timeout(
@@ -491,6 +523,9 @@ impl HttpRangeSource {
             body: Some(Mutex::new(response)),
             pending: Vec::new(),
             pending_offset: 0,
+            refresh,
+            refresh_used: false,
+            url_dead: false,
         })
     }
 
@@ -502,23 +537,72 @@ impl HttpRangeSource {
         {
             return Ok(false);
         }
-
-        let mut request = HTTP_CLIENT.get(self.url.clone());
-        if self.range_supported {
-            request = request.header(RANGE, format!("bytes={}-", self.pos));
-        } else if self.pos != 0 {
+        if !self.range_supported && self.pos != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "remote server does not support range requests",
             ));
         }
 
-        let response = crate::RUNTIME
-            .block_on(async { tokio::time::timeout(STREAM_IO_TIMEOUT, request.send()).await })
+        let mut last_err = match self.send_range_request() {
+            Ok(response) => return self.accept_body(response).map(|_| true),
+            Err(err) => err,
+        };
+
+        // A signed URL that was valid at open time can expire mid-track: the
+        // re-request is rejected with a client error (403/404). One refresh
+        // attempt buys a fresh URL from the provider hook; a still-rejected
+        // (or unrefreshable) URL is dead and the filler gives up instead of
+        // retrying until the consumer's stall budget expires.
+        if Self::client_rejected(&last_err)
+            && !self.refresh_used
+            && let Some(hook) = self.refresh.clone()
+            && let Some(fresh) = hook()
+            && let Ok(url) = Url::parse(fresh.to_string_lossy().as_ref())
+        {
+            self.refresh_used = true;
+            self.url = url;
+            tracing::info!(url = %self.url, "refreshed expired media URL mid-stream");
+            match self.send_range_request() {
+                Ok(response) => return self.accept_body(response).map(|_| true),
+                Err(err) => last_err = err,
+            }
+        }
+        if Self::client_rejected(&last_err) {
+            self.url_dead = true;
+        }
+        Err(last_err)
+    }
+
+    /// One ranged GET from the current position. Client rejections (4xx) are
+    /// surfaced as `PermissionDenied` so the refresh logic can classify them
+    /// without parsing error strings.
+    fn send_range_request(&self) -> io::Result<zed_reqwest::Response> {
+        let mut request = HTTP_CLIENT.get(self.url.clone());
+        if self.range_supported {
+            request = request.header(RANGE, format!("bytes={}-", self.pos));
+        }
+        crate::RUNTIME
+            .block_on(async { tokio::time::timeout(FILL_IO_TIMEOUT, request.send()).await })
             .map_err(|_| io::Error::other("HTTP request timed out"))?
             .and_then(|response| response.error_for_status())
-            .map_err(|e| io::Error::other(format!("HTTP request failed: {e}")))?;
+            .map_err(|e| match e.status() {
+                Some(status) if status.is_client_error() => io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("remote URL rejected (HTTP {status})"),
+                ),
+                _ => io::Error::other(format!("HTTP request failed: {e}")),
+            })
+    }
 
+    fn client_rejected(err: &io::Error) -> bool {
+        err.kind() == io::ErrorKind::PermissionDenied
+    }
+
+    /// Stores a successful range response as the active body. Returns an
+    /// error when a server that ignores `Range` answers a non-zero offset
+    /// with a full-body 200.
+    fn accept_body(&mut self, response: zed_reqwest::Response) -> io::Result<()> {
         // A server that ignores the Range header replies 200 with the body
         // from byte 0; that is only usable when byte 0 is what we asked for.
         if response.status() != StatusCode::PARTIAL_CONTENT && self.pos != 0 {
@@ -527,9 +611,9 @@ impl HttpRangeSource {
                 "server ignored the range request",
             ));
         }
-
         self.body = Some(Mutex::new(response));
-        Ok(true)
+        self.url_dead = false;
+        Ok(())
     }
 
     /// Copies buffered bytes into `buf`, advancing the logical position.
@@ -563,16 +647,16 @@ impl Read for HttpRangeSource {
             }
 
             // fetch the next chunk in its own scope so the body lock is
-            // released before `self` is touched below; the timeout bounds how
-            // long the playback thread can be parked on one read (see
-            // STREAM_IO_TIMEOUT)
+            // released before `self` is touched below; the timeout bounds one
+            // fill-thread event — a stall here triggers a reconnect (see
+            // FILL_IO_TIMEOUT), not a playback-thread park
             let chunk = {
                 let Some(body) = self.body.as_ref() else {
                     return Ok(0);
                 };
                 let mut body = body.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 crate::RUNTIME
-                    .block_on(async { tokio::time::timeout(STREAM_IO_TIMEOUT, body.chunk()).await })
+                    .block_on(async { tokio::time::timeout(FILL_IO_TIMEOUT, body.chunk()).await })
             };
 
             match chunk {
@@ -640,6 +724,12 @@ impl MediaSource for HttpRangeSource {
 
     fn byte_len(&self) -> Option<u64> {
         self.total_len
+    }
+}
+
+impl crate::media::prefetch::FillSource for HttpRangeSource {
+    fn url_dead(&self) -> bool {
+        self.url_dead
     }
 }
 

@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, TryRecvError},
+};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, trace_span, warn};
 
@@ -145,6 +149,11 @@ pub struct AudioEngine {
     /// as the outcome's path, but the caller keeps requesting the queue's
     /// stale URL until the write-back lands.
     failed_prepare: Option<(PathBuf, std::time::Instant)>,
+    /// Cancellation flag for the in-flight prepare thread: set when the
+    /// prepare is invalidated (queue mutation, stop) so a dropped prepare
+    /// stops paying provider refresh calls and a second full open for an
+    /// outcome nobody will read.
+    prepare_cancel: Option<Arc<AtomicBool>>,
 }
 
 /// How long after a queue-mutation invalidation a re-prepare of the same next
@@ -163,15 +172,17 @@ struct PrepareOutcome {
     result: Result<(Box<dyn MediaStream>, Option<u64>), String>,
 }
 
-/// One-shot retry hook handed to a background prepare: when opening the next
-/// track's media fails (an expired signed URL), the hook re-fetches a fresh
-/// path from the provider. Built by the playback thread, which owns the queue
-/// and the quality settings; the engine stays provider-agnostic — the prepare
-/// thread sees only the closure, so the retry (a blocking provider call,
-/// bounded by the caller's own timeout) runs on that dedicated std thread
-/// where it cannot stall the playback loop.
+/// Retry hook handed to a background prepare: when opening the next track's
+/// media fails (an expired signed URL), the hook re-fetches a fresh path from
+/// the provider. Built by the playback thread, which owns the queue and the
+/// quality settings; the engine stays provider-agnostic — the prepare thread
+/// sees only the closure, so the retry (a blocking provider call, bounded by
+/// the caller's own timeout) runs on that dedicated std thread where it cannot
+/// stall the playback loop. The same hook is cloned into the opened stream as
+/// its mid-stream refresh (see `MediaUrlRefresh`), so the shareable `Arc`/`Fn`
+/// form is load-bearing, not incidental.
 pub struct OnlineRefresh {
-    pub retry: Box<dyn FnOnce() -> Option<PathBuf> + Send>,
+    pub retry: crate::media::http_source::MediaUrlRefresh,
 }
 
 /// A finished background prepare, reported by [`AudioEngine::poll_prepared`]
@@ -210,6 +221,7 @@ impl AudioEngine {
             prepare_request: None,
             dropped_prepare: None,
             failed_prepare: None,
+            prepare_cancel: None,
         }
     }
 
@@ -282,6 +294,14 @@ impl AudioEngine {
         self.prepare_rx = Some(rx);
         let path = path.to_path_buf();
         self.prepare_request = Some(path.clone());
+        // A prepare invalidated mid-flight (queue mutation, stop) must not
+        // keep spending provider refresh calls and a second full open for an
+        // outcome nobody will read; the first open cannot be interrupted, so
+        // the flag is checked at the two remaining decision points.
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.prepare_cancel = Some(Arc::clone(&cancel));
+        // The same hook doubles as the opened stream's mid-stream refresh.
+        let source_refresh = on_open_error.as_ref().map(|hook| Arc::clone(&hook.retry));
         let spawned = std::thread::Builder::new()
             .name("media-prepare".into())
             .spawn(move || {
@@ -289,16 +309,30 @@ impl AudioEngine {
                 // re-fetches a fresh path, and the open is retried once
                 // against it. The outcome reports the final path so the
                 // caller can write it back to the queue.
-                let (path, result) = match MediaController::open_stream(&path) {
+                let (path, result) = match MediaController::open_stream(&path, source_refresh) {
                     Ok(stream) => (path, Ok(stream)),
-                    Err(err) => match on_open_error.and_then(|hook| (hook.retry)()) {
-                        Some(fresh) => {
-                            let result =
-                                MediaController::open_stream(&fresh).map_err(|e| e.to_string());
-                            (fresh, result)
+                    Err(err) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
                         }
-                        None => (path, Err(err.to_string())),
-                    },
+                        match on_open_error {
+                            Some(hook) => match (hook.retry)() {
+                                Some(fresh) => {
+                                    if cancel.load(Ordering::Relaxed) {
+                                        return;
+                                    }
+                                    let result = MediaController::open_stream(
+                                        &fresh,
+                                        Some(Arc::clone(&hook.retry)),
+                                    )
+                                    .map_err(|e| e.to_string());
+                                    (fresh, result)
+                                }
+                                None => (path, Err(err.to_string())),
+                            },
+                            None => (path, Err(err.to_string())),
+                        }
+                    }
                 };
                 let _ = tx.send(PrepareOutcome { path, result });
             });
@@ -319,6 +353,7 @@ impl AudioEngine {
         match rx.try_recv() {
             Ok(outcome) => {
                 self.prepare_rx = None;
+                self.prepare_cancel = None;
                 // Key the failure backoff and the refresh write-back on the
                 // requested path: with a refresh retry the outcome's path is
                 // the *fresh* URL, while `prepare_next`'s guards (and the
@@ -365,6 +400,7 @@ impl AudioEngine {
             Err(TryRecvError::Disconnected) => {
                 self.prepare_rx = None;
                 self.prepare_request = None;
+                self.prepare_cancel = None;
                 None
             }
         }
@@ -373,6 +409,12 @@ impl AudioEngine {
     /// Drop any pre-opened media; called when the queue changes (the next
     /// track may no longer be the prepared one) or playback stops.
     pub fn drop_prepared(&mut self) {
+        // A prepare still in flight must stop spending provider refresh calls
+        // and a second full open for an outcome nobody will read.
+        if let Some(cancel) = &self.prepare_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.prepare_cancel = None;
         // Remember what was invalidated so `prepare_next` can rate-limit
         // re-spawns of the same path while queue edits are settling.
         let dropped = self
@@ -386,10 +428,30 @@ impl AudioEngine {
         self.prepare_rx = None;
     }
 
+    /// Drop the pre-opened media only when the queue's next entry no longer
+    /// matches what was (being) prepared. Edits that leave the next track
+    /// untouched — metadata refreshes, reorders elsewhere, unrelated adds —
+    /// would otherwise kill a valid pre-open and re-pay a full open after the
+    /// [`PREPARE_COOLDOWN`] window. A `next` matching the *requested* path
+    /// keeps an in-flight prepare; one matching the *reported* path (a
+    /// refresh-recovered URL already written back) keeps a finished one.
+    pub fn drop_prepared_unless_next(&mut self, next: Option<&Path>) {
+        let matches = |prepared_path: &Path| next == Some(prepared_path);
+        let stale = match (&self.prepare_request, &self.prepared) {
+            (Some(requested), _) => !matches(requested),
+            (None, Some(prepared)) => !matches(&prepared.path),
+            (None, None) => return,
+        };
+        if stale {
+            self.drop_prepared();
+        }
+    }
+
     pub fn open(
         &mut self,
         path: &Path,
         preserve_resampler: bool,
+        refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<Option<u64>, PlaybackStartError> {
         info!("AudioEngine: Opening track '{}'", path.display());
 
@@ -430,9 +492,9 @@ impl AudioEngine {
                 // QueueUpdated already dropped the prepared stream, so a stale
                 // matchless stream here is rare — just drop it.
                 drop(stale);
-                self.media.open(path)?
+                self.media.open(path, refresh.clone())?
             }
-            None => self.media.open(path)?,
+            None => self.media.open(path, refresh.clone())?,
         };
 
         if recreation_required {

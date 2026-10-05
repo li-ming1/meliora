@@ -174,7 +174,8 @@ fn live_http_source_decodes_kugou_stream() {
     // (open_http_media calls Runtime::block_on internally, so it must not run
     // while another block_on is in progress.)
     let path = std::path::PathBuf::from(&url);
-    let mut stream = crate::media::http_source::open_http_media(&path).expect("open http stream");
+    let mut stream =
+        crate::media::http_source::open_http_media(&path, None).expect("open http stream");
     stream.start_playback().expect("start playback");
     let duration = stream.duration_ms().expect("duration");
     let metadata = stream.read_metadata().ok();

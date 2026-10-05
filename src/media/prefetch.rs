@@ -33,6 +33,17 @@ const STALL_BUDGET: Duration = Duration::from_secs(30);
 /// Backoff between fill attempts after an error.
 const RETRY_BACKOFF: Duration = Duration::from_millis(200);
 
+/// Source health for the fill loop: whether retrying can never succeed.
+///
+/// A rejected signed URL (HTTP 4xx on a mid-stream re-request) stays rejected
+/// forever; the filler must surface a fatal error instead of spinning until
+/// the consumer's stall budget expires. Default: never dead.
+pub trait FillSource: Read + Seek + Send {
+    fn url_dead(&self) -> bool {
+        false
+    }
+}
+
 /// Bumps on every seek: in-flight fill results from the old stream position
 /// are discarded instead of appended after the buffer was cleared.
 type Epoch = u64;
@@ -52,6 +63,10 @@ struct FillState {
     pending_seek: Option<u64>,
     eof: bool,
     shutdown: bool,
+    /// Set by the filler when the source is permanently unusable: the next
+    /// consumer read returns it as an IO error immediately instead of waiting
+    /// out the full stall budget on retries that can never succeed.
+    fatal: Option<String>,
 }
 
 impl FillState {
@@ -82,8 +97,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Fill errors trigger a reconnect (zero-delta seek → fresh ranged request)
 /// and are retried with ramping backoff until the shutdown or a seek
 /// resets the stream; whether the outage outlives the consumer's stall
-/// budget is decided on the consumer side alone.
-fn fill_loop<S: Read + Seek + Send>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
+/// budget is decided on the consumer side alone. A source that reports
+/// itself dead (rejected URL no refresh could fix) ends the retry loop
+/// immediately: the fatal error is handed to the consumer, which skips the
+/// track in seconds instead of playing 30 s of silence first.
+fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
     let mut consecutive_errors = 0u32;
     loop {
         // Wait for work: a seek to apply, or buffer below the high water
@@ -134,6 +152,24 @@ fn fill_loop<S: Read + Seek + Send>(shared: Arc<Shared<S>>, retry_backoff: Durat
                 }
             }
             Err(e) => {
+                let dead = {
+                    let mut source = lock(&shared.source);
+                    let dead = source.url_dead();
+                    // Zero-delta seek: drops the dead connection and makes the
+                    // next read re-request from the current position.
+                    let _ = source.seek(SeekFrom::Current(0));
+                    dead
+                };
+                if dead {
+                    let mut st = lock(&shared.state);
+                    if st.epoch == my_epoch {
+                        st.fatal = Some(format!(
+                            "remote URL rejected and could not be refreshed: {e}"
+                        ));
+                        shared.signal.notify_all();
+                    }
+                    return;
+                }
                 consecutive_errors += 1;
                 if consecutive_errors == 1 || consecutive_errors.is_multiple_of(5) {
                     tracing::warn!(
@@ -141,12 +177,6 @@ fn fill_loop<S: Read + Seek + Send>(shared: Arc<Shared<S>>, retry_backoff: Durat
                         error = %e,
                         "media stream fill failed; reconnecting"
                     );
-                }
-                // Zero-delta seek: drops the dead connection and makes the
-                // next read re-request from the current position.
-                {
-                    let mut source = lock(&shared.source);
-                    let _ = source.seek(SeekFrom::Current(0));
                 }
                 thread::sleep(retry_backoff * consecutive_errors.min(10));
             }
@@ -164,7 +194,7 @@ pub struct PrefetchSource<S> {
     stall_budget: Duration,
 }
 
-impl<S: MediaSource + 'static> PrefetchSource<S> {
+impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
     pub fn new(source: S) -> Self {
         Self::with_budget(source, STALL_BUDGET, RETRY_BACKOFF)
     }
@@ -183,6 +213,7 @@ impl<S: MediaSource + 'static> PrefetchSource<S> {
                 pending_seek: None,
                 eof: false,
                 shutdown: false,
+                fatal: None,
             }),
             signal: Condvar::new(),
         });
@@ -238,6 +269,9 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
             }
             if st.eof {
                 return Ok(0);
+            }
+            if let Some(msg) = st.fatal.as_deref() {
+                return Err(io::Error::other(msg.to_string()));
             }
             if st.shutdown {
                 // No filler thread (spawn failed): nothing will ever fill the
@@ -377,6 +411,8 @@ mod tests {
             Some(self.data.len() as u64)
         }
     }
+
+    impl FillSource for FakeSource {}
 
     fn open(len: usize, fail_reads: Arc<AtomicUsize>) -> PrefetchSource<FakeSource> {
         PrefetchSource::with_budget(

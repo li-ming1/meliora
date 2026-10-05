@@ -56,17 +56,21 @@ impl MediaController {
 
     /// Open a media file into a standalone stream without touching controller
     /// state; shared by [`Self::open`] (playback thread) and gapless prepare
-    /// (background thread).
+    /// (background thread). `refresh` arms an HTTP source with the mid-stream
+    /// URL refresh hook (expired signed URL self-heal on the fill thread).
     pub(super) fn open_stream(
         path: &Path,
+        refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<(Box<dyn MediaStream>, Option<u64>), PlaybackStartError> {
         // remote HTTP(S) streams bypass the file-based provider lookup
         #[cfg(feature = "online_sources")]
         let src = if crate::media::is_http_path(path) {
-            crate::media::http_source::open_http_media(path).map(Some)
+            crate::media::http_source::open_http_media(path, refresh).map(Some)
         } else {
             try_open_media(path, MediaProviderFeatures::PROVIDES_DECODER)
         };
+        #[cfg(not(feature = "online_sources"))]
+        let _ = refresh;
         #[cfg(not(feature = "online_sources"))]
         let src = try_open_media(path, MediaProviderFeatures::PROVIDES_DECODER);
 
@@ -95,13 +99,17 @@ impl MediaController {
     ///
     /// Returns the track duration in milliseconds if known, used to configure
     /// the audio pipeline and device.
-    pub fn open(&mut self, path: &Path) -> Result<Option<u64>, PlaybackStartError> {
+    pub fn open(
+        &mut self,
+        path: &Path,
+        refresh: Option<crate::media::http_source::MediaUrlRefresh>,
+    ) -> Result<Option<u64>, PlaybackStartError> {
         info!("Opening track '{}'", path.display());
 
         // Close any existing stream
         self.close();
 
-        let (media_stream, duration_ms) = Self::open_stream(path)?;
+        let (media_stream, duration_ms) = Self::open_stream(path, refresh)?;
 
         self.media_stream = Some(media_stream);
         self.current_path = Some(path.to_path_buf());

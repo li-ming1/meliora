@@ -86,7 +86,9 @@ fn playback_continues_after_earlier_device_fault() {
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
     run_to_eof(&mut engine, MAX_CYCLES); // fault fires during track A
-    engine.open(&path_b, false).expect("failed to open track B");
+    engine
+        .open(&path_b, false, None)
+        .expect("failed to open track B");
     run_to_eof(&mut engine, MAX_CYCLES); // track B plays on a healthy stream
     engine.stop();
     dummy::uninstall_capture();

@@ -50,7 +50,7 @@ const MAX_NO_PROGRESS_CYCLES: u32 = 50;
 /// Cap on the online-URL refresh inside the playback loop: the provider
 /// clients carry no per-request timeout, and this retry runs synchronously on
 /// the playback thread, so an unresponsive API must not stall the audio loop.
-/// Only consumed by `build_refresh_closure` (online_sources-gated).
+/// Only consumed by `build_refresh_hook` (online_sources-gated).
 #[cfg(feature = "online_sources")]
 const STREAM_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
@@ -437,7 +437,7 @@ impl PlaybackThread {
             .queue
             .current_display()
             .unwrap_or((None, None, None, None));
-        let refresh = self.build_refresh_closure(identity, display);
+        let refresh = self.build_refresh_hook(identity, display);
         let path = refresh()?;
         self.queue.replace_current_path(path.clone());
         Some(path)
@@ -448,38 +448,67 @@ impl PlaybackThread {
         None
     }
 
-    /// The shared core of both expired-URL refresh sites — the transition's
-    /// synchronous retry ([`Self::refresh_expired_online_url`]) and the
-    /// background prepare's on-error hook
-    /// ([`Self::build_prepare_refresh`]) — so the provider call, its timeout
-    /// and the quality settings live in exactly one place. Returns the fresh
-    /// path, or `None` when the provider can no longer produce one.
+    /// Mid-stream refresh hook for the track being opened: present only for
+    /// HTTP paths with a resolvable provider identity (the queue item's
+    /// persisted identity, or the stream-registry fallback). Installed on the
+    /// source at open time so an expired signed URL self-heals on the fill
+    /// thread instead of stalling into a fatal skip.
+    #[cfg(feature = "online_sources")]
+    fn build_current_refresh_hook(&self) -> Option<crate::media::http_source::MediaUrlRefresh> {
+        let path = self.queue.current_path()?;
+        if !crate::media::is_http_path(&path) {
+            return None;
+        }
+        let identity = self
+            .queue
+            .current_online_identity()
+            .or_else(|| crate::online_sources::identify_path(&path).map(|m| m.identity))?;
+        let display = self
+            .queue
+            .current_display()
+            .unwrap_or((None, None, None, None));
+        Some(self.build_refresh_hook(identity, display))
+    }
+
+    #[cfg(not(feature = "online_sources"))]
+    fn build_current_refresh_hook(&self) -> Option<crate::media::http_source::MediaUrlRefresh> {
+        None
+    }
+
+    /// The shared core of every expired-URL refresh site — the transition's
+    /// synchronous retry ([`Self::refresh_expired_online_url`]), the
+    /// background prepare's on-error hook and the mid-stream refresh hook
+    /// installed on each opened stream ([`Self::build_current_refresh_hook`],
+    /// [`AudioEngine::prepare_next`]) — so the provider call, its timeout and
+    /// the quality settings live in exactly one place. Returns a shareable
+    /// hook: each call re-fetches a fresh path, or `None` when the provider
+    /// can no longer produce one.
     ///
-    /// The closure blocks on the provider refresh, bounded by
+    /// The hook blocks on the provider refresh, bounded by
     /// [`STREAM_REFRESH_TIMEOUT`], and must only run where blocking is
     /// acceptable: the playback thread (the transition gap is already
-    /// audible) or the dedicated media-prepare std thread. Both are plain
-    /// threads, so `block_on` parks that thread alone — it can never occupy
-    /// a tokio worker and starve the runtime.
+    /// audible) or the dedicated media-prepare / fill std threads. All are
+    /// plain threads, so `block_on` parks that thread alone — it can never
+    /// occupy a tokio worker and starve the runtime.
     #[cfg(feature = "online_sources")]
-    fn build_refresh_closure(
+    fn build_refresh_hook(
         &self,
         identity: crate::online_sources::OnlineIdentity,
         display: crate::online_sources::OnlineDisplay,
-    ) -> Box<dyn FnOnce() -> Option<PathBuf> + Send> {
+    ) -> crate::media::http_source::MediaUrlRefresh {
         // `as_str` yields `&'static str`, so the quality snapshot rides in
         // the closure without borrowing `self`.
         #[cfg(feature = "kugou")]
         let kugou_quality = self.playback_settings.online_quality.as_str();
         #[cfg(feature = "netease")]
         let netease_quality = self.playback_settings.netease_quality.as_str();
-        Box::new(move || {
+        Arc::new(move || {
             let ctx = crate::online_sources::RefreshContext {
                 #[cfg(feature = "kugou")]
                 kugou_quality,
                 #[cfg(feature = "netease")]
                 netease_quality,
-                display,
+                display: display.clone(),
             };
             let fresh = crate::RUNTIME
                 .block_on(async {
@@ -525,7 +554,7 @@ impl PlaybackThread {
             .peek_next_display()
             .unwrap_or((None, None, None, None));
         Some(OnlineRefresh {
-            retry: self.build_refresh_closure(identity, display),
+            retry: self.build_refresh_hook(identity, display),
         })
     }
 
@@ -548,23 +577,29 @@ impl PlaybackThread {
         self.last_track_peak = None;
         self.last_album_peak = None;
 
-        let (duration, open_path) = match self.engine.open(path, preserve_resampler) {
-            Ok(duration) => (duration, path.to_path_buf()),
-            Err(first_error) => {
-                // A persisted online direct link is signed and expires (403).
-                // Before skipping, re-fetch a fresh URL from the item's
-                // provider identity and retry the open once.
-                let fresh_path = if crate::media::is_http_path(path) {
-                    self.refresh_expired_online_url()
-                } else {
-                    None
-                };
-                let Some(fresh_path) = fresh_path else {
-                    return Err(first_error);
-                };
-                info!("persisted stream URL expired; retrying with refreshed URL");
-                let duration = self.engine.open(&fresh_path, preserve_resampler)?;
-                (duration, fresh_path)
+        let (duration, open_path) = {
+            // Arm the opened stream's mid-stream URL refresh (an expired
+            // signed URL self-heals on the fill thread); None for local files.
+            let refresh = self.build_current_refresh_hook();
+            match self.engine.open(path, preserve_resampler, refresh) {
+                Ok(duration) => (duration, path.to_path_buf()),
+                Err(first_error) => {
+                    // A persisted online direct link is signed and expires (403).
+                    // Before skipping, re-fetch a fresh URL from the item's
+                    // provider identity and retry the open once.
+                    let fresh_path = if crate::media::is_http_path(path) {
+                        self.refresh_expired_online_url()
+                    } else {
+                        None
+                    };
+                    let Some(fresh_path) = fresh_path else {
+                        return Err(first_error);
+                    };
+                    info!("persisted stream URL expired; retrying with refreshed URL");
+                    let refresh = self.build_current_refresh_hook();
+                    let duration = self.engine.open(&fresh_path, preserve_resampler, refresh)?;
+                    (duration, fresh_path)
+                }
             }
         };
 
@@ -1344,9 +1379,13 @@ impl PlaybackThread {
 
     fn send_event(&mut self, event: PlaybackEvent) {
         // A queue mutation can change which track plays next: the gapless
-        // pre-open (if any) is stale from this point on.
+        // pre-open (if any) is stale from this point on — but only when the
+        // next entry actually changed. Edits elsewhere (metadata refreshes,
+        // reorders not touching next) keep a valid pre-open instead of
+        // re-paying a full open in the prepare cooldown window.
         if matches!(event, PlaybackEvent::QueueUpdated) {
-            self.engine.drop_prepared();
+            let next = self.queue.peek_next_path();
+            self.engine.drop_prepared_unless_next(next.as_deref());
         }
         // an Err just means the UI (and its receiver) is already gone
         let _ = self.events_tx.send(event);

@@ -336,8 +336,17 @@ impl ImmersiveView {
             let progress = cx.new(|cx| {
                 // The seek bar repaints on every position tick while the
                 // fullscreen view around it stays put (see the position
-                // observer above).
-                cx.observe(&info.position, |_, _, cx| cx.notify()).detach();
+                // observer above). Gated on the immersive flag: the entity
+                // lives app-long, so ungated ticks cost 30 empty notifies/s
+                // while the fullscreen view is closed.
+                let immersive_flag = immersive_flag.clone();
+                cx.observe(&info.position, move |_, _, cx| {
+                    if !*immersive_flag.read(cx) {
+                        return;
+                    }
+                    cx.notify();
+                })
+                .detach();
                 cx.observe(&info.duration, |_, _, cx| cx.notify()).detach();
                 ImmersiveProgress {
                     position: info.position.clone(),

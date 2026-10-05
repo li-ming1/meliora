@@ -59,7 +59,7 @@ pub fn engine_playing(path: &Path) -> AudioEngine {
         .set_replaygain(1.0)
         .expect("failed to set ReplayGain");
     engine
-        .open(path, false)
+        .open(path, false, None)
         .expect("failed to open the generated test WAV");
     engine
 }
