@@ -1,4 +1,4 @@
-use std::{cell::Cell, path::PathBuf};
+use std::{cell::Cell, path::PathBuf, sync::Arc};
 
 use gpui::{
     Anchor, App, AppContext, Bounds, Context, Div, DragMoveEvent, ElementId, Entity, Hsla,
@@ -42,7 +42,12 @@ pub struct TrackDragData {
     pub source_list_id: Option<ElementId>,
     pub source_index: Option<usize>,
     /// Additional selected indices when dragging multiple items from a list.
-    pub additional_indices: Vec<usize>,
+    /// Shared `Arc<[usize]>` (not `Vec`): the payload is re-stamped from a
+    /// cached base on every render frame while a drag is live, so this member
+    /// must clone by refcount instead of re-allocating the index list. The
+    /// `all_indices()` / drop paths only ever read it through slice access,
+    /// so the container type is invisible to them.
+    pub additional_indices: Arc<[usize]>,
 }
 
 impl TrackDragData {
@@ -54,7 +59,7 @@ impl TrackDragData {
             display_name: display_name.into(),
             source_list_id: None,
             source_index: None,
-            additional_indices: Vec::new(),
+            additional_indices: Arc::from([]),
         }
     }
 
@@ -71,7 +76,7 @@ impl TrackDragData {
             display_name: display_name.into(),
             source_list_id: None,
             source_index: None,
-            additional_indices: Vec::new(),
+            additional_indices: Arc::from([]),
         }
     }
 
@@ -81,8 +86,8 @@ impl TrackDragData {
         self
     }
 
-    pub fn with_additional_indices(mut self, indices: Vec<usize>) -> Self {
-        self.additional_indices = indices;
+    pub fn with_additional_indices(mut self, indices: impl Into<Arc<[usize]>>) -> Self {
+        self.additional_indices = indices.into();
         self
     }
 

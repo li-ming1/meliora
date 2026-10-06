@@ -31,7 +31,7 @@ use cntp_i18n::{tr, trn};
 use gpui::*;
 use prelude::FluentBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tracing::error;
 
 use super::{
@@ -59,6 +59,11 @@ pub struct QueueSelection {
     /// render path can borrow it instead of allocating and sorting per row
     /// per frame.
     sorted: Vec<usize>,
+    /// Bumped by `resync_sorted` on every mutation. Lets render-path consumers
+    /// (the per-row drag-companion cache) key their caches on a selection
+    /// version number instead of re-deriving per-frame data; a mutation that
+    /// leaves the set unchanged only causes a harmless cache rebuild.
+    epoch: u64,
     anchor: Option<usize>,
 }
 
@@ -67,6 +72,7 @@ impl QueueSelection {
         cx.new(|_| Self {
             selected: FxHashSet::default(),
             sorted: Vec::new(),
+            epoch: 0,
             anchor: None,
         })
     }
@@ -77,6 +83,12 @@ impl QueueSelection {
 
     pub fn is_multi(&self) -> bool {
         self.selected.len() > 1
+    }
+
+    /// Selection version: changes whenever any mutator runs (they all funnel
+    /// through `resync_sorted`), even if the resulting set is identical.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     pub fn indices(&self) -> Vec<usize> {
@@ -90,11 +102,14 @@ impl QueueSelection {
     }
 
     /// Rebuilds the sorted snapshot after a mutation. Selection changes are
-    /// user-action frequency, so the cost here is irrelevant.
+    /// user-action frequency, so the cost here is irrelevant. Every mutator
+    /// funnels through this method, making it the single bump point for the
+    /// epoch that per-row drag caches key on.
     fn resync_sorted(&mut self) {
         self.sorted.clear();
         self.sorted.extend(self.selected.iter().copied());
         self.sorted.sort_unstable();
+        self.epoch = self.epoch.wrapping_add(1);
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
@@ -169,6 +184,13 @@ pub struct QueueItem {
     /// changes (metadata load). Each frame just clones it and re-stamps the
     /// live index and selection instead of reallocating the path and name.
     drag_base: Option<(SharedString, TrackDragData)>,
+    /// Cached multi-drag companions: sorted selection minus this row, keyed on
+    /// (selection epoch, own index). `QueueSelection::sorted()` is already a
+    /// snapshot maintained on every mutation, so the per-frame recompute that
+    /// remained was only the filter+collect `Vec` feeding the drag payload;
+    /// with the payload's `additional_indices` now an `Arc<[usize]>`, this
+    /// cache turns that per-frame allocation into a refcount bump.
+    drag_others: Option<(u64, usize, Arc<[usize]>)>,
 }
 
 impl HasLikedState for QueueItem {
@@ -249,6 +271,7 @@ impl QueueItem {
                 duration_text: None,
                 cached_duration: None,
                 drag_base: None,
+                drag_others: None,
             }
         })
     }
@@ -437,16 +460,43 @@ impl Render for QueueItem {
                             drag_data = drag_data.with_reorder_info(QUEUE_LIST_ID, idx);
 
                             if is_selected {
-                                // borrowed sorted snapshot; only the per-drag
-                                // `others` Vec is still allocated
-                                let others: Vec<usize> = selection_for_drag
-                                    .read(cx)
-                                    .sorted()
-                                    .iter()
-                                    .filter(|&&i| i != idx)
-                                    .copied()
-                                    .collect();
-                                drag_data = drag_data.with_additional_indices(others);
+                                // Multi-drag companions: the sorted selection
+                                // minus this row. Cached for the drag session
+                                // instead of recomputed per frame — why that is
+                                // safe:
+                                // 1. `QueueSelection::sorted()` is already a
+                                //    snapshot rebuilt on every mutation, so the
+                                //    ordered set itself never goes stale; this
+                                //    cache only removes the per-frame
+                                //    filter+collect allocation that fed the
+                                //    payload.
+                                // 2. Every selection mutator is click-driven
+                                //    (`on_click`/`on_aux_click`), so while a
+                                //    drag is live the set cannot change.
+                                // 3. Even if a future mutator fires mid-drag,
+                                //    its epoch bump rebuilds the cache next
+                                //    frame — identical output to the old
+                                //    per-frame recompute, never stale.
+                                let selection_epoch = selection_for_drag.read(cx).epoch();
+                                if self
+                                    .drag_others
+                                    .as_ref()
+                                    .is_none_or(|(e, i, _)| *e != selection_epoch || *i != idx)
+                                {
+                                    let others: Arc<[usize]> = selection_for_drag
+                                        .read(cx)
+                                        .sorted()
+                                        .iter()
+                                        .filter(|&&i| i != idx)
+                                        .copied()
+                                        .collect();
+                                    self.drag_others = Some((selection_epoch, idx, others));
+                                }
+                                if let Some((_, _, others)) = &self.drag_others {
+                                    // refcount bump: `additional_indices` is
+                                    // an `Arc<[usize]>` on the payload
+                                    drag_data = drag_data.with_additional_indices(others.clone());
+                                }
                             }
 
                             div.on_drag(drag_data, {
