@@ -205,6 +205,11 @@ fn create_stream_internal<T: CpalSample + SampleFrom<f64>>(
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            // 实时回调线程的 MMCSS 登记（cpal 自建线程无法在创建侧做）：
+            // 每线程一次，后续只剩 thread_local 读，实时路径安全。见
+            // devices::mmcss 模块文档（2026-10-04 调度饥饿事故的应用侧
+            // 防线）。
+            crate::devices::mmcss::register_audio_thread_once();
             let read = read_available(&mut cons, data);
             if read < data.len() {
                 // Fill the tail with digital silence so an underrun plays

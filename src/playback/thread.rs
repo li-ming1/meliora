@@ -149,6 +149,10 @@ impl PlaybackThread {
         std::thread::Builder::new()
             .name("playback".to_string())
             .spawn(move || {
+                // 解码泵的 MMCSS 登记（"Playback" 任务类）：CPU 竞争场景
+                // 下保住环形缓冲的生产者——2026-10-04 的 696 次 underrun
+                // 就是泵线程被后台构建饿穿（见 devices::mmcss 模块文档）。
+                crate::devices::mmcss::register_playback_thread();
                 let queue_manager =
                     QueueManager::new(queue, playback_settings.clone(), session, storage_tx);
 
