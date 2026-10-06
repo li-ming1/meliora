@@ -313,13 +313,13 @@
   },
   "CLEAR_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1076",
+    "definedIn": "src/ui/queue.rs:1116",
     "plural": false,
     "description": null
   },
   "CLOSE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1094",
+    "definedIn": "src/ui/queue.rs:1134",
     "plural": false,
     "description": null
   },
@@ -1819,13 +1819,13 @@
   },
   "QUEUE_SUMMARY_TRACKS": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:998",
+    "definedIn": "src/ui/queue.rs:1038",
     "plural": true,
     "description": null
   },
   "QUEUE_TITLE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1061",
+    "definedIn": "src/ui/queue.rs:1101",
     "plural": false,
     "description": null
   },

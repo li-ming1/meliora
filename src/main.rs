@@ -415,6 +415,9 @@ fn spawn_memory_probe() {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut baseline: Option<(std::time::Instant, u64)> = None;
         let mut tick_count: u64 = 0;
+        // covers_mb 阶梯值：只在低频档刷新（见循环内刷新点），两次刷新
+        // 之间保持上次数值——字段语义是"低频刷新的磁盘封面缓存用量"。
+        let mut covers_mb: u64 = 0;
         // Pressure-shed bookkeeping: consecutive over-cap samples and the
         // rising edge (previous sample was under the cap).
         let mut over_cap_streak: u32 = 0;
@@ -427,11 +430,6 @@ fn spawn_memory_probe() {
         loop {
             tick.tick().await;
             let (private, working) = process_memory_mb();
-            // 封面缓存目录可达数千文件，同步枚举走阻塞池，不占 async worker。
-            let covers = crate::RUNTIME
-                .spawn_blocking(disk_cover_cache_mb)
-                .await
-                .unwrap_or(0);
             let render_cache = crate::ui::components::managed_image::render_cache_mb();
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
@@ -448,6 +446,23 @@ fn spawn_memory_probe() {
             // bought back: large reclaim = idle-page fragmentation, ~0 = the
             // growth is live data and the leak is real.
             tick_count += 1;
+            // covers_mb 低频档：磁盘封面缓存目录可达数千文件，全量
+            // read_dir + metadata 枚举不为一个观测字段每 30s 付一次——与
+            // mimalloc_stats 快照同频（每 10 个采样 ≈5 分钟，同款
+            // is_multiple_of(10) 写法），tick 1 补一次让首个 periodic 日志
+            // 就有真值（60s 启动延迟的争盘理由见循环前注释，两者共用）。
+            // 两次刷新之间 covers_mb 保持上次数值（阶梯更新）。该字段只
+            // 服务于 [mem] periodic / mem step 的日志观测：mem step 告警
+            // 的判定只吃 private commit 增量，covers_mb 是伴随字段，阶梯
+            // 值（至多 ~5 分钟陈旧）可接受；进程内 img_cache_mb 仍逐采样
+            // 刷新，告警路径不受影响。
+            if tick_count == 1 || tick_count.is_multiple_of(10) {
+                // 封面缓存目录可达数千文件，同步枚举走阻塞池，不占 async worker。
+                covers_mb = crate::RUNTIME
+                    .spawn_blocking(disk_cover_cache_mb)
+                    .await
+                    .unwrap_or(0);
+            }
             let scheduled_collect = tick_count.is_multiple_of(10);
             // Memory-cap watchdog: past the soft private-commit budget, purge
             // on every sample instead of waiting for the 5-minute cadence, and
@@ -546,7 +561,8 @@ fn spawn_memory_probe() {
                     private_mb = private,
                     render_cache_mb = render_cache,
                     img_cache_mb = img_mb,
-                    covers_mb = covers,
+                    // 阶梯值：低频档刷新（见上方 covers_mb 刷新点）
+                    covers_mb,
                     tiles_leaked = funnel.5,
                     "mem step: committed grew in last 10 min"
                 );
@@ -595,7 +611,8 @@ fn spawn_memory_probe() {
                     mi_rss_mb = mi_rss_mb,
                     mi_collect_reclaim_mb = mi_collect_reclaim_mb,
                     atlas = ?atlas_field,
-                    covers_mb = covers,
+                    // 阶梯值：低频档刷新（每 10 个采样 ≈5 分钟，tick 1 补一次）
+                    covers_mb,
                     render_cache_mb = render_cache,
                     render_cache_entries = render_cache_entries,
                     backdrop_cache_mb,
@@ -619,6 +636,10 @@ fn spawn_memory_probe() {
 
 /// Total bytes of the on-disk online-cover cache, in MiB. Tracks how many
 /// distinct covers the session has touched, independent of process memory.
+/// Sampling cadence is owned by the caller: the `[mem]` probe refreshes it
+/// on the low-frequency tier (every 10th sample, see the refresh site in
+/// `spawn_memory_probe`), so readers treat the logged value as a staircase,
+/// not a per-sample reading.
 #[cfg(all(not(test), feature = "online_sources"))]
 fn disk_cover_cache_mb() -> u64 {
     let dir = crate::paths::data_dir().join("image-cache");
