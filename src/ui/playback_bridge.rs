@@ -127,7 +127,22 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
                         });
                     }
                     PlaybackEvent::QueueUpdated => {
-                        queue_model.update(cx, |_, cx| cx.notify());
+                        queue_model.update(cx, |m, cx| {
+                            // Content-change signal for the queue panel's
+                            // observer (models::Queue::content_epoch): bumped
+                            // here — the single funnel where playback events
+                            // become queue-entity writes — so the panel can
+                            // skip its O(n) view/summary rescan on
+                            // QueuePositionChanged-only notifications (every
+                            // track switch). Path-only swaps that ride without
+                            // a QueueUpdated (queue_manager's
+                            // replace_current_path / replace_next_path) never
+                            // notified the UI before either and change no uid
+                            // and no duration, so the epoch tracks exactly the
+                            // notifications the rescan responded to.
+                            m.content_epoch = m.content_epoch.wrapping_add(1);
+                            cx.notify();
+                        });
                     }
                     PlaybackEvent::ShuffleToggled(v) => {
                         playback_info.shuffling.write(cx, v);

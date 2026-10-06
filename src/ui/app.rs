@@ -571,6 +571,7 @@ pub fn run() -> anyhow::Result<()> {
             models::Queue {
                 data: queue.clone(),
                 position: initial_position.unwrap_or(0),
+                content_epoch: 0,
             },
             &storage_data,
             initial_track,

@@ -831,8 +831,8 @@ pub struct Queue {
     /// only re-formats when the key actually moves.
     cached_summary: (usize, i64, SharedString),
     /// Sum of the durations resolved so far; rebuilt by
-    /// `rescan_views_and_summary` on every queue change and extended during
-    /// render as pending metadata loads land.
+    /// `rescan_views_and_summary` on every queue content change and extended
+    /// during render as pending metadata loads land.
     summary_total: i64,
     /// Indices whose duration is not resolved yet. Render reads exactly
     /// these (keeping the reactive dependency on their metadata entities)
@@ -840,14 +840,25 @@ pub struct Queue {
     pending_durations: Vec<usize>,
     /// Slot-window `(start, end)` the row-view prune last ran for. The list
     /// closure skips rebuilding its keep set while unchanged;
-    /// `rescan_views_and_summary` resets this on every queue change, because
-    /// slot keys move with their items — an unchanged slot window can hold a
-    /// different key set after a mutation.
+    /// `rescan_views_and_summary` resets this on every queue content change,
+    /// because slot keys move with their items — an unchanged slot window can
+    /// hold a different key set after a mutation. A position-only notify
+    /// skips the reset on purpose: no key moves, and if the follow-scroll
+    /// brings a different slot range into view the window tuple itself
+    /// changes, so the prune re-runs naturally.
     last_prune_window: (usize, usize),
-    /// Set when a queue notify arrived while the panel was hidden: the
-    /// row-view prune and summary rescan are deferred to the first render
-    /// after the panel is shown again.
+    /// Set when a queue content change (content_epoch moved, see the
+    /// observer) arrived while the panel was hidden: the row-view prune and
+    /// summary rescan are deferred to the first render after the panel is
+    /// shown again. Position-only notifies don't set this — there is nothing
+    /// to catch up on.
     needs_queue_rescan: bool,
+    /// Mirror of `models::Queue::content_epoch` as of the last
+    /// `rescan_views_and_summary`: the observer's content-change
+    /// discriminator. A queue notify whose position moved but whose epoch
+    /// did not (the per-track-switch `QueuePositionChanged` path) skips the
+    /// rescan entirely; see the observer for why that is safe.
+    last_seen_content_epoch: u64,
 }
 
 impl Queue {
@@ -856,6 +867,7 @@ impl Queue {
             let views_model = cx.new(|_| FxHashMap::default());
             let items = cx.global::<Models>().queue.clone();
             let initial_queue_position = items.read(cx).position;
+            let initial_content_epoch = items.read(cx).content_epoch;
             let initial_has_current_track =
                 cx.global::<PlaybackInfo>().current_track.read(cx).is_some();
 
@@ -864,20 +876,43 @@ impl Queue {
             let selection = QueueSelection::new(cx);
 
             cx.observe(&items, move |this: &mut Queue, _, cx| {
-                let new_position = cx.global::<Models>().queue.read(cx).position;
+                let (new_position, new_content_epoch) = {
+                    let queue_state = cx.global::<Models>().queue.read(cx);
+                    (queue_state.position, queue_state.content_epoch)
+                };
                 if this.last_queue_position != new_position {
                     this.last_queue_position = new_position;
                     this.follow_current_pending = true;
                     this.scroll_follow.cancel();
                 }
 
+                // Position-only notification (QueuePositionChanged: the
+                // current-track index moved): it leaves the live uid set and
+                // every item's duration state untouched, so all three rescan
+                // products are no-ops for it — the row-view retain would keep
+                // the same keys, the metadata side-table GC would drop
+                // nothing, and the summary state (total + pending indices) is
+                // unchanged. Skip the whole O(n) scan on that path; every
+                // track switch used to pay it. What a position change DOES
+                // need happens elsewhere by design: the current-row highlight
+                // is guarded per row in `QueueItem`'s own observer, and the
+                // follow-scroll bookkeeping ran right above. The discriminator
+                // is the content_epoch mirror (bumped by the event bridge on
+                // QueueUpdated only): a batch carrying a content change
+                // together with a position move still rescans, because the
+                // epoch moved too.
+                let content_changed = this.last_seen_content_epoch != new_content_epoch;
+                this.last_seen_content_epoch = new_content_epoch;
+
                 // Pruning and the summary rescan only matter while the panel
                 // can be seen; while it is hidden the work is deferred to the
                 // first render after it is shown again.
-                if *this.show_queue.read(cx) {
-                    this.rescan_views_and_summary(cx);
-                } else {
-                    this.needs_queue_rescan = true;
+                if content_changed {
+                    if *this.show_queue.read(cx) {
+                        this.rescan_views_and_summary(cx);
+                    } else {
+                        this.needs_queue_rescan = true;
+                    }
                 }
 
                 this.selection.update(cx, |s, cx| s.clear(cx));
@@ -906,15 +941,20 @@ impl Queue {
                 last_prune_window: (usize::MAX, usize::MAX),
                 // the first render builds the summary state from scratch
                 needs_queue_rescan: true,
+                // matches the entity's epoch at construction; the first
+                // content change after this still rescans
+                last_seen_content_epoch: initial_content_epoch,
             }
         })
     }
 
-    /// One pass over the queue data, run on every queue notify while the
-    /// panel is visible: drops row views (and metadata side-table slots)
-    /// whose uid is no longer in the queue and rebuilds the incremental
-    /// summary state (resolved total plus the indices whose duration is
-    /// still pending).
+    /// One pass over the queue data, run on every queue content change while
+    /// the panel is visible (position-only notifies skip it — the uid set and
+    /// every item's duration state are unchanged, see the observer's
+    /// content_epoch check) plus the deferred first render after the panel is
+    /// shown: drops row views (and metadata side-table slots) whose uid is no
+    /// longer in the queue and rebuilds the incremental summary state
+    /// (resolved total plus the indices whose duration is still pending).
     fn rescan_views_and_summary(&mut self, cx: &mut Context<Self>) {
         let data = cx.global::<Models>().queue.read(cx).data.clone();
         let queue = data.read().unwrap_or_else(|e| e.into_inner());
@@ -953,8 +993,8 @@ impl Render for Queue {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         check_drag_cancelled(self.drag_drop_manager.clone(), cx);
 
-        // A notify arrived while the panel was hidden: catch up now, before
-        // the summary and the list are built.
+        // A content change arrived while the panel was hidden: catch up now,
+        // before the summary and the list are built.
         if self.needs_queue_rescan {
             self.rescan_views_and_summary(cx);
             self.needs_queue_rescan = false;
