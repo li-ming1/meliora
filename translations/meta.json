@@ -449,6 +449,12 @@
     "plural": false,
     "description": null
   },
+  "DESKTOP_LYRICS": {
+    "context": "controls.rs",
+    "definedIn": "src/ui/controls.rs:779",
+    "plural": false,
+    "description": null
+  },
   "DROPDOWN_PLACEHOLDER": {
     "context": "dropdown.rs",
     "definedIn": "src/ui/components/dropdown.rs:102",
@@ -661,7 +667,7 @@
   },
   "IMMERSIVE_ENTER": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:764",
+    "definedIn": "src/ui/controls.rs:772",
     "plural": false,
     "description": null
   },
@@ -1291,13 +1297,13 @@
   },
   "LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:756",
+    "definedIn": "src/ui/controls.rs:764",
     "plural": false,
     "description": null
   },
   "MUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:675",
+    "definedIn": "src/ui/controls.rs:683",
     "plural": false,
     "description": null
   },
@@ -1609,7 +1615,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:889",
+    "definedIn": "src/ui/lyrics.rs:895",
     "plural": false,
     "description": null
   },
@@ -2605,7 +2611,7 @@
   },
   "UNMUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:672",
+    "definedIn": "src/ui/controls.rs:680",
     "plural": false,
     "description": null
   },

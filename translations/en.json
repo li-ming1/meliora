@@ -80,6 +80,7 @@
   "CREATE_PLAYLIST": "Create new playlist '{{name}}'",
   "DELETE_PLAYLIST": "Delete playlist",
   "DELETE_PLAYLIST_CONFIRM": "Click again to delete",
+  "DESKTOP_LYRICS": "Desktop Lyrics",
   "DROPDOWN_PLACEHOLDER": "Select...",
   "EQUALIZER": "Equalizer",
   "EQ_BAND_DISABLED": "Disabled",

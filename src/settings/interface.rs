@@ -57,6 +57,11 @@ pub struct InterfaceSettings {
     pub slim_scrollbars: bool,
     #[serde(default = "default_queue_select_on_click")]
     pub queue_select_on_click: bool,
+    #[serde(default)]
+    pub desktop_lyrics: bool,
+    /// 桌面歌词窗口拖动后的屏幕坐标（逻辑 px）；None = 默认主屏底部居中。
+    #[serde(default)]
+    pub desktop_lyrics_pos: Option<[f64; 2]>,
 }
 
 impl InterfaceSettings {
@@ -82,6 +87,8 @@ impl Default for InterfaceSettings {
             always_show_scrollbars: false,
             slim_scrollbars: true,
             queue_select_on_click: true,
+            desktop_lyrics: false,
+            desktop_lyrics_pos: None,
         }
     }
 }

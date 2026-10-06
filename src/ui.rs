@@ -9,6 +9,7 @@ pub mod components;
 mod constants;
 mod controls;
 pub(crate) mod design;
+pub mod desktop_lyrics;
 mod equalizer;
 mod global_actions;
 mod header;

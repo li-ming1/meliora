@@ -378,8 +378,12 @@ fn build_main_window(
 
     cx.new(|cx| {
         cx.observe_window_activation(window, |_, window, cx| {
+            // 33ms 档的 OR 条件：桌面歌词悬浮窗开着时，主窗口失焦也不降档
+            // （其主场景恰是主窗失焦的逐字扫色）。
+            let broadcast_active =
+                window.is_window_active() || crate::ui::desktop_lyrics::is_open(cx);
             cx.global::<PlaybackInterface>()
-                .set_position_broadcast_active(window.is_window_active());
+                .set_position_broadcast_active(broadcast_active);
         })
         .detach();
 
@@ -438,6 +442,18 @@ fn build_main_window(
 
         let right_sidebar = RightSidebar::new(cx);
         let lyrics_model = right_sidebar.lyrics();
+
+        // 桌面歌词悬浮窗的全局宿主：controls 开关、启动恢复、主窗关闭联动。
+        cx.set_global(crate::ui::desktop_lyrics::DesktopLyricsState::new(
+            lyrics_model.clone(),
+        ));
+
+        // 主窗口关闭 → 联动关闭悬浮窗：避免"只剩悬浮窗"的孤儿会话（应用
+        // 无托盘，悬浮窗自身无法重建主窗口），随后全部窗口关闭自然退出。
+        cx.on_release(|_: &mut MainWindow, cx| {
+            crate::ui::desktop_lyrics::close(cx);
+        })
+        .detach();
 
         MainWindow {
             controls: Controls::new(cx, show_queue.clone(), show_lyrics.clone()),
@@ -764,6 +780,18 @@ pub fn run() -> anyhow::Result<()> {
             })
             .unwrap();
         register_pbc_event_handlers(cx);
+
+        // 桌面歌词悬浮窗：设置开启即随主窗口恢复（句柄与歌词实体已在主
+        // 窗口构建时注入 Global）。
+        if cx
+            .global::<SettingsGlobal>()
+            .model
+            .read(cx)
+            .interface
+            .desktop_lyrics
+        {
+            crate::ui::desktop_lyrics::open(cx);
+        }
     });
 
     Ok(())

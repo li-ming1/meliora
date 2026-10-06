@@ -342,6 +342,12 @@ impl Lyrics {
         self.parsed.clone()
     }
 
+    /// 当前曲目的每首歌主题色（取自封面），桌面歌词悬浮窗与沉浸页共用。
+    /// 提取中或无封面时为 None，消费方回退主题文本色。
+    pub(crate) fn accent(&self) -> Option<Rgba> {
+        self.accent
+    }
+
     /// Generation counter bumped on every applied load; see
     /// [`Self::parsed_lines`].
     pub(crate) fn parsed_generation(&self) -> u64 {

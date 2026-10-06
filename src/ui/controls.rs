@@ -12,7 +12,7 @@ use crate::{
             context::context,
             icons::{
                 MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, REPEAT,
-                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, icon,
+                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, WORLD, icon,
             },
             menu::{menu, menu_check_item, menu_item},
             resizable::{ResizeEdge, resizable},
@@ -654,6 +654,14 @@ impl Render for SecondaryControls {
         let lyrics_active = *self.show_lyrics.read(cx);
         let queue_active = *self.show_queue.read(cx);
         let immersive_active = *self.immersive.read(cx);
+        // 桌面歌词开关态来自 interface settings 实体（读取即注册渲染依赖，
+        // toggle 的 set_enabled notify 会驱动本按钮重绘）。
+        let desktop_lyrics_active = cx
+            .global::<SettingsGlobal>()
+            .model
+            .read(cx)
+            .interface
+            .desktop_lyrics;
 
         div().flex().w_full().h_full().child(
             div()
@@ -762,6 +770,13 @@ impl Render for SecondaryControls {
                             crate::ui::immersive::set_immersive(entering, cx);
                         })
                         .tooltip(build_tooltip(tr!("IMMERSIVE_ENTER", "Immersive Mode"))),
+                )
+                .child(
+                    sidebar_toggle_button("desktop-lyrics-button", WORLD, desktop_lyrics_active)
+                        .on_click(|_, _, cx| {
+                            crate::ui::desktop_lyrics::toggle(cx);
+                        })
+                        .tooltip(build_tooltip(tr!("DESKTOP_LYRICS", "Desktop Lyrics"))),
                 ),
         )
     }
