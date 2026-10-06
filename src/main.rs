@@ -436,6 +436,10 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
         .map(|frame| frame.invalidations)
         .max()
         .unwrap_or(0);
+    // 遮挡/最小化期间 gpui 无帧回调、失效只累积；恢复窗口的首帧会把
+    // 几十分钟的 dirty_at 一次性排空——dirty→draw 超过 60s 即视为该
+    // 伪影而非调度问题（判读细节见 AGENTS.md [frame] 节）。
+    let occluded_gap = dirty_to_draw_max_us > 60_000_000;
     tracing::info!(
         frames = n,
         draw_p50_us = draws_us[n / 2],
@@ -446,6 +450,7 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
         over_33ms = over(33_000),
         dirty_to_draw_max_us,
         invalidations_max,
+        occluded_gap,
         "[frame] periodic"
     );
 }
