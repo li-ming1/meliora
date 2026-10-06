@@ -402,7 +402,11 @@ fn reclaim_delay_for(image: &RenderImage) -> Duration {
 }
 
 fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
+    let large = image_bytes(&image) >= LARGE_IMAGE_BYTES;
     TILE_DROP_STATS.pushed.fetch_add(1, Ordering::Relaxed);
+    if large {
+        TILE_DROP_STATS.pushed_large.fetch_add(1, Ordering::Relaxed);
+    }
     let due = reclaim_delay_for(&image);
     PENDING_TILE_DROPS
         .get_or_init(|| Mutex::new(Vec::new()))
@@ -420,6 +424,11 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
 /// traffic went through the funnel and what each drain decided.
 pub(crate) struct TileDropStats {
     pushed: AtomicU64,
+    /// Cumulative pushes of large-class (backdrop-重量级) payloads: the
+    /// 2026-10-06 burst (funnel_pending=146, private 717MB) was invisible to
+    /// size reasoning because only a total count existed — this splits the
+    /// flood into large vs small so the next burst names its composition.
+    pushed_large: AtomicU64,
     reclaimed: AtomicU64,
     kept_by_cache: AtomicU64,
     kept_by_holders: AtomicU64,
@@ -427,6 +436,7 @@ pub(crate) struct TileDropStats {
 
 static TILE_DROP_STATS: TileDropStats = TileDropStats {
     pushed: AtomicU64::new(0),
+    pushed_large: AtomicU64::new(0),
     reclaimed: AtomicU64::new(0),
     kept_by_cache: AtomicU64::new(0),
     kept_by_holders: AtomicU64::new(0),
@@ -458,6 +468,39 @@ pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
         load(&s.kept_by_cache),
         load(&s.kept_by_holders),
         0,
+    )
+}
+
+/// Queued-funnel payload weight for the `[mem]` probe: `(queued bytes in
+/// MiB, queued large-class count, cumulative large-class pushes)`. The
+/// 2026-10-06 burst session (funnel_pending=146, private 717MB) left the
+/// backlog's pixel weight unknown — only a count existed — so the peak's
+/// composition (live caches vs queued payloads) had to be guessed. Summed
+/// under the queue mutex at probe time instead of increment/decrement
+/// bookkeeping: O(pending) at 30s cadence, no drift paths through
+/// push/drain.
+// Only the non-test probe consumes this; test builds would flag it dead.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn funnel_pending_detail() -> (u64, u64, u64) {
+    let Some(queue) = PENDING_TILE_DROPS.get() else {
+        return (0, 0, TILE_DROP_STATS.pushed_large.load(Ordering::Relaxed));
+    };
+    let queue = queue
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut bytes = 0u64;
+    let mut large = 0u64;
+    for entry in queue.iter() {
+        let entry_bytes = image_bytes(&entry.image);
+        bytes = bytes.saturating_add(entry_bytes);
+        if entry_bytes >= LARGE_IMAGE_BYTES {
+            large += 1;
+        }
+    }
+    (
+        bytes / (1024 * 1024),
+        large,
+        TILE_DROP_STATS.pushed_large.load(Ordering::Relaxed),
     )
 }
 

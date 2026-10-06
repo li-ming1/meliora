@@ -565,6 +565,8 @@ fn spawn_memory_probe() {
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
+            let (funnel_pending_mb, funnel_pending_large, funnel_pushed_large) =
+                crate::ui::components::managed_image::funnel_pending_detail();
             let (backdrop_cache_entries, backdrop_cache_mb) =
                 crate::ui::components::managed_image::backdrop_cache_stats();
             let (mi_commit_mb, mi_rss_mb) = mimalloc_memory_mb();
@@ -636,11 +638,14 @@ fn spawn_memory_probe() {
                     crate::ui::components::managed_image::backdrop_cache_shrink(1);
                 }
                 if rising {
+                    let (funnel_pending_mb, _, _) =
+                        crate::ui::components::managed_image::funnel_pending_detail();
                     tracing::warn!(
                         private_mb = private,
                         soft_cap_mb = MEMORY_SOFT_CAP_MB,
                         render_cache_entries =
                             crate::ui::components::managed_image::render_cache_entries(),
+                        funnel_pending_mb,
                         "mem pressure: shedding image caches (render LRU → 12, \
                          backdrop LRU → 1) and suspending next-track prefetch"
                     );
@@ -753,6 +758,9 @@ fn spawn_memory_probe() {
                     img_cache_entries = img_entries,
                     funnel_pending = funnel.0,
                     funnel_pushed = funnel.1,
+                    funnel_pending_mb,
+                    funnel_pending_large,
+                    funnel_pushed_large,
                     tiles_reclaimed = funnel.2,
                     tiles_kept_by_cache = funnel.3,
                     tiles_kept_holders = funnel.4,
