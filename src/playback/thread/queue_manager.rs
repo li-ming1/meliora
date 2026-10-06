@@ -582,14 +582,28 @@ impl QueueManager {
 
     /// The queue slot `peek_next_path` resolves to, decided on the given
     /// queue snapshot: the repeat-one target's slot when repeat-one is
-    /// active, else the next playable item. Kept in lockstep with
-    /// `next(false)`'s landing decision so the gapless prepare request, its
-    /// URL-refresh hook and the refreshed-path write-back all address the
-    /// same entry. `None` when the advance is not predictable (queue end,
-    /// repeat-wrap with shuffle reshuffles).
+    /// active, else the next playable item, else the repeat-all wrap's
+    /// landing slot (first playable) when shuffle is off. Kept in lockstep
+    /// with `next(false)`'s landing decision so the gapless prepare request,
+    /// its URL-refresh hook and the refreshed-path write-back all address
+    /// the same entry. `None` when the advance is not predictable (queue end
+    /// without repeat, repeat-wrap with shuffle reshuffles).
     fn peek_next_index(&self, queue: &[QueueItemData]) -> Option<usize> {
         Self::repeat_one_target(self.repeat, queue, self.queue_next)
             .or_else(|| Self::next_playable_from(queue, self.queue_next))
+            // Repeat-all wrap without shuffle: `next(false)` reshuffles
+            // nothing and lands on the first playable slot, so the advance is
+            // predictable and the gapless prepare must cover it too — the
+            // wrap used to fall into a cold open with a possibly-expired
+            // persisted URL, the only audible track gap left in online
+            // playback.
+            .or_else(|| {
+                if self.repeat == RepeatState::Repeating && !self.shuffle {
+                    Self::first_playable_index_in(queue)
+                } else {
+                    None
+                }
+            })
     }
 
     /// The path `next(false)` would open, without advancing any state (used
@@ -1951,5 +1965,60 @@ mod tests {
             }
             other => panic!("expected Jumped, got {other:?}"),
         }
+    }
+
+    /// The repeat-all wrap without shuffle lands on the first playable slot
+    /// (`next(false)`'s decision), so the gapless pre-open must see it too:
+    /// `peek_next_path` used to return None past the last item and the wrap
+    /// fell into a cold open — with a persisted online URL that cold open
+    /// pays fail-then-refresh (~375 ms of audible underruns, log-verified
+    /// 2026-10-06: index 19 → 0 advanced with no prepared stream).
+    #[test]
+    fn peek_next_path_covers_repeat_all_wrap_without_shuffle() {
+        let dir = TestDir::new("meliora-queue-wrap-peek");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
+        manager.set_repeat(RepeatState::Repeating);
+        manager.set_position(2); // on the last track
+
+        let peeked = manager
+            .peek_next_path()
+            .expect("wrap target is predictable");
+        assert_eq!(
+            peeked,
+            manager.queue.read().expect("poisoned queue lock")[0]
+                .get_path()
+                .clone()
+        );
+
+        // lockstep: the advance lands on the peeked slot
+        assert!(matches!(
+            manager.next(false),
+            QueueNavigationResult::Changed { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn peek_next_path_stays_none_beyond_queue_end_without_repeat() {
+        let dir = TestDir::new("meliora-queue-end-peek");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
+        manager.set_position(2); // on the last track, repeat off
+
+        assert!(manager.peek_next_path().is_none());
+        assert!(matches!(
+            manager.next(false),
+            QueueNavigationResult::EndOfQueue
+        ));
+    }
+
+    #[test]
+    fn peek_next_path_stays_none_on_shuffle_wrap() {
+        let dir = TestDir::new("meliora-queue-shuffle-wrap-peek");
+        let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
+        manager.set_repeat(RepeatState::Repeating);
+        manager.set_position(2);
+        manager.toggle_shuffle();
+
+        // the reshuffled landing order is not predictable
+        assert!(manager.peek_next_path().is_none());
     }
 }
