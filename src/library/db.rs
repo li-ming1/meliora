@@ -454,20 +454,21 @@ pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64
         .await
 }
 
-/// Every (artist id, track location) pair, used to compute artist availability
-/// (any credited track still on disk) in a single query instead of one
-/// full `list_all_tracks_by_artist` fetch per artist row.
+/// Every `(track_id, artist_id)` credit pair, used to compute artist
+/// availability (any credited track still on disk) in one query instead of
+/// one full `list_all_tracks_by_artist` fetch per artist row. Yields integer
+/// pairs against the track table's own ids — the caller joins them with the
+/// base `(location, id, album_id)` rows in Rust, so no credit re-transfers
+/// its location string over SQL.
 ///
 /// The query must mirror `find_all_tracks_by_artist`: an artist is credited
 /// through BOTH `album_artist` (album-level) and `track_artist` (track-level).
 /// Querying only one of the two greys out every artist credited the other way,
 /// which is how most libraries credit theirs.
-pub async fn list_artist_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
-    let query = include_str!("../../queries/library/find_artist_availability.sql");
+pub async fn list_track_artist_credits(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, i64)>> {
+    let query = include_str!("../../queries/library/find_track_artist_credits.sql");
 
-    sqlx::query_as::<_, (i64, String)>(query)
-        .fetch_all(pool)
-        .await
+    sqlx::query_as::<_, (i64, i64)>(query).fetch_all(pool).await
 }
 
 pub async fn add_playlist_item(

@@ -92,14 +92,56 @@ fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashS
     available
 }
 
-/// `available_ids` for row sets whose ids are already unique (the track rows
-/// of `compute_availability`): one path per id, so the grouping map is pure
-/// overhead — keep the ids whose single path still exists.
-fn available_unique_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashSet<i64> {
-    rows.into_iter()
-        .filter(|(_, location)| paths.exists(location))
-        .map(|(id, _)| id)
-        .collect()
+/// Album, artist and track availability from one pass over the base track
+/// rows plus the integer credit pairs. Replaces the three-query snapshot:
+/// the old album rows duplicated the whole track scan, and the old artist
+/// query re-transferred each credit's location string over SQL — now one
+/// full `(location, id, album_id)` scan plus one `(track_id, artist_id)`
+/// scan feed all three sets through a single stat cache, so every distinct
+/// path is statted exactly once and no location crosses SQL twice. Each
+/// track id appears once in the base rows, so its slot means exactly "this
+/// track's file still exists"; album-less tracks must not grey out of the
+/// tracks table, which is why the base rows (not album-filtered rows) are
+/// the source.
+///
+/// `album_id` of 0 means "no album": sqlx-sqlite decodes a NULL INTEGER
+/// column into `i64` as 0 (its `Decode for i64` has no null check) and album
+/// rowids start at 1, so standalone tracks land here with 0 and must not
+/// conjure a phantom available album id.
+pub fn compute_availability_from_tracks(
+    track_rows: Vec<(String, i64, i64)>,
+    artist_credits: Vec<(i64, i64)>,
+) -> (FxHashSet<i64>, FxHashSet<i64>, FxHashSet<i64>) {
+    let mut paths = PathExistence::default();
+
+    let mut albums = FxHashSet::default();
+    let mut tracks = FxHashSet::default();
+    for (location, id, album_id) in &track_rows {
+        if paths.exists(location) {
+            tracks.insert(*id);
+            if *album_id > 0 {
+                albums.insert(*album_id);
+            }
+        }
+    }
+
+    // Credits reference tracks by id: look the location up instead of
+    // cloning it per credit — one stat per distinct path regardless of how
+    // many artists share the file.
+    let locations: FxHashMap<i64, &str> = track_rows
+        .iter()
+        .map(|(location, id, _)| (*id, location.as_str()))
+        .collect();
+    let mut artists = FxHashSet::default();
+    for (track_id, artist_id) in &artist_credits {
+        if let Some(location) = locations.get(track_id)
+            && paths.exists(location)
+        {
+            artists.insert(*artist_id);
+        }
+    }
+
+    (albums, artists, tracks)
 }
 
 /// Ids of albums that still have at least one track on disk, from a
@@ -111,28 +153,9 @@ pub fn compute_available_albums(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
     available_ids(rows, &mut PathExistence::default())
 }
 
-/// Album, artist and track availability from the same pass, sharing a single
-/// stat cache. Album rows and artist rows describe the same track paths, so
-/// computing the sets separately statted every path twice — and on a large
-/// library that pass is the expensive part of startup. The track rows come
-/// from `list_all_tracks` (every track, album-less ones included — the
-/// album-availability rows filter those out); each track id appears once, so
-/// its slot in the result means exactly "this track's file still exists".
-pub fn compute_availability(
-    album_rows: Vec<(i64, String)>,
-    artist_rows: Vec<(i64, String)>,
-    track_rows: Vec<(i64, String)>,
-) -> (FxHashSet<i64>, FxHashSet<i64>, FxHashSet<i64>) {
-    let mut paths = PathExistence::default();
-    let albums = available_ids(album_rows, &mut paths);
-    let artists = available_ids(artist_rows, &mut paths);
-    let tracks = available_unique_ids(track_rows, &mut paths);
-    (albums, artists, tracks)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{compute_availability, compute_available_albums};
+    use super::{compute_availability_from_tracks, compute_available_albums};
     use crate::test_support::TestDir;
 
     /// `(album id, location)` rows: an album counts as available when at least
@@ -159,29 +182,47 @@ mod tests {
         assert!(!available.contains(&3), "album with only missing files");
     }
 
-    /// `(artist id, location)` rows: an artist is available when any credited
-    /// track is on disk — including a file shared with another artist, which
-    /// must still mark both of them available.
+    /// All three sets derive from one pass over the base `(location, id,
+    /// album_id)` rows plus the integer credit pairs: an album counts when
+    /// any of its tracks is on disk, a track when its own file is, and an
+    /// artist when any credited track's file is — including a file shared
+    /// with another artist, which must mark both of them available.
+    /// `album_id` 0 (sqlx's silent decode of a NULL column) must not conjure
+    /// a phantom available album.
     #[test]
-    fn artist_availability_is_per_credited_artist() {
-        let dir = TestDir::new("meliora-availability-artists");
+    fn availability_sets_derive_from_one_track_pass() {
+        let dir = TestDir::new("meliora-availability-merged");
         let present = dir.join("present.mp3");
         std::fs::write(&present, b"x").unwrap();
         let present = present.display().to_string();
+        let standalone = dir.join("standalone.mp3");
+        std::fs::write(&standalone, b"x").unwrap();
+        let standalone = standalone.display().to_string();
         let missing = dir.join("missing.mp3").display().to_string();
 
-        let rows = vec![
-            (10_i64, present.clone()),
-            (10_i64, missing.clone()),
-            (11_i64, missing.clone()),
-            (12_i64, present),
+        let track_rows = vec![
+            (present.clone(), 1_i64, 100_i64),
+            (missing.clone(), 2_i64, 100_i64),
+            (standalone, 3_i64, 0_i64),
         ];
+        let credits = vec![(1, 10), (2, 10), (2, 11), (1, 12), (3, 13)];
 
-        let (_, available, _) = compute_availability(Vec::new(), rows, Vec::new());
+        let (albums, artists, tracks) = compute_availability_from_tracks(track_rows, credits);
 
-        assert!(available.contains(&10), "artist with a file that exists");
-        assert!(!available.contains(&11), "artist with only missing files");
-        assert!(available.contains(&12), "artist sharing the present file");
+        assert!(albums.contains(&100), "album with one file on disk");
+        assert!(
+            !albums.contains(&0),
+            "standalone track must not conjure album id 0"
+        );
+        assert!(
+            tracks.contains(&1) && tracks.contains(&3),
+            "present tracks available"
+        );
+        assert!(!tracks.contains(&2), "missing track unavailable");
+        assert!(artists.contains(&10), "artist with a file that exists");
+        assert!(!artists.contains(&11), "artist with only missing files");
+        assert!(artists.contains(&12), "artist sharing the present file");
+        assert!(artists.contains(&13), "standalone track's artist available");
     }
 
     /// An artist credited only at album level (`album_artist` with no
@@ -221,8 +262,9 @@ mod tests {
             .await
             .unwrap();
 
-        let rows = db::list_artist_availability(&pool).await.unwrap();
-        let (_, available, _) = compute_availability(Vec::new(), rows, Vec::new());
+        let track_rows = db::list_all_tracks(&pool).await.unwrap();
+        let credits = db::list_track_artist_credits(&pool).await.unwrap();
+        let (_, available, _) = compute_availability_from_tracks(track_rows, credits);
 
         assert!(
             available.contains(&artist_id),

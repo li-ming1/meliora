@@ -31,7 +31,7 @@ use crate::{
     ui::{
         app::Pool,
         assets::db::clear_shrunk_thumb_cache,
-        availability::{compute_availability, is_track_available},
+        availability::{compute_availability_from_tracks, is_track_available},
         library::{NavigationHistory, ViewSwitchMessage},
         library_access::LibraryAccess,
     },
@@ -166,6 +166,19 @@ impl Global for PlaybackInfo {}
 pub struct Queue {
     pub data: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
     pub position: usize,
+    /// Monotonic counter bumped by the UI-side event bridge
+    /// (`ui::playback_bridge`) on every `QueueUpdated` — the playback
+    /// thread's "queue content changed" broadcast; `QueuePositionChanged`
+    /// writes `position` without touching this. The queue panel's observer
+    /// uses it as the content-change discriminator: a position-only move
+    /// keeps the live uid set and every item's duration state, so the
+    /// panel's O(n) view/summary rescan can be skipped entirely
+    /// (see `ui::queue`). Content mutations that ride without a
+    /// `QueueUpdated` (the `replace_current_path` / `replace_next_path`
+    /// stream-URL refreshes) never notified the UI before either and
+    /// change no uid and no duration, so the epoch tracks exactly the
+    /// notifications the rescan used to respond to.
+    pub content_epoch: u64,
 }
 
 // PlaylistInfoTransfer / PlaylistEvent moved to the library layer (they are
@@ -701,11 +714,15 @@ pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
 }
 
 /// (Re)loads the album-, artist- and track-availability snapshots on the async
-/// runtime: two `(id, location)` queries plus one full `(location, id)` scan,
-/// then a single blocking pass that stats each distinct track path once for
-/// all three sets. Startup and scan completion only. All-or-nothing like
-/// `reload_liked_ids`: a failed query or task leaves the three previous
-/// snapshots in place instead of publishing empty sets.
+/// runtime: one full `(location, id, album_id)` track scan plus one integer
+/// `(track_id, artist_id)` credit scan, then a single blocking pass that stats
+/// each distinct track path once for all three sets. The base rows (not
+/// album-filtered rows) are the only complete source — `find_album_availability`
+/// filters album-less tracks out, and those must not grey out in the tracks
+/// table — and the credit join happens in Rust against them, so no query
+/// re-transfers a location string. Startup and scan completion only.
+/// All-or-nothing like `reload_liked_ids`: a failed query or task leaves the
+/// three previous snapshots in place instead of publishing empty sets.
 pub(crate) fn reload_availability(cx: &mut App) {
     // Yields the rows only when the spawned query fully succeeded; every
     // failure is logged so the caller can keep the previous snapshots.
@@ -731,39 +748,22 @@ pub(crate) fn reload_availability(cx: &mut App) {
     let artists = cx.global::<Models>().available_artists.clone();
     let tracks = cx.global::<Models>().available_tracks.clone();
     cx.spawn(async move |cx| {
-        let Some(album_rows) = query_rows(
-            "album availability rows",
-            crate::RUNTIME.spawn({
-                let pool = pool.clone();
-                async move { db::list_album_availability(&pool).await }
-            }),
-        )
-        .await
-        else {
-            return;
-        };
-        let Some(artist_rows) = query_rows(
-            "artist availability rows",
-            crate::RUNTIME.spawn({
-                let pool = pool.clone();
-                async move { db::list_artist_availability(&pool).await }
-            }),
-        )
-        .await
-        else {
-            return;
-        };
-        // `list_all_tracks` (not the album rows) is the only complete source:
-        // `find_album_availability` filters album-less tracks out, and those
-        // must not grey out in the tracks table
         let Some(track_rows) = query_rows(
             "track rows",
-            crate::RUNTIME.spawn(async move {
-                db::list_all_tracks(&pool).await.map(|rows| {
-                    rows.into_iter()
-                        .map(|(location, id, _)| (id, location))
-                        .collect()
-                })
+            crate::RUNTIME.spawn({
+                let pool = pool.clone();
+                async move { db::list_all_tracks(&pool).await }
+            }),
+        )
+        .await
+        else {
+            return;
+        };
+        let Some(artist_credits) = query_rows(
+            "track artist credits",
+            crate::RUNTIME.spawn({
+                let pool = pool.clone();
+                async move { db::list_track_artist_credits(&pool).await }
             }),
         )
         .await
@@ -771,7 +771,9 @@ pub(crate) fn reload_availability(cx: &mut App) {
             return;
         };
         let (album_set, artist_set, track_set) = match crate::RUNTIME
-            .spawn_blocking(move || compute_availability(album_rows, artist_rows, track_rows))
+            .spawn_blocking(move || {
+                compute_availability_from_tracks(track_rows, artist_credits)
+            })
             .await
         {
             Ok(sets) => sets,
