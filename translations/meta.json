@@ -313,13 +313,13 @@
   },
   "CLEAR_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1116",
+    "definedIn": "src/ui/queue.rs:1166",
     "plural": false,
     "description": null
   },
   "CLOSE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1134",
+    "definedIn": "src/ui/queue.rs:1184",
     "plural": false,
     "description": null
   },
@@ -631,13 +631,13 @@
   },
   "GO_TO_ALBUM": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:677",
+    "definedIn": "src/ui/queue.rs:727",
     "plural": false,
     "description": null
   },
   "GO_TO_ARTIST": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:696",
+    "definedIn": "src/ui/queue.rs:746",
     "plural": false,
     "description": null
   },
@@ -1609,7 +1609,7 @@
   },
   "NO_LYRICS": {
     "context": "lyrics.rs",
-    "definedIn": "src/ui/lyrics.rs:845",
+    "definedIn": "src/ui/lyrics.rs:889",
     "plural": false,
     "description": null
   },
@@ -1813,19 +1813,19 @@
   },
   "QUEUE_REMOVE_CANCELLED_STALE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:782",
+    "definedIn": "src/ui/queue.rs:832",
     "plural": false,
     "description": null
   },
   "QUEUE_SUMMARY_TRACKS": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1038",
+    "definedIn": "src/ui/queue.rs:1088",
     "plural": true,
     "description": null
   },
   "QUEUE_TITLE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1101",
+    "definedIn": "src/ui/queue.rs:1151",
     "plural": false,
     "description": null
   },
@@ -1861,7 +1861,7 @@
   },
   "REMOVE_FROM_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:740",
+    "definedIn": "src/ui/queue.rs:790",
     "plural": false,
     "description": null
   },
@@ -1873,7 +1873,7 @@
   },
   "REMOVE_N_FROM_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:627",
+    "definedIn": "src/ui/queue.rs:677",
     "plural": true,
     "description": null
   },
