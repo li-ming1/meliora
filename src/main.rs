@@ -228,6 +228,52 @@ pub(crate) fn process_memory_mb() -> (u64, u64) {
     }
 }
 
+/// 累计 kernel+user CPU 时间（100ns 单位）。与 `[mem]` 探针配套：跨采样
+/// 差分除以墙钟即进程 CPU 占用，空闲进程应稳定 ~0%——与 `[frame]` 的
+/// frames 字段联手检测"空闲却忙碌"（notify 泄漏、轮询循环、重绘风暴的
+/// 非 CPU 形态）。探针是 `#[cfg(not(test))]`（测试用计数分配器替身），
+/// 本 helper 跟随同一门。
+#[cfg(all(target_os = "windows", not(test)))]
+fn process_cpu_times_100ns() -> u64 {
+    use core::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        // FILETIME 是两个 u32，按 u64 槽直收（小端下组合即 64 位值）。
+        fn GetProcessTimes(
+            process: *mut c_void,
+            creation: *mut u64,
+            exit: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+    }
+
+    // SAFETY: pseudo-handle always valid; every out-param is a plain
+    // 8-byte slot written by the call.
+    unsafe {
+        let (mut creation, mut exit, mut kernel, mut user) = (0u64, 0u64, 0u64, 0u64);
+        let ok = GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        );
+        if ok != 0 {
+            kernel.saturating_add(user)
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(test)))]
+fn process_cpu_times_100ns() -> u64 {
+    0
+}
+
 // mimalloc's own accounting, in MiB: `(committed, rss)`. Sampled next to the
 // `[mem]` probe so per-track commit growth splits into "the allocator holds
 // it" (mi_commit climbs in lockstep with private_mb — retention/fragmentation
@@ -480,12 +526,34 @@ fn spawn_memory_probe() {
             gpui::profiler::set_frame_trace_enabled(true);
         }
         let mut frame_collector = gpui::profiler::FrameTimingCollector::new();
+        // CPU 占用差分状态：上次采样的累计 kernel+user 时间（100ns）。
+        let mut last_cpu: Option<(u64, std::time::Instant)> = None;
         loop {
             tick.tick().await;
             if frame_trace {
                 log_frame_aggregate(&mut frame_collector);
             }
             let (private, working) = process_memory_mb();
+            // 全机逻辑核归一的进程 CPU 百分比：差分 / 采样间隔。空闲应为
+            // ~0%；与 [frame] frames 联手定位"空闲却忙碌"。
+            let cpu_pct = {
+                let now = std::time::Instant::now();
+                let total = process_cpu_times_100ns();
+                let pct = last_cpu
+                    .and_then(|(prev, prev_at)| {
+                        let wall_us = prev_at.elapsed().as_micros() as u64;
+                        (wall_us > 0).then(|| {
+                            let cores = std::thread::available_parallelism()
+                                .map(|n| n.get() as u64)
+                                .unwrap_or(1);
+                            let cpu_us = total.saturating_sub(prev) / 10;
+                            (cpu_us * 100) / wall_us.saturating_mul(cores)
+                        })
+                    })
+                    .unwrap_or(0);
+                last_cpu = Some((total, now));
+                pct
+            };
             let render_cache = crate::ui::components::managed_image::render_cache_mb();
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
@@ -664,6 +732,7 @@ fn spawn_memory_probe() {
                     working_mb = working,
                     heap_commit_mb = heap_committed_mb,
                     non_heap_mb = private.saturating_sub(heap_committed_mb),
+                    cpu_pct = cpu_pct,
                     mi_rss_mb = mi_rss_mb,
                     mi_collect_reclaim_mb = mi_collect_reclaim_mb,
                     atlas = ?atlas_field,
