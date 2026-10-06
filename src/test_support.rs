@@ -782,3 +782,117 @@ mod benches {
         }
     }
 }
+
+/// 大库规模实测：设计目标（搜索索引"数秒"、可用性快照全表查询、单专辑
+/// 取曲）全部按 10 万曲设计，但从未在本机验证过——真实库只有 53 张
+/// 专辑。默认 #[ignore]（灌库约 1 分钟，不拖常规测试轮），显式运行：
+/// `cargo test --release --features kugou scale_probe -- --ignored --nocapture`
+/// 灌库走真实写入路径（update_metadata + artist flush，单事务）。
+#[cfg(test)]
+mod scale_probe {
+    use super::*;
+    use crate::ui::availability::compute_availability_from_tracks;
+    use sqlx::Acquire;
+    use std::time::Instant;
+
+    const TRACKS: usize = 100_000;
+    const ALBUMS: usize = 10_000;
+
+    #[tokio::test]
+    #[ignore = "scale probe: ~1-2 min, explicit run only"]
+    async fn hot_read_paths_at_100k_tracks() {
+        let (dir, pool) = create_test_pool("meliora-scale-probe").await;
+
+        // ---- 灌库：单事务 + 真实写入路径 ----
+        let fill_started = Instant::now();
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let mut tx = conn.begin().await.unwrap();
+            for i in 0..TRACKS {
+                let album_idx = i % ALBUMS;
+                let path = dir.utf8_join(&format!("t{i:05}.flac"));
+                insert_metadata(
+                    &mut *tx,
+                    &track_metadata(
+                        &format!("Album {album_idx:05}"),
+                        &format!("Artist {}", album_idx % 1_000),
+                        &format!("Track {i:05}"),
+                        (i % 20) as u64 + 1,
+                    ),
+                    &path,
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+        }
+        let fill = fill_started.elapsed();
+        let (tracks_n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM track")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (albums_n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM album")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        println!(
+            "灌库: {tracks_n} 曲 / {albums_n} 专辑，耗时 {:.2}s",
+            fill.as_secs_f64()
+        );
+
+        // ---- 1) 可用性快照基查询 ----
+        let t = Instant::now();
+        let track_rows = db::list_all_tracks(&pool).await.unwrap();
+        println!(
+            "1) list_all_tracks（{} 行）: {:?}",
+            track_rows.len(),
+            t.elapsed()
+        );
+
+        // ---- 2) 可用性 stat pass（10 万去重路径 exists）----
+        let credits = db::list_track_artist_credits(&pool).await.unwrap();
+        let credits_n = credits.len();
+        let t = Instant::now();
+        let (albums, artists, tracks) =
+            compute_availability_from_tracks(track_rows.clone(), credits);
+        println!(
+            "2) 可用性 stat pass（{credits_n} credits）: {:?} → albums {} / artists {} / tracks {}",
+            t.elapsed(),
+            albums.len(),
+            artists.len(),
+            tracks.len()
+        );
+
+        // ---- 3) 搜索索引四查询 ----
+        let t = Instant::now();
+        let avail = db::list_album_availability(&pool).await.unwrap();
+        let albums_q = db::list_albums_search(&pool).await.unwrap();
+        let artists_q = db::list_artists_search(&pool).await.unwrap();
+        let tracks_q = db::list_tracks_search(&pool).await.unwrap();
+        println!(
+            "3) 搜索索引四查询: {:?}（avail {} / albums {} / artists {} / tracks {}）",
+            t.elapsed(),
+            avail.len(),
+            albums_q.len(),
+            artists_q.len(),
+            tracks_q.len()
+        );
+
+        // ---- 4) 单专辑取曲（详情页热路径）----
+        let t = Instant::now();
+        let (album_id,): (i64,) = sqlx::query_as("SELECT id FROM album LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let in_album = db::list_tracks_in_album(&pool, album_id).await.unwrap();
+        println!(
+            "4) list_tracks_in_album（{} 行）: {:?}",
+            in_album.len(),
+            t.elapsed()
+        );
+
+        // 结构健全性：灌库比率符合设计（10 曲/专辑，专辑/艺术家去重生效）。
+        assert_eq!(tracks_n as usize, TRACKS);
+        assert_eq!(albums_n as usize, ALBUMS);
+    }
+}
