@@ -362,6 +362,48 @@ pub(crate) fn spawn_replacement() -> bool {
         .is_some()
 }
 
+/// 聚合并记录自上次调用以来的帧计时（`[frame] periodic`）。draw 时长是
+/// gpui `Window::draw` 的 CPU 段（场景构建 + 元素绘制）；dirty→draw 含
+/// 调度与合并延迟（上限为一个帧间隔属正常，持续超一个帧间隔才是问题）。
+/// 无帧窗口不记日志——空闲 UI 本就不该有帧，出现即异常信号。
+#[cfg(not(test))]
+fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
+    let frames = collector.collect_unseen();
+    if frames.is_empty() {
+        return;
+    }
+    let mut draws_us: Vec<u64> = frames
+        .iter()
+        .map(|frame| frame.draw_duration().as_micros() as u64)
+        .collect();
+    draws_us.sort_unstable();
+    let n = draws_us.len();
+    let over = |budget_us: u64| draws_us.iter().filter(|d| **d > budget_us).count();
+    let dirty_to_draw_max_us = frames
+        .iter()
+        .filter_map(|frame| frame.dirty_to_draw_duration())
+        .map(|d| d.as_micros() as u64)
+        .max()
+        .unwrap_or(0);
+    let invalidations_max = frames
+        .iter()
+        .map(|frame| frame.invalidations)
+        .max()
+        .unwrap_or(0);
+    tracing::info!(
+        frames = n,
+        draw_p50_us = draws_us[n / 2],
+        draw_p99_us = draws_us[((n * 99) / 100).min(n - 1)],
+        draw_max_us = draws_us[n - 1],
+        over_8ms = over(8_000),
+        over_16ms = over(16_000),
+        over_33ms = over(33_000),
+        dirty_to_draw_max_us,
+        invalidations_max,
+        "[frame] periodic"
+    );
+}
+
 #[cfg(not(test))]
 fn spawn_memory_probe() {
     // Net committed growth over the last 10 minutes considered a "step".
@@ -427,8 +469,22 @@ fn spawn_memory_probe() {
         // （间隔 30s，对内存观测无实质损失；看门狗晚 60s 相对 300s 最小存活
         // 守卫可忽略）。
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        // [frame] 探针：gpui 内建的帧计时（profiler::FrameTiming，运行时
+        // 开关、关闭时零开销）——每 30s 聚合本窗口的帧耗时分布（draw 时长
+        // p50/p99/max、超 8/16/33ms 计数、合并的 invalidation 数、dirty→
+        // draw 延迟），作为渲染优化的测量基线。空闲 UI 不产生帧：frames
+        // 长期偏高 = notify 泄漏/无谓重绘，本探针兼任其检测器。环形缓冲
+        // 有界（16MiB），无驻留风险；MELIORA_FRAME_TRACE=0 关闭。
+        let frame_trace = env_override("MELIORA_FRAME_TRACE", 1) != 0;
+        if frame_trace {
+            gpui::profiler::set_frame_trace_enabled(true);
+        }
+        let mut frame_collector = gpui::profiler::FrameTimingCollector::new();
         loop {
             tick.tick().await;
+            if frame_trace {
+                log_frame_aggregate(&mut frame_collector);
+            }
             let (private, working) = process_memory_mb();
             let render_cache = crate::ui::components::managed_image::render_cache_mb();
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
