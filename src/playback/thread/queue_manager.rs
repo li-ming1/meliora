@@ -168,7 +168,14 @@ pub struct QueueManager {
     undo_stack: VecDeque<UndoAction>,
     /// Queue content changed since the last session snapshot was sent.
     session_dirty: bool,
-    /// Instant of the last session snapshot send (debounce anchor).
+    /// Playback state (position/shuffle/repeat) changed since the last send
+    /// and is waiting for the debounced state-only flush. Parallel to
+    /// `session_dirty` (queue contents); shares the same
+    /// `last_session_send` window anchor. See `session.rs`.
+    state_dirty: bool,
+    /// Instant of the last session snapshot send (debounce anchor) — the
+    /// anchor is shared by the full-snapshot path and the state-only path,
+    /// so a state send also occupies the window.
     last_session_send: Option<Instant>,
 }
 
@@ -339,6 +346,7 @@ impl QueueManager {
             storage_tx,
             undo_stack: VecDeque::with_capacity(UNDO_STACK_CAPACITY),
             session_dirty: false,
+            state_dirty: false,
             last_session_send: None,
         }
     }
