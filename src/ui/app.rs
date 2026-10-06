@@ -446,6 +446,7 @@ fn build_main_window(
         // 桌面歌词悬浮窗的全局宿主：controls 开关、启动恢复、主窗关闭联动。
         cx.set_global(crate::ui::desktop_lyrics::DesktopLyricsState::new(
             lyrics_model.clone(),
+            window.window_handle(),
         ));
 
         // 主窗口关闭 → 联动关闭悬浮窗：避免"只剩悬浮窗"的孤儿会话（应用

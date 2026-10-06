@@ -37,16 +37,20 @@ const BOTTOM_MARGIN: f32 = 108.0;
 pub struct DesktopLyricsState {
     pub lyrics: Entity<Lyrics>,
     window: Option<WindowHandle<DesktopLyricsView>>,
+    /// 主窗口句柄：悬浮窗关闭时按其激活态恢复位置广播档位（33ms 强制档
+    /// 只在悬浮窗存在期间有效，关闭后不得滞留）。
+    main_window: Option<AnyWindowHandle>,
 }
 impl Global for DesktopLyricsState {}
 
 impl DesktopLyricsState {
     /// 主窗口构建时的初始注入；窗口句柄由开关流程（toggle/open/close）
     /// 独占管理。
-    pub fn new(lyrics: Entity<Lyrics>) -> Self {
+    pub fn new(lyrics: Entity<Lyrics>, main_window: AnyWindowHandle) -> Self {
         Self {
             lyrics,
             window: None,
+            main_window: Some(main_window),
         }
     }
 
@@ -98,7 +102,19 @@ pub fn close(cx: &mut App) {
             .update(cx, |_, window, _| window.remove_window())
             .ok();
     }
-    sync_broadcast(cx);
+    // 33ms 强制档随悬浮窗关闭立即撤销：按主窗口当前激活态恢复双档制。
+    // 不撤销的话，主窗失焦期间广播会滞留在 30fps（纯浪费的重绘泵）。
+    let main_active = cx
+        .global::<DesktopLyricsState>()
+        .main_window
+        .and_then(|handle| {
+            handle
+                .update(cx, |_view, window, _cx| window.is_window_active())
+                .ok()
+        })
+        .unwrap_or(false);
+    cx.global::<PlaybackInterface>()
+        .set_position_broadcast_active(main_active);
 }
 
 /// 位置广播档位：悬浮窗存在即 33ms（主窗失焦场景的逐字扫色需要）；
