@@ -52,7 +52,7 @@ const LYRICS_BASE_LINE_HEIGHT: f32 = 1.5;
 const LYRICS_ACTIVE_LINE_HEIGHT: f32 = 1.65;
 /// 上下渐隐遮罩高度：掩盖滚动边缘的硬裁切，越靠面板边缘越透明。
 const LYRICS_FADE_MASK_HEIGHT: f32 = 56.0;
-/// 按曲目歌词缓存容量（FIFO 淘汰）：覆盖来回切歌重访的最近曲目。
+/// 按曲目歌词缓存容量（LRU 淘汰）：覆盖来回切歌重访的最近曲目。
 const LYRIC_CACHE_CAP: usize = 16;
 /// 封面取色解码尺寸：256px 对饱和度加权主色已绰绰有余（约 2.1 万个采样
 /// 点）。取色图从不绘制——`use_cache=false` 解码即弃，零 RENDER_CACHE
@@ -61,6 +61,21 @@ const ACCENT_THUMB_PX: u32 = 256;
 
 /// 单曲歌词加载结果：纯文本原文 + 解析后的时间行（行数据 Arc 共享）。
 type CachedLyric = (Option<String>, Option<Arc<Vec<LrcLine>>>);
+
+/// 在线"无歌词"负结果的存活期：TTL 内重访免重发 search 请求，过期后允许
+/// 重拉一次——注册表晚到的误判（同 URL 稍后进注册表就能取到歌词）与厂商
+/// 补录歌词都会在 TTL 边界自愈，而不是像永久负缓存那样一直给过期的
+/// "无歌词"。
+const LYRIC_NEGATIVE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// 单曲歌词缓存条目。
+enum LyricCacheEntry {
+    /// 正结果：拿来即绘（在线正结果的原文已按 parsed 优先裁剪，见
+    /// `cache_lyrics`）。
+    Positive(CachedLyric),
+    /// 在线负结果（确认无歌词 / 拉取失败）：键为当时的流 URL。
+    Negative(Instant),
+}
 
 pub struct Lyrics {
     /// 纯文本回退分支的全文（无可解析时间行时）。SharedString（Arc<str>）
@@ -83,14 +98,15 @@ pub struct Lyrics {
     /// 查询，全是白付），只置脏；可见性观察者（面板打开 / 沉浸页激活）
     /// 补跑完整加载路径。
     load_pending: bool,
-    /// Bounded FIFO cache of recently loaded lyrics keyed by track path: a
-    /// back-and-forth track switch re-serves the cached lyric instead of
-    /// re-reading the sidecar files + DB queries (or re-issuing the 1-3
-    /// online requests). Cleared when a library scan completes (the only
-    /// writer of DB lyrics). Online entries are keyed by stream URL, so a
-    /// refreshed URL for the same song fetches once more.
-    lyric_cache: FxHashMap<PathBuf, CachedLyric>,
-    /// Insertion order for `lyric_cache` FIFO eviction.
+    /// Bounded LRU cache of recently loaded lyrics keyed by track path (the
+    /// stream URL for online tracks): a back-and-forth track switch re-serves
+    /// the cached lyric instead of re-reading the sidecar files + DB queries
+    /// (or re-issuing the 1-3 online requests). 命中即续命——大库歌词面板
+    /// 往返切换时不让在屏热条目被插入顺序挤掉。Cleared when a library scan
+    /// completes (the only writer of DB lyrics). Online entries are keyed by
+    /// stream URL, so a refreshed URL for the same song fetches once more.
+    lyric_cache: FxHashMap<PathBuf, LyricCacheEntry>,
+    /// 由旧到新的访问序，供 LRU 淘汰；键集合与 `lyric_cache` 保持一致。
     lyric_cache_order: Vec<PathBuf>,
     /// Latest playback position snapshot (ms), refreshed by the position
     /// observer; drives per-word karaoke progress.
@@ -442,30 +458,56 @@ impl Lyrics {
 
     /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
     /// oldest entry past [`LYRIC_CACHE_CAP`].
+    /// 缓存查询：正结果原样返回；在线负结果在 TTL 内返回空（免重发
+    /// search 请求），过期视为未命中（条目保留，重拉落地后被覆盖）。命中
+    /// 即 LRU 续命。
+    fn cached_lyrics(&mut self, key: &Path) -> Option<CachedLyric> {
+        let hit = match self.lyric_cache.get(key) {
+            Some(LyricCacheEntry::Positive(loaded)) => Some(loaded.clone()),
+            Some(LyricCacheEntry::Negative(at)) => {
+                (at.elapsed() < LYRIC_NEGATIVE_TTL).then_some((None, None))
+            }
+            None => None,
+        };
+        if hit.is_some() {
+            let key = key.to_path_buf();
+            if let Some(idx) = self.lyric_cache_order.iter().position(|k| *k == key) {
+                self.lyric_cache_order.remove(idx);
+                self.lyric_cache_order.push(key);
+            }
+        }
+        hit
+    }
+
     fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Arc<Vec<LrcLine>>>)) {
-        // 在线 URL 暂未进注册表时的未命中不缓存负结果：同 URL 稍后可能
-        // 进注册表并取到歌词，负缓存会一直给出过期的"无歌词"。
-        if loaded.0.is_none()
+        // 在线"无歌词"不再裸跳过而是带 TTL 负缓存（见 LYRIC_NEGATIVE_TTL）；
+        // 本地路径的空结果仍按正结果缓存——sidecar/DB 本来就没有，重访
+        // 直接命中，行为与旧版一致。
+        let entry = if loaded.0.is_none()
             && loaded.1.is_none()
             && crate::ui::availability::is_online_path(&path)
         {
-            return;
-        }
-        // 解析成功后全文不再被任何消费方读取（渲染的纯文本回退分支仅在
-        // parsed 为 None 时走）：缓存丢弃原文只留解析行，省 16 条 × 数百
-        // KB 的 KRC/LRC 原文冗余驻留。命中后 apply_loaded_lyrics 收到的
-        // content 即 None——渲染门控以 parsed 优先判定（见 render 的三态
-        // 分支），纯文本回退仍以 content 为准，行为不变。
-        let loaded = match loaded.1 {
-            Some(_) => (None, loaded.1),
-            None => loaded,
+            LyricCacheEntry::Negative(Instant::now())
+        } else {
+            // 解析成功后全文不再被任何消费方读取（渲染的纯文本回退分支仅在
+            // parsed 为 None 时走）：缓存丢弃原文只留解析行，省 16 条 × 数百
+            // KB 的 KRC/LRC 原文冗余驻留。命中后 apply_loaded_lyrics 收到的
+            // content 即 None——渲染门控以 parsed 优先判定（见 render 的三态
+            // 分支），纯文本回退仍以 content 为准，行为不变。
+            let loaded = match loaded.1 {
+                Some(_) => (None, loaded.1),
+                None => loaded,
+            };
+            LyricCacheEntry::Positive(loaded)
         };
-        if self.lyric_cache.insert(path.clone(), loaded).is_none() {
-            self.lyric_cache_order.push(path);
-            if self.lyric_cache_order.len() > LYRIC_CACHE_CAP {
-                let oldest = self.lyric_cache_order.remove(0);
-                self.lyric_cache.remove(&oldest);
-            }
+        if let Some(idx) = self.lyric_cache_order.iter().position(|k| *k == path) {
+            self.lyric_cache_order.remove(idx);
+        }
+        self.lyric_cache_order.push(path.clone());
+        self.lyric_cache.insert(path, entry);
+        while self.lyric_cache_order.len() > LYRIC_CACHE_CAP {
+            let oldest = self.lyric_cache_order.remove(0);
+            self.lyric_cache.remove(&oldest);
         }
     }
 
@@ -645,11 +687,11 @@ impl Lyrics {
         // Bounded per-track cache: a back-and-forth switch to a
         // recently played track re-serves the loaded lyric instead of
         // re-reading the sidecar files + DB queries.
-        if let Some((content, parsed)) = track
+        if let Some(loaded) = track
             .as_ref()
-            .and_then(|t| self.lyric_cache.get(t.get_path()).cloned())
+            .and_then(|t| self.cached_lyrics(t.get_path()))
         {
-            self.apply_loaded_lyrics(content, parsed, cx);
+            self.apply_loaded_lyrics(loaded.0, loaded.1, cx);
             return;
         }
 
@@ -681,9 +723,10 @@ impl Lyrics {
     fn fetch_online_lyrics(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
         // Bounded per-track cache: a back-and-forth switch to a recently
         // played track skips the search + fetch network round-trips (the
-        // stream-map lookup below only feeds that fetch).
-        if let Some((content, parsed)) = path.and_then(|key| self.lyric_cache.get(key).cloned()) {
-            self.apply_loaded_lyrics(content, parsed, cx);
+        // stream-map lookup below only feeds that fetch). A fresh negative
+        // entry (confirmed lyric-less) skips it just the same.
+        if let Some(loaded) = path.and_then(|key| self.cached_lyrics(key)) {
+            self.apply_loaded_lyrics(loaded.0, loaded.1, cx);
             return;
         }
 
@@ -733,9 +776,10 @@ impl Lyrics {
     fn fetch_netease_online_lyrics(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
         // Bounded per-track cache: a back-and-forth switch to a recently
         // played track skips the network request (the stream-map lookup
-        // below only feeds that fetch).
-        if let Some((content, parsed)) = path.and_then(|key| self.lyric_cache.get(key).cloned()) {
-            self.apply_loaded_lyrics(content, parsed, cx);
+        // below only feeds that fetch). A fresh negative entry (confirmed
+        // lyric-less) skips it just the same.
+        if let Some(loaded) = path.and_then(|key| self.cached_lyrics(key)) {
+            self.apply_loaded_lyrics(loaded.0, loaded.1, cx);
             return;
         }
 
