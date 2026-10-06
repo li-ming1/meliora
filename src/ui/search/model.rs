@@ -29,7 +29,10 @@ pub struct SearchModel {
     palette: Entity<Palette<SearchPaletteItem, MatcherFunc, OnAccept>>,
     /// Local (library) items, kept around so online results can be merged in.
     /// Shared as one `Arc`: online-only updates re-emit the segment without
-    /// touching its (library-sized) contents.
+    /// touching its (library-sized) contents. Swapped as a whole `Arc` only
+    /// when a rebuild succeeds (swap-on-success): between a scan completion
+    /// and the fresh rebuild landing, the previous index stays installed so
+    /// the local segment never goes dark.
     local_items: Arc<Vec<Arc<SearchPaletteItem>>>,
     /// Bumped when the local index is invalidated; an in-flight background
     /// load compares against it so a stale load can't overwrite a newer one.
@@ -54,7 +57,14 @@ pub struct SearchModel {
 /// full-table queries plus one `exists()` stat per distinct track path take
 /// seconds on a 100k library, and this used to run synchronously inside the
 /// first palette-open frame.
-async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchPaletteItem>> {
+///
+/// Errors from the three core table queries abort the rebuild (`Err`) so the
+/// caller keeps the previous index instead of swapping in an empty one;
+/// availability is only a per-album decoration, so its failure still falls
+/// back to an empty set.
+async fn load_search_items_off_thread(
+    pool: sqlx::SqlitePool,
+) -> Result<Vec<Arc<SearchPaletteItem>>, String> {
     let availability_rows = db::list_album_availability(&pool)
         .await
         .unwrap_or_else(|e| {
@@ -71,35 +81,30 @@ async fn load_search_items_off_thread(pool: sqlx::SqlitePool) -> Vec<Arc<SearchP
 
     let albums = db::list_albums_search(&pool)
         .await
-        .map(|rows| {
-            rows.into_iter()
-                .map(|(id, title, artist_override, artists)| {
-                    (
-                        id,
-                        title,
-                        artist_override,
-                        artists,
-                        available_albums.contains(&id),
-                    )
-                })
-                .collect()
+        .map_err(|e| format!("albums query failed: {e:?}"))?
+        .into_iter()
+        .map(|(id, title, artist_override, artists)| {
+            (
+                id,
+                title,
+                artist_override,
+                artists,
+                available_albums.contains(&id),
+            )
         })
-        .unwrap_or_else(|e| {
-            debug!("Failed to load albums for search: {:?}", e);
-            Vec::new()
-        });
+        .collect();
 
-    let artists = db::list_artists_search(&pool).await.unwrap_or_else(|e| {
-        debug!("Failed to load artists for search: {:?}", e);
-        Vec::new()
-    });
+    let artists = db::list_artists_search(&pool)
+        .await
+        .map_err(|e| format!("artists query failed: {e:?}"))?;
 
-    let tracks = db::list_tracks_search(&pool).await.unwrap_or_else(|e| {
-        debug!("Failed to load tracks for search: {:?}", e);
-        Vec::new()
-    });
+    let tracks = db::list_tracks_search(&pool)
+        .await
+        .map_err(|e| format!("tracks query failed: {e:?}"))?;
 
-    SearchPaletteItem::from_search_results(albums, artists, tracks)
+    Ok(SearchPaletteItem::from_search_results(
+        albums, artists, tracks,
+    ))
 }
 
 impl SearchModel {
@@ -220,9 +225,27 @@ impl SearchModel {
                     // File-watcher rescans fire even while the palette is
                     // closed: rebuilding the whole index then would query the
                     // whole library for results nobody is looking at.
-                    // Invalidate (dropping any in-flight background load) and
-                    // only reload now if the panel is actually open.
-                    this.local_items = Arc::new(Vec::new());
+                    //
+                    // Swap-on-success: the previous index is NOT cleared
+                    // here — it stays installed until the fresh rebuild
+                    // lands and swaps the whole `Arc` (see
+                    // `load_local_items_async`). Clearing used to leave the
+                    // local segment empty for the whole multi-second
+                    // rebuild, so searching in that window surfaced only
+                    // online results. The trade-off: until the rebuild
+                    // lands, results may transiently reference files the
+                    // rescan just deleted — a few stale hits beat a
+                    // several-second blackout of all local results. A failed
+                    // rebuild (DB error) also keeps the old index now; the
+                    // old clear-then-fail path left it empty until the next
+                    // successful rebuild.
+                    //
+                    // `local_items_loaded = false` only re-arms the
+                    // palette-open observer above to trigger a rebuild; no
+                    // render path or empty-state branch reads it, and the
+                    // stale-but-valid index keeps displaying meanwhile.
+                    // Bumping the generation drops any in-flight load so
+                    // results can never land out of order.
                     this.local_items_loaded = false;
                     this.load_generation += 1;
                     if !*show_for_scan.read(cx) {
@@ -258,6 +281,12 @@ impl SearchModel {
     /// while the load was in flight (the palette can be queried immediately),
     /// so the apply emits the full merge — emitting local-only would drop
     /// them. A newer load generation discards this one's result.
+    ///
+    /// Swap-on-success: the fresh index is applied as a whole-`Arc`
+    /// assignment (the old one keeps serving `merged_items` until that
+    /// moment), and only on `Ok` — an `Err` rebuild keeps the previous index
+    /// installed and leaves `local_items_loaded` false so the next palette
+    /// open retries, instead of swapping an empty segment in.
     fn load_local_items_async(&mut self, cx: &mut Context<Self>) {
         self.load_generation += 1;
         let generation = self.load_generation;
@@ -267,18 +296,28 @@ impl SearchModel {
             let new_items = crate::RUNTIME
                 .spawn(async move { load_search_items_off_thread(pool).await })
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|e| Err(format!("search index task failed: {e:?}")));
 
             this.update(cx, |this, cx| {
                 if this.load_generation != generation {
                     return;
                 }
-                this.local_items = Arc::new(new_items);
-                this.local_items_loaded = true;
-                let emitted = this.merged_items();
-                this.palette.update(cx, |_, cx| {
-                    cx.emit(emitted);
-                });
+                match new_items {
+                    Ok(items) => {
+                        this.local_items = Arc::new(items);
+                        this.local_items_loaded = true;
+                        let emitted = this.merged_items();
+                        this.palette.update(cx, |_, cx| {
+                            cx.emit(emitted);
+                        });
+                    }
+                    Err(err) => {
+                        // Keep the previous index (see swap-on-success
+                        // above); `local_items_loaded` stays false so the
+                        // next palette open / scan completion retries.
+                        debug!("Failed to rebuild search index, keeping previous one: {err}");
+                    }
+                }
             })
             .ok();
         })
