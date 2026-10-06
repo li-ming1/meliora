@@ -252,11 +252,17 @@ impl Render for ScanStatus {
                 | ScanEvent::PlaylistsUpdated(_) => SharedString::from(""),
                 ScanEvent::ScanProgress { current, total } => {
                     if *total == u64::MAX {
-                        // Total unknown (discovery still ongoing)
+                        // Total unknown (discovery still ongoing). 变量取值
+                        // 参与 i18n 缓存键：每个新值一次 cache miss，且
+                        // KEY_HASHES 每个新值永久 +8B（cntp_i18n
+                        // lookup_cached 只在 locale 重载时清空）。发现期的
+                        // current 单调递增，按 100 个文件取整显示——进度
+                        // 粒度不可感知，海量扫描不再每进度值一个键。
+                        let quantized = current / 100 * 100;
                         tr!(
                             "SCAN_PROGRESS_DISCOVERING",
                             "Scanning {{current}} files...",
-                            current = current
+                            current = quantized
                         )
                         .into()
                     } else {

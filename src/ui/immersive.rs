@@ -205,6 +205,9 @@ pub struct ImmersiveView {
 
     // Lyrics, mirrored from the shared `Lyrics` entity.
     parsed: Option<Arc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
+    /// 卡拉OK扫色期间主视图以 ~30Hz 重绘而音量几乎不变：缓存取整百分比
+    /// 对应的文本，值未变时渲染零分配（SharedString 克隆只是引用计数）。
+    volume_text: (i64, SharedString),
     current_line: Option<usize>,
     /// Wheel-browsing offset from the active line, in lines. Returns to 0
     /// after [`SCROLL_RETURN_AFTER`] of wheel idle (position ticks drive the
@@ -376,6 +379,7 @@ impl ImmersiveView {
                 accent_for: None,
                 resolved_signature: None,
                 parsed: None,
+                volume_text: (i64::MIN, SharedString::from("")),
                 current_line: None,
                 browse_offset: 0,
                 scroll_accum: 0.0,
@@ -455,6 +459,10 @@ impl ImmersiveView {
         self.backdrop_pending_arm = false;
         self.backdrop_fade_started = None;
         self.prefetched_art = None;
+        // 歌词镜像一并归还：观察者在非激活态被短路，旧歌词 Arc 否则会挂到
+        // 下次 activate 的 sync_lyrics（几十 KB 驻留）；重进时镜像无条件
+        // 重建，清空零行为差。
+        self.parsed = None;
         backdrop_cache_shrink(1);
     }
     /// Re-resolves cover/names/accent for whatever is playing now. Fired by
@@ -1242,37 +1250,41 @@ impl Render for ImmersiveView {
         // Mute-toggle decision (icon + target volume) shared with the play
         // bar's secondary controls; the button styling stays local.
         let (volume_target, volume_icon) = volume_toggle_target(volume, prev_volume);
-        let volume_group =
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .id("immersive-volume-btn")
-                        .p(px(4.0))
-                        .rounded(px(8.0))
-                        .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
-                        .on_click(move |_, _, cx| {
-                            cx.global::<PlaybackInterface>().set_volume(volume_target);
-                        })
-                        .child(icon(volume_icon).size(px(16.0)).text_color(text_secondary)),
-                )
-                .child(
-                    slider()
-                        .id("immersive-volume")
-                        .w(px(90.0))
-                        .h(px(6.0))
-                        .rounded_full()
-                        .change_interval(SLIDER_CHANGE_INTERVAL)
-                        .value(volume as f32)
-                        .on_change(move |v, _, cx| {
-                            cx.global::<PlaybackInterface>().set_volume(v as f64);
-                        }),
-                )
-                .child(div().text_size(px(11.0)).text_color(text_secondary).child(
-                    SharedString::from(format!("{}%", (volume * 100.0).round() as i64)),
-                ));
+        let volume_group = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .id("immersive-volume-btn")
+                    .p(px(4.0))
+                    .rounded(px(8.0))
+                    .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
+                    .on_click(move |_, _, cx| {
+                        cx.global::<PlaybackInterface>().set_volume(volume_target);
+                    })
+                    .child(icon(volume_icon).size(px(16.0)).text_color(text_secondary)),
+            )
+            .child(
+                slider()
+                    .id("immersive-volume")
+                    .w(px(90.0))
+                    .h(px(6.0))
+                    .rounded_full()
+                    .change_interval(SLIDER_CHANGE_INTERVAL)
+                    .value(volume as f32)
+                    .on_change(move |v, _, cx| {
+                        cx.global::<PlaybackInterface>().set_volume(v as f64);
+                    }),
+            )
+            .child(div().text_size(px(11.0)).text_color(text_secondary).child({
+                // 音量几乎不变而扫色期间每帧重绘：按取整百分比缓存文本。
+                let volume_pct = (volume * 100.0).round() as i64;
+                if self.volume_text.0 != volume_pct {
+                    self.volume_text = (volume_pct, SharedString::from(format!("{volume_pct}%")));
+                }
+                self.volume_text.1.clone()
+            }));
         let progress_row = self.progress.clone();
         let player_card = div()
             .w(relative(0.90))
@@ -1320,6 +1332,9 @@ impl Render for ImmersiveView {
         let lyric_children = self.parsed.as_ref().map(|parsed| {
             let visual_line = self.visual_line;
             let current_line = self.current_line;
+            // 邻居行色调恒定（卡拉OK扫色的起色同值）：提出行循环，12 个
+            // 邻居行 + 扫色行不再各自重算一遍混合。
+            let dimmed = lerp_color(text, text_secondary, 0.4);
             lyric_window(visual_line, parsed.len(), current_line)
                 .into_iter()
                 .map(move |(index, top, is_current)| {
@@ -1329,11 +1344,7 @@ impl Render for ImmersiveView {
                         .get(distance as usize)
                         .copied()
                         .unwrap_or(*LINE_OPACITY.last().unwrap());
-                    let color = if is_current {
-                        accent
-                    } else {
-                        lerp_color(text, text_secondary, 0.4)
-                    };
+                    let color = if is_current { accent } else { dimmed };
                     let line_time_ms = line.time_ms;
                     // Karaoke: un-sung words sit at the dimmed neighbor tone
                     // and sweep to the accent as each word's window passes
@@ -1341,7 +1352,7 @@ impl Render for ImmersiveView {
                     // it cannot be the sweep start). Word colors change per
                     // tick — glyph geometry stays fixed.
                     let text_child: Div = if is_current && !line.words.is_empty() {
-                        let unsung = lerp_color(text, text_secondary, 0.4);
+                        let unsung = dimmed;
                         let mut row = div().flex().flex_wrap().items_baseline();
                         for word in &line.words {
                             let progress = word_progress(word, position_ms);

@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1456",
+    "definedIn": "src/ui/immersive.rs:1467",
     "plural": false,
     "description": null
   },
@@ -2137,13 +2137,13 @@
   },
   "SCAN_PROGRESS_DISCOVERING": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:257",
+    "definedIn": "src/ui/header.rs:263",
     "plural": false,
     "description": null
   },
   "SCAN_PROGRESS_SCANNING": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:265",
+    "definedIn": "src/ui/header.rs:271",
     "plural": false,
     "description": null
   },
@@ -2167,7 +2167,7 @@
   },
   "SEARCH_PLACEHOLDER": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:311",
+    "definedIn": "src/ui/header.rs:317",
     "plural": false,
     "description": null
   },
