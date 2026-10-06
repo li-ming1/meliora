@@ -140,7 +140,14 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
-        .max_blocking_threads(4)
+        // Every spawn_blocking shares this ceiling: the scan pipeline runs up
+        // to 15 metadata-decode workers (MAX_METADATA_WORKERS on a 16-core
+        // machine) and the same pool serves art processing, availability
+        // statting, the backdrop sharp-fill and online URL refreshes. Capping
+        // it at 4 serialized the whole scan behind the pool. Idle blocking
+        // threads only reserve stack — no committed pages — so this does not
+        // fight the memory caps.
+        .max_blocking_threads(16)
         .build()
         .unwrap()
 });
