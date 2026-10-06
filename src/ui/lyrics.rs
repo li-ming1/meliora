@@ -20,7 +20,7 @@ use crate::{
             managed_image::{ImageCacheMode, ManagedImageKey},
             scrollbar::{ScrollableHandle, floating_scrollbar},
         },
-        models::{Models, PlaybackInfo},
+        models::{CurrentTrack, Models, PlaybackInfo},
         scroll_follow::{SmoothScrollFollow, ease_out_cubic},
         theme::Theme,
         util::extract_accent,
@@ -78,6 +78,11 @@ pub struct Lyrics {
     /// Bumped per track change; a background load only lands if its generation
     /// still matches, so fast switches never apply stale lyrics.
     load_generation: usize,
+    /// 面板与沉浸页都不可见期间发生过曲目切换：隐藏时整段加载被门控跳过
+    /// （每曲 1-3 个在线请求 + KRC 解密解析，或本地 sidecar 读 + 2 次 DB
+    /// 查询，全是白付），只置脏；可见性观察者（面板打开 / 沉浸页激活）
+    /// 补跑完整加载路径。
+    load_pending: bool,
     /// Bounded FIFO cache of recently loaded lyrics keyed by track path: a
     /// back-and-forth track switch re-serves the cached lyric instead of
     /// re-reading the sidecar files + DB queries (or re-issuing the 1-3
@@ -120,27 +125,32 @@ impl Lyrics {
             let position = playback_info.position;
 
             let initial_track = current_track.read(cx).clone();
-            let initial_track_path = initial_track.as_ref().map(|t| t.get_path().clone());
-            let pool = cx.global::<crate::ui::app::Pool>().0.clone();
 
             // Startup lyrics load mirrors the track-change path below: the
             // sidecar file read plus the two DB queries must not run on the
             // main thread while the window is being constructed. The view
             // starts in the empty state and the result lands via notify, with
             // the same generation guard so a fast track switch discards a
-            // stale startup load.
-            cx.spawn(async move |this, cx| {
-                let loaded = Self::load_lyrics_via_runtime(pool, initial_track_path).await;
+            // stale startup load. 可见性门控：面板与沉浸页初始都关闭时整段
+            // 加载白付——只置脏，打开时由可见性观察者补跑。
+            let startup_visible = *cx.global::<Models>().show_lyrics.read(cx)
+                || *cx.global::<Models>().immersive.read(cx);
+            if startup_visible {
+                let initial_track_path = initial_track.as_ref().map(|t| t.get_path().clone());
+                let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+                cx.spawn(async move |this, cx| {
+                    let loaded = Self::load_lyrics_via_runtime(pool, initial_track_path).await;
 
-                this.update(cx, |this: &mut Self, cx| {
-                    if this.load_generation != 0 {
-                        return;
-                    }
-                    this.apply_loaded_lyrics(loaded.0, loaded.1, cx);
+                    this.update(cx, |this: &mut Self, cx| {
+                        if this.load_generation != 0 {
+                            return;
+                        }
+                        this.apply_loaded_lyrics(loaded.0, loaded.1, cx);
+                    })
+                    .ok();
                 })
-                .ok();
-            })
-            .detach();
+                .detach();
+            }
 
             cx.observe(&current_track, |this: &mut Lyrics, ct, cx| {
                 let track = ct.read(cx).clone();
@@ -148,83 +158,18 @@ impl Lyrics {
                 // 在线歌词路径同样生效。
                 this.resolve_accent(cx);
 
-                #[cfg(any(feature = "kugou", feature = "netease"))]
-                if track
-                    .as_ref()
-                    .is_some_and(|t| crate::ui::availability::is_online_path(t.get_path()))
-                {
-                    // Invalidate in-flight local (sidecar/DB) loads: the
-                    // online fetch below is guarded by the current-path
-                    // check, but the local loads are guarded by this
-                    // generation.
-                    this.load_generation += 1;
-
-                    // online stream: dispatch to the source that owns it. With
-                    // both sources compiled in, each registry is consulted in
-                    // turn, so a NetEase stream is never swallowed by the
-                    // KuGou branch (and vice versa). An online path that
-                    // matches neither registry falls through to the local
-                    // lyrics handling below.
-                    let path = track.as_ref().map(|t| t.get_path().as_path());
-                    #[cfg(feature = "kugou")]
-                    if path
-                        .and_then(crate::ui::kugou::online_track_matching_path)
-                        .is_some()
-                    {
-                        this.reset_track_state();
-                        this.fetch_online_lyrics(path, cx);
-                        return;
-                    }
-                    #[cfg(feature = "netease")]
-                    if path
-                        .and_then(crate::ui::netease::online_track_matching_path)
-                        .is_some()
-                    {
-                        this.reset_track_state();
-                        this.fetch_netease_online_lyrics(path, cx);
-                        return;
-                    }
-                }
-
-                // Clear synchronously so a fast switch never shows the previous
-                // track's lines, then resolve the sidecar/DB off the main
-                // thread - the sync path did a file read plus two DB queries
-                // on the UI thread per track change.
-                this.reset_track_state();
-                this.last_user_interaction_at = None;
-                this.load_generation += 1;
-                let generation = this.load_generation;
-
-                // Bounded per-track cache: a back-and-forth switch to a
-                // recently played track re-serves the loaded lyric instead of
-                // re-reading the sidecar files + DB queries.
-                if let Some((content, parsed)) = track
-                    .as_ref()
-                    .and_then(|t| this.lyric_cache.get(t.get_path()).cloned())
-                {
-                    this.apply_loaded_lyrics(content, parsed, cx);
+                // 可见性门控：面板与沉浸页都关闭时，每曲的在线请求（kugou
+                // 1-3 个或 netease 1 个）+ KRC 解密解析、本地 sidecar 读 +
+                // DB 查询全是白付——与取色门（resolve_accent 内）同一取舍，
+                // 省的是网络往返与解析 CPU。只置脏，打开面板 / 进入沉浸页
+                // 的可见性观察者补跑完整加载路径。
+                let visible = *cx.global::<Models>().show_lyrics.read(cx)
+                    || *cx.global::<Models>().immersive.read(cx);
+                if !visible {
+                    this.load_pending = true;
                     return;
                 }
-
-                let pool = cx.global::<crate::ui::app::Pool>().0.clone();
-                let track_path = track.as_ref().map(|t| t.get_path().clone());
-                let cache_key = track_path.clone();
-
-                cx.spawn(async move |this, cx| {
-                    let loaded = Self::load_lyrics_via_runtime(pool, track_path).await;
-
-                    this.update(cx, |this, cx| {
-                        if this.load_generation != generation {
-                            return;
-                        }
-                        if let Some(path) = cache_key {
-                            this.cache_lyrics(path, loaded.clone());
-                        }
-                        this.apply_loaded_lyrics(loaded.0, loaded.1, cx);
-                    })
-                    .ok();
-                })
-                .detach();
+                this.load_lyrics_for_track(track, cx);
             })
             .detach();
 
@@ -236,14 +181,24 @@ impl Lyrics {
             })
             .detach();
 
-            // 面板打开瞬间补一次主题色解析：隐藏期间曲目可能已切换多轮
-            // （resolve_accent 被可见性门控短路，accent_for 停留在旧曲），
-            // 键未变（隐藏期间从未解析过当前曲）时这里从陈旧键解析新曲；
-            // 已解析过当前曲则直接早退，重复开关面板无成本。
+            // 面板打开瞬间补一次主题色解析与挂起的歌词加载：隐藏期间曲目
+            // 可能已切换多轮（取色与加载都被可见性门控短路），这里补齐。
+            // 键未变 / 无挂起时直接早退，重复开关面板无成本。
             let show_lyrics = cx.global::<Models>().show_lyrics.clone();
             cx.observe(&show_lyrics, |this: &mut Lyrics, flag, cx| {
                 if *flag.read(cx) {
                     this.resolve_accent(cx);
+                    this.load_pending_lyrics(cx);
+                }
+            })
+            .detach();
+
+            // 沉浸页激活同理：右半屏就是歌词视图（镜像 parsed_lines），
+            // 挂起的加载在此补跑；重复激活无成本早退。
+            let immersive = cx.global::<Models>().immersive.clone();
+            cx.observe(&immersive, |this: &mut Lyrics, flag, cx| {
+                if *flag.read(cx) {
+                    this.load_pending_lyrics(cx);
                 }
             })
             .detach();
@@ -337,6 +292,7 @@ impl Lyrics {
                 content: None,
                 parsed: None,
                 load_generation: 0,
+                load_pending: !startup_visible,
                 parsed_generation: 0,
                 lyric_cache: FxHashMap::default(),
                 lyric_cache_order: Vec::new(),
@@ -621,6 +577,101 @@ impl Lyrics {
         if let Some(key) = expected.map(PathBuf::from) {
             self.cache_lyrics(key, loaded);
         }
+    }
+
+    /// 可见性恢复（面板打开 / 沉浸页激活）时补跑被门控跳过的加载。
+    /// 无挂起时零成本早退；有挂起则对当前曲目走 [`Self::load_lyrics_for_track`]
+    /// ——reset_track_state 在其中同步清态，打开瞬间不回放上一首的行。
+    fn load_pending_lyrics(&mut self, cx: &mut Context<Self>) {
+        if !self.load_pending {
+            return;
+        }
+        self.load_pending = false;
+        let track = cx.global::<PlaybackInfo>().current_track.read(cx).clone();
+        self.load_lyrics_for_track(track, cx);
+    }
+
+    /// 当前曲目的完整歌词加载路径：在线分发（kugou / netease 注册表）+
+    /// 本地 sidecar/DB + 每曲缓存命中。切歌观察者与可见性补跑共用；调用方
+    /// 保证面板或沉浸页可见。
+    fn load_lyrics_for_track(&mut self, track: Option<CurrentTrack>, cx: &mut Context<Self>) {
+        #[cfg(any(feature = "kugou", feature = "netease"))]
+        if track
+            .as_ref()
+            .is_some_and(|t| crate::ui::availability::is_online_path(t.get_path()))
+        {
+            // Invalidate in-flight local (sidecar/DB) loads: the
+            // online fetch below is guarded by the current-path
+            // check, but the local loads are guarded by this
+            // generation.
+            self.load_generation += 1;
+
+            // online stream: dispatch to the source that owns it. With
+            // both sources compiled in, each registry is consulted in
+            // turn, so a NetEase stream is never swallowed by the
+            // KuGou branch (and vice versa). An online path that
+            // matches neither registry falls through to the local
+            // lyrics handling below.
+            let path = track.as_ref().map(|t| t.get_path().as_path());
+            #[cfg(feature = "kugou")]
+            if path
+                .and_then(crate::ui::kugou::online_track_matching_path)
+                .is_some()
+            {
+                self.reset_track_state();
+                self.fetch_online_lyrics(path, cx);
+                return;
+            }
+            #[cfg(feature = "netease")]
+            if path
+                .and_then(crate::ui::netease::online_track_matching_path)
+                .is_some()
+            {
+                self.reset_track_state();
+                self.fetch_netease_online_lyrics(path, cx);
+                return;
+            }
+        }
+
+        // Clear synchronously so a fast switch never shows the previous
+        // track's lines, then resolve the sidecar/DB off the main
+        // thread - the sync path did a file read plus two DB queries
+        // on the UI thread per track change.
+        self.reset_track_state();
+        self.last_user_interaction_at = None;
+        self.load_generation += 1;
+        let generation = self.load_generation;
+
+        // Bounded per-track cache: a back-and-forth switch to a
+        // recently played track re-serves the loaded lyric instead of
+        // re-reading the sidecar files + DB queries.
+        if let Some((content, parsed)) = track
+            .as_ref()
+            .and_then(|t| self.lyric_cache.get(t.get_path()).cloned())
+        {
+            self.apply_loaded_lyrics(content, parsed, cx);
+            return;
+        }
+
+        let pool = cx.global::<crate::ui::app::Pool>().0.clone();
+        let track_path = track.as_ref().map(|t| t.get_path().clone());
+        let cache_key = track_path.clone();
+
+        cx.spawn(async move |this, cx| {
+            let loaded = Self::load_lyrics_via_runtime(pool, track_path).await;
+
+            this.update(cx, |this, cx| {
+                if this.load_generation != generation {
+                    return;
+                }
+                if let Some(path) = cache_key {
+                    this.cache_lyrics(path, loaded.clone());
+                }
+                this.apply_loaded_lyrics(loaded.0, loaded.1, cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Fetches lyrics for the online (KuGou) track currently playing at `path`
