@@ -110,20 +110,22 @@ fn load_table_asset(
 const THUMB_MAX_PX: u32 = 128;
 
 /// 缩略图资产缓存条目上限。256 条 ≤128px 的 PNG（thumb 列存的是扫描器
-/// 的 70×70 BMP，缩后每条约 20–60KB）总量在几 MB 量级；写满后按插入顺序
-/// FIFO 淘汰最旧条目，绝不无界增长。
+/// 的 70×70 BMP，缩后每条约 20–60KB）总量在几 MB 量级；写满后按最近
+/// 使用 LRU 淘汰，绝不无界增长。
 const SHRUNK_THUMB_CACHE_MAX: usize = 256;
 
-/// 已缩到 128px 的 thumb 资产内存缓存，键为（表, id），按插入顺序 FIFO
-/// 淘汰。`!db://` 资产在滚动中会被 gpui 的资产加载器反复请求，无缓存时
+/// 已缩到 128px 的 thumb 资产内存缓存，键为（表, id），LRU 淘汰（命中即
+/// 续命）。`!db://` 资产在滚动中会被 gpui 的资产加载器反复请求，无缓存时
 /// 每次都要在后台线程上 block_on 查库 + decode + shrink + PNG 编码；缓存
 /// 命中后连数据库查询都省掉。"写满即止"会让第 257 个起的资产永远走这条
-/// 慢路径（永久性能悬崖），所以满时必须淘汰。thumb 来源（扫描器的
-/// 70×70 BMP）在扫描后不再变化，且扫描完成时整体清空（见
-/// `clear_shrunk_thumb_cache`），不存在陈旧条目问题。
+/// 慢路径（永久性能悬崖），所以满时必须淘汰——FIFO 会把大库网格往返
+/// 滚动中仍在屏的热条目按插入顺序挤掉（每 miss 重走整条慢路径），LRU
+/// 让最近访问的可见集驻留。thumb 来源（扫描器的 70×70 BMP）在扫描后
+/// 不再变化，且扫描完成时整体清空（见 `clear_shrunk_thumb_cache`），不
+/// 存在陈旧条目问题。
 struct ShrunkThumbCache {
     entries: FxHashMap<(&'static str, i64), Vec<u8>>,
-    /// 插入顺序，供 FIFO 淘汰；键集合与 `entries` 保持一致。
+    /// 由旧到新的访问序，供 LRU 淘汰；键集合与 `entries` 保持一致。
     order: VecDeque<(&'static str, i64)>,
 }
 
@@ -148,15 +150,31 @@ fn lock_thumb_cache() -> ThumbCacheGuard {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 读缓存；临界区无 await（本函数是同步接口，运行在 gpui 后台线程）。
+/// 读缓存；命中时把键提升为最近使用（LRU 续命）。临界区无 await（本函数
+/// 是同步接口，运行在 gpui 后台线程）；提升是 O(n) 队列操作，n ≤ 上限
+/// 256，相比它省掉的 decode+PNG 编码可忽略。
 fn thumb_cache_get(table: &'static str, id: i64) -> Option<Vec<u8>> {
-    lock_thumb_cache().entries.get(&(table, id)).cloned()
+    let mut cache = lock_thumb_cache();
+    let bytes = cache.entries.get(&(table, id)).cloned()?;
+    promote_thumb_key(&mut cache.order, (table, id));
+    Some(bytes)
 }
 
-/// 写缓存；超出上限时按插入顺序淘汰最旧条目（纯内存操作，无 IO）。
+/// 把键移到访问序末尾（最近使用）；键不在队列时按新使用追加（与 entries
+/// 的插入配套）。
+fn promote_thumb_key(order: &mut VecDeque<(&'static str, i64)>, key: (&'static str, i64)) {
+    if let Some(idx) = order.iter().position(|k| *k == key) {
+        order.remove(idx);
+    }
+    order.push_back(key);
+}
+
+/// 写缓存；已存在的键提升为最近使用（字节不变——thumb 来源在扫描代内
+/// 不变），超出上限时淘汰最久未用条目（纯内存操作，无 IO）。
 fn thumb_cache_put(table: &'static str, id: i64, bytes: Vec<u8>) {
     let mut cache = lock_thumb_cache();
     if cache.entries.contains_key(&(table, id)) {
+        promote_thumb_key(&mut cache.order, (table, id));
         return;
     }
     cache.entries.insert((table, id), bytes);
