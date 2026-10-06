@@ -6,12 +6,16 @@ use gpui::*;
 use prelude::FluentBuilder;
 
 use crate::{
-    library::types::{
-        Album, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR, DATE_PRECISION_YEAR_MONTH, DBString,
-        Track,
+    library::{
+        db,
+        types::{
+            Album, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR, DATE_PRECISION_YEAR_MONTH,
+            DBString, Track,
+        },
     },
     playback::thread::PlaybackState,
     ui::{
+        app::Pool,
         caching::meliora_cache,
         components::{
             button::{ButtonSize, button},
@@ -45,6 +49,25 @@ const RELEASE_SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(250);
 
 /// Fixed size of the album cover box and its image in the release header.
 const COVER_SIZE_PX: f32 = 160.0;
+
+/// Placeholder shown until the background load lands: only the id is known,
+/// so the header renders empty and the track list stays blank. Everything
+/// else fills in when `reload` completes. An album deleted under us (e.g. a
+/// cleanup scan) never gets real data either — it keeps rendering this empty
+/// release page instead of panicking the UI thread.
+fn placeholder_album(album_id: i64) -> Album {
+    Album {
+        id: album_id,
+        title: DBString::from(""),
+        artist_display_override: None,
+        release_date: None,
+        date_precision: None,
+        label: None,
+        catalog_number: None,
+        isrc: None,
+        vinyl_numbering: false,
+    }
+}
 
 fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
     if tracks.is_empty() {
@@ -133,6 +156,9 @@ pub struct ReleaseView {
     /// Per-track availability, computed once at load instead of N stats per frame.
     tracks_available: Arc<Vec<bool>>,
     track_listing: TrackListing,
+    /// Bumped on every load so a slow load that finishes after a newer one
+    /// cannot overwrite it (same guard as `Table::reload_rows`).
+    load_generation: u64,
     collection_summary: SharedString,
     release_info: Option<SharedString>,
     img_path: SharedString,
@@ -159,83 +185,6 @@ struct HeaderState {
 impl ReleaseView {
     pub(super) fn new(cx: &mut App, album_id: i64, target_track_id: Option<i64>) -> Entity<Self> {
         cx.new(|cx| {
-            // Album deleted under us (e.g. cleanup scan): render an empty
-            // release page instead of panicking in the UI thread.
-            let album = match cx.get_album_by_id(album_id) {
-                Ok(album) => album,
-                Err(_) => Arc::new(Album {
-                    id: album_id,
-                    title: DBString::from(""),
-                    artist_display_override: None,
-                    release_date: None,
-                    date_precision: None,
-                    label: None,
-                    catalog_number: None,
-                    isrc: None,
-                    vinyl_numbering: false,
-                }),
-            };
-            let tracks = cx.list_tracks_in_album(album_id).unwrap_or_default();
-            let artist_name = album.artist_display_override.clone();
-            let track_ids: std::rc::Rc<[i64]> = tracks.iter().map(|t| t.id).collect();
-            let release_date_utc = album.release_date.as_ref().and_then(|date| {
-                chrono::NaiveDate::parse_from_str(date.0.as_str(), "%Y-%m-%d")
-                    .ok()
-                    .map(|nd| {
-                        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-                            nd.and_hms_opt(0, 0, 0).expect("date has zero time"),
-                            chrono::Utc,
-                        )
-                    })
-            });
-
-            cx.on_release(|this: &mut Self, cx: &mut App| {
-                ImageSource::Resource(Resource::Embedded(this.img_path.clone())).remove_asset(cx);
-            })
-            .detach();
-
-            let track_listing = TrackListing::new(
-                cx,
-                tracks.clone(),
-                ArtistNameVisibility::OnlyIfDifferent(artist_name.clone()),
-                album.vinyl_numbering,
-                false,
-                true,
-            );
-            let collection_summary = format_collection_summary(
-                tracks.len() as i64,
-                tracks.iter().map(|track| track.duration).sum(),
-            );
-
-            let release_info = match (&album.label, &album.catalog_number) {
-                (Some(label), Some(catalog_number)) => Some(format!(
-                    "{} • {}",
-                    label.0.as_str(),
-                    catalog_number.0.as_str()
-                )),
-                (Some(label), None) => Some(label.0.to_string()),
-                (None, Some(catalog_number)) => Some(catalog_number.0.to_string()),
-                (None, None) => None,
-            }
-            // an empty result (e.g. a blank label) renders no footer line
-            .filter(|info| !info.is_empty())
-            .map(SharedString::from);
-
-            let pending_scroll = target_track_id.and_then(|track_id| {
-                tracks.iter().position(|track| {
-                    track.id == track_id && is_track_available_snapshot(cx, track)
-                })
-            });
-
-            let tracks_available: Arc<Vec<bool>> = Arc::new(
-                tracks
-                    .iter()
-                    .map(|track| is_track_available_snapshot(cx, track))
-                    .collect(),
-            );
-
-            let all_liked = compute_all_liked(cx, &tracks);
-
             let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
             cx.subscribe(&playlist_tracker, |this: &mut Self, _, ev, cx| {
                 if *ev != PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID) {
@@ -249,25 +198,164 @@ impl ReleaseView {
             })
             .detach();
 
-            ReleaseView {
-                album,
-                artist_name,
-                tracks,
-                tracks_available,
-                track_listing,
+            cx.on_release(|this: &mut Self, cx: &mut App| {
+                ImageSource::Resource(Resource::Embedded(this.img_path.clone())).remove_asset(cx);
+            })
+            .detach();
+
+            let placeholder = Arc::new(placeholder_album(album_id));
+            let collection_summary = format_collection_summary(0, 0);
+
+            let mut this = Self {
+                album: placeholder,
+                artist_name: None,
+                tracks: Arc::new(Vec::new()),
+                tracks_available: Arc::new(Vec::new()),
+                track_listing: TrackListing::new(
+                    cx,
+                    Arc::new(Vec::new()),
+                    ArtistNameVisibility::OnlyIfDifferent(None),
+                    false,
+                    false,
+                    true,
+                ),
                 collection_summary,
-                release_info,
+                release_info: None,
                 img_path: SharedString::from(format!("!db://album/{album_id}/full")),
                 scroll_handle: ScrollHandle::new(),
-                pending_scroll,
+                pending_scroll: None,
                 scroll_follow: SmoothScrollFollow::new(RELEASE_SCROLL_ANIMATION_DURATION),
                 scroll_frame_scheduled: false,
-                all_liked,
+                all_liked: false,
                 menu_open: false,
-                track_ids,
-                release_date_utc,
-            }
+                track_ids: std::rc::Rc::from(Vec::new()),
+                release_date_utc: None,
+                load_generation: 0,
+            };
+            // Opening the view loads the album header and its track list on
+            // the runtime (see reload); until it lands the view shows the
+            // placeholder header and an empty list.
+            this.reload(cx, target_track_id);
+            this
         })
+    }
+
+    /// Loads the album header and its track list on the background runtime:
+    /// opening the view used to block the UI thread on the album row plus the
+    /// full track-list query (and the liked-album membership check). The view
+    /// keeps showing the placeholder until the load lands; a generation guard
+    /// drops results superseded by a newer load.
+    fn reload(&mut self, cx: &mut Context<Self>, target_track_id: Option<i64>) {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        let generation = self.load_generation;
+        let album_id = self.album.id;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let loaded = crate::RUNTIME
+                .spawn(async move {
+                    let album = db::get_album_by_id(&pool, album_id).await.ok();
+                    let tracks = db::list_tracks_in_album(&pool, album_id)
+                        .await
+                        .unwrap_or_else(|_| Arc::new(Vec::new()));
+                    // Same liked-album check as `compute_all_liked` (including
+                    // its empty-list early return), but off the UI thread: the
+                    // ids only exist once the track list is loaded, so the
+                    // check rides along here.
+                    let all_liked = if tracks.is_empty() {
+                        false
+                    } else {
+                        let ids: Vec<i64> = tracks.iter().map(|track| track.id).collect();
+                        db::playlist_contains_all_tracks(&pool, LIKED_SONGS_PLAYLIST_ID, &ids)
+                            .await
+                            .unwrap_or(false)
+                    };
+                    (album, tracks, all_liked)
+                })
+                .await
+                .unwrap_or((None, Arc::new(Vec::new()), false));
+
+            let _ = this.update(cx, |this, cx| {
+                // A newer load superseded this one: this result is stale.
+                if this.load_generation != generation {
+                    return;
+                }
+                let (album, tracks, all_liked) = loaded;
+                this.apply_loaded(album, tracks, all_liked, target_track_id, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Fills the placeholder with one background load's results. Derived state
+    /// (rows, availability, scroll target) is rebuilt here on the UI thread —
+    /// only the queries themselves run off-thread.
+    fn apply_loaded(
+        &mut self,
+        album: Option<Arc<Album>>,
+        tracks: Arc<Vec<Track>>,
+        all_liked: bool,
+        target_track_id: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
+        // A failed album fetch keeps the placeholder: an album deleted under
+        // us (e.g. a cleanup scan) renders an empty release page instead of
+        // panicking the UI thread.
+        if let Some(album) = album {
+            self.artist_name = album.artist_display_override.clone();
+            self.release_info = match (&album.label, &album.catalog_number) {
+                (Some(label), Some(catalog_number)) => Some(format!(
+                    "{} • {}",
+                    label.0.as_str(),
+                    catalog_number.0.as_str()
+                )),
+                (Some(label), None) => Some(label.0.to_string()),
+                (None, Some(catalog_number)) => Some(catalog_number.0.to_string()),
+                (None, None) => None,
+            }
+            // an empty result (e.g. a blank label) renders no footer line
+            .filter(|info| !info.is_empty())
+            .map(SharedString::from);
+            self.release_date_utc = album.release_date.as_ref().and_then(|date| {
+                chrono::NaiveDate::parse_from_str(date.0.as_str(), "%Y-%m-%d")
+                    .ok()
+                    .map(|nd| {
+                        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                            nd.and_hms_opt(0, 0, 0).expect("date has zero time"),
+                            chrono::Utc,
+                        )
+                    })
+            });
+            self.album = album;
+        }
+        self.tracks = tracks.clone();
+        self.track_ids = tracks.iter().map(|track| track.id).collect();
+        self.tracks_available = Arc::new(
+            tracks
+                .iter()
+                .map(|track| is_track_available_snapshot(cx, track))
+                .collect(),
+        );
+        self.track_listing = TrackListing::new(
+            cx,
+            tracks.clone(),
+            ArtistNameVisibility::OnlyIfDifferent(self.artist_name.clone()),
+            self.album.vinyl_numbering,
+            false,
+            true,
+        );
+        self.collection_summary = format_collection_summary(
+            tracks.len() as i64,
+            tracks.iter().map(|track| track.duration).sum(),
+        );
+        self.pending_scroll = target_track_id.and_then(|track_id| {
+            tracks
+                .iter()
+                .position(|track| track.id == track_id && is_track_available_snapshot(cx, track))
+        });
+        self.all_liked = all_liked;
+
+        cx.notify();
     }
 
     fn render_header(

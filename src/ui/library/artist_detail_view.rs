@@ -141,6 +141,9 @@ pub struct ArtistDetailView {
     /// Bumped on every liked-tracks reload so a slow load that finishes after
     /// a newer one cannot overwrite it (same guard as `Table::reload_rows`).
     liked_load_generation: u64,
+    /// Bumped on the full-view load so a slow load that finishes after a
+    /// newer one cannot overwrite it (same guard as `Table::reload_rows`).
+    load_generation: u64,
 }
 
 impl ArtistDetailView {
@@ -150,33 +153,7 @@ impl ArtistDetailView {
         nav_model: Entity<super::NavigationHistory>,
     ) -> Entity<Self> {
         let view: Entity<Self> = cx.new(|cx| {
-            let artist = cx.get_artist_by_id(artist_id).ok();
-            let artist_name = artist.as_ref().and_then(|a| a.name.clone());
-
-            let album_ids = Arc::new(cx.list_albums_by_artist(artist_id).unwrap_or_default());
-
-            let all_tracks = cx
-                .list_all_tracks_by_artist(artist_id)
-                .unwrap_or_else(|_| Arc::new(Vec::new()));
-            let all_tracks_available = availability_map(cx, &all_tracks);
-
             let liked_sort = *cx.global::<Models>().liked_tracks_sort_method.read(cx);
-
-            let liked_tracks = cx
-                .list_liked_tracks_by_artist(artist_id, liked_sort)
-                .unwrap_or_else(|_| Arc::new(Vec::new()));
-            let liked_tracks_available = availability_map(cx, &liked_tracks);
-
-            let liked_track_items = track_items(cx, &liked_tracks, artist_name.as_ref());
-
-            let standalone_sort = LikedTrackSortMethod::ReleaseOrder;
-
-            let standalone_tracks = cx
-                .list_standalone_tracks_by_artist(artist_id, standalone_sort)
-                .unwrap_or_else(|_| Arc::new(Vec::new()));
-            let standalone_tracks_available = availability_map(cx, &standalone_tracks);
-
-            let standalone_track_items = track_items(cx, &standalone_tracks, artist_name.as_ref());
 
             let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
@@ -190,18 +167,18 @@ impl ArtistDetailView {
             let grid_views = cx.new(|_| FxHashMap::default());
             let grid_render_counter = cx.new(|_| 0usize);
 
-            ArtistDetailView {
+            let mut this = Self {
                 artist_id,
-                artist_name,
-                album_ids,
-                liked_track_items,
-                standalone_track_items,
-                all_tracks,
-                all_tracks_available,
-                liked_tracks,
-                liked_tracks_available,
-                standalone_tracks,
-                standalone_tracks_available,
+                artist_name: None,
+                album_ids: Arc::new(Vec::new()),
+                liked_track_items: Vec::new(),
+                standalone_track_items: Vec::new(),
+                all_tracks: Arc::new(Vec::new()),
+                all_tracks_available: Arc::new(Vec::new()),
+                liked_tracks: Arc::new(Vec::new()),
+                liked_tracks_available: Arc::new(Vec::new()),
+                standalone_tracks: Arc::new(Vec::new()),
+                standalone_tracks_available: Arc::new(Vec::new()),
                 scroll_handle: ScrollHandle::new(),
                 liked_scroll_handle: UniformListScrollHandle::new(),
                 standalone_scroll_handle: UniformListScrollHandle::new(),
@@ -209,12 +186,94 @@ impl ArtistDetailView {
                 grid_render_counter,
                 nav_model: nav_model.clone(),
                 liked_sort,
-                standalone_sort,
+                standalone_sort: LikedTrackSortMethod::ReleaseOrder,
                 liked_load_generation: 0,
-            }
+                load_generation: 0,
+            };
+            // Opening the view loads the artist header, album grid and the
+            // three track lists on the runtime (see reload); until it lands
+            // the view shows an empty page.
+            this.reload(cx);
+            this
         });
 
         view
+    }
+
+    /// Loads the artist header, album grid and the three track lists on the
+    /// background runtime: opening the view used to block the UI thread on
+    /// five queries back to back. The view stays empty until the load lands;
+    /// a generation guard drops results superseded by a newer load, and the
+    /// liked list is additionally gated on `liked_load_generation` so a
+    /// like/unlike or liked-sort reload racing this one is never overwritten
+    /// by this slower full load.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        let generation = self.load_generation;
+        let liked_generation = self.liked_load_generation;
+        let artist_id = self.artist_id;
+        let liked_sort = self.liked_sort;
+        let standalone_sort = self.standalone_sort;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let loaded = crate::RUNTIME
+                .spawn(async move {
+                    let artist = db::get_artist_by_id(&pool, artist_id).await.ok();
+                    let album_ids = db::list_albums_by_artist(&pool, artist_id)
+                        .await
+                        .unwrap_or_default();
+                    let all_tracks = db::list_all_tracks_by_artist(&pool, artist_id)
+                        .await
+                        .unwrap_or_else(|_| Arc::new(Vec::new()));
+                    let liked_tracks =
+                        db::list_liked_tracks_by_artist(&pool, artist_id, liked_sort)
+                            .await
+                            .unwrap_or_else(|_| Arc::new(Vec::new()));
+                    let standalone_tracks =
+                        db::list_standalone_tracks_by_artist(&pool, artist_id, standalone_sort)
+                            .await
+                            .unwrap_or_else(|_| Arc::new(Vec::new()));
+                    (
+                        artist,
+                        album_ids,
+                        all_tracks,
+                        liked_tracks,
+                        standalone_tracks,
+                    )
+                })
+                .await
+                .unwrap_or((
+                    None,
+                    Vec::new(),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                ));
+
+            let _ = this.update(cx, |this, cx| {
+                // A newer load superseded this one: this result is stale.
+                if this.load_generation != generation {
+                    return;
+                }
+
+                let (artist, album_ids, all_tracks, liked_tracks, standalone_tracks) = loaded;
+                this.artist_name = artist.and_then(|a| a.name.clone());
+                this.album_ids = Arc::new(album_ids);
+                this.all_tracks = all_tracks;
+                this.all_tracks_available = availability_map(cx, &this.all_tracks);
+                this.set_standalone_tracks(standalone_tracks, cx);
+                // A liked reload that started while this full load was in
+                // flight owns the liked list: skip the stale snapshot here and
+                // let its own generation guard deliver the newer one.
+                if this.liked_load_generation == liked_generation {
+                    this.set_liked_tracks(liked_tracks, cx);
+                }
+
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Reloads the artist's liked-tracks list on the background runtime: every
