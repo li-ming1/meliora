@@ -65,7 +65,10 @@ ecb = { version = "0.1", optional = true, features = ["alloc"] }
 file-rotate = "0.8.0"
 flate2 = "1"
 futures = "0.3"
-gpui = { package = "gpui-unofficial", path = "vendor/gpui-unofficial-shim" }
+# profiler：gpui 内建帧/任务计时的 feature 门（[frame] 探针依赖它；路径
+# 全部运行时开关、默认零开销，对所有构建安全）。经 shim 转发（见
+# vendor/gpui-unofficial-shim 的同名 feature）。
+gpui = { package = "gpui-unofficial", path = "vendor/gpui-unofficial-shim", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "ae7c41157feb180ce096cd1afdb2d6b48850b539", features = ["wayland", "x11", "font-kit"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 indexmap = { version = "2", features = ["serde"] }
