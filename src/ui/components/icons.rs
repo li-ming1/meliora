@@ -96,6 +96,7 @@ pub const SORT_DESCENDING: &str = "!bundled:icons/sort-descending.svg";
 pub const SORT_ASCENDING: &str = "!bundled:icons/sort-ascending.svg";
 pub const FOLDER_X: &str = "!bundled:icons/folder-x.svg";
 pub const MICROPHONE: &str = "!bundled:icons/microphone-2.svg";
+pub const BUBBLE_TEXT: &str = "!bundled:icons/bubble-text.svg";
 pub const PENCIL: &str = "!bundled:icons/pencil.svg";
 pub const FILE_EXPORT: &str = "!bundled:icons/file-export.svg";
 pub const DOWNLOAD: &str = "!bundled:icons/download.svg";

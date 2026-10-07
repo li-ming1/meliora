@@ -194,6 +194,9 @@ windows = { version = "0.62", features = [
     # Security::SECURITY_ATTRIBUTES，整个 Security 模块被本 feature 门控。
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    # 桌面歌词悬浮窗关闭 DWM 自动装饰（NCRENDERING/BORDER_COLOR/CORNER，
+    # desktop_lyrics.rs）——透明 PopUp 上 Win11 的 1px 描边+投影肉眼可见。
+    "Win32_Graphics_Dwm",
     # 零字面引用：本仓不直接用 COM（windows::core 无条件编译，BSTR/IUnknown
     # 不需要 feature）；accesskit_windows / cpal / sysinfo 的统一化已启用它。
     "Win32_System_IO",

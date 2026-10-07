@@ -1,18 +1,23 @@
 //! 桌面歌词悬浮窗：置顶无边框透明 PopUp（`WS_EX_TOOLWINDOW | WS_EX_TOPMOST`，
 //! 无任务栏入口），逐字卡拉OK复用共享 [`Lyrics`] 实体（不加载第二份歌词）。
 //!
-//! 生命周期：controls 的开关按钮 → [`toggle`]；开关状态与拖动后的位置
-//! 持久化在 interface settings（`desktop_lyrics` / `desktop_lyrics_pos`）。
+//! 生命周期：controls 的开关按钮 → [`toggle`]；悬浮窗悬停浮出的关闭按钮
+//! → [`close_and_disable`]（两者落盘同一设置位）。开关状态与拖动后的位
+//! 置持久化在 interface settings（`desktop_lyrics` / `desktop_lyrics_pos`）。
 //! 主窗口关闭时经其 root 的 `on_release` 联动关闭本窗（避免只剩悬浮窗的
 //! 孤儿会话）；悬浮窗自身被 Alt+F4 关闭时设置位保持 true，主窗开关再次
 //! 点击即重开（自愈）。窗口存在期间强制位置广播 33ms 档（桌面歌词的主
 //! 场景是主窗口失焦，250ms 档的逐字扫色会卡顿），关闭后由主窗口激活事
 //! 件恢复常规档位。
 //!
-//! 可读性：任意壁纸上以半透明黑药丸承托，逐字扫色在暗底色与曲目主题色
-//! 之间插值（与沉浸页同一 `word_progress`/`lerp_color` 管线）；无词行整
-//! 行主题色；无歌词时显示占位。
+//! 可读性：常态纯透明与壁纸融为一体（用户约定），悬停/拖动时才浮出半
+//! 透明黑药丸底 + 描边提示可抓取；OS 层（DWM）给 PopUp 自动叠加的描边/
+//! 投影/圆角在 [`disable_os_window_chrome`] 里关闭，否则常态透明也会露
+//! 出一圈系统像素。逐字扫色在暗底色与曲目主题色之间插值（与沉浸页同一
+//! `word_progress`/`lerp_color` 管线）；无词行整行主题色；无歌词时显示
+//! 占位。
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use std::sync::Arc;
@@ -21,6 +26,7 @@ use crate::{
     playback::interface::PlaybackInterface,
     settings::{SettingsGlobal, save_settings},
     ui::{
+        components::icons::{CROSS, icon},
         lyrics::{Lyrics, lerp_color, lrc::LrcLine, word_progress},
         models::PlaybackInfo,
         theme::Theme,
@@ -102,8 +108,24 @@ pub fn close(cx: &mut App) {
             .update(cx, |_, window, _| window.remove_window())
             .ok();
     }
-    // 33ms 强制档随悬浮窗关闭立即撤销：按主窗口当前激活态恢复双档制。
-    // 不撤销的话，主窗失焦期间广播会滞留在 30fps（纯浪费的重绘泵）。
+    restore_broadcast_after_close(cx);
+}
+
+/// 悬浮窗自身的关闭按钮路径：在窗口自己的事件分发内，只能直接
+/// `window.remove_window()`（分发结束后 gpui 按标志销毁窗口）。此时本
+/// 窗口已从 `cx.windows` 取出，对全局句柄再走一次 `handle.update` 会撞
+/// 上空槽静默失败（gpui "window not found"），且全局态会与实际窗口脱
+/// 钩——2026-10-07 ✕ 按钮无反应、播放栏开关看似失效的根因。
+fn close_from_within(window: &mut Window, cx: &mut App) {
+    window.remove_window();
+    cx.global_mut::<DesktopLyricsState>().window = None;
+    restore_broadcast_after_close(cx);
+    set_enabled(cx, false);
+}
+
+/// 33ms 强制档随悬浮窗关闭立即撤销：按主窗口当前激活态恢复双档制。
+/// 不撤销的话，主窗失焦期间广播会滞留在 30fps（纯浪费的重绘泵）。
+fn restore_broadcast_after_close(cx: &mut App) {
     let main_active = cx
         .global::<DesktopLyricsState>()
         .main_window
@@ -182,14 +204,67 @@ fn open_window(
         app_id: Some("meliora-desktop-lyrics".to_string()),
         ..Default::default()
     };
-    cx.open_window(options, |_window, cx| {
-        cx.new(|cx| DesktopLyricsView::new(lyrics, cx))
-    })
-    .unwrap_or_else(|error| {
-        tracing::error!(?error, "desktop lyrics: failed to open overlay window");
-        panic!("desktop lyrics window");
-    })
+    let handle = cx
+        .open_window(options, |_window, cx| {
+            cx.new(|cx| DesktopLyricsView::new(lyrics, cx))
+        })
+        .unwrap_or_else(|error| {
+            tracing::error!(?error, "desktop lyrics: failed to open overlay window");
+            panic!("desktop lyrics window");
+        });
+    // 窗口建起来立即摘掉 OS 层装饰，常态透明时才不会露出系统描边/投影。
+    handle
+        .update(cx, |_, window, _| disable_os_window_chrome(window))
+        .ok();
+    handle
 }
+
+/// 关闭 Win32/DWM 给 PopUp 窗口自动套上的装饰：非客户区描边、窗口投影
+/// 与圆角裁剪。窗口内容全透明时这些系统层像素照样合成上屏（亮色壁纸尤
+/// 其突兀），全部关掉后屏幕上只剩 gpui 实际绘制的内容。
+#[cfg(windows)]
+fn disable_os_window_chrome(window: &mut Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
+    };
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(win32.hwnd.get() as *mut _);
+    unsafe {
+        // 老式 NC 渲染：系统边框 + 投影。
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            &DWMNCRP_DISABLED as *const _ as *const _,
+            std::mem::size_of_val(&DWMNCRP_DISABLED) as u32,
+        );
+        // Win11 专有的 1px 描边，上一条管不到它；COLOR_NONE = 不画。
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &DWMWA_COLOR_NONE as *const _ as *const _,
+            std::mem::size_of_val(&DWMWA_COLOR_NONE) as u32,
+        );
+        // 圆角裁剪一并关掉（透明窗口下不可见，防御性）。
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &DWMWCP_DONOTROUND as *const _ as *const _,
+            std::mem::size_of_val(&DWMWCP_DONOTROUND) as u32,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn disable_os_window_chrome(_window: &mut Window) {}
 
 /// 拖动结束后持久化窗口位置（`start_window_move` 的 OS 模态循环返回即
 /// 拖动结束；屏幕坐标为逻辑 px，跨 DPI 变更可能漂移，可接受）。
@@ -211,6 +286,10 @@ pub struct DesktopLyricsView {
     parsed: Option<Arc<Vec<LrcLine>>>,
     current_line: Option<usize>,
     accent: Option<Rgba>,
+    /// 鼠标悬停态：驱动药丸底/描边与关闭按钮的出现（常态全透明）。
+    /// 用 Rust 状态而非 `.hover()` 样式 refinement，因为关闭按钮要整体
+    /// 按此条件渲染（未渲染的元素没有 hitbox，不会隐形吃点击）。
+    hovered: bool,
 }
 
 impl DesktopLyricsView {
@@ -220,6 +299,7 @@ impl DesktopLyricsView {
             parsed: None,
             current_line: None,
             accent: None,
+            hovered: false,
         };
         view.sync_from_lyrics(cx);
 
@@ -320,6 +400,33 @@ impl Render for DesktopLyricsView {
                 .into_any_element(),
         };
 
+        let set_hovered = cx.listener(|this, hovered: &bool, _window, cx| {
+            if this.hovered != *hovered {
+                this.hovered = *hovered;
+                cx.notify();
+            }
+        });
+
+        let close_button = div()
+            .id("desktop-lyrics-close")
+            // stop_propagation：不拦的话事件冒泡到药丸，点击会先进拖拽模
+            // 态循环。窗口移除走分发结束后的 trail，无需 defer。
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                cx.stop_propagation();
+                close_from_within(window, cx);
+            })
+            .cursor_pointer()
+            .absolute()
+            .top(px(2.0))
+            .right(px(6.0))
+            .size(px(16.0))
+            .rounded_full()
+            .bg(white().opacity(0.16))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon(CROSS).size(px(10.0)).text_color(white().opacity(0.9)));
+
         div()
             .size_full()
             .bg(transparent_black())
@@ -335,14 +442,31 @@ impl Render for DesktopLyricsView {
                         window.start_window_move();
                         save_position(window, cx);
                     })
+                    .on_hover(set_hovered)
                     .cursor_default()
+                    .relative()
                     .rounded(px(16.0))
-                    .bg(black().opacity(0.42))
+                    // 常态全透明与壁纸融为一体；悬停（含拖动全程——进入拖
+                    // 动前鼠标必然已悬停，且 OS 移动模态循环期间 hover 态
+                    // 不会被 mouse-move 清掉）才浮出药丸底 + 描边 + 关闭按
+                    // 钮。边框常驻（透明色）避免悬停时布局位移。
+                    .border_1()
+                    .border_color(if self.hovered {
+                        white().opacity(0.25)
+                    } else {
+                        transparent_black()
+                    })
+                    .bg(if self.hovered {
+                        black().opacity(0.42)
+                    } else {
+                        transparent_black()
+                    })
                     .px(px(24.0))
                     .py(px(10.0))
                     .max_w_full()
                     .overflow_hidden()
-                    .child(content),
+                    .child(content)
+                    .when(self.hovered, |pill| pill.child(close_button)),
             )
     }
 }

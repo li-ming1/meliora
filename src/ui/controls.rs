@@ -11,8 +11,8 @@ use crate::{
         components::{
             context::context,
             icons::{
-                MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, REPEAT,
-                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, WORLD, icon,
+                BUBBLE_TEXT, MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK,
+                REPEAT, REPEAT_OFF, REPEAT_ONCE, SHUFFLE, icon,
             },
             menu::{menu, menu_check_item, menu_item},
             resizable::{ResizeEdge, resizable},
@@ -772,11 +772,15 @@ impl Render for SecondaryControls {
                         .tooltip(build_tooltip(tr!("IMMERSIVE_ENTER", "Immersive Mode"))),
                 )
                 .child(
-                    sidebar_toggle_button("desktop-lyrics-button", WORLD, desktop_lyrics_active)
-                        .on_click(|_, _, cx| {
-                            crate::ui::desktop_lyrics::toggle(cx);
-                        })
-                        .tooltip(build_tooltip(tr!("DESKTOP_LYRICS", "Desktop Lyrics"))),
+                    sidebar_toggle_button(
+                        "desktop-lyrics-button",
+                        BUBBLE_TEXT,
+                        desktop_lyrics_active,
+                    )
+                    .on_click(|_, _, cx| {
+                        crate::ui::desktop_lyrics::toggle(cx);
+                    })
+                    .tooltip(build_tooltip(tr!("DESKTOP_LYRICS", "Desktop Lyrics"))),
                 ),
         )
     }

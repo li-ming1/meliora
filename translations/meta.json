@@ -451,7 +451,7 @@
   },
   "DESKTOP_LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:779",
+    "definedIn": "src/ui/controls.rs:783",
     "plural": false,
     "description": null
   },
