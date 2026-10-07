@@ -288,6 +288,10 @@ pub struct DesktopLyricsView {
     parsed: Option<Arc<Vec<LrcLine>>>,
     current_line: Option<usize>,
     accent: Option<Rgba>,
+    /// 上次镜像时的 `Lyrics::parsed_generation`：歌词实体的逐帧动画
+    /// notify（行强调 180ms + 跟随滚动，~60Hz 突发）不改变 parsed——
+    /// 无守卫的话悬浮窗每次换行白重绘 10-30 帧（可见输出不变）。
+    synced_generation: u64,
     /// 鼠标悬停态：驱动药丸底/描边与关闭按钮的出现（常态全透明）。
     /// 用 Rust 状态而非 `.hover()` 样式 refinement，因为关闭按钮要整体
     /// 按此条件渲染（未渲染的元素没有 hitbox，不会隐形吃点击）。
@@ -301,11 +305,13 @@ impl DesktopLyricsView {
             parsed: None,
             current_line: None,
             accent: None,
+            synced_generation: 0,
             hovered: false,
         };
         view.sync_from_lyrics(cx);
 
-        // 歌词实体变化（换歌/翻译落地/主题色提取完成）→ 重镜像。
+        // 歌词实体变化 → 重镜像；实际重镜像与否由 sync_from_lyrics 内的
+        // generation+accent 守卫决定（动画帧 notify 在此早退）。
         cx.observe(&lyrics, |this, _lyrics, cx| this.sync_from_lyrics(cx))
             .detach();
         // 位置推进 → 行切换与逐字扫色（仅在实际有变化时 notify）。
@@ -318,12 +324,22 @@ impl DesktopLyricsView {
         view
     }
 
-    /// 与沉浸页同一镜像协议：`parsed_lines()` 是引用计数克隆，
-    /// `parsed_generation` 的增量语义由观察者代替（observe 本身按变更触发）。
+    /// 镜像歌词实体的 parsed/accent。`parsed_lines()` 是引用计数克隆；
+    /// generation+accent 双守卫——accent 由取色任务异步落地且**不 bump
+    /// generation**（lyrics.rs resolve_accent），只比 generation 会漏接
+    /// 主题色（immersive 同位观察者只比 generation 是对的：它自带取色
+    /// 管线，不镜像 lyrics 的 accent）。首建时 parsed 必然伴随
+    /// generation≥1（apply_loaded_lyrics 无条件 +1），不会漏初始镜像。
     fn sync_from_lyrics(&mut self, cx: &mut Context<Self>) {
         let lyrics = self.lyrics.read(cx);
+        let generation = lyrics.parsed_generation();
+        let accent = lyrics.accent();
+        if generation == self.synced_generation && accent == self.accent {
+            return;
+        }
+        self.synced_generation = generation;
         self.parsed = lyrics.parsed_lines();
-        self.accent = lyrics.accent();
+        self.accent = accent;
         let pos_ms = *cx.global::<PlaybackInfo>().position.read(cx);
         self.current_line = self.line_at(pos_ms);
         cx.notify();
