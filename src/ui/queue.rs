@@ -1400,7 +1400,7 @@ impl Render for Queue {
                                 }
 
                                 keys.into_iter()
-                                    .filter_map(|(idx, item_key)| {
+                                    .map(|(idx, item_key)| {
                                         let drag_drop_manager = drag_drop_manager.clone();
                                         let scroll_handle = item_scroll_handle.clone();
                                         let item_selection = selection.clone();
@@ -1451,7 +1451,7 @@ impl Render for Queue {
                                             view.update(cx, |q, _| q.update_idx(idx));
                                         }
 
-                                        Some(div().child(view))
+                                        div().child(view)
                                     })
                                     .collect()
                             } else {

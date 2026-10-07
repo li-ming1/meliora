@@ -48,10 +48,9 @@ const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 /// Session cache for the two tab roots (TTL + helpers in `online_common`):
 /// the view entity is rebuilt on every tab switch, so a fresh entry skips
 /// the root-list re-fetch entirely.
-static CACHED_RANKS: LazyLock<Mutex<Option<CachedRoot<Vec<KugouRank>>>>> =
-    LazyLock::new(|| Mutex::new(None));
-static CACHED_RECOMMEND: LazyLock<Mutex<Option<CachedRoot<Vec<Arc<KugouTrackInfo>>>>>> =
-    LazyLock::new(|| Mutex::new(None));
+type CachedTabRoot<T> = LazyLock<Mutex<Option<CachedRoot<Vec<T>>>>>;
+static CACHED_RANKS: CachedTabRoot<KugouRank> = LazyLock::new(|| Mutex::new(None));
+static CACHED_RECOMMEND: CachedTabRoot<Arc<KugouTrackInfo>> = LazyLock::new(|| Mutex::new(None));
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {

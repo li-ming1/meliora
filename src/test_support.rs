@@ -812,7 +812,7 @@ mod scale_probe {
                 let album_idx = i % ALBUMS;
                 let path = dir.utf8_join(&format!("t{i:05}.flac"));
                 insert_metadata(
-                    &mut *tx,
+                    &mut tx,
                     &track_metadata(
                         &format!("Album {album_idx:05}"),
                         &format!("Artist {}", album_idx % 1_000),

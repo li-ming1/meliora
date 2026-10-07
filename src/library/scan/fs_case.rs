@@ -383,7 +383,7 @@ mod bench {
     /// UTF-8 stays on both hit and miss paths (5% share).
     fn raw_key(i: usize) -> String {
         let track = i % 1_000;
-        if i % MULTIBYTE_STRIDE == 0 {
+        if i.is_multiple_of(MULTIBYTE_STRIDE) {
             format!(r"\\?\D:\Music\艺术家-{i:06}\专辑-{i:06}\曲目-{track:03}.flac")
         } else {
             format!(r"\\?\D:\Music\artist-{i:06}\album-{i:06}\track-{track:03}.flac")

@@ -64,6 +64,10 @@ struct PersistedQueueUIData {
     duration: Option<i64>,
 }
 
+/// `PersistedQueueUIData::persisted_restore` 的载荷：
+/// `(name, artist_name, duration, cover_url)`。
+pub(crate) type PersistedUiRestore = (Option<String>, Option<String>, Option<i64>, Option<String>);
+
 impl serde::Serialize for QueueItemData {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -275,9 +279,7 @@ impl QueueItemData {
     /// tuple, decoupled from the private `PersistedQueueUIData` so the
     /// UI-side metadata table (`ui::queue_metadata`) can run the same
     /// restore branch. Not feature-gated: `persisted_ui` itself is not.
-    pub(crate) fn persisted_restore(
-        &self,
-    ) -> Option<(Option<String>, Option<String>, Option<i64>, Option<String>)> {
+    pub(crate) fn persisted_restore(&self) -> Option<PersistedUiRestore> {
         self.persisted_ui.as_ref().map(|p| {
             (
                 p.name.clone(),
