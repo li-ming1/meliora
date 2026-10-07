@@ -11,6 +11,7 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::channel,
     },
@@ -133,6 +134,34 @@ pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
 /// 文件监视器回读每次写盘，内容有变才触发全窗口刷新。
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 static SETTINGS_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// 已确认落盘的最高 generation。防抖任务被进程退出取消时（runtime drop
+/// 会掐掉 sleep 中的 async 任务），最后一笔靠 [`flush_pending_settings`]
+/// 同步补写。
+static SETTINGS_WRITTEN_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// 最近一次请求的快照登记（generation、内容、目标路径）：退出 flush 的
+/// 数据源。防抖任务正常落盘后摘除自己的登记。
+struct PendingSettingsSave {
+    generation: u64,
+    snapshot: Arc<Settings>,
+    path: PathBuf,
+}
+static PENDING_SETTINGS_SAVE: Mutex<Option<PendingSettingsSave>> = Mutex::new(None);
+
+/// 原子写盘：先写同目录临时文件再 rename 替换（同 session_io::save）——
+/// 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态还会把
+/// 正常会话误标为 Corrupt。tmp 名带 generation：防抖不保证上一次写盘已
+/// 结束，固定名会让两代写盘截断同一个 tmp 交错写。
+fn write_settings_file(snapshot: &Settings, path: &Path, generation: u64) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("json.tmp{generation}"));
+    File::create(&tmp)
+        .and_then(|file| serde_json::to_writer_pretty(file, snapshot).map_err(|e| e.into()))
+        .and_then(|()| fs::rename(&tmp, path))
+        // 旧文件原样保留，只清理残留临时文件
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
+}
 
 /// Push `settings` onto the playback thread and the scanner immediately, then
 /// debounce the disk write (trailing edge, see [`SETTINGS_SAVE_DEBOUNCE`]).
@@ -144,39 +173,76 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
     scan.update_settings(settings.scanning.clone());
 
     let path = cx.global::<SettingsGlobal>().path.clone();
-    let snapshot = settings.clone();
+    let snapshot = Arc::new(settings.clone());
 
     // The globals above must take effect live; only the disk write collapses
     // into one trailing-edge write (same pattern as the equalizer's save).
     let generation = SETTINGS_SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Ok(mut pending) = PENDING_SETTINGS_SAVE.lock() {
+        *pending = Some(PendingSettingsSave {
+            generation,
+            snapshot: snapshot.clone(),
+            path: path.clone(),
+        });
+    }
     crate::RUNTIME.spawn(async move {
         tokio::time::sleep(SETTINGS_SAVE_DEBOUNCE).await;
         if SETTINGS_SAVE_GENERATION.load(Ordering::Relaxed) != generation {
             return;
         }
-        let result = tokio::task::spawn_blocking(move || {
-            // 先写同目录临时文件再 rename 原子替换（同 session_io::save）：
-            // 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态
-            // 还会把正常会话误标为 Corrupt。tmp 名带 generation：防抖不保证
-            // 上一次写盘已结束，固定名会让两代写盘截断同一个 tmp 交错写。
-            let tmp = path.with_extension(format!("json.tmp{generation}"));
-            File::create(&tmp)
-                .and_then(|file| {
-                    serde_json::to_writer_pretty(file, &snapshot).map_err(|e| e.into())
-                })
-                .and_then(|()| fs::rename(&tmp, &path))
-                // 旧文件原样保留，只清理残留临时文件
-                .inspect_err(|_| {
-                    let _ = fs::remove_file(&tmp);
-                })
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => {}
+        let result =
+            tokio::task::spawn_blocking(move || write_settings_file(&snapshot, &path, generation))
+                .await;
+        let written = matches!(&result, Ok(Ok(())));
+        match &result {
+            Ok(Ok(())) => {
+                SETTINGS_WRITTEN_GENERATION.fetch_max(generation, Ordering::Relaxed);
+            }
             Ok(Err(e)) => warn!("Failed to save settings file: {e:?}"),
             Err(e) => warn!("settings save task failed: {e}"),
         }
+        // 已落盘的登记摘除（可能已被更新的 generation 覆盖，只在相等时摘）。
+        if written
+            && let Ok(mut pending) = PENDING_SETTINGS_SAVE.lock()
+            && pending.as_ref().is_some_and(|p| p.generation == generation)
+        {
+            *pending = None;
+        }
     });
+}
+
+/// 进程退出路径的兜底：防抖窗口内最后一笔还没落盘时（runtime drop 会取
+/// 消 sleep 中的防抖任务），同步补写。挂在主窗口 on_release（先于进程退
+/// 出）与硬 cap 阀门的 exit(70) 前。flush 与防抖任务并发写同一内容时用
+/// 不同 tmp 名（flush 后缀），rename 各自原子、字节一致，不会互相截断。
+pub fn flush_pending_settings() {
+    let Some(pending) = PENDING_SETTINGS_SAVE
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
+    else {
+        return;
+    };
+    if SETTINGS_WRITTEN_GENERATION.load(Ordering::Relaxed) >= pending.generation {
+        return;
+    }
+    let generation = pending.generation;
+    let tmp = pending
+        .path
+        .with_extension(format!("json.tmpflush{generation}"));
+    let result = File::create(&tmp)
+        .and_then(|file| {
+            serde_json::to_writer_pretty(file, &*pending.snapshot).map_err(|e| e.into())
+        })
+        .and_then(|()| fs::rename(&tmp, &pending.path))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        });
+    if result.is_ok() {
+        SETTINGS_WRITTEN_GENERATION.fetch_max(generation, Ordering::Relaxed);
+    } else if let Err(e) = result {
+        warn!("settings flush on exit failed: {e:?}");
+    }
 }
 
 pub struct SettingsGlobal {

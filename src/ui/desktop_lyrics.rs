@@ -36,7 +36,10 @@ use crate::{
 };
 
 const WIDTH: f32 = 720.0;
-const HEIGHT: f32 = 84.0;
+/// 画布高度：两行 30px 歌词（超宽行折行后药丸 ~90-110px）完整放下。窗口
+/// 常态全透明，画布加大零视觉成本——84px 时代超宽行折行的第二行会被窗
+/// 口边界硬裁（无省略号）。药丸内容自适应尺寸并居中，短行观感不变。
+const HEIGHT: f32 = 120.0;
 /// 主屏默认位置：底部居中，任务栏上方留白。
 const BOTTOM_MARGIN: f32 = 108.0;
 
@@ -200,15 +203,12 @@ fn open_window(
         app_id: Some("meliora-desktop-lyrics".to_string()),
         ..Default::default()
     };
-    let Some(handle) = cx
+    let handle = cx
         .open_window(options, |_window, cx| {
             cx.new(|cx| DesktopLyricsView::new(lyrics, cx))
         })
         .map_err(|error| tracing::error!(?error, "desktop lyrics: failed to open overlay window"))
-        .ok()
-    else {
-        return None;
-    };
+        .ok()?;
     // 窗口建起来立即摘掉 OS 层装饰，常态透明时才不会露出系统描边/投影；
     // 并登记 [frame] 探针的按窗口归因标签（悬浮窗重开覆盖同标签）。
     crate::register_frame_window_label(handle.into(), "desktop-lyrics");
@@ -351,7 +351,7 @@ impl DesktopLyricsView {
             let released_self = view
                 .self_handle
                 .zip(cx.global::<DesktopLyricsState>().window.as_ref())
-                .is_some_and(|(mine, current)| mine == current.clone().into());
+                .is_some_and(|(mine, current)| mine == (*current).into());
             if released_self {
                 cx.global_mut::<DesktopLyricsState>().window = None;
                 restore_broadcast_after_close(cx);

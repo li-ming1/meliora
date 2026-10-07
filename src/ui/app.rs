@@ -454,8 +454,10 @@ fn build_main_window(
 
         // 主窗口关闭 → 联动关闭悬浮窗：避免"只剩悬浮窗"的孤儿会话（应用
         // 无托盘，悬浮窗自身无法重建主窗口），随后全部窗口关闭自然退出。
+        // 退出兜底：防抖窗口内最后一笔设置（含悬浮窗位置）同步落盘。
         cx.on_release(|_: &mut MainWindow, cx| {
             crate::ui::desktop_lyrics::close(cx);
+            crate::settings::flush_pending_settings();
         })
         .detach();
 

@@ -766,6 +766,9 @@ fn spawn_memory_probe() {
                      restarting to bound private commit"
                 );
                 if spawn_replacement() {
+                    // 阀门重启依赖会话/设置随改随存：防抖窗口内的最后一笔
+                    // 同步补写后再退出，替换进程才能读到完整状态。
+                    crate::settings::flush_pending_settings();
                     std::process::exit(70);
                 }
                 tracing::error!("memory hard cap: replacement spawn failed; continuing degraded");
