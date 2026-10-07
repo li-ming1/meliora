@@ -6,7 +6,8 @@
 
 use cntp_i18n::{I18N_MANAGER, tr_load};
 use gpui::set_trace_enabled;
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::media::{
     lofty::LoftyProvider, lookup_table::register_providers, symphonia::SymphoniaProvider,
@@ -408,51 +409,93 @@ pub(crate) fn spawn_replacement() -> bool {
         .is_some()
 }
 
+/// [frame] 探针的窗口标签注册表：gpui 的 `FrameTiming` 只带 `WindowId`，
+/// 按窗口归因（主窗口 / 桌面歌词悬浮窗的帧节奏差一个数量级，混在一行里
+/// 无法判读）需要应用在开窗时登记人类可读标签。反向映射（标签→当前
+/// WindowId）：每标签一条，窗口反复开关只覆盖、不累积，已销毁窗口的
+/// 旧 id 自然失配，无需反注册。探针跑在 tokio worker 上，用普通互斥锁
+/// 而非 gpui Global。
+static FRAME_WINDOW_IDS: OnceLock<Mutex<HashMap<&'static str, gpui::WindowId>>> = OnceLock::new();
+
+/// 开窗后登记该窗口在 `[frame]` 日志里的 `win=` 标签（同标签重开覆盖）。
+pub fn register_frame_window_label(handle: gpui::AnyWindowHandle, label: &'static str) {
+    let map = FRAME_WINDOW_IDS.get_or_init(Default::default);
+    if let Ok(mut map) = map.lock() {
+        map.insert(label, handle.window_id());
+    }
+}
+
 /// 聚合并记录自上次调用以来的帧计时（`[frame] periodic`）。draw 时长是
 /// gpui `Window::draw` 的 CPU 段（场景构建 + 元素绘制）；dirty→draw 含
 /// 调度与合并延迟（上限为一个帧间隔属正常，持续超一个帧间隔才是问题）。
-/// 无帧窗口不记日志——空闲 UI 本就不该有帧，出现即异常信号。
+/// gpui 的帧计时环形缓冲是全窗口共享的：按 `window_id` 分组，每个有帧
+/// 的窗口各输出一行（`win=` 字段）。无帧窗口不记日志——空闲 UI 本就不
+/// 该有帧，出现即异常信号。
 #[cfg(not(test))]
 fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     let frames = collector.collect_unseen();
     if frames.is_empty() {
         return;
     }
-    let mut draws_us: Vec<u64> = frames
-        .iter()
-        .map(|frame| frame.draw_duration().as_micros() as u64)
-        .collect();
-    draws_us.sort_unstable();
-    let n = draws_us.len();
-    let over = |budget_us: u64| draws_us.iter().filter(|d| **d > budget_us).count();
-    let dirty_to_draw_max_us = frames
-        .iter()
-        .filter_map(|frame| frame.dirty_to_draw_duration())
-        .map(|d| d.as_micros() as u64)
-        .max()
-        .unwrap_or(0);
-    let invalidations_max = frames
-        .iter()
-        .map(|frame| frame.invalidations)
-        .max()
-        .unwrap_or(0);
-    // 遮挡/最小化期间 gpui 无帧回调、失效只累积；恢复窗口的首帧会把
-    // 几十分钟的 dirty_at 一次性排空——dirty→draw 超过 60s 即视为该
-    // 伪影而非调度问题（判读细节见 AGENTS.md [frame] 节）。
-    let occluded_gap = dirty_to_draw_max_us > 60_000_000;
-    tracing::info!(
-        frames = n,
-        draw_p50_us = draws_us[n / 2],
-        draw_p99_us = draws_us[((n * 99) / 100).min(n - 1)],
-        draw_max_us = draws_us[n - 1],
-        over_8ms = over(8_000),
-        over_16ms = over(16_000),
-        over_33ms = over(33_000),
-        dirty_to_draw_max_us,
-        invalidations_max,
-        occluded_gap,
-        "[frame] periodic"
-    );
+    let mut by_window: HashMap<gpui::WindowId, Vec<&gpui::profiler::FrameTiming>> = HashMap::new();
+    for frame in &frames {
+        by_window.entry(frame.window_id).or_default().push(frame);
+    }
+    let mut windows: Vec<(gpui::WindowId, Vec<&gpui::profiler::FrameTiming>)> =
+        by_window.into_iter().collect();
+    windows.sort_by_key(|(id, _)| id.as_u64());
+    let labels = FRAME_WINDOW_IDS.get_or_init(Default::default);
+    let labels = labels.lock().ok();
+    for (window_id, frames) in windows {
+        let win = labels
+            .as_ref()
+            .and_then(|labels| {
+                labels
+                    .iter()
+                    .find(|(_, id)| **id == window_id)
+                    .map(|(label, _)| *label)
+            })
+            .map_or_else(
+                || format!("win-{}", window_id.as_u64()),
+                |label| label.to_string(),
+            );
+        let mut draws_us: Vec<u64> = frames
+            .iter()
+            .map(|frame| frame.draw_duration().as_micros() as u64)
+            .collect();
+        draws_us.sort_unstable();
+        let n = draws_us.len();
+        let over = |budget_us: u64| draws_us.iter().filter(|d| **d > budget_us).count();
+        let dirty_to_draw_max_us = frames
+            .iter()
+            .filter_map(|frame| frame.dirty_to_draw_duration())
+            .map(|d| d.as_micros() as u64)
+            .max()
+            .unwrap_or(0);
+        let invalidations_max = frames
+            .iter()
+            .map(|frame| frame.invalidations)
+            .max()
+            .unwrap_or(0);
+        // 遮挡/最小化期间 gpui 无帧回调、失效只累积；恢复窗口的首帧会把
+        // 几十分钟的 dirty_at 一次性排空——dirty→draw 超过 60s 即视为该
+        // 伪影而非调度问题（判读细节见 AGENTS.md [frame] 节）。
+        let occluded_gap = dirty_to_draw_max_us > 60_000_000;
+        tracing::info!(
+            win = %win,
+            frames = n,
+            draw_p50_us = draws_us[n / 2],
+            draw_p99_us = draws_us[((n * 99) / 100).min(n - 1)],
+            draw_max_us = draws_us[n - 1],
+            over_8ms = over(8_000),
+            over_16ms = over(16_000),
+            over_33ms = over(33_000),
+            dirty_to_draw_max_us,
+            invalidations_max,
+            occluded_gap,
+            "[frame] periodic"
+        );
+    }
 }
 
 #[cfg(not(test))]

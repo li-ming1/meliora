@@ -212,7 +212,9 @@ fn open_window(
             tracing::error!(?error, "desktop lyrics: failed to open overlay window");
             panic!("desktop lyrics window");
         });
-    // 窗口建起来立即摘掉 OS 层装饰，常态透明时才不会露出系统描边/投影。
+    // 窗口建起来立即摘掉 OS 层装饰，常态透明时才不会露出系统描边/投影；
+    // 并登记 [frame] 探针的按窗口归因标签（悬浮窗重开覆盖同标签）。
+    crate::register_frame_window_label(handle.into(), "desktop-lyrics");
     handle
         .update(cx, |_, window, _| disable_os_window_chrome(window))
         .ok();

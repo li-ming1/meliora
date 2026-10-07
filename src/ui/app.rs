@@ -444,9 +444,12 @@ fn build_main_window(
         let lyrics_model = right_sidebar.lyrics();
 
         // 桌面歌词悬浮窗的全局宿主：controls 开关、启动恢复、主窗关闭联动。
+        // 主窗口同步登记 [frame] 探针的按窗口归因标签。
+        let main_handle = window.window_handle();
+        crate::register_frame_window_label(main_handle, "main");
         cx.set_global(crate::ui::desktop_lyrics::DesktopLyricsState::new(
             lyrics_model.clone(),
-            window.window_handle(),
+            main_handle,
         ));
 
         // 主窗口关闭 → 联动关闭悬浮窗：避免"只剩悬浮窗"的孤儿会话（应用
