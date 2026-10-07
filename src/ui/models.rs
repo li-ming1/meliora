@@ -162,6 +162,12 @@ pub struct PlaybackInfo {
 
 impl Global for PlaybackInfo {}
 
+/// 进度显示的重绘量化粒度。position 以 33ms/250ms 双档广播，但进度条每
+/// 拍实际移动亚像素（4 分钟曲目 250ms ≈ 0.3px@300px 宽）、时间标签整秒
+/// 缓存——position 观察者按此粒度守卫 cx.notify()，把"播放中主窗口
+/// 30fps 持续重绘"压到 4Hz，视觉无差（2026-10-07 桌面歌词专项实测项）。
+pub const POSITION_DISPLAY_QUANTUM_MS: u64 = 250;
+
 #[derive(Debug, Clone)]
 pub struct Queue {
     pub data: Arc<RwLock<Arc<Vec<QueueItemData>>>>,

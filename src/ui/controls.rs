@@ -22,7 +22,7 @@ use crate::{
         },
         design::{ICON_MD, ICON_SM},
         global_actions::{Next, PlayPause, Previous, StopAfterCurrent},
-        models::{Models, PlaybackInfo},
+        models::{Models, POSITION_DISPLAY_QUANTUM_MS, PlaybackInfo},
         theme::Theme,
         util::{CachedTimeText, format_duration, seek_to_fraction, volume_toggle_target},
     },
@@ -452,6 +452,10 @@ pub struct Scrubber {
     duration: Entity<u64>,
     playback_section: Entity<PlaybackSection>,
     time_labels: CachedTimeText<(SharedString, SharedString, SharedString)>,
+    /// 上次触发重绘的 position 量化值（`POSITION_DISPLAY_QUANTUM_MS`
+    /// 粒度）：存原始位置做跨档比较，暂停中的亚档位 seek（如
+    /// 500→400ms）跨档时仍即时重绘，同档内偏差 ≤1 档、视觉不可见。
+    drawn_position_quantum: u64,
 }
 
 impl Scrubber {
@@ -459,7 +463,16 @@ impl Scrubber {
         cx.new(|cx| {
             let position_model = cx.global::<PlaybackInfo>().position.clone();
             let duration_model = cx.global::<PlaybackInfo>().duration.clone();
-            observe_notify(cx, &position_model);
+            // 进度条每拍实际移动亚像素、时间标签整秒缓存——按 250ms 档
+            // 量化 notify，压掉"播放中主窗口 30fps 持续重绘"泵。
+            cx.observe(&position_model, |this: &mut Self, pos, cx| {
+                let quantum = *pos.read(cx) / POSITION_DISPLAY_QUANTUM_MS;
+                if quantum != this.drawn_position_quantum {
+                    this.drawn_position_quantum = quantum;
+                    cx.notify();
+                }
+            })
+            .detach();
             observe_notify(cx, &duration_model);
 
             Self {
@@ -468,6 +481,7 @@ impl Scrubber {
                 playback_section: PlaybackSection::new(cx),
                 // 整秒键缓存：u64::MAX 种子永不匹配真实秒数，强制首建。
                 time_labels: CachedTimeText::unseeded(),
+                drawn_position_quantum: 0,
             }
         })
     }

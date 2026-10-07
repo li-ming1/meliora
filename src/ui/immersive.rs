@@ -81,7 +81,7 @@ use crate::{
             tooltip::build_tooltip,
         },
         lyrics::{Lyrics, lerp_color, word_progress},
-        models::{CurrentTrack, Models, PlaybackInfo, Queue},
+        models::{CurrentTrack, Models, POSITION_DISPLAY_QUANTUM_MS, PlaybackInfo, Queue},
         queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
@@ -341,14 +341,23 @@ impl ImmersiveView {
                 // fullscreen view around it stays put (see the position
                 // observer above). Gated on the immersive flag: the entity
                 // lives app-long, so ungated ticks cost 30 empty notifies/s
-                // while the fullscreen view is closed.
+                // while the fullscreen view is closed. The 250ms display
+                // quantum on top stops the remaining 30fps repaint pump
+                // while playing (the bar moves sub-pixel per tick).
                 let immersive_flag = immersive_flag.clone();
-                cx.observe(&info.position, move |_, _, cx| {
-                    if !*immersive_flag.read(cx) {
-                        return;
-                    }
-                    cx.notify();
-                })
+                cx.observe(
+                    &info.position,
+                    move |this: &mut ImmersiveProgress, pos, cx| {
+                        if !*immersive_flag.read(cx) {
+                            return;
+                        }
+                        let quantum = *pos.read(cx) / POSITION_DISPLAY_QUANTUM_MS;
+                        if quantum != this.drawn_position_quantum {
+                            this.drawn_position_quantum = quantum;
+                            cx.notify();
+                        }
+                    },
+                )
                 .detach();
                 cx.observe(&info.duration, |_, _, cx| cx.notify()).detach();
                 ImmersiveProgress {
@@ -356,6 +365,7 @@ impl ImmersiveView {
                     duration: info.duration.clone(),
                     // 整秒键缓存：u64::MAX 种子永不匹配真实秒数，强制首建。
                     time_labels: CachedTimeText::unseeded(),
+                    drawn_position_quantum: 0,
                 }
             });
 
@@ -967,6 +977,9 @@ struct ImmersiveProgress {
     position: Entity<u64>,
     duration: Entity<u64>,
     time_labels: CachedTimeText<(SharedString, SharedString)>,
+    /// 上次触发重绘的 position 量化值（`POSITION_DISPLAY_QUANTUM_MS`
+    /// 粒度），跨档才 notify；语义与 Scrubber 同款。
+    drawn_position_quantum: u64,
 }
 
 impl Render for ImmersiveProgress {

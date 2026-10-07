@@ -451,7 +451,7 @@
   },
   "DESKTOP_LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:783",
+    "definedIn": "src/ui/controls.rs:797",
     "plural": false,
     "description": null
   },
@@ -667,13 +667,13 @@
   },
   "IMMERSIVE_ENTER": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:772",
+    "definedIn": "src/ui/controls.rs:786",
     "plural": false,
     "description": null
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1467",
+    "definedIn": "src/ui/immersive.rs:1480",
     "plural": false,
     "description": null
   },
@@ -1297,13 +1297,13 @@
   },
   "LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:764",
+    "definedIn": "src/ui/controls.rs:778",
     "plural": false,
     "description": null
   },
   "MUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:683",
+    "definedIn": "src/ui/controls.rs:697",
     "plural": false,
     "description": null
   },
@@ -2611,7 +2611,7 @@
   },
   "UNMUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:680",
+    "definedIn": "src/ui/controls.rs:694",
     "plural": false,
     "description": null
   },
