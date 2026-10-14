@@ -72,7 +72,7 @@ jobs:
         env:
           # fdk-aac-sys 在 Windows ARM64 编译需要 __x86__ 宏 hack（与本地 .cargo/config.toml 一致）
           CFLAGS_aarch64_pc_windows_msvc: ${{ matrix.cflags }}
-        run: cargo build --release --locked --target ${{ matrix.target }} --features kugou,netease
+        run: cargo build --release --locked --target ${{ matrix.target }} --features kugou
 
       - name: Package Windows (zip)
         if: ${{ runner.os == 'Windows' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
@@ -177,8 +177,8 @@ jobs:
             - Local library: scanning, metadata, embedded covers, playlists, ReplayGain, lyrics (LRC/KRC/YRC word-by-word karaoke)
             - 沉浸模式：全出血封面背景、圆盘唱片与歌词逐行跟随、每歌主题色
             - Immersive mode: full-bleed cover backdrop, vinyl disc with line-following lyrics, per-track accent color
-            - 网易云音乐 / 酷狗音乐在线：扫码登录、搜索、歌单、榜单、在线播放与下载
-            - NetEase Cloud Music / KuGou online: QR login, search, playlists, charts, streaming and downloading
+            - 酷狗音乐在线：扫码登录、搜索、歌单、榜单、在线播放与下载
+            - KuGou online: QR login, search, playlists, charts, streaming and downloading
             - 参数均衡器（最多 16 段）与实时频谱可视化 / Parametric equalizer (up to 16 bands) and real-time spectrum
 
             **完整变更见下方自动生成的 Release Notes / Full changelog is generated below.**

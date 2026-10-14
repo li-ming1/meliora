@@ -5,14 +5,10 @@ mod equalizer;
 mod interface;
 #[cfg(feature = "kugou")]
 mod kugou;
-#[cfg(feature = "netease")]
-mod netease;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 mod online_common;
 #[cfg(feature = "kugou")]
 use crate::ui::components::icons::KUGOU;
-#[cfg(feature = "netease")]
-use crate::ui::components::icons::NETEASE;
 mod library;
 mod playback;
 mod stats;
@@ -45,8 +41,6 @@ use crate::{
 
 #[cfg(feature = "kugou")]
 use crate::ui::settings::kugou::KugouSettings;
-#[cfg(feature = "netease")]
-use crate::ui::settings::netease::NeteaseSettings;
 
 pub fn open_settings_window(cx: &mut App) {
     open_or_focus_settings_window(cx, None);
@@ -136,8 +130,6 @@ pub enum SettingsSectionKind {
     Stats,
     #[cfg(feature = "kugou")]
     Kugou,
-    #[cfg(feature = "netease")]
-    Netease,
     About,
 }
 
@@ -151,8 +143,6 @@ impl SettingsSectionKind {
             Self::Stats => "stats",
             #[cfg(feature = "kugou")]
             Self::Kugou => "kugou",
-            #[cfg(feature = "netease")]
-            Self::Netease => "netease",
             Self::About => "about",
         }
     }
@@ -166,8 +156,6 @@ impl SettingsSectionKind {
             Self::Stats => RANKING,
             #[cfg(feature = "kugou")]
             Self::Kugou => KUGOU,
-            #[cfg(feature = "netease")]
-            Self::Netease => NETEASE,
             Self::About => ALERT_CIRCLE,
         }
     }
@@ -181,8 +169,6 @@ impl SettingsSectionKind {
             Self::Stats => tr!("STATS_SECTION", "Listening Stats").into(),
             #[cfg(feature = "kugou")]
             Self::Kugou => tr!("KUGOU_SECTION", "KuGou Music").into(),
-            #[cfg(feature = "netease")]
-            Self::Netease => tr!("NETEASE_SECTION", "NetEase Cloud Music").into(),
             Self::About => tr!("ABOUT_SECTION", "About and Help").into(),
         }
     }
@@ -202,8 +188,6 @@ enum SettingsSection {
     Stats(Entity<StatsSettings>),
     #[cfg(feature = "kugou")]
     Kugou(Entity<KugouSettings>),
-    #[cfg(feature = "netease")]
-    Netease(Entity<NeteaseSettings>),
     About(Entity<AboutSettings>),
 }
 
@@ -217,8 +201,6 @@ impl SettingsSection {
             SettingsSectionKind::Stats => Self::Stats(StatsSettings::new(cx)),
             #[cfg(feature = "kugou")]
             SettingsSectionKind::Kugou => Self::Kugou(KugouSettings::new(cx)),
-            #[cfg(feature = "netease")]
-            SettingsSectionKind::Netease => Self::Netease(NeteaseSettings::new(cx)),
             SettingsSectionKind::About => Self::About(AboutSettings::new(cx)),
         }
     }
@@ -232,8 +214,6 @@ impl SettingsSection {
             Self::Stats(_) => SettingsSectionKind::Stats,
             #[cfg(feature = "kugou")]
             Self::Kugou(_) => SettingsSectionKind::Kugou,
-            #[cfg(feature = "netease")]
-            Self::Netease(_) => SettingsSectionKind::Netease,
             Self::About(_) => SettingsSectionKind::About,
         }
     }
@@ -247,8 +227,6 @@ impl SettingsSection {
             Self::Stats(stats) => stats.clone().into_any_element(),
             #[cfg(feature = "kugou")]
             Self::Kugou(kugou) => kugou.clone().into_any_element(),
-            #[cfg(feature = "netease")]
-            Self::Netease(netease) => netease.clone().into_any_element(),
             Self::About(about) => about.clone().into_any_element(),
         }
     }
@@ -379,9 +357,6 @@ impl Render for SettingsWindow {
 
         #[cfg(feature = "kugou")]
         let sidebar = sidebar.child(self.render_section_item(SettingsSectionKind::Kugou, cx));
-
-        #[cfg(feature = "netease")]
-        let sidebar = sidebar.child(self.render_section_item(SettingsSectionKind::Netease, cx));
 
         let sidebar = sidebar.child(self.render_section_item(SettingsSectionKind::About, cx));
 

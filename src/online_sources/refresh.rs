@@ -1,7 +1,7 @@
 //! Shared "refresh a stale online stream URL" plumbing.
 //!
-//! KuGou / NetEase direct-link URLs are signed and expire (HTTP 403), but
-//! playlist items persist them. Both callers re-fetch a fresh URL from the
+//! KuGou direct-link URLs are signed and expire (HTTP 403), but
+//! playlist items persist them. The caller re-fetches a fresh URL from the
 //! provider identity: the session-restore pass in `app.rs` and the playback
 //! thread's one-shot retry when opening a persisted URL fails.
 //!

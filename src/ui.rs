@@ -21,11 +21,9 @@ pub mod library;
 pub mod library_access;
 mod lyrics;
 pub mod models;
-#[cfg(feature = "netease")]
-mod netease;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 mod online_common;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 mod online_track_row;
 mod playback_bridge;
 mod queue;

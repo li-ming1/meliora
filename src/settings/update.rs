@@ -5,7 +5,7 @@ fn default_true() -> bool {
 }
 
 /// Update-check preferences (`settings.json` → `update`). The updater itself
-/// only exists in `online` builds (`kugou`/`netease` imply it), but the group
+/// only exists in `online` builds (`kugou` implies it), but the group
 /// always deserializes so the settings file keeps one shape across builds.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct UpdateSettings {

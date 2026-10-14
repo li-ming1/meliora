@@ -21,21 +21,10 @@ atlas-probe = []
 # cache, online-aware queue items. Enabled by each provider feature below.
 online_sources = []
 kugou = ["online", "online_sources", "dep:md-5", "dep:num-bigint-dig", "dep:qrcode"]
-netease = [
-    "online",
-    "online_sources",
-    "dep:aes",
-    "dep:cbc",
-    "dep:ecb",
-    "dep:md-5",
-    "dep:num-bigint-dig",
-    "dep:qrcode",
-]
 default = []
 
 [dependencies]
 anyhow = "1"
-aes = { version = "0.8", optional = true }
 audioadapter-buffers = "5"
 async-compression = { version = "0.4", features = ["zlib", "tokio"] }
 async-trait = "0.1"
@@ -45,7 +34,6 @@ bitflags = "2"
 # full-buffer copy (zed-reqwest re-exports it only as an unnameable impl trait).
 bytes = "1"
 camino = { version = "1", features = ["serde1"] }
-cbc = { version = "0.1", optional = true, features = ["alloc"] }
 chrono = "0.4"
 # CLI surface is one optional positional arg + --version/--about: the default
 # color/suggestions machinery (and its anstream/strsim chains) is dead weight.
@@ -61,7 +49,6 @@ cpal = { version = "0.18.2", features = ["pipewire"] }
 dateparser = "0.3"
 derive_more = { version = "2", features = ["debug"] }
 directories = "6"
-ecb = { version = "0.1", optional = true, features = ["alloc"] }
 file-rotate = "0.8.0"
 flate2 = "1"
 futures = "0.3"

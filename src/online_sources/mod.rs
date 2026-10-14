@@ -23,8 +23,6 @@ pub enum OnlineIdentity {
         mix_song_id: i64,
         album_id: i64,
     },
-    /// NetEase: `song_url(id, level)`.
-    Netease { id: i64 },
 }
 
 /// Per-call refresh inputs: the quality settings of every provider compiled
@@ -34,8 +32,6 @@ pub enum OnlineIdentity {
 pub struct RefreshContext<'a> {
     #[cfg(feature = "kugou")]
     pub kugou_quality: &'a str,
-    #[cfg(feature = "netease")]
-    pub netease_quality: &'a str,
     pub display: OnlineDisplay,
 }
 
@@ -49,7 +45,7 @@ pub struct OnlineTrackMatch {
 }
 
 /// The ②-step seam: one implementation per compiled-in provider. The free
-/// functions in the `kugou`/`netease` submodules stay the source of truth and
+/// functions in the `kugou` submodule stay the source of truth and
 /// the impls delegate to them, so "add a provider" = implement this trait and
 /// register it in [`providers`] — no new match arms in the shared plumbing.
 #[async_trait::async_trait]
@@ -76,8 +72,6 @@ pub fn providers() -> &'static [&'static dyn OnlineSourceProvider] {
     &[
         #[cfg(feature = "kugou")]
         &kugou::KugouSource,
-        #[cfg(feature = "netease")]
-        &netease::NeteaseSource,
     ]
 }
 
@@ -89,10 +83,8 @@ pub fn identify_path(path: &Path) -> Option<OnlineTrackMatch> {
 pub mod cover_art;
 #[cfg(feature = "kugou")]
 pub mod kugou;
-#[cfg(feature = "netease")]
-pub mod netease;
 pub mod refresh;
-// 流注册表持久化设施（与 provider 无关；kugou/netease 各持一份实例）。
+// 流注册表持久化设施（与 provider 无关；每个 provider 各持一份实例）。
 pub mod stream_registry;
 
 // The shared refresh entry point lives in the `refresh` submodule;

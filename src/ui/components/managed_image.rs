@@ -203,11 +203,11 @@ pub enum ManagedImageKey {
     Album(i64),
     Track(i64),
     TrackFile(PathBuf),
-    /// Online album art fetched over HTTP (KuGou / NetEase track cover URL).
+    /// Online album art fetched over HTTP (KuGou track cover URL).
     #[cfg(feature = "online_sources")]
     HttpCover(SharedString),
     /// Same art, but the fetch tries the provider's large-display variant of
-    /// the URL first (KuGou `stdmusic/480`, NetEase `?param=1024y1024`) with
+    /// the URL first (KuGou `stdmusic/480`) with
     /// a fallback to the original thumbnail — for the immersive backdrop and
     /// label, where a 256px thumbnail stretched across the window reads as
     /// mush. See `online_sources::cover_art`.

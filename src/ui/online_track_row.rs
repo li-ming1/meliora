@@ -1,8 +1,8 @@
-//! Shared visual skeleton for the online providers' track rows. The KuGou
-//! and NetEase playlists / discovery pages render the identical row layout;
+//! Shared visual skeleton for the online provider's track rows. The KuGou
+//! playlists / discovery pages render the identical row layout;
 //! only the track type, the localized download label and the per-view play /
-//! like / download callbacks differ. One implementation here keeps the two
-//! providers visually in lockstep (the "②步收编" the provider glue modules'
+//! like / download callbacks differ. One implementation here keeps the
+//! provider visually in lockstep (the "②步收编" the provider glue modules'
 //! re-export notes refer to).
 
 use cntp_i18n::{I18nString, tr};
@@ -23,8 +23,8 @@ use crate::ui::{
     util::format_duration,
 };
 
-/// Display fields the shared row needs, implemented by each provider's track
-/// info struct (see the impls in `ui::kugou` / `ui::netease`).
+/// Display fields the shared row needs, implemented by the provider's track
+/// info struct (see the impl in `ui::kugou`).
 pub(crate) trait OnlineTrackDisplay {
     fn title(&self) -> &SharedString;
     fn artist(&self) -> &SharedString;
@@ -32,7 +32,7 @@ pub(crate) trait OnlineTrackDisplay {
     fn cover_url(&self) -> &SharedString;
     fn duration_secs(&self) -> i64;
     /// Localized "Download" label. Per-provider so the i18n generator keeps
-    /// seeing distinct `KUGOU_DOWNLOAD` / `NETEASE_DOWNLOAD` keys.
+    /// seeing distinct `KUGOU_DOWNLOAD` keys.
     fn download_label() -> I18nString;
 
     /// Right-hand label used in listings: "artist · m:ss".
@@ -212,8 +212,8 @@ where
 /// sharp while shrinking every tile the atlas packs.
 pub(crate) const RANK_CARD_W: f32 = 148.0;
 
-/// One discovery-page rank card: cover + name, optional provider subtitle
-/// (NetEase shows the chart's update frequency). The click handler is
+/// One discovery-page rank card: cover + name, optional provider subtitle.
+/// The click handler is
 /// supplied by the caller — the provider view types and their `open_rank`
 /// differ, and the cards are built from inside a uniform_list closure where
 /// only `&App` is available, so the weak-entity upgrade lives at the call

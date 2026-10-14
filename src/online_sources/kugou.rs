@@ -42,8 +42,8 @@ pub struct KugouTrackInfo {
 // the URL) cannot resolve lyrics / the like state / the download action on
 // its own. Every resolved play URL is recorded here in memory AND on disk, so
 // a restored queue still matches after a restart — even when the
-// session-restore URL refresh hits a network failure. Mirrors NetEase's
-// stream-map.
+// session-restore URL refresh hits a network failure. Mirrors the upstream
+// stream-map design.
 // ---------------------------------------------------------------------------
 
 /// On-disk mirror of a registry entry (plain strings, JSON friendly).
@@ -115,7 +115,7 @@ fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
 }
 
 /// 流注册表持久化设施（去重基线 + 写闸门）。本 provider 专属 static 实例：
-/// 基线绝不能与 netease 共享，否则去重跳写与失败回滚会互相误伤。
+/// 基线绝不能与其他 provider 共享，否则去重跳写与失败回滚会互相误伤。
 static STREAM_MAP_PERSISTENCE: StreamMapPersistence = StreamMapPersistence::new();
 
 /// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
@@ -375,16 +375,13 @@ impl super::OnlineSourceProvider for KugouSource {
         identity: &super::OnlineIdentity,
         ctx: &super::RefreshContext<'_>,
     ) -> Option<String> {
-        // Registry routing guarantees the KuGou variant; the fallthrough is
-        // type exhaustiveness only.
+        // KuGou is the only compiled-in provider, so the registry only ever
+        // hands this trait the KuGou variant.
         let super::OnlineIdentity::Kugou {
             hash,
             mix_song_id,
             album_id,
-        } = identity
-        else {
-            return None;
-        };
+        } = identity;
 
         let client = kugou::shared_client();
         let hash = hash.clone();

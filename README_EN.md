@@ -16,7 +16,7 @@ A fast, fluid desktop music player — for your local library and online streami
 
 ---
 
-Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummingbird-player/hummingbird). It keeps the local music library and playback capabilities, and adds online services for NetEase Cloud Music and KuGou Music (online catalog, charts, playlists, QR-code login, online streaming and downloading).
+Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummingbird-player/hummingbird). It keeps the local music library and playback capabilities, and adds online services for KuGou Music (online catalog, charts, playlists, QR-code login, online streaming and downloading).
 
 > **⚠️ Disclaimer**
 >
@@ -56,7 +56,6 @@ Press `F`, flip the sidebar toggle next to the lyrics button, or double-click th
 
 ### Online Services (features)
 
-- NetEase Cloud Music (`netease`): QR-code login, search, playlists, charts, online streaming and downloading
 - KuGou Music (`kugou`): VIP privileges granted on QR-code login; search, playlists, charts, online streaming and downloading
 
 ### UI & System
@@ -96,12 +95,8 @@ cargo build --release
 Online services are opt-in via features; append them to your build command:
 
 ```bash
-# KuGou + NetEase (recommended)
-cargo build --release --features kugou,netease
-
-# only one provider
+# KuGou (recommended)
 cargo build --release --features kugou
-cargo build --release --features netease
 ```
 
 ### Feature reference
@@ -109,7 +104,6 @@ cargo build --release --features netease
 | feature | purpose |
 |---|---|
 | `kugou` | KuGou Music online service (QR-code login, search, playlists, charts, streaming and downloading); pulls in `online` + `online_sources` |
-| `netease` | NetEase Cloud Music online service, same aggregation |
 | `online` | Base dependency for online services (HTTP client) |
 | `online_sources` | Shared online-track plumbing: HTTP-range streaming, cover cache, online queue items; auto-enabled by the provider features above |
 | `console` | [tokio-console](https://github.com/tokio-rs/console) runtime diagnostics |
@@ -119,7 +113,7 @@ Note: `default = []` — a plain build includes none of the features above.
 
 ### One-shot Windows build
 
-On Windows, prefer the in-repo `build-release.cmd`: it prepends your local MSVC / Windows SDK / CMake paths to PATH and builds a release (defaults to `--features kugou,netease`):
+On Windows, prefer the in-repo `build-release.cmd`: it prepends your local MSVC / Windows SDK / CMake paths to PATH and builds a release (defaults to `--features kugou`):
 
 ```powershell
 .\build-release.cmd
@@ -137,7 +131,6 @@ This project references the following open-source projects:
 
 | Project | Purpose |
 |---|---|
-| [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | Reference implementation for the NetEase Cloud Music API; the endpoints in `src/netease/` mirror it |
 | [MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi) | Reference implementation for the KuGou Music API; the endpoints in `src/kugou/` mirror it |
 | [hummingbird-player/hummingbird](https://github.com/hummingbird-player/hummingbird) | The predecessor of this project; Meliora is a continuation and rewrite of its codebase |
 
@@ -157,4 +150,4 @@ For any questions or suggestions, feel free to open an [issue](https://github.co
 
 This project is released under the **Apache License 2.0**. See [LICENSE](LICENSE).
 
-When using the online services (NetEase Cloud Music / KuGou Music), please comply with the terms of the respective platforms and applicable law. This project is for learning and communication purposes only.
+When using the online services (KuGou Music), please comply with the terms of the respective platforms and applicable law. This project is for learning and communication purposes only.

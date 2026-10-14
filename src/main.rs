@@ -22,14 +22,12 @@ mod logging;
 mod media;
 #[cfg(not(test))]
 mod mimalloc_stats;
-#[cfg(feature = "netease")]
-mod netease;
 #[cfg(feature = "online_sources")]
 mod online_sources;
 mod paths;
 mod playback;
 mod power;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 mod session_io;
 mod settings;
 mod stats;

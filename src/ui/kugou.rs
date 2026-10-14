@@ -510,7 +510,7 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
     cx.spawn(async move |cx| {
         // Coalesce concurrent clicks on the same song: only the first click
         // fetches and queues; later clicks in the same window are dropped
-        // (claim_fetch, shared with the NetEase glue).
+        // (claim_fetch, shared with the online glue).
         {
             let mut dedup = write_pending_fetches();
             if !claim_fetch(&mut dedup, track.mix_song_id, intent, Instant::now()) {

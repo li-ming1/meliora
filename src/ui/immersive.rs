@@ -13,7 +13,7 @@
 //!
 //! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
 //! loaded a second time: that entity owns the sidecar/DB/online fetch
-//! pipeline (KuGou/NetEase included), its bounded cache and the scan-reset
+//! pipeline (KuGou included), its bounded cache and the scan-reset
 //! logic. The mirror is generation-guarded so a re-notify never re-clones.
 //!
 //! Track presentation (cover, names, accent) is keyed off the queue position

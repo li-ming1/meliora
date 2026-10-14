@@ -1,8 +1,8 @@
 -- Top tracks, aggregated by song rather than by source.
 --
 -- One song can be reached through several `track_key` identities: a local file
--- (`local:<path>`), a KuGou stream (`kugou:<mix_song_id>`), a NetEase stream
--- (`netease:<id>`), or a bare URL hash (`hash:<...>`). Grouping on that key
+-- (`local:<path>`), a KuGou stream (`kugou:<mix_song_id>`), or a bare URL hash
+-- (`hash:<...>`). Grouping on that key
 -- kept those apart, so listening to a song offline and then online counted as
 -- two different songs - and because local keys embed the file path, moving or
 -- renaming a file split its history too.

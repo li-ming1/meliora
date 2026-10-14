@@ -1,13 +1,12 @@
 //! Cover-art URL helpers for full-screen display.
 //!
 //! Search/queue payloads carry *thumbnail* cover URLs (KuGou serves
-//! `stdmusic/256`, NetEase often no `?param=` at all). Stretching those
-//! across the immersive backdrop magnifies them 4-8× and reads as mush. The
-//! providers host larger variants of the same art at well-known URL shapes:
-//! KuGou's `stdmusic` path takes a size segment (probed 2026-09-28:
-//! 480/1280/1920/2048/4096 all serve real pixels — but only for covers whose
-//! large variants were actually generated), NetEase images accept a
-//! `?param=WxH` query. [`display_cover_candidates`] lays out the size LADDER
+//! `stdmusic/256`). Stretching those across the immersive backdrop magnifies
+//! them 4-8× and reads as mush. The provider hosts larger variants of the same
+//! art at well-known URL shapes: KuGou's `stdmusic` path takes a size segment
+//! (probed 2026-09-28: 480/1280/1920/2048/4096 all serve real pixels — but only
+//! for covers whose large variants were actually generated).
+//! [`display_cover_candidates`] lays out the size LADDER
 //! (largest variant first, the original thumbnail last) and
 //! [`fetch_display_cover_bytes_capped`] walks it, keeping the biggest variant
 //! that actually serves pixels and falling back to the original thumbnail
@@ -34,8 +33,6 @@ use tracing::{info, warn};
 /// averaging matches the 4×-downscaled disc label; absent variants cost one
 /// 404 and are negative-cached for the session.
 const KUGOU_SIZE_LADDER: [&str; 4] = ["4096", "2048", "1280", "480"];
-/// NetEase `?param=` ladder, same rationale.
-const NETEASE_PARAM_LADDER: [&str; 3] = ["2048y2048", "1024y1024", "512y512"];
 
 /// Display-variant URLs that returned no pixels this session. A 404 costs a
 /// round trip; without this set every backdrop retrieve for that cover would
@@ -66,10 +63,6 @@ pub fn display_cover_candidates(url: &str) -> Vec<String> {
         for size in KUGOU_SIZE_LADDER {
             rungs.push(rewrite_kugou_stdmusic_with(url, size));
         }
-    } else if url.contains("music.126.net") {
-        for param in NETEASE_PARAM_LADDER {
-            rungs.push(rewrite_netease_param_with(url, param));
-        }
     }
     rungs.push(url.to_string());
     rungs
@@ -94,16 +87,6 @@ fn rewrite_kugou_stdmusic_with(url: &str, size: &str) -> String {
     out.push_str(&url[..pos]);
     out.push_str(size);
     out.push_str(&rest[size_len..]);
-    out
-}
-
-/// NetEase image URLs are `host/hash/file.jpg` optionally followed by
-/// `?param=WxH`. Drop any existing param and ask for the requested square.
-fn rewrite_netease_param_with(url: &str, param: &str) -> String {
-    let base = url.split('?').next().unwrap_or(url);
-    let mut out = base.to_string();
-    out.push_str("?param=");
-    out.push_str(param);
     out
 }
 
@@ -159,8 +142,7 @@ pub async fn fetch_display_cover_bytes_capped(
 }
 
 /// Largest side of a ladder rung URL, when its shape carries one: KuGou
-/// `…/stdmusic/{size}/…`, NetEase `…?param={w}y{h}` (squares; the `x`
-/// separator is accepted too). Unknown shapes return None and are never
+/// `…/stdmusic/{size}/…`. Unknown shapes return None and are never
 /// capped out.
 fn rung_size(url: &str) -> Option<u32> {
     if let Some(rest) = url.split("/stdmusic/").nth(1) {
@@ -169,10 +151,7 @@ fn rung_size(url: &str) -> Option<u32> {
             .next()
             .and_then(|size| size.parse::<u32>().ok());
     }
-    let param = url.split("?param=").nth(1)?;
-    let wh = param.split('&').next()?;
-    let (w, h) = wh.split_once(['x', 'y'])?;
-    Some(w.parse::<u32>().ok()?.max(h.parse::<u32>().ok()?))
+    None
 }
 
 #[cfg(test)]
@@ -215,27 +194,6 @@ mod tests {
     }
 
     #[test]
-    fn netease_gets_large_param() {
-        let plain = "http://p3.music.126.net/AbCdEf/12345.jpg";
-        assert_eq!(
-            largest_variant(plain),
-            "http://p3.music.126.net/AbCdEf/12345.jpg?param=2048y2048"
-        );
-        let with_param = "http://p1.music.126.net/AbCdEf/12345.jpg?param=300y300";
-        assert_eq!(
-            largest_variant(with_param),
-            "http://p1.music.126.net/AbCdEf/12345.jpg?param=2048y2048"
-        );
-        let ladder = display_cover_candidates(with_param);
-        assert_eq!(ladder.len(), 4);
-        assert!(ladder[0].ends_with("?param=2048y2048"));
-        assert!(ladder[1].ends_with("?param=1024y1024"));
-        assert!(ladder[2].ends_with("?param=512y512"));
-        // The original URL (with whatever param it carried) is the last rung.
-        assert_eq!(ladder[3], with_param);
-    }
-
-    #[test]
     fn unknown_shapes_pass_through() {
         let url = "https://example.com/cover/art.png";
         assert_eq!(largest_variant(url), url);
@@ -254,15 +212,6 @@ mod tests {
         assert_eq!(
             rung_size("http://imge.kugou.com/stdmusic/256/20260306/x.jpg"),
             Some(256)
-        );
-        assert_eq!(
-            rung_size("http://p3.music.126.net/AbC/123.jpg?param=1024y1024"),
-            Some(1024)
-        );
-        // NetEase URLs may carry extra params after ?param=.
-        assert_eq!(
-            rung_size("http://p1.music.126.net/AbC/1.jpg?param=2048y2048&type=1"),
-            Some(2048)
         );
         // Unknown shapes are never capped out.
         assert_eq!(rung_size("https://example.com/cover/art.png"), None);

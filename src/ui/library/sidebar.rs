@@ -4,7 +4,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 // the online-source account avatars are the only users of these
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use gpui::InteractiveElement;
 use std::time::{Duration, Instant};
 
@@ -17,20 +17,16 @@ use crate::ui::theme::LIGHT_THEME_ID;
 
 #[cfg(feature = "kugou")]
 use crate::kugou::shared_client;
-#[cfg(feature = "netease")]
-use crate::netease::shared_client as netease_shared_client;
 #[cfg(feature = "kugou")]
 use crate::ui::components::icons::KUGOU;
-#[cfg(feature = "netease")]
-use crate::ui::components::icons::NETEASE;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use crate::ui::components::icons::RANKING;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use crate::ui::components::icons::icon;
 use crate::ui::components::icons::{FOLDER, MOON, MUSIC, SETTINGS, SIDEBAR, SIDEBAR_INACTIVE, SUN};
 use crate::ui::components::tooltip::build_tooltip;
 // ICON_SM 的唯二使用点在 account_pill（在线账号药丸）内。
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use crate::ui::design::ICON_SM;
 use crate::ui::{
     components::{
@@ -43,7 +39,7 @@ use crate::ui::{
     models::Models,
     theme::Theme,
 };
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use gpui::{ClickEvent, Div, FontWeight, Stateful};
 
 mod playlists;
@@ -61,8 +57,8 @@ fn section_label(label: impl Into<SharedString>, theme: &Theme) -> impl IntoElem
         .child(label.into())
 }
 
-/// SIDEBAR_LOGIN 的唯一定义点：酷狗/网易云两个账号药丸共用，避免 i18n 重复定义。
-#[cfg(any(feature = "kugou", feature = "netease"))]
+/// SIDEBAR_LOGIN 的唯一定义点：酷狗账号药丸使用，避免 i18n 重复定义。
+#[cfg(feature = "kugou")]
 fn login_label() -> SharedString {
     tr!("SIDEBAR_LOGIN", "Log In").into()
 }
@@ -70,7 +66,7 @@ fn login_label() -> SharedString {
 /// 在线音源账号入口。展开时是「品牌图标 + 昵称/登录」药丸——恒用品牌图标而
 /// 不是头像照片：导航语境里品牌可识别性优先，照片只会变成一张突兀的随机图；
 /// 折叠时退化为 28px 图标圆钮，与折叠态其他条目的形态一致。
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 #[allow(clippy::too_many_arguments)] // pill styling facets; callers pass theme-derived values
 fn account_pill(
     id: &'static str,
@@ -360,39 +356,6 @@ impl Render for Sidebar {
                     )),
             );
 
-        // 分组四：网易云音乐（顺序在酷狗之后）
-        #[cfg(feature = "netease")]
-        let sidebar_content = sidebar_content
-            .child(sidebar_separator())
-            .when(!collapsed, |this| {
-                this.child(section_label(tr!("NETEASE_SECTION"), &theme))
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(Self::nav_entry(
-                        cx,
-                        collapsed,
-                        "netease-playlists",
-                        NETEASE,
-                        // fallback for NETEASE_PLAYLISTS is defined by the
-                        // playlists page (single definition point)
-                        tr!("NETEASE_PLAYLISTS"),
-                        ViewSwitchMessage::NeteasePlaylists,
-                        matches!(sidebar_view, ViewSwitchMessage::NeteasePlaylists),
-                    ))
-                    .child(Self::nav_entry(
-                        cx,
-                        collapsed,
-                        "netease-ranks",
-                        RANKING,
-                        tr!("NETEASE_RANKS"),
-                        ViewSwitchMessage::NeteaseRanks,
-                        matches!(sidebar_view, ViewSwitchMessage::NeteaseRanks),
-                    )),
-            );
-
         // 底部固定：酷狗账号卡片 + 设置 / 主题 / 折叠
         let settings_button = nav_button("open-settings", SETTINGS)
             .tooltip(build_tooltip(tr!("SETTINGS")))
@@ -523,52 +486,24 @@ impl Render for Sidebar {
             )
         };
 
-        // 网易云账号药丸：与酷狗药丸并排；点击深链到设置页网易云分区
-        #[cfg(feature = "netease")]
-        let netease_pill = {
-            let profile = netease_shared_client().cached_user_profile();
-            let nickname = profile
-                .as_ref()
-                .filter(|p| !p.nickname.is_empty())
-                .map(|p| SharedString::from(p.nickname.clone()));
-            let logged_in = nickname.is_some();
-            let label: SharedString = nickname.clone().unwrap_or_else(login_label);
-            let tooltip_text = nickname.unwrap_or_else(|| tr!("NETEASE_LOGIN").into());
-
-            account_pill(
-                "netease-account",
-                NETEASE,
-                label,
-                tooltip_text,
-                logged_in,
-                collapsed,
-                &theme,
-                cx.listener(|_, _, _, cx| {
-                    crate::ui::settings::open_settings_window_with_section(
-                        cx,
-                        crate::ui::settings::SettingsSectionKind::Netease,
-                    );
-                }),
-            )
-        };
-
-        // 账号行：展开时两个药丸平分一行（内缩与导航条目对齐）；折叠时竖排圆钮
-        #[cfg(any(feature = "kugou", feature = "netease"))]
+        // 账号行：展开时药丸平分一行（内缩与导航条目对齐）；折叠时竖排圆钮
+        #[cfg(feature = "kugou")]
         let bottom = {
             let account_row = if collapsed {
-                let col = div().w_full().flex().flex_col().items_center().gap(px(4.0));
-                #[cfg(feature = "kugou")]
-                let col = col.child(kugou_pill);
-                #[cfg(feature = "netease")]
-                let col = col.child(netease_pill);
-                col
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(kugou_pill)
             } else {
-                let row = div().w_full().flex().gap(px(6.0)).px(px(9.0));
-                #[cfg(feature = "kugou")]
-                let row = row.child(kugou_pill);
-                #[cfg(feature = "netease")]
-                let row = row.child(netease_pill);
-                row
+                div()
+                    .w_full()
+                    .flex()
+                    .gap(px(6.0))
+                    .px(px(9.0))
+                    .child(kugou_pill)
             };
             bottom.child(account_row).child(div().h(px(4.0)))
         };

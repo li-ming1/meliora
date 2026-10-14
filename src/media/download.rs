@@ -1,10 +1,10 @@
-//! Shared IO layer for the online-source track downloads (KuGou / NetEase).
+//! Shared IO layer for the online-source track downloads (KuGou).
 //!
-//! F046 fixed both download paths independently and left byte-identical
-//! copies of this machinery in `ui::kugou::download` and
-//! `ui::netease::download`; this module is the single copy both call now, so
+//! F046 fixed the download paths independently and left byte-identical
+//! copies of this machinery in `ui::kugou::download`; this module is the
+//! single copy it calls now, so
 //! the behavior can no longer drift. What is genuinely provider-specific
-//! stays in the callers: URL quality ladders, lyrics sidecar formats, and
+//! stays in the caller: URL quality ladders, lyrics sidecar formats, and
 //! KuGou's UA header (passed through `extra_headers`).
 
 use std::{path::Path, time::Duration};

@@ -51,10 +51,6 @@ pub(crate) use kugou_playlists::invalidate_cached_playlists;
 #[cfg(feature = "kugou")]
 mod kugou_ranks;
 pub mod missing_folder_dialog;
-#[cfg(feature = "netease")]
-mod netease_playlists;
-#[cfg(feature = "netease")]
-mod netease_ranks;
 pub mod playlist_view;
 mod release_view;
 pub mod sidebar;
@@ -279,9 +275,6 @@ impl LibrarySection {
             // The KuGou page is not a local-library section – keep current.
             #[cfg(feature = "kugou")]
             ViewSwitchMessage::KugouPlaylists | ViewSwitchMessage::KugouRanks => None,
-            // The NetEase pages are not local-library sections – keep current.
-            #[cfg(feature = "netease")]
-            ViewSwitchMessage::NeteasePlaylists | ViewSwitchMessage::NeteaseRanks => None,
             ViewSwitchMessage::Back | ViewSwitchMessage::Forward | ViewSwitchMessage::Refresh => {
                 None
             }
@@ -302,10 +295,6 @@ enum LibraryView {
     KugouPlaylists(Entity<kugou_playlists::KugouPlaylistsView>),
     #[cfg(feature = "kugou")]
     KugouRanks(Entity<kugou_ranks::KugouRanksView>),
-    #[cfg(feature = "netease")]
-    NeteasePlaylists(Entity<netease_playlists::NeteasePlaylistsView>),
-    #[cfg(feature = "netease")]
-    NeteaseRanks(Entity<netease_ranks::NeteaseRanksView>),
 }
 
 impl LibraryView {
@@ -322,10 +311,6 @@ impl LibraryView {
             LibraryView::KugouPlaylists(_) => "albums",
             #[cfg(feature = "kugou")]
             LibraryView::KugouRanks(_) => "albums",
-            #[cfg(feature = "netease")]
-            LibraryView::NeteasePlaylists(_) => "albums",
-            #[cfg(feature = "netease")]
-            LibraryView::NeteaseRanks(_) => "albums",
         }
     }
 }
@@ -358,12 +343,6 @@ pub enum ViewSwitchMessage {
     /// KuGou discovery page: ranks + daily recommend (kugou feature only)
     #[cfg(feature = "kugou")]
     KugouRanks,
-    /// NetEase cloud playlists page (netease feature only)
-    #[cfg(feature = "netease")]
-    NeteasePlaylists,
-    /// NetEase discovery page: charts + daily recommend (netease feature only)
-    #[cfg(feature = "netease")]
-    NeteaseRanks,
     Back,
     Forward,
     Refresh,
@@ -404,20 +383,6 @@ impl ViewSwitchMessage {
                 LibraryView::KugouPlaylists(_),
                 ViewSwitchMessage::KugouPlaylists
             ) | (LibraryView::KugouRanks(_), ViewSwitchMessage::KugouRanks)
-        ) {
-            return true;
-        }
-
-        #[cfg(feature = "netease")]
-        if matches!(
-            (lv, self),
-            (
-                LibraryView::NeteasePlaylists(_),
-                ViewSwitchMessage::NeteasePlaylists
-            ) | (
-                LibraryView::NeteaseRanks(_),
-                ViewSwitchMessage::NeteaseRanks
-            )
         ) {
             return true;
         }
@@ -470,14 +435,6 @@ fn make_view(
         #[cfg(feature = "kugou")]
         ViewSwitchMessage::KugouRanks => {
             LibraryView::KugouRanks(kugou_ranks::KugouRanksView::new(cx))
-        }
-        #[cfg(feature = "netease")]
-        ViewSwitchMessage::NeteasePlaylists => {
-            LibraryView::NeteasePlaylists(netease_playlists::NeteasePlaylistsView::new(cx))
-        }
-        #[cfg(feature = "netease")]
-        ViewSwitchMessage::NeteaseRanks => {
-            LibraryView::NeteaseRanks(netease_ranks::NeteaseRanksView::new(cx))
         }
         ViewSwitchMessage::Back => panic!("improper use of make_view (cannot make Back)"),
         ViewSwitchMessage::Forward => panic!("improper use of make_view (cannot make Forward)"),
@@ -760,10 +717,6 @@ fn library_view_key(view: &LibraryView) -> &'static str {
         LibraryView::KugouPlaylists(_) => "kugou-playlists",
         #[cfg(feature = "kugou")]
         LibraryView::KugouRanks(_) => "kugou-ranks",
-        #[cfg(feature = "netease")]
-        LibraryView::NeteasePlaylists(_) => "netease-playlists",
-        #[cfg(feature = "netease")]
-        LibraryView::NeteaseRanks(_) => "netease-ranks",
     }
 }
 
@@ -798,10 +751,6 @@ impl Render for Library {
                 LibraryView::KugouPlaylists(v) => v.clone().into_any_element(),
                 #[cfg(feature = "kugou")]
                 LibraryView::KugouRanks(v) => v.clone().into_any_element(),
-                #[cfg(feature = "netease")]
-                LibraryView::NeteasePlaylists(v) => v.clone().into_any_element(),
-                #[cfg(feature = "netease")]
-                LibraryView::NeteaseRanks(v) => v.clone().into_any_element(),
             }
         }
 

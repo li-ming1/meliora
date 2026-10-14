@@ -1,5 +1,6 @@
-//! NetEase YRC (word-level karaoke lyric) parser. Plain text, unlike KuGou's
-//! encrypted KRC. Line shapes:
+//! YRC (word-level karaoke lyric) parser. Plain text, unlike KuGou's
+//! encrypted KRC. The format originated with NetEase Cloud Music and is also
+//! read from local `.yrc` sidecar files next to a track. Line shapes:
 //!   `[6700,2780](6700,240,0)作(6940,240,0)词...` — line timing + word tokens
 //!   `[{"t":0,"c":[{"tx":"作词: ..."}]}]`        — credits/metadata line
 

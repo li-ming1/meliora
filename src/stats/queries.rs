@@ -228,7 +228,7 @@ mod tests {
     }
 
     /// The point of grouping on the song instead of the track_key: playing the
-    /// same song from disk, from NetEase and from KuGou is one song, not three.
+    /// same song from disk and from KuGou is one song, not two.
     #[tokio::test]
     async fn top_tracks_folds_every_source_of_one_song() {
         let pool = test_pool().await;
@@ -243,7 +243,7 @@ mod tests {
                 },
                 ListenRow {
                     ts: 200,
-                    track_key: "netease:12345".into(),
+                    track_key: "kugou:12345".into(),
                     seconds: 60,
                     meta: Some(meta("Song A", "X", "L")),
                 },

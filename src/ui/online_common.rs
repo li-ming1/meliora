@@ -1,6 +1,6 @@
-//! Shared glue for the online providers' UI layer: play-intent fetch dedup,
-//! QR login image rendering and tolerant JSON field extraction. Both
-//! provider glue modules (`ui::kugou` / `ui::netease`) consume these;
+//! Shared glue for the online provider's UI layer: play-intent fetch dedup,
+//! QR login image rendering and tolerant JSON field extraction. The
+//! provider glue module (`ui::kugou`) consumes these;
 //! everything here must stay provider-agnostic.
 
 use std::{
@@ -149,7 +149,7 @@ pub(crate) fn parse_pointer_list<T>(
 }
 
 // ---------------------------------------------------------------------------
-// 排行榜（discovery）页共享件：kugou_ranks / netease_ranks 的 switch_tab、
+// 排行榜（discovery）页共享件：kugou_ranks 的 switch_tab、
 // load_more、tab_button 与 liked 缓存预热四处逐字相同（仅 provider 名/id
 // 前缀与各自私有字段不同），收编于此；两侧调用点保留原方法名，只做一行
 // 转发。差异点全部经参数注入。
@@ -224,8 +224,8 @@ pub(crate) fn rank_tab_button<V: 'static>(
         .on_click(cx.listener(move |this, _, _, cx| on_select(this, cx)))
 }
 
-/// 后台预热 provider 的 liked 缓存（`ui::kugou::prime_liked_cache` /
-/// `ui::netease::prime_liked_cache` 的共享体）：provider 专属的加载锁与刷新
+/// 后台预热 provider 的 liked 缓存（`ui::kugou::prime_liked_cache`
+/// 的共享体）：provider 专属的加载锁与刷新
 /// 函数经参数传入，函数体两侧原本逐字相同。
 pub(crate) fn prime_online_liked_cache<L, R, Fut>(
     liked_load_lock: L,

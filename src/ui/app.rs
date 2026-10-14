@@ -722,12 +722,6 @@ pub fn run() -> anyhow::Result<()> {
         #[cfg(feature = "kugou")]
         crate::ui::kugou::claim_daily_vip_async();
 
-        // Refresh the NetEase liked-songs cache on launch so the play-bar
-        // star is accurate for online tracks right away (no-op when logged
-        // out).
-        #[cfg(feature = "netease")]
-        crate::ui::netease::prime_liked_cache();
-
         // Auto-update: publish the updater state, scrub leftovers of a
         // previous update restart, and check GitHub Releases once the
         // startup rush has settled. No-op unless a new release exists; the
@@ -835,8 +829,6 @@ fn refresh_restored_online_urls(
     // Owned so the spawned task outlives this scope; `as_str` is feature-gated.
     #[cfg(feature = "kugou")]
     let kugou_quality = playback.online_quality.as_str().to_string();
-    #[cfg(feature = "netease")]
-    let netease_quality = playback.netease_quality.as_str().to_string();
 
     let queue = Arc::clone(queue);
     let current_track = cx.global::<PlaybackInfo>().current_track.clone();
@@ -880,8 +872,6 @@ fn refresh_restored_online_urls(
             let ctx = crate::online_sources::RefreshContext {
                 #[cfg(feature = "kugou")]
                 kugou_quality: kugou_quality.as_str(),
-                #[cfg(feature = "netease")]
-                netease_quality: netease_quality.as_str(),
                 display,
             };
             let url = crate::online_sources::refresh_online_url(&identity, &ctx).await;

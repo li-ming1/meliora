@@ -85,7 +85,6 @@ pub fn song_info(
         let identity = item.as_ref().and_then(|item| item.online_identity());
         let key = match identity {
             Some(OnlineIdentity::Kugou { mix_song_id, .. }) => format!("kugou:{mix_song_id}"),
-            Some(OnlineIdentity::Netease { id }) => format!("netease:{id}"),
             None => return (format!("hash:{}", url_hash(path)), None),
         };
 

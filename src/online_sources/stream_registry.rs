@@ -2,7 +2,7 @@
 //! 写闸门（串行化 truncate+write，防 JSON 撕裂）。与具体 provider 无关，
 //! 无条件编译，不依赖任何 provider feature。
 //!
-//! 关键约束：每个 provider（kugou / netease）必须各持一份 `static` 实例。
+//! 关键约束：每个 provider 必须各持一份 `static` 实例。
 //! 基线是各注册表自己的状态——共享同一实例会让一侧的去重跳写与失败回滚
 //! 覆盖/误伤另一侧的写入。
 

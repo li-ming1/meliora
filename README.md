@@ -16,7 +16,7 @@
 
 ***
 
-Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的延续与重构，在保留本地音乐库与播放能力的基础上，集成了网易云音乐与酷狗音乐的在线服务（在线曲库、榜单、歌单、二维码登录、在线试听与下载）。
+Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的延续与重构，在保留本地音乐库与播放能力的基础上，集成了酷狗音乐的在线服务（在线曲库、榜单、歌单、二维码登录、在线试听与下载）。
 
 > **⚠️ 免责声明**
 >
@@ -70,8 +70,6 @@ Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的
 
 ### 在线服务（feature）
 
-- 网易云音乐（`netease`）：扫码登录、搜索、歌单、榜单、在线播放与下载
-
 - 酷狗音乐（`kugou`）：扫码登录即自动获取 VIP 权益；搜索、歌单、榜单、在线播放与下载
 
 ### 界面与系统
@@ -113,12 +111,8 @@ cargo build --release
 在线服务按 feature 提供，追加在你的构建命令上即可：
 
 ```bash
-# 酷狗 + 网易云（推荐）
-cargo build --release --features kugou,netease
-
-# 只启用其中一家
+# 酷狗（推荐）
 cargo build --release --features kugou
-cargo build --release --features netease
 ```
 
 ### Feature 说明
@@ -126,7 +120,6 @@ cargo build --release --features netease
 | feature | 作用 |
 |---|---|
 | `kugou` | 酷狗音乐在线服务（扫码登录、搜索、歌单、榜单、在线播放与下载），聚合 `online` 与 `online_sources` |
-| `netease` | 网易云音乐在线服务，同上聚合 |
 | `online` | 在线服务基础依赖（HTTP 客户端） |
 | `online_sources` | 在线曲目公共管道：HTTP-range 流式播放、封面缓存、在线队列项，由上面的 provider feature 自动开启 |
 | `console` | [tokio-console](https://github.com/tokio-rs/console) 运行时诊断 |
@@ -136,7 +129,7 @@ cargo build --release --features netease
 
 ### Windows 一键构建
 
-Windows 下推荐使用仓库内的 `build-release.cmd`，它自动把本机 MSVC / Windows SDK / CMake 路径加入 PATH，再构建 release（默认已带 `--features kugou,netease`）：
+Windows 下推荐使用仓库内的 `build-release.cmd`，它自动把本机 MSVC / Windows SDK / CMake 路径加入 PATH，再构建 release（默认已带 `--features kugou`）：
 
 ```powershell
 .\build-release.cmd
@@ -154,7 +147,6 @@ Windows 下推荐使用仓库内的 `build-release.cmd`，它自动把本机 MSV
 
 | 项目                                                                                                        | 用途                                       |
 | --------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 网易云音乐 API 接口参考实现，`src/netease/` 中的端点与之对应 |
 | [MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi)                                           | 酷狗音乐 API 接口参考实现，`src/kugou/` 中的端点与之对应    |
 | [hummingbird-player/hummingbird](https://github.com/hummingbird-player/hummingbird)                       | 本项目的前身，Meliora 基于其代码库延续与重构               |
 
@@ -174,4 +166,4 @@ Windows 下推荐使用仓库内的 `build-release.cmd`，它自动把本机 MSV
 
 本项目基于 **Apache License 2.0** 发布，详见 [LICENSE](LICENSE)。
 
-在使用在线服务（网易云音乐 / 酷狗音乐）时，请遵守相关平台的条款与适用法律，本项目仅供学习交流。
+在使用在线服务（酷狗音乐）时，请遵守相关平台的条款与适用法律，本项目仅供学习交流。

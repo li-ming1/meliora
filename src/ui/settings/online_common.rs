@@ -1,7 +1,7 @@
-//! Shared plumbing for the online provider settings pages (`kugou`,
-//! `netease`): the QR login flow (state machine, poll loop with a failure
+//! Shared plumbing for the online provider settings page (`kugou`):
+//! the QR login flow (state machine, poll loop with a failure
 //! cap, modal) and the download-folder field. Feature-gated together with
-//! its users.
+//! its user.
 
 use std::{future::Future, sync::Arc, time::Duration};
 

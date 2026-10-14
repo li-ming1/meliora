@@ -6,8 +6,6 @@ use lrc::{LrcLine, LrcWord, parse_lrc};
 
 #[cfg(feature = "kugou")]
 use crate::ui::kugou::{OnlineLyric, fetch_online_lyric};
-#[cfg(feature = "netease")]
-use crate::ui::netease::fetch_online_lyric as fetch_netease_lyric;
 
 use crate::ui::design::ICON_MD;
 use crate::{
@@ -33,7 +31,7 @@ use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use rustc_hash::FxHashMap;
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use std::path::Path;
 use std::{
     path::PathBuf,
@@ -175,7 +173,7 @@ impl Lyrics {
                 this.resolve_accent(cx);
 
                 // 可见性门控：面板与沉浸页都关闭时，每曲的在线请求（kugou
-                // 1-3 个或 netease 1 个）+ KRC 解密解析、本地 sidecar 读 +
+                // 1-3 个）+ KRC 解密解析、本地 sidecar 读 +
                 // DB 查询全是白付——与取色门（resolve_accent 内）同一取舍，
                 // 省的是网络往返与解析 CPU。只置脏，打开面板 / 进入沉浸页
                 // 的可见性观察者补跑完整加载路径。
@@ -411,7 +409,7 @@ impl Lyrics {
     }
 
     /// Resets lyric display state for a newly selected track.
-    #[cfg_attr(not(any(feature = "kugou", feature = "netease")), allow(dead_code))]
+    #[cfg_attr(not(feature = "kugou"), allow(dead_code))]
     fn reset_track_state(&mut self) {
         self.last_active_line = None;
         self.position_ms = 0;
@@ -521,7 +519,7 @@ impl Lyrics {
     /// online fetch paths compare it against the path they were dispatched
     /// with, so a stale response for a track the user already left behind is
     /// dropped instead of overwriting the current lyric.
-    #[cfg_attr(not(any(feature = "kugou", feature = "netease")), allow(dead_code))]
+    #[cfg_attr(not(feature = "kugou"), allow(dead_code))]
     fn current_track_path(cx: &App) -> Option<String> {
         cx.global::<PlaybackInfo>()
             .current_track
@@ -613,7 +611,7 @@ impl Lyrics {
     /// the per-track cache. The caller has already confirmed via
     /// [`Self::current_track_path`] that the user hasn't switched tracks;
     /// `expected` is the path the fetch was started for.
-    #[cfg_attr(not(any(feature = "kugou", feature = "netease")), allow(dead_code))]
+    #[cfg_attr(not(feature = "kugou"), allow(dead_code))]
     fn apply_online_lyrics(
         &mut self,
         expected: Option<&str>,
@@ -639,11 +637,11 @@ impl Lyrics {
         self.load_lyrics_for_track(track, cx);
     }
 
-    /// 当前曲目的完整歌词加载路径：在线分发（kugou / netease 注册表）+
+    /// 当前曲目的完整歌词加载路径：在线分发（kugou 注册表）+
     /// 本地 sidecar/DB + 每曲缓存命中。切歌观察者与可见性补跑共用；调用方
     /// 保证面板或沉浸页可见。
     fn load_lyrics_for_track(&mut self, track: Option<CurrentTrack>, cx: &mut Context<Self>) {
-        #[cfg(any(feature = "kugou", feature = "netease"))]
+        #[cfg(feature = "kugou")]
         if track
             .as_ref()
             .is_some_and(|t| crate::ui::availability::is_online_path(t.get_path()))
@@ -654,29 +652,16 @@ impl Lyrics {
             // generation.
             self.load_generation += 1;
 
-            // online stream: dispatch to the source that owns it. With
-            // both sources compiled in, each registry is consulted in
-            // turn, so a NetEase stream is never swallowed by the
-            // KuGou branch (and vice versa). An online path that
-            // matches neither registry falls through to the local
+            // online stream: dispatch to the source that owns it. An online
+            // path that matches no registry falls through to the local
             // lyrics handling below.
             let path = track.as_ref().map(|t| t.get_path().as_path());
-            #[cfg(feature = "kugou")]
             if path
                 .and_then(crate::ui::kugou::online_track_matching_path)
                 .is_some()
             {
                 self.reset_track_state();
                 self.fetch_online_lyrics(path, cx);
-                return;
-            }
-            #[cfg(feature = "netease")]
-            if path
-                .and_then(crate::ui::netease::online_track_matching_path)
-                .is_some()
-            {
-                self.reset_track_state();
-                self.fetch_netease_online_lyrics(path, cx);
                 return;
             }
         }
@@ -768,47 +753,6 @@ impl Lyrics {
                     return;
                 }
 
-                this.apply_online_lyrics(expected.as_deref(), (content, parsed), cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Fetches lyrics for the online (NetEase) track currently playing at
-    /// `path` and swaps them in. Guarded so a stale response for a previous
-    /// track doesn't overwrite the current one.
-    #[cfg(feature = "netease")]
-    fn fetch_netease_online_lyrics(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
-        // Bounded per-track cache: a back-and-forth switch to a recently
-        // played track skips the network request (the stream-map lookup
-        // below only feeds that fetch). A fresh negative entry (confirmed
-        // lyric-less) skips it just the same.
-        if let Some(loaded) = path.and_then(|key| self.cached_lyrics(key)) {
-            self.apply_loaded_lyrics(loaded.0, loaded.1, cx);
-            return;
-        }
-
-        let Some(track) = path.and_then(crate::ui::netease::online_track_matching_path) else {
-            return;
-        };
-        let expected = path.map(|p| p.to_string_lossy().into_owned());
-
-        cx.spawn(async move |this, cx| {
-            let lyric = fetch_netease_lyric(&track).await;
-
-            this.update(cx, |this, cx| {
-                // ignore the result if the user has already switched tracks
-                if Self::current_track_path(cx) != expected {
-                    return;
-                }
-
-                // lyric 在 runtime 上已解析完毕且此后不再使用，整体 move
-                // 免掉主线程深拷贝（lines 含逐字 words，YRC 曲上千次堆分配）。
-                let (content, parsed) = match lyric {
-                    Some(lyric) => (Some(lyric.content), Some(Arc::new(lyric.lines))),
-                    None => (None, None),
-                };
                 this.apply_online_lyrics(expected.as_deref(), (content, parsed), cx);
             })
             .ok();

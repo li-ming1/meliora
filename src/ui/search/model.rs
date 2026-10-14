@@ -47,10 +47,6 @@ pub struct SearchModel {
     /// against it so stale results are dropped.
     #[cfg(feature = "kugou")]
     kugou_query_generation: u64,
-    #[cfg(feature = "netease")]
-    netease_items: Vec<Arc<SearchPaletteItem>>,
-    #[cfg(feature = "netease")]
-    netease_query_generation: u64,
 }
 
 /// Loads the whole-library search index on the background runtime: three
@@ -122,8 +118,6 @@ impl SearchModel {
                     | SearchPaletteItem::Track { search_text, .. } => search_text.as_ref(),
                     #[cfg(feature = "kugou")]
                     SearchPaletteItem::KugouTrack { search_text, .. } => search_text.as_ref(),
-                    #[cfg(feature = "netease")]
-                    SearchPaletteItem::NeteaseTrack { search_text, .. } => search_text.as_ref(),
                 })
             });
 
@@ -139,11 +133,6 @@ impl SearchModel {
                     #[cfg(feature = "kugou")]
                     SearchPaletteItem::KugouTrack { track, .. } => {
                         crate::ui::kugou::play_track_now(cx, track);
-                        None
-                    }
-                    #[cfg(feature = "netease")]
-                    SearchPaletteItem::NeteaseTrack { track, .. } => {
-                        crate::ui::netease::play_track_now(cx, track);
                         None
                     }
                 };
@@ -175,10 +164,6 @@ impl SearchModel {
                 kugou_items: Vec::new(),
                 #[cfg(feature = "kugou")]
                 kugou_query_generation: 0,
-                #[cfg(feature = "netease")]
-                netease_items: Vec::new(),
-                #[cfg(feature = "netease")]
-                netease_query_generation: 0,
             };
 
             #[cfg(feature = "online_sources")]
@@ -191,8 +176,6 @@ impl SearchModel {
                     |this: &mut SearchModel, _, query: &SharedString, cx| {
                         #[cfg(feature = "kugou")]
                         this.on_kugou_query(query, cx);
-                        #[cfg(feature = "netease")]
-                        this.on_netease_query(query, cx);
                     },
                 )
                 .detach();
@@ -261,18 +244,14 @@ impl SearchModel {
         })
     }
 
-    /// The stable local segment followed by the volatile online (KuGou, then
-    /// NetEase) results. Emitting this clones only the online pages — the
+    /// The stable local segment followed by the volatile online (KuGou)
+    /// results. Emitting this clones only the online pages — the
     /// local prefix is re-shared as one `Arc`, not per item (see
     /// `SplitItems`).
     fn merged_items(&self) -> SplitItems<SearchPaletteItem> {
         SplitItems {
             stable: self.local_items.clone(),
-            volatile: self
-                .kugou_iter()
-                .chain(self.netease_iter())
-                .cloned()
-                .collect(),
+            volatile: self.kugou_iter().cloned().collect(),
         }
     }
 
@@ -335,17 +314,6 @@ impl SearchModel {
         std::iter::empty()
     }
 
-    #[cfg(feature = "netease")]
-    fn netease_iter(&self) -> impl Iterator<Item = &Arc<SearchPaletteItem>> {
-        self.netease_items.iter()
-    }
-
-    #[cfg(not(feature = "netease"))]
-    #[allow(dead_code)]
-    fn netease_iter(&self) -> std::iter::Empty<&Arc<SearchPaletteItem>> {
-        std::iter::empty()
-    }
-
     #[cfg(feature = "online_sources")]
     fn emit_merged_items(&self, cx: &mut Context<Self>) {
         let merged = self.merged_items();
@@ -361,19 +329,12 @@ impl SearchModel {
         self.on_online_query::<KugouSearch>(query, cx);
     }
 
-    /// Debounced online search: 350ms after the last keystroke, query NetEase
-    /// and merge the results behind the local and KuGou ones.
-    #[cfg(feature = "netease")]
-    fn on_netease_query(&mut self, query: &str, cx: &mut Context<Self>) {
-        self.on_online_query::<NeteaseSearch>(query, cx);
-    }
-
-    /// Shared skeleton behind `on_kugou_query`/`on_netease_query`: bump the
+    /// Shared skeleton behind `on_kugou_query`: bump the
     /// provider's query generation, drop stale results for short queries,
     /// then 350ms after the last keystroke fetch, parse and merge the results
     /// behind the local ones. Provider state and endpoints come from `P` so
     /// each feature stays independently compilable.
-    #[cfg(any(feature = "kugou", feature = "netease"))]
+    #[cfg(feature = "kugou")]
     fn on_online_query<P: OnlineSearchProvider>(&mut self, query: &str, cx: &mut Context<Self>) {
         use tracing::warn;
 
@@ -443,11 +404,6 @@ impl SearchModel {
             self.kugou_items.clear();
             self.kugou_query_generation += 1;
         }
-        #[cfg(feature = "netease")]
-        {
-            self.netease_items.clear();
-            self.netease_query_generation += 1;
-        }
         #[cfg(feature = "online_sources")]
         self.emit_merged_items(cx);
     }
@@ -461,8 +417,8 @@ impl SearchModel {
 
 /// Hooks by which `on_online_query` reaches the per-provider search state,
 /// client endpoint and item construction. Each impl lives under its own
-/// feature so `kugou` and `netease` stay independently compilable.
-#[cfg(any(feature = "kugou", feature = "netease"))]
+/// feature so `kugou` stays independently compilable.
+#[cfg(feature = "kugou")]
 trait OnlineSearchProvider: 'static {
     /// Label used verbatim in the failure log lines.
     const LABEL: &'static str;
@@ -528,53 +484,6 @@ impl OnlineSearchProvider for KugouSearch {
             .map(|track| {
                 let search_text: Arc<str> = format!("{} {}", track.title, track.artist).into();
                 Arc::new(SearchPaletteItem::KugouTrack { track, search_text })
-            })
-            .collect()
-    }
-}
-
-#[cfg(feature = "netease")]
-struct NeteaseSearch;
-
-#[cfg(feature = "netease")]
-impl OnlineSearchProvider for NeteaseSearch {
-    type Error = crate::netease::client::NeteaseError;
-
-    const LABEL: &'static str = "netease";
-
-    fn bump_generation(model: &mut SearchModel) -> u64 {
-        model.netease_query_generation += 1;
-        model.netease_query_generation
-    }
-
-    fn clear_stale_items(model: &mut SearchModel, cx: &mut Context<SearchModel>) {
-        if !model.netease_items.is_empty() {
-            model.netease_items.clear();
-            model.emit_merged_items(cx);
-        }
-    }
-
-    fn current_generation(model: &SearchModel) -> u64 {
-        model.netease_query_generation
-    }
-
-    fn store_items(model: &mut SearchModel, items: Vec<Arc<SearchPaletteItem>>) {
-        model.netease_items = items;
-    }
-
-    async fn fetch(query: String) -> Result<serde_json::Value, Self::Error> {
-        crate::netease::shared_client()
-            .cloudsearch(&query, 1, 15, 0)
-            .await
-            .map(|response| response.body)
-    }
-
-    fn parse_items(body: &serde_json::Value) -> Vec<Arc<SearchPaletteItem>> {
-        crate::ui::netease::parse_tracks(body, "/result/songs")
-            .into_iter()
-            .map(|track| {
-                let search_text: Arc<str> = format!("{} {}", track.title, track.artist).into();
-                Arc::new(SearchPaletteItem::NeteaseTrack { track, search_text })
             })
             .collect()
     }

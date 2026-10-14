@@ -32,31 +32,6 @@ impl OnlineQuality {
     }
 }
 
-/// NetEase online playback quality `level`. Higher tiers generally need VIP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum NeteaseQuality {
-    #[default]
-    Standard,
-    Higher,
-    Exhigh,
-    Lossless,
-    HiRes,
-}
-
-impl NeteaseQuality {
-    /// The `level` value passed to the NetEase playback-URL endpoint.
-    #[cfg(feature = "netease")]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Standard => "standard",
-            Self::Higher => "higher",
-            Self::Exhigh => "exhigh",
-            Self::Lossless => "lossless",
-            Self::HiRes => "hires",
-        }
-    }
-}
-
 /// User-set playback settings, to be passed to the playback thread.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlaybackSettings {
@@ -117,11 +92,7 @@ pub struct PlaybackSettings {
     #[serde(default)]
     pub online_quality: OnlineQuality,
 
-    /// NetEase online playback quality. Defaults to standard 128 kbps.
-    #[serde(default)]
-    pub netease_quality: NeteaseQuality,
-
-    /// Directory online (KuGou/NetEase) downloads are written to. `None` uses
+    /// Directory online (KuGou) downloads are written to. `None` uses
     /// the platform's default Downloads folder.
     #[serde(default)]
     pub download_dir: Option<String>,
@@ -159,7 +130,6 @@ impl Default for PlaybackSettings {
             prevent_idle: false,
             consume: false,
             online_quality: OnlineQuality::default(),
-            netease_quality: NeteaseQuality::default(),
             download_dir: None,
         }
     }

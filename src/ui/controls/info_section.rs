@@ -3,13 +3,6 @@ use crate::ui::kugou::{
     KugouTrackInfo, like_track as kugou_like_track, online_track_is_liked,
     online_track_matching_path, unlike_track as kugou_unlike_track,
 };
-#[cfg(feature = "netease")]
-use crate::ui::netease::{
-    NeteaseTrackInfo, like_track as netease_like_track,
-    online_track_is_liked as netease_track_is_liked,
-    online_track_matching_path as netease_track_matching_path,
-    unlike_track as netease_unlike_track,
-};
 use crate::{
     library::types::Track,
     playback::{queue::QueueItemUIData, thread::PlaybackState},
@@ -41,25 +34,19 @@ use super::observe_notify;
 
 /// The currently playing online track, if any: the running stream URL is
 /// mapped back to its source through the per-source registries.
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 #[derive(Clone, Debug, PartialEq)]
 enum OnlinePlayingTrack {
-    #[cfg(feature = "kugou")]
     Kugou(KugouTrackInfo),
-    #[cfg(feature = "netease")]
-    Netease(NeteaseTrackInfo),
 }
 
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 impl OnlinePlayingTrack {
     /// Identity key used to detect "still the same track" across async
-    /// callbacks: the KuGou hash or the NetEase song id.
+    /// callbacks: the KuGou hash.
     fn identity(&self) -> String {
         match self {
-            #[cfg(feature = "kugou")]
             OnlinePlayingTrack::Kugou(track) => format!("kugou:{}", track.hash),
-            #[cfg(feature = "netease")]
-            OnlinePlayingTrack::Netease(track) => format!("netease:{}", track.id),
         }
     }
 
@@ -82,9 +69,9 @@ pub struct InfoSection {
     /// Bumped per track change; a background library resolve only lands if its
     /// generation still matches, so fast switches never apply stale results.
     library_resolve_generation: usize,
-    #[cfg(any(feature = "kugou", feature = "netease"))]
+    #[cfg(feature = "kugou")]
     online_track: Option<OnlinePlayingTrack>,
-    #[cfg(any(feature = "kugou", feature = "netease"))]
+    #[cfg(feature = "kugou")]
     is_online_liked: bool,
     queue_item_data: Option<Entity<Option<QueueItemUIData>>>,
     queue_item_subscription: Option<Subscription>,
@@ -127,9 +114,9 @@ impl InfoSection {
                 |this: &mut Self, current_track, cx| {
                     let current_track = current_track.read(cx).clone();
                     this.update_current_track_state(current_track.as_ref(), cx);
-                    #[cfg(any(feature = "kugou", feature = "netease"))]
+                    #[cfg(feature = "kugou")]
                     this.detect_online_track();
-                    #[cfg(any(feature = "kugou", feature = "netease"))]
+                    #[cfg(feature = "kugou")]
                     this.schedule_online_liked_query(cx);
                     this.resolve_queue_item_metadata(cx);
                     cx.notify();
@@ -162,17 +149,17 @@ impl InfoSection {
                 image_element_key: 0,
                 is_liked: None,
                 library_resolve_generation: 0,
-                #[cfg(any(feature = "kugou", feature = "netease"))]
+                #[cfg(feature = "kugou")]
                 online_track: None,
-                #[cfg(any(feature = "kugou", feature = "netease"))]
+                #[cfg(feature = "kugou")]
                 is_online_liked: false,
                 queue_item_data: None,
                 queue_item_subscription: None,
             };
             info_section.update_track_metadata(&initial_metadata);
-            #[cfg(any(feature = "kugou", feature = "netease"))]
+            #[cfg(feature = "kugou")]
             info_section.detect_online_track();
-            #[cfg(any(feature = "kugou", feature = "netease"))]
+            #[cfg(feature = "kugou")]
             info_section.schedule_online_liked_query(cx);
             info_section.resolve_queue_item_metadata(cx);
             info_section.spawn_library_resolve(cx);
@@ -273,22 +260,17 @@ impl InfoSection {
         }
     }
 
-    /// Re-resolves the current playback position as an online (KuGou/NetEase)
+    /// Re-resolves the current playback position as an online (KuGou)
     /// track. Online tracks have no library entry, so `current_library_track`
     /// stays `None`; we map the running stream URL back to its track instead.
-    #[cfg(any(feature = "kugou", feature = "netease"))]
+    #[cfg(feature = "kugou")]
     fn detect_online_track(&mut self) {
         let matched = self.current_track_path.as_ref().and_then(|path| {
             if !crate::media::is_http_path(path) {
                 return None;
             }
-            #[cfg(feature = "kugou")]
             if let Some(track) = online_track_matching_path(path) {
                 return Some(OnlinePlayingTrack::Kugou(track));
-            }
-            #[cfg(feature = "netease")]
-            if let Some(track) = netease_track_matching_path(path) {
-                return Some(OnlinePlayingTrack::Netease(track));
             }
             None
         });
@@ -309,7 +291,7 @@ impl InfoSection {
     /// Fires off a background query for whether the current online track is
     /// already in its source's liked list, then reflects the result once it
     /// lands (so the star lights up by default for already-liked songs).
-    #[cfg(any(feature = "kugou", feature = "netease"))]
+    #[cfg(feature = "kugou")]
     fn schedule_online_liked_query(&mut self, cx: &mut Context<Self>) {
         let Some(track) = self.online_track.clone() else {
             return;
@@ -317,12 +299,9 @@ impl InfoSection {
         let identity = track.identity();
         cx.spawn(async move |this, cx| {
             let liked = match &track {
-                #[cfg(feature = "kugou")]
                 OnlinePlayingTrack::Kugou(track) => {
                     !track.hash.is_empty() && online_track_is_liked(&track.hash).await
                 }
-                #[cfg(feature = "netease")]
-                OnlinePlayingTrack::Netease(track) => netease_track_is_liked(track.id).await,
             };
             this.update(cx, |this, cx| {
                 // Only apply if we're still on the same track.
@@ -375,25 +354,16 @@ impl InfoSection {
                         toggle_like(track_id, cx.entity(), cx);
                         return;
                     }
-                    #[cfg(any(feature = "kugou", feature = "netease"))]
+                    #[cfg(feature = "kugou")]
                     let this = _this;
-                    #[cfg(any(feature = "kugou", feature = "netease"))]
+                    #[cfg(feature = "kugou")]
                     if let Some(online) = this.online_track.clone() {
                         match &online {
-                            #[cfg(feature = "kugou")]
                             OnlinePlayingTrack::Kugou(track) => {
                                 if this.is_online_liked {
                                     kugou_unlike_track(cx, track);
                                 } else {
                                     kugou_like_track(cx, track);
-                                }
-                            }
-                            #[cfg(feature = "netease")]
-                            OnlinePlayingTrack::Netease(track) => {
-                                if this.is_online_liked {
-                                    netease_unlike_track(cx, track);
-                                } else {
-                                    netease_like_track(cx, track);
                                 }
                             }
                         }
@@ -634,14 +604,14 @@ impl Render for InfoSection {
                     .when(*state != PlaybackState::Stopped, |e| {
                         let is_liked = self.is_liked;
                         let track_id = self.current_library_track.as_ref().map(|t| t.id);
-                        #[cfg(any(feature = "kugou", feature = "netease"))]
+                        #[cfg(feature = "kugou")]
                         let is_liked_filled = (track_id.is_some() && is_liked.is_some())
                             || (self.online_track.is_some() && self.is_online_liked);
-                        #[cfg(not(any(feature = "kugou", feature = "netease")))]
+                        #[cfg(not(feature = "kugou"))]
                         let is_liked_filled = is_liked.is_some();
-                        #[cfg(any(feature = "kugou", feature = "netease"))]
+                        #[cfg(feature = "kugou")]
                         let has_track = track_id.is_some() || self.online_track.is_some();
-                        #[cfg(not(any(feature = "kugou", feature = "netease")))]
+                        #[cfg(not(feature = "kugou"))]
                         let has_track = track_id.is_some();
 
                         e.child(
@@ -692,9 +662,9 @@ impl Render for InfoSection {
         // An online track without a matched identity leaves the menu with
         // zero items (artist/album/like/add-to all key off the library track,
         // and "reveal" is hidden for streams) - don't attach the popup at all.
-        #[cfg(any(feature = "kugou", feature = "netease"))]
+        #[cfg(feature = "kugou")]
         let menu_has_items = self.current_library_track.is_some() || self.online_track.is_some();
-        #[cfg(not(any(feature = "kugou", feature = "netease")))]
+        #[cfg(not(feature = "kugou"))]
         let menu_has_items = self.current_library_track.is_some();
 
         if menu_has_items
@@ -704,24 +674,16 @@ impl Render for InfoSection {
             let add_to = add_to_state.map(|(_, a)| a);
 
             // online tracks: swap "show in file manager" for a download action
-            #[cfg(any(feature = "kugou", feature = "netease"))]
+            #[cfg(feature = "kugou")]
             let online_download = self.online_track.clone().map(|track| match track {
-                #[cfg(feature = "kugou")]
                 OnlinePlayingTrack::Kugou(track) => (
                     SharedString::from(crate::ui::kugou::download_label()),
                     Rc::new(move |cx: &mut App| {
                         crate::ui::kugou::download_track_ui(cx, track.clone())
                     }) as Rc<dyn Fn(&mut App)>,
                 ),
-                #[cfg(feature = "netease")]
-                OnlinePlayingTrack::Netease(track) => (
-                    SharedString::from(crate::ui::netease::download_label()),
-                    Rc::new(move |cx: &mut App| {
-                        crate::ui::netease::download_track_ui(cx, track.clone())
-                    }) as Rc<dyn Fn(&mut App)>,
-                ),
             });
-            #[cfg(not(any(feature = "kugou", feature = "netease")))]
+            #[cfg(not(feature = "kugou"))]
             let online_download: Option<(SharedString, Rc<dyn Fn(&mut App)>)> = None;
 
             div()

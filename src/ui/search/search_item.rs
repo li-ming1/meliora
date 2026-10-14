@@ -17,10 +17,10 @@ use crate::ui::{
     library_access::LibraryAccess,
     models::is_song_liked,
 };
-// 与 ui.rs 的 `mod online_track_row` 同 gate：trait 仅服务下方 kugou/netease
+// 与 ui.rs 的 `mod online_track_row` 同 gate：trait 仅服务下方 kugou
 // 匹配臂的 `detail_label()`（trait 方法，需在作用域内）。use 树嵌套段上不能
 // 挂 `#[cfg]`（rustc 判为解析错误），故按全仓惯例拆为独立 use 语句。
-#[cfg(any(feature = "kugou", feature = "netease"))]
+#[cfg(feature = "kugou")]
 use crate::ui::online_track_row::OnlineTrackDisplay;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,12 +53,6 @@ pub enum SearchPaletteItem {
         track: crate::ui::kugou::KugouTrackInfo,
         search_text: Arc<str>,
     },
-    /// Online track streamed from NetEase (netease feature only).
-    #[cfg(feature = "netease")]
-    NeteaseTrack {
-        track: crate::ui::netease::NeteaseTrackInfo,
-        search_text: Arc<str>,
-    },
 }
 
 impl SearchPaletteItem {
@@ -69,7 +63,7 @@ impl SearchPaletteItem {
 
     /// Online track titles fall back to the localized UNKNOWN_TRACK label
     /// when the source provides none.
-    #[cfg(any(feature = "kugou", feature = "netease"))]
+    #[cfg(feature = "kugou")]
     fn online_title(title: &str) -> SharedString {
         if title.is_empty() {
             tr!("UNKNOWN_TRACK").into()
@@ -144,8 +138,6 @@ impl PaletteItem for SearchPaletteItem {
             }
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { .. } => Some(FinderItemLeft::Icon(DISC.into())),
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { .. } => Some(FinderItemLeft::Icon(DISC.into())),
         }
     }
 
@@ -156,8 +148,6 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Track { title, .. } => title.clone().into(),
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { track, .. } => Self::online_title(&track.title),
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { track, .. } => Self::online_title(&track.title),
         }
     }
 
@@ -168,8 +158,6 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Artist { .. } => None,
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { track, .. } => Some(track.detail_label()),
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { track, .. } => Some(track.detail_label()),
         }
     }
 
@@ -180,8 +168,6 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Track { album_id, .. } => album_id.is_some(),
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { .. } => true,
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { .. } => true,
         }
     }
 
@@ -192,8 +178,6 @@ impl PaletteItem for SearchPaletteItem {
         match self {
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { .. } => true,
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { .. } => true,
             _ => false,
         }
     }
@@ -205,10 +189,6 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Track { .. } => tr!("TRACKS"),
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { .. } => tr!("KUGOU_ONLINE_RESULTS", "Online · KuGou"),
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { .. } => {
-                tr!("NETEASE_ONLINE_RESULTS", "Online · NetEase")
-            }
         })
     }
 
@@ -228,10 +208,6 @@ impl PaletteItem for SearchPaletteItem {
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { track, .. } => {
                 crate::ui::kugou::queue_track(cx, track);
-            }
-            #[cfg(feature = "netease")]
-            SearchPaletteItem::NeteaseTrack { track, .. } => {
-                crate::ui::netease::queue_track(cx, track);
             }
         }
     }
