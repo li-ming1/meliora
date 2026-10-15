@@ -9,41 +9,32 @@ use std::{
 
 use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::tr;
-use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
+    AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, ScrollHandle, SharedString, Styled, UniformListScrollHandle, WeakEntity, Window, div,
+    px, uniform_list,
 };
 
 use crate::{
     kugou,
     ui::{
-        components::{button::button, scrollbar::floating_scrollbar},
+        components::{
+            button::{ButtonIntent, button},
+            scrollbar::floating_scrollbar,
+        },
         kugou::{
             KugouRank, KugouTrackInfo, parse_rank_tracks, parse_ranks, parse_recommend_tracks,
         },
-        library::{EscapeBack, view_header::view_header},
+        library::{EscapeBack, kugou_view_common, view_header::view_header},
         online_common::{
-            CachedRoot, cached_root, load_more_rank_tracks, rank_tab_button, store_root,
-            switch_ranks_tab,
+            CachedRoot, LoadMoreSpec, cached_root, online_list_container, page_scroll_container,
+            store_root,
         },
         theme::Theme,
     },
 };
 
 const TRACKS_PER_PAGE: i64 = 30;
-
-/// uniform_list strides rows by one fixed height measured from the first
-/// row, so track rows are pinned to their natural height: 8px vertical
-/// padding × 2 + title line (text_sm) + 1px gap + subtitle line (text_xs)
-/// + 1px bottom border. Same value as kugou_playlists.
-const TRACK_ROW_HEIGHT: f32 = 60.0;
-
-/// How long the like/unlike watcher waits for the shared helper to confirm
-/// the outcome through the global liked-set before rolling the optimistic
-/// update back.
-const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Session cache for the two tab roots (TTL + helpers in `online_common`):
 /// the view entity is rebuilt on every tab switch, so a fresh entry skips
@@ -177,15 +168,16 @@ impl KugouRanksView {
     }
 
     fn switch_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        switch_ranks_tab(
-            self,
-            cx,
-            self.tab == tab,
-            |v| v.tab = tab,
-            |v| (&mut v.scroll_handle, &mut v.tracks_scroll_handle),
-            tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle),
-            |v, cx| v.load_recommend(cx),
-        );
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.scroll_handle = ScrollHandle::new();
+        self.tracks_scroll_handle = UniformListScrollHandle::new();
+        if tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle) {
+            self.load_recommend(cx);
+        }
+        cx.notify();
     }
 
     fn load_recommend(&mut self, cx: &mut Context<Self>) {
@@ -299,14 +291,12 @@ impl KugouRanksView {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        load_more_rank_tracks(
-            self,
-            cx,
-            self.has_more_tracks,
-            matches!(self.tracks_state, TracksState::Loading),
-            self.track_page + 1,
-            |v, page, cx| v.load_tracks_page(page, cx),
-        );
+        // one page in flight at a time: tracks_state stays Loading from the
+        // click until the response lands, so extra clicks are ignored
+        if self.has_more_tracks && !matches!(self.tracks_state, TracksState::Loading) {
+            let next_page = self.track_page + 1;
+            self.load_tracks_page(next_page, cx);
+        }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -358,37 +348,21 @@ impl KugouRanksView {
         was_liked: bool,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn(async move |this, cx| {
-            let deadline = std::time::Instant::now() + LIKE_WATCH_TIMEOUT;
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(250))
-                    .await;
-                if crate::ui::kugou::liked_set_contains(&hash) == want_liked {
-                    // landed: release the dedup marker, nothing to roll back
-                    this.update(cx, |this, _| {
-                        this.like_in_flight.remove(&hash);
-                    })
-                    .ok();
-                    return;
-                }
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-            }
-            // never confirmed: undo the optimistic update
-            this.update(cx, |this, cx| {
-                this.like_in_flight.remove(&hash);
+        kugou_view_common::spawn_like_watcher(
+            cx,
+            hash,
+            want_liked,
+            |view, hash| {
+                view.like_in_flight.remove(hash);
+            },
+            move |view, hash| {
                 if was_liked {
-                    this.liked.insert(hash);
+                    view.liked.insert(hash.to_string());
                 } else {
-                    this.liked.remove(&hash);
+                    view.liked.remove(hash);
                 }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+            },
+        );
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -424,14 +398,15 @@ impl KugouRanksView {
         label: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        rank_tab_button(
-            "kugou",
-            tab,
-            self.tab == tab,
-            label,
-            move |this, cx| this.switch_tab(tab, cx),
-            cx,
-        )
+        button()
+            .id(format!("kugou-rank-tab-{:?}", tab))
+            .intent(if self.tab == tab {
+                ButtonIntent::Primary
+            } else {
+                ButtonIntent::Secondary
+            })
+            .child(label.into())
+            .on_click(cx.listener(move |this, _, _, cx| this.switch_tab(tab, cx)))
     }
 
     fn render_ranks_grid(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -554,50 +529,17 @@ impl KugouRanksView {
         index: usize,
         entity: &Entity<Self>,
         cx: &App,
-    ) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
-        let liked = self.is_liked(&track.hash);
-        // The row closures must own their data ('static): capture Arc clones
-        // (refcount bump only) instead of three deep clones per visible row
-        // per redraw — a full clone re-allocates `hash: String` each time.
-        let play = track.clone();
-        let like = track.clone();
-        let download = track.clone();
-        let weak = entity.downgrade();
-
-        crate::ui::online_track_row::track_row(
-            theme,
+    ) -> AnyElement {
+        kugou_view_common::kugou_track_row_view(
+            self,
+            entity,
             track,
             index,
+            cx,
             "kugou-rank-track",
-            true,
             false,
-            liked,
-            move |_, _, cx| {
-                crate::ui::kugou::play_track_now(cx, &play);
-            },
-            move |_, _, cx| {
-                let Some(view) = weak.upgrade() else {
-                    return;
-                };
-                view.update(cx, |this, cx| this.toggle_like(&like, cx));
-            },
-            move |_, _, cx| {
-                crate::ui::kugou::download_track_ui(cx, (*download).clone());
-            },
-        )
-    }
-
-    /// The "Load More" pill below the virtualized rank track list. Also used
-    /// by the degenerate no-rows state so the escape hatch stays reachable.
-    fn render_load_more_button(cx: &mut Context<Self>) -> impl IntoElement {
-        div().flex().justify_center().pt(px(12.0)).child(
-            button()
-                .id("kugou-rank-load-more")
-                .child(tr!("KUGOU_LOAD_MORE"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.load_more(cx);
-                })),
+            |view, hash| view.is_liked(hash),
+            |view, track, cx| view.toggle_like(track, cx),
         )
     }
 
@@ -700,76 +642,31 @@ impl Render for KugouRanksView {
             .child(self.render_header(cx));
 
         if tracks_ready {
-            let track_count = self.visible_tracks().len();
             let has_more_tracks = self.selected.is_some() && self.has_more_tracks;
-            let list_entity = cx.entity();
             let tracks_scroll_handle = self.tracks_scroll_handle.clone();
             let title = self.selected.as_ref().map(|rank| rank.name.clone());
 
-            root = root.child(
-                div()
-                    .id("kugou-ranks-tracks-container")
-                    .w_full()
-                    .max_w(px(900.0))
-                    .mr_auto()
-                    .ml_auto()
-                    .flex()
-                    .flex_col()
-                    .flex_grow(1.0)
-                    .min_h(px(0.0))
-                    .px(px(16.0))
-                    .pt(px(4.0))
-                    .when_some(title, |this, name| {
-                        this.child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::BOLD)
-                                .pb(px(8.0))
-                                .child(name),
-                        )
-                    })
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .flex_grow(1.0)
-                            .min_h(px(0.0))
-                            .child(
-                                uniform_list(
-                                    "kugou-rank-tracks",
-                                    track_count,
-                                    move |range, _, cx| {
-                                        let start = range.start;
-                                        let view = list_entity.read(cx);
-                                        view.visible_tracks()[range]
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, track)| {
-                                                div().h(px(TRACK_ROW_HEIGHT)).child(
-                                                    view.render_track_row(
-                                                        track,
-                                                        start + i,
-                                                        &list_entity,
-                                                        cx,
-                                                    ),
-                                                )
-                                            })
-                                            .collect()
-                                    },
-                                )
-                                .w_full()
-                                .h_full()
-                                .track_scroll(&tracks_scroll_handle),
-                            ),
-                    )
-                    .when(has_more_tracks, |this| {
-                        this.child(Self::render_load_more_button(cx))
-                    })
-                    .child(floating_scrollbar(
-                        "kugou-ranks-tracks-scrollbar",
-                        tracks_scroll_handle,
-                    )),
-            );
+            root = root.child(online_list_container(
+                cx,
+                "kugou-ranks-tracks-container",
+                "kugou-rank-tracks",
+                "kugou-ranks-tracks-scrollbar",
+                &tracks_scroll_handle,
+                kugou_view_common::ONLINE_TRACK_ROW_HEIGHT,
+                self.visible_tracks().len(),
+                0.0,
+                false,
+                title,
+                |view| view.visible_tracks(),
+                |view, index, track, entity, cx| view.render_track_row(track, index, entity, cx),
+                has_more_tracks.then(|| LoadMoreSpec {
+                    id: "kugou-rank-load-more",
+                    label: tr!("KUGOU_LOAD_MORE").into_any_element(),
+                    on_click: Box::new(|view: &mut Self, cx: &mut Context<Self>| {
+                        view.load_more(cx)
+                    }),
+                }),
+            ));
         } else if grid_ready {
             root = root.child(self.render_ranks_grid(cx));
         } else {
@@ -793,23 +690,11 @@ impl Render for KugouRanksView {
             };
 
             root = root
-                .child(
-                    div()
-                        .id("kugou-ranks-scroll")
-                        .w_full()
-                        .max_w(px(900.0))
-                        .mr_auto()
-                        .ml_auto()
-                        .flex()
-                        .flex_col()
-                        .flex_grow(1.0)
-                        .min_h(px(0.0))
-                        .px(px(16.0))
-                        .pt(px(4.0))
-                        .overflow_y_scroll()
-                        .track_scroll(&scroll_handle)
-                        .child(content),
-                )
+                .child(page_scroll_container(
+                    "kugou-ranks-scroll",
+                    &scroll_handle,
+                    content,
+                ))
                 .child(floating_scrollbar("kugou-ranks-scrollbar", scroll_handle));
         }
 

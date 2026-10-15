@@ -30,8 +30,8 @@ use crate::{
     ui::{
         library::context_menus::{play_now, queue_item},
         online_common::{
-            PlayIntent, claim_fetch, i64_field, parse_pointer_list, prime_online_liked_cache,
-            settle_fetch, string_field, write_pending_fetches,
+            PlayIntent, claim_fetch, i64_field, parse_pointer_list, settle_fetch, string_field,
+            write_pending_fetches,
         },
         online_track_row::OnlineTrackDisplay,
     },
@@ -725,8 +725,22 @@ pub fn queue_track(cx: &mut App, track: &KugouTrackInfo) {
 /// Fires a background refresh of the liked-set. Called when the user opens
 /// the KuGou "liked songs" playlist so the play-bar star is immediately
 /// accurate for those tracks.
+///
+/// Inlined from `online_common::prime_online_liked_cache` (2026-10-15): the
+/// shared body's two closure parameters only ever injected this module's own
+/// lock and refresh fn, so with a single provider left they were pure
+/// indirection (§12).
 pub fn prime_liked_cache() {
-    prime_online_liked_cache(liked_load_lock, refresh_liked_set_from_service);
+    crate::RUNTIME.spawn(async {
+        // Startup staging: wait out the first-frame window before firing this
+        // whole-liked-list prime, same discipline as the updater's startup
+        // delay — it is background warming, not first-frame work.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Same lock as the lazy load in `online_track_is_liked` so the two
+        // entry points cannot double-fetch the whole liked list.
+        let _guard = liked_load_lock().lock().await;
+        refresh_liked_set_from_service().await;
+    });
 }
 
 /// True when `hash` is already in the user's KuGou liked-songs list. Uses the

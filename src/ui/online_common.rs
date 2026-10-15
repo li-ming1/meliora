@@ -5,18 +5,19 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, RwLockWriteGuard},
     time::{Duration, Instant},
 };
 
 use gpui::{
-    Context, ParentElement, RenderImage, ScrollHandle, SharedString, UniformListScrollHandle,
+    AnyElement, App, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    UniformListScrollHandle, div, prelude::FluentBuilder, px, uniform_list,
 };
 use serde_json::Value;
 use smallvec::SmallVec;
 
-use crate::ui::components::button::{ButtonIntent, InteractiveButton, button};
+use crate::ui::components::{button::button, scrollbar::floating_scrollbar};
 
 /// Intent of an online-track activation: start playing now, or append.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,103 +150,14 @@ pub(crate) fn parse_pointer_list<T>(
 }
 
 // ---------------------------------------------------------------------------
-// 排行榜（discovery）页共享件：kugou_ranks 的 switch_tab、
-// load_more、tab_button 与 liked 缓存预热四处逐字相同（仅 provider 名/id
-// 前缀与各自私有字段不同），收编于此；两侧调用点保留原方法名，只做一行
-// 转发。差异点全部经参数注入。
+// 排行榜（discovery）页共享件的历史注记：netease 摘除前（2026-10-14），
+// kugou_ranks 与 netease_ranks 的 switch_tab / load_more / tab_button 与
+// liked 缓存预热四处逐字相同，曾以"共享体 + 参数注入 + 一行转发"收编于此。
+// 只剩酷狗一个 provider 后，四处均退化回单调用点，注入参数只为虚构的第二个
+// 调用点存在——2026-10-15 按 §12/§27 内联回各调用点（kugou_ranks.rs /
+// ui/kugou.rs），共享层的"双 provider"框架自此只保留仍有多调用件的部分
+// （parse_pointer_list / claim_fetch / CachedRoot 等）。
 // ---------------------------------------------------------------------------
-
-/// 排行榜页 `switch_tab` 的共享体。与原实现行为一致：同页点击早退；换页时
-/// 先换 tab、再重建两个滚动句柄；切到日推页且 recommend 尚未加载过才触发
-/// 首次加载；最后 notify。各视图经参数接入自己的 tab / recommend 字段与方法。
-///
-/// `same_tab` 与 `recommend_idle` 在调用点求值：两者都是对字段的纯读取，
-/// 提前求值与原实现的短路求值行为等价（`recommend_idle` 传
-/// `tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Idle)`）。
-pub(crate) fn switch_ranks_tab<V: 'static>(
-    view: &mut V,
-    cx: &mut Context<V>,
-    same_tab: bool,
-    set_tab: impl FnOnce(&mut V),
-    scroll_handles: impl FnOnce(&mut V) -> (&mut ScrollHandle, &mut UniformListScrollHandle),
-    recommend_idle: bool,
-    load_recommend: impl FnOnce(&mut V, &mut Context<V>),
-) {
-    if same_tab {
-        return;
-    }
-    set_tab(view);
-    let (scroll_handle, tracks_scroll_handle) = scroll_handles(view);
-    *scroll_handle = ScrollHandle::new();
-    *tracks_scroll_handle = UniformListScrollHandle::new();
-    if recommend_idle {
-        load_recommend(view, cx);
-    }
-    cx.notify();
-}
-
-/// 排行榜页 `load_more` 的共享体。`next_page`（= track_page + 1）由调用点
-/// 传入，纯计算，提前求值与原实现等价；翻页动作经 `load_page` 注入。
-pub(crate) fn load_more_rank_tracks<V: 'static>(
-    view: &mut V,
-    cx: &mut Context<V>,
-    has_more_tracks: bool,
-    a_page_is_loading: bool,
-    next_page: i64,
-    load_page: impl FnOnce(&mut V, i64, &mut Context<V>),
-) {
-    // one page in flight at a time: tracks_state stays Loading from the
-    // click until the response lands, so extra clicks are ignored
-    if has_more_tracks && !a_page_is_loading {
-        load_page(view, next_page, cx);
-    }
-}
-
-/// 排行榜页头部 `tab_button` 的共享体：两侧按钮的构建/样式/点击管线完全
-/// 相同，仅 element id 前缀与各自的 tab 枚举不同。`on_select` 接各视图自己的
-/// `switch_tab`（点击回调会触发多次，须 `Fn`）。
-pub(crate) fn rank_tab_button<V: 'static>(
-    id_prefix: &str,
-    tab: impl Copy + std::fmt::Debug,
-    active: bool,
-    label: impl Into<SharedString>,
-    on_select: impl Fn(&mut V, &mut Context<V>) + 'static,
-    cx: &mut Context<V>,
-) -> InteractiveButton {
-    let label = label.into();
-    button()
-        .id(format!("{id_prefix}-rank-tab-{:?}", tab))
-        .intent(if active {
-            ButtonIntent::Primary
-        } else {
-            ButtonIntent::Secondary
-        })
-        .child(label)
-        .on_click(cx.listener(move |this, _, _, cx| on_select(this, cx)))
-}
-
-/// 后台预热 provider 的 liked 缓存（`ui::kugou::prime_liked_cache`
-/// 的共享体）：provider 专属的加载锁与刷新
-/// 函数经参数传入，函数体两侧原本逐字相同。
-pub(crate) fn prime_online_liked_cache<L, R, Fut>(
-    liked_load_lock: L,
-    refresh_liked_set_from_service: R,
-) where
-    L: Fn() -> &'static tokio::sync::Mutex<()> + Send + 'static,
-    R: Fn() -> Fut + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    crate::RUNTIME.spawn(async move {
-        // Startup staging: wait out the first-frame window before firing this
-        // whole-liked-list prime, same discipline as the updater's startup
-        // delay — it is background warming, not first-frame work.
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        // Same lock as the lazy load in `online_track_is_liked` so the two
-        // entry points cannot double-fetch the whole liked list.
-        let _guard = liked_load_lock().lock().await;
-        refresh_liked_set_from_service().await;
-    });
-}
 
 /// Session-level cache TTL for discovery-page root lists. The view entities
 /// are rebuilt on every tab switch, so without a cache reopening a discovery
@@ -289,6 +201,153 @@ pub(crate) fn clear_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) {
     *cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+// ---------------------------------------------------------------------------
+// 发现页（discovery）列表容器共享件：kugou_ranks 与 kugou_playlists 的曲目
+// 列表容器、页面级滚动容器与 Load More 药丸逐行相同（2026-10-15 收编台阶
+// D）。布局差异（relative / pb / 标题行 / id）全部经参数注入，不做"顺手
+// 统一"——那些差异各有来历（滚动条定位、底部留白），规范化会改行为。
+// ---------------------------------------------------------------------------
+
+/// The "Load More" pill below a virtualized list: centered button. Shared by
+/// [`online_list_container`] and any call site that needs the escape hatch
+/// outside a container.
+pub(crate) fn load_more_pill<V: 'static>(
+    id: &'static str,
+    label: AnyElement,
+    on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> impl IntoElement {
+    div().flex().justify_center().pt(px(12.0)).child(
+        button()
+            .id(id)
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx))),
+    )
+}
+
+/// Optional Load More pill spec for [`online_list_container`]: `None`
+/// renders no pill at all.
+pub(crate) struct LoadMoreSpec<V> {
+    pub id: &'static str,
+    pub label: AnyElement,
+    pub on_click: Box<dyn Fn(&mut V, &mut Context<V>)>,
+}
+
+/// The virtualized track-list container shared by the KuGou discovery
+/// views: a fixed-height-row `uniform_list` that is its own scroll
+/// container (so accumulated rows stay virtualized regardless of page
+/// count), an optional title line, the optional Load More pill and the
+/// floating scrollbar.
+///
+/// Everything that differs between the two views is a parameter — element
+/// ids (must stay distinct: they key scroll state and image caches),
+/// `container_pb` (0 = none), `container_relative`, the title, the item
+/// slice and the row builder. The row builder receives `&App` (rows are
+/// built inside the uniform_list closure, where no `Context` exists), so
+/// per-row listeners must reach the view through the passed entity.
+#[allow(clippy::too_many_arguments)] // builder-style container API; every parameter is a real per-view delta
+pub(crate) fn online_list_container<V: 'static, T>(
+    cx: &mut Context<V>,
+    container_id: &'static str,
+    list_id: &'static str,
+    scrollbar_id: &'static str,
+    scroll_handle: &UniformListScrollHandle,
+    row_height: f32,
+    count: usize,
+    container_pb: f32,
+    container_relative: bool,
+    title: Option<SharedString>,
+    items: impl Fn(&V) -> &[T] + 'static,
+    render_row: impl Fn(&V, usize, &T, &Entity<V>, &App) -> AnyElement + 'static,
+    load_more: Option<LoadMoreSpec<V>>,
+) -> impl IntoElement {
+    let list_entity = cx.entity();
+
+    let mut container = div()
+        .id(container_id)
+        .when(container_relative, |this| this.relative())
+        .w_full()
+        .max_w(px(900.0))
+        .mr_auto()
+        .ml_auto()
+        .flex()
+        .flex_col()
+        .flex_grow(1.0)
+        .min_h(px(0.0))
+        .px(px(16.0))
+        .pt(px(4.0))
+        .when(container_pb > 0.0, |this| this.pb(px(container_pb)))
+        .when_some(title, |this, name| {
+            this.child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::BOLD)
+                    .pb(px(8.0))
+                    .child(name),
+            )
+        })
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .flex_grow(1.0)
+                .min_h(px(0.0))
+                .child(
+                    uniform_list(list_id, count, move |range, _, cx| {
+                        let start = range.start;
+                        let view = list_entity.read(cx);
+                        items(&view)[range]
+                            .iter()
+                            .enumerate()
+                            .map(|(i, track)| {
+                                div().h(px(row_height)).child(render_row(
+                                    &view,
+                                    start + i,
+                                    track,
+                                    &list_entity,
+                                    cx,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .w_full()
+                    .h_full()
+                    .track_scroll(scroll_handle),
+                ),
+        );
+
+    if let Some(spec) = load_more {
+        container = container.child(load_more_pill(spec.id, spec.label, spec.on_click, cx));
+    }
+    container.child(floating_scrollbar(scrollbar_id, scroll_handle.clone()))
+}
+
+/// The page-level scroll container for the fallback (loading / error /
+/// empty) states: the same 900px column geometry as the list containers,
+/// with `overflow_y_scroll` and the page scroll handle. The floating
+/// scrollbar is a sibling child — the caller adds it with its own id.
+pub(crate) fn page_scroll_container(
+    id: &'static str,
+    scroll_handle: &ScrollHandle,
+    content: AnyElement,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .w_full()
+        .max_w(px(900.0))
+        .mr_auto()
+        .ml_auto()
+        .flex()
+        .flex_col()
+        .flex_grow(1.0)
+        .min_h(px(0.0))
+        .px(px(16.0))
+        .pt(px(4.0))
+        .overflow_y_scroll()
+        .track_scroll(scroll_handle)
+        .child(content)
 }
 
 #[cfg(test)]

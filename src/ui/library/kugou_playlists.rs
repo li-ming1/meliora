@@ -1,5 +1,7 @@
 //! KuGou cloud playlists page: lists the logged-in user's playlists and their
-//! tracks. Tracks are streamed on double-click via a freshly fetched play URL.
+//! tracks. Tracks are streamed on click via a freshly fetched play URL (the
+//! shared row ignores the second click of a double-click, so a double-click
+//! does not run the fetch + open churn twice).
 //! Gated behind the `kugou` cargo feature.
 
 use std::{
@@ -12,8 +14,8 @@ use cntp_i18n::{tr, trn};
 use futures::{StreamExt as _, stream};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -31,8 +33,11 @@ use crate::{
             textbox::Textbox,
         },
         kugou::{KugouPlaylistInfo, KugouTrackInfo, parse_playlists, parse_tracks},
-        library::view_header::view_header,
-        online_common::{CachedRoot, cached_root, clear_root, store_root},
+        library::{kugou_view_common, view_header::view_header},
+        online_common::{
+            CachedRoot, LoadMoreSpec, cached_root, clear_root, online_list_container,
+            page_scroll_container, store_root,
+        },
         settings::{SettingsSectionKind, open_settings_window_with_section},
         theme::Theme,
     },
@@ -67,21 +72,11 @@ pub(crate) fn invalidate_cached_playlists() {
 /// M3U lookup tolerates 8).
 const KUGOU_MATCH_CONCURRENCY: usize = 4;
 
-/// uniform_list strides rows by one fixed height measured from the first
-/// row, so track rows are pinned to their natural height: 8px vertical
-/// padding × 2 + title line (text_sm) + 1px gap + subtitle line (text_xs)
-/// + 1px bottom border.
-const TRACK_ROW_HEIGHT: f32 = 60.0;
-
 /// Overview playlist rows are pinned to their natural height: 8px vertical
 /// padding × 2 + title line (text_sm) + 1px bottom border (the single-line
-/// name dominates; the 16px icon and count line are shorter).
+/// name dominates; the 16px icon and count line are shorter). Track rows
+/// use the shared `kugou_view_common::ONLINE_TRACK_ROW_HEIGHT`.
 const PLAYLIST_ROW_HEIGHT: f32 = 40.0;
-
-/// How long the like/unlike watcher waits for the shared helper to confirm
-/// the outcome through the global liked-set before rolling the optimistic
-/// update back.
-const LIKE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 enum PlaylistsState {
     LoggedOut,
@@ -477,6 +472,34 @@ impl KugouPlaylistsView {
         }
     }
 
+    /// Optimistic like/unlike with click dedup; the outcome watcher rolls
+    /// the snapshot back if the request does not land. Mirrors
+    /// `KugouRanksView::toggle_like`, plus the `unliked` set the "liked
+    /// songs" playlist (listid 2) needs.
+    fn toggle_like(&mut self, track: &KugouTrackInfo, cx: &mut Context<Self>) {
+        let hash = track.hash.clone();
+        // one like/unlike request per track at a time; clicks while a request
+        // is in flight are ignored
+        if !self.like_in_flight.insert(hash.clone()) {
+            return;
+        }
+        let want_liked = !self.is_track_liked(&hash);
+        // snapshot for the rollback watcher
+        let was_liked = self.liked.contains(&hash);
+        let was_unliked = self.unliked.contains(&hash);
+        if want_liked {
+            self.unliked.remove(&hash);
+            self.liked.insert(hash.clone());
+            crate::ui::kugou::like_track(cx, track);
+        } else {
+            self.unliked.insert(hash.clone());
+            self.liked.remove(&hash);
+            crate::ui::kugou::unlike_track(cx, track);
+        }
+        cx.notify();
+        self.watch_like_outcome(hash, want_liked, was_liked, was_unliked, cx);
+    }
+
     /// The shared like/unlike helpers flip the process-wide liked-set on
     /// success and leave it untouched on failure, so the outcome is
     /// observable via `crate::ui::kugou::liked_set_contains`. Watch it
@@ -490,42 +513,26 @@ impl KugouPlaylistsView {
         was_unliked: bool,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn(async move |this, cx| {
-            let deadline = std::time::Instant::now() + LIKE_WATCH_TIMEOUT;
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(250))
-                    .await;
-                if crate::ui::kugou::liked_set_contains(&hash) == want_liked {
-                    // landed: release the dedup marker, nothing to roll back
-                    this.update(cx, |this, _| {
-                        this.like_in_flight.remove(&hash);
-                    })
-                    .ok();
-                    return;
-                }
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-            }
-            // never confirmed: undo the optimistic update
-            this.update(cx, |this, cx| {
-                this.like_in_flight.remove(&hash);
+        kugou_view_common::spawn_like_watcher(
+            cx,
+            hash,
+            want_liked,
+            |view, hash| {
+                view.like_in_flight.remove(hash);
+            },
+            move |view, hash| {
                 if was_liked {
-                    this.liked.insert(hash.clone());
+                    view.liked.insert(hash.to_string());
                 } else {
-                    this.liked.remove(&hash);
+                    view.liked.remove(hash);
                 }
                 if was_unliked {
-                    this.unliked.insert(hash);
+                    view.unliked.insert(hash.to_string());
                 } else {
-                    this.unliked.remove(&hash);
+                    view.unliked.remove(hash);
                 }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+            },
+        );
     }
 
     // ---- External playlist import (NetEase / QQ → KuGou) ----
@@ -776,59 +783,17 @@ impl KugouPlaylistsView {
         index: usize,
         entity: &Entity<Self>,
         cx: &App,
-    ) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
-        let liked = self.is_track_liked(&track.hash);
-        // The row closures must own their data ('static): capture Arc clones
-        // (refcount bump only) instead of three deep clones per visible row
-        // per redraw — a full clone re-allocates `hash: String` each time.
-        let play = track.clone();
-        let like = track.clone();
-        let download = track.clone();
-        let weak = entity.downgrade();
-
-        crate::ui::online_track_row::track_row(
-            theme,
+    ) -> AnyElement {
+        kugou_view_common::kugou_track_row_view(
+            self,
+            entity,
             track,
             index,
+            cx,
             "kugou-track",
             true,
-            true,
-            liked,
-            move |_, _, cx| {
-                crate::ui::kugou::play_track_now(cx, &play);
-            },
-            move |_, _, cx| {
-                let Some(view) = weak.upgrade() else {
-                    return;
-                };
-                view.update(cx, |this, cx| {
-                    let hash = like.hash.clone();
-                    // one like/unlike request per track at a time; clicks
-                    // while a request is in flight are ignored
-                    if !this.like_in_flight.insert(hash.clone()) {
-                        return;
-                    }
-                    let want_liked = !this.is_track_liked(&hash);
-                    // snapshot for the rollback watcher
-                    let was_liked = this.liked.contains(&hash);
-                    let was_unliked = this.unliked.contains(&hash);
-                    if want_liked {
-                        this.unliked.remove(&hash);
-                        this.liked.insert(hash.clone());
-                        crate::ui::kugou::like_track(cx, &like);
-                    } else {
-                        this.unliked.insert(hash.clone());
-                        this.liked.remove(&hash);
-                        crate::ui::kugou::unlike_track(cx, &like);
-                    }
-                    cx.notify();
-                    this.watch_like_outcome(hash, want_liked, was_liked, was_unliked, cx);
-                });
-            },
-            move |_, _, cx| {
-                crate::ui::kugou::download_track_ui(cx, (*download).clone());
-            },
+            |view, hash| view.is_track_liked(hash),
+            |view, track, cx| view.toggle_like(track, cx),
         )
     }
 }
@@ -967,77 +932,29 @@ impl Render for KugouPlaylistsView {
         if tracks_ready {
             // the uniform_list is its own scroll container, so the page-level
             // scroller is replaced wholesale while tracks are on screen
-            let track_count = self.tracks.len();
-            let has_more_tracks = self.has_more_tracks;
-            let list_entity = cx.entity();
             let tracks_scroll_handle = self.tracks_scroll_handle.clone();
 
-            root = root.child(
-                div()
-                    .id("kugou-playlists-track-container")
-                    .relative()
-                    .w_full()
-                    .max_w(px(900.0))
-                    .mr_auto()
-                    .ml_auto()
-                    .flex()
-                    .flex_col()
-                    .flex_grow(1.0)
-                    .min_h(px(0.0))
-                    .px(px(16.0))
-                    .pt(px(4.0))
-                    .pb(px(24.0))
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .flex_grow(1.0)
-                            .min_h(px(0.0))
-                            .child(
-                                uniform_list(
-                                    "kugou-playlist-tracks",
-                                    track_count,
-                                    move |range, _, cx| {
-                                        let start = range.start;
-                                        let view = list_entity.read(cx);
-                                        view.tracks[range]
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, track)| {
-                                                div().h(px(TRACK_ROW_HEIGHT)).child(
-                                                    view.render_track_row(
-                                                        track,
-                                                        start + i,
-                                                        &list_entity,
-                                                        cx,
-                                                    ),
-                                                )
-                                            })
-                                            .collect()
-                                    },
-                                )
-                                .w_full()
-                                .h_full()
-                                .track_scroll(&tracks_scroll_handle),
-                            ),
-                    )
-                    .when(has_more_tracks, |this| {
-                        this.child(
-                            div().flex().justify_center().pt(px(12.0)).child(
-                                button()
-                                    .id("kugou-load-more")
-                                    .child(tr!("KUGOU_LOAD_MORE", "Load More"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.load_more_tracks(cx);
-                                    })),
-                            ),
-                        )
-                    })
-                    .child(floating_scrollbar(
-                        "kugou-playlist-tracks-scrollbar",
-                        tracks_scroll_handle,
-                    )),
-            );
+            root = root.child(online_list_container(
+                cx,
+                "kugou-playlists-track-container",
+                "kugou-playlist-tracks",
+                "kugou-playlist-tracks-scrollbar",
+                &tracks_scroll_handle,
+                kugou_view_common::ONLINE_TRACK_ROW_HEIGHT,
+                self.tracks.len(),
+                24.0,
+                true,
+                None,
+                |view| &view.tracks,
+                |view, index, track, entity, cx| view.render_track_row(track, index, entity, cx),
+                self.has_more_tracks.then(|| LoadMoreSpec {
+                    id: "kugou-load-more",
+                    label: tr!("KUGOU_LOAD_MORE", "Load More").into_any_element(),
+                    on_click: Box::new(|view: &mut Self, cx: &mut Context<Self>| {
+                        view.load_more_tracks(cx)
+                    }),
+                }),
+            ));
         } else if overview_ready {
             // the playlist overview is its own scroll container, so the
             // page-level scroller is replaced wholesale here (same as the
@@ -1106,23 +1023,11 @@ impl Render for KugouPlaylistsView {
             );
         } else {
             root = root
-                .child(
-                    div()
-                        .id("kugou-playlists-scroll")
-                        .w_full()
-                        .max_w(px(900.0))
-                        .mr_auto()
-                        .ml_auto()
-                        .flex()
-                        .flex_col()
-                        .flex_grow(1.0)
-                        .min_h(px(0.0))
-                        .px(px(16.0))
-                        .pt(px(4.0))
-                        .overflow_y_scroll()
-                        .track_scroll(&scroll_handle)
-                        .child(content),
-                )
+                .child(page_scroll_container(
+                    "kugou-playlists-scroll",
+                    &scroll_handle,
+                    content.into_any_element(),
+                ))
                 .child(floating_scrollbar(
                     "kugou-playlists-scrollbar",
                     scroll_handle,
