@@ -419,6 +419,30 @@ impl Render for InterfaceSettings {
                 ),
                 interface.queue_select_on_click,
                 |interface| interface.queue_select_on_click = !interface.queue_select_on_click,
+            ))
+            .child(toggle_row(
+                cx,
+                "interface-close-to-tray",
+                "interface-close-to-tray-check",
+                tr!("INTERFACE_CLOSE_TO_TRAY", "Closing the window hides to tray"),
+                tr!(
+                    "INTERFACE_CLOSE_TO_TRAY_SUBTEXT",
+                    "On: closing the main window hides it to the tray and music keeps playing. Off: closing the main window quits Meliora."
+                ),
+                interface.close_to_tray,
+                |interface| interface.close_to_tray = !interface.close_to_tray,
+            ))
+            .child(toggle_row(
+                cx,
+                "interface-start-minimized",
+                "interface-start-minimized-check",
+                tr!("INTERFACE_START_MINIMIZED", "Start minimized to tray"),
+                tr!(
+                    "INTERFACE_START_MINIMIZED_SUBTEXT",
+                    "Start hidden in the tray; click the tray icon to show the window."
+                ),
+                interface.start_minimized,
+                |interface| interface.start_minimized = !interface.start_minimized,
             ));
 
         body.child(

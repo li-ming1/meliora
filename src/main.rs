@@ -34,6 +34,10 @@ mod stats;
 #[cfg(test)]
 mod test_support;
 mod toasts;
+// 托盘只在 Windows / macOS 存在；Linux 无托盘，调用点就地回退（见
+// window_header.rs 的关闭分支与 app.rs 的 init 调用）。
+#[cfg(any(windows, target_os = "macos"))]
+mod tray;
 pub mod ui;
 #[cfg(feature = "online")]
 mod updater;
@@ -874,17 +878,22 @@ fn enforce_single_instance() -> anyhow::Result<()> {
     // at exit, so a crash can never leave a stale lock behind.
     let _mutex = unsafe { CreateMutexW(None, false, w!("Local\\MelioraSingleInstance"))? };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        // Runs before logging/i18n init, so the notice is a plain dialog with
-        // a fixed bilingual text rather than a tr! lookup.
-        unsafe {
-            MessageBoxW(
-                None,
-                w!(
-                    "Meliora is already running.\nMeliora \u{5df2}\u{7ecf}\u{5728}\u{8fd0}\u{884c}\u{3002}"
-                ),
-                w!("Meliora"),
-                MB_OK | MB_ICONINFORMATION,
-            );
+        // 已有实例：优先唤回它的窗口（托盘宿主窗口接收激活消息；窗口隐藏
+        // 时这是用户唯一的"再点一次桌面图标"恢复路径）。唤回失败（目标实例
+        // 可能还在启动中、托盘壳未建）才退回提示对话框。
+        if !crate::tray::activate_existing_instance() {
+            // Runs before logging/i18n init, so the notice is a plain dialog with
+            // a fixed bilingual text rather than a tr! lookup.
+            unsafe {
+                MessageBoxW(
+                    None,
+                    w!(
+                        "Meliora is already running.\nMeliora \u{5df2}\u{7ecf}\u{5728}\u{8fd0}\u{884c}\u{3002}"
+                    ),
+                    w!("Meliora"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
         }
         std::process::exit(0);
     }

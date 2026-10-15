@@ -189,10 +189,14 @@ windows = { version = "0.62", features = [
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_SystemServices",
+    # 托盘图标加载（LoadImageW 的 hInstance，tray/windows.rs）。
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_System_WinRT",
     "Win32_System_Power",
     "Win32_System_Recovery",
+    # 系统托盘壳（Shell_NotifyIconW / NOTIFYICONDATAW，tray/windows.rs）。
+    "Win32_UI_Shell",
     # 零字面引用但不可删：单实例守护的 MessageBoxW（main.rs enforce_single_instance）
     "Win32_UI_WindowsAndMessaging"
 ] }
@@ -203,7 +207,7 @@ core-text = "=21.0.0" # GPUI issue, zed#47168
 block2 = "0.6"
 imagesize = "0.14"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSImage"] }
+objc2-app-kit = { version = "0.3", features = ["NSImage", "NSBezierPath"] }
 objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
 objc2-foundation = { version = "0.3", features = [
     "NSData",

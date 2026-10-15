@@ -63,7 +63,7 @@ use super::{
     theme::setup_theme,
 };
 
-struct MainWindow {
+pub(crate) struct MainWindow {
     pub controls: Entity<Controls>,
     pub sidebar: Entity<Sidebar>,
     pub right_sidebar: RightSidebar,
@@ -230,10 +230,29 @@ pub fn find_fonts(cx: &mut App) -> gpui::Result<()> {
 // 此不再为拿连接池而依赖 crate::ui；此处再导出维持既有 `ui::app::Pool` 引用。
 pub use crate::library::Pool;
 
-fn find_main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
+pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
     cx.windows()
         .into_iter()
         .find_map(|window| window.downcast::<MainWindow>())
+}
+
+/// 主窗口宿主（toast 层实体）：托盘唤回时主窗口已销毁的极端路径经它重建。
+/// 正常托盘流程只显隐不销毁，此全局只为兜底。
+pub struct MainWindowHost(pub Entity<ToastLayer>);
+
+impl gpui::Global for MainWindowHost {}
+
+/// 托盘唤回入口：窗口在则激活，不在则经 [`MainWindowHost`] 重建。
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn restore_main_window(cx: &mut App) {
+    if let Some(window) = find_main_window(cx) {
+        focus_main_window(window, cx);
+        return;
+    }
+    let Some(layer) = cx.try_global::<MainWindowHost>().map(|host| host.0.clone()) else {
+        return;
+    };
+    let _ = ensure_main_window(cx, layer);
 }
 
 /// Whether the main window was maximized when immersive mode entered; drives
@@ -460,6 +479,14 @@ fn build_main_window(
             crate::settings::flush_pending_settings();
         })
         .detach();
+
+        // OS 关闭路径（Alt+F4 / 系统菜单）拦截：永远返回 false，关闭语义
+        // 由托盘模块按"关闭到托盘"设置决定（隐藏或退出）——与 ✕ 按钮
+        // （window_header.rs）收敛到同一决策。Linux 无托盘，不装拦截。
+        #[cfg(any(windows, target_os = "macos"))]
+        window.on_window_should_close(cx, |window, cx| {
+            crate::tray::handle_close_request(window, cx)
+        });
 
         MainWindow {
             controls: Controls::new(cx, show_queue.clone(), show_lyrics.clone()),
@@ -714,6 +741,8 @@ pub fn run() -> anyhow::Result<()> {
         toast_layer
             .set(toast_layer_entity.clone())
             .expect("toast layer initialized once");
+        // 托盘唤回的兜底宿主（正常托盘流程只显隐不销毁，见 restore_main_window）。
+        cx.set_global(MainWindowHost(toast_layer_entity.clone()));
 
         // Kick off the daily free-VIP claim on launch so an already-logged-in
         // account gets today's award without opening the settings page. The
@@ -780,6 +809,12 @@ pub fn run() -> anyhow::Result<()> {
             })
             .unwrap();
         register_pbc_event_handlers(cx);
+
+        // 系统托盘（Windows/macOS）：壳事件经 mpsc 编组回 GPUI drain 任务；
+        // init 内部登记主窗口句柄，start_minimized 时以隐藏状态启动。
+        // Linux 无托盘模块，不建壳（关闭行为由 window_header 就地回退）。
+        #[cfg(any(windows, target_os = "macos"))]
+        crate::tray::init(cx);
 
         // 桌面歌词悬浮窗：设置开启即随主窗口恢复（句柄与歌词实体已在主
         // 窗口构建时注入 Global）。

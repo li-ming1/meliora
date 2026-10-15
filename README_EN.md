@@ -60,6 +60,8 @@ Press `F`, flip the sidebar toggle next to the lyrics button, or double-click th
 
 ### UI & System
 
+- System tray (Windows / macOS): closing the main window hides it to the tray, quick playback controls from the tray, tooltip showing the current track; optional start-minimized-to-tray
+
 - Natively rendered UI (GPUI), responsive layout, light and dark themes
 - System media controls: Windows SMTC, macOS Now Playing, Linux MPRIS
 - Supports Windows / macOS / Linux

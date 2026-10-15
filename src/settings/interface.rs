@@ -27,6 +27,10 @@ fn default_queue_select_on_click() -> bool {
     true
 }
 
+fn default_close_to_tray() -> bool {
+    true
+}
+
 pub fn clamp_grid_min_item_width(value: f32) -> f32 {
     if !value.is_finite() {
         return DEFAULT_GRID_MIN_ITEM_WIDTH;
@@ -62,6 +66,13 @@ pub struct InterfaceSettings {
     /// 桌面歌词窗口拖动后的屏幕坐标（逻辑 px）；None = 默认主屏底部居中。
     #[serde(default)]
     pub desktop_lyrics_pos: Option<[f64; 2]>,
+    /// 关闭主窗口时隐藏到托盘而不是退出（需托盘壳可用；Linux 无托盘，
+    /// 该设置在那里无效）。
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
+    /// 启动时直接以托盘隐藏状态启动。
+    #[serde(default)]
+    pub start_minimized: bool,
 }
 
 impl InterfaceSettings {
@@ -89,6 +100,8 @@ impl Default for InterfaceSettings {
             queue_select_on_click: true,
             desktop_lyrics: false,
             desktop_lyrics_pos: None,
+            close_to_tray: true,
+            start_minimized: false,
         }
     }
 }

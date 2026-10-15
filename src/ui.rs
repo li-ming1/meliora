@@ -31,7 +31,9 @@ pub mod queue_metadata;
 mod right_sidebar;
 mod scroll_follow;
 mod search;
-mod settings;
+// crate 内可见（非 pub）：托盘菜单需要打开设置窗口（tray.rs 在 crate 根，
+// 私有模块对它不可见）。
+pub(crate) mod settings;
 mod theme;
 mod toasts;
 mod troubleshooting;

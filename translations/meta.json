@@ -415,13 +415,13 @@
   },
   "COMMAND_PALETTE": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:427",
+    "definedIn": "src/ui/settings/interface.rs:451",
     "plural": false,
     "description": null
   },
   "COMMAND_PALETTE_OPEN": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:439",
+    "definedIn": "src/ui/settings/interface.rs:463",
     "plural": false,
     "description": null
   },
@@ -695,9 +695,21 @@
     "plural": false,
     "description": null
   },
+  "INTERFACE_CLOSE_TO_TRAY": {
+    "context": "interface.rs",
+    "definedIn": "src/ui/settings/interface.rs:427",
+    "plural": false,
+    "description": null
+  },
+  "INTERFACE_CLOSE_TO_TRAY_SUBTEXT": {
+    "context": "interface.rs",
+    "definedIn": "src/ui/settings/interface.rs:429",
+    "plural": false,
+    "description": null
+  },
   "INTERFACE_COMMAND_PALETTE_SUBTEXT": {
     "context": "interface.rs",
-    "definedIn": "src/ui/settings/interface.rs:430",
+    "definedIn": "src/ui/settings/interface.rs:454",
     "plural": false,
     "description": null
   },
@@ -770,6 +782,18 @@
   "INTERFACE_STARTUP_LIBRARY_VIEW_SUBTEXT": {
     "context": "interface.rs",
     "definedIn": "src/ui/settings/interface.rs:279",
+    "plural": false,
+    "description": null
+  },
+  "INTERFACE_START_MINIMIZED": {
+    "context": "interface.rs",
+    "definedIn": "src/ui/settings/interface.rs:439",
+    "plural": false,
+    "description": null
+  },
+  "INTERFACE_START_MINIMIZED_SUBTEXT": {
+    "context": "interface.rs",
+    "definedIn": "src/ui/settings/interface.rs:441",
     "plural": false,
     "description": null
   },
@@ -2276,6 +2300,54 @@
   "TRACK_SIDE": {
     "context": "track_item.rs",
     "definedIn": "src/ui/library/track_item.rs:256",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_HIDE": {
+    "context": "windows.rs",
+    "definedIn": "src/tray/windows.rs:346",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_NEXT": {
+    "context": "tray.rs",
+    "definedIn": "src/tray.rs:74",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_PLAY_PAUSE": {
+    "context": "tray.rs",
+    "definedIn": "src/tray.rs:66",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_PREVIOUS": {
+    "context": "tray.rs",
+    "definedIn": "src/tray.rs:70",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_QUIT": {
+    "context": "tray.rs",
+    "definedIn": "src/tray.rs:78",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_SETTINGS": {
+    "context": "tray.rs",
+    "definedIn": "src/tray.rs:82",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_SHOW": {
+    "context": "windows.rs",
+    "definedIn": "src/tray/windows.rs:348",
+    "plural": false,
+    "description": null
+  },
+  "TRAY_TOGGLE": {
+    "context": "macos.rs",
+    "definedIn": "src/tray/macos.rs:145",
     "plural": false,
     "description": null
   },

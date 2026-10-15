@@ -183,7 +183,15 @@ impl RenderOnce for WindowButton {
             .when(is_close, |this| this.rounded_tr(px(theme.radius_md)))
             .on_click(move |_, window, cx| match self {
                 WindowButton::Close(false) => window.remove_window(),
-                WindowButton::Close(true) => cx.quit(),
+                // 主窗 ✕：经托盘关闭决策（隐藏到托盘或退出），Alt+F4 的
+                // OS 关闭路径由 build_main_window 的 on_window_should_close
+                // 收敛到同一决策。Linux 无托盘模块，就地回退为退出。
+                WindowButton::Close(true) => {
+                    #[cfg(any(windows, target_os = "macos"))]
+                    crate::tray::request_close(window, cx);
+                    #[cfg(not(any(windows, target_os = "macos")))]
+                    cx.quit();
+                }
                 WindowButton::Minimize => {
                     if !cfg!(target_os = "windows") {
                         window.minimize_window()

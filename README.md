@@ -74,6 +74,8 @@ Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的
 
 ### 界面与系统
 
+- 系统托盘（Windows / macOS）：关闭主窗口隐藏到托盘、托盘快捷播放控制、tooltip 显示当前曲目；可设置启动即入托盘
+
 - 原生渲染 UI（GPUI），响应式布局，深浅主题
 
 - 系统媒体控制：Windows SMTC、macOS Now Playing、Linux MPRIS
