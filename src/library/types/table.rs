@@ -982,3 +982,115 @@ mod tests {
         );
     }
 }
+
+/// Timing probes for the table read paths — the §37 regression-protection
+/// layer for library loading, sorting and the row-prefetch used while
+/// scrolling. Companion probes: `row_build_bench` (per-row queries),
+/// `test_support::scale_probe` (100k hot reads, incl. the search-index
+/// queries), `session_storage`'s large-session bench.
+///
+/// ```text
+/// cargo test --release table::bench -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod bench {
+    use super::{clear_row_cache, prefetch_rows_chunked, track_row_cache};
+    use crate::{
+        library::db::{self, TrackSortMethod},
+        test_support::{create_test_pool, seed_library},
+    };
+
+    const ALBUMS: usize = 200;
+    const TRACKS_PER_ALBUM: usize = 50;
+    const ARTISTS: usize = ALBUMS;
+
+    /// Full-table loads cost 10s of ms at this scale, so they get a handful
+    /// of runs instead of the shared 400-iteration micro-query helper.
+    fn summarize_table(name: &str, runs: usize, mut f: impl FnMut()) {
+        f(); // warmup: first run populates the page cache
+        let mut samples = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            let start = std::time::Instant::now();
+            f();
+            samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+        }
+        let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
+        let mean = samples.iter().sum::<f64>() / runs as f64;
+        println!("{name:<28} min={min:>8.1}ms  mean={mean:>8.1}ms  ({runs} runs)");
+    }
+
+    #[test]
+    #[ignore = "timing report, run with --ignored --nocapture"]
+    fn report_table_read_costs() {
+        // Startup DB half: pool creation + migrations (the [startup] log's
+        // `database pool ready elapsed_ms` measures the same thing in situ).
+        let pool_start = std::time::Instant::now();
+        let (_dir, pool) = crate::RUNTIME.block_on(async {
+            let (dir, pool) = create_test_pool("table-bench").await;
+            seed_library(&pool, ALBUMS, TRACKS_PER_ALBUM, ARTISTS).await;
+            (dir, pool)
+        });
+        println!(
+            "create_test_pool (pool + migrate): {:?}",
+            pool_start.elapsed()
+        );
+        let total_tracks = ALBUMS * TRACKS_PER_ALBUM;
+        println!("library: {ALBUMS} albums, {total_tracks} tracks, {ARTISTS} artists");
+
+        // ---- library loading + sorting: every table sort method ----
+        // The default (`None` → ArtistAsc) is the accepted-debt full-table
+        // JOIN + COALESCE sort documented in find_tracks_artist_asc.sql;
+        // these numbers are its regression baseline.
+        let sorts: Vec<(&str, TrackSortMethod)> = vec![
+            (
+                "list_tracks ArtistAsc (default)",
+                TrackSortMethod::ArtistAsc,
+            ),
+            ("list_tracks ArtistDesc", TrackSortMethod::ArtistDesc),
+            ("list_tracks TitleAsc", TrackSortMethod::TitleAsc),
+            ("list_tracks AlbumAsc", TrackSortMethod::AlbumAsc),
+            ("list_tracks DurationAsc", TrackSortMethod::DurationAsc),
+            (
+                "list_tracks TrackNumberAsc",
+                TrackSortMethod::TrackNumberAsc,
+            ),
+        ];
+        for (label, sort) in sorts {
+            summarize_table(label, 5, || {
+                let _ = crate::RUNTIME
+                    .block_on(db::list_tracks(&pool, sort))
+                    .unwrap();
+            });
+        }
+
+        // ---- scrolling prefetch: chunked IN queries over cold ids ----
+        // The prefetch filters already-cached ids, so each shot gets a fresh
+        // slice of cold ids and a cleared cache (setup, not measured); the
+        // best of 3 stands for the per-chunk cost.
+        let all_ids: Vec<i64> = (0..total_tracks as i64).collect();
+        for chunk_count in [1usize, 10] {
+            let mut best_ms = f64::INFINITY;
+            for shot in 0..3 {
+                let slice: Vec<i64> = all_ids.iter().skip(shot * 900).take(900).copied().collect();
+                if slice.len() < 900 {
+                    break;
+                }
+                clear_row_cache(track_row_cache());
+                let start = std::time::Instant::now();
+                crate::RUNTIME.block_on(prefetch_rows_chunked(
+                    track_row_cache(),
+                    pool.clone(),
+                    slice,
+                ));
+                best_ms = best_ms.min(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            println!(
+                "prefetch chunk x{chunk_count:<2} (900 ids each)   {:>8.1}ms per chunk  \
+                 {:>7.1}µs/id  (best of 3)",
+                best_ms,
+                best_ms * 1_000.0 / 900.0,
+            );
+        }
+        clear_row_cache(track_row_cache());
+    }
+}

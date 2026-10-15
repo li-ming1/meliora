@@ -290,3 +290,77 @@ impl PaletteItem for SearchPaletteItem {
         }
     }
 }
+
+/// Timing probe for the search-index item construction — the half of a
+/// palette-open rebuild that the DB-side `scale_probe` (its "3) 搜索索引
+/// 四查询" section) does not cover: turning the three query results into
+/// `SearchPaletteItem`s with their precomputed match text. Runs on
+/// `spawn_blocking` at open time, so a regression here is open latency.
+///
+/// ```text
+/// cargo test --release search_item::bench -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod bench {
+    use super::SearchPaletteItem;
+    use crate::test_support::bench_summarize_n;
+
+    const ALBUMS: usize = 2_000;
+    const ARTISTS: usize = 2_000;
+    const TRACKS: usize = 10_000;
+
+    fn synthetic_results() -> SyntheticResults {
+        let albums = (0..ALBUMS as i64)
+            .map(|id| {
+                (
+                    id,
+                    format!("Album {id:05}"),
+                    Some(format!("Artist {:05}", id % ARTISTS as i64)),
+                    format!("Artist {:05} · Album {id:05}", id % ARTISTS as i64),
+                    id % 7 != 0,
+                )
+            })
+            .collect();
+        let artists = (0..ARTISTS as i64)
+            .map(|id| (id, format!("Artist {id:05}")))
+            .collect();
+        let tracks = (0..TRACKS as i64)
+            .map(|id| {
+                (
+                    id,
+                    format!("Track {id:05}"),
+                    format!("Artist {:05} · Track {id:05}", id % ARTISTS as i64),
+                    Some(id % ALBUMS as i64),
+                )
+            })
+            .collect();
+        SyntheticResults {
+            albums,
+            artists,
+            tracks,
+        }
+    }
+
+    struct SyntheticResults {
+        albums: Vec<(i64, String, Option<String>, String, bool)>,
+        artists: Vec<(i64, String)>,
+        tracks: Vec<(i64, String, String, Option<i64>)>,
+    }
+
+    #[test]
+    #[ignore = "timing report, run with --ignored --nocapture"]
+    fn report_search_item_build_costs() {
+        let data = synthetic_results();
+        println!("search index: {ALBUMS} albums, {ARTISTS} artists, {TRACKS} tracks");
+        // The query results are cloned per run (from_search_results consumes
+        // them); at 14k items that clone is a fixed per-run overhead the
+        // build itself must be read against.
+        bench_summarize_n("from_search_results (14k items)", 2, 50, || {
+            let albums = data.albums.clone();
+            let artists = data.artists.clone();
+            let tracks = data.tracks.clone();
+            let items = SearchPaletteItem::from_search_results(albums, artists, tracks);
+            assert_eq!(items.len(), ALBUMS + ARTISTS + TRACKS);
+        });
+    }
+}

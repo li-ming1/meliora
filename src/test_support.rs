@@ -139,6 +139,137 @@ pub(crate) async fn create_test_pool(prefix: &str) -> (TestDir, SqlitePool) {
     (dir, pool)
 }
 
+/// Seeds a synthetic library with raw SQL in one transaction: `artists`
+/// artists, `albums` albums (each linked to its same-numbered artist) and
+/// `albums * tracks_per_album` tracks (each linked to its album's artist).
+/// The shape matches a real scan write closely enough for read-path
+/// benchmarks (10k tracks ≈ 200 albums × 50); the write path itself is
+/// covered by the scan tests and the 100k `scale_probe`.
+pub(crate) async fn seed_library(
+    pool: &SqlitePool,
+    albums: usize,
+    tracks_per_album: usize,
+    artists: usize,
+) {
+    let mut tx = pool.begin().await.unwrap();
+    for artist in 0..artists {
+        sqlx::query("INSERT INTO artist (id, name, name_sortable) VALUES ($1, $2, $3)")
+            .bind(artist as i64)
+            .bind(format!("artist-{artist:04}"))
+            .bind(format!("artist-{artist:04}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    for album in 0..albums {
+        sqlx::query("INSERT INTO album (id, title, title_sortable) VALUES ($1, $2, $3)")
+            .bind(album as i64)
+            .bind(format!("album-{album:04}"))
+            .bind(format!("album-{album:04}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO album_artist (album_id, artist_id) VALUES ($1, $2)")
+            .bind(album as i64)
+            .bind(album.min(artists - 1) as i64)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    let mut id = 0i64;
+    for album in 0..albums {
+        for track in 0..tracks_per_album {
+            sqlx::query(
+                "INSERT INTO track (id, title, title_sortable, album_id, track_number, duration, location) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(id)
+            .bind(format!("track-{track:03}"))
+            .bind(format!("track-{track:03}"))
+            .bind(album as i64)
+            .bind(track as i64)
+            .bind(180)
+            .bind(format!(r"C:\bench\album-{album:04}\track-{track:03}.flac"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO track_artist (track_id, artist_id) VALUES ($1, $2)")
+                .bind(id)
+                .bind(album.min(artists - 1) as i64)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            id += 1;
+        }
+    }
+    tx.commit().await.unwrap();
+}
+
+/// Untimed warmup runs before timing; keeps first-call costs (page cache
+/// population, lazy statics) out of the samples.
+pub(crate) const BENCH_WARMUP: usize = 50;
+/// Timed runs per probe; headline numbers use the min.
+pub(crate) const BENCH_ITERATIONS: usize = 400;
+
+/// Times `f` after `BENCH_WARMUP` untimed runs and prints a
+/// min/p50/p90/p99/max/mean summary in microseconds — the micro-query
+/// format the per-row benches read in.
+pub(crate) fn bench_summarize(name: &str, mut f: impl FnMut()) {
+    for _ in 0..BENCH_WARMUP {
+        f();
+    }
+    let mut samples = Vec::with_capacity(BENCH_ITERATIONS);
+    for _ in 0..BENCH_ITERATIONS {
+        let start = std::time::Instant::now();
+        f();
+        samples.push(start.elapsed().as_nanos() as u64 / 1_000);
+    }
+    samples.sort_unstable();
+    let mean = samples.iter().sum::<u64>() / samples.len() as u64;
+    println!(
+        "{name:<28} min={:>6}µs  p50={:>6}µs  p90={:>6}µs  p99={:>6}µs  max={:>6}µs  mean={:>6}µs",
+        samples[0],
+        samples[samples.len() / 2],
+        samples[samples.len() * 9 / 10],
+        samples[samples.len() * 99 / 100],
+        samples[samples.len() - 1],
+        mean,
+    );
+}
+
+/// [`bench_summarize`] in milliseconds with explicit run counts — for
+/// probes whose single run costs 10s of ms (image pipelines, index
+/// builds), where the default 400 iterations would take minutes.
+/// Percentiles collapse to min/mean below 10 runs.
+pub(crate) fn bench_summarize_n(name: &str, warmup: usize, runs: usize, mut f: impl FnMut()) {
+    for _ in 0..warmup {
+        f();
+    }
+    let mut samples = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let start = std::time::Instant::now();
+        f();
+        samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mean = samples.iter().sum::<f64>() / runs as f64;
+    if runs >= 10 {
+        println!(
+            "{name:<34} min={:>8.1}ms  p50={:>8.1}ms  p90={:>8.1}ms  p99={:>8.1}ms  mean={:>8.1}ms  ({runs} runs)",
+            samples[0],
+            samples[runs / 2],
+            samples[runs * 9 / 10],
+            samples[runs.min(100) - 1],
+            mean,
+        );
+    } else {
+        println!(
+            "{name:<34} min={:>8.1}ms  mean={:>8.1}ms  ({runs} runs)",
+            samples[0], mean,
+        );
+    }
+}
+
 pub(crate) fn track_metadata(album: &str, artist: &str, title: &str, track: u64) -> Metadata {
     Metadata {
         name: Some(title.to_string()),

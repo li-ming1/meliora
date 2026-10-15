@@ -11,72 +11,16 @@
 //! cargo test --release row_build_bench -- --ignored --nocapture
 //! ```
 
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
-use sqlx::SqlitePool;
-
-use crate::{library::db, test_support::create_test_pool};
+use crate::{
+    library::db,
+    test_support::{bench_summarize, create_test_pool, seed_library},
+};
 
 const ALBUMS: usize = 200;
 const TRACKS_PER_ALBUM: usize = 50;
 const ARTISTS: usize = ALBUMS;
-const WARMUP: usize = 50;
-const ITERATIONS: usize = 400;
-
-async fn seed(pool: &SqlitePool) {
-    let mut tx = pool.begin().await.unwrap();
-    for artist in 0..ARTISTS {
-        sqlx::query("INSERT INTO artist (id, name, name_sortable) VALUES ($1, $2, $3)")
-            .bind(artist as i64)
-            .bind(format!("artist-{artist:04}"))
-            .bind(format!("artist-{artist:04}"))
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    for album in 0..ALBUMS {
-        sqlx::query("INSERT INTO album (id, title, title_sortable) VALUES ($1, $2, $3)")
-            .bind(album as i64)
-            .bind(format!("album-{album:04}"))
-            .bind(format!("album-{album:04}"))
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO album_artist (album_id, artist_id) VALUES ($1, $2)")
-            .bind(album as i64)
-            .bind(album as i64)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    let mut id = 0i64;
-    for album in 0..ALBUMS {
-        for track in 0..TRACKS_PER_ALBUM {
-            sqlx::query(
-                "INSERT INTO track (id, title, title_sortable, album_id, track_number, duration, location) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(id)
-            .bind(format!("track-{track:03}"))
-            .bind(format!("track-{track:03}"))
-            .bind(album as i64)
-            .bind(track as i64)
-            .bind(180)
-            .bind(format!(r"C:\bench\album-{album:04}\track-{track:03}.flac"))
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-            sqlx::query("INSERT INTO track_artist (track_id, artist_id) VALUES ($1, $2)")
-                .bind(id)
-                .bind(album as i64)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-            id += 1;
-        }
-    }
-    tx.commit().await.unwrap();
-}
 
 /// Cycles through `ids` so consecutive probes hit different rows (and pages).
 fn cycler(ids: &[i64]) -> impl FnMut() -> i64 + '_ {
@@ -88,31 +32,6 @@ fn cycler(ids: &[i64]) -> impl FnMut() -> i64 + '_ {
     }
 }
 
-/// Time `f` `ITERATIONS` times after `WARMUP` untimed runs, and print a
-/// min/p50/p90/p99/max/mean summary in microseconds.
-fn summarize(name: &str, mut f: impl FnMut()) {
-    for _ in 0..WARMUP {
-        f();
-    }
-    let mut samples = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = Instant::now();
-        f();
-        samples.push(start.elapsed().as_nanos() as u64 / 1_000);
-    }
-    samples.sort_unstable();
-    let mean = samples.iter().sum::<u64>() / samples.len() as u64;
-    println!(
-        "{name:<28} min={:>6}µs  p50={:>6}µs  p90={:>6}µs  p99={:>6}µs  max={:>6}µs  mean={:>6}µs",
-        samples[0],
-        samples[samples.len() / 2],
-        samples[samples.len() * 9 / 10],
-        samples[samples.len() * 99 / 100],
-        samples[samples.len() - 1],
-        mean,
-    );
-}
-
 #[test]
 #[ignore = "timing report, run with --ignored --nocapture"]
 fn report_row_build_query_costs() {
@@ -121,7 +40,7 @@ fn report_row_build_query_costs() {
     // thread pays per row build via `blocking_query`.
     let (_dir, pool) = crate::RUNTIME.block_on(async {
         let (_dir, pool) = create_test_pool("row-build-bench").await;
-        seed(&pool).await;
+        seed_library(&pool, ALBUMS, TRACKS_PER_ALBUM, ARTISTS).await;
         (_dir, pool)
     });
 
@@ -141,22 +60,22 @@ fn report_row_build_query_costs() {
     let mut next_track_id = cycler(&track_ids);
     let mut next_album_id = cycler(&album_ids);
     let mut next_artist_id = cycler(&artist_ids);
-    summarize("get_track_by_id", || {
+    bench_summarize("get_track_by_id", || {
         let _ = crate::RUNTIME
             .block_on(db::get_track_by_id(&pool, next_track_id()))
             .unwrap();
     });
-    summarize("get_album_by_id", || {
+    bench_summarize("get_album_by_id", || {
         let _ = crate::RUNTIME
             .block_on(db::get_album_by_id(&pool, next_album_id()))
             .unwrap();
     });
-    summarize("get_artist_with_counts", || {
+    bench_summarize("get_artist_with_counts", || {
         let _ = crate::RUNTIME
             .block_on(db::get_artist_with_counts(&pool, next_artist_id()))
             .unwrap();
     });
-    summarize("list_all_tracks_by_artist", || {
+    bench_summarize("list_all_tracks_by_artist", || {
         let _: Arc<Vec<_>> = crate::RUNTIME
             .block_on(db::list_all_tracks_by_artist(&pool, next_artist_id()))
             .unwrap();

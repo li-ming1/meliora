@@ -2040,3 +2040,105 @@ mod tests {
         assert_eq!(u32::from(size.height), 1440);
     }
 }
+
+/// Timing probes for the image pipeline (§37 regression protection):
+/// the cover decode paths (what every list/grid tile pays) and the
+/// immersive backdrop pipeline (the hundreds-of-ms synchronous CPU the
+/// 2026-09-29 "切换不丝滑"复盘 was about). Companion probe: the allocation
+/// guards in `playback` tests cover the audio side; `[mem]`/`[frame]` cover
+/// the residency/frame side.
+///
+/// ```text
+/// cargo test --release managed_image::bench -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::test_support::bench_summarize_n;
+    use image::{Frame, RgbaImage};
+    use smallvec::smallvec;
+    use std::sync::Arc;
+
+    /// A photo-like synthetic cover: smooth gradients plus per-8px block
+    /// steps, so JPEG compression and the denoise/resample passes see
+    /// realistic structure (flat color would flatter every number). JPEG has
+    /// no alpha, so the buffer is encoded as Rgb8 — exactly what a real
+    /// cover file decodes back from.
+    fn synthetic_jpeg(size: u32) -> Vec<u8> {
+        let image = RgbaImage::from_fn(size, size, |x, y| {
+            image::Rgba([
+                ((x * 255 / size) as u8).wrapping_add(((x / 8 % 2) * 24) as u8),
+                ((y * 255 / size) as u8).wrapping_add(((y / 8 % 2) * 24) as u8),
+                (((x + y) * 255 / (2 * size)) as u8),
+                255,
+            ])
+        });
+        let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
+        let mut buf = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85);
+        encoder
+            .encode(rgb.as_raw(), size, size, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        buf
+    }
+
+    fn synthetic_source(size: u32) -> Arc<RenderImage> {
+        Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
+            size,
+            size,
+            |x, y| {
+                image::Rgba([
+                    ((x * 255 / size) as u8).wrapping_add(((x / 8 % 2) * 24) as u8),
+                    ((y * 255 / size) as u8).wrapping_add(((y / 8 % 2) * 24) as u8),
+                    (((x + y) * 255 / (2 * size)) as u8),
+                    255,
+                ])
+            },
+        ))]))
+    }
+
+    #[test]
+    #[ignore = "timing report, run with --ignored --nocapture"]
+    fn report_image_pipeline_costs() {
+        for source_px in [2048u32, 1280] {
+            let jpeg = synthetic_jpeg(source_px);
+            println!(
+                "source: {source_px}px synthetic JPEG, {} KB",
+                jpeg.len() / 1024
+            );
+
+            // Display-cover path: decode bounded at the tile size (what every
+            // list/grid row pays on a cache miss).
+            bench_summarize_n("decode scaled @512", 5, 50, || {
+                let _ = decode_to_render_image_scaled(&jpeg, 512).unwrap();
+            });
+            // Full decode: the backdrop source path (no bound).
+            bench_summarize_n(&format!("decode full @{source_px}"), 1, 5, || {
+                let _ = decode_to_render_image_scaled(&jpeg, 0).unwrap();
+            });
+        }
+
+        // Immersive backdrop pipeline: full-size source → cover crop →
+        // denoise → resample → unsharp, to a 1920x1080 device-pixel target.
+        for source_px in [2048u32, 1280] {
+            let source = synthetic_source(source_px);
+            bench_summarize_n(
+                &format!("backdrop_sharp_fill {source_px}->1080p"),
+                1,
+                3,
+                || {
+                    let _ = backdrop_sharp_fill(source.clone(), 1920, 1080).unwrap();
+                },
+            );
+        }
+
+        // Fixed-size fallback path (target unknown, first frame): the enhance
+        // pass only does real work on small sources — a 2048 source passes
+        // through untouched, so the probe uses the 480px ladder-fallback size
+        // it exists for.
+        let source = synthetic_source(480);
+        bench_summarize_n("enhance_render_image 480 (fallback)", 2, 10, || {
+            let _ = enhance_render_image(&source).unwrap();
+        });
+    }
+}
