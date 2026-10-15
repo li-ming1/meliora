@@ -51,6 +51,7 @@ async fn sync_artist_links(
                 .await?;
         }
     }
+    let mut evicted: Vec<i64> = Vec::new();
     for artist_id in existing {
         if !desired.contains(artist_id) {
             sqlx::query(delete_sql)
@@ -59,9 +60,13 @@ async fn sync_artist_links(
                 .execute(&mut *conn)
                 .await?;
             // the cleanup trigger can delete the artist when its last link goes
-            matcher.evict(*artist_id);
+            evicted.push(*artist_id);
         }
     }
+    // One pass over the matcher for the whole victim set: a mass re-tag
+    // orphans every artist, and looping `evict` would sweep `by_key` once
+    // per victim (bench F028: 168x on 10k victims). End state identical.
+    matcher.evict_many(&evicted);
     Ok(())
 }
 

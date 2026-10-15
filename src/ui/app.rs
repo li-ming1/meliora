@@ -20,7 +20,7 @@ use crate::{
     controllers::{init_pbc_task, register_pbc_event_handlers},
     library::{
         db::create_pool,
-        scan::{ScanEvent, ScanInterface, start_scanner},
+        scan::{ScanInterface, start_scanner},
     },
     paths,
     playback::{
@@ -101,15 +101,6 @@ impl Render for MainWindow {
                 .child(self.immersive_view.clone())
                 .child(self.toast_layer.clone());
         }
-        let show_corrupt_settings_dialog = matches!(
-            cx.global::<Models>().settings_health.read(cx),
-            models::SettingsHealth::Corrupt { .. }
-        );
-        let show_missing_folder_dialog = !show_corrupt_settings_dialog
-            && matches!(
-                cx.global::<Models>().scan_state.read(cx),
-                ScanEvent::WaitingForMissingFolderDecision { .. }
-            );
         let show_queue = *self.show_queue.read(cx);
         let show_lyrics = *self.show_lyrics.read(cx);
         let show_sidebar = show_queue || show_lyrics;
@@ -199,12 +190,16 @@ impl Render for MainWindow {
                             show_about.write(cx, false);
                         }))
                     })
-                    .when(show_missing_folder_dialog, |this| {
-                        this.child(self.missing_folder_dialog.clone())
-                    })
-                    .when(show_corrupt_settings_dialog, |this| {
-                        this.child(self.corrupt_settings_dialog.clone())
-                    })
+                    // Both dialogs stay mounted and hide themselves inside
+                    // their own render (empty div). Gating the mount on
+                    // `scan_state` / `settings_health` reads here made the
+                    // root view re-render at the scan-progress rate (250 ms
+                    // during a scan) for two values that are almost always
+                    // false — the whole window chrome rebuilt per tick for
+                    // nothing. The entities are in the tree either way, so
+                    // visibility is byte-for-byte the same as before.
+                    .child(self.missing_folder_dialog.clone())
+                    .child(self.corrupt_settings_dialog.clone())
                     .child(self.toast_layer.clone()),
             ))
     }
@@ -418,7 +413,14 @@ fn build_main_window(
             .map(|v| v.size)
             .unwrap_or(window.bounds().size);
 
-            window_information.write(cx, Some(WindowInformation { maximized, size }));
+            // `!=` guard like every other Models write: dragging a window
+            // border fires this at the OS rate, and an unchanged write still
+            // costs a notify effect for a value nothing observes.
+            let next = WindowInformation { maximized, size };
+            let changed = window_information.read(cx).as_ref() != Some(&next);
+            if changed {
+                window_information.write(cx, Some(next));
+            }
         })
         .detach();
 

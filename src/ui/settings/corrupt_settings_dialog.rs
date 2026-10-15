@@ -21,8 +21,10 @@ impl CorruptSettingsDialog {
 
 impl Render for CorruptSettingsDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let path = match cx.global::<Models>().settings_health.read(cx).clone() {
-            SettingsHealth::Corrupt { path } => path,
+        // Mounted unconditionally by the root view (app.rs); borrow-match so
+        // the healthy path (the overwhelmingly common one) clones nothing.
+        let path = match &*cx.global::<Models>().settings_health.read(cx) {
+            SettingsHealth::Corrupt { path } => path.clone(),
             SettingsHealth::Ok => return div().into_any_element(),
         };
         let path_display = path.display().to_string();

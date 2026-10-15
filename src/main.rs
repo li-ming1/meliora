@@ -7,7 +7,7 @@
 use cntp_i18n::{I18N_MANAGER, tr_load};
 use gpui::set_trace_enabled;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 
 use crate::media::{
     lofty::LoftyProvider, lookup_table::register_providers, symphonia::SymphoniaProvider,
@@ -415,14 +415,15 @@ pub(crate) fn spawn_replacement() -> bool {
 /// 按窗口归因（主窗口 / 桌面歌词悬浮窗的帧节奏差一个数量级，混在一行里
 /// 无法判读）需要应用在开窗时登记人类可读标签。反向映射（标签→当前
 /// WindowId）：每标签一条，窗口反复开关只覆盖、不累积，已销毁窗口的
-/// 旧 id 自然失配，无需反注册。探针跑在 tokio worker 上，用普通互斥锁
-/// 而非 gpui Global。
-static FRAME_WINDOW_IDS: OnceLock<Mutex<HashMap<&'static str, gpui::WindowId>>> = OnceLock::new();
+/// 旧 id 自然失配，无需反注册。探针跑在 tokio worker 上，30s 一次只读，
+/// 注册是开窗级写——RwLock 而非 gpui Global（注册点在窗口创建路径上，
+/// 拿不到 App 上下文）。
+static FRAME_WINDOW_IDS: OnceLock<RwLock<HashMap<&'static str, gpui::WindowId>>> = OnceLock::new();
 
 /// 开窗后登记该窗口在 `[frame]` 日志里的 `win=` 标签（同标签重开覆盖）。
 pub fn register_frame_window_label(handle: gpui::AnyWindowHandle, label: &'static str) {
     let map = FRAME_WINDOW_IDS.get_or_init(Default::default);
-    if let Ok(mut map) = map.lock() {
+    if let Ok(mut map) = map.write() {
         map.insert(label, handle.window_id());
     }
 }
@@ -447,7 +448,7 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
         by_window.into_iter().collect();
     windows.sort_by_key(|(id, _)| id.as_u64());
     let labels = FRAME_WINDOW_IDS.get_or_init(Default::default);
-    let labels = labels.lock().ok();
+    let labels = labels.read().ok();
     for (window_id, frames) in windows {
         let win = labels
             .as_ref()

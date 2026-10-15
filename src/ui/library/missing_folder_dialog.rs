@@ -3,7 +3,7 @@
 //! remembering the choice as the default policy in Settings.
 
 use cntp_i18n::tr;
-use gpui::{App, AppContext, Context, Entity, IntoElement, Render, Window};
+use gpui::{App, AppContext, Context, Entity, IntoElement, Render, Window, div};
 
 use crate::{
     library::scan::{MissingFolderDecision, ScanEvent, ScanInterface},
@@ -15,6 +15,7 @@ use crate::{
             icons::{FOLDER_CHECK, TRASH},
         },
         models::Models,
+        models::SettingsHealth,
     },
 };
 
@@ -59,9 +60,22 @@ impl MissingFolderDialog {
 
 impl Render for MissingFolderDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let paths = match cx.global::<Models>().scan_state.read(cx).clone() {
-            ScanEvent::WaitingForMissingFolderDecision { paths } => paths,
-            _ => Vec::new(),
+        // Mounted unconditionally by the root view (app.rs); hidden states
+        // render an empty div, same contract as `CorruptSettingsDialog`.
+        // Reading `scan_state` in the root view instead would re-render the
+        // whole window chrome at the scan-progress rate (250 ms). The
+        // corrupt-settings precedence mirrors the root view's old
+        // `!show_corrupt_settings_dialog &&` gate.
+        let models = cx.global::<Models>();
+        if matches!(
+            *models.settings_health.read(cx),
+            SettingsHealth::Corrupt { .. }
+        ) {
+            return div().into_any_element();
+        }
+        let paths = match models.scan_state.read(cx) {
+            ScanEvent::WaitingForMissingFolderDecision { paths } => paths.clone(),
+            _ => return div().into_any_element(),
         };
 
         let remember_choice = self.remember_choice;
@@ -124,5 +138,6 @@ impl Render for MissingFolderDialog {
             )),
         )
         .footer(footer)
+        .into_any_element()
     }
 }

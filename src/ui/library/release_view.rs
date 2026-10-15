@@ -167,6 +167,13 @@ pub struct ReleaseView {
     scroll_follow: SmoothScrollFollow,
     scroll_frame_scheduled: bool,
     all_liked: bool,
+    /// Cached at load: `tracks_available` is immutable once built, so the
+    /// header no longer rescans it every render.
+    has_available_tracks: bool,
+    /// Whether the currently playing track belongs to this album. Derived
+    /// from `PlaybackInfo::current_track`; recomputed on track change (the
+    /// observer below) and at load — never per frame.
+    current_track_in_album: bool,
     menu_open: bool,
     track_ids: std::rc::Rc<[i64]>,
     /// Parsed once; the footer renders it every frame otherwise.
@@ -193,6 +200,21 @@ impl ReleaseView {
                 let new_all_liked = compute_all_liked(cx, &this.tracks);
                 if new_all_liked != this.all_liked {
                     this.all_liked = new_all_liked;
+                    cx.notify();
+                }
+            })
+            .detach();
+
+            // The header highlights the current track when it belongs to this
+            // album. Recomputed here on track change (with a `!=` guard) so
+            // render never scans the track list — and so the highlight no
+            // longer goes stale on track change, which nothing else in this
+            // view observed.
+            let current_track = cx.global::<PlaybackInfo>().current_track.clone();
+            cx.observe(&current_track, |this: &mut Self, _, cx| {
+                let in_album = this.compute_current_track_in_album(cx);
+                if in_album != this.current_track_in_album {
+                    this.current_track_in_album = in_album;
                     cx.notify();
                 }
             })
@@ -227,6 +249,8 @@ impl ReleaseView {
                 scroll_follow: SmoothScrollFollow::new(RELEASE_SCROLL_ANIMATION_DURATION),
                 scroll_frame_scheduled: false,
                 all_liked: false,
+                has_available_tracks: false,
+                current_track_in_album: false,
                 menu_open: false,
                 track_ids: std::rc::Rc::from(Vec::new()),
                 release_date_utc: None,
@@ -354,8 +378,29 @@ impl ReleaseView {
                 .position(|track| track.id == track_id && is_track_available_snapshot(cx, track))
         });
         self.all_liked = all_liked;
+        // Derived header state, computed once per load instead of per frame.
+        self.has_available_tracks = self.tracks_available.iter().any(|&a| a);
+        self.current_track_in_album = self.compute_current_track_in_album(cx);
 
         cx.notify();
+    }
+
+    /// Whether the currently playing track is one of this album's available
+    /// tracks: borrow the current path (no clone) and pair each track with
+    /// its precomputed availability — no per-frame stats, and the scan runs
+    /// only on track change / load, not on every render.
+    fn compute_current_track_in_album(&self, cx: &App) -> bool {
+        cx.global::<PlaybackInfo>()
+            .current_track
+            .read(cx)
+            .as_ref()
+            .map(|current| current.get_path().as_path())
+            .is_some_and(|current| {
+                self.tracks
+                    .iter()
+                    .zip(self.tracks_available.iter())
+                    .any(|(track, &available)| available && current == track.location.as_path())
+            })
     }
 
     fn render_header(
@@ -747,22 +792,6 @@ impl Render for ReleaseView {
 
         let is_playing =
             cx.global::<PlaybackInfo>().playback_state.read(cx) == &PlaybackState::Playing;
-        // Flag whether the current track is part of the album: borrow the
-        // current path (no clone) and pair each track with its precomputed
-        // availability — no per-frame stats.
-        let current_path = cx
-            .global::<PlaybackInfo>()
-            .current_track
-            .read(cx)
-            .as_ref()
-            .map(|current| current.get_path().as_path());
-        let current_track_in_album = current_path.is_some_and(|current| {
-            self.tracks
-                .iter()
-                .zip(self.tracks_available.iter())
-                .any(|(track, &available)| available && current == track.location.as_path())
-        });
-        let has_available_tracks = self.tracks_available.iter().any(|&a| a);
 
         let scroll_handle = self.scroll_handle.clone();
 
@@ -786,8 +815,8 @@ impl Render for ReleaseView {
                     .child(self.render_header(
                         &theme,
                         HeaderState {
-                            has_available_tracks,
-                            current_track_in_album,
+                            has_available_tracks: self.has_available_tracks,
+                            current_track_in_album: self.current_track_in_album,
                             is_playing,
                             show_close_button: two_column,
                         },

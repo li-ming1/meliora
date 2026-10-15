@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use sqlx::SqliteConnection;
 
 // 规范化函数本体在 media 层（media/lofty.rs 同用它做 tag 归一），此处再导
@@ -29,11 +29,24 @@ impl ArtistMatcher {
         self.by_key.clear();
     }
 
-    pub fn evict(&mut self, artist_id: i64) {
-        if let Some(artists) = &mut self.artists {
-            artists.remove(&artist_id);
+    /// Evict a batch of artists whose last link went: one pass over both
+    /// maps for the whole victim set. `sync_artist_links` can orphan many
+    /// artists inside one commit (a mass re-tag orphans every artist); the
+    /// per-id predecessor swept `by_key` once per victim, which is O(n²)
+    /// against the map size (bench F028: 10k victims on a 10k map = 77 ms
+    /// sequential vs 0.5 ms here). End state is identical to looping the
+    /// old per-id evict — asserted by the bench's
+    /// `assert_batch_matches_loop`. The old per-id shape lives on in the
+    /// bench as the pre-fix comparison variant.
+    pub fn evict_many(&mut self, artist_ids: &[i64]) {
+        if artist_ids.is_empty() {
+            return;
         }
-        self.by_key.retain(|_, id| *id != artist_id);
+        let victims: FxHashSet<i64> = artist_ids.iter().copied().collect();
+        if let Some(artists) = &mut self.artists {
+            artists.retain(|id, _| !victims.contains(id));
+        }
+        self.by_key.retain(|_, id| !victims.contains(id));
     }
 
     async fn load(&mut self, conn: &mut SqliteConnection) -> anyhow::Result<()> {
@@ -84,8 +97,17 @@ impl ArtistMatcher {
             .unwrap()
             .get_mut(&artist_id)
             .expect("artist matcher key should point to a loaded artist");
-        let is_canonical = |name: &str| token_key(name) == entry.key;
-        if is_canonical(name) && !is_canonical(&entry.name) {
+        // A `by_key` hit implies `entry.key == key` (`load`/`create` maintain
+        // that invariant), so both canonical checks compare against `key`.
+        // When the sort defaulted to the name, `key` IS `token_key(name)` and
+        // the incoming-name check is trivially true — no recomputation. Bench
+        // F029 measured the old shape at 3 `token_key` calls per hit (551 ns
+        // per hit, 111% of it in `token_key`); the hit path now costs at most
+        // one (the entry-name check) and zero on the steady state where the
+        // stored name is already canonical.
+        let entry_name_matches_key = token_key(&entry.name) == key;
+        let name_matches_key = sort == name || token_key(name) == key;
+        if name_matches_key && !entry_name_matches_key {
             let updated = sqlx::query(include_str!("../../../queries/scan/update_artist_name.sql"))
                 .bind(name)
                 .bind(entry.id)
@@ -213,7 +235,7 @@ mod tests {
             .unwrap();
         assert_ne!(first, second);
 
-        matcher.evict(first);
+        matcher.evict_many(&[first]);
         assert_eq!(
             matcher
                 .resolve(&mut conn, "Second Artist", None)
@@ -239,15 +261,18 @@ mod tests {
 ///
 /// F028 - `ArtistMatcher::evict` sweeps the whole `by_key` map with one
 /// `retain` per evicted artist, and `sync_artist_links`
-/// (database/artist_links.rs:62) calls it once per deleted link. The audited
+/// (database/artist_links.rs) called it once per deleted link. The audited
 /// worst case is a mass re-tag that orphans every artist: 10k evictions
-/// against a 10k-entry map. Three variants are timed on synthetic matchers
-/// built exactly the way `load` builds them (no database involved - this
-/// child module can see the private fields):
+/// against a 10k-entry map. **Fixed 2026-10-15**: production now collects
+/// the batch and calls `evict_many` (the A' shape below). Three variants
+/// are timed on synthetic matchers built exactly the way `load` builds
+/// them (no database involved - this child module can see the private
+/// fields):
 ///
-/// - A: the current `evict(id)` called per artist in a loop (call-site
-///   shape; the real loop additionally pays one SQL DELETE per link, which
-///   this bench deliberately isolates out)
+/// - A: the pre-fix `evict(id)` called per artist in a loop (the old
+///   call-site shape, replicated by `evict_one_sequential`; the real loop
+///   additionally paid one SQL DELETE per link, which this bench
+///   deliberately isolates out)
 /// - A': a batched one-pass variant - one `retain` over both maps against
 ///   the whole victim set, the shape a batched cleanup API would take; its
 ///   end state is asserted equal to looping `evict` before anything is timed
@@ -257,18 +282,21 @@ mod tests {
 /// plus scenario B, a regular incremental rescan (50 evictions out of the
 /// same 10k matcher), which is what every ordinary scan pays.
 ///
-/// F029 - the `resolve` hit path recomputes `token_key`: with `sort_name`
+/// F029 - the `resolve` hit path recomputed `token_key`: with `sort_name`
 /// absent (:74) `key = token_key(name)` at :75, then `is_canonical(name)` at
-/// :88 recomputes `token_key(name)` - always redundant on a hit, because a
+/// :88 recomputed `token_key(name)` - always redundant on a hit, because a
 /// `by_key` hit implies `entry.key == key` - and when the incoming name
 /// equals the stored name (the steady state this bench seeds) the
-/// short-circuit still evaluates `is_canonical(&entry.name)` on the same
-/// string. The hit shape is therefore 3 `token_key` calls per hit, 2 of them
-/// removable by reusing `key`. The bench times `token_key` standalone (100k
-/// calls, per-call ns), then full `resolve` hits against a seeded
-/// 10k-artist database (the hit path runs no SQL, so the share calculation
-/// is not I/O-diluted), and reports the hit share plus the audit's
-/// full-library extrapolation (100k tracks x 1.5 artists = 150k resolves).
+/// short-circuit still evaluated `is_canonical(&entry.name)` on the same
+/// string. The hit shape was therefore 3 `token_key` calls per hit, 2 of them
+/// removable by reusing `key`. **Fixed 2026-10-15**: the hit path now reuses
+/// `key` (and skips the incoming-name call outright when the sort defaulted
+/// to the name), costing at most one `token_key`. The bench times
+/// `token_key` standalone (100k calls, per-call ns), then full `resolve`
+/// hits against a seeded 10k-artist database (the hit path runs no SQL, so
+/// the share calculation is not I/O-diluted), and reports the post-fix hit
+/// cost plus the audit's full-library extrapolation. Before/after numbers
+/// live in the GPUI HARDCORE PERFORMANCE §44 ledger (2026-10-15 round).
 ///
 /// Measured numbers are only ever written into this doc comment after an
 /// actual run (GPUI HARDCORE §1: no numbers, no conclusion - never pre-fill).
@@ -314,10 +342,21 @@ mod bench {
         }
     }
 
+    /// The pre-fix per-id evict shape, kept as scenario A's comparison:
+    /// one `by_key` sweep per victim. Removed from production when
+    /// `evict_many` landed (2026-10-15); lives on here so the before/after
+    /// delta stays measurable (§37 regression protection).
+    fn evict_one_sequential(matcher: &mut ArtistMatcher, artist_id: i64) {
+        if let Some(artists) = &mut matcher.artists {
+            artists.remove(&artist_id);
+        }
+        matcher.by_key.retain(|_, id| *id != artist_id);
+    }
+
     /// Comparison variant for the mass-eviction scenario: partition both
     /// maps once against the whole victim set instead of one full
-    /// `by_key.retain` sweep per victim. Same end state as looping `evict`
-    /// (asserted by `assert_batch_matches_loop`).
+    /// `by_key.retain` sweep per victim. Same end state as looping
+    /// `evict_one_sequential` (asserted by `assert_batch_matches_loop`).
     fn evict_all_one_pass(matcher: &mut ArtistMatcher, victims: &[i64]) {
         let victims: FxHashSet<i64> = victims.iter().copied().collect();
         if let Some(artists) = &mut matcher.artists {
@@ -347,7 +386,7 @@ mod bench {
         let victims: Vec<i64> = (0..N).filter(|id| id % 2 == 0).collect();
         let mut looped = make_matcher(N as usize);
         for id in &victims {
-            looped.evict(*id);
+            evict_one_sequential(&mut looped, *id);
         }
         let mut batched = make_matcher(N as usize);
         evict_all_one_pass(&mut batched, &victims);
@@ -410,17 +449,17 @@ mod bench {
 
         println!(
             "dataset: {ARTISTS} artists in the matcher; evict called once per artist, \
-             the sync_artist_links (artist_links.rs:62) shape"
+             the pre-fix sync_artist_links call-site shape"
         );
 
         // scenario A: the audited mass re-tag - every artist evicted, one
-        // full by_key sweep per call
+        // full by_key sweep per call (pre-fix shape; production now batches)
         let (a_min, _) = time_evictions(
-            "A   evict 10000/10000 sequential (current)",
+            "A   evict 10000/10000 sequential (pre-fix shape)",
             || make_matcher(ARTISTS),
             |m| {
                 for id in &all_ids {
-                    m.evict(*id);
+                    evict_one_sequential(m, *id);
                 }
             },
         );
@@ -445,7 +484,7 @@ mod bench {
             || make_matcher(ARTISTS),
             |m| {
                 for id in &small_ids {
-                    m.evict(*id);
+                    evict_one_sequential(m, *id);
                 }
             },
         );
@@ -458,8 +497,8 @@ mod bench {
             f_min * 1_000.0 / ARTISTS as f64,
         );
         println!(
-            "bench_artist_evict: 10k×10k 总 {a_min:.0} ms（现实现）vs {b_min:.0} ms\
-             （单遍批量）vs {f_min:.0} ms（逆向索引下限），加速比 {:.0}；\
+            "bench_artist_evict: 10k×10k 总 {a_min:.0} ms（修复前：逐条 evict）vs {b_min:.0} ms\
+             （修复后：evict_many 单遍批量）vs {f_min:.0} ms（逆向索引下限），加速比 {:.0}；\
              50 条增量驱逐 {:.0} µs",
             a_min / b_min,
             s_min * 1_000.0,
@@ -546,27 +585,22 @@ mod bench {
              min pass={pass_min:.2}ms  mean={pass_mean:.2}ms  ({hit_ns:.0} ns/hit)"
         );
 
-        // share: seeded shape = 3 token_key calls per hit, 2 removable by
-        // reusing `key` (module doc); the hit path runs no SQL, so the share
-        // is not I/O-diluted
-        let total_share = 3.0 * tk_ns / hit_ns * 100.0;
-        let removable_share = 2.0 * tk_ns / hit_ns * 100.0;
-        println!(
-            "token_key share of one resolve hit: total (3 calls) {total_share:.1}%  \
-             removable (2 calls) {removable_share:.1}%"
-        );
+        // share: post-fix hit shape is 1 token_key call (the entry-name
+        // check; the `sort == name` steady state skips the incoming-name
+        // call outright — see `resolve`). The hit path runs no SQL, so the
+        // share is not I/O-diluted. Pre-fix hit cost and share live in the
+        // GPUI HARDCORE PERFORMANCE §44 ledger (2026-10-15 round).
+        let post_fix_share = tk_ns / hit_ns * 100.0;
+        println!("token_key share of one resolve hit (post-fix, 1 call): {post_fix_share:.1}%");
 
         // audit arithmetic: 100k tracks x 1.5 artists = 150k resolves per
-        // full-library scan, priced at the measured per-call cost
-        let task_ms = FULL_SCAN_RESOLVES as f64 * tk_ns / 1e6;
-        let measured_ms = FULL_SCAN_RESOLVES as f64 * 2.0 * tk_ns / 1e6;
+        // full-library scan; the pre-fix shape made 2 redundant calls per
+        // hit, priced at the measured per-call cost
+        let pre_fix_ms = FULL_SCAN_RESOLVES as f64 * 2.0 * tk_ns / 1e6;
+        println!("full-scan redundancy eliminated (pre-fix 2 calls/hit): {pre_fix_ms:.1}ms");
         println!(
-            "full-scan redundancy: 150k calls = {task_ms:.1}ms (audit's 1/hit); \
-             measured shape (2/hit) = {measured_ms:.1}ms"
-        );
-        println!(
-            "bench_resolve_hit: 单次命中 {hit_ns:.0} ns，token_key 占比 {total_share:.1}%\
-             （其中可省 {removable_share:.1}%）；全库 150k 次冗余 ≈ {measured_ms:.1} ms"
+            "bench_resolve_hit: 单次命中 {hit_ns:.0} ns，token_key 占比 {post_fix_share:.1}%\
+             ；全库 150k 次冗余 ≈ {pre_fix_ms:.1} ms（已消除）"
         );
     }
 }

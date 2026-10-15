@@ -682,7 +682,7 @@ impl Read for HttpRangeSource {
                 Err(_) => {
                     self.body = None;
                     return Err(io::Error::other(format!(
-                        "remote stream stalled: no data for {STREAM_IO_TIMEOUT:?}"
+                        "remote stream stalled: no data for {FILL_IO_TIMEOUT:?}"
                     )));
                 }
             }

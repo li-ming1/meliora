@@ -1309,7 +1309,7 @@
   },
   "LIKE_ALBUM": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:492",
+    "definedIn": "src/ui/library/release_view.rs:537",
     "plural": false,
     "description": null
   },
@@ -1567,13 +1567,13 @@
   },
   "RELEASED_DATE": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:592",
+    "definedIn": "src/ui/library/release_view.rs:637",
     "plural": false,
     "description": null
   },
   "RELEASED_YEAR": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:617",
+    "definedIn": "src/ui/library/release_view.rs:662",
     "plural": false,
     "description": null
   },
@@ -1705,49 +1705,49 @@
   },
   "SCANNING_MISSING_DIALOG_BODY": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:87",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:101",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_DELETE": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:114",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:128",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_DELETE_SUBTITLE": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:121",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:135",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_DONT_ASK_AGAIN": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:71",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:85",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_DONT_ASK_HINT": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:79",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:93",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_KEEP": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:97",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:111",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_KEEP_SUBTITLE": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:104",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:118",
     "plural": false,
     "description": null
   },
   "SCANNING_MISSING_DIALOG_TITLE": {
     "context": "missing_folder_dialog.rs",
-    "definedIn": "src/ui/library/missing_folder_dialog.rs:85",
+    "definedIn": "src/ui/library/missing_folder_dialog.rs:99",
     "plural": false,
     "description": null
   },
@@ -1915,37 +1915,37 @@
   },
   "SETTINGS_CORRUPT_DIALOG_BODY": {
     "context": "corrupt_settings_dialog.rs",
-    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:36",
+    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:38",
     "plural": false,
     "description": null
   },
   "SETTINGS_CORRUPT_DIALOG_QUIT": {
     "context": "corrupt_settings_dialog.rs",
-    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:62",
+    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:64",
     "plural": false,
     "description": null
   },
   "SETTINGS_CORRUPT_DIALOG_QUIT_SUBTITLE": {
     "context": "corrupt_settings_dialog.rs",
-    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:67",
+    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:69",
     "plural": false,
     "description": null
   },
   "SETTINGS_CORRUPT_DIALOG_SHOW": {
     "context": "corrupt_settings_dialog.rs",
-    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:48",
+    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:50",
     "plural": false,
     "description": null
   },
   "SETTINGS_CORRUPT_DIALOG_SHOW_SUBTITLE": {
     "context": "corrupt_settings_dialog.rs",
-    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:53",
+    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:55",
     "plural": false,
     "description": null
   },
   "SETTINGS_CORRUPT_DIALOG_TITLE": {
     "context": "corrupt_settings_dialog.rs",
-    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:32",
+    "definedIn": "src/ui/settings/corrupt_settings_dialog.rs:34",
     "plural": false,
     "description": null
   },
@@ -2371,7 +2371,7 @@
   },
   "UNLIKE_ALBUM": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:490",
+    "definedIn": "src/ui/library/release_view.rs:535",
     "plural": false,
     "description": null
   },

@@ -270,7 +270,22 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
                     st.read_pos = 0;
                 }
                 self.pos += n as u64;
-                self.shared.signal.notify_all();
+                // Wake the filler only when this drain crossed the buffer
+                // from at/above the high water mark to below it: that is the
+                // one transition that can unblock a filler parked in
+                // `signal.wait` (its predicate is `available < HIGH_WATER`,
+                // re-checked under the state lock before every wait, so a
+                // crossing can never be missed). Reads that leave the buffer
+                // below the mark find the filler already filling; reads that
+                // keep it above change nothing for a waiting filler. Steady
+                // state therefore costs one notify per top-up cycle instead
+                // of one per decoder read.
+                if available >= HIGH_WATER_BYTES
+                    && st.buf.len() - st.read_pos < HIGH_WATER_BYTES
+                    && !st.eof
+                {
+                    self.shared.signal.notify_all();
+                }
                 return Ok(n);
             }
             if st.eof {

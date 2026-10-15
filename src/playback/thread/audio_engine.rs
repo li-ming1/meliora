@@ -924,8 +924,6 @@ impl AudioEngine {
 
     /// Consume samples from pipeline to device
     fn consume_to_device(&mut self) -> EngineCycleResult {
-        let s = trace_span!("consume_from").entered();
-
         let Some(pipeline) = &mut self.pipeline else {
             return EngineCycleResult::NothingToDo;
         };
@@ -933,6 +931,11 @@ impl AudioEngine {
         let consume_result = self.device.consume_from(&mut pipeline.device_input);
 
         if let Err(err) = consume_result {
+            // Span constructed only on the error path: entering one every
+            // cycle allocates a `Span` (Arc) whenever TRACE logging is
+            // enabled, and this runs once per playback cycle (doctrine §8).
+            // The four diagnostics below keep their span parent.
+            let s = trace_span!("consume_from").entered();
             // A device whose WriteTimeout recurs every cycle never converges
             // through recreation; pace the recreate with a growing defer
             // window instead of churning the stream every cycle. The consume

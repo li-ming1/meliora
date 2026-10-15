@@ -945,9 +945,12 @@ pub(crate) fn observe_scan_for_table<
 ) {
     let table_for_availability = table.clone();
     cx.observe(state, move |_, e, cx| {
-        // completion only: TableEvent::NewRows re-queries the whole table on
-        // the UI thread and wipes every row view, so refreshing on progress
-        // froze the UI every 100 files for the duration of a large scan.
+        // completion only: TableEvent::NewRows goes through
+        // `Table::reload_rows`, which spawns the re-query on the runtime with
+        // a generation guard (the UI thread only swaps the row Arc; see the
+        // `table rows loaded` elapsed_ms log). Refreshing on *progress* still
+        // stays disabled: mid-scan the row set churns constantly, and each
+        // swap would wipe every cached row view.
         // ScanProgress still feeds the progress UI through its own subscriber.
         let should_refresh = matches!(
             e.read(cx),
