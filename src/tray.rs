@@ -176,6 +176,9 @@ pub fn init(cx: &mut App) {
         let platform = Rc::clone(&platform);
         Rc::new(move |cx: &mut App| {
             let text = tray_tooltip(cx, &metadata, &current_track);
+            // 诊断：tooltip 不显示时区分"文本就是空"与"API 调用失败"
+            // （后者在 tray/windows.rs 的 notify() 里有 GetLastError 日志）。
+            tracing::info!(target: "tray", text_len = text.len(), "tray tooltip refresh");
             platform.set_tooltip(&text);
         })
     };

@@ -18,13 +18,12 @@ use std::sync::{
 
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Shell::{
-                NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-                NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW, NOTIFYICONDATAW_0,
-                Shell_NotifyIconW,
+                NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+                NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
                 AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW,
@@ -70,6 +69,9 @@ const IDM_SETTINGS: usize = 1006;
 /// 托盘壳句柄。Drop 时摘除图标并销毁 message-only 窗口。
 pub(super) struct WindowsTray {
     hwnd: HWND,
+    /// ADD 时的图标句柄（`LR_SHARED`，无需销毁）。NIM_MODIFY 重发完整
+    /// flags 时需要它——只发 NIF_TIP 在部分 shell 版本上不可靠。
+    icon: Option<HICON>,
 }
 
 impl WindowsTray {
@@ -77,7 +79,15 @@ impl WindowsTray {
         // 失败无所谓：壳瞬态（explorer 重启中）下 tooltip 保持旧值，
         // 下一次 TaskbarCreated 重注册后会跟上。
         unsafe {
-            notify(self.hwnd, NIM_MODIFY, NIF_TIP, Some(text), None);
+            notify(
+                self.hwnd,
+                NIM_MODIFY,
+                // 与 ADD 同一套完整 flags（参考实现的 GetData() 模式）：
+                // 只发 NIF_TIP 时部分 shell 版本不会更新 infotip。
+                NIF_ICON | NIF_MESSAGE | NIF_TIP,
+                Some(text),
+                self.icon,
+            );
         }
     }
 }
@@ -142,8 +152,9 @@ pub(super) fn init(tx: Sender<TrayCommand>) -> Option<WindowsTray> {
         }
         return None;
     }
-    unsafe { set_version(hwnd) };
-    Some(WindowsTray { hwnd })
+    // 不调 NIM_SETVERSION：v0（经典行为）的 tooltip 路径最可靠，
+    // 而我们用不到 v4 的焦点语义。
+    Some(WindowsTray { hwnd, icon })
 }
 
 /// 记录主窗口句柄（菜单标签的显隐判断用；不改变任何行为）。
@@ -259,20 +270,25 @@ unsafe fn notify(
     if let Some(tip) = tip {
         write_tip(&mut nid.szTip, tip);
     }
-    unsafe { Shell_NotifyIconW(message, &nid).as_bool() }
-}
-
-/// 切到 NOTIFY_ICON_VERSION_4：Vista+ 行为（长 tooltip / 焦点语义）。
-/// windows crate 0.62 未导出该常量，字面量 4 即 NOTIFY_ICON_VERSION_4。
-unsafe fn set_version(hwnd: HWND) {
-    let nid = NOTIFYICONDATAW {
-        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: hwnd,
-        uID: TRAY_ID,
-        Anonymous: NOTIFYICONDATAW_0 { uVersion: 4 },
-        ..Default::default()
-    };
-    let _ = unsafe { Shell_NotifyIconW(NIM_SETVERSION, &nid) };
+    let ok = unsafe { Shell_NotifyIconW(message, &nid).as_bool() };
+    // 诊断：tooltip 不显示的排查靠这几行（message/flags/tip 长度 + 结果）。
+    // meliora.log 里 grep "tray shell"。
+    if !ok {
+        let err = unsafe { GetLastError() };
+        tracing::info!(
+            target: "tray",
+            ?err,
+            tip_len = tip.map(str::len),
+            "tray shell: Shell_NotifyIconW failed"
+        );
+    } else {
+        tracing::info!(
+            target: "tray",
+            tip_len = tip.map(str::len),
+            "tray shell: Shell_NotifyIconW ok"
+        );
+    }
+    ok
 }
 
 fn write_tip(buf: &mut [u16; 128], text: &str) {
