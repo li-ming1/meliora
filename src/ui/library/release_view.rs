@@ -78,9 +78,7 @@ fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
         .unwrap_or(false)
 }
 
-/// Prebuilt track rows for the release view (merged from
-/// `library/track_listing.rs`, whose only remaining constructor call site
-/// lives here).
+/// Prebuilt track rows for the release view.
 struct TrackListing {
     tracks: Arc<Vec<Entity<TrackItem>>>,
     original_tracks: Arc<Vec<Track>>,

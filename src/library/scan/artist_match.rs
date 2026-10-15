@@ -283,15 +283,15 @@ mod tests {
 /// same 10k matcher), which is what every ordinary scan pays.
 ///
 /// F029 - the `resolve` hit path recomputed `token_key`: with `sort_name`
-/// absent (:74) `key = token_key(name)` at :75, then `is_canonical(name)` at
-/// :88 recomputed `token_key(name)` - always redundant on a hit, because a
+/// absent, `key = token_key(name)`, then the canonical check on the incoming
+/// name recomputed `token_key(name)` - always redundant on a hit, because a
 /// `by_key` hit implies `entry.key == key` - and when the incoming name
 /// equals the stored name (the steady state this bench seeds) the
-/// short-circuit still evaluated `is_canonical(&entry.name)` on the same
-/// string. The hit shape was therefore 3 `token_key` calls per hit, 2 of them
-/// removable by reusing `key`. **Fixed 2026-10-15**: the hit path now reuses
-/// `key` (and skips the incoming-name call outright when the sort defaulted
-/// to the name), costing at most one `token_key`. The bench times
+/// short-circuit still evaluated the canonical check on the stored name on
+/// the same string. The hit shape was therefore 3 `token_key` calls per hit,
+/// 2 of them removable by reusing `key`. **Fixed 2026-10-15**: the hit path
+/// now reuses `key` (and skips the incoming-name call outright when the sort
+/// defaulted to the name), costing at most one `token_key`. The bench times
 /// `token_key` standalone (100k calls, per-call ns), then full `resolve`
 /// hits against a seeded 10k-artist database (the hit path runs no SQL, so
 /// the share calculation is not I/O-diluted), and reports the post-fix hit
