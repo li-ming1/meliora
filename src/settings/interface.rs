@@ -93,7 +93,7 @@ impl Default for InterfaceSettings {
             full_width_library: false,
             two_column_library: false,
             startup_library_view: StartupLibraryView::default(),
-            grid_min_item_width: DEFAULT_GRID_MIN_ITEM_WIDTH,
+            grid_min_item_width: default_grid_min_item_width(),
             reduced_motion: false,
             always_show_scrollbars: false,
             slim_scrollbars: true,
