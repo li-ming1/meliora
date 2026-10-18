@@ -408,51 +408,47 @@ impl<'a> ScanExecution<'a> {
             || !self.pending_relocations.is_empty()
     }
 
+    /// 三个提交点共用的一段"从 self 的不相交字段取借用"：池、事务、歌手匹配器、
+    /// 缓存，再加 `PendingCommitState` 把两个待处理列表与记录/断点配对。各站点只在
+    /// `CommitOptions` 上不同，借用布线本身没有可写的选择。
+    async fn run_commit_batch(&mut self, options: CommitOptions) {
+        commit_batch(
+            self.context.pool,
+            &mut self.tx,
+            &mut self.artist_matcher,
+            &mut self.active.caches,
+            PendingCommitState {
+                pending_commit: &mut self.pending_commit,
+                pending_relocations: &mut self.pending_relocations,
+                scan_record: &self.active.scan_record,
+                scan_checkpoint: &self.scan_checkpoint,
+            },
+            options,
+        )
+        .await;
+    }
+
     async fn commit_final_batch(&mut self) {
         if !self.has_pending_writes() {
             return;
         }
 
-        commit_batch(
-            self.context.pool,
-            &mut self.tx,
-            &mut self.artist_matcher,
-            &mut self.active.caches,
-            PendingCommitState {
-                pending_commit: &mut self.pending_commit,
-                pending_relocations: &mut self.pending_relocations,
-                scan_record: &self.active.scan_record,
-                scan_checkpoint: &self.scan_checkpoint,
-            },
-            CommitOptions {
-                update_checkpoint: false,
-                update_record: true,
-                run_retry: true,
-                label: "final scan",
-            },
-        )
+        self.run_commit_batch(CommitOptions {
+            update_checkpoint: false,
+            update_record: true,
+            run_retry: true,
+            label: "final scan",
+        })
         .await;
     }
 
     async fn commit_scan_batch(&mut self) {
-        commit_batch(
-            self.context.pool,
-            &mut self.tx,
-            &mut self.artist_matcher,
-            &mut self.active.caches,
-            PendingCommitState {
-                pending_commit: &mut self.pending_commit,
-                pending_relocations: &mut self.pending_relocations,
-                scan_record: &self.active.scan_record,
-                scan_checkpoint: &self.scan_checkpoint,
-            },
-            CommitOptions {
-                update_checkpoint: true,
-                update_record: true,
-                run_retry: false,
-                label: "scan batch",
-            },
-        )
+        self.run_commit_batch(CommitOptions {
+            update_checkpoint: true,
+            update_record: true,
+            run_retry: false,
+            label: "scan batch",
+        })
         .await;
 
         self.start_checkpoint_write().await;
@@ -560,24 +556,12 @@ impl<'a> ScanExecution<'a> {
 
     async fn finish_cancelled(mut self) -> ScanRecord {
         if self.has_pending_writes() {
-            commit_batch(
-                self.context.pool,
-                &mut self.tx,
-                &mut self.artist_matcher,
-                &mut self.active.caches,
-                PendingCommitState {
-                    pending_commit: &mut self.pending_commit,
-                    pending_relocations: &mut self.pending_relocations,
-                    scan_record: &self.active.scan_record,
-                    scan_checkpoint: &self.scan_checkpoint,
-                },
-                CommitOptions {
-                    update_checkpoint: true,
-                    update_record: true,
-                    run_retry: true,
-                    label: "cancelled scan",
-                },
-            )
+            self.run_commit_batch(CommitOptions {
+                update_checkpoint: true,
+                update_record: true,
+                run_retry: true,
+                label: "cancelled scan",
+            })
             .await;
             self.pending_commit.clear();
             self.pending_relocations.clear();
