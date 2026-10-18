@@ -29,7 +29,7 @@ pub struct TrackView {
 
 impl TrackView {
     pub(super) fn new(cx: &mut App, initial_scroll_offset: Option<f32>) -> Entity<Self> {
-        // Weak on purpose: Table 持有的行回调会捕获这个 cell，强引用
+        // 刻意用弱引用：Table 持有的行回调会捕获这个 cell，强引用
         // Entity 会成环——把整棵表钉在导航历史里无法释放。
         let table_ref = Rc::new(RefCell::new(None::<WeakEntity<Table<Track, TrackColumn>>>));
         let table_ref_clone = table_ref.clone();

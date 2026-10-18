@@ -151,7 +151,7 @@ mod tests {
         assert!(lines[2].text.is_empty());
     }
 
-    /// Real payload head from `孤勇者` (captured live, anonymous session):
+    /// 来自《孤勇者》的真实载荷开头（匿名会话现场抓取）：
     /// JSON 署名行带着多余的 `li`/`or` 字段，必须忽略。
     #[test]
     fn parses_real_payload_with_credit_links() {

@@ -51,7 +51,7 @@ const ART_SIZE: f32 = 20.0;
 
 pub struct FileRowItem {
     flat_row: FlatRow,
-    /// Weak on purpose: FilesView 持有全部行实体，行再强持有 view 会成环，
+    /// 刻意用弱引用：FilesView 持有全部行实体，行再强持有 view 会成环，
     /// 把整棵视图树钉在导航历史里无法释放。
     files_view: WeakEntity<FilesView>,
     is_liked: Option<i64>,
@@ -206,7 +206,7 @@ impl FileRowItem {
                         },
                         move |_, _, cx| {
                             if any_liked {
-                                // Unlike deletes by track id：只摘除已赞子集，
+                                // 与"按 track id 取消收藏"不同：只摘除已赞子集，
                                 // 未赞的其余选中项保持原状
                                 toggle_album_like(liked_ids.to_vec(), true, cx);
                             } else {
