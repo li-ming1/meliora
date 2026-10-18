@@ -49,8 +49,7 @@ mod kugou_playlists;
 #[cfg(feature = "kugou")]
 mod kugou_ranks;
 
-/// Account identity changed (login/logout or a fresh account): drop every
-/// session cache that is keyed to the signed-in user.
+/// 账号身份变了（登录/登出或换了一个账号）：丢掉所有以登录用户为键的会话缓存。
 #[cfg(feature = "kugou")]
 pub(crate) fn invalidate_online_account_caches() {
     kugou_playlists::invalidate_cached_playlists();
@@ -71,7 +70,7 @@ pub mod view_header;
 
 actions!(library, [NavigateBack, NavigateForward, EscapeBack]);
 
-/// Absolute close button anchored to the detail-view host (album/release).
+/// 钉在详情视图宿主（专辑/发行版）上的绝对定位关闭按钮。
 pub fn detail_close_button(id: impl Into<ElementId>) -> impl IntoElement {
     crate::ui::components::nav_button::nav_button(id, crate::ui::components::icons::CROSS)
         .absolute()
@@ -86,7 +85,7 @@ pub fn detail_close_button(id: impl Into<ElementId>) -> impl IntoElement {
         )))
 }
 
-/// The navigation history + a cursor noting what the current message is.
+/// 导航历史 + 一个指出「当前是哪条」的光标。
 #[derive(Debug)]
 pub struct NavigationHistory {
     startup_view: ViewSwitchMessage,
@@ -115,7 +114,7 @@ impl NavigationHistory {
         self.cursor < self.history.len() - 1
     }
 
-    /// Returns the history entry immediately before the cursor, if any.
+    /// 返回光标紧邻的前一条历史条目（如果存在）。
     pub fn previous(&self) -> Option<ViewSwitchMessage> {
         if self.cursor > 0 {
             Some(self.history[self.cursor - 1])
@@ -142,34 +141,32 @@ impl NavigationHistory {
         }
     }
 
-    /// Navigates to a new view. All history entries after the cursor are discarded, then the new
-    /// view is appended and the cursor advances to it. History is capped at 100 entries.
+    /// 导航到一个新视图。光标之后的所有历史条目都被丢弃，然后把新视图追加进去、
+    /// 光标前进到它。历史最多保留 100 条。
     ///
-    /// Navigating to the page the cursor already sits on is a no-op. Appending a duplicate entry
-    /// would make the back button look broken: it stays enabled (the cursor is past the start), but
-    /// pressing it walks onto an identical page and nothing visibly changes. Clicking the sidebar
-    /// item you are already on is an ordinary thing to do, so this is handled here rather than
-    /// relying on every call site to check first.
+    /// 导航到光标已经所在的那个页面是空操作。追加重复条目会让「后退」按钮
+    /// 看起来像坏了：它仍然可点（光标不在起点），但按下去只是走到一个一模一样的
+    /// 页面、什么都不会变。点侧栏里你当前就在的那一项是很平常的事，所以在这里
+    /// 处理，而不是指望每个调用点先自己检查。
     ///
-    /// Returns whether the history actually moved.
+    /// 返回历史是否真的移动了。
     pub fn navigate(&mut self, message: ViewSwitchMessage) -> bool {
         if self.current() == message {
             return false;
         }
 
-        // Re-focusing inside the page the user is already on - the same album,
-        // a different track - replaces the current entry instead of appending.
-        // Appending would make back land on that very same album again, which
-        // reads as a dead button.
+        // 在用户已经所在的页面内部重新聚焦——同一张专辑、另一首曲目——是替换
+        // 当前条目而不是追加。追加会让后退又落到那张完全相同的专辑上，
+        // 看起来就是个死按钮。
         if is_refocus_of(self.current(), message) {
             self.history[self.cursor] = message;
             return true;
         }
 
-        // Drop any forward history.
+        // 丢掉全部前进历史。
         self.history.truncate(self.cursor + 1);
 
-        // Cap total history at 100 entries by evicting the oldest.
+        // 通过逐出最旧的条目，把历史总量封顶在 100 条。
         if self.history.len() >= 100 {
             let remove_idx = self.eviction_index();
             self.history.remove(remove_idx);
@@ -198,7 +195,7 @@ impl NavigationHistory {
         }
     }
 
-    /// Finds the most recent history entry (before the cursor) that matches a predicate.
+    /// 找到（光标之前）匹配谓词的最新一条历史条目。
     pub fn last_matching(
         &self,
         pred: impl Fn(&ViewSwitchMessage) -> bool,
@@ -210,16 +207,15 @@ impl NavigationHistory {
             .copied()
     }
 
-    /// Removes history entries that do not satisfy `f`, adjusting the cursor so that it continues
-    /// to point at the same entry if it survives, or backs up to the nearest preceding survivor
-    /// otherwise. History is guaranteed to never become empty (falls back to the startup view).
+    /// 移除不满足 `f` 的历史条目，同时调整光标：它若还活着就继续指向同一条，
+    /// 否则退到最近的前一条幸存者。历史保证永不为空（回退到启动视图）。
     ///
-    /// Used to remove entries that are no longer valid.
+    /// 用于移除已经失效的条目。
     pub fn retain<F>(&mut self, f: F)
     where
         F: Fn(&ViewSwitchMessage) -> bool,
     {
-        // Count how many entries at or before the cursor will be removed.
+        // 数一下光标及其之前有多少条目会被移除。
         let removed_before_or_at_cursor = self.history[..=self.cursor]
             .iter()
             .filter(|v| !f(v))
@@ -239,9 +235,8 @@ impl NavigationHistory {
     }
 }
 
-/// Whether `next` is the same page as `current` opened at a different target:
-/// currently only the same album at another track. Such a move is a re-focus
-/// within a page, not a step in the browsing history.
+/// `next` 是否与 `current` 是同一个页面、只是打开了不同的目标：目前只指
+/// 「同一张专辑的另一首曲目」。这种移动是页面内部重新聚焦，不是浏览历史上的一步。
 fn is_refocus_of(current: ViewSwitchMessage, next: ViewSwitchMessage) -> bool {
     matches!(
         (current, next),
@@ -257,8 +252,7 @@ impl Default for NavigationHistory {
 
 impl EventEmitter<ViewSwitchMessage> for NavigationHistory {}
 
-/// Tracks which top-level section the user is currently in so that
-/// context-dependent actions (like "go up") can behave correctly.
+/// 跟踪用户当前所处的顶层分区，好让依赖上下文的动作（比如「向上」）行为正确。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibrarySection {
     Albums,
@@ -269,8 +263,8 @@ enum LibrarySection {
 }
 
 impl LibrarySection {
-    /// Derive the section from a navigation message. Returns `None` for
-    /// ambiguous messages (e.g. `Release`) that should keep the current section.
+    /// 从导航消息推出所属分区。对有歧义的消息（例如 `Release`）返回 `None`，
+    /// 让它们保持当前分区。
     fn from_message(msg: &ViewSwitchMessage) -> Option<Self> {
         match msg {
             ViewSwitchMessage::Albums => Some(Self::Albums),
@@ -278,9 +272,9 @@ impl LibrarySection {
             ViewSwitchMessage::Artists | ViewSwitchMessage::Artist(_) => Some(Self::Artists),
             ViewSwitchMessage::Files => Some(Self::Files),
             ViewSwitchMessage::Playlist(_) => Some(Self::Playlists),
-            // Release can appear under Albums or Artists – keep current section.
+            // Release 可能出现在 Albums 或 Artists 下——保持当前分区。
             ViewSwitchMessage::Release(_, _) => None,
-            // The KuGou page is not a local-library section – keep current.
+            // 酷狗页面不属于本地库分区——保持当前分区。
             #[cfg(feature = "kugou")]
             ViewSwitchMessage::KugouPlaylists | ViewSwitchMessage::KugouRanks => None,
             ViewSwitchMessage::Back | ViewSwitchMessage::Forward | ViewSwitchMessage::Refresh => {
@@ -341,14 +335,14 @@ pub enum ViewSwitchMessage {
     Tracks,
     Artists,
     Files,
-    /// album id, track id
+    /// 专辑 id、曲目 id
     Release(i64, Option<i64>),
     Artist(i64),
     Playlist(i64),
-    /// KuGou cloud playlists page (kugou feature only)
+    /// 酷狗云歌单页（仅 kugou feature）
     #[cfg(feature = "kugou")]
     KugouPlaylists,
-    /// KuGou discovery page: ranks + daily recommend (kugou feature only)
+    /// 酷狗发现页：榜单 + 每日推荐（仅 kugou feature）
     #[cfg(feature = "kugou")]
     KugouRanks,
     Back,
@@ -377,7 +371,7 @@ impl ViewSwitchMessage {
             (lv, self),
             (LibraryView::Album(_), ViewSwitchMessage::Albums)
                 | (LibraryView::Tracks(_), ViewSwitchMessage::Tracks)
-                // ArtistDetail: don't cache – we can't verify the id matches without extra storage
+                // ArtistDetail：不缓存——不加额外存储就无法验证 id 是否仍然匹配
                 | (LibraryView::Artists(_), ViewSwitchMessage::Artists)
                 | (LibraryView::Files(_), ViewSwitchMessage::Files)
         ) {
@@ -405,9 +399,8 @@ fn make_view(
     model: &Entity<NavigationHistory>,
     scroll_state: &ScrollStateStorage,
 ) -> LibraryView {
-    // Every page instance (new navigation, back/forward/refresh, startup)
-    // flows through here at user-navigation frequency; sampling memory here
-    // attributes the browse-driven steps the periodic probe can't explain.
+    // 每个页面实例（新导航、前进/后退/刷新、启动）都会在用户导航频率上经过这里；
+    // 在此采样内存，可以把周期探针解释不了的那部分浏览驱动阶跃归因出来。
     crate::log_mem_event(&format!("library view: {message:?}"));
 
     match message {
@@ -450,8 +443,8 @@ fn make_view(
     }
 }
 
-/// Runs one history step (`go_back`/`go_forward`) on the shared history
-/// entity and returns the destination, if the cursor could move.
+/// 在共享历史实体上走一步历史（`go_back`/`go_forward`）并返回目的地
+/// （光标能移动的话）。
 fn step_history(
     history: &Entity<NavigationHistory>,
     cx: &mut App,
@@ -475,9 +468,8 @@ fn library_section_from_history(history: &NavigationHistory) -> LibrarySection {
 }
 
 impl Library {
-    /// Snapshots the outgoing view's scroll position (plus the files view's
-    /// expanded set) into `scroll_state`, so a rebuilt view can restore the
-    /// reader's place.
+    /// 把即将离开的视图的滚动位置（外加文件视图的展开集合）快照进 `scroll_state`，
+    /// 这样重建出来的视图能恢复读者读到的位置。
     fn save_scroll_state(view: &LibraryView, scroll_state: &mut ScrollStateStorage, cx: &App) {
         match view {
             LibraryView::Album(view) => {
@@ -545,9 +537,8 @@ impl Library {
             let view = make_view(&initial_message, cx, &switcher_model, &scroll_state);
             let section = library_section_from_history(switcher_model.read(cx));
 
-            // this view is cached, so it only re-renders when explicitly
-            // dirtied: observe every width entity its layout depends on (the
-            // resizable queue/lyrics panel, and the two-column split)
+            // 这个视图是缓存的，所以只有被显式置脏才重绘：观察它布局依赖的
+            // 每一个宽度实体（可拖拽的队列/歌词面板，以及双栏分割）
             let queue_width = cx.global::<Models>().queue_width.clone();
             cx.observe(&queue_width, |_, _, cx| cx.notify()).detach();
 
@@ -556,8 +547,8 @@ impl Library {
                 move |this: &mut Library, m, message, cx| {
                     Self::save_scroll_state(&this.view, &mut this.scroll_state, cx);
 
-                    // if we're navigating away from a view that stole focus (e.g. PlaylistView),
-                    // schedule a focus reclaim so the Library div retakes focus on next render.
+                    // 如果我们要离开一个偷走了焦点的视图（例如 PlaylistView），
+                    // 就安排一次焦点回收，让 Library 的 div 在下一次渲染时重新拿到焦点。
                     if matches!(this.view, LibraryView::Playlist(_)) {
                         this.reclaim_focus = true;
                     }
@@ -594,9 +585,8 @@ impl Library {
                                 navigated
                             });
 
-                            // Re-navigating to the current page is a no-op, and
-                            // rebuilding the view for it would drop anything the
-                            // page holds that is not in the scroll state.
+                            // 重新导航到当前页面是空操作，而为它重建视图会丢掉
+                            // 该页面持有的、不在滚动状态里的一切。
                             if navigated {
                                 make_view(message, cx, &m, &this.scroll_state)
                             } else {
@@ -711,7 +701,7 @@ impl Library {
     }
 }
 
-/// Stable per-variant key used to re-run the view-switch fade when navigation changes.
+/// 每个变体的稳定键，用于在导航变化时重新触发切换视图的淡入。
 fn library_view_key(view: &LibraryView) -> &'static str {
     match view {
         LibraryView::Album(_) => "album",
@@ -782,7 +772,7 @@ impl Render for Library {
             self.left_view.as_ref(),
             self.right_view.as_ref(),
         ) {
-            // two column
+            // 双栏
             let key = left.split_key();
             let split_widths = &cx.global::<Models>().split_widths;
             let split_width_model = split_widths
@@ -827,15 +817,15 @@ impl Render for Library {
                 )
                 .into_any_element()
         } else if two_column {
-            // single column - two column mode but views not available
+            // 单栏——双栏模式，但详情视图不可用
             single_column(self.left_view.as_ref().unwrap_or(&self.view))
         } else {
-            // single column - two column mode disabled
+            // 单栏——双栏模式已关闭
             single_column(&self.view)
         };
 
-        // Fade the whole library area in on every view switch. Keyed by the active view
-        // kind so each navigation re-runs the (once-per-key) mount animation.
+        // 每次切换视图都把整个库区域淡入。以当前视图种类为键，于是每次导航都会
+        // 重跑这个「每个键只播一次」的挂载动画。
         let view_key = self
             .right_view
             .as_ref()
@@ -888,8 +878,8 @@ impl Render for Library {
                 };
 
                 if let Some(dest) = parent {
-                    // If the previous history entry matches the parent, go back
-                    // instead of creating a new history entry.
+                    // 若上一条历史就是父页面，则走后退，
+                    // 而不是新建一条历史条目。
                     let msg = if switcher.read(cx).previous() == Some(dest) {
                         ViewSwitchMessage::Back
                     } else {
@@ -942,7 +932,7 @@ impl Render for Library {
     }
 }
 
-/// Three top-level tables refresh on the same scan events; one observer for all.
+/// 三张顶层表在同一批扫描事件上刷新；三者共用一个观察者。
 pub(crate) fn observe_scan_for_table<
     V: 'static,
     T: crate::ui::components::table::table_data::TableData<C> + 'static,
@@ -954,13 +944,11 @@ pub(crate) fn observe_scan_for_table<
 ) {
     let table_for_availability = table.clone();
     cx.observe(state, move |_, e, cx| {
-        // completion only: TableEvent::NewRows goes through
-        // `Table::reload_rows`, which spawns the re-query on the runtime with
-        // a generation guard (the UI thread only swaps the row Arc; see the
-        // `table rows loaded` elapsed_ms log). Refreshing on *progress* still
-        // stays disabled: mid-scan the row set churns constantly, and each
-        // swap would wipe every cached row view.
-        // ScanProgress still feeds the progress UI through its own subscriber.
+        // 只在扫描完成时刷新：TableEvent::NewRows 走 `Table::reload_rows`，
+        // 它带代际守卫地在运行时上派生重查询（UI 线程只换行 Arc；见
+        // `table rows loaded` 的 elapsed_ms 日志）。*进度*上刷新仍然保持禁用：
+        // 扫描中途行集频繁变动，每次换 Arc 都会清空所有缓存的行视图。
+        // ScanProgress 仍通过它自己的订阅者喂进度 UI。
         let should_refresh = matches!(
             e.read(cx),
             ScanEvent::ScanCompleteIdle
@@ -975,9 +963,8 @@ pub(crate) fn observe_scan_for_table<
     })
     .detach();
 
-    // Rows built before the availability snapshots land (startup) report
-    // "unavailable"; refresh exactly once, when the last of them arrives.
-    // Later landings coincide with the scan-completion refresh above.
+    // 在可用性快照落地（启动）之前构建的行会报「不可用」；等最后一份到达时
+    // 精确刷新一次。之后的落地都与上面那次扫描完成刷新重合。
     let album_snapshot = cx
         .global::<crate::ui::models::Models>()
         .available_albums
@@ -1010,17 +997,16 @@ pub(crate) fn observe_scan_for_table<
 
 #[cfg(test)]
 mod tests {
-    // Deliberately not `use super::*`: re-importing the module's GPUI glob
-    // pushes `#[test]` expansion past the default recursion limit.
+    // 刻意不写 `use super::*`：把本模块的 GPUI glob 再导入一次会让 `#[test]`
+    // 的展开超过默认递归上限。
     use super::{NavigationHistory, ViewSwitchMessage};
 
     fn history() -> NavigationHistory {
         NavigationHistory::new(ViewSwitchMessage::Albums)
     }
 
-    /// The reported symptom, minimal: tap the sidebar item you are already on,
-    /// then press back. The duplicate entry used to swallow the step, leaving
-    /// the button enabled while it walked onto an identical page.
+    /// 报告出来的症状，最小化版本：点你当前已经在的那个侧栏项，然后按后退。
+    /// 那个重复条目过去会吞掉这一步，让按钮仍可点却只是走到一个一模一样的页面。
     #[test]
     fn re_navigating_to_the_current_page_does_not_grow_history() {
         let mut h = history();
@@ -1033,7 +1019,7 @@ mod tests {
     fn clicking_the_current_sidebar_item_keeps_back_meaningful() {
         let mut h = history();
         h.navigate(ViewSwitchMessage::Artists);
-        // User taps "Artists" again while already there.
+        // 用户已经在 Artists 上时再点一次 "Artists"。
         assert!(!h.navigate(ViewSwitchMessage::Artists));
 
         assert_eq!(h.go_back(), Some(ViewSwitchMessage::Albums));
@@ -1054,8 +1040,8 @@ mod tests {
         assert_eq!(h.go_back(), None);
     }
 
-    /// A different album is a real step; the same album at another track is a
-    /// re-focus and replaces the entry; an identical message is a plain no-op.
+    /// 另一张专辑是真实的一步；同一张专辑的另一首曲目是重新聚焦、替换该条目；
+    /// 完全相同的消息则是普通空操作。
     #[test]
     fn detail_pages_compare_by_their_payload() {
         let mut h = history();
@@ -1068,9 +1054,8 @@ mod tests {
         assert_eq!(h.history.len(), 3);
     }
 
-    /// The second reported shape of "back does nothing": jumping to a track of
-    /// the album you are already viewing (e.g. from search) used to append a
-    /// step, so back landed on that same album again.
+    /// 「后退没反应」的第二种报告形态：跳到你正在看的那张专辑里的一首曲目
+    /// （比如从搜索里）过去会追加一步，于是后退又落到同一张专辑。
     #[test]
     fn refocusing_within_an_album_leaves_back_a_real_step() {
         let mut h = history();
@@ -1098,8 +1083,7 @@ mod tests {
         );
     }
 
-    /// Used when a playlist is deleted: its entries leave the history and the
-    /// cursor lands on the nearest survivor.
+    /// 删除歌单时使用：它的条目离开历史，光标落在最近的前一条幸存者上。
     #[test]
     fn retain_keeps_the_cursor_on_a_surviving_entry() {
         let mut h = history();
@@ -1109,14 +1093,14 @@ mod tests {
         h.retain(|v| *v != ViewSwitchMessage::Playlist(2));
         assert_eq!(h.current(), ViewSwitchMessage::Playlist(1));
 
-        // Removing everything falls back to the startup view.
+        // 全部移除时回退到启动视图。
         h.retain(|v| *v != ViewSwitchMessage::Playlist(1));
         assert_eq!(h.current(), ViewSwitchMessage::Albums);
         assert_eq!(h.history.len(), 1);
         assert!(!h.can_go_back());
     }
 
-    /// The cap must never evict the entry the user is standing on.
+    /// 上限绝不可能逐出用户当前站立的那一条。
     #[test]
     fn history_cap_keeps_the_current_entry() {
         let mut h = history();

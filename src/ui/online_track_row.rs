@@ -1,9 +1,7 @@
-//! Shared visual skeleton for the online provider's track rows. The KuGou
-//! playlists / discovery pages render the identical row layout;
-//! only the track type, the localized download label and the per-view play /
-//! like / download callbacks differ. One implementation here keeps the
-//! provider visually in lockstep (the "②步收编" the provider glue modules'
-//! re-export notes refer to).
+//! 在线音源曲目行共用的视觉骨架。酷狗的歌单 / 发现页渲染完全相同的行布局；
+//! 只有曲目类型、本地化的下载标签以及逐视图的播放 / 收藏 / 下载回调不同。
+//! 这里放一份实现，让各音源在视觉上齐步走（就是音源胶水模块里那条
+//! 「②步收编」的 re-export 注释所指的事）。
 
 use cntp_i18n::{I18nString, tr};
 use gpui::{
@@ -23,19 +21,18 @@ use crate::ui::{
     util::format_duration,
 };
 
-/// Display fields the shared row needs, implemented by the provider's track
-/// info struct (see the impl in `ui::kugou`).
+/// 共用行所需的显示字段，由音源的曲目信息结构体实现（见 `ui::kugou` 里的 impl）。
 pub(crate) trait OnlineTrackDisplay {
     fn title(&self) -> &SharedString;
     fn artist(&self) -> &SharedString;
     fn album(&self) -> &SharedString;
     fn cover_url(&self) -> &SharedString;
     fn duration_secs(&self) -> i64;
-    /// Localized "Download" label. Per-provider so the i18n generator keeps
-    /// seeing distinct `KUGOU_DOWNLOAD` keys.
+    /// 本地化的「下载」标签。按音源各留一份，i18n 生成器才会一直看到互不相同的
+    /// `KUGOU_DOWNLOAD` 键。
     fn download_label() -> I18nString;
 
-    /// Right-hand label used in listings: "artist · m:ss".
+    /// 列表里右侧使用的标签：「艺人 · m:ss」。
     fn detail_label(&self) -> SharedString {
         let duration = format_duration(self.duration_secs(), false);
         if self.artist().is_empty() {
@@ -46,8 +43,8 @@ pub(crate) trait OnlineTrackDisplay {
     }
 }
 
-/// The discovery pages iterate `Arc<...TrackInfo>` items; a blanket impl lets
-/// them pass `&Arc<T>` straight to [`track_row`].
+/// 发现页遍历的是 `Arc<...TrackInfo>` 条目；一条 blanket impl 让它们可以把
+/// `&Arc<T>` 直接交给 [`track_row`]。
 impl<T: OnlineTrackDisplay> OnlineTrackDisplay for std::sync::Arc<T> {
     fn title(&self) -> &SharedString {
         (**self).title()
@@ -69,9 +66,8 @@ impl<T: OnlineTrackDisplay> OnlineTrackDisplay for std::sync::Arc<T> {
     }
 }
 
-/// The shared online-track row used by both providers' playlists and
-/// discovery (ranks / daily recommend) pages. The callbacks carry the
-/// per-view semantics; the visual skeleton is identical.
+/// 两个音源的歌单与发现页（榜单 / 每日推荐）共用的在线曲目行。回调携带逐视图的
+/// 语义；视觉骨架完全一致。
 #[allow(clippy::too_many_arguments)] // builder-style row API, mirrors the gpui element builders it feeds
 pub(crate) fn track_row<T: OnlineTrackDisplay, F1, F2, F3>(
     theme: &Theme,
@@ -120,9 +116,8 @@ where
         .cursor_pointer()
         .hover(move |this| this.bg(theme.queue_item_hover))
         .on_click(move |event, window, cx| {
-            // GPUI delivers one click event per click of a multi-click
-            // sequence; only the first click starts playback so a
-            // double-click doesn't run the fetch + open churn twice.
+            // GPUI 对连点序列的每次点击都发一个点击事件；只有第一次点击开始播放，
+            // 这样双击不会把「抓取 + 打开」的震荡跑两遍。
             if event.click_count() > 1 {
                 return;
             }
@@ -138,8 +133,8 @@ where
         )
         .when(show_cover, |this| {
             this.child(
-                // composite (name, index) id: zero per-frame allocation; the
-                // image is scoped under this row's `.id((id_prefix, index))`
+                // 复合的 (name, index) id：每帧零分配；图片被限定在本行的
+                // `.id((id_prefix, index))` 作用域下
                 managed_image(
                     ("thumb", index),
                     ManagedImageKey::HttpCover(track.cover_url().clone()),
@@ -181,7 +176,7 @@ where
         )
         .child(
             button()
-                // composite ids scoped under the row's `.id((id_prefix, index))`
+                // 复合 id 限定在本行 `.id((id_prefix, index))` 的作用域下
                 .id(("like", index))
                 .child(icon(if liked { STAR_FILLED } else { STAR }).size(ICON_SM))
                 .text_color(if liked {
@@ -207,17 +202,14 @@ where
         )
 }
 
-/// Width of one discovery-page rank card in CSS px. Cards paint at this size;
-/// the managed-image thumb decodes at 192 device px so 1.25-1.5 DPR stays
-/// sharp while shrinking every tile the atlas packs.
+/// 发现页单张榜单卡片的宽度，单位 CSS px。卡片按这个尺寸绘制；managed-image
+/// 缩略图按 192 设备像素解码，于是 1.25-1.5 DPR 下仍然锐利，同时缩小图集打包的
+/// 每一枚瓦片。
 pub(crate) const RANK_CARD_W: f32 = 148.0;
 
-/// One discovery-page rank card: cover + name, optional provider subtitle.
-/// The click handler is
-/// supplied by the caller — the provider view types and their `open_rank`
-/// differ, and the cards are built from inside a uniform_list closure where
-/// only `&App` is available, so the weak-entity upgrade lives at the call
-/// site.
+/// 发现页的一张榜单卡片：封面 + 名字，可选的音源副标题。点击处理器由调用方提供
+/// ——各音源的视图类型与它们的 `open_rank` 都不同，而卡片是在 uniform_list 闭包
+/// 内部构建的，那里只有 `&App`，所以 weak-entity 的 upgrade 留在调用点。
 pub(crate) fn rank_card<F>(
     id_prefix: &'static str,
     index: usize,
@@ -268,7 +260,7 @@ where
         })
 }
 
-/// Muted placeholder line for empty/loading states.
+/// 给空/加载状态的暗色占位行。
 pub(crate) fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
     div()
         .text_sm()
@@ -277,7 +269,7 @@ pub(crate) fn muted_line(text: impl IntoElement, theme: &Theme) -> Div {
         .child(text)
 }
 
-/// Error placeholder line; the caller pairs it with a retry button.
+/// 错误占位行；调用方把它与一个重试按钮配对使用。
 pub(crate) fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
     div()
         .text_sm()

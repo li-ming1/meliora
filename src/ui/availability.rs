@@ -5,8 +5,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::library::types::Track;
 
-/// True when `path` is an HTTP(S) stream URL. Without the `online_sources`
-/// feature no online tracks exist, so every path is local.
+/// `path` 是否是 HTTP(S) 流 URL。没有 `online_sources` feature 时不存在在线曲目，
+/// 所以每个路径都是本地的。
 #[cfg_attr(not(feature = "online_sources"), allow(unused_variables))]
 fn is_http(path: &Path) -> bool {
     #[cfg(feature = "online_sources")]
@@ -17,17 +17,16 @@ fn is_http(path: &Path) -> bool {
 }
 
 pub fn is_track_path_available(path: &Path) -> bool {
-    // remote HTTP(S) streams (kugou et al.) don't exist on disk; treat any
-    // http/https path as available so it can be selected and played
+    // 远程 HTTP(S) 流（酷狗等）在盘上并不存在；把任何 http/https 路径都当作
+    // 可用，这样它能被选中并播放
     if is_http(path) {
         return true;
     }
     path.exists()
 }
 
-/// True when `path` is an HTTP(S) stream URL (an online track). Such paths
-/// report "available" for playback, but no file exists on disk, so actions
-/// like "show in file manager" must not be offered for them.
+/// `path` 是否是 HTTP(S) 流 URL（在线曲目）。这类路径在播放时报告「可用」，
+/// 但盘上并不存在文件，所以「在文件管理器中显示」这类动作绝不能为它们提供。
 pub fn is_online_path(path: &Path) -> bool {
     is_http(path)
 }
@@ -36,10 +35,9 @@ pub fn is_track_available(track: &Track) -> bool {
     is_track_path_available(&track.location)
 }
 
-/// Which of `paths` are available (same probe as
-/// [`is_track_path_available`]), one stat per path. Pure so callers can batch
-/// a whole selection's stats into one blocking task — `Path::exists` is a
-/// syscall and must stay off the UI thread.
+/// `paths` 中哪些可用（与 [`is_track_path_available`] 同一枚探针），每路径一次
+/// stat。写成纯函数，好让调用方把整个选区的 stat 合并进一次阻塞任务——
+/// `Path::exists` 是系统调用，必须留在 UI 线程之外。
 ///
 /// 这里**刻意不用** `PathExistence` 的目录枚举探针：调用方是用户点击的少量路径
 /// （几个到几十个），枚举整个父目录可能列出上千条目，比直接 stat 这几个路径更贵。
@@ -51,33 +49,27 @@ pub fn available_paths(paths: Vec<PathBuf>) -> FxHashSet<PathBuf> {
         .collect()
 }
 
-/// Monotonic ticket serializing the file-view batch actions: moving their
-/// availability stats off the UI thread made completion order
-/// nondeterministic, so each click takes a ticket and the async apply drops
-/// itself when a newer click exists — the synchronous "last click wins"
-/// ordering, restored.
+/// 用一个单调 ticket 给文件视图的批量动作串行化：把它们的可用性 stat 挪出 UI
+/// 线程之后完成顺序就不确定了，所以每次点击取一张 ticket，异步应用发现自己
+/// 后面有更新的点击时就自我丢弃——同步时代的「最后一次点击为准」顺序就此恢复。
 pub static BATCH_ACTION_TICKET: AtomicU64 = AtomicU64::new(0);
 
-/// Path -> "does it still exist" memo, backed by a per-directory listing cache.
-/// Every availability set is grouped from the same track paths, so sharing one
-/// cache across sets means one lookup per distinct path.
+/// 路径 → 「它还存在吗」的记忆表，底下是一本按目录的列表缓存。
+/// 每一组可用性集合都从同一批曲目路径分组而来，所以跨集合共享一本缓存就意味着
+/// 每个不同路径只查一次。
 ///
-/// The probe is a **directory enumeration, not a per-file stat**. Measured on
-/// Windows with 100,000 real files spread over 2,000 directories: `Path::exists`
-/// cost 245.8us per path (24.6s for the set) while one `read_dir` per directory
-/// cost 12.8us per path (1.28s); the same-harness Rust bench
-/// [`tests::bench_availability_probe_styles`] measures **33x** over 30,000 probes.
-/// That stat loop is the availability snapshot's dominant background cost
-/// (100k tracks measured 15.75s), and the kernel path resolution behind each
-/// `exists()` is what costs, not the SQL.
+/// 这枚探针是**目录枚举，不是逐文件 stat**。在 Windows 上实测：100,000 个真实
+/// 文件散布在 2,000 个目录里，`Path::exists` 每路径 245.8us（整组 24.6s），
+/// 而每目录一次 `read_dir` 只花每路径 12.8us（1.28s）；同一 harness 的 Rust
+/// 基准 [`tests::bench_availability_probe_styles`] 在 30,000 次探测上测得
+/// **33 倍**。那圈 stat 正是可用性快照的主要后台开销（100k 曲目实测 15.75s），
+/// 花钱的是每次 `exists()` 背后的内核路径解析，不是 SQL。
 ///
-/// Same shape and same conservatism as the scanner's `missing_paths` (see
-/// `library::scan::discover::cleanup`): a name found in the listing needs **no
-/// stat at all**, and only an apparent absence is confirmed with one stat, so a
-/// quirk of the listing can never grey out a playable track. A directory whose
-/// listing fails as `NotFound` answers "everything inside is gone" without
-/// stats; any other failure (permissions, a stalled mount) falls back to per
-/// -path stats rather than guessing.
+/// 形状与保守程度都同扫描器的 `missing_paths`（见
+/// `library::scan::discover::cleanup`）：在列表里找到名字**一次 stat 都不需要**，
+/// 只有「看起来不存在」才用一次 stat 确认，所以列表的任何怪异都绝不可能把一首
+/// 可播放的曲目置灰。列表枚举以 `NotFound` 失败的目录直接回答「里面全没了」，
+/// 不花 stat；其他任何失败（权限、卡住的挂载）回退到逐路径 stat，而不是猜。
 ///
 /// 残留的一条行为差（与旧的逐路径 stat 不同，且刻意保留 —— 消掉它就要给每个"存在"再付一次
 /// stat，等于放弃这次收益）：**悬空符号链接/junction 报"存在"**，因为目录清单里有它的名字；
@@ -162,9 +154,8 @@ impl PathExistence {
     }
 }
 
-/// Ids from `(id, location)` rows that still have at least one file on disk.
-/// `any` stops at the first hit, so an id whose first track is present costs one
-/// lookup and no further stats.
+/// 从 `(id, location)` 行里取出「至少还有一个文件在盘上」的 id。
+/// `any` 命中第一个就停，所以第一首曲目仍在的那个 id 只花一次查找、不再多花 stat。
 fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashSet<i64> {
     let mut locations_by_id: FxHashMap<i64, Vec<String>> = FxHashMap::default();
     for (id, location) in rows {
@@ -181,22 +172,17 @@ fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashS
     available
 }
 
-/// Album, artist and track availability from one pass over the base track
-/// rows plus the integer credit pairs. Replaces the three-query snapshot:
-/// the old album rows duplicated the whole track scan, and the old artist
-/// query re-transferred each credit's location string over SQL — now one
-/// full `(location, id, album_id)` scan plus one `(track_id, artist_id)`
-/// scan feed all three sets through a single stat cache, so every distinct
-/// path is statted exactly once and no location crosses SQL twice. Each
-/// track id appears once in the base rows, so its slot means exactly "this
-/// track's file still exists"; album-less tracks must not grey out of the
-/// tracks table, which is why the base rows (not album-filtered rows) are
-/// the source.
+/// 专辑、艺人与曲目的可用性由一趟基础曲目行加整数署名对的扫描得出。它取代原来的
+/// 三查询快照：旧的专辑行把整趟曲目扫描重复了一遍，旧的艺人查询又让每条署名的
+/// location 字符串第二次穿过 SQL——现在一次全量 `(location, id, album_id)` 扫描
+/// 加一次 `(track_id, artist_id)` 扫描，通过同一份 stat 缓存喂出三个集合，于是
+/// 每个不同路径恰好 stat 一次、没有任何 location 二次穿过 SQL。每首曲目在基础行
+/// 里只出现一次，所以它的槽位含义正是「这首曲目的文件还在」；没有专辑的曲目
+/// 绝不能从曲目表里置灰，这就是以基础行（而不是按专辑过滤后的行）为来源的原因。
 ///
-/// `album_id` of 0 means "no album": sqlx-sqlite decodes a NULL INTEGER
-/// column into `i64` as 0 (its `Decode for i64` has no null check) and album
-/// rowids start at 1, so standalone tracks land here with 0 and must not
-/// conjure a phantom available album id.
+/// `album_id` 为 0 表示「没有专辑」：sqlx-sqlite 把 NULL INTEGER 列解码成 `i64`
+/// 时给出 0（它的 `Decode for i64` 没有 null 检查），而专辑 rowid 从 1 开始，
+/// 所以独立曲目到这里是 0，绝不能凭空造出一个可用的专辑 id。
 pub fn compute_availability_from_tracks(
     track_rows: Vec<(String, i64, i64)>,
     artist_credits: Vec<(i64, i64)>,
@@ -214,9 +200,8 @@ pub fn compute_availability_from_tracks(
         }
     }
 
-    // Credits reference tracks by id: look the location up instead of
-    // cloning it per credit — one stat per distinct path regardless of how
-    // many artists share the file.
+    // 署名按 id 引用曲目：把 location 查出来而不是每条署名克隆一次——
+    // 无论多少个艺人共用这个文件，每个不同路径都只 stat 一次。
     let locations: FxHashMap<i64, &str> = track_rows
         .iter()
         .map(|(location, id, _)| (*id, location.as_str()))
@@ -233,11 +218,10 @@ pub fn compute_availability_from_tracks(
     (albums, artists, tracks)
 }
 
-/// Ids of albums that still have at least one track on disk, from a
-/// `(album_id, track location)` row set. Replaces the per-album
-/// `list_tracks_in_album` N+1 with one query plus one directory enumeration per
-/// distinct parent directory. Pure so the search index loader can run it on a
-/// blocking thread; the probe is a syscall and must stay off the UI thread.
+/// 从 `(album_id, track location)` 行集里取出「至少还有一首曲目在盘上」的专辑 id。
+/// 它取代按专辑逐个 `list_tracks_in_album` 的 N+1，改为一次查询外加每个不同父目录
+/// 一次目录枚举。写成纯函数，好让搜索索引加载器在阻塞线程上跑它——探针是系统
+/// 调用，必须留在 UI 线程之外。
 pub fn compute_available_albums(rows: Vec<(i64, String)>) -> FxHashSet<i64> {
     available_ids(rows, &mut PathExistence::default())
 }
@@ -285,8 +269,7 @@ mod tests {
         );
     }
 
-    /// `(album id, location)` rows: an album counts as available when at least
-    /// one of its tracks is still on disk.
+    /// `(专辑 id, location)` 行：一张专辑只要至少一首曲目还在盘上就算可用。
     #[test]
     fn album_availability_needs_one_track_on_disk() {
         let dir = TestDir::new("meliora-availability-albums");
@@ -411,13 +394,10 @@ mod tests {
         }
     }
 
-    /// All three sets derive from one pass over the base `(location, id,
-    /// album_id)` rows plus the integer credit pairs: an album counts when
-    /// any of its tracks is on disk, a track when its own file is, and an
-    /// artist when any credited track's file is — including a file shared
-    /// with another artist, which must mark both of them available.
-    /// `album_id` 0 (sqlx's silent decode of a NULL column) must not conjure
-    /// a phantom available album.
+    /// 三个集合都由一趟基础 `(location, id, album_id)` 行加整数署名对推出：
+    /// 专辑只要任一曲目在盘上就算可用，曲目看它自己的文件，艺人看任一署名曲目的
+    /// 文件——包括与另一个艺人共用的那个文件，它必须让两个人都标记为可用。
+    /// `album_id` 0（sqlx 对 NULL 列的静默解码）绝不能凭空造出一个可用的专辑。
     #[test]
     fn availability_sets_derive_from_one_track_pass() {
         let dir = TestDir::new("meliora-availability-merged");
@@ -454,11 +434,10 @@ mod tests {
         assert!(artists.contains(&13), "standalone track's artist available");
     }
 
-    /// An artist credited only at album level (`album_artist` with no
-    /// `track_artist` row) must still count as available. Availability used to
-    /// be computed from `track_artist` alone, which greyed out — and, because
-    /// unavailable rows lose their click handler, made unclickable — every
-    /// artist credited the album way, which is how most libraries credit theirs.
+    /// 只在专辑层被署名（有 `album_artist` 但没有 `track_artist` 行）的艺人也必须
+    /// 算作可用。可用性过去只从 `track_artist` 算，那会把所有按专辑方式署名的艺人
+    /// 置灰——并且因为不可用的行会失去点击处理器——让他们点不动，而绝大多数库
+    /// 正是按专辑方式署名的。
     #[tokio::test]
     async fn artist_availability_includes_album_level_credits() {
         use crate::library::db;
@@ -478,8 +457,8 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        // Pin the album-only case: whatever `update_metadata` credited, leave
-        // `album_artist` as the sole attribution path for this artist.
+        // 钉住「仅专辑署名」这种情形：无论 `update_metadata` 记了什么署名，
+        // 都让这个艺人只保留 `album_artist` 这一条归属路径。
         sqlx::query("DELETE FROM track_artist")
             .execute(&pool)
             .await

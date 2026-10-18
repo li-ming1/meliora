@@ -11,19 +11,18 @@ use crate::{
     },
 };
 
-// ─── RightSidebar component ───────────────────────────────────────────────────
+// ─── RightSidebar 组件 ─────────────────────────────────────────────────
 
-/// Queue pane width limits (px), clamped by the left-edge resize handle.
+/// 队列面板的宽度上下限（px），由左边缘的拖拽手柄做钳位。
 const QUEUE_MIN_WIDTH: f32 = 225.0;
 const QUEUE_MAX_WIDTH: f32 = 800.0;
-/// Lyrics pane height limits (fraction of the sidebar), clamped by the
-/// top-edge resize handle in `percent_mode`.
+/// 歌词面板的高度上下限（占侧栏的比例），由 `percent_mode` 下顶边缘的拖拽手柄
+/// 做钳位。
 const LYRICS_MIN_FRACTION: f32 = 0.10;
 const LYRICS_MAX_FRACTION: f32 = 0.85;
 
-/// Queue + lyrics column: the queue pane is width-resizable from its left
-/// edge; the lyrics pane sits at the bottom, height-resizable from its top
-/// edge when the queue is shown.
+/// 队列 + 歌词这一列：队列面板可从其左边缘拖宽；歌词面板贴在底部，
+/// 队列显示时可从其顶边缘拖高。
 pub struct RightSidebar {
     queue: Entity<Queue>,
     lyrics: Entity<Lyrics>,
@@ -37,14 +36,13 @@ impl RightSidebar {
         Self { queue, lyrics }
     }
 
-    /// The shared lyrics model: the immersive view mirrors its parsed state
-    /// (including online fetches) instead of loading lyrics a second time.
+    /// 共享的歌词模型：沉浸视图镜像它的已解析状态（含在线抓取），而不是二次加载
+    /// 歌词。
     pub(crate) fn lyrics(&self) -> Entity<Lyrics> {
         self.lyrics.clone()
     }
 
-    /// Renders the width-resizable queue pane; the lyrics pane sits below it,
-    /// or fills the whole column when the queue is hidden.
+    /// 渲染可拖宽的队列面板；歌词面板在其下方，队列隐藏时占满整列。
     pub fn render(&self, cx: &mut App, show_queue: bool, show_lyrics: bool) -> impl IntoElement {
         let queue_width = cx.global::<Models>().queue_width.clone();
         let lyrics_height_entity = cx.global::<Models>().lyrics_height.clone();
@@ -63,7 +61,7 @@ impl RightSidebar {
                     .w_full()
                     .flex()
                     .flex_col()
-                    // Queue section: fills remaining space above the lyrics pane.
+                    // 队列区：填满歌词面板之上的剩余空间。
                     .when(show_queue, |outer: Div| {
                         let queue_wrapper = div()
                             .when(show_lyrics, |d: Div| d.flex_1().min_h(px(0.0)))
@@ -72,12 +70,12 @@ impl RightSidebar {
                             .child(queue);
                         outer.child(queue_wrapper)
                     })
-                    // Lyrics section: fixed height at bottom, resizable from its top edge.
+                    // 歌词区：底部固定高度，可从其顶边缘拖拽调整。
                     .when(show_lyrics, |outer: Div| {
                         let lyrics = AnyView::from(self.lyrics.clone())
                             .cached(StyleRefinement::default().size_full());
-                        // Same clipped pane whether the top edge is resizable
-                        // (queue shown) or fixed (queue hidden).
+                        // 无论顶边缘可拖（显示队列）还是固定（隐藏队列），
+                        // 都是同一个被裁剪的面板。
                         let lyrics_pane = div().h_full().overflow_hidden().child(lyrics);
                         if show_queue {
                             outer.child(

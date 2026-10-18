@@ -13,9 +13,8 @@ use super::{
     models::Models,
 };
 
-/// The search modal view: hosts the library search palette, forwards its
-/// navigation events to the main view switcher, and won't open while another
-/// modal is active.
+/// 搜索模态视图：承载库搜索面板，把它的导航事件转发给主视图切换器，
+/// 且另一个模态框活动期间不会打开。
 pub struct SearchView {
     show: Entity<bool>,
     search: Entity<SearchModel>,
@@ -34,8 +33,7 @@ impl SearchView {
                     return;
                 }
 
-                // Close the artist picker first, or it would sit open
-                // underneath the search modal.
+                // 先关掉艺人选择浮层，否则它会敞开着留在搜索模态框下方。
                 super::artist_picker::close(cx);
 
                 show_clone.update(cx, |m, cx| {
@@ -88,15 +86,15 @@ impl Render for SearchView {
         let weak = cx.weak_entity();
 
         if *is_open {
-            // Focus the palette's input, not the search view itself.
+            // 焦点给面板的输入框，而不是搜索视图本身。
             cx.update_entity(&self.search, |search, cx| {
                 search.focus(window, cx);
             });
 
             modal()
                 .on_exit(move |_, cx| {
-                    // The view entity may already be gone when the modal exits
-                    // (normal teardown timing) - log and move on, do not abort.
+                    // 模态框退出时这个视图实体可能已经没了（正常的销毁时序）——
+                    // 记录一下继续走，不要中断。
                     if let Err(err) = weak.update(cx, |this, cx| {
                         this.reset(cx);
                     }) {

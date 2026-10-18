@@ -1,9 +1,7 @@
-//! UI-side consumer of the playback thread's event channel: the broadcast
-//! loop that mirrors playback events into the `Models` / `PlaybackInfo`
-//! entities, plus the frame-interval atlas-tile drains owned by the image
-//! reclaim funnel. Moved verbatim from `playback::interface` (architecture
-//! audit: the playback layer must not import `ui::models`); the interface
-//! itself stays a pure command sender.
+//! 播放线程事件通道的 UI 侧消费者：把播放事件镜像进 `Models` / `PlaybackInfo`
+//! 实体的广播循环，外加图片回收漏斗拥有的帧间隔图集瓦片排空。逐字搬自
+//! `playback::interface`（架构审计：playback 层不得 import `ui::models`）；
+//! interface 本身保持为纯命令发送器。
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -18,28 +16,22 @@ use crate::{
     ui::models::{CurrentTrack, ImageEvent, Models, PlaybackInfo},
 };
 
-/// Volume echoes only update `prev_volume` above this floor: the remembered
-/// value must stay visible in the UI while volume is toggled on/off, even if
-/// the user slid it all the way to `0`.
+/// 音量回声只有高于这条下限才更新 `prev_volume`：被记住的值必须在开关音量时
+/// 仍然可见于 UI，即便用户把它一路拖到 `0`。
 const MIN_REMEMBERED_VOLUME: f64 = 0.05;
 
-/// Cadence of the idle atlas-tile drain spawned by [`start_broadcast`]: keeps
-/// evicted tiles reclaimed while playback is paused (the event loop only
-/// drains when events arrive).
+/// [`start_broadcast`] 派生的空闲图集瓦片排空的节奏：让已逐出的瓦片在暂停期间
+/// 也被回收（事件循环只在有事件到达时才排空）。
 const IDLE_TILE_DRAIN_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Starts the broadcast loop that will read events from the playback thread and update data
-/// models accordingly. This function should be called once, and will panic if called more than
-/// once.
+/// 启动广播循环：它从播放线程读事件并据此更新数据模型。本函数只应调用一次，
+/// 调用多于一次会 panic。
 ///
-/// The bridge takes advantage of GPUI's asynchronous runtime to read messages without blocking
-/// rendering. Events are read via `recv().await` as soon as they arrive; a backlog left by a busy
-/// frame is coalesced to the newest event of each kind, though the executor may still delay the
-/// wakeup under load. Because of this, event handling should not perform any heavy operations,
-/// which should be instead sent to the data thread for any required additional processing.
+/// 这座桥借助 GPUI 的异步运行时来读消息而不阻塞渲染。事件一到就经 `recv().await`
+/// 读出；繁忙帧留下的积压会归并为每种事件的最新一条，不过负载下执行器仍可能推迟
+/// 唤醒。因此事件处理里不该做任何重操作，那些应当发给数据线程去做额外处理。
 pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
-    // This function's sole responsibility is to read events from the playback thread and update
-    // data models accordingly.
+    // 本函数的唯一职责就是从播放线程读事件并据此更新数据模型。
     let Some(mut events_rx) = interface.take_events_rx() else {
         panic!("broadcast thread already started");
     };
@@ -54,15 +46,13 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
     let stats_pool = app.global::<Pool>().0.clone();
 
     app.spawn(async move |cx| {
-        // `recv()` returning None means the playback thread dropped its
-        // senders; the loop must end there or it would spin on None.
+        // `recv()` 返回 None 意味着播放线程已丢弃它的发送端；循环必须就此结束，
+        // 否则会在 None 上空转。
         while let Some(event) = events_rx.recv().await {
-            // Coalesce the backlog: after a busy frame the channel can
-            // hold dozens of stale position ticks, and replaying them
-            // just redoes the same entity writes. Every variant is
-            // value-replacement semantics (the newest wins; QueueUpdated
-            // is a bare signal), so keeping only the last occurrence of
-            // each variant preserves correctness while shedding the rest.
+            // 归并积压：一次繁忙的帧之后通道里可能积着几十条过期位置 tick，
+            // 重放它们只是把同一批实体写入再做一遍。每个变体都是值替换语义
+            // （最新者胜；QueueUpdated 是裸信号），所以每个变体只保留最后一次
+            // 出现即可保持正确，其余全部丢弃。
             let mut latest = vec![event];
             while let Ok(next) = events_rx.try_recv() {
                 let disc = std::mem::discriminant(&next);
@@ -129,18 +119,14 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
                     }
                     PlaybackEvent::QueueUpdated => {
                         queue_model.update(cx, |m, cx| {
-                            // Content-change signal for the queue panel's
-                            // observer (models::Queue::content_epoch): bumped
-                            // here — the single funnel where playback events
-                            // become queue-entity writes — so the panel can
-                            // skip its O(n) view/summary rescan on
-                            // QueuePositionChanged-only notifications (every
-                            // track switch). Path-only swaps that ride without
-                            // a QueueUpdated (queue_manager's
-                            // replace_current_path / replace_next_path) never
-                            // notified the UI before either and change no uid
-                            // and no duration, so the epoch tracks exactly the
-                            // notifications the rescan responded to.
+                            // 给队列面板观察者用的内容变化信号
+                            // （models::Queue::content_epoch）：在这里自增——这里是
+                            // 播放事件变成队列实体写入的唯一漏斗——于是面板可以
+                            // 在只带 QueuePositionChanged 的通知（每次切歌）上跳过
+                            // 它那趟 O(n) 视图/摘要重扫。不伴随 QueueUpdated 的
+                            // 纯路径替换（queue_manager 的 replace_current_path /
+                            // replace_next_path）过去也从不通知 UI，且不改任何 uid
+                            // 与时长，所以这个 epoch 恰好只跟踪重扫过去响应的那批通知。
                             m.content_epoch = m.content_epoch.wrapping_add(1);
                             cx.notify();
                         });
@@ -149,13 +135,12 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
                         playback_info.shuffling.write(cx, v);
                     }
                     PlaybackEvent::VolumeChanged(v) => {
-                        // equality guard: during a slider drag the echo-back
-                        // notify would re-render the source slider per tick
+                        // 相等性守卫：拖动滑块期间，回声通知会让源头那个滑块
+                        // 每 tick 重渲染一次
                         update_if_changed(&playback_info.volume, cx, v);
 
-                        // `prev_volume` must never dip below the floor: its
-                        // value needs to stay visible in the UI while volume
-                        // is toggled on/off, even if the user slid it to `0`.
+                        // `prev_volume` 绝不能跌到下限之下：它的值需要在开关音量时
+                        // 仍然可见于 UI，即便用户把它拖到 `0`。
                         if v > MIN_REMEMBERED_VOLUME {
                             update_if_changed(&playback_info.prev_volume, cx, v);
                         }
@@ -178,22 +163,18 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
                 }
             }
 
-            // Reclaim evicted cover atlas tiles. This loop runs on the
-            // UI thread regardless of window visibility - a minimized
-            // window still receives playback events, while frames (and
-            // therefore the request_layout drain) stop being produced.
-            // Without this, idle playback leaked one atlas page per
-            // song change. The drain must only run between frames
-            // (never mid-paint, see managed_image.rs).
+            // 回收已逐出的封面图集瓦片。这个循环无论在窗口可见性如何都跑在 UI
+            // 线程上——最小化的窗口仍会收到播放事件，而帧（因而 request_layout
+            // 排空）不再产生。没有这段的话，空闲播放会每次切歌漏一个图集页。
+            // 排空只能在帧之间运行（绝不在 mid-paint 中间，见 managed_image.rs）。
             cx.update(crate::ui::components::managed_image::drain_pending_tile_drops);
         }
     })
     .detach();
 
-    // Idle atlas tile reclamation: the event loop above only drains while
-    // events arrive; this timer keeps it running when playback is paused.
-    // Deliberately a gpui timer, NOT tokio::time — the gpui executor has
-    // no tokio reactor on this thread (startup panic, 2026-09-08).
+    // 空闲图集瓦片回收：上面那个事件循环只在有事件到达时排空；这个计时器让它在
+    // 播放暂停时继续运转。刻意用 gpui 计时器，而不是 tokio::time——gpui 执行器
+    // 在这个线程上没有 tokio reactor（启动期 panic，2026-09-08）。
     app.spawn(async move |cx| {
         loop {
             cx.background_executor()
@@ -205,9 +186,8 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
     .detach();
 }
 
-/// Feeds one recording step to the shared stats recorder and flushes the
-/// rows it produced. A poisoned lock is recovered from: a panic inside an
-/// earlier recording step must not wedge the broadcast loop.
+/// 把一次收听记录步进喂给共享的统计记录器并刷出它产出的行。毒化的锁会被从中
+/// 恢复：更早一次记录步进里的 panic 绝不能把广播循环卡死。
 fn record_and_flush<T>(
     stats: &Mutex<T>,
     pool: sqlx::SqlitePool,
@@ -217,9 +197,8 @@ fn record_and_flush<T>(
     crate::stats::flush_rows_async(pool, rows);
 }
 
-/// Writes `value` into the entity and notifies, but only when it actually
-/// differs: echo-back events during a slider drag would otherwise re-render
-/// the source widget on every tick.
+/// 只在值真的不同时才把 `value` 写进实体并通知：拖动滑块期间的回声事件否则
+/// 会让源控件每 tick 重渲染一次。
 fn update_if_changed<T: PartialEq + 'static>(entity: &Entity<T>, cx: &mut AsyncApp, value: T) {
     entity.update(cx, |m, cx| {
         if *m != value {

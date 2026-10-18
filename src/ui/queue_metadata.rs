@@ -1,14 +1,11 @@
-//! UI-side metadata side table for queue items, keyed by
-//! [`QueueItemData::uid`] (P2-B step 2).
+//! 队列条目的 UI 侧元数据旁表，以 [`QueueItemData::uid`] 为键（P2-B 第 2 步）。
 //!
-//! Holds each queue item's `Entity<Option<QueueItemUIData>>` handle in a
-//! `Global` map keyed by the item's uid, so a lookup survives clones (every
-//! clone carries the same uid). The per-item entity slot that used to live
-//! inside `playback::queue::QueueItemData` was removed in P2-B step 6 — this
-//! table is the only home of queue-item UI metadata. The background loaders
-//! (library query + disk read + entity backfill) moved here with it: they are
-//! UI semantics, and with them gone `playback/queue.rs` no longer touches
-//! gpui entities.
+//! 每个队列条目的 `Entity<Option<QueueItemUIData>>` 句柄存在一张以条目 uid 为键的
+//! `Global` map 里，所以一次查找能活过克隆（每个克隆都带同一个 uid）。过去住在
+//! `playback::queue::QueueItemData` 里的那个「每条目实体槽位」已在 P2-B 第 6 步
+//! 移除——本表是队列条目 UI 元数据的唯一居所。后台加载器（库查询 + 磁盘读 +
+//! 实体回填）随之搬到这里：它们是 UI 语义，且它们离开之后 `playback/queue.rs`
+//! 不再触碰任何 gpui 实体。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,24 +23,22 @@ use crate::media::{
 };
 use crate::playback::queue::{DataSource, QueueItemData, QueueItemUIData, UNKNOWN_DURATION};
 
-/// Side table mapping a queue item's uid to its UI metadata slot. Lives as an
-/// independent [`Global`] (same pattern as `PlaybackInterface` / `StatsHandle`
-/// / `Pool`) rather than a field of `models::Queue`, whose entity would
-/// notify every subscriber on each insert (O(n) fan-out).
+/// 把队列条目 uid 映射到其 UI 元数据槽位的旁表。作为独立的 [`Global`] 存在
+/// （与 `PlaybackInterface` / `StatsHandle` / `Pool` 同一模式），而不是
+/// `models::Queue` 的一个字段——后者的实体会在每次插入时通知所有订阅者
+/// （O(n) 扇出）。
 #[derive(Default)]
 pub struct QueueMetadataStore(FxHashMap<u64, Entity<Option<QueueItemUIData>>>);
 
 impl Global for QueueMetadataStore {}
 
-/// Returns the item's UI metadata slot from the table keyed by
-/// [`QueueItemData::uid`], creating an empty shell on first use and seeding it
-/// through three branches (persisted restore → library load → disk-metadata
-/// load).
+/// 从以 [`QueueItemData::uid`] 为键的表里返回该条目的 UI 元数据槽位，首次使用时
+/// 创建空壳，并按三条分支播种（持久化恢复 → 库加载 → 磁盘元数据加载）。
 pub fn queue_ui_data(cx: &mut App, item: &QueueItemData) -> Entity<Option<QueueItemUIData>> {
     let uid = item.uid();
 
-    // ensure: look up the slot, creating (and inserting) an empty shell on
-    // first touch. `default_global` lazily materializes the store.
+    // ensure：查这个槽位，首次触到时创建（并插入）一个空壳。
+    // `default_global` 惰性地把 store 具现化。
     let existing = cx
         .default_global::<QueueMetadataStore>()
         .0
@@ -60,9 +55,8 @@ pub fn queue_ui_data(cx: &mut App, item: &QueueItemData) -> Entity<Option<QueueI
         }
     };
 
-    // Fast path: the slot already holds its data, so return the handle without
-    // cloning the path/persisted-ui/duration payloads (those are only needed
-    // by the seeding path below).
+    // 快路径：槽位已持有数据，于是直接返回句柄，不克隆 path/persisted-ui/duration
+    // 这几份载荷（它们只有下面的播种路径才需要）。
     if entity.read(cx).is_some() {
         return entity;
     }
@@ -73,13 +67,13 @@ pub fn queue_ui_data(cx: &mut App, item: &QueueItemData) -> Entity<Option<QueueI
     let persisted = item.persisted_restore();
     let duration = item.duration_cell();
     entity.update(cx, move |m, cx| {
-        // if we already have the data, exit the function
+        // 数据已经有了，就退出本函数
         if m.is_some() {
             return;
         }
 
-        // online (KuGou) tracks carry no db id, so restore the metadata that
-        // was persisted with the queue item instead of failing a disk read
+        // 在线（酷狗）曲目不带 db id，所以恢复随队列条目一起持久化下来的元数据，
+        // 而不是去做一次注定失败的磁盘读
         if let Some((name, artist, dur, cover)) = persisted
             && track_id.is_none()
         {
@@ -104,37 +98,32 @@ pub fn queue_ui_data(cx: &mut App, item: &QueueItemData) -> Entity<Option<QueueI
             cover_url: None,
         });
 
-        // if the database ids are known we can get the data from the database
+        // 数据库 id 已知时就能从数据库取数据
         if let (Some(track_id), Some(album_id)) = (track_id, album_id) {
-            // the two library queries left the UI thread (doctrine
-            // §2.3/§14): the placeholder renders until the background load
-            // backfills, exactly like the disk-metadata path below
+            // 那两次库查询已离开 UI 线程（准则 §2.3/§14）：占位符一直渲染到
+            // 后台加载回填，与下面那条磁盘元数据路径完全一致
             cx.notify();
             spawn_library_load(track_id, album_id, path, cx.entity(), duration.clone(), cx);
             return;
         }
 
-        // vital information left blank, try retriving the metadata from disk
-        // much slower, especially on windows
+        // 关键信息仍空缺时，试着从磁盘取元数据——慢得多，在 Windows 上尤其慢
         spawn_metadata_load(path, cx.entity(), duration.clone(), cx);
     });
 
     entity
 }
 
-/// The duration from the item's slot entity, but only if that entity already
-/// exists in the table — never spawns one as a side effect. Reading it during
-/// a render registers a dependency, so the reading view recomputes as
-/// metadata loads land.
+/// 取该条目槽位实体里的时长，但仅当该实体已存在于表中——绝不作为副作用新建一个。
+/// 在渲染期间读它会注册依赖，于是读取方视图会在元数据逐个落地时重新计算。
 pub fn queue_loaded_duration(cx: &App, item: &QueueItemData) -> Option<i64> {
     let store = cx.try_global::<QueueMetadataStore>()?;
     let entity = store.0.get(&item.uid())?;
     entity.read(cx).as_ref()?.duration
 }
 
-/// Clears the item's slot content (the shell and its uid key stay in the
-/// table), so the data is re-fetched if the item is resolved through
-/// [`queue_ui_data`] again.
+/// 清空该条目槽位的内容（空壳与它的 uid 键仍留在表里），于是条目再次经
+/// [`queue_ui_data`] 解析时数据会被重新取回。
 pub fn queue_drop_data(cx: &mut App, item: &QueueItemData) {
     let Some(entity) = cx
         .try_global::<QueueMetadataStore>()
@@ -148,10 +137,9 @@ pub fn queue_drop_data(cx: &mut App, item: &QueueItemData) {
     });
 }
 
-/// Retains only the slots whose uid is in `live` (the queue panel's
-/// `rescan_views_and_summary` passes the uids of the queue's current items);
-/// everything else is dropped, releasing those entity handles. Takes
-/// `&mut App` because gpui offers no `&App` path that can mutate a `Global`.
+/// 只保留 uid 在 `live` 里的槽位（队列面板的 `rescan_views_and_summary` 传入
+/// 当前队列条目的 uid 集合）；其余全部丢弃，从而释放那些实体句柄。取
+/// `&mut App`，因为 gpui 没有能用 `&App` 修改 `Global` 的路径。
 pub(crate) fn gc_retaining(cx: &mut App, live: impl Iterator<Item = u64>) {
     let live: FxHashSet<u64> = live.collect();
     let store = cx.default_global::<QueueMetadataStore>();
@@ -165,7 +153,7 @@ fn read_metadata(path: &Path) -> anyhow::Result<QueueItemUIData> {
     stream.start_playback()?;
 
     let mut metadata = stream.read_metadata()?;
-    // online (KuGou) paths are URLs — a filename fallback would parse the URL
+    // 在线（酷狗）路径是 URL——用文件名兜底会把 URL 解析成显示名
     if !crate::media::is_http_path(path) {
         metadata.fill_from_filename(path);
     }
@@ -187,8 +175,8 @@ fn read_metadata(path: &Path) -> anyhow::Result<QueueItemUIData> {
     Ok(ui_data)
 }
 
-/// Background-loads a queue item's display metadata from disk, filling `entity`
-/// when done. Avoids blocking the UI thread on slow Windows reads.
+/// 在后台从磁盘加载一个队列条目的显示元数据，完成时填充 `entity`。避免把 UI
+/// 线程阻塞在 Windows 的慢读取上。
 fn spawn_metadata_load(
     path: PathBuf,
     entity: Entity<Option<QueueItemUIData>>,
@@ -213,13 +201,11 @@ fn spawn_metadata_load(
     .detach();
 }
 
-/// Background-loads a queue item's display metadata from the library database
-/// (one track row plus one album row), filling `entity` when done. Mirrors
-/// [`spawn_metadata_load`]: the synchronous `LibraryAccess` calls this replaces
-/// parked the UI thread on two `RUNTIME.block_on`s per queue row's first
-/// render (doctrine §2.3/§14). A row that vanished from the library, or one
-/// whose artist stays blank after the load, falls back to the disk metadata
-/// load exactly as the previous inline path did.
+/// 在后台从库数据库加载一个队列条目的显示元数据（一行曲目加一行专辑），完成时
+/// 填充 `entity`。与 [`spawn_metadata_load`] 同形：它取代的那些同步
+/// `LibraryAccess` 调用，会让 UI 线程在每行队列首次渲染时停在两次
+/// `RUNTIME.block_on` 上（准则 §2.3/§14）。已从库里消失的行，或加载后艺人仍为空的
+/// 行，都照旧的 inline 路径那样回退到磁盘元数据加载。
 fn spawn_library_load(
     track_id: i64,
     album_id: i64,
@@ -245,7 +231,7 @@ fn spawn_library_load(
             };
 
             let Some(data) = m.as_mut() else {
-                // the entity was dropped meanwhile; nothing to fill
+                // 实体其间已被丢弃；没什么可填的
                 return;
             };
             data.name = Some(track.title.clone().0);
@@ -263,8 +249,7 @@ fn spawn_library_load(
 
             cx.notify();
 
-            // artist information left blank, try retrieving the metadata from
-            // disk (the fallback the old inline path ran)
+            // 艺人信息仍然空缺，试着从磁盘取元数据（旧 inline 路径跑的就是这个兜底）
             if data.artist_name.is_none() {
                 spawn_metadata_load(path, cx.entity(), duration, cx);
             }

@@ -27,7 +27,7 @@ impl ArtistPickerView {
             })
             .detach();
 
-            // a background scan can delete or rename the listed artists, drop the picker
+            // 后台扫描可能删掉或改名列表里的艺人，于是丢弃这个选择浮层
             let picker = model.clone();
             let scan_state = cx.global::<Models>().scan_state.clone();
             cx.observe(&scan_state, move |_, state, cx| {
@@ -73,7 +73,7 @@ impl Render for ArtistPickerView {
             return div().into_any_element();
         };
 
-        // grab focus once when the picker opens, not on every frame
+        // 只在浮层打开时抓一次焦点，不是每帧都抓
         if !self.focused {
             self.focus_handle.focus(window, cx);
             self.focused = true;

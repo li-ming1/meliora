@@ -37,11 +37,11 @@ use crate::{
     },
 };
 
-// SettingsHealth moved to the settings layer (it describes settings.json's
-// state); re-exported here for the existing `ui::models::SettingsHealth` users.
+// SettingsHealth 已搬到 settings 层（它描述的是 settings.json 的状态）；
+// 这里再导出，供现有的 `ui::models::SettingsHealth` 使用者继续用。
 pub use crate::settings::SettingsHealth;
 
-// yes this looks a little silly
+// 是，这看着有点傻
 impl EventEmitter<Metadata> for Metadata {}
 
 #[derive(Debug, PartialEq, Clone)]
@@ -55,7 +55,7 @@ pub struct WindowInformation {
     pub size: Size<Pixels>,
 }
 
-// Click position and artist choices for the artist picker overlay
+// 艺人选择浮层的点击位置与候选艺人
 pub type ArtistPickerState = Option<(Point<Pixels>, Vec<(i64, SharedString)>)>;
 
 /// 全局状态袋（2026-09-26 审计 A-5 起的演进约定）：字段按六个域归组，
@@ -68,34 +68,29 @@ pub type ArtistPickerState = Option<(Point<Pixels>, Vec<(i64, SharedString)>)>;
 /// 字段不强行重排；新字段不得造成新的跨域交错。
 pub struct Models {
     pub metadata: Entity<Metadata>,
-    /// Current-track artwork. The stored *value* stays `None` — the entity is
-    /// used purely as an `ImageEvent` bus for the SMTC controller
-    /// (see `controllers::register_pbc_event_handlers`); never read the value.
+    /// 当前曲目的封面图。存进去的*值*始终是 `None`——这个实体只当作 SMTC
+    /// 控制器的 `ImageEvent` 总线用（见
+    /// `controllers::register_pbc_event_handlers`）；绝不要去读它的值。
     pub albumart: Entity<Option<Arc<RenderImage>>>,
-    /// Cached id set of the "Liked Songs" playlist, loaded once at startup
-    /// and re-loaded whenever that playlist changes. Lets track rows check
-    /// like state without one DB query per row.
+    /// 「我收藏」歌单的缓存 id 集合：启动时加载一次、该歌单每次变动时重载。
+    /// 让曲目行不必每行一次 DB 查询就能检查收藏状态。
     pub liked_ids: Entity<Option<Arc<HashSet<i64>>>>,
-    /// Cached set of album ids that still have at least one track on disk,
-    /// reloaded at startup and on scan completion. Lets album rows, grid
-    /// tiles and album context menus test availability without a per-row
-    /// `block_on` query plus a stat per track.
+    /// 缓存的「至少还有一首曲目在盘上」的专辑 id 集合，启动时与扫描完成时
+    /// 重载。让专辑行、网格瓦片与专辑右键菜单不必每行做一次 `block_on` 查询
+    /// 外加每曲一次 stat 就能测可用性。
     pub available_albums: Entity<Option<Arc<FxHashSet<i64>>>>,
-    /// Cached set of artist ids that still have at least one credited track on
-    /// disk, reloaded at startup and on scan completion. Lets artist rows test
-    /// availability without a per-row `list_all_tracks_by_artist` query plus a
-    /// stat per track.
+    /// 缓存的「至少还有一首署名曲目在盘上」的艺人 id 集合，启动时与扫描完成时
+    /// 重载。让艺人行不必每行一次 `list_all_tracks_by_artist` 查询外加每曲
+    /// 一次 stat 就能测可用性。
     pub available_artists: Entity<Option<Arc<FxHashSet<i64>>>>,
-    /// Cached set of track ids whose file still exists on disk, computed in
-    /// the same availability pass as the album/artist sets (startup and scan
-    /// completion). Lets track rows test availability without one
-    /// `path.exists()` stat per newly built row on the UI thread. Online
-    /// (http/https) tracks short-circuit to available before consulting this.
+    /// 缓存的「文件仍在盘上」的曲目 id 集合，与专辑/艺人集合在同一次可用性
+    /// 扫描里算出（启动时与扫描完成时）。让曲目行不必每个新建行在 UI 线程上
+    /// 做一次 `path.exists()` stat 就能测可用性。在线（http/https）曲目在
+    /// 查这个集合之前就短路为可用。
     pub available_tracks: Entity<Option<Arc<FxHashSet<i64>>>>,
-    /// Album metadata for row construction: rebuilding a track row needed up
-    /// to three `get_album_by_id` block_on queries (vinyl numbering, album
-    /// title, artist override). A scan is the only writer of album metadata,
-    /// so the cache is cleared there and on process-wide startup.
+    /// 供行构建使用的专辑元数据：重建一个曲目行过去要多达三次
+    /// `get_album_by_id` block_on 查询（碟片编号、专辑标题、艺人覆盖）。
+    /// 扫描是专辑元数据的唯一写入方，所以缓存就在扫描处与进程启动时清空。
     pub album_cache: Entity<FxHashMap<i64, Arc<Album>>>,
     pub queue: Entity<Queue>,
     pub scan_state: Entity<ScanEvent>,
@@ -118,9 +113,8 @@ pub struct Models {
     pub controls_left_width: Entity<Pixels>,
     pub controls_right_width: Entity<Pixels>,
     pub window_information: Entity<Option<WindowInformation>>,
-    /// Full-screen immersive listening view (`ui::immersive`): while `true`
-    /// the main window renders the immersive page instead of the library
-    /// layout and the window is toggled fullscreen.
+    /// 全屏沉浸聆听视图（`ui::immersive`）：为 `true` 时主窗口渲染沉浸页而不是
+    /// 库布局，并把窗口切到全屏。
     pub immersive: Entity<bool>,
 }
 
@@ -156,7 +150,7 @@ pub struct PlaybackInfo {
     pub stop_after_current: Entity<bool>,
     pub volume: Entity<f64>,
     pub prev_volume: Entity<f64>,
-    /// Output stream rate in Hz, 0 until the first stream exists.
+    /// 输出流的采样率，单位 Hz；首个流建立之前为 0。
     pub sample_rate: Entity<u32>,
 }
 
@@ -172,25 +166,20 @@ pub const POSITION_DISPLAY_QUANTUM_MS: u64 = 250;
 pub struct Queue {
     pub data: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
     pub position: usize,
-    /// Monotonic counter bumped by the UI-side event bridge
-    /// (`ui::playback_bridge`) on every `QueueUpdated` — the playback
-    /// thread's "queue content changed" broadcast; `QueuePositionChanged`
-    /// writes `position` without touching this. The queue panel's observer
-    /// uses it as the content-change discriminator: a position-only move
-    /// keeps the live uid set and every item's duration state, so the
-    /// panel's O(n) view/summary rescan can be skipped entirely
-    /// (see `ui::queue`). Content mutations that ride without a
-    /// `QueueUpdated` (the `replace_current_path` / `replace_next_path`
-    /// stream-URL refreshes) never notified the UI before either and
-    /// change no uid and no duration, so the epoch tracks exactly the
-    /// notifications the rescan used to respond to.
+    /// 由 UI 侧事件桥（`ui::playback_bridge`）在每次 `QueueUpdated`——播放线程
+    /// 的「队列内容变了」广播——自增的单调计数；`QueuePositionChanged` 只写
+    /// `position`、不碰这里。队列面板的观察者把它用作内容变化判别器：仅位置的
+    /// 移动会保留活 uid 集合与每个条目的时长状态，所以面板那次 O(n) 的视图/
+    /// 摘要重扫可以整个跳过（见 `ui::queue`）。不伴随 `QueueUpdated` 的内容变动
+    /// （`replace_current_path` / `replace_next_path` 那两处流 URL 刷新）过去
+    /// 同样不通知 UI，也不改任何 uid 与时长，所以这个 epoch 恰好只跟踪重扫过去
+    /// 会响应的那批通知。
     pub content_epoch: u64,
 }
 
-// PlaylistInfoTransfer / PlaylistEvent moved to the library layer (they are
-// playlist-domain state; library/scan no longer reverse-imports ui::models
-// to emit them); re-exported here for the existing
-// `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` users.
+// PlaylistInfoTransfer / PlaylistEvent 已搬到 library 层（它们是歌单域的状态；
+// library/scan 不再为了发出它们而反向 import ui::models）；这里再导出，供现有的
+// `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` 使用者继续用。
 pub use crate::library::playlist::{PlaylistEvent, PlaylistInfoTransfer};
 
 fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
@@ -199,16 +188,15 @@ fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
         StartupLibraryView::Artists => ViewSwitchMessage::Artists,
         StartupLibraryView::Tracks => ViewSwitchMessage::Tracks,
         StartupLibraryView::Files => ViewSwitchMessage::Files,
-        // Liked Songs needs the list_all_playlists aggregate to resolve its
-        // playlist id; that query runs on the runtime now (see build_models),
-        // so start on the Albums fallback and navigate once it lands.
+        // 「我收藏」需要 list_all_playlists 聚合才能解析出它的歌单 id；那个查询
+        // 现在跑在运行时上（见 build_models），所以先从 Albums 兜底视图起步，
+        // 等结果落地再导航。
         StartupLibraryView::LikedSongs => ViewSwitchMessage::Albums,
     }
 }
 
-/// A stored width/height of 0 means "never saved" (historical storage
-/// contract): fall back to the compiled default instead of collapsing the
-/// pane. Every dimension entity rebuilt from `StorageData` goes through this.
+/// 存进去的宽/高为 0 表示「从未保存过」（历史存储契约）：回退到编译期默认值，
+/// 而不是把面板压扁。每个从 `StorageData` 重建的尺寸实体都走这里。
 fn stored_dimension(stored: Pixels, default: Pixels) -> Pixels {
     if stored > px(0.0) { stored } else { default }
 }
@@ -250,14 +238,13 @@ pub fn build_models(
     let startup_view = resolve_startup_view(startup_setting);
 
     let switcher_model = cx.new(|_| NavigationHistory::new(startup_view));
-    // Kept for the Liked Songs startup-view resolution below (the entity is
-    // moved into the Models global).
+    // 保留给下面的「我收藏」启动视图解析使用（该实体会移入 Models 全局）。
     let switcher_for_startup = switcher_model.clone();
     let artist_picker_model = cx.new(|_| None);
 
     let sidebar_width: Entity<Pixels> =
         cx.new(|_| stored_dimension(storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH));
-    // Rendered sidebar width, tweened toward `sidebar_width` / collapsed by the sidebar view.
+    // 实际渲染出的侧栏宽度，由侧栏视图朝 `sidebar_width` 补间或在收起时压到 0。
     let animated_sidebar_width: Entity<Pixels> =
         cx.new(|_| stored_dimension(storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH));
     let queue_width: Entity<Pixels> =
@@ -329,10 +316,9 @@ pub fn build_models(
         immersive,
     });
 
-    // Startup view = Liked Songs: resolving its playlist id needs the
-    // list_all_playlists aggregate, which used to block startup on the UI
-    // thread. Resolve it on the runtime and navigate once it lands; if the
-    // user has already navigated away by then, leave the current view alone.
+    // 启动视图 = 「我收藏」：解析它的歌单 id 需要 list_all_playlists 聚合，
+    // 而那过去会让启动阻塞在 UI 线程上。现在在运行时上解析、落地后导航；
+    // 若届时用户已经导航到别处，就保持当前视图不动。
     if matches!(startup_setting, StartupLibraryView::LikedSongs) {
         let switcher_model = switcher_for_startup;
         let pool = cx.global::<Pool>().0.clone();
@@ -366,9 +352,9 @@ pub fn build_models(
         .detach();
     }
 
-    // Populate the liked-songs id set once at startup (Models is registered
-    // above), then again whenever the liked playlist changes — all like /
-    // unlike paths emit PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID).
+    // 启动时填充一次收藏 id 集合（Models 已在上面注册），此后每当收藏歌单
+    // 变化再填一次——所有点赞/取消点赞路径都会发出
+    // PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID)。
     reload_liked_ids(cx);
     let tracker = cx.global::<Models>().playlist_tracker.clone();
     cx.subscribe(&tracker, |_, ev, cx| {
@@ -378,10 +364,8 @@ pub fn build_models(
     })
     .detach();
 
-    // Album/artist/track availability snapshots: loaded at startup and
-    // refreshed whenever a scan completes. A scan is also the only writer of
-    // album metadata, so the row-construction album cache is dropped at the
-    // same point.
+    // 专辑/艺人/曲目的可用性快照：启动时加载，每次扫描完成时刷新。扫描同样是
+    // 专辑元数据的唯一写入方，所以供行构建用的专辑缓存也在同一点丢弃。
     reload_availability(cx);
     let scan_state = cx.global::<Models>().scan_state.clone();
     cx.observe(&scan_state, |scan_event, cx| {
@@ -393,10 +377,9 @@ pub fn build_models(
         ) {
             let album_cache = cx.global::<Models>().album_cache.clone();
             album_cache.update(cx, |cache, _| cache.clear());
-            // A scan is also the only writer of thumb assets: drop the
-            // shrunk-thumb cache so new/re-scanned artwork re-enters the
-            // bounded FIFO cache instead of every later cache miss costing a
-            // DB load + decode + shrink forever.
+            // 扫描同样是缩略图资产的唯一写入方：丢弃缩小后的缩略图缓存，让新增
+            // /重扫到的封面重新进入有界 FIFO 缓存，而不是此后每次缓存未命中都要
+            // 付一次 DB 加载 + 解码 + 缩小。
             clear_shrunk_thumb_cache();
             reload_availability(cx);
         }
@@ -435,19 +418,17 @@ pub fn build_models(
 
 pub(crate) const LIKED_SONGS_PLAYLIST_ID: i64 = 1;
 
-/// Like state carried by UI rows. The stored id is always the *track id*:
-/// `Some(track_id)` means the track is in the Liked Songs playlist. It is
-/// display state only — the unlike actions resolve the playlist_item row from
-/// the track id (see `unlike_track` / `toggle_like_by_id`), so nothing may
-/// interpret this value as a playlist_item row id.
+/// UI 行携带的收藏状态。存进去的 id 恒为*曲目 id*：`Some(track_id)` 表示这首
+/// 歌在「我收藏」歌单里。它只是显示状态——取消收藏的动作会从曲目 id 解析出
+/// playlist_item 行（见 `unlike_track` / `toggle_like_by_id`），所以谁都不许把
+/// 这个值当成 playlist_item 的行 id 来解释。
 pub(crate) trait HasLikedState {
     fn is_liked(&self) -> Option<i64>;
     fn set_liked(&mut self, item_id: Option<i64>);
 }
 
-/// Shared outcome handling for the background like/unlike DB tasks: returns
-/// true on success; on a failed query or a panicked task logs the caller's
-/// message and returns false (the caller then skips its follow-up notify).
+/// 后台点赞/取消点赞 DB 任务的共用结果处理：成功返回 true；查询失败或任务
+/// panic 时打出调用方给的消息并返回 false（调用方随后跳过它的后续 notify）。
 fn like_task_succeeded<T, E: std::fmt::Debug>(
     result: Result<sqlx::Result<T>, E>,
     failure_log: &str,
@@ -491,10 +472,9 @@ pub(crate) async fn like_track<E: HasLikedState + 'static>(
     });
 }
 
-/// Removes `track_id` from the Liked Songs playlist. The playlist item row is
-/// resolved from the track id (`remove_tracks_from_playlist` does the
-/// lookup-and-delete in one transaction), so this never depends on which id
-/// the calling row happened to store.
+/// 把 `track_id` 从「我收藏」歌单里移除。歌单条目行由曲目 id 解析
+/// （`remove_tracks_from_playlist` 在一个事务里完成查找与删除），所以这里
+/// 从不依赖调用方的那一行当初存的是哪个 id。
 pub(crate) async fn unlike_track<E: HasLikedState + 'static>(
     track_id: i64,
     entity: Entity<E>,
@@ -519,9 +499,8 @@ pub(crate) async fn unlike_track<E: HasLikedState + 'static>(
         }
         Err(err) => {
             tracing::error!("unlike task panicked: {err:?}");
-            // The unlike never ran (the transaction rolled back with the
-            // panic), but the caller already cleared the display state —
-            // restore it so the row still shows liked, matching the DB.
+            // 取消收藏其实没执行（事务随 panic 一起回滚），但调用方已经清掉了
+            // 显示状态——把它恢复，让该行仍显示为已收藏，与 DB 一致。
             entity.update(cx, |this, cx| {
                 this.set_liked(Some(track_id));
                 cx.notify();
@@ -543,11 +522,11 @@ pub(crate) fn toggle_like<E: HasLikedState + 'static>(
     let pool = cx.global::<Pool>().0.clone();
     let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
-    // Defer so this is safe to call from inside a listener, where the entity
-    // is already leased and synchronous read/update would re-enter and panic.
+    // 延迟执行，好让这个函数可以安全地从监听器内部调用：那时实体已被租走，
+    // 同步 read/update 会重入并 panic。
     cx.defer(move |cx| {
-        // The stored id is display state only (see HasLikedState); the unlike
-        // always targets this function's `track_id`, never the stored value.
+        // 存进去的 id 只是显示状态（见 HasLikedState）；取消收藏永远针对本函数的
+        // `track_id`，绝不用存着的值。
         let is_liked = entity.read(cx).is_liked().is_some();
         if is_liked {
             entity.update(cx, |this, cx| {
@@ -567,10 +546,10 @@ pub(crate) fn toggle_like<E: HasLikedState + 'static>(
     });
 }
 
-/// Like/unlike without a row entity. `is_liked` only carries the liked flag —
-/// `Some(_)` removes `track_id` from the Liked Songs playlist, `None` adds it.
-/// The id inside `Some` is deliberately ignored: callers historically passed
-/// either the track id or the playlist_item row id, and both mean "liked".
+/// 不依赖行实体的点赞/取消点赞。`is_liked` 只携带「是否已收藏」这个标记——
+/// `Some(_)` 从「我收藏」歌单里移除 `track_id`，`None` 则加入。`Some` 里的 id
+/// 刻意忽略：调用方历史上要么传曲目 id、要么传 playlist_item 行 id，两者都表示
+/// 「已收藏」。
 pub(crate) fn toggle_like_by_id(track_id: i64, is_liked: Option<i64>, cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
     let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
@@ -643,12 +622,10 @@ pub(crate) fn subscribe_liked_updates<E>(
 ) where
     E: HasLikedState + 'static,
 {
-    // Observe the cached liked-ids set instead of the playlist tracker: the
-    // tracker fires while the reload that reflects the change is still in
-    // flight, so a cache read there would be stale. The set entity notifies
-    // exactly when fresh data lands (startup, like, unlike, batch like), and
-    // the notification costs no IO — the old tracker subscription ran one
-    // synchronous DB query per live row on every liked-playlist change.
+    // 观察缓存的收藏 id 集合而不是歌单追踪器：追踪器触发时，反映这次变化的重载
+    // 还已在途，在那里读缓存会读到过期值。集合实体恰好在新鲜数据落地时通知
+    // （启动、点赞、取消点赞、批量收藏），且通知零 IO——旧的追踪器订阅在每次
+    // 收藏歌单变化时都会为每条活行跑一次同步 DB 查询。
     let liked_ids = cx.global::<Models>().liked_ids.clone();
     cx.observe(&liked_ids, move |this, _, cx| {
         let new_liked = get_track_id(this).and_then(|id| is_song_liked(cx, id));
@@ -660,10 +637,9 @@ pub(crate) fn subscribe_liked_updates<E>(
     .detach();
 }
 
-/// (Re)loads the liked-songs track-id set into `Models.liked_ids` on the
-/// async runtime. Called once at startup and on every liked-playlist change,
-/// so track rows can test like state against the cached set instead of one
-/// DB query per row. Best-effort: a failed load leaves the set unchanged.
+/// 在异步运行时上把收藏曲目的 id 集合（重）加载进 `Models.liked_ids`。启动时
+/// 调用一次、收藏歌单每次变化时再调一次，于是曲目行可以对着缓存集合测收藏
+/// 状态，而不必每行一次 DB 查询。尽力而为：加载失败时集合保持原样。
 pub(crate) fn reload_liked_ids(cx: &mut App) {
     let pool = cx.global::<Pool>().0.clone();
     let liked_ids = cx.global::<Models>().liked_ids.clone();
@@ -678,10 +654,9 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
                     .map(|rows| rows.into_iter().map(|(id,)| id).collect::<HashSet<i64>>())
             })
             .await;
-        // Best-effort for real: a failed query (e.g. SQLITE_BUSY) or a
-        // panicked task must leave the previous set in place. Overwriting
-        // with an empty set would un-like every row in the UI and make the
-        // next like insert a duplicate playlist_item row.
+        // 真正的尽力而为：查询失败（例如 SQLITE_BUSY）或任务 panic 都必须让
+        // 上一次的集合原地保留。用空集合覆盖会把 UI 里每一行都变成未收藏，
+        // 并让下一次点赞插入一条重复的 playlist_item 行。
         let Ok(Ok(ids)) = result else {
             warn!("could not reload liked songs track ids, keeping previous set");
             return;
@@ -694,24 +669,20 @@ pub(crate) fn reload_liked_ids(cx: &mut App) {
     .detach();
 }
 
-/// Like-state of `track_id` against the cached set: `Some(track_id)` when the
-/// track is in the Liked Songs playlist, `None` otherwise — the exact value a
-/// row stores in its `is_liked` field (see `HasLikedState`). Returns `None`
-/// (unknown) until the first reload lands — callers observe
-/// `Models.liked_ids`, so the answer self-corrects on the next notification
-/// without any DB access.
+/// 对着缓存集合查 `track_id` 的收藏状态：曲目在「我收藏」歌单里时返回
+/// `Some(track_id)`，否则 `None`——正是每行该存进 `is_liked` 字段的值
+/// （见 `HasLikedState`）。首次重载落地之前返回 `None`（未知）；调用方观察
+/// `Models.liked_ids`，所以答案会在下一次通知时自我纠正，全程零 DB 访问。
 pub(crate) fn is_song_liked(cx: &App, track_id: i64) -> Option<i64> {
     let cached = cx.global::<Models>().liked_ids.read(cx).clone();
     cached.and_then(|set| set.contains(&track_id).then_some(track_id))
 }
 
-/// Track availability from the background snapshot (reloaded at startup and
-/// on scan completion, same pass as the album/artist sets): lets view
-/// construction answer "is this track's file still there" without one
-/// `path.exists()` syscall per track on the UI thread. `None` (snapshot not
-/// loaded yet) falls back to the exact pre-snapshot behavior so the startup
-/// window never reads as unavailable — the same contract as the table rows
-/// (`types/table.rs`).
+/// 从后台快照取的曲目可用性（启动与扫描完成时重载，与专辑/艺人集合同一次
+/// 扫描）：让视图构造能回答「这首曲目的文件还在不在」，而不必在 UI 线程上
+/// 每曲一次 `path.exists()` 系统调用。快照尚未加载时返回 `None` 并回退到
+/// 快照机制之前的确切行为，所以启动窗口绝不会读成「不可用」——与表格行
+/// （`types/table.rs`）同一份契约。
 pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
     match cx.global::<Models>().available_tracks.read(cx).clone() {
         Some(set) => set.contains(&track.id),
@@ -719,19 +690,17 @@ pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
     }
 }
 
-/// (Re)loads the album-, artist- and track-availability snapshots on the async
-/// runtime: one full `(location, id, album_id)` track scan plus one integer
-/// `(track_id, artist_id)` credit scan, then a single blocking pass that stats
-/// each distinct track path once for all three sets. The base rows (not
-/// album-filtered rows) are the only complete source — `find_album_availability`
-/// filters album-less tracks out, and those must not grey out in the tracks
-/// table — and the credit join happens in Rust against them, so no query
-/// re-transfers a location string. Startup and scan completion only.
-/// All-or-nothing like `reload_liked_ids`: a failed query or task leaves the
-/// three previous snapshots in place instead of publishing empty sets.
+/// 在异步运行时上（重）加载专辑、艺人与曲目三份可用性快照：一次全量
+/// `(location, id, album_id)` 曲目扫描加一次纯整数的 `(track_id, artist_id)`
+/// 署名扫描，随后一趟阻塞处理，对每个不同的曲目路径只 stat 一次就得出全部
+/// 三个集合。基础行（未按专辑过滤的行）是唯一完整的来源——
+/// `find_album_availability` 会把没有专辑的曲目滤掉，而那些行绝不能被置灰——
+/// 且署名关联在 Rust 里对着基础行完成，所以没有任何查询需要再搬运一次路径
+/// 字符串。只在启动与扫描完成时调用。与 `reload_liked_ids` 同样是全有或全无：
+/// 查询或任务失败时三份旧快照原地保留，绝不发布空集合。
 pub(crate) fn reload_availability(cx: &mut App) {
-    // Yields the rows only when the spawned query fully succeeded; every
-    // failure is logged so the caller can keep the previous snapshots.
+    // 只有派生的查询完全成功时才交出这些行；每次失败都会被记录，好让调用方
+    // 保留上一次的快照。
     async fn query_rows<T>(
         what: &'static str,
         task: tokio::task::JoinHandle<sqlx::Result<T>>,
@@ -806,10 +775,9 @@ pub(crate) fn reload_availability(cx: &mut App) {
     .detach();
 }
 
-/// Album metadata for row construction, from the cache when warm (cleared
-/// only when a scan, its sole writer, completes) and one blocking query on a
-/// cold miss — so a row rebuild costs zero DB round trips after the first
-/// time each album is seen.
+/// 供行构建使用的专辑元数据：缓存热的时候走缓存（只有扫描——它的唯一写入方——
+/// 完成时才清空），冷未命中时一次阻塞查询——所以每张专辑第一次被见到之后，
+/// 重建行就零次 DB 往返。
 pub(crate) fn cached_album(cx: &mut App, album_id: i64) -> Option<Arc<Album>> {
     let cache = cx.global::<Models>().album_cache.clone();
     if let Some(album) = cache.read(cx).get(&album_id).cloned() {

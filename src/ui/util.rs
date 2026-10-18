@@ -29,10 +29,9 @@ pub fn reduced_motion_enabled(cx: &App) -> bool {
         .reduced_motion
 }
 
-/// Rows this far outside the visible window stay cached. Scrolling back
-/// within the band reuses the existing row entities instead of re-running
-/// their DB/stat construction pipeline on the UI thread; the band must stay
-/// wider than any viewport so visible rows are never pruned.
+/// 距可见窗口这么远之外的行仍保持缓存。在带内滚回去会复用已有的行实体，而不是在
+/// UI 线程上重跑它们的 DB/stat 构建管线；这条带必须比任何视口都宽，
+/// 这样可见的行永不会被修剪掉。
 pub const VIEW_KEEP_AROUND: usize = 128;
 
 pub fn prune_views<T>(
@@ -48,12 +47,10 @@ where
     let mut to_remove: Vec<usize> = Vec::new();
     let mut did_remove = false;
 
-    // Prune views outside the union of the previous and current windows
-    // plus the keep-around band. Covers both scroll directions: upward
-    // (current < last) behaves exactly as before, and downward scrolling
-    // now also prunes far-above rows instead of accumulating the whole
-    // table's row views on a long one-way scroll. Don't prune the first
-    // view so this still works with uniform_list.
+    // 修剪掉「上一窗口与当前窗口的并集再加 keep-around 带」之外的视图。
+    // 两个滚动方向都能覆盖：向上（current < last）与以往行为完全一致，
+    // 而向下滚动如今也会修剪远处上方的行，不再在长距离单向滚动时把整张表的
+    // 行视图都累积下来。不要修剪第一个视图，这样与 uniform_list 仍能配合工作。
     let lower = last.min(current).saturating_sub(VIEW_KEEP_AROUND);
     let upper = last.max(current) + 1 + VIEW_KEEP_AROUND;
     for idx in views_model.read(cx).keys() {
@@ -71,7 +68,7 @@ where
         });
     }
 
-    // update the render counter
+    // 更新渲染计数
     render_counter.update(cx, |m, _| {
         *m = current;
     });
@@ -101,15 +98,13 @@ where
     }
 }
 
-/// Drops the atlas tiles for a batch of images whose owning elements are gone.
-/// Unlike the old `drop_image_from_app` this tolerates windows disappearing
-/// mid-reclaim (skips instead of panicking), which matters when draining the
-/// render cache's eviction queue: the cache outlives any single window.
+/// 为一整批「所属元素已不存在」的图片丢掉它们的图集瓦片。与旧的
+/// `drop_image_from_app` 不同，这里容忍回收过程中窗口消失（跳过而不是 panic），
+/// 这在排空渲染缓存的逐出队列时很关键：缓存活得比任何单个窗口都久。
 ///
-/// There is no degradation path for a panicked drop: the build sets
-/// `panic = "abort"` (Cargo.toml), so a panic inside `drop_image` — e.g.
-/// etagere's stale-tile generation assertion after the atlas recycles a page —
-/// terminates the process outright; nothing can be caught or leaked.
+/// panic 的 drop 没有降级路径：构建配置设了 `panic = "abort"`（Cargo.toml），
+/// 所以 `drop_image` 内部的 panic——例如 etagere 在图集回收某页之后的过期瓦片
+/// 代际断言——会直接终止进程；什么都捕获不到，也泄漏不了。
 pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
     if images.is_empty() {
         return;
@@ -129,8 +124,8 @@ pub fn reclaim_images_from_app(cx: &mut App, images: Vec<Arc<RenderImage>>) {
 pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
     #[cfg(windows)]
     {
-        // Windows quirk: paths can arrive with a `\\?\` extended-length prefix,
-        // which must be stripped before handing them to the file manager.
+        // Windows 的怪癖：路径可能带 `\\?\` 长路径前缀送达，交给文件管理器之前
+        // 必须把它剥掉。
         let path_for_reveal = match path.to_string_lossy().strip_prefix("\\\\?\\") {
             Some(stripped) => PathBuf::from(stripped),
             None => path.to_path_buf(),
@@ -145,8 +140,7 @@ pub fn reveal_path_for_file_manager(path: &Path, cx: &mut App) {
     }
 }
 
-/// Splits a second count into (hours, minutes, seconds); negative inputs
-/// clamp to zero.
+/// 把秒数拆成 (时, 分, 秒)；负输入钳位到零。
 fn split_duration(secs: i64) -> (i64, i64, i64) {
     let secs = secs.max(0);
     (secs / 3_600, (secs % 3_600) / 60, secs % 60)
@@ -172,12 +166,10 @@ pub fn format_duration(secs: i64, pad_minutes: bool) -> String {
     }
 }
 
-/// Shared scrubber seek gate: seeks to `fraction` of the current track's
-/// `duration_ms` (converted to seconds) only while a track is actually
-/// loaded (`duration_ms > 0`) and playback is not stopped. Both the play bar
-/// scrubber (`controls::Scrubber`) and the immersive player card
-/// (`immersive::ImmersiveProgress`) funnel their slider `on_change` handlers
-/// through here. Interaction-time only — never on the render path.
+/// 共用跳转定位闸门（scrubber）：只有在曲目真的已加载（`duration_ms > 0`）且播放
+/// 未停止时，才跳到当前曲目 `duration_ms`（换算成秒）的 `fraction` 处。播放栏
+/// 的 scrubber（`controls::Scrubber`）与沉浸播放卡（`immersive::ImmersiveProgress`）
+/// 都把它们的滑块 `on_change` 处理器汇入这里。只在交互时刻调用——绝不在渲染路径上。
 pub fn seek_to_fraction(fraction: f64, duration_ms: u64, cx: &mut App) {
     if duration_ms == 0 {
         return;
@@ -189,11 +181,10 @@ pub fn seek_to_fraction(fraction: f64, duration_ms: u64, cx: &mut App) {
         .seek(fraction * duration_ms as f64 / 1_000.0);
 }
 
-/// Mute-toggle decision shared by the play bar's secondary controls and the
-/// immersive player card: `volume <= 0.0` counts as muted; toggling a muted
-/// button restores `prev_volume`, an audible one mutes (volume 0.0). Returns
-/// `(target_volume, icon_path)`; callers keep their own chrome (tooltips,
-/// sizes, hover styles) and only consume the decision. Pure, allocation-free.
+/// 播放栏次级控件与沉浸播放卡共用的静音切换判定：`volume <= 0.0` 视为已静音；
+/// 对已静音的按钮切换会恢复 `prev_volume`，对有声的则静音（音量 0.0）。
+/// 返回 `(target_volume, icon_path)`；调用方保留自己的外观（tooltip、尺寸、悬停
+/// 样式），只消费这个判定。纯函数、零分配。
 pub fn volume_toggle_target(volume: f64, prev_volume: f64) -> (f64, &'static str) {
     if volume <= 0.0 {
         (prev_volume, VOLUME_OFF)
@@ -202,15 +193,12 @@ pub fn volume_toggle_target(volume: f64, prev_volume: f64) -> (f64, &'static str
     }
 }
 
-/// Whole-second cache for formatted time labels. The labels only change once
-/// per second while the surrounding views re-render at ~30Hz on position
-/// ticks, so the formatted label set is kept keyed by the whole-second
-/// `(position_secs, duration_secs)` pair and reused verbatim until the key
-/// moves — invalidation is exactly the second boundary. Generic over the
-/// label tuple: the play bar scrubber caches three labels (position /
-/// duration / "-remaining"), the immersive player card two (elapsed / total).
-/// The `T: Clone` on the hit path is `SharedString` refcount bumps, not
-/// allocations (GPUI hot-path discipline).
+/// 已格式化时间标签的整秒缓存。这些标签每秒才变一次，而周围的视图在位置 tick 上
+/// 以 ~30Hz 重渲染，所以把格式化好的标签集以整秒 `(position_secs, duration_secs)`
+/// 为键保存，键不动就原样复用——失效点正好就是秒边界。对标签元组泛型：播放栏
+/// scrubber 缓存三个标签（位置 / 时长 / 「剩余 -」），沉浸播放卡两个（已播 / 总长）。
+/// 命中路径上的 `T: Clone` 是 `SharedString` 的引用计数自增，不是分配
+/// （GPUI 热路径纪律）。
 pub struct CachedTimeText<T> {
     position_secs: u64,
     duration_secs: u64,
@@ -218,8 +206,8 @@ pub struct CachedTimeText<T> {
 }
 
 impl<T: Clone + Default> CachedTimeText<T> {
-    /// Unseeded cache: the `u64::MAX` key never matches a real second count,
-    /// forcing the first `resolve` to build.
+    /// 未播种的缓存：`u64::MAX` 这个键永远匹配不上真实的秒数，从而强制首次
+    /// `resolve` 去构建。
     pub fn unseeded() -> Self {
         Self {
             position_secs: u64::MAX,
@@ -230,9 +218,8 @@ impl<T: Clone + Default> CachedTimeText<T> {
 }
 
 impl<T: Clone> CachedTimeText<T> {
-    /// Returns the cached labels while the whole-second key is unchanged,
-    /// otherwise rebuilds via `build(position_secs, duration_secs)` and
-    /// stores the result. `build` runs at most once per second boundary.
+    /// 整秒键没变时返回缓存的标签，否则经 `build(position_secs, duration_secs)`
+    /// 重建并存下结果。`build` 每个秒边界至多运行一次。
     pub fn resolve(
         &mut self,
         position_secs: u64,
@@ -329,14 +316,13 @@ mod tests {
         let mut cache = CachedTimeText::unseeded();
         let first = cache.resolve(1, 60, |p, d| format!("{p}/{d}"));
         assert_eq!(first, "1/60");
-        // Same whole-second key: the cached set is handed back, `build` is
-        // not re-run.
+        // 同一个整秒键：交回缓存的那一组，`build` 不会重跑。
         let again = cache.resolve(1, 60, |_, _| String::from("rebuilt"));
         assert_eq!(again, "1/60");
-        // Second boundary moved: rebuild with the new key.
+        // 秒边界移动了：用新键重建。
         let moved = cache.resolve(2, 60, |p, d| format!("{p}/{d}"));
         assert_eq!(moved, "2/60");
-        // Either half of the key moving invalidates.
+        // 键的两半中任一半移动都会使其失效。
         let duration_moved = cache.resolve(2, 61, |p, d| format!("{p}/{d}"));
         assert_eq!(duration_moved, "2/61");
     }
@@ -352,7 +338,7 @@ mod tests {
 
     #[test]
     fn dominant_accent_prefers_saturated_pixels() {
-        // BGRA: mostly grey pixels, a few vivid red ones — red must win.
+        // BGRA：大多是灰像素，夹着几个鲜艳的红——红色必须胜出。
         let grey = [128u8, 128, 128, 255];
         let red = [40u8, 30, 220, 255];
         let mut bytes = repeated_pixel(grey, 100);
@@ -370,7 +356,7 @@ mod tests {
 
     #[test]
     fn dominant_accent_lifts_dark_winners() {
-        // A single near-black bucket: the lift must raise luminance.
+        // 只有一桶接近纯黑：提升必须把亮度抬起来。
         let dark = [10u8, 12, 16, 255];
         let bytes = repeated_pixel(dark, 64);
         let accent = dominant_accent_bgra(&bytes).unwrap();

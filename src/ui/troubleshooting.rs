@@ -22,8 +22,8 @@ pub fn copy_troubleshooting_info(_: &CopyTroubleshootingInfo, cx: &mut App) {
     });
 }
 
-/// The GPU-less troubleshooting header shared by every platform: version,
-/// architecture, OS, CPU and total memory, one `Key: value` per line.
+/// 各平台共用的「无 GPU」排查信息头部：版本、架构、OS、CPU 与总内存，
+/// 每行一个 `Key: value`。
 fn base_system_info() -> String {
     format!(
         "Meliora {}\nArchitecture: {}\nOperating System: {}\nCPU: {}\nMemory: {}",
@@ -36,7 +36,7 @@ fn base_system_info() -> String {
 }
 
 fn copy_troubleshooting_info_inner(_window: Option<&mut Window>, cx: &mut App) {
-    // GPUI only supports fetching GPU info on Linux
+    // GPUI 只在 Linux 上支持取 GPU 信息
     #[cfg(target_os = "linux")]
     let info = {
         let mut info = base_system_info();

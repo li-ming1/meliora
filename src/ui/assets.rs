@@ -23,8 +23,7 @@ impl MelioraAssetSource {
 
 impl AssetSource for MelioraAssetSource {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
-        // Malformed paths and unknown schemes resolve to a missing asset
-        // instead of panicking the asset task.
+        // 畸形路径与未知 scheme 解析成「资产缺失」，而不是让资产任务 panic
         let Some(rest) = path.get(1..) else {
             return Ok(None);
         };

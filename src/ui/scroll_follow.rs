@@ -130,12 +130,11 @@ impl SmoothScrollFollow {
         let current_scroll_top = animation.start_scroll_top
             + (animation.target_scroll_top - animation.start_scroll_top) * eased_progress;
 
-        // Snap the tween to whole CSS pixels. The glyph atlas keys tiles by
-        // the glyph origin's fractional subpixel phase, and tiles are never
-        // evicted: an unsnapped tween sweeps every visible glyph through all
-        // subpixel phases each run, permanently stranding 4 MB subpixel pages
-        // per animation (2026-09-27 atlas leak, see `lyrics.rs` font_size).
-        // 1 px steps at 60 fps read as a smooth glide for 22 px text.
+        // 把补间吸附到整 CSS 像素。字形图集按字形原点的亚像素小数相位为瓦片定键，
+        // 而瓦片永不逐出：不做吸附的补间会在每一轮里把每条可见字形扫过所有亚像素
+        // 相位，每次动画都永久搁置若干 4 MB 的 subpixel 页（2026-09-27 图集泄漏，
+        // 见 `lyrics.rs` 的 font_size）。60 fps 下的 1 px 步进对 22 px 的文字
+        // 读起来就是一道平滑滑动。
         scroll_handle.set_offset(gpui::Point {
             x: current_offset.x,
             y: -current_scroll_top.round(),
@@ -149,7 +148,7 @@ impl SmoothScrollFollow {
     }
 }
 
-/// `1 - (1 - t)³` easing: fast start, gentle settle.
+/// `1 - (1 - t)³` 缓动：起步快、落点轻。
 pub fn ease_out_cubic(progress: f32) -> f32 {
     1.0 - (1.0 - progress).powi(3)
 }

@@ -1,80 +1,72 @@
-//! Design tokens for the whole UI.
+//! 整个 UI 的设计令牌。
 //!
-//! Everything under `ui/` that expresses space, type size or icon size should
-//! go through this module instead of writing a raw value at the call site.
+//! `ui/` 下凡是表达间距、字号或图标尺寸的东西都应走本模块，而不是在调用点写死
+//! 一个裸值。
 //!
-//! # Why this exists
+//! # 为什么存在
 //!
-//! Before this module the UI carried **19 distinct spacing values**, **9
-//! distinct icon sizes** and **16 raw font sizes** on top of GPUI's own text
-//! scale. Most of them sat one or two pixels away from the nearest round
-//! number: `px(6.0)` next to `px(8.0)`, `px(13.0)` next to `text_sm()` (14px),
-//! `px(11.0)` next to `text_xs()` (12px). No single one of those is wrong,
-//! which is exactly why they accumulated - each looked like a reasonable local
-//! adjustment at the time. Together they are why the UI reads as "rough": the
-//! eye cannot name a 1px discrepancy, it just refuses to call the result
-//! polished.
+//! 本模块建立之前，UI 在 GPUI 自带的文字尺度之上还带着 **19 种不同的间距值**、
+//! **9 种不同的图标尺寸**和 **16 个裸字号**。它们中大多数离最近的整数只差一两个
+//! 像素：`px(6.0)` 挨着 `px(8.0)`、`px(13.0)` 挨着 `text_sm()`（14px）、
+//! `px(11.0)` 挨着 `text_xs()`（12px）。单看哪一个都不算错，这正是它们累积起来的
+//! 原因——当时每一处看着都像合理的局部微调。合起来就是 UI 读起来「糙」的缘由：
+//! 眼睛说不出那 1px 的差，它只会拒绝承认结果是精修过的。
 //!
-//! # The rules
+//! # 规则
 //!
-//! - **Spacing** - 4pt grid. Snap to the nearest step below; never invent a
-//!   value because a neighbour happens to look tight.
-//! - **Type** - only GPUI's `text_xs()` / `text_sm()` / `text_base()` /
-//!   `text_lg()` / `text_xl()` (12 / 14 / 16 / 18 / 20px). They are `rem`-based
-//!   and so follow the root font size; a raw `text_size(px(…))` does not, which
-//!   is a second reason not to write one.
-//! - **Icons** - three sizes only. `icon()` deliberately has no default size so
-//!   each call site has to pick: inline ([`ICON_SM`]), standard ([`ICON_MD`]),
-//!   or primary ([`ICON_LG`]).
-//! - **Radius** - `Theme::radius_sm` / `radius_md` / `radius_lg`, never a raw
-//!   `rounded(px(…))`.
+//! - **间距**——4pt 网格。向下取到最近的档位；不要因为邻居看着有点挤就发明一个值。
+//! - **文字**——只用 GPUI 的 `text_xs()` / `text_sm()` / `text_base()` /
+//!   `text_lg()` / `text_xl()`（12 / 14 / 16 / 18 / 20px）。它们基于 `rem`，
+//!   所以跟随根字号；裸的 `text_size(px(…))` 不跟随，这是不要写它的第二个理由。
+//! - **图标**——只有三种尺寸。`icon()` 刻意不设默认尺寸，每个调用点必须自己挑：
+//!   行内（[`ICON_SM`]）、标准（[`ICON_MD`]）、主要（[`ICON_LG`]）。
+//! - **圆角**——`Theme::radius_sm` / `radius_md` / `radius_lg`，绝不写裸的
+//!   `rounded(px(…))`。
 //!
-//! `ui::components::label` is the reference implementation of the settings-row
-//! rhythm built on these.
+//! `ui::components::label` 是用这套令牌搭建设置页节奏的参考实现。
 //!
-//! A scale is only useful if it is complete, so the full set lives here whether
-//! or not every step has a caller yet: migrating the remaining call sites will
-//! pull them in, and a half-populated scale invites inventing the missing step
-//! by hand - the exact failure this module exists to stop.
+//! 尺度只有完整才有用，所以全套档位都在这里，不论每一档是否已有调用方：迁移
+//! 剩下的调用点时会把它们取用过去，而一个填了一半的尺度会诱导人手补上缺的那一档
+//! ——正是本模块要阻止的那种失败。
 #![allow(dead_code)]
 
 use gpui::{Pixels, px};
 
-// ----------------------------------------------------------------- spacing --
+// ------------------------------------------------------------------ 间距 --
 
-/// Optical nudges inside a single glyph or icon. Not a layout value: if you are
-/// reaching for this to separate two elements, you want [`SPACE_XS`].
+/// 单个字形或图标内部的光学校正。不是布局值：如果你为了分隔两个元素而去取用它，
+/// 你真正想要的是 [`SPACE_XS`]。
 pub const SPACE_HAIRLINE: Pixels = px(2.0);
 
-/// Tight: closely related parts of one row (a title and its trailing badge).
+/// 紧凑：同一行内关系紧密的部分（标题与它后面的徽标）。
 pub const SPACE_XS: Pixels = px(4.0);
 
-/// Default gap between sibling elements in a row or column.
+/// 行或列里同辈元素之间的默认间隙。
 pub const SPACE_SM: Pixels = px(8.0);
 
-/// Related but distinct: the gaps inside a group of controls.
+/// 相关但有区别：一组控件内部的间隙。
 pub const SPACE_MD: Pixels = px(12.0);
 
-/// Between the rows of a settings page; also the content area's own padding.
+/// 设置页各行之间；也是内容区自身的内边距。
 pub const SPACE_LG: Pixels = px(16.0);
 
-/// Between groups of settings within a page.
+/// 一页之内各设置组之间。
 pub const SPACE_XL: Pixels = px(24.0);
 
-/// Between major page regions.
+/// 主要页面区域之间。
 pub const SPACE_2XL: Pixels = px(32.0);
 
-// ------------------------------------------------------------------- icons --
+// ------------------------------------------------------------------ 图标 --
 
-/// Inline with text: a trailing chevron, a per-row action.
+/// 与文字同行：尾部的 chevron、逐行动作按钮。
 pub const ICON_SM: Pixels = px(14.0);
 
-/// Standard icon: toolbars, list rows, buttons.
+/// 标准图标：工具栏、列表行、按钮。
 pub const ICON_MD: Pixels = px(16.0);
 
-/// Primary affordance: transport controls, section headers.
+/// 主要操作入口：走带控件、分区标题。
 pub const ICON_LG: Pixels = px(20.0);
 
-/// Only for an icon centered in its own circular badge. Anything else at this
-/// size wants a button, not an icon.
+/// 只用于在自己圆形徽标里居中的图标。这个尺寸下的任何其他用法都该是按钮，
+/// 而不是图标。
 pub const ICON_XL: Pixels = px(28.0);

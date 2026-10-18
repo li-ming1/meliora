@@ -23,33 +23,32 @@ use crate::{
 
 const MAX_VISIBLE: usize = 4;
 
-/// Repaint cadence of the auto-dismiss countdown bar. `AnimationExt::with_animation`
-/// pumps `window.request_animation_frame()` once per frame for the animation's whole
-/// duration, and each such request notifies the rendering view — which dirties the
-/// complete view-ancestor chain (`Window::mark_view_dirty` walks `view_path_reversed`),
-/// so a 5s toast alone re-drew `MainWindow` at 60Hz (~300 full-window draws, ~0.8s of
-/// main-thread CPU at the ledger's measured ~2.7ms/frame constant) while the user did
-/// nothing at all. The bar is decorative and dismissal is timer-driven, so the width is
-/// now computed from elapsed time and refreshed on this tick instead: 10x/s keeps the
-/// countdown legible (a 360px bar over 5s moves 7px per tick) at 1/6 the frames.
-/// Same substitution the scrollbar fade already uses for its pre-fade wait.
+/// 自动消失倒计时条的重绘节奏。`AnimationExt::with_animation` 会在动画的整个时长
+/// 里每帧泵一次 `window.request_animation_frame()`，而每一次这样的请求都会通知
+/// 渲染视图——这会把整条视图祖先链都置脏（`Window::mark_view_dirty` 会走
+/// `view_path_reversed`），于是一条 5s 的 toast 独自就把 `MainWindow` 按 60Hz
+/// 重画了约 300 次全屏绘制（按账本实测的 ~2.7ms/帧常数算约 0.8s 主线程 CPU），
+/// 而用户什么都没做。这根条只是装饰、消失由计时器驱动，所以现在宽度由已经过的
+/// 时间算出、按本 tick 刷新：10 次/秒仍能让倒计时读得清（360px 的条在 5s 内
+/// 每 tick 走 7px），帧数只有原来的 1/6。滚动条淡出早就用同样的替换处理它
+/// 淡出前的等待。
 const PROGRESS_TICK: Duration = Duration::from_millis(100);
 
-/// Action buttons pack `(toast id, action index)` into one integer element
-/// id: the index lives in the low bits, the toast id above it.
+/// 动作按钮把 `(toast id, action index)` 打包进一个整数元素 id：索引住在低位，
+/// toast id 在它上面。
 const ACTION_INDEX_SHIFT: u32 = 16;
 
 struct ActiveToast {
     id: u64,
     toast: Toast,
-    /// When the toast appeared, so the countdown bar can derive its width
-    /// from elapsed time rather than from a per-frame animation delta.
+    /// toast 出现的时间，好让倒计时条的宽度由已经过的时间推出，
+    /// 而不是由每帧的动画增量推出。
     shown_at: Instant,
 }
 
 impl ActiveToast {
-    /// Fraction of the auto-dismiss countdown still left, for the progress bar.
-    /// Clamped because a frame can land between the last tick and the dismissal.
+    /// 自动消失倒计时还剩的比例，给进度条用。做钳位，因为某一帧可能正好落在
+    /// 最后一次 tick 与消失之间。
     fn remaining(&self) -> f32 {
         let Some(duration) = self.toast.duration else {
             return 0.0;
@@ -62,9 +61,8 @@ impl ActiveToast {
 pub struct ToastLayer {
     toasts: Vec<ActiveToast>,
     next_id: u64,
-    /// Toasts on screen that draw a countdown bar. One pump at `PROGRESS_TICK`
-    /// covers all of them (each bar's width comes from its own `shown_at`), so
-    /// the repaint rate stays flat as toasts stack up.
+    /// 屏幕上会绘制倒计时条的那些 toast。`PROGRESS_TICK` 的一次泵送就覆盖全部
+    /// （每根条的宽度各自来自它的 `shown_at`），所以 toast 叠加时重绘速率保持平稳。
     bar_count: usize,
     ticker_running: bool,
 }
@@ -120,17 +118,16 @@ impl ToastLayer {
         cx.notify();
     }
 
-    /// A toast left the layer: release its claim on the countdown pump.
+    /// 有一条 toast 离开了图层：释放它对倒计时泵占的额度。
     fn retire(&mut self, removed: &ActiveToast) {
         if removed.toast.duration.is_some() {
             self.bar_count = self.bar_count.saturating_sub(1);
         }
     }
 
-    /// One `PROGRESS_TICK` pump serves every bar on screen, since each bar's
-    /// width comes from its own `shown_at` at render time. Per-toast pumps would
-    /// stack: four visible toasts (the batch-download case, `MAX_VISIBLE`) meant
-    /// four repaint requests per tick — 40/s instead of 60/s, barely a win.
+    /// 一次 `PROGRESS_TICK` 泵送服务屏幕上所有条，因为每根条的宽度都在渲染时
+    /// 取自它自己的 `shown_at`。逐 toast 泵送会叠加：四条在屏（批量下载那种场景，
+    /// `MAX_VISIBLE`）就意味着每个 tick 四次重绘请求——40/s 而不是 60/s，收益微乎其微。
     fn start_ticker(&mut self, cx: &mut Context<Self>) {
         if self.ticker_running || self.bar_count == 0 {
             return;
@@ -147,10 +144,10 @@ impl ToastLayer {
         .detach();
     }
 
-    /// One pump tick: request a repaint while any bar is on screen, stand down
-    /// when none is. `reduced_motion` is read live rather than at push time, so
-    /// flipping the setting mid-toast can't freeze a bar that is being drawn —
-    /// with the setting on, the pump still wakes, but asks for no frames.
+    /// 一次泵送 tick：屏上有任意条时请求重绘，一条都不剩时收工。
+    /// `reduced_motion` 是实时读取而不是 push 时读，所以在一条 toast 显示期间
+    /// 改这个设置也不可能冻住一根正在画的条——设置打开时泵依然会醒，
+    /// 但不再请求任何帧。
     fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         if self.bar_count == 0 {
             self.ticker_running = false;
@@ -199,21 +196,20 @@ impl Render for ToastLayer {
 
         let viewport = window.viewport_size();
         let reduced_motion = reduced_motion_enabled(cx);
-        // Read once for the whole layer: render_toast runs per toast per
-        // frame (the progress animation re-renders every frame), and cloning
-        // the whole Theme there just to read one radius is pure waste.
+        // 整个图层只读一次：render_toast 是每条 toast 每帧都跑的（进度动画每帧
+        // 重渲染），在那里仅为读一个 radius 就克隆整个 Theme 纯属浪费。
         let radius_md = px(cx.global::<Theme>().radius_md);
 
         let mut column = div().flex().flex_col().gap(px(8.0)).w(px(360.0));
         for toast in &self.toasts {
-            // Per-toast theme lookup: the borrowed &Theme must not outlive the
-            // statement, since render_toast below re-borrows cx mutably.
+            // 逐 toast 查主题：借来的 &Theme 不能活得比这条语句更久，
+            // 因为下面的 render_toast 会重新可变借用 cx。
             let colors = toast_colors(cx.global::<Theme>(), toast.toast.severity);
             column = column.child(render_toast(toast, colors, reduced_motion, radius_md, cx));
         }
 
         anchored()
-            // 38 (height of window_header w/ border) + 16 = 54
+            // 38（window_header 含边框的高度）+ 16 = 54
             .position(point(viewport.width - px(16.0), px(54.0)))
             .anchor(Anchor::TopRight)
             .child(deferred(column))
@@ -221,12 +217,12 @@ impl Render for ToastLayer {
     }
 }
 
-/// The four theme colors a toast paints with, resolved per severity.
+/// 一条 toast 会用的四个主题色，按严重级别解析。
 struct ToastColors {
     background: Rgba,
     border: Rgba,
     text: Rgba,
-    /// Color of the auto-dismiss progress bar.
+    /// 自动消失进度条的颜色。
     track: Rgba,
 }
 
@@ -285,8 +281,8 @@ fn render_toast(
                 .size(ButtonSize::Regular)
                 .intent(match toast.severity {
                     Severity::Info => ButtonIntent::Secondary,
-                    // Success toasts with actions (updater restart) render as
-                    // Primary; there is no dedicated green intent button.
+                    // 带动作的成功 toast（更新器重启）按 Primary 渲染；
+                    // 没有专门的绿色意图按钮。
                     Severity::Success => ButtonIntent::Primary,
                     Severity::Warning => ButtonIntent::Warning,
                     Severity::Error => ButtonIntent::Danger,

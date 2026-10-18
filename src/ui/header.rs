@@ -22,7 +22,7 @@ use gpui::{prelude::FluentBuilder, *};
 
 // ─── 导航按钮（后退/前进） ───────────────────────────────────────────────
 
-/// One back/forward arrow wired to emit its message into the navigation history.
+/// 一个前进/后退箭头，接线为把它的消息发进导航历史。
 fn nav_switch_button(
     id: &'static str,
     icon: &'static str,
@@ -127,7 +127,7 @@ impl Render for Header {
                     .items_center()
                     .justify_center()
                     .when(collapsed, |this| this.pl(px(8.0)))
-                    // Not an icon: the brand mark, sized independently of ICON_*.
+                    // 不是图标：品牌标识，尺寸独立于 ICON_*。
                     .child(img("!bundled:images/logo.png").size(px(20.0)).rounded_sm())
                     .when(!collapsed, |this| {
                         this.gap(px(8.0)).pl(px(14.0)).child(
@@ -191,7 +191,7 @@ impl Render for ScanStatus {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let status = self.scan_model.read(cx);
-        // None while idle-ish, so the icon only renders while a scan is doing something
+        // 空闲时大致为 None，这样只有扫描真在干活时图标才渲染
         let scan_icon = match status {
             ScanEvent::Cleaning
             | ScanEvent::PlaylistsUpdated(_)
@@ -264,7 +264,7 @@ impl Render for ScanStatus {
                         )
                         .into()
                     } else {
-                        // Total known (discovery complete)
+                        // 已知总数（发现阶段完成）
                         tr!(
                             "SCAN_PROGRESS_SCANNING",
                             "Scanning {{percentage}}%",

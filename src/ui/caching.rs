@@ -14,15 +14,14 @@ use tracing::{error, trace};
 
 use crate::ui::components::managed_image::{image_bytes, queue_orphan_tile_drop};
 
-/// Live footprint of every `MelioraImageCache` instance combined, reported
-/// by the `[mem]` probe. Bytes are credited when an entry's load task first
-/// resolves (see `load`) and debited on eviction / entity release, so the
-/// probe curve attributes the view caches' share of resident memory exactly
-/// instead of leaving it inside the unattributed plateau.
+/// 所有 `MelioraImageCache` 实例合起来的实活占用，由 `[mem]` 探针上报。
+/// 字节在某个条目的加载任务第一次 resolve 时计入（见 `load`），在逐出/实体释放时
+/// 扣除，于是探针曲线能精确归因出各视图缓存占的常驻内存，而不把它留在
+/// 无法归因的平台期里。
 static IMAGE_CACHE_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static IMAGE_CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
 
-/// (live entries, decoded MiB) across all `MelioraImageCache` instances.
+/// 跨所有 `MelioraImageCache` 实例的统计（活条目数、已解码 MiB）。
 pub fn image_cache_stats() -> (u64, u64) {
     (
         IMAGE_CACHE_ENTRIES.load(Ordering::Relaxed),
@@ -30,8 +29,8 @@ pub fn image_cache_stats() -> (u64, u64) {
     )
 }
 
-/// Creates the bounded per-view image cache used by `image_cache(...)`
-/// call sites, holding at most `max_items` entries.
+/// 创建 `image_cache(...)` 调用点使用的有界逐视图图片缓存，最多容纳 `max_items`
+/// 个条目。
 pub fn meliora_cache(id: impl Into<ElementId>, max_items: usize) -> MelioraImageCacheProvider {
     MelioraImageCacheProvider {
         id: id.into(),
@@ -39,8 +38,8 @@ pub fn meliora_cache(id: impl Into<ElementId>, max_items: usize) -> MelioraImage
     }
 }
 
-/// gpui [`ImageCacheProvider`] that reuses one [`MelioraImageCache`] per
-/// element id (kept in the window's element state across frames).
+/// 对每个元素 id 复用一枚 [`MelioraImageCache`] 的 gpui [`ImageCacheProvider`]
+/// （缓存本体存在窗口的跨帧元素状态里）。
 pub struct MelioraImageCacheProvider {
     id: ElementId,
     max_items: usize,
@@ -60,14 +59,13 @@ impl ImageCacheProvider for MelioraImageCacheProvider {
     }
 }
 
-/// A bounded LRU image cache for one view. Evicted images and whole-cache
-/// releases go through the orphan-tile reclaim funnel instead of being
-/// dropped inline (see `queue_orphan_tile_drop`).
+/// 单个视图的有界 LRU 图片缓存。被逐出的图片与整缓存释放都走孤儿瓦片回收漏斗，
+/// 而不是就地丢弃（见 `queue_orphan_tile_drop`）。
 pub struct MelioraImageCache {
     max_items: usize,
     usage_list: VecDeque<u64>,
-    /// (loading task, resource, decoded-pixel bytes credited to the `[mem]`
-    /// probe — stays 0 until the load task resolves).
+    /// （加载任务、资源、计入 `[mem]` 探针的已解码像素字节——在加载任务 resolve
+    /// 之前一直是 0）。
     cache: FxHashMap<u64, (ImageCacheItem, Resource, u64)>,
 }
 
@@ -109,9 +107,8 @@ impl ImageCache for MelioraImageCache {
         let hash = hash(resource);
 
         if let Some(item) = self.cache.get_mut(&hash) {
-            // Fast path: the LRU-hot item is already at the front of
-            // usage_list, which covers the vast majority of hits; only cold
-            // hits pay for the O(n) scan + reorder.
+            // 快路径：LRU 最热的条目已经在 usage_list 最前面，这覆盖绝大多数命中；
+            // 只有冷命中才付那次 O(n) 扫描 + 重排。
             if self.usage_list.front() != Some(&hash) {
                 let current_idx = self
                     .usage_list
@@ -123,9 +120,8 @@ impl ImageCache for MelioraImageCache {
                 self.usage_list.push_front(hash);
             }
 
-            // Credit the entry's decoded pixels once, the first time the
-            // shared load task resolves, so the [mem] probe reports the view
-            // caches' live footprint without scanning per tick.
+            // 共享加载任务第一次 resolve 时把该条目的已解码像素计入一次，
+            // 于是 [mem] 探针不必每 tick 扫描就能报出各视图缓存的实活占用。
             let resolved = item.0.get();
             if item.2 == 0
                 && let Some(Ok(image)) = &resolved
@@ -151,7 +147,7 @@ impl ImageCache for MelioraImageCache {
 
             if let Some(Ok(render_image)) = entry.0.get() {
                 trace!("requesting image to be dropped");
-                // 驱逐发生在 img 的 request_layout/paint 调用栈内：直接
+                // 逐出发生在 img 的 request_layout/paint 调用栈内：直接
                 // drop_image 会在同帧释放图集页（sprite 已记录）并可能踩
                 // etagere 断言。推进回收漏斗，由事件循环的 drain 帧间释放。
                 queue_orphan_tile_drop(render_image);

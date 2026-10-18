@@ -219,7 +219,7 @@ fn test_toast(_: &TestToast, _cx: &mut App) {
                 info!("test toast action clicked");
             }),
         ),
-        // was: define_error!(TestError{..}) + emit_error
+        // 原先是：define_error!(TestError{..}) + emit_error
         _ => {
             error!("test emit_error, n={n}");
             emit_toast(Toast::error(tr!(
@@ -244,11 +244,9 @@ fn issues(_: &Issues, cx: &mut App) {
 }
 
 fn shuffle_all(_: &ShuffleAll, cx: &mut App) {
-    // the whole-library query and the per-track item construction used to run
-    // on the UI thread; on a 100k library that froze the main thread for
-    // hundreds of ms. Items carry pure data — per-row UI metadata lives in
-    // the queue_metadata side table, resolved on the UI thread on first use
-    // — so nothing GPUI-owned is constructed off the main thread.
+    // 全库查询与逐曲目的条目构建过去跑在 UI 线程上；10 万曲目的库里那会把主线程
+    // 冻住几百 ms。条目携带的是纯数据——逐行的 UI 元数据住在 queue_metadata 旁表里，
+    // 首次使用时才在 UI 线程上解析——所以线程外不会构建任何 GPUI 拥有的东西。
     let pool = cx.global::<Pool>().0.clone();
     cx.spawn(async move |cx| {
         let tracks = crate::RUNTIME
@@ -305,7 +303,7 @@ impl MenuPlatform {
     }
 }
 
-/// Builds an individual GPUI `Menu` for the application menu bar.
+/// 为应用菜单栏构建单个 GPUI `Menu`。
 pub struct MenuBuilder {
     name: SharedString,
     items: Vec<MenuItem>,
@@ -348,7 +346,7 @@ impl MenuBuilder {
     }
 }
 
-/// Creates a single GPUI `MenuItem`, unless the platform check fails.
+/// 创建一个 GPUI `MenuItem`，除非平台检查不通过。
 pub fn menu_item<A: Action>(
     name: impl Into<SharedString>,
     action: A,
@@ -361,7 +359,7 @@ pub fn menu_item<A: Action>(
     Some(MenuItem::action(name, action))
 }
 
-/// Creates a single GPUI `MenuItem` separator, unless the platform check fails.
+/// 创建一个 GPUI `MenuItem` 分隔线，除非平台检查不通过。
 pub fn menu_separator(platform: MenuPlatform) -> Option<MenuItem> {
     if !platform.is_active() {
         return None;

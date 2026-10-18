@@ -46,24 +46,22 @@ use super::{
     util::{VIEW_KEEP_AROUND, create_or_retrieve_view, reduced_motion_enabled},
 };
 
-/// The list identifier for queue drag-drop operations
+/// 队列拖放操作的列表标识符
 const QUEUE_LIST_ID: &str = "queue";
-/// Height of each queue item in pixels
+/// 每个队列条目的像素高度
 const QUEUE_ITEM_HEIGHT: f32 = 60.0;
-/// Duration of the queue auto-follow animation.
+/// 队列自动跟随动画的时长。
 const QUEUE_FOLLOW_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 
-/// Shared selection state for the queue.
+/// 队列共享的选中状态。
 pub struct QueueSelection {
     selected: FxHashSet<usize>,
-    /// Sorted snapshot of `selected`, maintained on every mutation so the
-    /// render path can borrow it instead of allocating and sorting per row
-    /// per frame.
+    /// `selected` 的有序快照，每次变更都维护，渲染路径可直接借用，
+    /// 不必每帧每行再分配并排序。
     sorted: Vec<usize>,
-    /// Bumped by `resync_sorted` on every mutation. Lets render-path consumers
-    /// (the per-row drag-companion cache) key their caches on a selection
-    /// version number instead of re-deriving per-frame data; a mutation that
-    /// leaves the set unchanged only causes a harmless cache rebuild.
+    /// `resync_sorted` 每次变更都自增。让渲染路径的消费者（每行拖拽
+    /// 同伴缓存）用选中版本号作缓存键，而不必每帧重新推导；某次变更
+    /// 即使集合不变也只导致一次无害的缓存重建。
     epoch: u64,
     anchor: Option<usize>,
 }
@@ -86,8 +84,8 @@ impl QueueSelection {
         self.selected.len() > 1
     }
 
-    /// Selection version: changes whenever any mutator runs (they all funnel
-    /// through `resync_sorted`), even if the resulting set is identical.
+    /// 选中版本：任何变更器运行都会变化（它们全部汇入 `resync_sorted`），
+    /// 即便结果集合完全相同。
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
@@ -96,16 +94,14 @@ impl QueueSelection {
         self.sorted.clone()
     }
 
-    /// Borrowed sorted snapshot; render-path consumers use this to skip the
-    /// per-frame allocation entirely.
+    /// 借用式有序快照；渲染路径的消费者用它彻底跳过每帧分配。
     pub fn sorted(&self) -> &[usize] {
         &self.sorted
     }
 
-    /// Rebuilds the sorted snapshot after a mutation. Selection changes are
-    /// user-action frequency, so the cost here is irrelevant. Every mutator
-    /// funnels through this method, making it the single bump point for the
-    /// epoch that per-row drag caches key on.
+    /// 变更后重建有序快照。选中变化是用户操作频率，这里的开销无关紧要。
+    /// 所有变更器都经过本方法，使其成为每行拖拽缓存所依赖 epoch 的唯一
+    /// 自增点。
     fn resync_sorted(&mut self) {
         self.sorted.clear();
         self.sorted.extend(self.selected.iter().copied());
@@ -120,7 +116,7 @@ impl QueueSelection {
         cx.notify();
     }
 
-    /// Plain click: deselect all, select only this item.
+    /// 普通点击：清空选中，只选中这一项。
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected.clear();
         self.selected.insert(index);
@@ -129,7 +125,7 @@ impl QueueSelection {
         cx.notify();
     }
 
-    /// Ctrl/Cmd+click: toggle this item in the selection.
+    /// Ctrl/Cmd+点击：在选中集里切换这一项。
     pub fn ctrl_toggle(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.selected.contains(&index) {
             self.selected.remove(&index);
@@ -144,9 +140,9 @@ impl QueueSelection {
         cx.notify();
     }
 
-    /// Shift+click: select range from anchor to this item.
-    /// Replaces any previous range selection. If no anchor exists,
-    /// uses `current_position` (the currently-playing track) as the anchor.
+    /// Shift+点击：选中从锚点到这一项的区间。
+    /// 替换此前的任何区间选择；没有锚点时用 `current_position`
+    /// （正在播放的曲目）作为锚点。
     pub fn shift_range(
         &mut self,
         index: usize,
@@ -175,22 +171,20 @@ pub struct QueueItem {
     show_add_to: Option<Entity<bool>>,
     track_id: Option<i64>,
     is_liked: Option<i64>,
-    /// Computed once at view construction: a per-frame `path.exists()` stat
-    /// for every visible row is far too expensive.
+    /// 在视图构造时算一次即可：每帧对每条可见行做 `path.exists()` stat
+    /// 开销太大。
     is_available: bool,
-    /// Formatted duration text, rebuilt only when the item's duration changes.
+    /// 格式化后的时长文本，仅在条目时长变化时重建。
     duration_text: Option<SharedString>,
     cached_duration: Option<i64>,
-    /// Cached drag payload base, rebuilt only when the row's display name
-    /// changes (metadata load). Each frame just clones it and re-stamps the
-    /// live index and selection instead of reallocating the path and name.
+    /// 缓存的拖拽负载基底，仅在该行显示名变化（元数据加载）时重建。
+    /// 每帧只克隆它并重新盖上实时索引与选中状态，不再重新分配路径与名称。
     drag_base: Option<(SharedString, TrackDragData)>,
-    /// Cached multi-drag companions: sorted selection minus this row, keyed on
-    /// (selection epoch, own index). `QueueSelection::sorted()` is already a
-    /// snapshot maintained on every mutation, so the per-frame recompute that
-    /// remained was only the filter+collect `Vec` feeding the drag payload;
-    /// with the payload's `additional_indices` now an `Arc<[usize]>`, this
-    /// cache turns that per-frame allocation into a refcount bump.
+    /// 缓存的多选拖拽同伴：有序选中集减去本行，键为（选中 epoch，本行索引）。
+    /// `QueueSelection::sorted()` 已是每次变更都维护的快照，因此残留的每帧
+    /// 重算只剩喂给拖拽负载的那次 filter+collect `Vec`；负载的
+    /// `additional_indices` 现在是 `Arc<[usize]>`，本缓存把那次每帧分配
+    /// 变成一次引用计数自增。
     drag_others: Option<(u64, usize, Arc<[usize]>)>,
 }
 
@@ -221,9 +215,8 @@ impl QueueItem {
             let queue = cx.global::<Models>().queue.clone();
             cx.observe(&queue, |this: &mut QueueItem, queue, cx| {
                 let position = queue.read(cx).position;
-                // Only the rows whose current-track highlight actually moved
-                // re-render; without this guard every queue notification
-                // repaints all n rows (an O(n) fan-out per track switch).
+                // 只有「当前曲目高亮」真正移动过的行才重绘；没有这道守卫，
+                // 每次队列通知都会重画全部 n 行（每次切歌 O(n) 扇出）。
                 if this.current != position {
                     this.current = position;
                     cx.notify();
@@ -232,10 +225,9 @@ impl QueueItem {
             .detach();
 
             let track_id = item.get_db_id();
-            // metadata lives in the ui-side side table keyed by the item's
-            // uid (same loaders, same restore branches as the legacy slot)
+            // 元数据住在 ui 侧旁表，以条目的 uid 为键（加载器与恢复分支同旧槽位）
             let data = queue_metadata::queue_ui_data(cx, &item);
-            // one stat per row view lifetime, not once per rendered frame
+            // 每个行视图生命周期只做一次 stat，而不是每帧一次
             let is_available = is_track_path_available(item.get_path());
 
             cx.observe(&data, |_, _, cx| {
@@ -248,9 +240,9 @@ impl QueueItem {
             })
             .detach();
 
-            // Pure cache read, zero IO: the liked-id set is reloaded on every
-            // liked-playlist change, and is_song_liked yields the track id
-            // convention every row stores (see HasLikedState / is_song_liked).
+            // 纯缓存读取、零 IO：liked-id 集合在每次收藏歌单变化时重载，
+            // 且 is_song_liked 给出的正是每行存储的曲目 id 约定
+            // （见 HasLikedState / is_song_liked）。
             let is_liked = track_id.and_then(|id| is_song_liked(cx, id));
 
             subscribe_liked_updates(cx, |this: &QueueItem| this.track_id);
@@ -262,8 +254,8 @@ impl QueueItem {
                 drag_drop_manager,
                 scroll_handle,
                 selection,
-                // the AddToPlaylist palette (and its show flag) is only built
-                // the first time the context menu actually needs it
+                // AddToPlaylist 面板（及其 show 旗标）只在右键菜单真正需要它
+                // 的第一次才构建
                 add_to: None,
                 show_add_to: None,
                 track_id,
@@ -286,8 +278,8 @@ impl QueueItem {
         }
     }
 
-    /// Opens (creating on first use) the row's add-to-playlist palette over
-    /// `track_ids`; shared by the single-row and multi-select context menus.
+    /// 打开（首次使用时创建）该行的「加入歌单」面板并载入 `track_ids`；
+    /// 单选行与多选右键菜单共用。
     fn open_add_to_palette(&mut self, track_ids: Vec<i64>, cx: &mut Context<Self>) {
         let show = self
             .show_add_to
@@ -314,7 +306,7 @@ impl Render for QueueItem {
         let is_selected = self.selection.read(cx).contains(self.idx);
 
         if let Some(item) = ui_data.as_ref() {
-            // Rebuild the duration text only when the item's duration changes.
+            // 仅在条目时长变化时重建时长文本。
             let duration_text = if self.cached_duration == item.duration {
                 self.duration_text.clone()
             } else {
@@ -336,7 +328,7 @@ impl Render for QueueItem {
             let image_key = track_id.map(ManagedImageKey::Track).or_else(|| {
                 #[cfg(feature = "online_sources")]
                 {
-                    // online (KuGou) tracks have no db id; use their HTTP art
+                    // 在线（酷狗）曲目没有 db id；用它们的 HTTP 封面
                     if let Some(cover) = item.cover_url.clone().filter(|c| !c.is_empty()) {
                         return Some(ManagedImageKey::HttpCover(cover));
                     }
@@ -355,8 +347,8 @@ impl Render for QueueItem {
             let is_multi_selected = selection_read.is_multi() && selection_read.contains(idx);
             let single_track_id = self.track_id;
             let queue_item_entity = cx.entity();
-            // add_to is created lazily on first menu use; its presence no
-            // longer distinguishes library tracks from online ones
+            // add_to 是首次用菜单时才懒创建，它的存在与否不再能区分
+            // 库内曲目与在线曲目
             let has_add_to = self.track_id.is_some();
             let is_liked = self.is_liked.is_some();
 
@@ -380,13 +372,13 @@ impl Render for QueueItem {
                         .h(px(QUEUE_ITEM_HEIGHT))
                         .px(px(17.0))
                         .py(px(11.0))
-                        // add extra padding when the scrollbar is always drawn
-                        // 11px queue item pad + 4px scrollbar + 10px buffer
+                        // 常驻绘制滚动条时补额外内边距：
+                        // 11px 队列行内边距 + 4px 滚动条 + 10px 余量
                         .when(scrollbar_always_visible, |div| div.pr(px(25.0)))
                         .when(is_available, |div| div.cursor_pointer())
                         .when(!is_available, |div| div.cursor_default().opacity(0.5))
                         .relative()
-                        // Default bottom border - always present
+                        // 默认下边框——始终存在
                         .border_b(px(1.0))
                         .border_color(theme.border_color)
                         .when(item_state.is_being_dragged, |div| div.opacity(0.5))
@@ -439,10 +431,9 @@ impl Render for QueueItem {
                             },
                         )
                         .when(is_available, |div| {
-                            // The drag payload base is rebuilt only when the
-                            // display name changed (metadata load); each frame
-                            // just clones it and re-stamps the live index and
-                            // selection instead of reallocating path and name.
+                            // 拖拽负载基底只在显示名变化（元数据加载）时重建；
+                            // 每帧只克隆它并重新盖上实时索引与选中状态，
+                            // 不再重新分配路径与名称。
                             if self
                                 .drag_base
                                 .as_ref()
@@ -467,23 +458,17 @@ impl Render for QueueItem {
                             drag_data = drag_data.with_reorder_info(QUEUE_LIST_ID, idx);
 
                             if is_selected {
-                                // Multi-drag companions: the sorted selection
-                                // minus this row. Cached for the drag session
-                                // instead of recomputed per frame — why that is
-                                // safe:
-                                // 1. `QueueSelection::sorted()` is already a
-                                //    snapshot rebuilt on every mutation, so the
-                                //    ordered set itself never goes stale; this
-                                //    cache only removes the per-frame
-                                //    filter+collect allocation that fed the
-                                //    payload.
-                                // 2. Every selection mutator is click-driven
-                                //    (`on_click`/`on_aux_click`), so while a
-                                //    drag is live the set cannot change.
-                                // 3. Even if a future mutator fires mid-drag,
-                                //    its epoch bump rebuilds the cache next
-                                //    frame — identical output to the old
-                                //    per-frame recompute, never stale.
+                                // 多选拖拽同伴：有序选中集减去本行。整个拖拽
+                                // 会话用缓存而非每帧重算——为什么安全：
+                                // 1. `QueueSelection::sorted()` 本就是每次变更
+                                //    重建的快照，有序集合本身不会过期；本缓存
+                                //    只去掉喂给负载的那次每帧 filter+collect 分配。
+                                // 2. 每个选中变更器都由点击驱动
+                                //    （`on_click`/`on_aux_click`），拖拽进行中
+                                //    集合不可能变化。
+                                // 3. 即使未来某个变更器在拖拽中途触发，它的
+                                //    epoch 自增会在下一帧重建缓存——输出与旧的
+                                //    每帧重算完全一致，绝不会过期。
                                 let selection_epoch = selection_for_drag.read(cx).epoch();
                                 if self
                                     .drag_others
@@ -500,16 +485,15 @@ impl Render for QueueItem {
                                     self.drag_others = Some((selection_epoch, idx, others));
                                 }
                                 if let Some((_, _, others)) = &self.drag_others {
-                                    // refcount bump: `additional_indices` is
-                                    // an `Arc<[usize]>` on the payload
+                                    // 引用计数自增：负载上的
+                                    // `additional_indices` 是 `Arc<[usize]>`
                                     drag_data = drag_data.with_additional_indices(others.clone());
                                 }
                             }
 
                             div.on_drag(drag_data, {
-                                // capture a clone: the move closure below must
-                                // not consume the `track_name` reused later in
-                                // this render
+                                // 取一份克隆：下面的 move 闭包不能吞掉本次
+                                // render 里后面还要复用的 `track_name`
                                 let track_name = track_name.clone();
                                 move |_, _, _, cx| DragPreview::new(cx, track_name.clone())
                             })
@@ -562,9 +546,8 @@ impl Render for QueueItem {
                                         .w_full()
                                         .text_ellipsis()
                                         .font_weight(FontWeight::EXTRA_BOLD)
-                                        // reuse the per-frame `track_name`
-                                        // computed above instead of calling
-                                        // tr! again on every frame
+                                        // 复用上面算好的每帧 `track_name`，
+                                        // 不再每帧调一次 tr!
                                         .child(track_name),
                                 )
                                 .child(
@@ -598,17 +581,14 @@ impl Render for QueueItem {
                 )
                 .menu_on_open(move |_, cx| {
                     if is_multi_selected {
-                        // The selection and queue snapshots are taken here, at
-                        // menu-open time, instead of on every render frame.
+                        // 选中集与队列的快照在这里（菜单打开时）取，
+                        // 而不是每帧渲染时取。
                         let remove_indices = selection_for_menu.read(cx).indices();
                         let remove_count = remove_indices.len();
-                        // (index, track_id, path) per selected row, taken at
-                        // menu-open time. The menu stays open while the queue
-                        // can mutate concurrently (auto-insert on playback,
-                        // removal from another entry point), so the Remove-N
-                        // callback re-validates this snapshot before deleting:
-                        // stale indices alone would delete whatever rows now
-                        // occupy those positions.
+                        // 每个选中行一条 (index, track_id, path)，在菜单打开时
+                        // 取。菜单开着的时候队列可能并发变化（播放时自动插入、
+                        // 从别的入口移除），所以「移除 N 项」回调删除前会重新
+                        // 校验这份快照：光靠索引会把如今占在这些位置上的行删掉。
                         let remove_snapshot: Vec<(usize, Option<i64>, PathBuf)> = {
                             let queue = cx.global::<Models>().queue.read(cx);
                             let queue_data = queue.data.read_recovered();
@@ -628,10 +608,10 @@ impl Render for QueueItem {
                         let add_to_ids = selected_track_ids.clone();
                         let entity_for_add = queue_item_entity.clone();
 
-                        // Cached liked-ids set (see is_song_liked): the menu
-                        // only needs the liked/unliked boolean for icon and
-                        // label, and unlike deletes by track id — no
-                        // playlist_item row id and zero DB access here.
+                        // 缓存的 liked-ids 集合（见 is_song_liked）：菜单只需要
+                        // 已收藏/未收藏这个布尔量来决定图标与标签，且取消收藏
+                        // 按曲目 id 删除——这里不需要 playlist_item 行 id，
+                        // 也零 DB 访问。
                         let liked_ids: Vec<i64> = selected_track_ids
                             .iter()
                             .copied()
@@ -664,10 +644,10 @@ impl Render for QueueItem {
                                         tr!("LIKE")
                                     },
                                     move |_, _, cx| {
-                                        // One batched toggle: the unlike DELETE
-                                        // is a no-op for ids that were never
-                                        // liked, so only the liked subset moves
-                                        // either way (see toggle_album_like).
+                                        // 一次批量切换：对从未收藏过的 id，
+                                        // 取消收藏的 DELETE 是空操作，所以无论
+                                        // 哪一侧都只有已收藏的子集会变动
+                                        // （见 toggle_album_like）。
                                         toggle_album_like(
                                             track_ids_for_like.clone(),
                                             any_liked,
@@ -687,11 +667,9 @@ impl Render for QueueItem {
                                     count = remove_count
                                 ),
                                 move |_, _, cx| {
-                                    // Execute only if every menu-open snapshot
-                                    // slot still holds the same content; a
-                                    // queue mutated while the menu was open
-                                    // invalidates the captured indices (see
-                                    // `remove_snapshot` above).
+                                    // 仅当菜单打开时快照的每个槽位仍持有相同
+                                    // 内容才执行；菜单开着期间队列被改动会让
+                                    // 捕获的索引失效（见上面的 `remove_snapshot`）。
                                     if remove_snapshot.iter().all(|&(i, id, ref path)| {
                                         queue_slot_matches(cx, i, id, path)
                                     }) {
@@ -709,11 +687,9 @@ impl Render for QueueItem {
                             ))
                     } else {
                         let entity_for_add = queue_item_entity.clone();
-                        // Snapshot the row content at menu-open time (same
-                        // instant as the multi-select snapshot above): the
-                        // queue can mutate before the click lands, so the
-                        // remove callback re-validates instead of trusting
-                        // the captured `idx`.
+                        // 在菜单打开时快照该行内容（与上面的多选快照同一时刻）：
+                        // 点击落地前队列可能已变化，所以移除回调重新校验，
+                        // 而不是直接相信捕获的 `idx`。
                         let remove_snapshot = {
                             let queue = cx.global::<Models>().queue.read(cx);
                             let queue_data = queue.data.read_recovered();
@@ -796,9 +772,8 @@ impl Render for QueueItem {
                                 Some(CROSS),
                                 tr!("REMOVE_FROM_QUEUE", "Remove from queue"),
                                 move |_, _, cx| {
-                                    // Same stale-index guard as remove_items
-                                    // above: only delete while the snapshotted
-                                    // row content still sits at this position.
+                                    // 与上面 remove_items 同样的过期索引守卫：
+                                    // 只有快照的行内容仍在此位置时才删除。
                                     let unchanged =
                                         remove_snapshot.as_ref().is_some_and(|&(id, ref path)| {
                                             queue_slot_matches(cx, idx, id, path)
@@ -819,8 +794,8 @@ impl Render for QueueItem {
                 })
                 .into_any_element()
         } else {
-            // Metadata still loading: keep the row's shape with a plain block
-            // so the list doesn't jump; the item repaints when data lands.
+            // 元数据仍在加载：用普通方块保住该行的形状，列表不跳动；
+            // 数据到位后条目会自行重绘。
             div()
                 .h(px(QUEUE_ITEM_HEIGHT))
                 .border_t(px(1.0))
@@ -832,8 +807,8 @@ impl Render for QueueItem {
     }
 }
 
-/// Warn the user that a queued remove action was dropped because the queue
-/// changed while its context menu was open (see `queue_slot_matches`).
+/// 提醒用户：排队的移除操作被丢弃，因为队列在其右键菜单打开期间发生了变化
+/// （见 `queue_slot_matches`）。
 fn emit_stale_remove_toast() {
     emit_toast(Toast::warning(tr!(
         "QUEUE_REMOVE_CANCELLED_STALE",
@@ -841,16 +816,13 @@ fn emit_stale_remove_toast() {
     )));
 }
 
-/// True if the live queue still holds the content captured for `index` when
-/// the context menu was opened (same track id and path).
+/// 若活队列在 `index` 处仍持有右键菜单打开时捕获的内容（曲目 id 与路径都相同）
+/// 则为真。
 ///
-/// Guards the queue context-menu remove actions: the menu stays open while
-/// the queue can be mutated concurrently (auto-insert on playback, removal
-/// from another entry point), so indices captured at menu-open time may point
-/// at different rows by the time the click lands — deleting them anyway would
-/// remove the wrong rows. The playback-side `dequeue_many` clamps
-/// out-of-range indices but cannot know which rows were meant, so the content
-/// check has to happen here, on the UI side.
+/// 缘由：守护队列右键菜单的移除动作——菜单开着的时候队列可以并发变化
+/// （播放时自动插入、从别的入口移除），所以菜单打开时捕获的索引到点击落地时
+/// 可能指向别的行，照删会删错行。播放侧的 `dequeue_many` 只会把越界索引钳到
+/// 边界，无从知道本意是哪几行，因此内容校验必须放在这里、UI 侧。
 fn queue_slot_matches(cx: &App, index: usize, track_id: Option<i64>, path: &PathBuf) -> bool {
     let queue = cx.global::<Models>().queue.read(cx);
     let queue_data = queue.data.read_recovered();
@@ -860,9 +832,8 @@ fn queue_slot_matches(cx: &App, index: usize, track_id: Option<i64>, path: &Path
 }
 
 pub struct Queue {
-    /// Row views keyed by the owning item's uid (`QueueItemData::uid`) —
-    /// stable across clones and queue mutations, unlike the legacy per-item
-    /// entity-id keys, and always available without touching any entity.
+    /// 行视图以所属条目的 uid 为键（`QueueItemData::uid`）——跨克隆与队列变更
+    /// 都稳定，不像旧的「每条目实体 id」键，且无需触碰任何实体就能取到。
     views_model: Entity<FxHashMap<u64, Entity<QueueItem>>>,
     show_queue: Entity<bool>,
     scroll_handle: UniformListScrollHandle,
@@ -873,39 +844,30 @@ pub struct Queue {
     follow_current_pending: bool,
     follow_frame_scheduled: bool,
     scroll_follow: SmoothScrollFollow,
-    /// Formatted "(N songs) • (total)" summary, valid for the cached
-    /// `(queue_len, total_seconds)` key. The total is maintained
-    /// incrementally (see `rescan_views_and_summary`), so the render path
-    /// only re-formats when the key actually moves.
+    /// 格式化好的「(N 首) • (总时长)」摘要，对缓存的 `(queue_len, total_seconds)`
+    /// 键有效。总时长是增量维护的（见 `rescan_views_and_summary`），所以渲染
+    /// 路径只在键真的变动时才重新格式化。
     cached_summary: (usize, i64, SharedString),
-    /// Sum of the durations resolved so far; rebuilt by
-    /// `rescan_views_and_summary` on every queue content change and extended
-    /// during render as pending metadata loads land.
+    /// 迄今已解析出的时长之和；`rescan_views_and_summary` 每次队列内容变化都
+    /// 重建，渲染期间随着待加载元数据落地继续累加。
     summary_total: i64,
-    /// Indices whose duration is not resolved yet. Render reads exactly
-    /// these (keeping the reactive dependency on their metadata entities)
-    /// instead of re-scanning the whole queue every frame.
+    /// 时长尚未解析完成的索引集合。渲染只精确读这批（从而保持对它们元数据
+    /// 实体的响应式依赖），而不是每帧重扫整个队列。
     pending_durations: Vec<usize>,
-    /// Slot-window `(start, end)` the row-view prune last ran for. The list
-    /// closure skips rebuilding its keep set while unchanged;
-    /// `rescan_views_and_summary` resets this on every queue content change,
-    /// because slot keys move with their items — an unchanged slot window can
-    /// hold a different key set after a mutation. A position-only notify
-    /// skips the reset on purpose: no key moves, and if the follow-scroll
-    /// brings a different slot range into view the window tuple itself
-    /// changes, so the prune re-runs naturally.
+    /// 上一次执行行视图修剪所针对的槽位窗口 `(start, end)`。窗口没变时列表
+    /// 闭包会跳过重建保留集；`rescan_views_and_summary` 每次队列内容变化都
+    /// 重置它，因为槽位键随条目一起移动——变更后即便槽位窗口不变，键集合
+    /// 也可能不同。仅位置变化的 notify 刻意不重置：没有键移动，而若跟随滚动
+    /// 把另一段槽位范围带入视野，窗口元组本身就变了，修剪自然重跑。
     last_prune_window: (usize, usize),
-    /// Set when a queue content change (content_epoch moved, see the
-    /// observer) arrived while the panel was hidden: the row-view prune and
-    /// summary rescan are deferred to the first render after the panel is
-    /// shown again. Position-only notifies don't set this — there is nothing
-    /// to catch up on.
+    /// 面板隐藏期间收到队列内容变化（content_epoch 移动，见观察者）时置位：
+    /// 行视图修剪与摘要重扫推迟到面板重新显示后的首次渲染。仅位置变化的
+    /// notify 不置位——没有要补的账。
     needs_queue_rescan: bool,
-    /// Mirror of `models::Queue::content_epoch` as of the last
-    /// `rescan_views_and_summary`: the observer's content-change
-    /// discriminator. A queue notify whose position moved but whose epoch
-    /// did not (the per-track-switch `QueuePositionChanged` path) skips the
-    /// rescan entirely; see the observer for why that is safe.
+    /// 截至上一次 `rescan_views_and_summary` 时 `models::Queue::content_epoch`
+    /// 的镜像：观察者用来判别内容是否变化。位置移动但 epoch 没动的队列 notify
+    /// （每次切歌走的 `QueuePositionChanged` 路径）整个跳过重扫；为什么这样
+    /// 安全见观察者。
     last_seen_content_epoch: u64,
 }
 
@@ -934,36 +896,29 @@ impl Queue {
                     this.scroll_follow.cancel();
                 }
 
-                // Position-only notification (QueuePositionChanged: the
-                // current-track index moved): it leaves the live uid set and
-                // every item's duration state untouched, so all three rescan
-                // products are no-ops for it — the row-view retain would keep
-                // the same keys, the metadata side-table GC would drop
-                // nothing, and the summary state (total + pending indices) is
-                // unchanged. Skip the whole O(n) scan on that path; every
-                // track switch used to pay it. What a position change DOES
-                // need happens elsewhere by design: the current-row highlight
-                // is guarded per row in `QueueItem`'s own observer, and the
-                // follow-scroll bookkeeping ran right above. The discriminator
-                // is the content_epoch mirror (bumped by the event bridge on
-                // QueueUpdated only): a batch carrying a content change
-                // together with a position move still rescans, because the
-                // epoch moved too.
+                // 仅位置变化的通知（QueuePositionChanged：当前曲目索引移动了）：
+                // 它不改动活 uid 集合，也不改任何条目的时长状态，所以重扫的三个
+                // 产物对它全是空操作——行视图 retain 会保留同一批键，元数据旁表
+                // GC 什么也不会丢弃，摘要状态（总时长 + 待解析索引）不变。
+                // 这条路径整个跳过 O(n) 扫描；过去每次切歌都要付这笔开销。
+                // 位置变化「确实需要」的事都按设计在别处发生：当前行高亮由
+                // `QueueItem` 自己的观察者逐行守卫，跟随滚动的记账就在上面。
+                // 判别依据是 content_epoch 镜像（只在事件桥收到 QueueUpdated
+                // 时自增）：一批同时带内容变化与位置移动的事件仍会重扫，
+                // 因为 epoch 动了。
                 let content_changed = this.last_seen_content_epoch != new_content_epoch;
                 this.last_seen_content_epoch = new_content_epoch;
 
-                // Pruning and the summary rescan only matter while the panel
-                // can be seen; while it is hidden the work is deferred to the
-                // first render after it is shown again.
+                // 修剪与摘要重扫只在面板可见时才有意义；面板隐藏期间这些活
+                // 推迟到重新显示后的首次渲染。
                 if content_changed {
                     if *this.show_queue.read(cx) {
                         this.rescan_views_and_summary(cx);
                     } else {
                         this.needs_queue_rescan = true;
                     }
-                    // Rows keep their indices on a position-only switch, so
-                    // clearing the selection there only re-rendered every
-                    // live row and dropped a multi-selection for nothing.
+                    // 仅位置切换时各行索引保持不变，此时清空选中只会让每条
+                    // 活行重绘一遍，还白白丢掉一次多选。
                     this.selection.update(cx, |s, cx| s.clear(cx));
                 }
 
@@ -982,35 +937,31 @@ impl Queue {
                 follow_current_pending: initial_has_current_track,
                 follow_frame_scheduled: false,
                 scroll_follow: SmoothScrollFollow::new(QUEUE_FOLLOW_ANIMATION_DURATION),
-                // usize::MAX can never match a real queue length: forces one build
+                // usize::MAX 永远匹配不上真实的队列长度：强制构建一次
                 cached_summary: (usize::MAX, 0, SharedString::default()),
                 summary_total: 0,
                 pending_durations: Vec::new(),
-                // usize::MAX can never match a real slot window: forces the
-                // first render to prune
+                // usize::MAX 永远匹配不上真实的槽位窗口：强制首次渲染就修剪
                 last_prune_window: (usize::MAX, usize::MAX),
-                // the first render builds the summary state from scratch
+                // 首次渲染从零开始构建摘要状态
                 needs_queue_rescan: true,
-                // matches the entity's epoch at construction; the first
-                // content change after this still rescans
+                // 与实体构造时的 epoch 一致；此后的第一次内容变化仍会重扫
                 last_seen_content_epoch: initial_content_epoch,
             }
         })
     }
 
-    /// One pass over the queue data, run on every queue content change while
-    /// the panel is visible (position-only notifies skip it — the uid set and
-    /// every item's duration state are unchanged, see the observer's
-    /// content_epoch check) plus the deferred first render after the panel is
-    /// shown: drops row views (and metadata side-table slots) whose uid is no
-    /// longer in the queue and rebuilds the incremental summary state
-    /// (resolved total plus the indices whose duration is still pending).
+    /// 面板可见期间每次队列内容变化都跑一遍的对队列数据单趟扫描（仅位置变化的
+    /// notify 会跳过——uid 集合与每条目的时长状态都没变，见观察者的
+    /// content_epoch 判别），外加面板显示后的那次延迟首次渲染：丢弃 uid 已不在
+    /// 队列里的行视图（以及元数据旁表槽位），并重建增量摘要状态
+    /// （已解析总时长 + 时长仍待解析的索引）。
     fn rescan_views_and_summary(&mut self, cx: &mut Context<Self>) {
         let data = cx.global::<Models>().queue.read(cx).data.clone();
         let queue = data.read_recovered();
 
-        // uids are always available (no per-item entity needed), so unlike
-        // the legacy entity-id keys the collection never skips rows.
+        // uid 总是拿得到（不需要每条目的实体），所以不像旧的实体 id 键那样
+        // 会跳过某些行。
         let mut valid_keys: Vec<u64> = Vec::with_capacity(queue.len());
         let mut pending: Vec<usize> = Vec::new();
         let mut total: i64 = 0;
@@ -1027,12 +978,11 @@ impl Queue {
         self.views_model.update(cx, |m, _| {
             m.retain(|k, _| key_set.contains(k));
         });
-        // GC the metadata side table: entries whose item left the queue
-        // release their entity handles here (their rows were just dropped by
-        // the retain above and cleared their content on release).
+        // 对元数据旁表做 GC：条目已离开队列的槽位在这里释放其实体句柄
+        // （它们的行刚被上面的 retain 丢弃，并在 release 时清空了内容）。
         queue_metadata::gc_retaining(cx, key_set.into_iter());
-        // slot keys move with their items: force the next window prune to
-        // re-run even when the slot window itself is unchanged
+        // 槽位键随条目一起移动：即使槽位窗口本身没变，也要让下一次窗口修剪
+        // 强制重跑
         self.last_prune_window = (usize::MAX, usize::MAX);
         self.summary_total = total;
         self.pending_durations = pending;
@@ -1044,8 +994,7 @@ impl Render for Queue {
         let _render = crate::tally_render(crate::RenderedView::Queue);
         check_drag_cancelled(self.drag_drop_manager.clone(), cx);
 
-        // A content change arrived while the panel was hidden: catch up now,
-        // before the summary and the list are built.
+        // 面板隐藏期间到过的内容变化：现在就补上，在摘要与列表构建之前。
         if self.needs_queue_rescan {
             self.rescan_views_and_summary(cx);
             self.needs_queue_rescan = false;
@@ -1055,10 +1004,8 @@ impl Render for Queue {
             let queue = cx.global::<Models>().queue.clone().read(cx);
             queue.data.read_recovered().len()
         };
-        // Resolve only the items whose duration is still pending: reading
-        // them here keeps the reactive dependency on their metadata entities,
-        // so the summary refreshes exactly when each load lands — without
-        // re-scanning the whole queue every frame.
+        // 只解析时长仍待完成的条目：在这里读取它们能保持对其元数据实体的
+        // 响应式依赖，所以每次加载落地时摘要都正好刷新——不必每帧重扫整个队列。
         if !self.pending_durations.is_empty() {
             let data = cx.global::<Models>().queue.read(cx).data.clone();
             let queue = data.read_recovered();
@@ -1077,8 +1024,8 @@ impl Render for Queue {
                 }
             }
         }
-        // Reuse the formatted summary while the (length, total seconds) key is
-        // unchanged; only re-run the format!/trn! when either actually moves.
+        // (长度, 总秒数) 键不变时复用已格式化的摘要；只有任一值真的移动才
+        // 重跑 format!/trn!。
         let queue_summary =
             if self.cached_summary.0 == queue_len && self.cached_summary.1 == self.summary_total {
                 self.cached_summary.2.clone()
@@ -1120,8 +1067,8 @@ impl Render for Queue {
             self.schedule_follow_frame(window, cx);
         }
 
-        // Borrow the theme only after the last `&mut cx` use above; the
-        // per-element styling below just reads its Copy fields.
+        // 在上面最后一次使用 `&mut cx` 之后才借用主题；下面的逐元素样式只读
+        // 它的 Copy 字段。
         let theme = cx.global::<Theme>();
 
         div()
@@ -1311,7 +1258,7 @@ impl Render for Queue {
                             cx.notify();
                         },
                     ))
-                    // album drops
+                    // 专辑拖放
                     .on_drop(cx.listener(
                         move |this: &mut Queue, drag_data: &AlbumDragData, _, cx| {
                             use crate::ui::library_access::LibraryAccess;
@@ -1360,22 +1307,19 @@ impl Render for Queue {
                                 .read_recovered();
 
                             if range.end <= queue.len() {
-                                // each row's view key is its item's uid: stable
-                                // across clones and always available — no `cx`
-                                // needed while the queue guard is held
+                                // 每行的视图键就是其条目的 uid：跨克隆稳定且
+                                // 总能拿到——持有队列守卫期间不需要 `cx`
                                 let keys: Vec<(usize, u64)> =
                                     (start..range.end).map(|i| (i, queue[i].uid())).collect();
 
-                                // Scroll pruning: row views live in `views_model`
-                                // keyed by the item's uid and nothing removed them on a
-                                // one-way scroll, so a long queue accumulated one
-                                // live row entity (with its observers) per slot ever
-                                // rendered. Keep only the visible window ± the same
-                                // band the table uses; pruned rows rebuild on demand.
-                                // The keep set is only rebuilt when the window moved;
-                                // queue changes reset `last_prune_window` (in
-                                // `rescan_views_and_summary`) so a mutation always
-                                // re-prunes even at an unchanged slot window.
+                                // 滚动修剪：行视图存在 `views_model` 里、以条目 uid
+                                // 为键，单向滚动时不会移除任何一个，所以长队列会为
+                                // 每个渲染过的槽位累积一个活行实体（连带其观察者）。
+                                // 只保留可见窗口 ± 表格用的同一条带；被修剪的行按需
+                                // 重建。保留集只在窗口移动时才重建；队列变化会在
+                                // `rescan_views_and_summary` 里重置
+                                // `last_prune_window`，所以变更后即便槽位窗口不变
+                                // 也一定重新修剪。
                                 let last_prune_window = this_entity.read(cx).last_prune_window;
                                 let prune_start = start.saturating_sub(VIEW_KEEP_AROUND);
                                 let prune_end = (range.end + VIEW_KEEP_AROUND).min(queue.len());
@@ -1405,15 +1349,14 @@ impl Render for Queue {
                                         let scroll_handle = item_scroll_handle.clone();
                                         let item_selection = selection.clone();
 
-                                        // the uid is always in hand, so the legacy
-                                        // "build the metadata entity just to read its
-                                        // entity id" fallback is gone
+                                        // uid 总在手上，所以「为了读实体 id 而先
+                                        // 构建元数据实体」这个旧兜底已移除
                                         let view = create_or_retrieve_view(
                                             &views_model,
                                             item_key,
                                             move |cx| {
-                                                // clone the row only when its view is
-                                                // (re)built, not on every cached frame
+                                                // 只在行视图被（重新）构建时克隆该行，
+                                                // 缓存命中的帧不再克隆
                                                 let item = cx
                                                     .global::<Models>()
                                                     .queue
@@ -1423,10 +1366,9 @@ impl Render for Queue {
                                                     .read_recovered()
                                                     .get(idx)
                                                     .cloned();
-                                                // the queue shrank between the row-key pass
-                                                // and this rebuild (never observed in
-                                                // practice): build a placeholder row instead
-                                                // of panicking the frame
+                                                // 行键遍历与本次重建之间队列变短了
+                                                // （实践中从未观测到）：构建一个占位行，
+                                                // 而不是让这一帧 panic
                                                 let item = match item {
                                                     Some(item) => item,
                                                     None => QueueItemData::new(
@@ -1479,11 +1421,10 @@ impl Render for Queue {
 }
 
 impl Queue {
-    /// Shared tail of both drag-move handlers: schedules the edge auto-scroll
-    /// when the move scrolled the list — guarded, at most one pending frame
-    /// chain (per-event scheduling used to accumulate chains: scroll speed
-    /// multiplied with the mouse report rate) — and repaints only when
-    /// something visible moved (same gating as the playlist view handlers).
+    /// 两个拖拽移动处理器的共用尾部：本次移动滚动了列表时才安排边缘自动滚动
+    /// ——带守卫、最多一条待处理帧链（过去按事件调度会累积出多条链：滚动速度
+    /// 被鼠标上报频率成倍放大）；并且只在有可见内容移动时才重绘
+    /// （门控方式与歌单视图的处理器相同）。
     fn finish_drag_move(
         &mut self,
         before: (bool, Option<(usize, DropPosition)>),

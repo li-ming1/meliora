@@ -75,8 +75,8 @@ enum CommandAction {
     Value(Box<dyn Action + Sync>),
     Named {
         name: &'static str,
-        // Main-thread only (commands never leave the UI thread); the Mutex
-        // memoizes the built action so it isn't rebuilt on every dispatch.
+        // 只在主线程用（命令从不出离 UI 线程）；Mutex 把构建好的 action
+        // 记忆下来，好让每次派发不必重建。
         cached: Mutex<Option<Box<dyn Action>>>,
     },
 }
@@ -100,8 +100,8 @@ impl CommandAction {
                 let mut slot = cached.lock_recovered();
                 let mut guard = slot.take();
                 if guard.is_none() {
-                    // A failed build leaves the slot empty, so the next call
-                    // retries instead of memoizing the failure.
+                    // 构建失败会让槽位留空，于是下一次调用重试，
+                    // 而不是把这个失败记忆下来。
                     guard = Some(match cx.build_action(name, None) {
                         Ok(action) => action,
                         Err(err) => {
@@ -295,9 +295,8 @@ fn load_builtin_commands(cx: &mut App) -> Vec<CommandSpec> {
                 None,
             );
 
-            // The id and action name key `items` for the process lifetime and
-            // `build_action` wants `&'static str`, so leak the one-shot,
-            // built-in command strings deliberately.
+            // id 与 action 名在进程生命周期内都是 `items` 的键，而 `build_action`
+            // 要 `&'static str`，所以这里刻意把这批一次性、内建的命令字符串泄漏出去。
             let id: &'static str = Box::leak(e.id.into_boxed_str());
             let action: &'static str = Box::leak(e.action.into_boxed_str());
             CommandSpec::named((id, 0), Some(e.category), name, action, built)
@@ -326,9 +325,8 @@ impl CommandPalette {
                 let show_clone = show_clone.clone();
                 cx.defer(move |cx| {
                     if let Some(focus_handle) = &item.focus_handle {
-                        // The active window can disappear between accepting a
-                        // command and this deferred run; degrading to not
-                        // focusing beats panicking the UI thread.
+                        // 从接受一条命令到这次延迟运行之间，活动窗口可能已经消失；
+                        // 降级为不聚焦，也比把 UI 线程 panic 掉好。
                         if let Some(window_id) = cx.active_window()
                             && let Err(err) = cx.update_window(window_id, |_, window, cx| {
                                 focus_handle.focus(window, cx);
@@ -382,7 +380,7 @@ impl CommandPalette {
                     return;
                 }
 
-                // the artist picker would sit open underneath the palette
+                // 艺人选择浮层会敞开着留在面板下方
                 super::artist_picker::close(cx);
 
                 show_clone.update(cx, |show, cx| {

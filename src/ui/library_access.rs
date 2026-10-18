@@ -1,9 +1,8 @@
-//! UI-thread database access: the [`LibraryAccess`] trait implemented for
-//! [`gpui::App`], plus the UI-thread blocking measurement around it.
+//! UI 线程上的数据库访问：为 [`gpui::App`] 实现的 [`LibraryAccess`] trait，
+//! 外加围绕它的 UI 线程阻塞测量。
 //!
-//! Lives in the UI layer (moved out of `library::db`) because the trait hands
-//! query results to view code synchronously on the UI thread — keeping it here
-//! leaves the database layer free of gpui dependencies.
+//! 住在 UI 层（从 `library::db` 搬出来）是因为这个 trait 会在 UI 线程上同步地把
+//! 查询结果交给视图代码——留在这里是为了让数据库层不沾 gpui 依赖。
 
 use std::{
     path::Path,
@@ -67,28 +66,26 @@ pub trait LibraryAccess {
 }
 
 // ---------------------------------------------------------------------------
-// UI-thread database blocking measurement
+// UI 线程数据库阻塞测量
 //
-// Every `LibraryAccess for App` method parks the UI thread on
-// `RUNTIME.block_on`. Doctrine §2.3 forbids blocking the main thread and §14
-// forbids database access on the UI hot path, so those `block_on`s are debt —
-// but which of them is worth converting to a background load is a question for
-// data, not intuition (§1/§36). The methods routed through `blocking_query`
-// below are the ones the row- and view-construction paths call, which is where
-// the call volume is; the remaining methods can be added the same way.
+// `LibraryAccess for App` 的每个方法都会把 UI 线程停在 `RUNTIME.block_on` 上。
+// 准则 §2.3 禁止阻塞主线程、§14 禁止在 UI 热路径上访问数据库，所以这些
+// `block_on` 是欠账——但其中哪些值得改成后台加载，是一个靠数据而不是靠直觉回答的
+// 问题（§1/§36）。下面经 `blocking_query` 走的那些方法，正是行与视图构建路径会调
+// 的那批，也就是调用量的所在；剩下的方法可以用同样的方式加进来。
 // ---------------------------------------------------------------------------
 
-/// A single query slower than this is logged with its method name.
+/// 慢过这个值的单次查询会带着方法名被记录。
 const UI_QUERY_SLOW_MICROS: u64 = 2_000;
-/// Two log lines per accumulated quarter-second of UI-thread blocking: silent
-/// while the total stays small, a growing curve when it does not.
+/// UI 线程阻塞累计每多四分之一秒打两行日志：总量还小时保持静默，总量失控时
+/// 打出一条不断增长的曲线。
 const UI_QUERY_REPORT_STEP_MICROS: u64 = 250_000;
 
 static UI_QUERY_CALLS: AtomicU64 = AtomicU64::new(0);
 static UI_QUERY_TOTAL_MICROS: AtomicU64 = AtomicU64::new(0);
 static UI_QUERY_PEAK_MICROS: AtomicU64 = AtomicU64::new(0);
 
-/// Runs a UI-thread database query, recording how long it parked the UI thread.
+/// 跑一次 UI 线程上的数据库查询，并记录它把 UI 线程停了多久。
 fn blocking_query<T>(method: &'static str, future: impl std::future::Future<Output = T>) -> T {
     let started = std::time::Instant::now();
     let result = crate::RUNTIME.block_on(future);

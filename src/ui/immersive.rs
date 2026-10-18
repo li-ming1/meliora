@@ -1,53 +1,38 @@
-//! Full-screen immersive listening view, laid out like a hi-fi lyrics
-//! presentation: the artwork fills the screen as a sharp cover-band backdrop
-//! (see `managed_image::backdrop_pipeline::backdrop_sharp_fill` —
-//! center-cropped to the window
-//! aspect, median-denoised, Lanczos-resampled to the exact device-pixel size
-//! and unsharp-masked; the KuGou ladder now leads with 4096 so the resample
-//! averages noise like the disc label does; one vertical + one horizontal
-//! gradient carve out the reading zones), a static disc-sized circular
-//! cover (the "vinyl" no longer spins — see the animation notes below) sits
-//! on the left above the track names and a frosted-glass player card
-//! (seekable progress, transport, volume), and the right half is the lyrics
-//! column with karaoke word timing, wheel browsing and click-to-seek.
+//! 全屏沉浸聆听视图，版式仿高保真歌词演示：封面作为清晰裁剪带背景铺满整屏
+//! （见 `managed_image::backdrop_pipeline::backdrop_sharp_fill` — 按窗口纵横比
+//! 居中裁剪、中值去噪、Lanczos 重采样到精确设备像素尺寸并 unsharp 补锐；酷狗
+//! 阶梯现以 4096 打头，让缩采样像圆盘小封面那样平均掉噪声；一道竖向 + 一道
+//! 横向渐变划出阅读区），左侧静止的圆盘尺寸圆形封面（「黑胶」已不再旋转——
+//! 见下面的动画纪律）压在曲名之上，配一张磨砂玻璃播放卡（可拖动进度、走带、
+//! 音量），右半是歌词栏，带逐字卡拉OK计时、滚轮浏览与点击定位。
 //!
-//! Lyrics are mirrored from the sidebar's [`Lyrics`] entity instead of being
-//! loaded a second time: that entity owns the sidecar/DB/online fetch
-//! pipeline (KuGou included), its bounded cache and the scan-reset
-//! logic. The mirror is generation-guarded so a re-notify never re-clones.
+//! 歌词从侧栏的 [`Lyrics`] 实体镜像而来而不是二次加载：该实体持有
+//! sidecar/DB/在线抓取管线（含酷狗）、它的有界缓存与扫描重置逻辑。
+//! 镜像有代际守卫，重复 notify 绝不重复克隆。
 //!
-//! Track presentation (cover, names, accent) is keyed off the queue position
-//! — the single source of truth for "what is playing", as in InfoSection —
-//! and re-resolved on both `SongChanged` and `QueuePositionChanged`, because
-//! the former lands while the position still points at the previous track.
+//! 曲目呈现（封面、名称、取色）以队列位置为键——「正在播什么」的唯一真相源，
+//! 与 InfoSection 一致——并在 `SongChanged` 与 `QueuePositionChanged` 上都重新
+//! 解析，因为前者到达时位置还指向上一个曲目。
 //!
-//! Animation discipline (see `GPUI_HARDCORE_PERFORMANCE.md` and the
-//! 2026-09-27 glyph-atlas lesson in `scroll_follow.rs`):
-//! - every frame is data-driven (position broadcasts) or transition-driven
-//!   (line glide), with the frame loop stopped the moment nothing animates
-//!   any more;
-//! - lyric glyph geometry never interpolates: font sizes come from a
-//!   discrete set and line offsets snap to whole pixels, only colors lerp
-//!   (karaoke word colors included);
-//! - the "vinyl" is now just the circular cover art at disc size: the dark
-//!   platter, groove rings and sheen went away across 2026-09-28 feedback
-//!   (a rotating sheen arc rendered displaced/oversized on DirectX via
-//!   `Svg::with_transformation`, and the exposed platter ring read as a
-//!   pointless border around the cover);
-//! - the backdrop is its own decode, rendered as a sharp cover-band to the
-//!   exact window device-pixel size (held by the backdrop LRU, recycled
-//!   through the orphan-tile funnel on track switch; the swap is a 400ms
-//!   crossfade — the outgoing art keeps painting underneath until the fade
-//!   ends). Sharp won the 2026-09-29 four-round bake-off with the user:
-//!   blur-fill (three strength grades, with and without luma dimming) was
-//!   rejected round by round — the directive is backdrop sharpness on par
-//!   with the disc label, so the pipeline is center-crop → median denoise
-//!   (kills JPEG block edges that 1:1-ish resampling would paint) → Lanczos
-//!   → thresholded unsharp, and the KuGou ladder leads with 4096 so covers
-//!   that have it resample ~0.47× (disc-grade averaging). Online covers walk
-//!   the ladder (4096 → 2048 → 1280 → 480 → original) so a missing largest
-//!   variant degrades gracefully instead of silently painting a 256px
-//!   thumbnail across the screen.
+//! 动画纪律（见 `GPUI_HARDCORE_PERFORMANCE.md` 与 `scroll_follow.rs` 里的
+//! 2026-09-27 图集泄漏教训）：
+//! - 每一帧要么数据驱动（位置广播）、要么过渡驱动（行滑动），一旦没有东西在
+//!   动就立刻停掉帧循环；
+//! - 歌词字形几何绝不插值：字号取自离散集合、行偏移吸附到整像素，只有颜色做
+//!   lerp（含卡拉OK逐字色）；
+//! - 「黑胶」现在只是圆盘尺寸的圆形封面图：深色转盘、纹路环与光泽弧在
+//!   2026-09-28 的反馈里全部去掉（旋转光泽弧经 `Svg::with_transformation` 在
+//!   DirectX 上会渲染成位移/超尺寸，而露出的转盘环看着像给封面加了道无意义
+//!   的边框）；
+//! - 背景是它自己的一次解码，按窗口精确设备像素尺寸渲染成清晰裁剪带（由背景
+//!   LRU 持有，切歌时经孤儿瓦片回收漏斗回收；交换是一次 400ms crossfade——
+//!   淡出中的旧图在其下继续绘制直到淡出结束）。清晰方案在 2026-09-29 与用户
+//!   的四轮比选中胜出：模糊填充（三档强度、带与不带亮度压暗）逐轮被否——
+//!   指令是背景清晰度须与圆盘小封面齐平，故管线为居中裁剪 → 中值去噪
+//!   （干掉 1:1 级重采样会直接上屏的 JPEG 块边）→ Lanczos → 阈值 unsharp，
+//!   酷狗阶梯以 4096 打头，有该档的封面缩采样约 0.47×（圆盘级平均）。
+//!   在线封面走阶梯（4096 → 2048 → 1280 → 480 → 原图），最大变体缺失时优雅
+//!   降级，而不是静默把 256px 缩略图铺满整屏。
 
 use std::{
     path::PathBuf,
@@ -92,29 +77,28 @@ use crate::{
     },
 };
 
-/// Vertical distance between lyric lines, in px.
+/// 歌词行之间的垂直间距，单位 px。
 const LINE_PITCH_PX: f32 = 44.0;
-/// Lyric font sizes — discrete glyph-atlas-safe levels only.
+/// 歌词字号——只允许离散档位，保证字形图集安全。
 const CURRENT_LINE_SIZE: f32 = 22.0;
 const NEIGHBOR_LINE_SIZE: f32 = 18.0;
 const TRANSLATION_SIZE: f32 = 13.0;
-/// Lyric lines rendered on either side of the active one (13-line window).
+/// 活动行两侧各渲染多少行歌词（13 行窗口）。
 const LINE_WINDOW: i64 = 6;
-/// Height of the lyric viewport: thirteen pitches.
+/// 歌词视口高度：十三个行距。
 const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 13.0;
-/// Per-line opacity by distance from the active line (index = distance).
+/// 按「与活动行的距离」给出的逐行不透明度（下标 = 距离）。
 const LINE_OPACITY: [f32; 7] = [1.0, 0.82, 0.64, 0.47, 0.33, 0.22, 0.14];
 const LINE_ANIMATION: Duration = Duration::from_millis(320);
-/// Vinyl disc as a fraction of the left column height.
+/// 圆盘直径占左栏高度的比例。
 const VINYL_SIZE_FRACTION: f32 = 0.34;
-/// Cover as a fraction of the disc diameter — 1.0: the cover IS the disc.
-/// (The dark platter used to peek out around a smaller label; 2026-09-28
-/// feedback: with the grooves gone that ring read as a pointless border.)
+/// 封面占圆盘直径的比例——1.0：封面就是圆盘。（此前深色转盘会从小一圈的
+/// 标签四周露出来；2026-09-28 反馈：纹路去掉后那圈环看着像一道无意义的边框。）
 const VINYL_LABEL_FRACTION: f32 = 1.0;
-/// Cover decode for the vinyl label — small, render-cached.
+/// 圆盘标签封面的解码尺寸——小图，走渲染缓存。
 const LABEL_THUMB_PX: u32 = 512;
-/// Backdrop decode cap for the fixed-size fallback path (`Backdrop(None)`,
-/// see `backdrop_layer`): taken only when the device-pixel target is unknown.
+/// 定长兜底路径（`Backdrop(None)`，见 `backdrop_layer`）的背景解码上限：
+/// 仅在设备像素目标尺寸未知时取用。
 const BACKDROP_THUMB_PX: u32 = 2048;
 /// 大图回收队列未放行时的退避重试间隔：重试只是一次廉价的队列计数检查，
 /// 期间旧背景保持绘制，不出现黑底。
@@ -123,14 +107,11 @@ const BACKDROP_RETRY: Duration = Duration::from_millis(500);
 /// RECLAIM_DELAY_LARGE（3s）：淡出期间旧背景元素仍在绘制，其图集瓦片
 /// 靠那条短年龄门兜底（门到时淡出早已结束、旧元素已卸载）。
 const BACKDROP_FADE: Duration = Duration::from_millis(400);
-/// Wheel browsing: after this long without scrolling the view glides back
-/// to the active line (the sidebar's lyrics panel uses the same pattern).
+/// 滚轮浏览：超过这么久没有滚动，视图就滑回活动行（侧栏歌词面板用同一模式）。
 const SCROLL_RETURN_AFTER: Duration = Duration::from_secs(2);
 
-/// Enters or leaves immersive mode: flips [`Models::immersive`] and toggles
-/// the main window's OS fullscreen state in step. Every entry point (keybind,
-/// sidebar toggle, info-section double-click, exit button) funnels through
-/// here.
+/// 进入或离开沉浸模式：翻转 [`Models::immersive`] 并同步切换主窗口的 OS 全屏
+/// 状态。所有入口（快捷键、侧栏开关、信息区双击、退出按钮）都汇入这里。
 pub fn set_immersive(entering: bool, cx: &mut App) {
     let immersive = cx.global::<Models>().immersive.clone();
     if *immersive.read(cx) == entering {
@@ -145,7 +126,7 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
 
 pub struct ImmersiveView {
     focus_handle: FocusHandle,
-    /// Mirrors `Models::immersive`; gates every observer's `notify`.
+    /// 镜像 `Models::immersive`；守每次观察者的 `notify`。
     active: bool,
 
     position: Entity<u64>,
@@ -154,12 +135,12 @@ pub struct ImmersiveView {
     playback_state: Entity<PlaybackState>,
     current_track: Entity<Option<CurrentTrack>>,
     queue: Entity<Queue>,
-    /// The sidebar's lyrics model — shared so online fetches are reused.
+    /// 侧栏的歌词模型——共享它，在线抓取才能复用。
     lyrics: Entity<Lyrics>,
-    /// `Lyrics::parsed_generation` last mirrored into `parsed`.
+    /// 上一次镜像进 `parsed` 的 `Lyrics::parsed_generation`。
     synced_lyrics_generation: u64,
 
-    // Track presentation, re-resolved on track/queue-position changes.
+    // 曲目呈现，在切歌/队列位置变化时重新解析。
     image_key: Option<ManagedImageKey>,
     image_element_key: u64,
     /// 当前渲染中的背景图键：解码完成时才晋升，与 `image_key`（封面/
@@ -198,34 +179,34 @@ pub struct ImmersiveView {
     artist_name: Option<SharedString>,
     meta_subscription: Option<Subscription>,
     accent: Option<Rgba>,
-    /// Which cover the pending/existing accent was extracted from.
+    /// 待处理/现有的取色是从哪张封面提取的。
     accent_for: Option<ManagedImageKey>,
-    /// `(queue position, current track path)` last resolved; both triggers
-    /// fire per switch, the second one must be a no-op.
+    /// 上一次解析的 `(队列位置, 当前曲目路径)`；每次切歌两个触发器都会响，
+    /// 第二个必须是空操作。
     resolved_signature: Option<(usize, Option<PathBuf>)>,
 
-    // Lyrics, mirrored from the shared `Lyrics` entity.
+    // 歌词，从共享的 `Lyrics` 实体镜像而来。
     parsed: Option<Arc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
     /// 卡拉OK扫色期间主视图以 ~30Hz 重绘而音量几乎不变：缓存取整百分比
     /// 对应的文本，值未变时渲染零分配（SharedString 克隆只是引用计数）。
     volume_text: (i64, SharedString),
     current_line: Option<usize>,
-    /// Wheel-browsing offset from the active line, in lines. Returns to 0
-    /// after [`SCROLL_RETURN_AFTER`] of wheel idle (position ticks drive the
-    /// check, so paused playback never resets the browse position).
+    /// 相对活动行的滚轮浏览偏移，单位是行。滚轮空闲超过
+    /// [`SCROLL_RETURN_AFTER`] 后回到 0（由位置 tick 驱动这个检查，所以暂停
+    /// 播放永远不会重置浏览位置）。
     browse_offset: i64,
-    /// Sub-line wheel accumulator (fractional lines between snaps).
+    /// 亚行级的滚轮累计量（两次吸附之间的小数行）。
     scroll_accum: f32,
-    /// Last wheel interaction; `None` once the browse offset has returned.
+    /// 最后一次滚轮交互；浏览偏移归零后为 `None`。
     last_scroll: Option<Instant>,
-    /// Animated display center = active line + browse offset, glided
-    /// whenever either moves. Whole-pixel snapped per line at render time.
+    /// 动画显示的中心行 = 活动行 + 浏览偏移，两者任一移动就滑动过渡。
+    /// 渲染时按整行吸附到整像素。
     visual_line: f32,
     line_anim: Option<(f32, f32, Instant)>,
 
     frame_scheduled: bool,
-    /// Self-contained seek bar; observes position/duration itself so 30 Hz
-    /// ticks repaint only this subtree instead of the fullscreen view.
+    /// 自包含的进度条；它自己观察位置/时长，所以 30 Hz 的 tick 只重绘这一
+    /// 子树，而不是整个全屏视图。
     progress: Entity<ImmersiveProgress>,
 }
 
@@ -242,9 +223,8 @@ impl ImmersiveView {
             let immersive_flag = cx.global::<Models>().immersive.clone();
             let queue = cx.global::<Models>().queue.clone();
 
-            // Fullscreen toggling itself lives in `set_immersive` (it needs
-            // the window handle); this observer only mirrors the flag into
-            // the view's own state.
+            // 全屏切换本身住在 `set_immersive`（它需要窗口句柄）；这个观察者
+            // 只把旗标镜像进视图自己的状态。
             cx.observe(&immersive_flag, |this: &mut ImmersiveView, flag, cx| {
                 this.set_active(*flag.read(cx), cx);
             })
@@ -256,9 +236,8 @@ impl ImmersiveView {
                 }
                 let pos_ms = *pos.read(cx);
                 let mut needs_repaint = this.track_lyric_line(pos_ms);
-                // Wheel-browsing returns to the active line after the idle
-                // window; position ticks drive the check so paused playback
-                // never resets the browse position.
+                // 空闲窗口过后滚轮浏览会回到活动行；由位置 tick 驱动这个检查，
+                // 所以暂停播放永不重置浏览位置。
                 if this.browse_offset != 0
                     && this
                         .last_scroll
@@ -269,11 +248,9 @@ impl ImmersiveView {
                     this.sync_display_target(true);
                     needs_repaint = true;
                 }
-                // Karaoke word colors sweep per tick — but only while the
-                // current line's last word is still in flight. Line-based
-                // lyrics repaint only when the line moved (track_lyric_line).
-                // The progress bar lives in its own entity and observes
-                // position itself, so nothing else needs this 30 Hz path.
+                // 卡拉OK逐字色随 tick 扫动——但只在当前行最后一个字仍在途时。
+                // 纯行模式的歌词只在行移动时才重绘（track_lyric_line）。进度条
+                // 住在自己的实体里并自行观察位置，所以别处都不需要这条 30 Hz 路径。
                 if !needs_repaint
                     && this.current_line.is_some_and(|i| {
                         this.parsed
@@ -305,9 +282,8 @@ impl ImmersiveView {
             })
             .detach();
 
-            // Both per-switch triggers funnel into one guarded resolve:
-            // SongChanged lands while the queue position still points at the
-            // previous track, QueuePositionChanged completes the picture.
+            // 每次切歌的两个触发器都汇入同一个带守卫的 resolve：SongChanged
+            // 落地时队列位置还指向上一个曲目，QueuePositionChanged 才补齐全貌。
             cx.observe(&info.current_track, |this, _, cx| {
                 if this.active {
                     this.resolve_track_presentation(cx);
@@ -321,9 +297,8 @@ impl ImmersiveView {
             })
             .detach();
 
-            // The Lyrics entity notifies unconditionally when a load (local
-            // or online fetch) lands; the generation guard keeps re-notifies
-            // from re-cloning the parsed lines.
+            // Lyrics 实体在任何加载（本地或在线抓取）落地时都会无条件 notify；
+            // 代际守卫让重复 notify 不再重复克隆已解析的行。
             cx.observe(&lyrics, |this: &mut ImmersiveView, lyrics, cx| {
                 if !this.active {
                     return;
@@ -338,13 +313,11 @@ impl ImmersiveView {
             .detach();
 
             let progress = cx.new(|cx| {
-                // The seek bar repaints on every position tick while the
-                // fullscreen view around it stays put (see the position
-                // observer above). Gated on the immersive flag: the entity
-                // lives app-long, so ungated ticks cost 30 empty notifies/s
-                // while the fullscreen view is closed. The 250ms display
-                // quantum on top stops the remaining 30fps repaint pump
-                // while playing (the bar moves sub-pixel per tick).
+                // 进度条在每个位置 tick 都重绘，而它周围的全屏视图保持不动
+                // （见上面的位置观察者）。用沉浸旗标门控：该实体活满整个应用
+                // 生命周期，不加门控时全屏视图关闭期间也要付 30 次空 notify/s。
+                // 再叠加 250ms 的显示量化，就止住了播放中残余的 30fps 重绘泵
+                // （每个 tick 进度条只走亚像素）。
                 let immersive_flag = immersive_flag.clone();
                 cx.observe(
                     &info.position,
@@ -417,8 +390,8 @@ impl ImmersiveView {
         })
     }
 
-    /// `Models::immersive` flipped on/off while the view stays alive inside
-    /// `MainWindow`.
+    /// `Models::immersive` 在视图仍活着（住在 `MainWindow` 里）时被翻转为
+    /// 开/关。
     fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.active == active {
             return;
@@ -476,9 +449,9 @@ impl ImmersiveView {
         self.parsed = None;
         backdrop_cache_shrink(1);
     }
-    /// Re-resolves cover/names/accent for whatever is playing now. Fired by
-    /// both `SongChanged` and `QueuePositionChanged`; the signature guard
-    /// makes the second fire per switch a no-op.
+    /// 针对此刻正在播放的曲目重新解析封面/名称/取色。由 `SongChanged` 与
+    /// `QueuePositionChanged` 双双触发；签名守卫让每次切歌的第二次触发变成
+    /// 空操作。
     fn resolve_track_presentation(&mut self, cx: &mut Context<Self>) {
         let (position, item) = {
             let queue = self.queue.read(cx);
@@ -501,7 +474,7 @@ impl ImmersiveView {
         self.image_element_key += 1;
         self.track_name = None;
         self.artist_name = None;
-        // A fresh track ends any wheel-browsing session.
+        // 新曲目会终结任何滚轮浏览会话。
         self.browse_offset = 0;
         self.last_scroll = None;
         drop(self.meta_subscription.take());
@@ -516,8 +489,8 @@ impl ImmersiveView {
             track_path.as_ref().is_some_and(|path| *path == slot_path)
         });
         if let Some(item) = &item {
-            // Online tracks carry a cover URL on their queue item; local
-            // files fall back to embedded art / sidecar files.
+            // 在线曲目的队列条目自带封面 URL；本地文件回退到内嵌封面 /
+            // sidecar 文件。
             #[cfg(feature = "online_sources")]
             if let Some(url) = queue_metadata::queue_ui_data(cx, item)
                 .read(cx)
@@ -525,25 +498,22 @@ impl ImmersiveView {
                 .and_then(|data| data.cover_url)
                 .filter(|url| !url.is_empty())
             {
-                // Large-display variant: the queue carries 256px thumbnails,
-                // which turn to mush across a fullscreen backdrop.
+                // 大屏显示档：队列里带的是 256px 缩略图，铺满全屏背景会糊成一团。
                 cover_key = Some(ManagedImageKey::HttpCoverLarge(url));
             }
             if cover_key.is_none() {
                 cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
             }
 
-            // Handle from the metadata side table (P2-B step 4): same uid
-            // always yields the same entity, so `meta_subscription` below
-            // observes the same slot the data lives in. `adopt_names` is
-            // unchanged — it consumes the entity's content, only the
-            // subscription's source moved.
+            // 句柄来自元数据旁表（P2-B 第 4 步）：同一 uid 恒给出同一实体，
+            // 所以下面的 `meta_subscription` 观察的正是数据所在的那个槽位。
+            // `adopt_names` 不变——它消费实体的内容，只是订阅的来源换了。
             let data = queue_metadata::queue_ui_data(cx, item);
             let item_path = item.get_path().clone();
             let is_current_slot = track_path.as_ref().is_some_and(|path| *path == item_path);
-            // Names only from the slot that actually holds the playing track
-            // — a stale slot (SongChanged before QueuePositionChanged) must
-            // not latch, the position-change resolve corrects it instead.
+            // 名称只取自真正持有播放中曲目的那个槽位——陈旧槽位
+            // （SongChanged 早于 QueuePositionChanged）绝不能锁死，
+            // 改由位置变化那次 resolve 纠正。
             if is_current_slot && let Some(ui_data) = data.read(cx).clone() {
                 self.adopt_names(ui_data);
             }
@@ -563,8 +533,8 @@ impl ImmersiveView {
             }));
         }
         self.image_key = cover_key;
-        // No cover means no accent source: clearing here avoids keeping the
-        // previous track's theme color on the card and lyric highlight.
+        // 没有封面就没有取色来源：在这里清空，避免卡片与歌词高亮继续沿用
+        // 上一首的主题色。
         if self.image_key.is_none() {
             self.accent = None;
             self.accent_for = None;
@@ -575,8 +545,7 @@ impl ImmersiveView {
             self.arm_backdrop(cx);
         }
 
-        // Accent color: extracted from the label's small decode (render
-        // cached), analyzed off-thread.
+        // 主题色：从标签的小图解码（走渲染缓存）提取，离线程分析。
         if let Some(key) = self.image_key.clone()
             && self.accent_for.as_ref() != Some(&key)
         {
@@ -853,8 +822,7 @@ impl ImmersiveView {
         self.artist_name = data.artist_name.or(self.artist_name.take());
     }
 
-    /// Mirrors the shared lyrics entity's parsed lines and snaps to the
-    /// current line without gliding across the whole list.
+    /// 镜像共享歌词实体的已解析行，并直接吸附到当前行，不滑动穿过整个列表。
     fn sync_lyrics(&mut self, cx: &mut Context<Self>) {
         self.synced_lyrics_generation = self.lyrics.read(cx).parsed_generation();
         // parsed_lines 返回的 Arc 与面板/缓存共享同一份行数据，镜像只付
@@ -870,8 +838,7 @@ impl ImmersiveView {
         self.sync_display_target(false);
     }
 
-    /// Returns whether the active line moved (i.e. the lyrics pane changed
-    /// and a repaint is needed).
+    /// 返回活动行是否移动了（即歌词栏发生变化、需要重绘）。
     fn track_lyric_line(&mut self, pos_ms: u64) -> bool {
         let Some(parsed) = &self.parsed else {
             return false;
@@ -881,9 +848,8 @@ impl ImmersiveView {
         if new_line == self.current_line {
             return false;
         }
-        // A jump of more than one line is a seek (click-to-seek, scrubber,
-        // prev/next): the wheel-browse session ends so the window recenters
-        // on the line the user jumped to. Natural playback steps by one.
+        // 跨越一行以上是定位（点击定位、拖动进度条、上/下一曲）：滚轮浏览会话
+        // 就此结束，窗口重新对准用户跳到的那一行。自然播放只前进一行。
         if let (Some(new), Some(old)) = (new_line, self.current_line)
             && new.abs_diff(old) > 1
         {
@@ -895,8 +861,7 @@ impl ImmersiveView {
         true
     }
 
-    /// Recenters the lyric window on the active line plus the wheel-browse
-    /// offset, gliding when the target moved.
+    /// 把歌词窗口重新对准「活动行 + 滚轮浏览偏移」，目标移动时滑动过渡。
     fn sync_display_target(&mut self, animate: bool) {
         let len = self.parsed.as_ref().map_or(0, |parsed| parsed.len() as i64);
         let base = self.current_line.map_or(-1, |line| line as i64);
@@ -958,12 +923,10 @@ impl ImmersiveView {
     }
 }
 
-/// Self-contained seek bar for the immersive player card. It owns the 30 Hz
-/// position observation so progress ticks repaint only this small subtree —
-/// the fullscreen view's own position observer is gated on actual lyric-pane
-/// changes (line moves, wheel-browse return, karaoke sweep in flight).
-/// Time labels use the shared whole-second cache (`util::CachedTimeText`,
-/// same mechanism as controls.rs Scrubber).
+/// 沉浸播放卡自包含的进度条。它自己持有 30 Hz 的位置观察，所以进度 tick 只
+/// 重绘这一小片子树——全屏视图自己的位置观察者被门控在歌词栏的真实变化上
+/// （行移动、滚轮浏览归位、卡拉OK扫色已在途）。时间标签共用整秒缓存
+/// （`util::CachedTimeText`，与 controls.rs 的 Scrubber 同一套机制）。
 struct ImmersiveProgress {
     position: Entity<u64>,
     duration: Entity<u64>,
@@ -976,7 +939,7 @@ struct ImmersiveProgress {
 impl Render for ImmersiveProgress {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::ImmersiveProgress);
-        // PlaybackInfo positions and durations are both in milliseconds.
+        // PlaybackInfo 的位置与时长都用毫秒。
         let position_ms = *self.position.read(cx);
         let duration_ms = *self.duration.read(cx);
         let position_secs = position_ms / 1000;
@@ -1035,10 +998,9 @@ impl Render for ImmersiveProgress {
     }
 }
 
-/// The lyric lines inside the window around the animated display center:
-/// `(line index, whole-pixel top offset, is_current)`. Pure so the clamp and
-/// snap math is unit-testable. The highlighted line is the one actually
-/// playing, even while the user browses away with the wheel.
+/// 动画显示中心周围窗口内的歌词行：`(行号, 整像素顶部偏移, is_current)`。
+/// 写成纯函数以便给钳位与吸附数学做单元测试。高亮的那一行始终是真正在播的
+/// 行，即使用户用滚轮浏览到了别处。
 fn lyric_window(
     visual_line: f32,
     parsed_len: usize,
@@ -1063,7 +1025,7 @@ fn lyric_window(
 impl Render for ImmersiveView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::Immersive);
-        // Keyboard focus for the Esc binding (AboutDialog pattern; idempotent).
+        // 让键盘焦点落到 Esc 绑定上（AboutDialog 的模式；幂等）。
         self.focus_handle.focus(window, cx);
 
         let reduced_motion = reduced_motion_enabled(cx);
@@ -1103,22 +1065,19 @@ impl Render for ImmersiveView {
             }
         }
 
-        // PlaybackInfo positions are in milliseconds. The progress bar reads
-        // position/duration in its own entity (ImmersiveProgress).
+        // PlaybackInfo 的位置用毫秒。进度条在自己的实体（ImmersiveProgress）里
+        // 读位置/时长。
         let position_ms = *self.position.read(cx);
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
         let volume = *self.volume.read(cx);
         let prev_volume = *self.prev_volume.read(cx);
 
-        // Backdrop: full-sharpness decode, Cover-fit, NO blur — sharpness is
-        // the point; the gradients below carve the reading zones. The two
-        // fixed layers render `backdrop_layers` (decode-ready slots), not
-        // `image_key`: the view promotes a slot only once the decoded Arc is
-        // in hand, so the previous art keeps painting until the swap — no
-        // dark gap. The swap itself is a 400ms crossfade: the outgoing layer
-        // keeps painting underneath at (1-p) while the incoming one fades in
-        // at p (div opacity → gpui's element_opacity → PolychromeSprite
-        // opacity).
+        // 背景：全清晰度解码、Cover 适配、绝不模糊——清晰度就是目的；下面的
+        // 渐变划出阅读区。两个固定图层渲染的是 `backdrop_layers`（解码就绪的
+        // 槽位）而不是 `image_key`：视图只有在拿到解码后的 Arc 时才晋升槽位，
+        // 所以上一张图会一直绘制到交换为止——没有黑底间隙。交换本身是一次
+        // 400ms crossfade：淡出层以 (1-p) 在其下继续绘制，进入层以 p 淡入
+        // （div opacity → gpui 的 element_opacity → PolychromeSprite opacity）。
         let fade_progress = self.backdrop_fade_started.map_or(1.0, |started| {
             ease_out_cubic((started.elapsed().as_secs_f32() / BACKDROP_FADE.as_secs_f32()).min(1.0))
         });
@@ -1131,26 +1090,24 @@ impl Render for ImmersiveView {
                 (1.0 - fade_progress).clamp(0.0, 1.0),
             ))
             .child(self.backdrop_layer(self.backdrop_active, fade_progress.clamp(0.0, 1.0)));
-        // Global weight: heavier at the bottom (card zone), light at the top
-        // (0deg = to top: the 0% stop sits at the bottom edge).
+        // 整体权重：底部更重（卡片区）、顶部更轻
+        // （0deg = 朝上：0% 色标落在底边）。
         let vertical_shade = div().absolute().inset_0().bg(linear_gradient(
             0.0,
             linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.42), 0.0),
             linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.12), 1.0),
         ));
-        // Right lyrics zone: transparent over the artwork, dark toward the
-        // right edge (90deg = to right).
+        // 右侧歌词区：压在封面上时透明、朝右边缘变暗（90deg = 朝右）。
         let right_shade = div().absolute().inset_0().bg(linear_gradient(
             90.0,
             linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 0.30),
             linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.52), 1.0),
         ));
 
-        // ── Left column: circular cover, names, frosted player card ──────
-        // The cover fills the whole disc circle (label fraction 1.0); the
-        // dark layer behind it only shows through while the cover decodes or
-        // when a track has no art at all. See module docs for why nothing
-        // rotates and the grooves/sheen are gone.
+        // ── 左栏：圆形封面、曲名、磨砂播放卡 ──────────────────────────
+        // 封面填满整个圆盘（标签比例 1.0）；其下的深色层只在封面解码期间，
+        // 或曲目完全没有封面时才透出。为什么不转、纹路环与光泽弧为何移除，
+        // 见模块文档。
         let vinyl_label = div()
             .absolute()
             .inset_0()
@@ -1248,8 +1205,8 @@ impl Render for ImmersiveView {
                     cx.global::<PlaybackInterface>().next();
                 }),
             );
-        // Mute-toggle decision (icon + target volume) shared with the play
-        // bar's secondary controls; the button styling stays local.
+        // 静音切换的判定（图标 + 目标音量）与播放栏的次级控件共用；
+        // 按钮样式仍留在本地。
         let (volume_target, volume_icon) = volume_toggle_target(volume, prev_volume);
         let volume_group = div()
             .flex()
@@ -1325,11 +1282,10 @@ impl Render for ImmersiveView {
             .child(track_info)
             .child(player_card);
 
-        // ── Right column: lyrics ─────────────────────────────────────────
-        // Every line is click-to-seek; the wheel browses away from the
-        // active line (returning after the idle window); the active line
-        // renders word-by-word karaoke when the track carries per-word
-        // timing. Colors lerp only — glyph geometry never interpolates.
+        // ── 右栏：歌词 ────────────────────────────────────────────────
+        // 每一行都可点击定位；滚轮可离开活动行浏览（空闲窗口过后自动归位）；
+        // 活动行在曲目带逐字时间戳时按字渲染卡拉OK。只有颜色做 lerp——
+        // 字形几何绝不插值。
         let lyric_children = self.parsed.as_ref().map(|parsed| {
             let visual_line = self.visual_line;
             let current_line = self.current_line;
@@ -1347,11 +1303,9 @@ impl Render for ImmersiveView {
                         .unwrap_or(*LINE_OPACITY.last().unwrap());
                     let color = if is_current { accent } else { dimmed };
                     let line_time_ms = line.time_ms;
-                    // Karaoke: un-sung words sit at the dimmed neighbor tone
-                    // and sweep to the accent as each word's window passes
-                    // (the current line's own color is already the accent, so
-                    // it cannot be the sweep start). Word colors change per
-                    // tick — glyph geometry stays fixed.
+                    // 卡拉OK：未唱到的字停在暗化的邻行色调上，随着每个字的时间
+                    // 窗过去扫向主题色（当前行自身的颜色已经是主题色，所以它
+                    // 不能当扫色的起点）。字的颜色逐 tick 变化——字形几何保持不变。
                     let text_child: Div = if is_current && !line.words.is_empty() {
                         let unsung = dimmed;
                         let mut row = div().flex().flex_wrap().items_baseline();
@@ -1372,10 +1326,8 @@ impl Render for ImmersiveView {
                         .cursor_pointer()
                         .hover(move |el| el.opacity(opacity.max(0.9)))
                         .on_click(move |_, _, cx| {
-                            // Direct-closure handler (sidebar lyric rows use
-                            // the same shape): the click only seeks — the
-                            // wheel-browse session unwinds through the
-                            // position-tick idle return.
+                            // 直接用闭包的处理器（侧栏歌词行用同一形状）：点击只做
+                            // 定位——滚轮浏览会话经由位置 tick 的空闲归位自然解开。
                             let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
                             if state != PlaybackState::Stopped {
                                 cx.global::<PlaybackInterface>()
@@ -1495,7 +1447,7 @@ mod tests {
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             (4..=16).collect::<Vec<_>>()
         );
-        // The active line sits in the middle slot (index 6 of 13).
+        // 活动行位于中间槽（13 槽里的第 6 个）。
         let (_, top, is_current) = lines[6];
         assert!(is_current);
         assert_eq!(top, LINE_WINDOW as f32 * LINE_PITCH_PX);
@@ -1508,14 +1460,13 @@ mod tests {
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
-        // Before the first line the window still starts at the clamp.
+        // 第一行之前，窗口仍从钳位处开始。
         let lines = lyric_window(-1.0, 3, None);
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
-        // Browsing away: the highlight stays on the playing line even when
-        // the window centers elsewhere.
+        // 浏览到别处时：即使窗口中心落在别处，高亮仍留在正在播放的那一行。
         let lines = lyric_window(4.0, 30, Some(1));
         assert!(
             lines

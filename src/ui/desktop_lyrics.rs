@@ -101,9 +101,8 @@ pub fn open(cx: &mut App) {
         return;
     };
     cx.global_mut::<DesktopLyricsState>().window = Some(handle);
-    // This window is the only visible lyrics consumer when the side panel
-    // and immersive view are both closed; fill in a load the visibility
-    // gates skipped while nothing was showing.
+    // 侧栏面板与沉浸页都关闭时，这个窗口是唯一可见的歌词消费者；把可见性门控
+    // 在「什么都没显示」期间跳过的那次加载补上。
     lyrics.update(cx, |lyrics, cx| lyrics.ensure_loaded(cx));
     set_enabled(cx, true);
     sync_broadcast(cx);
@@ -150,8 +149,8 @@ fn restore_broadcast_after_close(cx: &mut App) {
 /// 关闭后由主窗口激活事件（app.rs 的 activation 观察者）恢复常规双档。
 /// app.rs 的档位写入点以 [`is_open`] 为 OR 条件，两条写入路径不再互踩。
 pub fn is_open(cx: &App) -> bool {
-    // Called from `Lyrics::new` as well, which runs before this Global is
-    // installed; absence simply means "not open".
+    // `Lyrics::new` 也会调到这里，而它跑在本 Global 安装之前；取不到就只表示
+    // 「没打开」。
     cx.try_global::<DesktopLyricsState>()
         .is_some_and(DesktopLyricsState::is_open)
 }
@@ -185,7 +184,7 @@ fn open_window(
                 origin: point(px(x as f32), px(y as f32)),
                 size: size(px(WIDTH), px(HEIGHT)),
             };
-            // 恢复坐标钳制：副屏断开/投影切换后持久化原点可能落在所有
+            // 恢复坐标钳位：副屏断开/投影切换后持久化原点可能落在所有
             // 屏幕之外——窗口不可达且无任何 UI 手段找回。与任一显示器
             // 无交集则回退默认底部居中位。
             let visible = cx

@@ -16,7 +16,7 @@ use serde::{
 };
 use tracing::{error, info, warn};
 
-/// A color parsed from the CSS-style hex strings used in theme files.
+/// 从主题文件里那种 CSS 风格的十六进制字符串解析出的颜色。
 struct ColorHex(Rgba);
 
 impl<'de> Deserialize<'de> for ColorHex {
@@ -87,7 +87,7 @@ pub struct Theme {
 
     pub border_color: Rgba,
 
-    /// Corner radius scale in px, consumed by components instead of hardcoded px() values.
+    /// 圆角尺度，单位 px，供组件消费，取代写死的 px() 值。
     pub radius_sm: f32,
     pub radius_md: f32,
     pub radius_lg: f32,
@@ -771,9 +771,9 @@ impl Theme {
     }
 }
 
-/// Legacy single-file theme read from the data directory root.
+/// 从数据目录根读到的旧版单文件主题。
 pub const LEGACY_THEME_PATH: &str = "theme.json";
-/// Data-directory subdirectory holding one `<name>.json` theme per file.
+/// 数据目录下的子目录，每个 `<name>.json` 文件是一个主题。
 pub const THEMES_DIR_NAME: &str = "themes";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -810,9 +810,8 @@ pub fn create_theme(path: &Path) -> Theme {
     }
 }
 
-/// Discovers all available theme options in the data directory.
-/// Returns a vector containing the default theme, legacy theme (if present),
-/// and any custom themes found in the themes subdirectory.
+/// 发现数据目录里所有可用的主题选项。返回的 vector 含默认主题、旧版主题
+/// （如果存在），以及 themes 子目录里找到的任何自定义主题。
 pub fn discover_theme_options(data_dir: &Path) -> Vec<ThemeOption> {
     let mut themes = vec![
         ThemeOption {
@@ -862,8 +861,7 @@ pub fn discover_theme_options(data_dir: &Path) -> Vec<ThemeOption> {
     themes
 }
 
-/// Resolves a theme identifier to its relative path if the file exists.
-/// Returns None if no theme is selected or the file does not exist.
+/// 文件存在时把主题标识解析成它的相对路径。没选中主题或文件不存在时返回 None。
 pub fn resolve_theme_relative_path(
     data_dir: &Path,
     selected_theme: Option<&str>,
@@ -876,8 +874,7 @@ pub fn resolve_theme_relative_path(
     None
 }
 
-/// Loads the theme for the given selection, falling back to the default theme
-/// if the file does not exist or cannot be parsed.
+/// 按给定的选择加载主题，文件不存在或解析不了时回退到默认主题。
 pub fn load_selected_theme(data_dir: &Path, selected_theme: Option<&str>) -> Theme {
     if selected_theme == Some(LIGHT_THEME_ID) {
         return Theme::light();
@@ -889,7 +886,7 @@ pub fn load_selected_theme(data_dir: &Path, selected_theme: Option<&str>) -> The
         .unwrap_or_default()
 }
 
-/// Converts a filesystem path to a theme-relative path for comparison.
+/// 把文件系统路径转换成主题相对路径，以便比较。
 fn theme_relative_path_for_event(data_dir: &Path, path: &Path) -> Option<String> {
     if path.parent() == Some(data_dir) && path.file_name() == Some(LEGACY_THEME_PATH.as_ref()) {
         return Some(LEGACY_THEME_PATH.to_string());
@@ -908,12 +905,11 @@ fn theme_relative_path_for_event(data_dir: &Path, path: &Path) -> Option<String>
     None
 }
 
-/// Checks if any of the event's theme-relative paths affect the currently
-/// selected theme.
+/// 检查事件的哪些主题相对路径影响当前选中的主题。
 ///
-/// A plain string compare against the selected id suffices:
-/// `resolve_theme_relative_path` either echoes the selected id back or
-/// returns `None`, so resolving it here adds nothing.
+/// 拿选中 id 做一次普通字符串比较就够了：
+/// `resolve_theme_relative_path` 要么把选中的 id 原样回吐，要么返回 `None`，
+/// 所以在这里再解析它不会多给任何东西。
 fn event_affects_selected_theme(selected_theme: Option<&str>, affected: &[String]) -> bool {
     let Some(selected_theme) = selected_theme else {
         return false;
@@ -924,8 +920,8 @@ fn event_affects_selected_theme(selected_theme: Option<&str>, affected: &[String
         .any(|affected_path| affected_path == selected_theme)
 }
 
-/// Checks whether a filesystem event changes the set of available theme
-/// choices: the themes directory itself was touched or a theme file matched.
+/// 检查某个文件系统事件是否改变了可用主题的集合：themes 目录本身被碰过，
+/// 或某个主题文件匹配上了。
 fn event_affects_theme_options(themes_dir_touched: bool, affected: &[String]) -> bool {
     themes_dir_touched || !affected.is_empty()
 }
@@ -1059,16 +1055,15 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
                         }
                     }
 
-                    // Theme/settings files are hand-edited JSON; a 1 s poll
-                    // reacts within perception while keeping these background
-                    // wake-ups rare.
+                    // 主题/设置文件是手改的 JSON；1 s 轮询能在知觉阈值内响应，
+                    // 同时让这些后台唤醒保持稀少。
                     cx.background_executor().timer(Duration::from_secs(1)).await;
                 }
             }
         })
         .detach();
 
-        // store the watcher in a global so it doesn't go out of scope
+        // 把 watcher 存进一个 global，免得它离开作用域就被析构
         let tw = ThemeWatcher(Box::new(watcher));
         cx.set_global(tw);
     } else if let Err(e) = watcher {

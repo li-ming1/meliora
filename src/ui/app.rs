@@ -98,9 +98,8 @@ impl Render for MainWindow {
         let show_about = *self.show_about.read(cx);
         let immersive = *self.immersive.read(cx);
         if immersive {
-            // Immersive mode replaces the whole library layout; the toast
-            // layer stays so notifications remain visible. window_chrome is
-            // skipped — the OS decorations are gone in fullscreen anyway.
+            // 沉浸模式取代整个库布局；toast 层保留，通知仍然可见。window_chrome
+            // 跳过——全屏下系统装饰本来就没有。
             return div()
                 .image_cache(self.image_cache.clone())
                 .key_context("app")
@@ -132,8 +131,7 @@ impl Render for MainWindow {
                     .overflow_hidden()
                     .size_full()
                     .flex()
-                    // the whole application has to be flipped upside down otherwise sidebar icons
-                    // overlap menu bar menus
+                    // 否则整个应用都得翻转过来，不然侧栏图标会压住菜单栏的菜单
                     .flex_col_reverse()
                     .max_w_full()
                     .max_h_full()
@@ -197,14 +195,11 @@ impl Render for MainWindow {
                             show_about.write(cx, false);
                         }))
                     })
-                    // Both dialogs stay mounted and hide themselves inside
-                    // their own render (empty div). Gating the mount on
-                    // `scan_state` / `settings_health` reads here made the
-                    // root view re-render at the scan-progress rate (250 ms
-                    // during a scan) for two values that are almost always
-                    // false — the whole window chrome rebuilt per tick for
-                    // nothing. The entities are in the tree either way, so
-                    // visibility is byte-for-byte the same as before.
+                    // 两个对话框都保持挂载，由它们自己的 render 内部隐藏（空 div）。
+                    // 在这里用 `scan_state` / `settings_health` 的读值来门控挂载，
+                    // 会让根视图按扫描进度频率重渲染（扫描期间 250 ms 一次），
+                    // 只为两个几乎永远为 false 的值——每 tick 整个窗口外壳都重建、
+                    // 毫无收益。两种情况下实体都在树里，所以可见性与之前逐字节相同。
                     .child(self.missing_folder_dialog.clone())
                     .child(self.corrupt_settings_dialog.clone())
                     .child(self.toast_layer.clone()),
@@ -257,22 +252,18 @@ pub(crate) fn restore_main_window(cx: &mut App) {
     let _ = ensure_main_window(cx, layer);
 }
 
-/// Whether the main window was maximized when immersive mode entered; drives
-/// the restore on fullscreen exit. Pure OS-window-state memory — there is no
-/// Models domain this could belong to.
+/// 进入沉浸模式时主窗口是否处于最大化；决定退出全屏时的还原动作。纯 OS 窗口状态
+/// 记忆——Models 里没有所属域可以容纳它。
 static IMMERSIVE_WAS_MAXIMIZED: AtomicBool = AtomicBool::new(false);
 
-/// Enters/leaves the main window's OS fullscreen (called by
-/// `ui::immersive::set_immersive`, which only owns the app context).
+/// 进入/离开主窗口的 OS 全屏（由 `ui::immersive::set_immersive` 调用，
+/// 那边只持有应用上下文）。
 ///
-/// Windows refuses the fullscreen rect for a zoomed window: stripping the
-/// caption styles implicitly restores it and the subsequent monitor-sized
-/// SetWindowPos is swallowed outright (measured: entering fullscreen from a
-/// maximized window falls back to the small pre-maximize rect, leaving the
-/// taskbar visible). So un-maximize before entering and re-maximize after
-/// leaving. The SW_RESTORE is a queued OS message while gpui's style switch
-/// runs in an executor callback — measured to land BEFORE the restore, so the
-/// enter path waits until `is_maximized` is actually clear before toggling.
+/// Windows 拒绝给 zoomed 窗口套全屏矩形：剥掉标题栏样式会隐式把它还原，随后那次
+/// 按显示器尺寸的 SetWindowPos 会被整个吞掉（实测：从最大化窗口进入全屏会退回
+/// 最大化前的小矩形，任务栏仍然可见）。所以进入前先取消最大化、离开后再重新
+/// 最大化。SW_RESTORE 是排队的 OS 消息，而 gpui 的样式切换跑在 executor 回调里
+/// ——实测它落在 restore 之前，所以进入路径会等到 `is_maximized` 真的清掉之后再切。
 pub(crate) fn set_main_window_fullscreen(fullscreen: bool, cx: &mut App) {
     let Some(window) = find_main_window(cx) else {
         error!(
@@ -305,12 +296,12 @@ pub(crate) fn set_main_window_fullscreen(fullscreen: bool, cx: &mut App) {
         }
         if was_maximized {
             cx.spawn(async move |cx| {
-                // Same foreground executor FIFO as gpui's internal restore
-                // spawn: by the time this runs, style and bounds are back.
+                // 与 gpui 内部 restore 派生任务同一个前台 executor FIFO：
+                // 这段跑起来时，样式与边界都已经恢复。
                 cx.update(|cx| {
                     let _ = window.update(cx, |_, window, _| {
                         if window.is_fullscreen() {
-                            // Restore not landed yet (rare): defer one frame.
+                            // restore 还没落地（罕见）：再推迟一帧。
                             window.on_next_frame(|window, _| {
                                 if !window.is_fullscreen() {
                                     window.zoom_window();
@@ -327,10 +318,9 @@ pub(crate) fn set_main_window_fullscreen(fullscreen: bool, cx: &mut App) {
     }
 }
 
-/// Toggles fullscreen once the queued SW_RESTORE has actually landed, retrying
-/// once per frame (capped: an un-restored window after ~16 frames means
-/// something is deeply wrong and we skip the toggle rather than toggle a
-/// zoomed window).
+/// 等排队的 SW_RESTORE 真的落地之后再切一次全屏，每帧重试一次（有上限：
+/// 约 16 帧之后仍未还原说明深处出了问题，我们跳过这次切换，绝不去切一个
+/// zoomed 窗口）。
 fn enter_fullscreen_when_restored(window: &mut Window, remaining: u8) {
     if window.is_maximized() && remaining > 0 {
         window
@@ -420,9 +410,9 @@ fn build_main_window(
             .map(|v| v.size)
             .unwrap_or(window.bounds().size);
 
-            // `!=` guard like every other Models write: dragging a window
-            // border fires this at the OS rate, and an unchanged write still
-            // costs a notify effect for a value nothing observes.
+            // 与所有其他 Models 写入一样的 `!=` 守卫：拖动窗口边框会按 OS 频率
+            // 触发这里，而一次值没变的写入仍要为没有任何观察者的值付一个
+            // notify effect。
             let next = WindowInformation { maximized, size };
             let changed = window_information.read(cx).as_ref() != Some(&next);
             if changed {
@@ -517,12 +507,11 @@ fn build_main_window(
             missing_folder_dialog: MissingFolderDialog::new(cx),
             corrupt_settings_dialog: CorruptSettingsDialog::new(cx),
             palette,
-            // use a really small global image cache
-            // this is literally just to ensure that images are *always* removed
-            // from memory *at some point*
+            // 用一个非常小的全局图片缓存
+            // 这纯粹是为了保证图片*迟早*都会从内存里被移除
             //
-            // if your view uses a lot of images you need to have your own image
-            // cache
+            // 如果你的视图用了很多图片，你需要有自己的图片
+            // 缓存
             image_cache: MelioraImageCache::new(12, cx),
             toast_layer,
         }
@@ -582,10 +571,9 @@ pub fn run() -> anyhow::Result<()> {
         }
     });
     application.run(move |cx: &mut App| {
-        // Fontconfig isn't read currently so fall back to the most "okay" font rendering
-        // option - I'm sure people will disagree with this but Grayscale font rendering
-        // results in text that is at least displayed correctly on all screens, unlike
-        // sub-pixel AA
+        // 目前并不读 Fontconfig，所以退到最「尚可」的字体渲染选项——
+        // 肯定有人不同意这么选，但 Grayscale 字体渲染至少能保证文本在所有屏幕上
+        // 都显示正确，亚像素 AA 做不到这点
         #[cfg(target_os = "linux")]
         cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
 
@@ -645,9 +633,8 @@ pub fn run() -> anyhow::Result<()> {
             initial_repeat,
         );
 
-        // Revive restored online queue items whose signed stream URL expired
-        // while the app was off: re-fetch a fresh URL in the background and
-        // keep the current track / info section keyed on the fresh URL.
+        // 唤醒恢复出来的在线队列条目：签名流 URL 在应用关闭期间过期了，
+        // 就在后台重新取一个新 URL，并让当前曲目/信息区都以新 URL 为键。
         #[cfg(feature = "online_sources")]
         refresh_restored_online_urls(cx, &queue, &playback_settings);
 
@@ -679,10 +666,9 @@ pub fn run() -> anyhow::Result<()> {
         let (scan_interface, scan_events) = start_scanner(pool.clone(), scanning_settings);
         let initial_health = cx.global::<Models>().settings_health.read(cx).clone();
         if matches!(initial_health, models::SettingsHealth::Ok) {
-            // Defer the first scan past startup: the incremental walk stats
-            // every audio file, and that disk IO used to race the first frame
-            // and the startup DB reads. The scanner is already background, so
-            // a 1 s head start costs nothing.
+            // 把首次扫描推到启动之后：增量遍历会对每个音频文件做 stat，
+            // 那趟磁盘 IO 过去会与首帧以及启动期的 DB 读取抢跑。扫描器本就
+            // 是后台的，所以让行 1 s 毫无代价。
             cx.spawn(async move |cx| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
@@ -728,8 +714,7 @@ pub fn run() -> anyhow::Result<()> {
 
         let last_volume = *cx.global::<PlaybackInfo>().volume.read(cx);
 
-        // Listening-stats recorder, fed by the playback event loop and flushed
-        // to SQLite on quit.
+        // 收听统计记录器：由播放事件循环喂数据，退出时刷进 SQLite。
         cx.set_global(crate::stats::StatsHandle::new());
 
         let mut playback_interface: PlaybackInterface = PlaybackThread::start(
@@ -758,31 +743,28 @@ pub fn run() -> anyhow::Result<()> {
         // 托盘唤回的兜底宿主（正常托盘流程只显隐不销毁，见 restore_main_window）。
         cx.set_global(MainWindowHost(toast_layer_entity.clone()));
 
-        // Kick off the daily free-VIP claim on launch so an already-logged-in
-        // account gets today's award without opening the settings page. The
-        // claim itself is guarded by the persisted "claimed today" marker, so
-        // this is a no-op (zero requests) once per calendar day.
+        // 启动时发起每日免费 VIP 领取，让已登录的账号不必打开设置页也能拿到
+        // 今天的奖励。领取本身由持久化的「今日已领」标记守卫，所以每个自然日
+        // 这里只会是空操作（零请求）。
         #[cfg(feature = "kugou")]
         crate::ui::kugou::claim_daily_vip_async();
 
-        // Auto-update: publish the updater state, scrub leftovers of a
-        // previous update restart, and check GitHub Releases once the
-        // startup rush has settled. No-op unless a new release exists; the
-        // download/install pipeline lives in updater.rs.
+        // 自动更新：发布更新器状态、清理上一次更新重启留下的残余，并在启动
+        // 高峰平息后检查一次 GitHub Releases。没有新版本时是空操作；
+        // 下载/安装管线住在 updater.rs。
         #[cfg(feature = "online")]
         crate::updater::init(cx);
         #[cfg(feature = "online")]
         crate::updater::schedule_startup_check(cx);
 
-        // Update `StorageData` and save it to file system while quitting the app.
+        // 退出应用时更新 `StorageData` 并把它保存到文件系统。
         cx.on_app_quit({
             move |cx| {
                 let data = StorageData::new(cx);
                 let storage = storage.clone();
 
-                // Flush the partially-listened segment so the final seconds of
-                // a session are not lost. `write_rows` is tokio-backed, so it
-                // runs through RUNTIME's context on the background thread.
+                // 刷出最后那段未听完的记录，免得一次会话的最后几秒丢失。
+                // `write_rows` 走 tokio，所以在后台线程上经 RUNTIME 的上下文执行。
                 let pending_rows = {
                     let stats = cx.global::<crate::stats::StatsHandle>();
                     let mut recorder = stats.0.lock_recovered();
@@ -809,9 +791,8 @@ pub fn run() -> anyhow::Result<()> {
         .detach();
 
         if let Some(window_information) = storage_data.window_information {
-            // The intermediate binding ends the shared borrow of `cx` before
-            // `write` takes it mutably — chaining global() straight into
-            // write() does not compile.
+            // 这个中间绑定让 `cx` 的共享借用先结束，`write` 才能拿到可变借用——
+            // 把 global() 直接串进 write() 是编译不过的。
             let window_information_entity = cx.global::<Models>().window_information.clone();
             window_information_entity.write(cx, Some(window_information));
         }
@@ -846,11 +827,10 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Restored online queue items carry signed stream URLs that expire while the
-/// app is off; re-fetch a fresh URL for each one so a long-idle session still
-/// plays. If the refreshed item is the one currently playing, the current
-/// track path is updated in lockstep so the info section (cover/name/artist)
-/// stays keyed on the fresh URL. Network calls hop onto the Tokio runtime.
+/// 恢复出来的在线队列条目带的是签名流 URL，应用在关闭期间它们会过期；给每一条
+/// 重新取一个新 URL，长时间闲置后的会话就还能播。若刷新后的条目正是当前播放的
+/// 那首，当前曲目路径会同步更新，让信息区（封面/曲名/艺人）始终以新 URL 为键。
+/// 网络调用都会跳到 Tokio 运行时上。
 #[cfg(feature = "online_sources")]
 fn refresh_restored_online_urls(
     cx: &mut App,
@@ -874,7 +854,7 @@ fn refresh_restored_online_urls(
         return;
     }
 
-    // Owned so the spawned task outlives this scope; `as_str` is feature-gated.
+    // 取所有权，好让派生出的任务活得比本作用域更久；`as_str` 是 feature 门控的。
     #[cfg(feature = "kugou")]
     let kugou_quality = playback.online_quality.as_str().to_string();
 
@@ -885,11 +865,10 @@ fn refresh_restored_online_urls(
         .as_ref()
         .map(|track| track.get_path().clone());
 
-    // Only the current track needs a valid URL right now; anything else in the
-    // restored queue is refreshed on demand by the playback thread when it is
-    // actually played (`PlaybackThread::refresh_expired_online_url`). Refresh
-    // the current one first, cap the startup burst, let the fallback handle
-    // the tail instead of burning a serial HTTP round trip per queued track.
+    // 此刻只有当前曲目必须有一个有效 URL；恢复出的队列里其余条目等真要被播放时
+    // 由播放线程按需刷新（`PlaybackThread::refresh_expired_online_url`）。
+    // 先刷当前这一条，给启动期的高峰封顶，让兜底路径去处理尾巴，而不是为队列里
+    // 每一首曲目都烧掉一次串行的 HTTP 往返。
     const STARTUP_REFRESH_CAP: usize = 8;
     // 单次拿锁完成全部位置匹配：闭包里逐元素重锁在长队列下是 O(n) 次
     // 获取，且两次持有之间纯同步、无 await，合并安全。
@@ -912,10 +891,9 @@ fn refresh_restored_online_urls(
                 .and_then(|item| item.persisted_display())
                 .unwrap_or((None, None, None, None));
 
-            // Shared refresh: fetches a fresh URL and re-registers it in the
-            // provider's stream registry (lyrics / like / download resolve by
-            // that registry, so a refreshed URL must be re-registered or those
-            // break once the refreshed stream comes up in rotation).
+            // 共用的刷新：取一个新 URL 并把它重新登记进该音源的流注册表
+            // （歌词 / 收藏 / 下载都按这张注册表解析，所以刷新过的 URL 必须
+            // 重新登记，否则轮到刷新后的流播起来时这些功能就断）。
             let ctx = crate::online_sources::RefreshContext {
                 #[cfg(feature = "kugou")]
                 kugou_quality: kugou_quality.as_str(),
@@ -932,8 +910,7 @@ fn refresh_restored_online_urls(
                 let Some(item) = Arc::make_mut(&mut guard).get_mut(idx) else {
                     continue;
                 };
-                // the queue may have shifted since the snapshot; never clobber
-                // a different item
+                // 自快照以来队列可能已经移位；绝不用来覆盖另一个条目
                 if item.online_identity() != Some(&identity) {
                     continue;
                 }
@@ -962,8 +939,8 @@ struct Args {
     files: Option<Vec<PathBuf>>,
 }
 
-/// Parses the arguments provided by the user and handles them. Returns true if files were provided
-/// for playback as command line arguments.
+/// 解析用户给出的命令行参数并处理它们。如果命令行里提供了用于播放的文件，
+/// 返回 true。
 fn parse_args_and_prepare(interface: &PlaybackInterface) -> bool {
     let args = Args::parse();
 

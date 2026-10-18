@@ -32,8 +32,7 @@ use gpui::{InteractiveElement, prelude::FluentBuilder, *};
 
 use self::replaygain::ReplayGainButton;
 
-/// Re-renders whenever `entity` changes; the default wiring for global model
-/// mirrors that carry no extra state of their own.
+/// `entity` 变化时重新渲染；这是那些自身不带额外状态的全局模型镜像的默认接线。
 pub(crate) fn observe_notify<O: 'static, T: 'static>(cx: &mut Context<O>, entity: &Entity<T>) {
     cx.observe(entity, |_, _, cx| {
         cx.notify();
@@ -41,14 +40,13 @@ pub(crate) fn observe_notify<O: 'static, T: 'static>(cx: &mut Context<O>, entity
     .detach();
 }
 
-/// Shared press handler for the transport buttons: stops propagation and
-/// suppresses default handling, leaving the action to the click handler.
+/// 走带按钮共用的按下处理：阻止冒泡并抑制默认处理，把动作留给点击处理器。
 fn swallow_press(_: &MouseDownEvent, window: &mut Window, cx: &mut App) {
     cx.stop_propagation();
     window.prevent_default();
 }
 
-/// Which transport action a prev/next button dispatches.
+/// 上/下一曲按钮各自派发哪种走带动作。
 #[derive(Clone, Copy)]
 enum TransportAction {
     Previous,
@@ -64,9 +62,8 @@ impl TransportAction {
     }
 }
 
-/// One end cap of the prev/play/next cluster: a 30×28 button that dispatches
-/// its action on click, swallows presses, and hover-fades its background.
-/// The caller adds the outer-corner rounding.
+/// 「上一曲 / 播放 / 下一曲」这组按钮的一个端头：30×28 的按钮，点击时派发自己的
+/// 动作、吞掉按下事件、悬停时淡入背景。外侧圆角由调用方加。
 fn transport_button(
     id: &'static str,
     icon_path: &'static str,
@@ -91,10 +88,9 @@ fn transport_button(
         .into_transition(theme.playback_button, theme.playback_button_hover)
 }
 
-/// Shared chrome for the play bar's 25×25 square toggles (volume, queue,
-/// lyrics, ReplayGain): rounded square with the standard playback-button
-/// background, hover and active tints. Callers pass a stateful div and layer
-/// icon, tooltip and handlers on top.
+/// 播放栏 25×25 方形开关（音量、队列、歌词、ReplayGain）共用的外观：圆角方形，
+/// 带标准播放按钮的背景、悬停与激活着色。调用方传入一个有状态的 div，
+/// 在其上叠加图标、tooltip 与处理器。
 fn playback_toggle_button<D>(button: D, theme: &Theme) -> D
 where
     D: Styled + StatefulInteractiveElement,
@@ -173,8 +169,7 @@ impl Render for Controls {
                 .max_size(px(500.0))
                 .default_size(DEFAULT_CONTROLS_LEFT_WIDTH)
                 .border_width(px(0.0))
-                // deliberately uncached: this subtree went stale after shell
-                // restructures (cached replays graft the old frame)
+                // 刻意不加缓存：外壳重构后这个子树会失效（缓存重放会嫁接旧框架）
                 .child(self.info_section.clone()),
             )
             .child(self.scrubber.clone())
@@ -498,7 +493,7 @@ impl Render for Scrubber {
         let position_secs = position_ms / 1_000;
         let duration_secs = duration_ms / 1_000;
 
-        // reuse the formatted labels while the whole-second key is unchanged
+        // 整秒键没变时复用已格式化的标签
         let (position_text, duration_text, remaining_text) = self.time_labels.resolve(
             position_secs,
             duration_secs,
@@ -663,8 +658,8 @@ impl Render for SecondaryControls {
         let theme = cx.global::<Theme>();
         let volume = *self.info.volume.read(cx);
         let prev_volume = *self.info.prev_volume.read(cx);
-        // Mute-toggle decision (icon + target volume) shared with the
-        // immersive player card; the tooltips below stay local.
+        // 静音切换的判定（图标 + 目标音量）与沉浸播放卡共用；下面的 tooltip
+        // 仍留在本地。
         let (volume_target, volume_icon) = volume_toggle_target(volume, prev_volume);
         let show_queue = self.show_queue.clone();
         let show_lyrics = self.show_lyrics.clone();
@@ -724,11 +719,9 @@ impl Render for SecondaryControls {
                                 }),
                         )
                         .on_scroll_wheel(move |ev, _, cx| {
-                            // Both branches reduce to the same scale factor
-                            // (0.01666666 ≈ 1/60 of full volume per wheel
-                            // line): precise deltas arrive as pixels and are
-                            // multiplied directly, line deltas are converted
-                            // by treating one line as 0.01666666 px.
+                            // 两个分支都化归到同一个缩放系数（0.01666666 ≈ 满音量的
+                            // 每滚轮行 1/60）：精确增量以像素送达并直接相乘，
+                            // 行增量则把一行当作 0.01666666 px 来换算。
                             let delta: f64 = if ev.delta.precise() {
                                 f64::from(ev.delta.pixel_delta(px(1.0)).y) * 0.01666666
                             } else {
@@ -803,7 +796,7 @@ impl Render for SecondaryControls {
     }
 }
 
-// --- volume tooltip (merged from ui/components/volume_tooltip.rs) ---
+// --- 音量 tooltip（由 ui/components/volume_tooltip.rs 并入）---
 
 pub struct VolumeTooltip {
     volume: Entity<f64>,

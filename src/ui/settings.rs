@@ -181,7 +181,7 @@ impl SettingsSectionKind {
         }
     }
 
-    // sections that fill the content area vertically instead of scrolling
+    // 在竖直方向填满内容区、而不是滚动的那些分区
     fn fills_height(self) -> bool {
         matches!(self, Self::Equalizer)
     }
@@ -270,8 +270,7 @@ impl SettingsWindow {
         self.scroll_handle.scroll_to_top_of_item(0);
         cx.notify();
 
-        // Force a redraw to make sure that scrollbars and
-        // padding are properly updated.
+        // 强制重绘，确保滚动条与内边距被正确更新。
         self.redraw = true;
     }
 
@@ -309,8 +308,8 @@ impl Render for SettingsWindow {
             let settings = cx.global::<SettingsGlobal>();
             let scroll_handle: ScrollableHandle = scroll_handle.clone().into();
 
-            // On the first draw, total_content_height returns 0. In this case,
-            // we want to always draw padding to prevent a noticeable jitter.
+            // 首次绘制时 total_content_height 返回 0。这种情况下我们永远要画出
+            // 内边距，以防出现明显的抖动。
             settings.model.read(cx).interface.always_show_scrollbars
                 && (scroll_handle.total_content_height() <= 0.0
                     || scroll_handle.should_draw_vertical_scrollbar())
@@ -337,7 +336,7 @@ impl Render for SettingsWindow {
                         .w_full()
                         .p(px(16.0))
                         .when(scrollbar_always_visible, |div| {
-                            // 16px padding + 10px buffer
+                            // 16px 内边距 + 10px 余量
                             div.pr(px(26.0))
                         })
                         .child(content),
@@ -405,8 +404,7 @@ impl Render for SettingsWindow {
     }
 }
 
-/// Shared by the playback and KuGou settings pages: mutate
-/// `settings.playback`, persist, and redraw.
+/// 播放与酷狗设置页共用：改动 `settings.playback`、持久化并重绘。
 pub(crate) fn update_playback_settings(
     settings: &Entity<Settings>,
     cx: &mut App,

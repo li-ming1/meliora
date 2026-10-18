@@ -50,7 +50,7 @@ const LYRICS_BASE_LINE_HEIGHT: f32 = 1.5;
 const LYRICS_ACTIVE_LINE_HEIGHT: f32 = 1.65;
 /// 上下渐隐遮罩高度：掩盖滚动边缘的硬裁切，越靠面板边缘越透明。
 const LYRICS_FADE_MASK_HEIGHT: f32 = 56.0;
-/// 按曲目歌词缓存容量（LRU 淘汰）：覆盖来回切歌重访的最近曲目。
+/// 按曲目歌词缓存容量（LRU 逐出）：覆盖来回切歌重访的最近曲目。
 const LYRIC_CACHE_CAP: usize = 16;
 /// 封面取色解码尺寸：256px 对饱和度加权主色已绰绰有余（约 2.1 万个采样
 /// 点）。取色图从不绘制——`use_cache=false` 解码即弃，零 RENDER_CACHE
@@ -83,38 +83,33 @@ pub struct Lyrics {
     /// Arc 共享：面板、`lyric_cache` 与沉浸页镜像引用同一份行数据，
     /// 传递全程只付引用计数（LrcLine 含逐字 Vec，深拷贝代价可观）。
     parsed: Option<Arc<Vec<LrcLine>>>,
-    /// Bumped on every applied load (local, cached or online fetch): lets
-    /// other consumers (the immersive view) mirror `parsed` without
-    /// re-cloning it on unrelated notifies.
+    /// 每次应用加载（本地、缓存命中或在线抓取）都自增：让其他消费者（沉浸视图）
+    /// 能镜像 `parsed`，无关的 notify 不会重复克隆它。
     parsed_generation: u64,
     last_active_line: Option<usize>,
-    /// Bumped per track change; a background load only lands if its generation
-    /// still matches, so fast switches never apply stale lyrics.
+    /// 每次切歌自增；后台加载只有代际仍匹配才落地，所以快速切换绝不会应用
+    /// 过期歌词。
     load_generation: usize,
     /// 面板与沉浸页都不可见期间发生过曲目切换：隐藏时整段加载被门控跳过
     /// （每曲 1-3 个在线请求 + KRC 解密解析，或本地 sidecar 读 + 2 次 DB
     /// 查询，全是白付），只置脏；可见性观察者（面板打开 / 沉浸页激活）
     /// 补跑完整加载路径。
     load_pending: bool,
-    /// Bounded LRU cache of recently loaded lyrics keyed by track path (the
-    /// stream URL for online tracks): a back-and-forth track switch re-serves
-    /// the cached lyric instead of re-reading the sidecar files + DB queries
-    /// (or re-issuing the 1-3 online requests). 命中即续命——大库歌词面板
-    /// 往返切换时不让在屏热条目被插入顺序挤掉。Cleared when a library scan
-    /// completes (the only writer of DB lyrics). Online entries are keyed by
-    /// stream URL, so a refreshed URL for the same song fetches once more.
+    /// 有界 LRU 缓存，存最近加载的歌词，键为曲目路径（在线曲目是流 URL）：
+    /// 来回切歌时直接从缓存取回，不再重读 sidecar 文件 + DB 查询（也不再发出
+    /// 那 1-3 个在线请求）。命中即续命——大库歌词面板
+    /// 往返切换时不让在屏热条目被插入顺序挤掉。库扫描完成时清空（它是 DB
+    /// 歌词的唯一写入方）。在线条目以流 URL 为键，所以同一首歌换了新 URL
+    /// 会再抓一次。
     lyric_cache: FxHashMap<PathBuf, LyricCacheEntry>,
-    /// 由旧到新的访问序，供 LRU 淘汰；键集合与 `lyric_cache` 保持一致。
+    /// 由旧到新的访问序，供 LRU 逐出；键集合与 `lyric_cache` 保持一致。
     lyric_cache_order: Vec<PathBuf>,
-    /// Latest playback position snapshot (ms), refreshed by the position
-    /// observer; drives per-word karaoke progress.
+    /// 最新的播放位置快照（ms），由位置观察者刷新；驱动逐字卡拉OK进度。
     position_ms: u64,
     scroll_handle: ScrollHandle,
-    /// Virtualized variable-height list state for the LRC branch: only
-    /// visible+overdraw lines are built and measured per frame (doctrine §10
-    /// — off-screen lyrics must not pay render cost). Reset per track in
-    /// `apply_loaded_lyrics`. The plain-text fallback branch keeps
-    /// `scroll_handle` instead.
+    /// LRC 分支用的虚拟化变高列表状态：每帧只构建并测量「可见 + 过绘带」内的
+    /// 行（准则 §10——屏幕外的歌词不许付渲染代价）。每次切歌在
+    /// `apply_loaded_lyrics` 里重置。纯文本回退分支仍用 `scroll_handle`。
     list_state: ListState,
     follow_pending: bool,
     follow_frame_scheduled: bool,
@@ -140,12 +135,10 @@ impl Lyrics {
 
             let initial_track = current_track.read(cx).clone();
 
-            // Startup lyrics load mirrors the track-change path below: the
-            // sidecar file read plus the two DB queries must not run on the
-            // main thread while the window is being constructed. The view
-            // starts in the empty state and the result lands via notify, with
-            // the same generation guard so a fast track switch discards a
-            // stale startup load. 可见性门控：面板与沉浸页初始都关闭时整段
+            // 启动时的歌词加载照搬下面的切歌路径：sidecar 文件读加上两次 DB
+            // 查询绝不能在主窗口构造期间跑在主线程上。视图以空状态启动，
+            // 结果经 notify 落地，并用同一个代际守卫让快速切歌丢弃迟到的
+            // 过期启动加载。可见性门控：面板与沉浸页初始都关闭时整段
             // 加载白付——只置脏，打开时由可见性观察者补跑。
             let startup_visible = *cx.global::<Models>().show_lyrics.read(cx)
                 || *cx.global::<Models>().immersive.read(cx)
@@ -229,10 +222,9 @@ impl Lyrics {
                     let idx = parsed.partition_point(|l| l.time_ms <= pos_ms);
                     let new_line = if idx == 0 { None } else { Some(idx - 1) };
                     if new_line != this.last_active_line {
-                        // The deactivated line keeps its last measured height
-                        // in the list's SumTree once it scrolls out of the
-                        // overdraw band; remeasure it so the total height (and
-                        // the scrollbar) doesn't drift by one emphasis delta.
+                        // 某行停用后一旦滚出过绘带，它在列表 SumTree 里会保留
+                        // 最后一次测量到的高度；重新测量它，总高度（以及滚动条）
+                        // 才不会漂移一个 emphasis 档位差。
                         if let Some(prev) = this.last_active_line {
                             this.list_state.remeasure_items(prev..prev + 1);
                         }
@@ -278,10 +270,9 @@ impl Lyrics {
             })
             .detach();
 
-            // A library scan is the only writer of DB lyrics: drop the
-            // per-track lyric cache when one completes so re-scanned lyrics
-            // are re-read instead of served stale from the cache (mirrors
-            // the album-cache reset in `build_models`).
+            // 库扫描是 DB 歌词的唯一写入方：一次扫描完成时丢弃按曲目缓存的
+            // 歌词，让重扫到的歌词被重新读取，而不是从缓存里取到过期内容
+            // （与 `build_models` 里的专辑缓存重置同理）。
             let scan_state = cx.global::<Models>().scan_state.clone();
             cx.observe(&scan_state, |this, scan_event, cx| {
                 if matches!(
@@ -296,8 +287,7 @@ impl Lyrics {
             })
             .detach();
 
-            // Content starts in the empty state (same rendering as the
-            // track-switch in-flight state); lyrics land off-thread above.
+            // 内容以空状态起步（渲染同切歌已在途的状态）；歌词在上面于线程外落地。
             let mut this = Self {
                 content: None,
                 parsed: None,
@@ -326,12 +316,10 @@ impl Lyrics {
         })
     }
 
-    /// Parsed lyric lines of the current track, for consumers that render
-    /// lyrics themselves (the immersive view mirrors this instead of loading
-    /// a second copy — online fetches included). Arc-shared with `self.parsed`
-    /// and the per-track cache: cloning is a refcount bump, no line data is
-    /// copied. Pair with [`Self::parsed_generation`] to detect changes
-    /// cheaply.
+    /// 当前曲目已解析的歌词行，供自己渲染歌词的消费者使用（沉浸视图镜像这份
+    /// 而不是二次加载——含在线抓取）。与 `self.parsed` 及按曲目缓存 Arc 共享：
+    /// 克隆只是一次引用计数自增，不复制任何行数据。配合
+    /// [`Self::parsed_generation`] 廉价地检测变化。
     pub(crate) fn parsed_lines(&self) -> Option<Arc<Vec<LrcLine>>> {
         self.parsed.clone()
     }
@@ -342,15 +330,13 @@ impl Lyrics {
         self.accent
     }
 
-    /// Generation counter bumped on every applied load; see
-    /// [`Self::parsed_lines`].
+    /// 每次应用加载都自增的代际计数；见 [`Self::parsed_lines`]。
     pub(crate) fn parsed_generation(&self) -> u64 {
         self.parsed_generation
     }
 
-    /// Loads lyrics for `path` off the main thread (startup and track-switch
-    /// path): sidecar read via tokio fs, DB via the pool directly, no
-    /// `block_on` on the main thread. Shared with the immersive view.
+    /// 在主线程之外加载 `path` 的歌词（启动与切歌路径）：sidecar 走 tokio fs
+    /// 读，DB 直接走连接池，主线程上没有 `block_on`。与沉浸视图共用。
     pub(crate) async fn load_lyrics_off_thread(
         pool: &sqlx::SqlitePool,
         path: std::path::PathBuf,
@@ -385,10 +371,9 @@ impl Lyrics {
         (content, parsed)
     }
 
-    /// Runs [`Self::load_lyrics_off_thread`] on the shared runtime and joins
-    /// the result (shared by the startup and track-change paths). A `None`
-    /// path (no current track) short-circuits to the empty pair, and so does
-    /// a panicked or failed join — the UI then stays in the empty state.
+    /// 在共享运行时上跑 [`Self::load_lyrics_off_thread`] 并等待结果（启动与
+    /// 切歌路径共用）。`None` 路径（没有当前曲目）短路返回空对，panic 或
+    /// join 失败同样如此——UI 随后保持空状态。
     async fn load_lyrics_via_runtime(
         pool: sqlx::SqlitePool,
         path: Option<PathBuf>,
@@ -404,7 +389,7 @@ impl Lyrics {
             .unwrap_or((None, None))
     }
 
-    /// Resets lyric display state for a newly selected track.
+    /// 为新选中的曲目重置歌词显示状态。
     #[cfg_attr(not(feature = "kugou"), allow(dead_code))]
     fn reset_track_state(&mut self) {
         self.last_active_line = None;
@@ -421,8 +406,8 @@ impl Lyrics {
         });
     }
 
-    /// Applies a fully loaded lyric (cache hit or background load result) as
-    /// the current track's lyric state and notifies the view.
+    /// 把一份加载完成的歌词（缓存命中或后台加载结果）应用为当前曲目的歌词
+    /// 状态，并通知视图。
     fn apply_loaded_lyrics(
         &mut self,
         content: Option<String>,
@@ -440,23 +425,21 @@ impl Lyrics {
         self.scroll_follow.cancel();
         self.line_emphasis_start_values = vec![0.0; line_count];
         self.line_emphasis_target_values = vec![0.0; line_count];
-        // A track change is a fresh list: rebuilt with a uniform height hint
-        // so the scrollbar is approximately right before the first paint
-        // converges it. `reset` also returns the view to the top, which is
-        // the pre-existing per-track scroll behavior.
+        // 切歌等于一张新列表：用统一的高度提示重建，好让滚动条在首次绘制
+        // 收敛它之前大致正确。`reset` 同时把视图送回顶部，这本就是原有的
+        // 按曲目滚动行为。
         self.list_state
             .reset_with_uniform_height(line_count, px(60.0));
         if self.parsed.is_none() {
-            // plain-text fallback branch still scrolls via `scroll_handle`
+            // 纯文本回退分支仍然经 `scroll_handle` 滚动
             self.scroll_handle.set_offset(gpui::Point {
                 x: px(0.0),
                 y: px(0.0),
             });
         } else {
-            // Seed the active line from the live position: a pending load
-            // applied while paused (panel opened after a hidden track
-            // change) gets no position tick, so leaving the list at line 0
-            // would show the wrong lyric until playback resumes.
+            // 用实时位置给活动行播种：在暂停期间应用的待加载歌词（隐藏期间
+            // 切了歌之后才打开面板）等不到位置 tick，若把列表留在第 0 行
+            // 就会一直显示错的歌词，直到恢复播放。
             let position_ms = *cx.global::<PlaybackInfo>().position.read(cx);
             self.position_ms = position_ms;
             let parsed = self
@@ -495,8 +478,8 @@ impl Lyrics {
         hit
     }
 
-    /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
-    /// oldest entry past [`LYRIC_CACHE_CAP`].
+    /// 把加载好的歌词插入有界 FIFO 缓存，超过 [`LYRIC_CACHE_CAP`] 时逐出最旧
+    /// 的条目。
     fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Arc<Vec<LrcLine>>>)) {
         // 在线"无歌词"不再裸跳过而是带 TTL 负缓存（见 LYRIC_NEGATIVE_TTL）；
         // 本地路径的空结果仍按正结果缓存——sidecar/DB 本来就没有，重访
@@ -529,10 +512,9 @@ impl Lyrics {
         }
     }
 
-    /// Path string of the track the playback mirror says is playing now: the
-    /// online fetch paths compare it against the path they were dispatched
-    /// with, so a stale response for a track the user already left behind is
-    /// dropped instead of overwriting the current lyric.
+    /// 播放镜像所指「此刻正在播放」曲目的路径字符串：在线抓取路径会拿它与
+    /// 自己出发时的路径比对，于是用户已经离开的那首歌的陈旧响应会被丢弃，
+    /// 而不是覆盖当前歌词。
     #[cfg_attr(not(feature = "kugou"), allow(dead_code))]
     fn current_track_path(cx: &App) -> Option<String> {
         cx.global::<PlaybackInfo>()
@@ -546,8 +528,8 @@ impl Lyrics {
     /// 同一提取器）。取色图从不绘制：`use_cache=false` 解码即弃——零
     /// RENDER_CACHE 条目、零图集瓦片，256px 像素缓冲在提取任务结束时
     /// 就地释放；键未变化时直接返回，重复触发无成本。
-    /// Any consumer became visible (side panel, immersive view, desktop
-    /// lyrics window): fill in what the hidden period skipped.
+    /// 任一消费者变为可见（侧栏面板、沉浸视图、桌面歌词窗口）：把隐藏期间
+    /// 跳过的那些活补上。
     pub(crate) fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         self.resolve_accent(cx);
         self.load_pending_lyrics(cx);
@@ -622,10 +604,9 @@ impl Lyrics {
         .detach();
     }
 
-    /// Applies a fetched online lyric to the current track and files it in
-    /// the per-track cache. The caller has already confirmed via
-    /// [`Self::current_track_path`] that the user hasn't switched tracks;
-    /// `expected` is the path the fetch was started for.
+    /// 把抓取到的在线歌词应用为当前曲目的歌词并存进按曲目缓存。调用方已经用
+    /// [`Self::current_track_path`] 确认用户没切歌；`expected` 是发起这次抓取时
+    /// 的路径。
     #[cfg_attr(not(feature = "kugou"), allow(dead_code))]
     fn apply_online_lyrics(
         &mut self,
@@ -661,15 +642,12 @@ impl Lyrics {
             .as_ref()
             .is_some_and(|t| crate::ui::availability::is_online_path(t.get_path()))
         {
-            // Invalidate in-flight local (sidecar/DB) loads: the
-            // online fetch below is guarded by the current-path
-            // check, but the local loads are guarded by this
-            // generation.
+            // 让已在途的本地（sidecar/DB）加载失效：下面的在线抓取由「当前路径」
+            // 检查守护，而本地加载由这个代际守护。
             self.load_generation += 1;
 
-            // online stream: dispatch to the source that owns it. An online
-            // path that matches no registry falls through to the local
-            // lyrics handling below.
+            // 在线流：派给持有它的那个音源。没匹配上任何注册表的在线路径会
+            // 落到下面的本地歌词处理。
             let path = track.as_ref().map(|t| t.get_path().as_path());
             if path
                 .and_then(crate::ui::kugou::online_track_matching_path)
@@ -681,18 +659,16 @@ impl Lyrics {
             }
         }
 
-        // Clear synchronously so a fast switch never shows the previous
-        // track's lines, then resolve the sidecar/DB off the main
-        // thread - the sync path did a file read plus two DB queries
-        // on the UI thread per track change.
+        // 同步清空，好让快速切换绝不会露出上一首的行；随后在主线程之外解析
+        // sidecar/DB——原来的同步路径每次切歌都要在 UI 线程上做一趟文件读加
+        // 两次 DB 查询。
         self.reset_track_state();
         self.last_user_interaction_at = None;
         self.load_generation += 1;
         let generation = self.load_generation;
 
-        // Bounded per-track cache: a back-and-forth switch to a
-        // recently played track re-serves the loaded lyric instead of
-        // re-reading the sidecar files + DB queries.
+        // 有界的按曲目缓存：切回最近播过的歌时直接从缓存取回已加载的歌词，
+        // 不再重读 sidecar 文件 + DB 查询。
         if let Some(loaded) = track
             .as_ref()
             .and_then(|t| self.cached_lyrics(t.get_path()))
@@ -722,15 +698,12 @@ impl Lyrics {
         .detach();
     }
 
-    /// Fetches lyrics for the online (KuGou) track currently playing at `path`
-    /// and swaps them in. Guarded so a stale response for a previous track
-    /// doesn't overwrite the current one.
+    /// 抓取 `path` 处正在播放的在线（酷狗）曲目歌词并换上。带守卫，上一首
+    /// 的陈旧响应不会覆盖当前曲目。
     #[cfg(feature = "kugou")]
     fn fetch_online_lyrics(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
-        // Bounded per-track cache: a back-and-forth switch to a recently
-        // played track skips the search + fetch network round-trips (the
-        // stream-map lookup below only feeds that fetch). A fresh negative
-        // entry (confirmed lyric-less) skips it just the same.
+        // 有界的按曲目缓存：切回最近播过的歌时跳过搜索 + 抓取的网络往返
+        // （下面的流映射查询只为这次抓取服务）。已确认无歌词的新负条目同样跳过。
         if let Some(loaded) = path.and_then(|key| self.cached_lyrics(key)) {
             self.apply_loaded_lyrics(loaded.0, loaded.1, cx);
             return;
@@ -744,10 +717,9 @@ impl Lyrics {
         cx.spawn(async move |this, cx| {
             let lyric = fetch_online_lyric(&track).await;
 
-            // Parse off the UI thread: KRC is two full-text passes plus JSON
-            // block deserialization, and the fetch above already runs on the
-            // runtime so this just stays there instead of dropping back to
-            // the main thread for the parse.
+            // 在 UI 线程之外解析：KRC 是两趟全文扫描加 JSON 块反序列化，而
+            // 上面的抓取本就跑在运行时上，所以这里继续留在那里，不必为了
+            // 解析回到主线程。
             let (parsed, content) = crate::RUNTIME
                 .spawn(async move {
                     let parsed = match &lyric {
@@ -763,7 +735,7 @@ impl Lyrics {
                 .unwrap_or_default();
 
             this.update(cx, |this, cx| {
-                // ignore the result if the user has already switched tracks
+                // 用户已经切歌就忽略这次结果
                 if Self::current_track_path(cx) != expected {
                     return;
                 }
@@ -856,12 +828,10 @@ impl Render for Lyrics {
             let this_entity = cx.entity();
             let (fade_top, fade_bottom) = fade_masks();
 
-            // Virtualized variable-height list: `render_item` runs only for
-            // the visible + overdraw lines, so a full-track lyric no longer
-            // rebuilds every row element at karaoke repaint rate (doctrine
-            // §10). View state is read through the entity handle - by the
-            // time the list lays items out (paint phase) the render lease on
-            // this view is already released.
+            // 虚拟化变高列表：`render_item` 只对「可见 + 过绘」的行运行，于是
+            // 整首歌词不再按卡拉OK重绘频率重建每一行的元素（准则 §10）。
+            // 视图状态经实体句柄读取——等到列表给条目排版时（paint 阶段），
+            // 本视图的 render lease 早已释放。
             let lyrics_list = list(self.list_state.clone(), move |idx, _window, cx| {
                 let this = this_entity.read(cx);
                 let Some(line) = this.parsed.as_ref().and_then(|parsed| parsed.get(idx)) else {
@@ -869,8 +839,7 @@ impl Render for Lyrics {
                 };
                 let time_ms = line.time_ms;
                 if line.text.is_empty() {
-                    // blank interlude lines are clickable too, so seeking to
-                    // the start of an instrumental section works
+                    // 空白的间奏行同样可点击，这样跳到纯器乐段开头也能生效
                     div()
                         .id(("lyric", idx))
                         .on_click(move |_, _, cx| {
@@ -886,20 +855,16 @@ impl Render for Lyrics {
                     let is_active = emphasis > 0.0 || Some(idx) == this.last_active_line;
                     let highlight = this.accent.unwrap_or(normal);
                     let text_color = lerp_color(muted, highlight, emphasis);
-                    // Geometry (font size, line height, padding) must move on
-                    // a discrete grid: glyph atlas tiles are keyed by the
-                    // exact f32 font size AND the glyph origin's fractional
-                    // subpixel phase (RenderGlyphParams), and glyph tiles are
-                    // never evicted. A continuous emphasis interpolation used
-                    // to rasterize every intermediate size of every visible
-                    // line onto fresh 4 MB subpixel pages that stayed resident
-                    // forever — the 6.5 h session leak of 2026-09-27 (non_heap
-                    // +2.5 MB/min while the lyrics panel was active, all of it
-                    // glyph pages; same-day probe: 510 → 12 213 sub tiles in
-                    // minutes). Quantized geometry repeats the same glyph
-                    // origins, so the tile set stays bounded by the charset ×
-                    // grid levels. Color, scroll timing and opacity still
-                    // animate continuously.
+                    // 几何（字号、行高、内边距）必须走离散网格：字形图集瓦片以
+                    // 精确 f32 字号「加上」字形原点的亚像素小数相位
+                    // （RenderGlyphParams）为键，而字形瓦片永不逐出。连续的
+                    // emphasis 插值过去会把每条可见行的每个中间字号重光栅化到
+                    // 全新的 4 MB subpixel 页上并永久驻留——即 2026-09-27 那次
+                    // 6.5 h 会话泄漏（歌词面板活动期 non_heap +2.5 MB/min，
+                    // 全是字形页；同日探针：几分钟内 sub 瓦片 510 → 12 213）。
+                    // 量化后的几何重复用同样的字形原点，于是瓦片集合被
+                    // 「字符集 × 网格档位」封住上界。颜色、滚动时序与不透明度
+                    // 照旧连续动画。
                     let snapped_emphasis = (emphasis * 3.0).round() / 3.0;
                     let font_size = lerp(
                         LYRICS_BASE_TEXT_SIZE,
@@ -913,7 +878,7 @@ impl Render for Lyrics {
                         .id(("lyric", idx))
                         .on_click(move |_, _, cx| {
                             let interface = cx.global::<PlaybackInterface>();
-                            // add a small offset to make sure it goes to the next frame
+                            // 加一点偏移，确保它落到下一帧
                             interface.seek(time_ms as f64 / 1000_f64 + 0.1);
                         })
                         .cursor_pointer()
@@ -1134,9 +1099,8 @@ impl Lyrics {
             return FollowTarget::PendingLayout;
         }
 
-        // `bounds_for_item` is None for lines above the scroll top, so a
-        // newly active line the user has scrolled past would pend forever:
-        // reveal it immediately instead of animating in from off-screen.
+        // 滚动顶部之上的行 `bounds_for_item` 返回 None，所以用户已经滚过去的
+        // 新活动行会一直挂着不办：直接 reveal 它，而不是从屏幕外动画进来。
         let (Some(above), Some(below)) = (
             self.list_state.item_is_above_viewport(active_line),
             self.list_state.item_is_below_viewport(active_line),
@@ -1144,13 +1108,10 @@ impl Lyrics {
             return FollowTarget::PendingLayout;
         };
         if above || below {
-            // Jump most of the distance (reveal aligns the line to the
-            // viewport edge), then keep following: once the line is inside
-            // the viewport and measured, the next frame takes the smooth
-            // path below and settles it exactly at the center. Settling for
-            // `NoScrollNeeded` here would leave the active line pinned to
-            // the edge forever - the next line would then be wholly outside
-            // the viewport again and reveal right back.
+            // 先跳过大半距离（reveal 把该行对齐到视口边缘），随后继续跟随：
+            // 一旦这行进入视口并被测量，下一帧就走下面的平滑路径把它精确落到
+            // 中心。在这里因为 `NoScrollNeeded` 就收手会让活动行永远钉在边缘——
+            // 下一行于是又完全在视口之外，又被 reveal 拉回来。
             self.list_state.scroll_to_reveal_item(active_line);
             return FollowTarget::PendingLayout;
         }
@@ -1161,11 +1122,9 @@ impl Lyrics {
 
         let max_scroll_top = self.list_state.max_offset_for_scrollbar().y.max(px(0.0));
         let current_scroll_top = -self.list_state.scroll_px_offset_for_scrollbar().y;
-        // ListState reports window coordinates, so the item's on-screen
-        // position is already shifted by the current scroll: convert it back
-        // to content space before aiming for the viewport center. (The old
-        // ScrollHandle layout reported unscrolled content coordinates, which
-        // is why the pre-virtualization formula had no current-scroll term.)
+        // ListState 报的是窗口坐标，所以条目的屏幕位置已被当前滚动偏移过：
+        // 瞄准视口中心前先把它换算回内容坐标。（旧的 ScrollHandle 布局报的是
+        // 未滚动的内容坐标，这正是虚拟化前的公式里没有当前滚动项的原因。）
         let item_content_y = current_scroll_top + (item_bounds.origin.y - viewport.origin.y);
         let target_scroll_top = (item_content_y + item_bounds.size.height / 2.0
             - viewport.size.height / 2.0)
@@ -1228,8 +1187,7 @@ impl Lyrics {
         true
     }
 
-    /// Whether any line's emphasis start value still differs from its
-    /// target: decides whether the frame loop must keep repainting.
+    /// 是否还有某一行的 emphasis 起始值与目标值不同：决定帧循环要不要继续重绘。
     fn line_emphasis_has_change(&self) -> bool {
         self.line_emphasis_start_values
             .iter()
@@ -1271,12 +1229,10 @@ impl Lyrics {
             .is_some_and(|at| at.elapsed() < LYRICS_USER_INTERACTION_TIMEOUT)
     }
 
-    // During the interaction window the wheel/click events drive the
-    // repaints themselves and `scroll_follow` is cancelled, so a pending
-    // re-follow must not keep the frame loop alive: it is consumed by the
-    // first frame after the window expires (the next line change or
-    // karaoke position tick), and counting it unconditionally here would
-    // idle-spin the loop for the whole 2s window after every interaction.
+    // 交互窗口期间由滚轮/点击事件自己驱动重绘，且 `scroll_follow` 已取消，
+    // 所以待处理的重新跟随绝不能让帧循环空转：它由窗口过期后的第一帧消费
+    // （下一次行变化或卡拉OK位置 tick），无条件把它计入会让每次交互之后
+    // 整个 2s 窗口都在空转。
     fn needs_animation_frame(&self) -> bool {
         self.line_emphasis_started_at.is_some()
             || (self.follow_pending && !self.has_recent_user_interaction())

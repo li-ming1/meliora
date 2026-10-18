@@ -13,9 +13,8 @@ const ISSUES_URL: &str = "https://github.com/li-ming1/meliora/issues";
 const SOURCE_URL: &str = "https://github.com/li-ming1/meliora";
 const LICENSE_URL: &str = "https://choosealicense.com/licenses/apache-2.0/";
 
-/// "New version available" / "restart to apply" line under the version
-/// string, rendered from the updater global — the dialog is a `RenderOnce`
-/// rebuilt on every open, so it always shows the freshest state.
+/// 版本字符串下方的「有新版本」/「重启以应用」那一行，由更新器 global 渲染——
+/// 这个对话框是 `RenderOnce`，每次打开都重建，所以它显示的总是最新状态。
 #[cfg(feature = "online")]
 fn update_badge(cx: &gpui::App, link_color: gpui::Rgba) -> Option<gpui::AnyElement> {
     use crate::updater::{UpdateStatus, UpdaterGlobal};
