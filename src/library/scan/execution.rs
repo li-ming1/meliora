@@ -160,6 +160,12 @@ pub(super) struct ScanExecution<'a> {
     scanned: u64,
     processed: u64,
     skipped_duplicate: u64,
+    /// 本次扫描真正落到库表的变更数（每个成功处理的文件 + 每次路径搬迁）。
+    /// 与 `scanned` 的差别是它把 duplicate-folder 也算进来，因此是"表内容可
+    /// 能变了"的保守上界——扫描完成扇出（可用性整库重算 + 专辑/缩略图缓存
+    /// 清空 + 三张表重读）值不值得加"零变更即跳过"的门，只能靠这个数在真实
+    /// 会话里的分布来判（AGENTS.md §1 先测量后优化），故随完成日志打点。
+    mutations: u64,
     decode_failures: DecodeFailureCounters,
     artist_matcher: ArtistMatcher,
     tx: Option<Transaction<'static, Sqlite>>,
@@ -201,6 +207,7 @@ impl<'a> ScanExecution<'a> {
             scanned: 0,
             processed: 0,
             skipped_duplicate: 0,
+            mutations: 0,
             decode_failures: DecodeFailureCounters::default(),
             artist_matcher: ArtistMatcher::new(),
             tx,
@@ -344,6 +351,7 @@ impl<'a> ScanExecution<'a> {
                             // changes
                             self.pending_commit.push((path, timestamp));
                             self.items_in_tx += 1;
+                            self.mutations += 1;
                             match outcome {
                                 TrackWriteOutcome::Written => self.scanned += 1,
                                 TrackWriteOutcome::SkippedDuplicateFolder => {
@@ -388,6 +396,7 @@ impl<'a> ScanExecution<'a> {
                         .send(ScanEvent::PlaylistsUpdated(updated));
                 }
                 self.pending_relocations.push((old, new, timestamp));
+                self.mutations += 1;
             }
             Some(Err(error)) => {
                 error!(
@@ -705,6 +714,17 @@ impl<'a> ScanExecution<'a> {
         if recovered {
             self.context.pending_start.get_or_insert(false);
         }
+        // 完成扇出的变化门判据打点（字段含义见 `ScanExecution::mutations`）：
+        // mutations=0 且未删轨的完成 = 零改动扫描，此时 models/library 侧的
+        // 整库可用性重算 + 缓存清空 + 三表重读全是白做。攒够真实分布再决定
+        // 是否加门，不在没有数据的情况下改失效路径（§1/§39）。
+        info!(
+            mutations = self.mutations,
+            tracks_deleted = self.context.tracks_deleted,
+            targeted = matches!(self.context.mode, ScanMode::Targeted { .. }),
+            watching,
+            "[scan] completion fanout input"
+        );
         let _ = self
             .context
             .event_tx

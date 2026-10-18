@@ -54,16 +54,19 @@ pub async fn examine_folder_art(
     }
 
     // only disc 1, 0, or unknown
-    let claims: Vec<(i64, String)> = sqlx::query_as(include_str!(
+    let claims: Vec<(i64, String, i64)> = sqlx::query_as(include_str!(
         "../../../queries/scan/list_album_path_claims.sql"
     ))
     .fetch_all(pool)
     .await?;
     let mut claims_by_dir: FxHashMap<String, Vec<i64>> = FxHashMap::default();
     let mut claim_counts: FxHashMap<i64, usize> = FxHashMap::default();
-    for (album_id, path) in claims {
+    let mut incumbent_sources: FxHashMap<i64, i64> = FxHashMap::default();
+    for (album_id, path, artwork_source) in claims {
         claims_by_dir.entry(path).or_default().push(album_id);
         *claim_counts.entry(album_id).or_default() += 1;
+        // every album_path row of one album carries the album's own source
+        incumbent_sources.insert(album_id, artwork_source);
     }
 
     let mut conn = pool.acquire().await?;
@@ -101,6 +104,18 @@ pub async fn examine_folder_art(
         }
 
         for &album_id in album_ids {
+            // Being in `examined` sends the album through finalize (up to five
+            // statements per album, on every scan). Mark it only where this pass
+            // can change an answer: art found now, or a folder incumbent that
+            // may have vanished with its cover file. An embedded incumbent
+            // (source 0) in a cover-less directory can only re-vote the majority
+            // this scan already proved unchanged - and for legacy migrated rows
+            // (album art present, tracks without `art_hash`) that re-vote
+            // answers "no art" and clears the album, so skipping is the safer
+            // half of the same no-op.
+            if art.is_none() && incumbent_sources.get(&album_id).copied().unwrap_or(0) == 0 {
+                continue;
+            }
             examined.insert(album_id);
 
             if let Some(art) = &art {

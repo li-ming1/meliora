@@ -186,7 +186,7 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
             };
 
             let span = tracing::debug_span!("import_playlist", playlist_id, path = %path.display());
-            let ids: Vec<i64> = parse_m3u(File::open(path).await?)
+            let mut ids: Vec<i64> = parse_m3u(File::open(path).await?)
                 .map(|result| {
                     let pool = pool.clone();
                     async move {
@@ -198,6 +198,27 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
                             }
                         };
                         let location = entry.location.clone();
+                        // 阶段一：只做索引化精确路径匹配（`track.location` 上有 UNIQUE
+                        // 隐式索引，EXPLAIN 为 SEARCH … USING COVERING INDEX）。原实现
+                        // 单条查询把精确匹配与前导通配 LIKE 放在同一个顶层 OR 里，
+                        // SQLite 因此整体放弃索引 → 计划为 `SCAN t`，即每条 M3U 曲目一次
+                        // 全表扫描：按 100k 实测标尺（`list_all_tracks` 283ms）2000 行的
+                        // 导入要数百秒，且占满 3 条连接池，饿住行预取那侧 UI 线程的
+                        // `block_on`（见 queries/playlist/lookup_track_by_location.sql）。
+                        let exact_query =
+                            include_str!("../../queries/playlist/lookup_track_by_location.sql");
+                        let exact_hit = sqlx::query_scalar::<Sqlite, i64>(exact_query)
+                            .bind(entry.location.to_string_lossy().into_owned())
+                            .fetch_optional(&pool)
+                            .await
+                            .ok()
+                            .flatten();
+                        if let Some(id) = exact_hit {
+                            return Some(id);
+                        }
+
+                        // 阶段二：仅未命中的少数条目才走既有的模糊匹配。精确匹配本就是
+                        // 原 OR 的第一支，所以命中集严格不劣化。
                         let lookup_query = include_str!("../../queries/playlist/lookup_track.sql");
                         match sqlx::query_scalar::<Sqlite, i64>(lookup_query)
                             .bind(entry.location.to_string_lossy().into_owned())
@@ -240,6 +261,13 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
                 return anyhow::Ok(false);
             }
 
+            // 保序去重：同一曲目在 M3U 里出现两次很常见（列两遍，或相对/绝对路径解析到
+            // 同一 track），而 `playlist_item(playlist_id, track_id)` 是唯一索引、插入用
+            // 的是普通 INSERT——重复项会让整批导入在**所有查询都跑完之后**因约束冲突
+            // 回滚，用户看到的就是"导入失败"。
+            let mut seen = rustc_hash::FxHashSet::default();
+            ids.retain(|id| seen.insert(*id));
+
             let mut tx = pool.begin().await?;
 
             let reset_query = include_str!("../../queries/playlist/empty_playlist.sql");
@@ -280,4 +308,121 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
         })
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{create_test_pool, insert_metadata, track_metadata};
+    use sqlx::Row as _;
+
+    const EXACT_SQL: &str = include_str!("../../queries/playlist/lookup_track_by_location.sql");
+    // sqlx 0.9 禁止运行期拼接的 SQL 串，故在编译期把 EXPLAIN 前缀与查询文件拼成静态串
+    // （`concat!` 接受 `include_str!`）。
+    const EXPLAIN_EXACT: &str = concat!(
+        "EXPLAIN QUERY PLAN ",
+        include_str!("../../queries/playlist/lookup_track_by_location.sql")
+    );
+    const FUZZY_SQL: &str = include_str!("../../queries/playlist/lookup_track.sql");
+
+    async fn seed_one(pool: &SqlitePool, path: &camino::Utf8Path) -> i64 {
+        let mut conn = pool.acquire().await.unwrap();
+        insert_metadata(
+            &mut conn,
+            &track_metadata("Album A", "Artist B", "Song C", 3),
+            path,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        sqlx::query_scalar::<_, i64>("SELECT id FROM track WHERE location = ?")
+            .bind(path.as_str())
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// 两阶段解析的等价性与计划形状回归（2026-10-17 修 `SCAN t` 时钉下）：
+    /// 阶段一必须命中索引、且与原模糊查询在精确路径命中时给出同一个 id；
+    /// 路径变了的时候原模糊分支仍要能靠标题找回。
+    #[tokio::test]
+    async fn m3u_lookup_prefers_indexed_exact_location() {
+        let (dir, pool) = create_test_pool("meliora-m3u-lookup").await;
+        let path = dir.utf8_join("song.flac");
+        let id = seed_one(&pool, &path).await;
+
+        let exact: Option<i64> = sqlx::query_scalar::<Sqlite, i64>(EXACT_SQL)
+            .bind(path.as_str())
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert_eq!(exact, Some(id), "阶段一必须解析出灌入的曲目");
+
+        let stem = format!("%{}%", path.file_stem().unwrap());
+        let fuzzy_same: Option<i64> = sqlx::query_scalar::<Sqlite, i64>(FUZZY_SQL)
+            .bind(path.as_str())
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<u32>)
+            .bind(&stem)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert_eq!(exact, fuzzy_same, "精确命中时两阶段与原查询必须同解");
+
+        // 路径不同（M3U 记录的是旧位置）：阶段一未命中，模糊分支按标题找回。
+        let fuzzy_moved: Option<i64> = sqlx::query_scalar::<Sqlite, i64>(FUZZY_SQL)
+            .bind("/nowhere/song.flac")
+            .bind("Song C")
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<u32>)
+            .bind("%song%")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert_eq!(fuzzy_moved, Some(id), "模糊回退必须仍能解析同一曲目");
+
+        let rows = sqlx::query(EXPLAIN_EXACT).fetch_all(&pool).await.unwrap();
+        let detail: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.try_get::<String, _>("detail").ok())
+            .collect();
+        let joined = detail.join(" | ");
+        assert!(
+            joined.contains("USING") && !joined.contains("SCAN"),
+            "阶段一必须走索引查找，实际计划：{joined}"
+        );
+    }
+
+    /// `playlist_item(playlist_id, track_id)` 是唯一索引而导入用普通 INSERT，
+    /// 所以导入侧的保序去重不是可选优化：少了它，含重复曲目的 M3U 会在全部
+    /// 查询跑完之后因约束冲突让整批事务回滚。
+    #[tokio::test]
+    async fn duplicate_track_ids_would_violate_the_playlist_unique_index() {
+        let (dir, pool) = create_test_pool("meliora-m3u-dup").await;
+        let path = dir.utf8_join("song.flac");
+        let id = seed_one(&pool, &path).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let first = sqlx::query(include_str!("../../queries/playlist/add_track.sql"))
+            .bind(1_i64)
+            .bind(id)
+            .execute(&mut *conn)
+            .await;
+        assert!(first.is_ok(), "首次插入应成功");
+
+        let second = sqlx::query(include_str!("../../queries/playlist/add_track.sql"))
+            .bind(1_i64)
+            .bind(id)
+            .execute(&mut *conn)
+            .await;
+        assert!(
+            second.is_err(),
+            "重复曲目必须撞唯一索引——证明导入侧去重是必需项"
+        );
+    }
 }

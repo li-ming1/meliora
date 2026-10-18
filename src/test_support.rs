@@ -1026,4 +1026,367 @@ mod scale_probe {
         assert_eq!(tracks_n as usize, TRACKS);
         assert_eq!(albums_n as usize, ALBUMS);
     }
+
+    /// 排序路径 100k 实测 + 候选索引对照实验。先量现状（第十二轮的 SQL 审计显示
+    /// 这批查询的计划是 `SCAN` + `USE TEMP B-TREE FOR ORDER BY`），再在**同一个库**
+    /// 里建候选索引复量，并打印建索引本身的耗时（它就是将来迁移的成本）。
+    /// 索引要不要进 migrations，只由这张前后对照表决定（§1/§37/§38）。
+    /// 执行计划由 python 侧对同一批 SQL 跑 EXPLAIN 复核，不在此处重复。
+    #[tokio::test]
+    #[ignore = "scale probe: ~10 min fill + sort A/B, explicit run only"]
+    async fn sort_paths_at_100k_with_index_experiment() {
+        const SORTS: &[(&str, &str)] = &[
+            (
+                "track title asc",
+                include_str!("../queries/library/find_tracks_title_asc.sql"),
+            ),
+            (
+                "track title desc",
+                include_str!("../queries/library/find_tracks_title_desc.sql"),
+            ),
+            (
+                "track length asc",
+                include_str!("../queries/library/find_tracks_length_asc.sql"),
+            ),
+            (
+                "track number asc",
+                include_str!("../queries/library/find_tracks_number_asc.sql"),
+            ),
+            (
+                "track album asc",
+                include_str!("../queries/library/find_tracks_album_asc.sql"),
+            ),
+            (
+                "track artist asc (已判定接受)",
+                include_str!("../queries/library/find_tracks_artist_asc.sql"),
+            ),
+            (
+                "album title asc (已是有序索引扫描)",
+                include_str!("../queries/library/find_albums_title_asc.sql"),
+            ),
+            (
+                "album release asc",
+                include_str!("../queries/library/find_albums_release_asc.sql"),
+            ),
+            (
+                "album label asc",
+                include_str!("../queries/library/find_albums_label_asc.sql"),
+            ),
+            (
+                "album catnum asc",
+                include_str!("../queries/library/find_albums_catnum_asc.sql"),
+            ),
+            (
+                "album artist asc",
+                include_str!("../queries/library/find_albums_artist_asc.sql"),
+            ),
+            (
+                "artist name asc",
+                include_str!("../queries/library/find_artists_name_asc.sql"),
+            ),
+        ];
+
+        // 候选索引：与第十二轮 SQL 审计里"排序键全在本表内"的 6 组一一对应。
+        const CANDIDATES: &[(&str, &str)] = &[
+            (
+                "bench_track_title",
+                "CREATE INDEX bench_track_title ON track(title_sortable, album_id, location COLLATE NOCASE)",
+            ),
+            (
+                "bench_track_duration",
+                "CREATE INDEX bench_track_duration ON track(duration)",
+            ),
+            (
+                "bench_track_discnum",
+                "CREATE INDEX bench_track_discnum ON track(disc_number, track_number)",
+            ),
+            (
+                "bench_album_release_title",
+                "CREATE INDEX bench_album_release_title ON album(release_date, title_sortable COLLATE NOCASE)",
+            ),
+            (
+                "bench_album_label",
+                "CREATE INDEX bench_album_label ON album(label COLLATE NOCASE, catalog_number, release_date)",
+            ),
+            (
+                "bench_album_catnum",
+                "CREATE INDEX bench_album_catnum ON album(catalog_number COLLATE NOCASE, release_date)",
+            ),
+        ];
+
+        async fn time_sorts(pool: &SqlitePool, phase: &str) -> Vec<(String, u128, usize)> {
+            let mut out = Vec::new();
+            for &(label, sql) in SORTS {
+                let mut best = u128::MAX;
+                let mut rows = 0usize;
+                for _ in 0..3 {
+                    let t = Instant::now();
+                    let fetched = sqlx::query(sql).fetch_all(pool).await.unwrap();
+                    best = best.min(t.elapsed().as_millis());
+                    rows = fetched.len();
+                }
+                println!("  [{phase}] {label:34} min={best:5} ms  rows={rows}");
+                out.push((label.to_string(), best, rows));
+            }
+            out
+        }
+
+        let (dir, pool) = create_test_pool("meliora-sort-probe").await;
+
+        let fill_started = Instant::now();
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let mut tx = conn.begin().await.unwrap();
+            for i in 0..TRACKS {
+                let album_idx = i % ALBUMS;
+                let path = dir.utf8_join(&format!("t{i:05}.flac"));
+                insert_metadata(
+                    &mut tx,
+                    &track_metadata(
+                        &format!("Album {album_idx:05}"),
+                        &format!("Artist {}", album_idx % 1_000),
+                        &format!("Track {i:05}"),
+                        (i % 20) as u64 + 1,
+                    ),
+                    &path,
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+        }
+        println!(
+            "灌库: {TRACKS} 曲 / {ALBUMS} 专辑，耗时 {:.1}s",
+            fill_started.elapsed().as_secs_f64()
+        );
+
+        println!("== 现状（无候选索引）==");
+        let before = time_sorts(&pool, "before").await;
+
+        println!("== 建候选索引的耗时（= 将来迁移成本）==");
+        for &(name, ddl) in CANDIDATES {
+            let t = Instant::now();
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+            println!("  {name:26} {:6}.0 ms", t.elapsed().as_millis().max(1));
+        }
+
+        println!("== 建索引后 ==");
+        let after = time_sorts(&pool, "after").await;
+
+        println!("== 对照（正数=建索引后省下的 ms）==");
+        for ((label, b, _), (_, a, _)) in before.iter().zip(after.iter()) {
+            println!("  {label:34} {b:5} → {a:5} ms  Δ={}", *b as i64 - *a as i64);
+        }
+    }
+
+    /// 播放歌单点击的主线程成本曲线。`find_playlist_tracks`
+    /// (`ui/library/playlist_view.rs:1315`) 在一次点击里做两件事，都在主线程：
+    /// ① `list_playlist_tracks` 的 `block_on` 取行（JOIN + ORDER BY position），
+    /// ② 逐行 `QueueItemData::new`（每行一次 String→PathBuf 加一次
+    /// `Arc<AtomicI64>` 分配）。日志侧的 `[db] slow ui-thread query`（阈值 2ms）
+    /// 只证过"本机小库从未越线"，这条给出规模曲线：歌单/库长大时主线程
+    /// 会被这次点击堵住多久。默认 #[ignore]：灌 10k 曲并建歌单要 1-2 分钟。
+    /// `cargo test --release --features kugou report_playlist_click_costs -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "cost probe: playlist play-click on the main thread, explicit run only"]
+    async fn report_playlist_click_costs_at_scale() {
+        use crate::playback::queue::QueueItemData;
+
+        let (dir, pool) = create_test_pool("meliora-playlist-click").await;
+        for size in [500usize, 2000, 5000, 10000] {
+            {
+                let mut conn = pool.acquire().await.unwrap();
+                let mut tx = conn.begin().await.unwrap();
+                for i in 0..size {
+                    let path = dir.utf8_join(&format!("p{i:05}.flac"));
+                    insert_metadata(
+                        &mut tx,
+                        &track_metadata(
+                            "Click Album",
+                            "Click Artist",
+                            &format!("Click {i:05}"),
+                            (i % 20) as u64 + 1,
+                        ),
+                        &path,
+                    )
+                    .await
+                    .unwrap();
+                }
+                tx.commit().await.unwrap();
+            }
+
+            // 歌单名有唯一约束，每档各建一个
+            let playlist_id = db::create_playlist(&pool, &format!("click-probe-{size}"))
+                .await
+                .unwrap();
+            let seed_started = Instant::now();
+            {
+                // 批量单事务 + 显式 checkpoint：旧写法每行一个事务，测出来的
+                // "查询耗时"里混进了未 checkpoint 的 WAL 索引构建（同一探针曾把
+                // 5k 行报成 20ms、10k 行报成 102ms，而干净口径的真值是 6ms/12ms）。
+                let track_ids: Vec<(i64,)> = sqlx::query_as("SELECT id FROM track ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                let mut conn = pool.acquire().await.unwrap();
+                let mut tx = conn.begin().await.unwrap();
+                for (rank, (track_id,)) in track_ids.iter().enumerate() {
+                    sqlx::query(
+                        "INSERT INTO playlist_item (playlist_id, track_id, position) \
+                         VALUES ($1, $2, $3)",
+                    )
+                    .bind(playlist_id)
+                    .bind(*track_id)
+                    .bind(rank as i64)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                }
+                tx.commit().await.unwrap();
+                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let seeding = seed_started.elapsed();
+
+            // min-of-3：本机 run-to-run ±20%（见记忆 bench-noise-and-paired-ab）。
+            let mut query = std::time::Duration::MAX;
+            let mut build = std::time::Duration::MAX;
+            let mut item_count = 0usize;
+            for _ in 0..3 {
+                let started = Instant::now();
+                let rows = db::list_playlist_tracks(&pool, playlist_id).await.unwrap();
+                query = query.min(started.elapsed());
+
+                let started = Instant::now();
+                let items: Vec<QueueItemData> = rows
+                    .iter()
+                    .map(|row| {
+                        QueueItemData::new(
+                            row.location.clone().into(),
+                            Some(row.track_id),
+                            Some(row.album_id),
+                        )
+                    })
+                    .collect();
+                build = build.min(started.elapsed());
+                item_count = items.len();
+            }
+
+            println!(
+                "playlist_click size={size} query_ms={:.2} build_ms={:.2} click_total_ms={:.2} us_per_row={:.2} items={} (seeding {:.1}s)",
+                query.as_secs_f64() * 1000.0,
+                build.as_secs_f64() * 1000.0,
+                (query.as_secs_f64() + build.as_secs_f64()) * 1000.0,
+                (query.as_micros() + build.as_micros()) as f64 / size as f64,
+                item_count,
+                seeding.as_secs_f64(),
+            );
+
+            // 分离变量看超线性来自哪里：①去掉 ORDER BY（有序输出 => 随机回查
+            // track 行 的形态消失）；②只取索引内的列（覆盖索引，零行回查）。
+            // 'static 常量字符串让 EXPLAIN 与计时共用同一条 SQL，不引借用期问题。
+            const NO_SORT: &str = "SELECT pl.id, pl.track_id, t.album_id, t.location \
+                 FROM playlist_item as pl JOIN track t on pl.track_id = t.id \
+                 WHERE pl.playlist_id = $1";
+            const COVERING: &str = "SELECT pl.id, pl.track_id, pl.position FROM playlist_item pl \
+                 WHERE pl.playlist_id = $1 ORDER BY pl.position ASC";
+
+            if size >= 5000 {
+                let started = Instant::now();
+                let rows4: Vec<(i64, i64, i64, String)> = sqlx::query_as(NO_SORT)
+                    .bind(playlist_id)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                println!(
+                    "  variant no_order_by      size={size} ms={:.2} rows={}",
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    rows4.len()
+                );
+                let started = Instant::now();
+                let rows3: Vec<(i64, i64, i64)> = sqlx::query_as(COVERING)
+                    .bind(playlist_id)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                println!(
+                    "  variant covering_no_join size={size} ms={:.2} rows={}",
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    rows3.len()
+                );
+
+                const EXPLAIN_SHIPPED: &str = concat!(
+                    "EXPLAIN QUERY PLAN ",
+                    include_str!("../queries/playlist/get_track_listing.sql")
+                );
+                const EXPLAIN_NO_SORT: &str = concat!(
+                    "EXPLAIN QUERY PLAN SELECT pl.id, pl.track_id, t.album_id, t.location ",
+                    "FROM playlist_item as pl JOIN track t on pl.track_id = t.id ",
+                    "WHERE pl.playlist_id = $1"
+                );
+                const EXPLAIN_COVERING: &str = concat!(
+                    "EXPLAIN QUERY PLAN SELECT pl.id, pl.track_id, pl.position ",
+                    "FROM playlist_item pl WHERE pl.playlist_id = $1 ORDER BY pl.position ASC"
+                );
+                for (label, sql) in [
+                    ("as_shipped", EXPLAIN_SHIPPED),
+                    ("no_order_by", EXPLAIN_NO_SORT),
+                    ("covering_no_join", EXPLAIN_COVERING),
+                ] {
+                    let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(sql)
+                        .bind(playlist_id)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                    for row in plan {
+                        println!("  plan[{label}] {}", row.3);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 会话快照的真实单价：`send_session_with_queue` 每次**深拷贝整条队列**
+    /// 再序列化落盘（`queue_manager/session.rs:11-13` 的注释承认这点，并用
+    /// 500ms 前缘去抖把突发压成"每窗口一次快照"）。本机歌单只有 20 项，
+    /// 所以"随机播放全部 10 万曲"那档从来没人量过：一次快照 = 一次
+    /// O(队列) 深拷贝（发生在喂音频环的那条线程上）+ 一次几十 MB 序列化。
+    /// 这条给出 clone / serialize / bytes 三个数，用来判那个极端场景是否
+    /// 会吃掉 250ms 的环余量。默认 #[ignore]（100k 档要分配几十 MB）。
+    /// `cargo test --release --features kugou report_session_snapshot -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "cost probe: session snapshot clone + serialize at queue scale, explicit run only"]
+    async fn report_session_snapshot_costs() {
+        use crate::playback::queue::QueueItemData;
+
+        for n in [20usize, 1_000, 25_000, 100_000] {
+            let queue: Vec<QueueItemData> = (0..n)
+                .map(|i| {
+                    QueueItemData::new(
+                        format!("D:/probe/artist {}/album y/track_{i:05}.flac", i % 400).into(),
+                        Some(i as i64),
+                        Some((i % 50) as i64),
+                    )
+                })
+                .collect();
+
+            let started = Instant::now();
+            let cloned = queue.clone();
+            let clone = started.elapsed();
+
+            let started = Instant::now();
+            let json = serde_json::to_vec(&cloned).unwrap_or_default();
+            let serialize = started.elapsed();
+
+            println!(
+                "session_snapshot n={n} clone_ms={:.2} serialize_ms={:.2} bytes={} B_per_item={:.0} note=per-window-worst-2-clones(queue+original)",
+                clone.as_secs_f64() * 1000.0,
+                serialize.as_secs_f64() * 1000.0,
+                json.len(),
+                json.len() as f64 / n as f64,
+            );
+        }
+    }
 }

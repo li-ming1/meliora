@@ -5,6 +5,6 @@ SELECT
 FROM
     track t
 ORDER BY
-    t.title_sortable,
-    t.album_id,
+    t.title_sortable DESC,
+    t.album_id DESC,
     t.location COLLATE NOCASE DESC;
