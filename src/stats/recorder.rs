@@ -4,7 +4,7 @@ use crate::playback::thread::PlaybackState;
 
 use super::TrackMeta;
 
-/// Unix seconds right now.
+/// 此刻的 Unix 秒。
 pub(crate) fn now_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -12,27 +12,24 @@ pub(crate) fn now_ts() -> i64 {
         .unwrap_or(0)
 }
 
-/// One finished listening segment ready for persistence.
+/// 一段已完成、可直接持久化的收听区间。
 pub struct ListenRow {
-    /// Unix seconds where this row's listening started.
+    /// 这一行收听开始的 Unix 秒。
     pub ts: i64,
     pub track_key: String,
     pub seconds: i64,
-    /// Display metadata captured at song-change time; `None` for local tracks,
-    /// which are resolved from the library at write time instead.
+    /// 切歌时抓到的展示元数据；本地 tracks 为 `None`，它们在写入时从音乐库解析。
     pub meta: Option<TrackMeta>,
 }
 
-/// Completed rows are flushed in quanta of this size while playing, so the DB
-/// write cadence is one small batch per minute of listening.
+/// 播放期间按这个大小为一档刷写已完成的行，于是 DB 写入节奏是每分钟收听一个小批次。
 const ROW_SECONDS: i64 = 60;
-/// Never credit more wall-clock time than this to a single position event.
-/// Bounds the credit for unusable position deltas (seek jumps, repeat-one loop
-/// points) and shrugs off the gap after process suspend.
+/// 单个位置事件最多计入这么多墙钟时间。它给不可用的位置增量（跳转定位、单曲循环的
+/// 回绕点）封顶，并扛过进程挂起之后的时间空洞。
 const MAX_TRUST_MS: i64 = 2_000;
 
-/// Pure accumulation logic: diffs broadcast position events while playing,
-/// clamps anomalies against wall-clock time, and yields finished rows.
+/// 纯累加逻辑：在播放期间对广播的位置事件做差分，用墙钟时间钳掉异常值，并产出
+/// 已完成的行。
 pub struct StatsRecorder {
     state: PlaybackState,
     current: Option<ActiveTrack>,
@@ -44,13 +41,13 @@ pub struct StatsRecorder {
 struct ActiveTrack {
     key: String,
     meta: Option<TrackMeta>,
-    /// Unix ts where the current unflushed row began.
+    /// 当前未刷写那一行开始的 Unix 时间戳。
     row_start_ts: i64,
     row_ms: i64,
 }
 
 impl ActiveTrack {
-    /// The finished row for the `seconds` accumulated so far.
+    /// 把迄今累出的 `seconds` 组成已完成的那一行。
     fn listen_row(&self, seconds: i64) -> ListenRow {
         ListenRow {
             ts: self.row_start_ts,
@@ -78,8 +75,8 @@ impl StatsRecorder {
 
     fn on_state_at(&mut self, state: PlaybackState, ts: i64) {
         if state == PlaybackState::Playing {
-            // Baseline reset: the first position event after the transition
-            // re-establishes it, so a seek made while paused is never credited.
+            // 基线重置：状态切换之后的第一个位置事件会重建它，因此在暂停期间做的
+            // 跳转定位永远不会被计入。
             self.last_pos_ms = None;
             self.last_wall = None;
             self.state = state;
@@ -121,8 +118,7 @@ impl StatsRecorder {
         std::mem::take(&mut self.pending)
     }
 
-    /// Flush the partial row of the active track and reset the position
-    /// baseline. Used on pause, stop, song change and app quit.
+    /// 刷写当前活跃曲目的半行并重置位置基线。用于暂停、停止、切歌与退出应用。
     fn finalize(&mut self, ts: i64) {
         if let Some(mut cur) = self.current.take() {
             let secs = cur.row_ms / 1000;
@@ -146,9 +142,8 @@ impl StatsRecorder {
         };
         if let Some(last) = self.last_pos_ms {
             let delta_ms = pos_ms as i64 - last as i64;
-            // Position deltas are only trusted when they agree with wall-clock
-            // time; anything else (seek, loop point, stale tick) credits the
-            // wall fragment instead.
+            // 只有当位置增量与墙钟时间一致时才可信；其他情形（跳转定位、回绕点、
+            // 过期 tick）改按墙钟的那一段计入。
             let counted = if delta_ms < 0 || delta_ms > wall_ms {
                 wall_ms.min(MAX_TRUST_MS)
             } else {
@@ -189,8 +184,8 @@ mod tests {
     fn accumulates_position_deltas_into_rows() {
         let mut rec = StatsRecorder::new();
         playing_with_song(&mut rec, 1_000_000);
-        // 62 ticks of 1 s each with 1 s wall gap: the first establishes the
-        // baseline, 61 s accumulate, 60 s complete a row.
+        // 62 次各 1 秒的 tick，墙钟间隔也是 1 秒：第一次建立基线，累计 61 秒，
+        // 60 秒成一行。
         for i in 0..=61 {
             rec.accumulate(i * 1000, 1000);
         }
@@ -213,9 +208,9 @@ mod tests {
     fn seek_backward_credits_only_wall_fragment() {
         let mut rec = StatsRecorder::new();
         playing_with_song(&mut rec, 0);
-        rec.accumulate(1000, 1000); // baseline
+        rec.accumulate(1000, 1000); // 建立基线
         rec.accumulate(60_000, 1000); // +1 s
-        rec.accumulate(5_000, 250); // loop point / seek back
+        rec.accumulate(5_000, 250); // 回绕点 / 向后跳转
         rec.on_state_at(PlaybackState::Paused, 4);
         assert_eq!(pending_secs(&mut rec), 1); // 1000 + 1000 + 250 ms
     }
@@ -224,9 +219,9 @@ mod tests {
     fn seek_forward_is_capped_at_wall() {
         let mut rec = StatsRecorder::new();
         playing_with_song(&mut rec, 0);
-        rec.accumulate(1000, 1000); // baseline
-        rec.accumulate(120_000, 250); // +2 min jump, 250 ms wall
-        rec.accumulate(121_000, 1000); // normal tick
+        rec.accumulate(1000, 1000); // 建立基线
+        rec.accumulate(120_000, 250); // +2 min 跳转，墙钟只有 250 ms
+        rec.accumulate(121_000, 1000); // 正常 tick
         rec.on_state_at(PlaybackState::Paused, 3);
         assert_eq!(pending_secs(&mut rec), 1);
     }
@@ -242,7 +237,7 @@ mod tests {
         assert_eq!(pending_secs(&mut rec), 29);
 
         rec.on_state_at(PlaybackState::Playing, 200);
-        rec.accumulate(30_000, 1000); // baseline tick
+        rec.accumulate(30_000, 1000); // 基线 tick
         rec.accumulate(31_000, 1000);
         rec.on_state_at(PlaybackState::Paused, 300);
         assert_eq!(pending_secs(&mut rec), 1);
@@ -252,9 +247,9 @@ mod tests {
     fn repeat_one_loop_jump_keeps_counting() {
         let mut rec = StatsRecorder::new();
         playing_with_song(&mut rec, 0);
-        rec.accumulate(1000, 1000); // baseline
+        rec.accumulate(1000, 1000); // 建立基线
         rec.accumulate(2_000, 1000);
-        // Engine-internal loop: position jumps back to 0 without SongChanged.
+        // 引擎内部循环：位置跳回 0，且没有发出 SongChanged。
         rec.accumulate(0, 250);
         rec.accumulate(1_000, 1000);
         rec.accumulate(2_000, 1000);

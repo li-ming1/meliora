@@ -25,7 +25,7 @@ impl EqualizerSettings {
     pub fn new(cx: &mut App) -> Entity<Self> {
         let view = EqualizerView::new(cx);
         cx.new(|cx| {
-            // keep the header checkbox in step with the view's live config
+            // 让头部勾选框与视图的实时配置保持一致
             cx.observe(&view, |_, _, cx| cx.notify()).detach();
             Self { view }
         })

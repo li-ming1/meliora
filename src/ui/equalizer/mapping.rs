@@ -1,73 +1,73 @@
-//! Pure conversions between graph pixels and equalizer parameter space.
+//! 图表像素与均衡器参数空间之间的纯转换。
 
 use crate::playback::dsp::equalizer::{MAX_FREQUENCY, MAX_GAIN_DB, MAX_Q, MIN_FREQUENCY, MIN_Q};
 
-/// Frequency range of the graph's x-axis, Hz.
+/// 图表 x 轴的频率范围，单位 Hz。
 pub const MIN_FREQ: f32 = 20.0;
 pub const MAX_FREQ: f32 = 20_000.0;
 
-/// The graph shows +/- this many dB vertically.
+/// 图表纵向显示 +/- 这么多 dB。
 pub const DB_WINDOW: f32 = 30.0;
 
-/// Sampled curve values are clamped into this range so high-Q paths stay bounded.
+/// 采样出的曲线值会钳进这个范围，让高 Q 的路径保持有界。
 pub const CURVE_MIN_DB: f64 = -90.0;
 pub const CURVE_MAX_DB: f64 = 36.0;
 
-/// Spectrum dB floor, mapped to the graph's bottom edge.
+/// 频谱的 dB 下限，映射到图表底边。
 pub const SPECTRUM_MIN_DB: f32 = -96.0;
 
-/// Horizontal pixel for a frequency, log scale.
+/// 某个频率对应的水平像素，对数刻度。
 pub fn freq_to_x(freq: f32, width: f32) -> f32 {
     let t = (freq.clamp(MIN_FREQ, MAX_FREQ).log10() - MIN_FREQ.log10())
         / (MAX_FREQ.log10() - MIN_FREQ.log10());
     t * width
 }
 
-/// Frequency at a horizontal pixel, log scale.
+/// 某个水平像素对应的频率，对数刻度。
 pub fn x_to_freq(x: f32, width: f32) -> f32 {
     let t = (x / width).clamp(0.0, 1.0);
     10.0f32.powf(MIN_FREQ.log10() + t * (MAX_FREQ.log10() - MIN_FREQ.log10()))
 }
 
-/// Vertical pixel for a dB value, linear, positive dB up, clamped to the window.
+/// 某个 dB 值对应的垂直像素，线性，正 dB 朝上，钳到窗口内。
 pub fn db_to_y(db: f32, height: f32) -> f32 {
     (DB_WINDOW - db.clamp(-DB_WINDOW, DB_WINDOW)) / (2.0 * DB_WINDOW) * height
 }
 
-/// Unclamped variant for curve samples, which may plunge off the plot for the content mask to cut.
+/// 供曲线采样用的不钳位版本——它们可以冲到绘图区之外，交给内容遮罩去裁。
 pub fn db_to_y_unclamped(db: f32, height: f32) -> f32 {
     (DB_WINDOW - db) / (2.0 * DB_WINDOW) * height
 }
 
-/// dB value at a vertical pixel, inverse of `db_to_y`, clamped to the window.
+/// 某个垂直像素对应的 dB 值，`db_to_y` 的逆，钳到窗口内。
 pub fn y_to_db(y: f32, height: f32) -> f32 {
     (DB_WINDOW - y / height * 2.0 * DB_WINDOW).clamp(-DB_WINDOW, DB_WINDOW)
 }
 
-/// Vertical pixel for a spectrum dB value, the spectrum spans the floor up to the window top.
+/// 频谱 dB 值对应的垂直像素：频谱从下限一直铺到窗口顶部。
 pub fn spectrum_db_to_y(db: f32, height: f32) -> f32 {
     (DB_WINDOW - db) / (DB_WINDOW - SPECTRUM_MIN_DB) * height
 }
 
-/// Multiplicative Q nudge from scroll input, one notch per wheel line.
+/// 滚轮输入换算成 Q 的乘法微调，每个滚轮行一档。
 pub fn scroll_q(q: f64, notches: f64) -> f64 {
     (q * 1.08f64.powf(notches)).clamp(MIN_Q, MAX_Q)
 }
 
-/// Frequency nudge from arrow keys, a semitone per press, a tenth of one with Shift held.
-/// Clamps to the DSP's range, which is wider than the graph's axis.
+/// 方向键的频率微调：每次一个半音，按住 Shift 是十分之一个半音。钳到 DSP 的范围，
+/// 它比图表坐标轴更宽。
 pub fn nudge_frequency(freq: f64, direction: f64, fine: bool) -> f64 {
     let semitones = if fine { 0.1 } else { 1.0 };
     (freq * 2.0f64.powf(direction * semitones / 12.0)).clamp(MIN_FREQUENCY, MAX_FREQUENCY)
 }
 
-/// Gain nudge from arrow keys, 1 dB per press, 0.1 dB with Shift held.
+/// 方向键的增益微调：每次 1 dB，按住 Shift 是 0.1 dB。
 pub fn nudge_gain(gain_db: f64, direction: f64, fine: bool) -> f64 {
     let step = if fine { 0.1 } else { 1.0 };
     (gain_db + direction * step).clamp(-MAX_GAIN_DB, MAX_GAIN_DB)
 }
 
-/// "1.24 kHz" style readout for the drag tooltip and axis labels.
+/// 给拖拽 tooltip 与坐标轴标签用的 "1.24 kHz" 式读数。
 pub fn format_hz(hz: f64) -> String {
     if hz >= 1_000.0 {
         let text = format!("{:.2}", hz / 1_000.0);
@@ -77,7 +77,7 @@ pub fn format_hz(hz: f64) -> String {
     }
 }
 
-/// Inverse of `format_hz`, accepts "1240", "1.24k", "1.24 kHz" and friends.
+/// `format_hz` 的逆过程，接受 "1240"、"1.24k"、"1.24 kHz" 之类的写法。
 pub fn parse_hz(text: &str) -> Option<f64> {
     let text = text.trim().to_lowercase();
     let text = text.strip_suffix("hz").unwrap_or(&text);
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn freq_x_is_logarithmic() {
-        // octaves span equal pixels
+        // 等倍频程跨等像素
         let octave = freq_to_x(200.0, 900.0) - freq_to_x(100.0, 900.0);
         let other = freq_to_x(10_000.0, 900.0) - freq_to_x(5_000.0, 900.0);
         assert!((octave - other).abs() < 0.01);
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn nudge_frequency_keeps_bands_outside_the_graph_axis() {
-        // a band beyond the graph's 20 kHz edge nudges up without snapping back into view
+        // 超出图表 20 kHz 边界的频段上调时不会弹回视野内
         let nudged = nudge_frequency(25_000.0, 1.0, false);
         assert!(nudged > 25_000.0, "nudged down to {nudged} Hz");
         assert!(nudged < MAX_FREQUENCY);

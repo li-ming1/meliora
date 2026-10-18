@@ -17,11 +17,9 @@ use crate::{
 
 use super::debounced_save::DebouncedSave;
 
-/// One checkbox row: clicking the label toggles one `bool` field of
-/// `settings.playback` via `update_playback_settings`. The checkbox id is
-/// passed explicitly so both ids of the row pair stay greppable. Rows whose
-/// click does more than flip the field (prevent-idle also pushes the value
-/// to the `PowerManager`) build inline instead.
+/// 一个勾选行：点击标签即经 `update_playback_settings` 切换 `settings.playback` 的
+/// 一个 `bool` 字段。勾选框 id 显式传入，好让一行的两个 id 都可 grep。点击不只是
+/// 翻字段的行（防息屏还要把值推给 `PowerManager`）改为就地构建。
 fn toggle_row(
     cx: &Context<PlaybackSettings>,
     label_id: &'static str,
@@ -163,13 +161,11 @@ impl Render for PlaybackSettings {
                         .on_change({
                             let weak_self = cx.weak_entity();
                             move |v, _, cx| {
-                                // live value lands in the model WITHOUT notifying the settings
-                                // model: a per-tick model notify cascades into the app-wide
-                                // refresh_windows observer (app.rs) - a full repaint of every
-                                // window per mouse move while dragging. Only this page entity
-                                // is notified so the slider and its readout track the drag;
-                                // the debounced save applies the preamp to the playback
-                                // thread once the drag settles.
+                                // 实时值写入模型，但**不** notify 设置模型：每个 tick 都
+                                // notify 模型会级联到应用级的 refresh_windows 观察者
+                                // （app.rs）——拖拽时每次鼠标移动都重绘所有窗口。这里只
+                                // notify 本页面实体，让滑块与读数跟随拖拽；前置增益等拖拽
+                                // 结束后由防抖保存应用到播放线程。
                                 settings.update(cx, |settings, _| {
                                     settings.playback.replaygain.fallback_preamp_db = v as f64;
                                 });

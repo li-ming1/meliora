@@ -40,9 +40,8 @@ pub struct MprisControllerServer {
 }
 
 impl MprisControllerServer {
-    /// Whether the player can currently accept transport commands: a file is
-    /// loaded and playback has not stopped. `CanPlay`, `CanPause`, and
-    /// `CanSeek` all report this same predicate.
+    /// 播放器当前是否能接受传输命令：已载入文件且播放未停止。`CanPlay`、`CanPause`
+    /// 和 `CanSeek` 报告的都是同一个谓词。
     async fn can_control_playback_int(&self) -> fdo::Result<bool> {
         let data = self.data.read().await;
         Ok(data.last_playback_state != Some(PlaybackState::Stopped) && data.last_file.is_some())
@@ -123,12 +122,12 @@ impl MprisControllerServer {
 
 impl RootInterface for MprisControllerServer {
     async fn raise(&self) -> fdo::Result<()> {
-        // intentionally unsupported: can_raise() reports false
+        // 刻意不支持：can_raise() 报 false
         Ok(())
     }
 
     async fn quit(&self) -> fdo::Result<()> {
-        // intentionally unsupported: can_quit() reports false
+        // 刻意不支持：can_quit() 报 false
         Ok(())
     }
 
@@ -153,8 +152,8 @@ impl RootInterface for MprisControllerServer {
     }
 
     async fn has_track_list(&self) -> fdo::Result<bool> {
-        // Meliora has no MPRIS playlist concept; clients fall back to the
-        // plain control methods, which is all the spec requires of us.
+        // Meliora 没有 MPRIS 的播放列表概念；客户端退回普通控制方法，规范对我们的
+        // 要求也就止于此。
         Ok(false)
     }
 
@@ -167,8 +166,8 @@ impl RootInterface for MprisControllerServer {
     }
 
     async fn supported_mime_types(&self) -> fdo::Result<Vec<String>> {
-        // Decoders come from symphonia (+ libopus/fdk-aac adapters); give
-        // clients the common container types we can actually open.
+        // 解码器来自 symphonia（外加 libopus/fdk-aac 适配层）；给客户端报我们确实
+        // 打得开的常见容器类型。
         Ok([
             "audio/mpeg",
             "audio/flac",
@@ -200,7 +199,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn can_go_next(&self) -> fdo::Result<bool> {
-        // TODO: this can probably be implemented better
+        // TODO: 这里应该能实现得更好
         Ok(true)
     }
 
@@ -210,7 +209,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn can_go_previous(&self) -> fdo::Result<bool> {
-        // TODO: this can probably be implemented better
+        // TODO: 这里应该能实现得更好
         Ok(true)
     }
 
@@ -271,7 +270,7 @@ impl PlayerInterface for MprisControllerServer {
 
     async fn set_position(
         &self,
-        _track_id: mpris_server::TrackId, // single-track position; id is irrelevant
+        _track_id: mpris_server::TrackId, // 单曲目位置；id 无关紧要
         position: Time,
     ) -> fdo::Result<()> {
         let position = position.as_secs();
@@ -293,7 +292,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
-        // intentionally unsupported; clients play via their own UI
+        // 刻意不支持；客户端经自己的界面播放
         Ok(())
     }
 
@@ -336,7 +335,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn maximum_rate(&self) -> fdo::Result<PlaybackRate> {
-        // NB: if we add rate changing this should change
+        // NB: 如果我们以后支持倍速播放，这里也要跟着改
         Ok(1.0_f64)
     }
 
@@ -389,9 +388,8 @@ impl PlaybackController for MprisController {
 
         if let Some(original_position) = original_position {
             let position_diff = new_position as i64 - original_position as i64;
-            // Position ticks arrive once per second during normal playback;
-            // any change other than +1 s means a seek, which MPRIS clients
-            // must be told about via the Seeked signal.
+            // 正常播放期间位置 tick 每秒到一次；任何非 +1 s 的变化都意味着跳转定位，
+            // 必须通过 Seeked 信号告知 MPRIS 客户端。
             if position_diff != 1 {
                 self.server
                     .emit(Signal::Seeked {

@@ -12,14 +12,13 @@ use crate::ui::models::Queue;
 pub use recorder::ListenRow;
 use recorder::StatsRecorder;
 
-/// Year listening stats started; the heat-map year pager stops here.
+/// 收听统计开始的年份；热力图的年份翻页器到此为止。
 pub fn epoch_year() -> i32 {
     2026
 }
 
-/// Unix seconds of local midnight on August 1st of [`epoch_year`], the first
-/// day listening stats are tracked. Everything before it is ignored by every
-/// query and by the heat-map window (the feature shipped 2026-08).
+/// [`epoch_year`] 年 8 月 1 日本地午夜的 Unix 秒，即收听统计开始追踪的第一天。
+/// 早于此的一切都被每个查询和热力图窗口忽略（该功能于 2026-08 上线）。
 pub fn epoch_ts() -> i64 {
     use chrono::TimeZone;
     chrono::Local
@@ -29,9 +28,8 @@ pub fn epoch_ts() -> i64 {
         .unwrap_or(0)
 }
 
-/// Display metadata attached to listen rows: captured from the online
-/// provider registry at song-change time, or resolved from the library at
-/// write time for local tracks.
+/// 附在收听行上的展示元数据：切歌时从在线 provider 注册表抓取，本地曲目则在写入
+/// 时从音乐库解析。
 #[derive(Clone, Debug, Default)]
 pub struct TrackMeta {
     pub title: String,
@@ -39,8 +37,7 @@ pub struct TrackMeta {
     pub album: String,
 }
 
-/// Shared recorder handle: the playback event loop feeds it on the UI thread,
-/// the app-quit hook drains it.
+/// 共享的记录器句柄：播放事件循环在 UI 线程喂它，应用退出钩子把它排空。
 pub struct StatsHandle(pub Arc<Mutex<StatsRecorder>>);
 
 impl Global for StatsHandle {}
@@ -51,7 +48,7 @@ impl StatsHandle {
     }
 }
 
-/// Persists finished rows off the UI thread; a no-op for an empty batch.
+/// 在 UI 线程之外持久化已完成的行；空批次是空操作。
 pub fn flush_rows_async(pool: sqlx::SqlitePool, rows: Vec<ListenRow>) {
     if rows.is_empty() {
         return;
@@ -61,9 +58,8 @@ pub fn flush_rows_async(pool: sqlx::SqlitePool, rows: Vec<ListenRow>) {
     });
 }
 
-/// Identity + display metadata for the song that just started, keyed for
-/// `listen_event.track_key`. Local files key on their path; online streams key
-/// on their provider identity with a URL-hash fallback.
+/// 刚刚开始的曲目的身份 + 展示元数据，作为 `listen_event.track_key` 的键。本地
+/// 文件用路径作键；在线流用 provider 身份作键，并在缺失时退回 URL 哈希。
 pub fn song_info(
     path: &std::path::Path,
     queue: &Entity<Queue>,
@@ -88,10 +84,9 @@ pub fn song_info(
             None => return (format!("hash:{}", url_hash(path)), None),
         };
 
-        // The compile-time registry consults every compiled-in provider's
-        // stream map; a hit implies the identity (the URL only lives in the
-        // map of the service that produced it). Fall back to the queue item's
-        // persisted display metadata when the registry doesn't know the URL.
+        // 编译期注册表会查每个已编译进来 provider 的流映射；命中就意味着这个身份
+        // （URL 只存在于产生它的那个服务的映射里）。注册表不认识该 URL 时，退回
+        // 队列条目已持久化的展示元数据。
         let meta = identify_path(path)
             .map(|m| TrackMeta {
                 title: m.title,

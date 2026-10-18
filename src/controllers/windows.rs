@@ -32,27 +32,20 @@ pub struct WindowsController {
     display: SystemMediaTransportControlsDisplayUpdater,
     timeline: SystemMediaTransportControlsTimelineProperties,
     cmd_tx: UnboundedSender<PlaybackCommand>,
-    /// Persistent backing stream for the SMTC thumbnail, overwritten in
-    /// place on every update. Building a fresh
-    /// InMemoryRandomAccessStream + DataWriter per track left the replaced
-    /// thumbnail chains to delayed COM reclamation, which over long
-    /// background sessions leaked a few MB per track (matches the [mem]
-    /// probe's per-track climb). One long-lived stream keeps the shell's
-    /// reference stable and the artwork byte count bounded.
+    /// SMTC 缩略图的常驻后备流，每次更新都就地覆写。每首曲目都重建一个全新的
+    /// InMemoryRandomAccessStream + DataWriter，会让被替换掉的缩略图链交给延后的
+    /// COM 回收，长时间后台会话里每首曲目漏掉几 MB（与 [mem] 探针的每曲爬升吻合）。
+    /// 一条长生命周期的流让 shell 的引用保持稳定，封面字节数也有界。
     ///
-    /// Only the stream is kept; the DataWriter is rebuilt per update. Its
-    /// write position survives StoreAsync and this binding exposes no
-    /// reset, so a reused writer appended each track's artwork past the
-    /// truncated end and the backing stream grew by the artwork size per
-    /// track — the same per-track climb, resurfacing after the stream was
-    /// made persistent. A fresh writer always starts at position 0, and
-    /// the SetSize after the store pins the stream to exactly the artwork
-    /// length.
+    /// 只保留流；DataWriter 每次更新重建。它的写入位置会活过 StoreAsync，而这个
+    /// 绑定不暴露任何 reset，所以复用同一个 writer 会把每首曲目的封面追加到已截断
+    /// 末尾之后，后备流按每曲一个封面大小增长——即流改成常驻之后又复现的那条每曲
+    /// 爬升。新建的 writer 位置恒为 0，store 之后的 SetSize 把流钉成恰好封面的长度。
     album_art_stream: Option<InMemoryRandomAccessStream>,
 }
 
 impl WindowsController {
-    /// Registers the SMTC button, seek, shuffle, and repeat request handlers.
+    /// 注册 SMTC 的按钮、跳转定位、随机与循环请求处理器。
     pub fn connect_events(&mut self) -> anyhow::Result<()> {
         self.controls.SetIsEnabled(true)?;
         self.controls.SetIsNextEnabled(true)?;
@@ -66,8 +59,8 @@ impl WindowsController {
             SystemMediaTransportControls,
             SystemMediaTransportControlsButtonPressedEventArgs,
         >::new(move |_, args| {
-            // A failed event payload or getter skips this button event instead
-            // of panicking the SMTC task (which would disable SMTC for good).
+            // 事件负载或 getter 失败时跳过这次按钮事件，而不是让 SMTC 任务 panic
+            // （那会让 SMTC 永久失效）。
             let Some(args) = args.as_ref() else {
                 return Ok(());
             };
@@ -103,7 +96,7 @@ impl WindowsController {
                 SystemMediaTransportControls,
                 PlaybackPositionChangeRequestedEventArgs,
             >::new(move |_, args| {
-                // a failed payload/getter skips this seek event
+                // 负载/getter 失败时跳过这次跳转定位事件
                 let Some(args) = args.as_ref() else {
                     return Ok(());
                 };
@@ -111,7 +104,7 @@ impl WindowsController {
                     return Ok(());
                 };
 
-                // TimeSpan is measured in 100ns intervals
+                // TimeSpan 以 100ns 为最小单位计量
                 let _ = cmd_tx.send(PlaybackCommand::Seek(
                     position.Duration as f64 / 10_000_000.0,
                 ));
@@ -125,7 +118,7 @@ impl WindowsController {
                 SystemMediaTransportControls,
                 ShuffleEnabledChangeRequestedEventArgs,
             >::new(move |_, args| {
-                // a failed payload/getter skips this shuffle event
+                // 负载/getter 失败时跳过这次随机播放事件
                 let Some(args) = args.as_ref() else {
                     return Ok(());
                 };
@@ -143,7 +136,7 @@ impl WindowsController {
                 SystemMediaTransportControls,
                 AutoRepeatModeChangeRequestedEventArgs,
             >::new(move |_, args| {
-                // a failed payload/getter skips this repeat event
+                // 负载/getter 失败时跳过这次循环模式事件
                 let Some(args) = args.as_ref() else {
                     return Ok(());
                 };
@@ -176,9 +169,9 @@ impl WindowsController {
 
         let hwnd = match handle {
             Some(RawWindowHandle::Win32(handle)) => handle,
-            // A failure here must surface as an error, not a panic: init runs
-            // inside the startup `main_window.update` on the main thread, and
-            // the caller degrades to "no desktop integration" on Err.
+            // 这里的失败必须表现为 error 而不是 panic：init 跑在启动时的
+            // `main_window.update` 里、在主线程上，而调用方遇到 Err 会退化为
+            // "不做桌面集成"。
             _ => anyhow::bail!(
                 "non-Win32 window handle/invalid window handle during creation of SMTC"
             ),
@@ -234,10 +227,9 @@ impl PlaybackController for WindowsController {
     }
 
     async fn metadata_changed(&mut self, metadata: &Metadata) -> anyhow::Result<()> {
-        // One MusicProperties() fetch for the whole update: each call builds
-        // a fresh WinRT object. Property write order is unchanged; a failed
-        // getter skips this update entirely instead of panicking the
-        // controller task (the next playback event retries).
+        // 整次更新只取一次 MusicProperties()：每次调用都会构建一个新的 WinRT 对象。
+        // 属性写入顺序不变；getter 失败时整次更新直接跳过，而不是让控制器任务
+        // panic（下一个播放事件会重试）。
         let Ok(music) = self.display.MusicProperties() else {
             return Ok(());
         };
@@ -271,12 +263,10 @@ impl PlaybackController for WindowsController {
         if album_art.is_empty() {
             return Ok(());
         }
-        // Overwrite the persistent thumbnail stream in place instead of
-        // building a fresh InMemoryRandomAccessStream per track: the shell's
-        // reference stays stable and the artwork byte count bounded. The
-        // DataWriter is rebuilt per update (see the field comment) and
-        // dropped right after the store; SetSize pins the stream to exactly
-        // the artwork length so no stale tail can survive either.
+        // 就地覆写常驻的缩略图后备流，而不是每首曲目新建一个
+        // InMemoryRandomAccessStream：shell 的引用保持稳定，封面字节数也有界。
+        // DataWriter 每次更新重建（见字段注释），store 之后立刻丢弃；SetSize 把流
+        // 钉成恰好封面的长度，因此也不会留下过期的尾部。
         let stream = match self.album_art_stream.as_ref() {
             Some(stream) => stream.clone(),
             None => {
@@ -332,14 +322,13 @@ impl PlaybackController for WindowsController {
     async fn new_file(&mut self, path: &Path) -> anyhow::Result<()> {
         self.display.ClearAll()?;
         self.display.SetType(MediaPlaybackType::Music)?;
-        // Paths ending in ".." have no file name and non-UTF-8 names fail
-        // `to_str()`; either unwrap would panic inside the pbc task, unwinding
-        // it and permanently disabling SMTC. Fall back to the full path and
-        // replace invalid UTF-8 instead.
+        // 以 ".." 结尾的路径没有文件名，非 UTF-8 的名字会让 `to_str()` 失败；任一处
+        // unwrap 都会在 pbc 任务里 panic，把它 unwind 掉并永久停用 SMTC。改为退回
+        // 完整路径并替换非法 UTF-8。
         let file_name = path.file_name().unwrap_or(path.as_os_str());
         let title_string = HSTRING::from(file_name.to_string_lossy().as_ref());
-        // Same as metadata_changed: a failed MusicProperties() skips this
-        // update instead of panicking the controller task.
+        // 与 metadata_changed 同理：MusicProperties() 失败时跳过这次更新，而不是让
+        // 控制器任务 panic。
         let Ok(music) = self.display.MusicProperties() else {
             return Ok(());
         };

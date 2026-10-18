@@ -27,15 +27,15 @@ use crate::{
 
 use super::PlaybackController;
 
-/// Reports Meliora's playback state to the macOS Now Playing info center and
-/// forwards system remote-command events to the playback thread.
+/// 把 Meliora 的播放状态上报给 macOS 的 Now Playing 信息中心，并把系统远程命令事件
+/// 转发给播放线程。
 pub struct MacMediaPlayerController {
     cmd_tx: UnboundedSender<PlaybackCommand>,
 }
 
 impl MacMediaPlayerController {
-    /// A fresh now-playing dictionary pre-populated from the currently
-    /// published one, so partial updates keep the remaining keys.
+    /// 一份全新的 now-playing 字典，预先用当前已发布的那份填好，这样局部更新能保留
+    /// 其余键。
     unsafe fn now_playing_with_previous() -> Retained<NSMutableDictionary<NSString>> {
         unsafe {
             let now_playing: Retained<NSMutableDictionary<NSString>> =
@@ -50,7 +50,7 @@ impl MacMediaPlayerController {
         }
     }
 
-    /// Publishes the now-playing dictionary to the shared info center.
+    /// 把 now-playing 字典发布到共享信息中心。
     unsafe fn set_now_playing(now_playing: &NSMutableDictionary<NSString>) {
         unsafe {
             MPNowPlayingInfoCenter::defaultCenter().setNowPlayingInfo(Some(now_playing));
@@ -61,14 +61,12 @@ impl MacMediaPlayerController {
         unsafe {
             debug!("New file: {:?}", path);
 
-            // Paths ending in ".." have no file name and non-UTF-8 names fail
-            // `to_str()`; either unwrap would panic inside the pbc task,
-            // unwinding it and permanently disabling now-playing integration.
-            // Fall back to the full path and replace invalid UTF-8 instead.
+            // 以 ".." 结尾的路径没有文件名，非 UTF-8 的名字会让 `to_str()` 失败；
+            // 任一处 unwrap 都会在 pbc 任务里 panic，把它 unwind 掉并永久停用
+            // now-playing 集成。改为退回完整路径并替换非法 UTF-8。
             let file_name = path.file_name().unwrap_or_else(|| path.as_os_str());
 
-            // Starts from an empty dictionary on purpose: a new file resets
-            // the now-playing entry rather than updating it.
+            // 刻意从空字典开始：新文件应当重置 now-playing 条目，而不是更新它。
             let now_playing: Retained<NSMutableDictionary<NSString>> =
                 NSMutableDictionary::dictionary();
 
@@ -140,7 +138,7 @@ impl MacMediaPlayerController {
     unsafe fn new_album_art(&mut self, art: &[u8]) {
         unsafe {
             debug!("Received album art");
-            // get the image's dimensions, we'll need them to load the image into NP
+            // 取图像尺寸，加载进 NP 时需要它
             let Ok(size) = imagesize::blob_size(art) else {
                 return;
             };
@@ -150,10 +148,10 @@ impl MacMediaPlayerController {
                 error!("Failed to create NSImage from album art");
                 return;
             };
-            // there's a good chance this leaks memory
-            // the only way that it wouldn't is if, once it disappears in to macOS, the OS drops it
-            // there's an even better chance that if it does, there's no way to fix it
-            // TODO: figure out this mess
+            // 这里很可能在漏内存
+            // 唯一不漏的情形是：它进入 macOS 之后被 OS 丢掉
+            // 而更可能的是，即使被丢掉，我们也没有办法回收它
+            // TODO: 把这一团乱弄清楚
             let image = NonNull::new(Retained::into_raw(image)).unwrap();
 
             let request_handler = RcBlock::new(move |_cg: CGSize| image);
@@ -186,14 +184,12 @@ impl MacMediaPlayerController {
         }
     }
 
-    /// Attaches a handler that forwards `action` to the playback thread each
-    /// time `command` is triggered from the system remote.
+    /// 挂一个处理器，每次系统远程触发 `command` 时把 `action` 转发给播放线程。
     unsafe fn attach_command_handler(&self, command: &MPRemoteCommand, action: PlaybackCommand) {
         unsafe {
             let cmd_tx = self.cmd_tx.clone();
-            // Handler blocks are `Fn` (they may fire any number of times), so
-            // the command is cloned per invocation; the commands used here are
-            // unit variants, so the clone is free.
+            // 处理器闭包是 `Fn`（可能触发任意多次），所以每次调用都克隆 command；
+            // 这里用到的 command 都是单元变体，克隆不花钱。
             let handler = RcBlock::new(move |_| {
                 let _ = cmd_tx.send(action.clone());
                 MPRemoteCommandHandlerStatus::Success
@@ -220,7 +216,7 @@ impl MacMediaPlayerController {
             );
             self.attach_command_handler(&command_center.nextTrackCommand(), PlaybackCommand::Next);
 
-            // Seek
+            // 跳转定位
             let seek_tx = self.cmd_tx.clone();
             let seek_handler = RcBlock::new(move |mut event: NonNull<MPRemoteCommandEvent>| {
                 if let Some(ev) = Retained::retain(event.as_mut()) {

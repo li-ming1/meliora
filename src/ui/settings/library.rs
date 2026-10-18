@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-/// Adds new scan paths while ignoring duplicates.
+/// 追加新的扫描路径，同时忽略重复项。
 fn merge_scan_paths(
     paths: &mut Vec<Utf8PathBuf>,
     new_paths: impl IntoIterator<Item = Utf8PathBuf>,
@@ -411,7 +411,7 @@ mod tests {
     use super::merge_scan_paths;
     use camino::Utf8PathBuf;
 
-    /// Adds multiple new paths in order.
+    /// 按顺序追加多个新路径。
     #[test]
     fn merge_scan_paths_adds_multiple_unique_paths() {
         let mut paths = vec![Utf8PathBuf::from("/music/existing")];
@@ -435,7 +435,7 @@ mod tests {
         );
     }
 
-    /// Ignores paths that already exist.
+    /// 忽略已经存在的路径。
     #[test]
     fn merge_scan_paths_ignores_existing_paths() {
         let mut paths = vec![Utf8PathBuf::from("/music/existing")];
@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(paths, vec![Utf8PathBuf::from("/music/existing")]);
     }
 
-    /// Ignores duplicate paths in one batch.
+    /// 忽略同一批次里的重复路径。
     #[test]
     fn merge_scan_paths_ignores_duplicates_within_same_batch() {
         let mut paths = Vec::new();
@@ -470,7 +470,7 @@ mod tests {
         );
     }
 
-    /// Reports no change for an empty batch.
+    /// 空批次要报告"无变化"。
     #[test]
     fn merge_scan_paths_reports_no_change_when_batch_is_empty() {
         let mut paths = vec![Utf8PathBuf::from("/music/existing")];

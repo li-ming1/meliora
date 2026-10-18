@@ -37,9 +37,8 @@ pub struct LanguageOption {
     pub display_name: SharedString,
 }
 
-/// Static language list, built once. The system-default label resolves at
-/// first use; language changes require an app restart anyway, so caching it
-/// is safe.
+/// 静态语言列表，只构建一次。跟随系统那个标签在首次使用时解析；反正切换语言本来就
+/// 需要重启应用，所以缓存它是安全的。
 fn available_languages() -> &'static [LanguageOption] {
     static LANGUAGES: OnceLock<Vec<LanguageOption>> = OnceLock::new();
     LANGUAGES.get_or_init(|| {
@@ -92,10 +91,9 @@ fn available_languages() -> &'static [LanguageOption] {
     })
 }
 
-/// Applies `update` to `settings.interface`, then persists the settings
-/// file and notifies. Toggles and dropdown writes go through here; the
-/// grid-width slider writes directly instead so a drag does not save or
-/// repaint per tick (see its `on_change`).
+/// 把 `update` 应用到 `settings.interface`，随后持久化设置文件并 notify。开关和下拉
+/// 写入都走这里；网格宽度滑块改为直接写入，这样拖拽时不会每个 tick 都保存或重绘
+/// （见它的 `on_change`）。
 fn update_interface_settings(
     settings: &Entity<crate::settings::Settings>,
     cx: &mut App,
@@ -108,9 +106,8 @@ fn update_interface_settings(
     });
 }
 
-/// One checkbox row: clicking the label toggles one `bool` field of
-/// `InterfaceSettings` via `update_interface`. The checkbox id is passed
-/// explicitly so both ids of the row pair stay greppable.
+/// 一个勾选行：点击标签即经 `update_interface` 切换 `InterfaceSettings` 的一个
+/// `bool` 字段。勾选框 id 显式传入，好让一行的两个 id 都可 grep。
 fn toggle_row(
     cx: &Context<InterfaceSettings>,
     label_id: &'static str,
@@ -154,10 +151,8 @@ impl InterfaceSettings {
         })
     }
 
-    /// Applies `update` to the interface section, re-clamps the grid item
-    /// width, then persists and notifies. Toggles route through here; the
-    /// dropdowns that never touch the grid go through
-    /// [`update_interface_settings`] directly.
+    /// 把 `update` 应用到 interface 分区，重新钳位网格条目宽度，然后持久化并 notify。
+    /// 开关走这里；从不触碰网格的下拉直接走 [`update_interface_settings`]。
     fn update_interface(
         &self,
         cx: &mut App,
@@ -320,10 +315,8 @@ impl Render for InterfaceSettings {
                 interface.two_column_library,
                 |interface| {
                     interface.two_column_library = !interface.two_column_library;
-                    // Keep the frozen full-width slot in sync: two_column
-                    // forces the effective value on, and without this turning
-                    // two_column off later would silently resurrect whatever
-                    // stale value the slot held before.
+                    // 保持冻结的整宽槽位同步：two_column 会强制把生效值置为开启，
+                    // 少了这一步，之后关掉 two_column 就会静默复活该槽位之前的过期值。
                     if interface.two_column_library {
                         interface.full_width_library = true;
                     }
@@ -351,13 +344,11 @@ impl Render for InterfaceSettings {
                         .on_change({
                             let weak_self = cx.weak_entity();
                             move |value, _, cx| {
-                                // live value lands in the model WITHOUT notifying the settings
-                                // model: a per-tick model notify cascades into the app-wide
-                                // refresh_windows observer (app.rs) - a full repaint of every
-                                // window per mouse move while dragging. Only this page entity
-                                // is notified so the slider and its readout track the drag;
-                                // the rest of the UI refreshes once the debounced save lands
-                                // (plus the settings file watcher's real refresh).
+                                // 实时值写入模型，但**不** notify 设置模型：每个 tick 都
+                                // notify 模型会级联到应用级的 refresh_windows 观察者
+                                // （app.rs）——拖拽时每次鼠标移动都重绘所有窗口。这里只
+                                // notify 本页面实体，让滑块与读数跟随拖拽；其余 UI 等防抖
+                                // 保存落地时刷一次（外加设置文件监视器的那次真实刷新）。
                                 settings.update(cx, |settings, _| {
                                     settings.interface.grid_min_item_width =
                                         clamp_grid_min_item_width(value);

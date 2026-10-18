@@ -38,7 +38,7 @@ type EditHandler = dyn Fn(BandEdit, &mut App);
 type RemoveHandler = dyn Fn(&mut App);
 type DismissHandler = dyn Fn(&mut Window, &mut App);
 
-/// Frequency a band defaults to, also the freq knob's reset point.
+/// 频段的默认频率，同时也是频率旋钮的重置点。
 const DEFAULT_BAND_FREQ_HZ: f64 = 1_000.0;
 
 const FREQ_SPAN: f64 = MAX_FREQ as f64 / MIN_FREQ as f64;
@@ -68,7 +68,7 @@ fn norm_to_q(norm: f32) -> f64 {
     MIN_Q * Q_SPAN.powf(f64::from(norm))
 }
 
-/// Popover editor for one band, anchored under its dot on the graph.
+/// 单个频段的浮层编辑器，锚定在图表上它对应的圆点下方。
 #[derive(IntoElement)]
 pub struct BandEditor {
     index: usize,
@@ -98,7 +98,7 @@ impl BandEditor {
 
 impl RenderOnce for BandEditor {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // knob type-in editors hand focus back here when they close
+        // 旋钮的键入编辑器关闭时把焦点交回这里
         let focus = window
             .use_keyed_state("eq-band-editor-focus", cx, |_, cx| cx.focus_handle())
             .read(cx)
@@ -141,15 +141,14 @@ impl RenderOnce for BandEditor {
             move |kind, _, cx| on_edit(BandEdit::Kind(*kind), cx)
         });
 
-        // per-band ids keep knob state from bleeding across bands when the
-        // popover re-targets; composite (name, index) ids avoid a per-frame
-        // format! allocation (same pattern as ColumnResizeHandle::new)
+        // 逐频段 id 能在浮层改指向时防止旋钮状态串到别的频段；用 (name, index) 组合
+        // id 是为了避开每帧一次 format! 分配（与 ColumnResizeHandle::new 同一套路）
         let index = self.index;
         let freq_knob = knob(ElementId::named_usize("eq-band-freq", index))
             .label(tr!("EQ_BAND_FREQ", "Freq"))
             .value(freq_to_norm(band.frequency))
             .default_value(freq_to_norm(DEFAULT_BAND_FREQ_HZ))
-            // typed input covers the full DSP range, the drag stays axis-bound
+            // 键入输入覆盖 DSP 的完整量程，拖拽则受坐标轴约束
             .parse_range(freq_to_norm(MIN_FREQUENCY), freq_to_norm(MAX_FREQUENCY))
             .format(|v| format_hz(norm_to_freq(v)).into())
             .parse(|s| parse_hz(s).map(freq_to_norm))

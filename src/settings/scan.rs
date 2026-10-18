@@ -16,10 +16,9 @@ pub enum MissingFolderPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScanSettings {
-    // The default is deliberately impure: a settings.json missing the `paths`
-    // key probes the OS for the standard music folders right here (WinRT
-    // StorageLibrary + canonicalize, see `retrieve_default_paths`). It only
-    // runs when the key is absent, and an empty table on failure is harmless.
+    // 默认值刻意是纯函数之外的：缺 `paths` 键的 settings.json 会在这里向 OS 探测
+    // 标准音乐文件夹（WinRT StorageLibrary + canonicalize，见
+    // `retrieve_default_paths`）。只有该键缺失时才运行，失败时返回空表也无害。
     #[serde(default = "retrieve_default_paths")]
     pub paths: Vec<Utf8PathBuf>,
     #[serde(default)]

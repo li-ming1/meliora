@@ -42,7 +42,7 @@ use crate::{
 
 actions!(eq, [Dismiss]);
 
-/// Frozen popover position plus the inputs that re-anchor it when they change.
+/// 冻结的浮层位置，外加能在变化时把它重新锚定的那几个输入。
 #[derive(Clone, Copy)]
 struct PopoverAnchor {
     selected: Option<usize>,
@@ -50,7 +50,7 @@ struct PopoverAnchor {
     point: Point<Pixels>,
 }
 
-/// Working copy of the equalizer settings: capped at MAX_EQ_BANDS and sanitized.
+/// 均衡器设置的工作副本：条数上限为 MAX_EQ_BANDS 并做过清洗。
 fn synced_config(settings: &Settings) -> EqualizerSettings {
     let mut config = settings.playback.equalizer.clone();
     config.bands.truncate(MAX_EQ_BANDS);
@@ -67,18 +67,18 @@ pub struct EqualizerView {
     popover_anchor: Option<PopoverAnchor>,
     plot_slot: PlotSlot,
     spectrum: Option<Entity<SpectrumData>>,
-    /// Shared viewer count gating the audio taps, decremented when the view is released.
+    /// 门控音频抽头的共享查看者计数，视图释放时减一。
     spectrum_viewers: Option<Arc<AtomicUsize>>,
-    /// First click on the header's reset button only arms it, the second clears the bands.
+    /// 第一次点击头部的重置按钮只是把它武装起来，第二次才清空频段。
     reset_armed: bool,
-    /// Drops the arm if the confirming second click never comes.
+    /// 如果那第二次确认点击迟迟不来，就解除武装。
     reset_disarm_task: Option<Task<()>>,
     clip_latched: bool,
     save_task: Option<Task<()>>,
-    /// Reload held back while a drag owns the state, applied when the drag ends.
+    /// 拖拽独占状态期间被挡住的重新载入，拖拽结束时应用。
     pending_reload: Option<EqualizerSettings>,
     focus_handle: FocusHandle,
-    /// Set when a selection change should pull keyboard focus to this view.
+    /// 选中项变化应当把键盘焦点拉到本视图时置位。
     focus_pending: bool,
 }
 
@@ -88,7 +88,7 @@ impl EqualizerView {
             let settings = cx.global::<SettingsGlobal>().model.clone();
             let config = synced_config(settings.read(cx));
 
-            // hot-reloads and external edits sync in, held back while a drag owns the state
+            // 热重载与外部编辑会同步进来，拖拽独占状态期间被挡住
             cx.observe(&settings, |this: &mut Self, settings, cx| {
                 let config = synced_config(settings.read(cx));
                 if this.dragging {
@@ -103,13 +103,13 @@ impl EqualizerView {
             })
             .detach();
 
-            // a pending debounced save dies with the view, flush it on release
+            // 待处理的防抖保存会随视图一起消亡，释放时把它刷出去
             cx.on_release(|this, cx| {
-                // one less open view, the taps gate shut when the last view leaves
+                // 少一个打开的视图，最后一个视图离开后抽头门就关上
                 if let Some(viewers) = &this.spectrum_viewers {
                     viewers.fetch_sub(1, Ordering::Relaxed);
                 }
-                // compare like-for-like, the working copy is capped at MAX_EQ_BANDS
+                // 同类相比：工作副本的条数上限是 MAX_EQ_BANDS
                 let mut stored = this.settings.read(cx).playback.equalizer.clone();
                 stored.bands.truncate(MAX_EQ_BANDS);
                 if this.save_task.is_none() && stored == this.config {
@@ -124,7 +124,7 @@ impl EqualizerView {
             })
             .detach();
 
-            // redraw the curve when the output stream's rate changes
+            // 输出流的采样率变化时重绘曲线
             let sample_rate = if cx.has_global::<PlaybackInfo>() {
                 let model = cx.global::<PlaybackInfo>().sample_rate.clone();
                 let rate = *model.read(cx);
@@ -141,7 +141,7 @@ impl EqualizerView {
                 0
             };
 
-            // the process-long analyzer publishes into a shared entity, open views gate the taps
+            // 与进程同寿的分析器发布进一个共享实体，打开的视图为抽头把关
             ensure_analyzer(cx);
             let (spectrum, spectrum_viewers) = if cx.has_global::<SpectrumState>() {
                 let (data, viewers) = {
@@ -176,7 +176,7 @@ impl EqualizerView {
         })
     }
 
-    /// Remove a band and keep the selection coherent.
+    /// 移除一个频段并保持选中项自洽。
     fn remove_band(&mut self, cx: &mut Context<Self>, index: usize) {
         self.mutate(cx, |config| {
             if index < config.bands.len() {
@@ -190,7 +190,7 @@ impl EqualizerView {
         }
     }
 
-    /// Drops the selection when it points past the (shortened) band list.
+    /// 选中项指向（变短后的）频段列表之外时把它丢掉。
     fn drop_stale_selection(&mut self) {
         if self.selected.is_some_and(|i| i >= self.config.bands.len()) {
             self.selected = None;
@@ -221,7 +221,7 @@ impl EqualizerView {
             self.mutate(cx, |config| config.bands.clear());
         } else {
             self.reset_armed = true;
-            // a stray second click long after arming must not clear the bands
+            // 武装之后很久才来的第二次点击不得清空频段
             self.reset_disarm_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(Duration::from_secs(3)).await;
                 this.update(cx, |this, cx| {
@@ -238,42 +238,39 @@ impl EqualizerView {
         self.reset_armed
     }
 
-    /// Single funnel for edits: apply, then push the result everywhere.
+    /// 所有编辑的唯一汇聚点：先应用，再把结果推向所有下游。
     pub fn mutate(&mut self, cx: &mut Context<Self>, update: impl FnOnce(&mut EqualizerSettings)) {
         update(&mut self.config);
         self.config.bands.truncate(MAX_EQ_BANDS);
         self.push_config(cx);
     }
 
-    /// Push the working copy to the DSP and the settings model, debounce only the disk write.
+    /// 把工作副本推给 DSP 与设置模型，只对落盘做防抖。
     fn push_config(&mut self, cx: &mut Context<Self>) {
         if cx.has_global::<PlaybackInterface>() {
             cx.global::<PlaybackInterface>()
                 .set_equalizer(self.config.clone());
         }
 
-        // the model always tracks the latest edit so a mid-debounce save or reload stays
-        // current, the equality guard in the observer keeps this notify from looping back.
-        // Deliberately NOT notifying here: the DSP got the config above and this view
-        // notifies itself below, and a notify on the settings model cascades into the
-        // app-wide refresh_windows observer - a full repaint of every window per mouse
-        // move while dragging. The trailing-edge save reads the model directly, and when
-        // settings.json lands the file watcher produces one real notification.
+        // 模型始终跟随最新一次编辑，于是防抖期间的保存或重载拿到的都是当前值；
+        // 观察者里的相等性守卫能防止这次 notify 回流到自己。
+        // 这里刻意**不** notify：DSP 在上面已拿到配置，本视图在下面自己 notify，
+        // 而对设置模型的 notify 会级联到应用级的 refresh_windows 观察者——拖拽时
+        // 每次鼠标移动都重绘所有窗口。后沿保存直接读模型，settings.json 落盘时
+        // 文件监视器会产生一次真正的通知。
         let config = self.config.clone();
         self.settings.update(cx, |settings, _| {
             settings.playback.equalizer = config;
         });
 
-        // persist on the trailing edge so rapid edits collapse into one write, the closure saves
-        // whatever the model holds when it fires
+        // 在后沿落盘，于是密集编辑折叠成一次写入；闭包触发时保存模型当时的内容
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(500))
                 .await;
             this.update(cx, |this, cx| {
-                // Clear the handle so the release guard's "nothing pending &&
-                // no diff" fast path works again; a newer edit re-arms a fresh
-                // task (dropping this one cancels it before this body runs).
+                // 清掉句柄，让释放守卫的"无待处理 && 无差异"快路径重新可用；
+                // 更新的编辑会武装一个新任务（这个被丢弃时，其本体尚未运行就被取消）。
                 this.save_task = None;
                 this.settings
                     .update(cx, |settings, cx| save_settings(cx, settings));
@@ -284,7 +281,7 @@ impl EqualizerView {
         cx.notify();
     }
 
-    /// Escape deselects the band, without a selection the key falls through to closing the window.
+    /// Escape 取消选中频段；没有选中时这个键继续下传给关闭窗口。
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected.take().is_some() {
             cx.notify();
@@ -293,7 +290,7 @@ impl EqualizerView {
         }
     }
 
-    /// Arrow keys nudge the selected band, Shift shrinks the step.
+    /// 方向键微调选中的频段，Shift 缩小步长。
     fn nudge(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.selected else {
             return;
@@ -325,7 +322,7 @@ impl EqualizerView {
 impl Render for EqualizerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::Equalizer);
-        // key events only reach this view while it sits on the focus path
+        // 只有本视图位于焦点路径上时键事件才会到达这里
         if self.focus_pending {
             self.focus_pending = false;
             if self.selected.is_some() {
@@ -339,7 +336,7 @@ impl Render for EqualizerView {
         let dot = self
             .selected
             .and_then(|index| Some(dot_position(self.config.bands.get(index)?, plot?)));
-        // the anchor freezes once computed, released on drag end, selection, or layout changes
+        // 锚点一经算出就冻结，在拖拽结束、选中变化或布局变化时释放
         let anchor = self
             .popover_anchor
             .filter(|anchor| anchor.selected == self.selected && anchor.plot == plot)
@@ -459,9 +456,9 @@ impl Render for EqualizerView {
                     view.update(cx, |this, cx| {
                         this.dragging = active;
                         if !active {
-                            // re-anchor the popover onto the dot's resting spot
+                            // 把浮层重新锚定到圆点的静止位置
                             this.popover_anchor = None;
-                            // land a reload that was held back while the drag owned the state
+                            // 落实那次在拖拽独占状态期间被挡住的重新载入
                             if let Some(config) = this.pending_reload.take()
                                 && config != this.config
                             {
@@ -535,8 +532,7 @@ impl Render for EqualizerView {
                                         };
                                         match edit {
                                             BandEdit::Kind(kind) => {
-                                                // follow the default Q across types, keep a custom
-                                                // one
+                                                // 切换类型时跟随默认 Q，自定义值则保留
                                                 if band.q == band.kind.default_q() {
                                                     band.q = kind.default_q();
                                                 }

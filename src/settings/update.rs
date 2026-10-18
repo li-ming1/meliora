@@ -4,16 +4,15 @@ fn default_true() -> bool {
     true
 }
 
-/// Update-check preferences (`settings.json` → `update`). The updater itself
-/// only exists in `online` builds (`kugou` implies it), but the group
-/// always deserializes so the settings file keeps one shape across builds.
+/// 更新检查偏好（`settings.json` → `update`）。更新器本身只存在于 `online` 构建
+/// （`kugou` 蕴含它），但这一组始终可反序列化，让设置文件在各种构建下保持同一形状。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct UpdateSettings {
-    /// Check GitHub Releases once per launch, a few seconds after startup.
+    /// 每次启动检查一次 GitHub Releases，在启动几秒之后。
     #[serde(default = "default_true")]
     pub auto_check: bool,
-    /// Download a matched new build automatically when a check finds one;
-    /// installing still waits for an explicit restart (see `updater.rs`).
+    /// 检查发现新版本时自动下载匹配的新构建；安装仍然等用户显式重启
+    /// （见 `updater.rs`）。
     #[serde(default = "default_true")]
     pub auto_download: bool,
 }

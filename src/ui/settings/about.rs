@@ -22,8 +22,8 @@ use crate::{
 };
 
 pub struct AboutSettings {
-    /// settings.json entity — source of the update toggles (`online` builds
-    /// only; the page itself is stateless without the updater).
+    /// settings.json 实体——更新开关的来源（仅 `online` 构建；没有更新器时这一页
+    /// 本身无状态）。
     #[cfg(feature = "online")]
     settings: Entity<crate::settings::Settings>,
 }
@@ -52,9 +52,8 @@ impl AboutSettings {
     }
 }
 
-/// One settings row: a titled label with explanation subtext and a
-/// full-width secondary button that dispatches `action` (deferred, so it
-/// runs outside of click handling) on click.
+/// 一行设置：带标题的标签 + 说明副文本，加一个整宽的次级按钮，点击时分发 `action`
+/// （延迟执行，好让它跑在点击处理之外）。
 fn action_row<A: Action + Clone>(
     cx: &Context<AboutSettings>,
     label_id: &'static str,
@@ -78,9 +77,8 @@ fn action_row<A: Action + Clone>(
 }
 
 #[cfg(feature = "online")]
-/// What the contextual button of the status row does right now; `None`
-/// means the state machine is busy (checking / downloading) and shows no
-/// button at all.
+/// 状态行上那个上下文按钮此刻做什么；`None` 表示状态机正忙（检查中/下载中），
+/// 完全不显示按钮。
 enum UpdateAction {
     None,
     Check,
@@ -91,8 +89,8 @@ enum UpdateAction {
 
 #[cfg(feature = "online")]
 impl AboutSettings {
-    /// Applies `update` to `settings.update`, then persists the settings
-    /// file and notifies (interface-page pattern).
+    /// 把 `update` 应用到 `settings.update`，随后持久化设置文件并 notify
+    /// （interface 页的同一套模式）。
     fn update_update_settings(
         &self,
         cx: &mut App,
@@ -105,7 +103,7 @@ impl AboutSettings {
         });
     }
 
-    /// One checkbox row toggling one `bool` field of `UpdateSettings`.
+    /// 一个勾选行，切换 `UpdateSettings` 的一个 `bool` 字段。
     fn toggle_row(
         cx: &Context<Self>,
         label_id: &'static str,
@@ -125,8 +123,7 @@ impl AboutSettings {
             .child(checkbox(check_id, checked))
     }
 
-    /// `(status subtext, contextual button action)` for the updater's
-    /// current state.
+    /// 更新器当前状态对应的 `(状态副文本, 上下文按钮动作)`。
     fn update_status(cx: &App) -> (SharedString, UpdateAction) {
         let status = if cx.has_global::<UpdaterGlobal>() {
             cx.global::<UpdaterGlobal>().state.read(cx).status.clone()
@@ -197,8 +194,7 @@ impl AboutSettings {
         }
     }
 
-    /// The status row: current version, live updater state, and the one
-    /// contextual action for that state.
+    /// 状态行：当前版本、更新器的实时状态，以及该状态对应的那一个上下文动作。
     fn update_status_row(&self, cx: &mut Context<Self>) -> Label {
         let (status_text, action) = Self::update_status(cx);
         let row = label(

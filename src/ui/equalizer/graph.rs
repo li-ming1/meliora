@@ -28,22 +28,21 @@ type AddHandler = dyn FnMut(f64, f64, &mut App) -> usize;
 type DragActiveHandler = dyn FnMut(bool, &mut App);
 
 const DOT_RADIUS: f32 = 8.0;
-/// Gap between a dot and its hover ring.
+/// 圆点与其 hover 环之间的间隙。
 const DOT_RING_PAD: f32 = 3.0;
 const DOT_HIT_RADIUS: f32 = 16.0;
 const CURVE_HIT_DISTANCE: f32 = 8.0;
 const Q_FLASH_MS: u128 = 600;
-/// Pointer travel before a press counts as a drag rather than a click.
+/// 指针移动多少之后，一次按下算拖拽而不是点击。
 const DRAG_START_THRESHOLD_PX: f32 = 3.0;
-/// A click this soon after an add is the double-click's second press landing
-/// on the new dot, not a toggle.
+/// 新增之后这么短的一次点击是双击的第二次按下正好落在新圆点上，而不是切换选中。
 const ADD_ECHO_MS: u128 = 500;
 
 const GRID_FREQS: [f32; 13] = [
     20.0, 30.0, 50.0, 100.0, 200.0, 300.0, 500.0, 1_000.0, 2_000.0, 3_000.0, 5_000.0, 10_000.0,
     20_000.0,
 ];
-// decade and 5x marks get text labels
+// 十倍频程与 5x 刻度带文字标签
 const LABEL_FREQS: [f32; 6] = [50.0, 100.0, 500.0, 1_000.0, 5_000.0, 10_000.0];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -63,7 +62,7 @@ struct DragState {
     moved: bool,
 }
 
-/// Slot the graph writes its plot area into each frame, so the view can anchor popovers to dots.
+/// 图表每帧写入其绘图区域的槽位，好让视图能把浮层锚定到圆点上。
 pub type PlotSlot = Rc<Cell<Option<Bounds<Pixels>>>>;
 
 struct CurveCache {
@@ -77,8 +76,8 @@ struct CurveCache {
     band: Option<Rc<Vec<f32>>>,
 }
 
-/// Cached axis-label shapes. The 17 labels are static text, so they are only
-/// re-shaped when the font, label color, DPI scale or plot geometry changes.
+/// 缓存的坐标轴标签形状。17 个标签是静态文本，所以只在字体、标签颜色、DPI 缩放或
+/// 绘图几何变化时重新成形。
 struct LabelCache {
     font: Font,
     color: Hsla,
@@ -88,19 +87,15 @@ struct LabelCache {
     lines: Rc<Vec<(ShapedLine, Point<Pixels>)>>,
 }
 
-/// How often a drag pushes new values downstream: mouse moves arrive at
-/// 125-1000 Hz and every push used to clone the config into the DSP channel
-/// and re-run the compensation grid.
+/// 拖拽向下游推送新值的频率：鼠标移动以 125-1000 Hz 到达，而过去每次推送都会把配置
+/// 克隆进 DSP 通道并重跑补偿网格。
 const DRAG_PUSH_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Built tessellations for one stable frame, reused while nothing visible
-/// changed. Painting still hands the scene its own copy of the painted path
-/// (paint_path takes it by value), but a cache hit skips PathBuilder's
-/// intermediate buffers and the curve sampling a rebuild would redo — a
-/// static page (paused spectrum, no drag) then tessellates nothing at all.
-/// Split into two independently keyed halves: a playing spectrum swaps its
-/// Rc pointers every frame and rebuilds only the spectrum half, never the
-/// untouched curve half ([`EqCurvePaths`]).
+/// 一个稳定帧里构建好的镶嵌结果，在可见内容没变时复用。绘制仍会把已铺好路径的副本
+/// 交给自己的场景（paint_path 按值接收），但缓存命中能跳过 PathBuilder 的中间缓冲和
+/// 重建会重做的曲线采样——静止页面（频谱暂停、无拖拽）于是完全不镶嵌。
+/// 拆成两个独立记 key 的半边：播放中的频谱每帧换它的 Rc 指针，只重建频谱半边，
+/// 绝不碰未变动的曲线半边（[`EqCurvePaths`]）。
 #[derive(Default)]
 struct EqSpectrumPaths {
     pre_fill: Option<Path<Pixels>>,
@@ -108,7 +103,7 @@ struct EqSpectrumPaths {
     post_stroke: Option<Path<Pixels>>,
 }
 
-/// Curve half of the tessellation cache; see [`EqSpectrumPaths`].
+/// 镶嵌缓存的曲线半边；见 [`EqSpectrumPaths`]。
 #[derive(Default)]
 struct EqCurvePaths {
     band_stroke: Option<Path<Pixels>>,
@@ -116,8 +111,8 @@ struct EqCurvePaths {
     composite_stroke: Option<Path<Pixels>>,
 }
 
-/// Spectrum paths keyed on the analyzer Rc pointers plus the plot geometry
-/// (no scale: `build_spectrum_paths` only consumes plot geometry).
+/// 频谱路径，以分析器的 Rc 指针加绘图几何为 key（不含 scale：
+/// `build_spectrum_paths` 只消费绘图几何）。
 struct SpectrumPathCache {
     origin: Point<Pixels>,
     size: Size<Pixels>,
@@ -126,8 +121,7 @@ struct SpectrumPathCache {
     paths: Rc<EqSpectrumPaths>,
 }
 
-/// Curve paths invalidated alongside the curve cache
-/// (config/selected/geometry/rate).
+/// 与曲线缓存一同失效的曲线路径（config/selected/geometry/rate）。
 struct CurvePathCache {
     config: EqualizerSettings,
     selected: Option<usize>,
@@ -144,7 +138,7 @@ struct GraphState {
     hover: Option<Hover>,
     q_flash: Option<(Instant, usize)>,
     last_add: Option<(Instant, usize)>,
-    /// The last values a drag pushed downstream, for the push coalescing.
+    /// 拖拽最后一次向下游推送的值，用于推送合并。
     last_push: Option<(Instant, usize, f64, f64)>,
     cache: Option<CurveCache>,
     label_cache: Option<LabelCache>,
@@ -152,8 +146,7 @@ struct GraphState {
     curve_paths: Option<CurvePathCache>,
 }
 
-/// Summed response of the enabled bands. Bypass ignored so the curve stays
-/// visible for editing while the EQ is off.
+/// 已启用频段的响应叠加。旁路被忽略，好让 EQ 关闭时曲线仍可见以便编辑。
 fn composite_db(config: &EqualizerSettings, rate: f64, frequency: f64) -> f64 {
     config
         .bands
@@ -175,15 +168,14 @@ pub(crate) fn dot_position(band: &EqBandSettings, plot: Bounds<Pixels>) -> Point
     point(plot.origin.x + px(x), plot.origin.y + px(y))
 }
 
-/// `freq_to_x` without the axis clamp: a band nudged off-axis starts its drag
-/// outside the plot, and the delta must stay relative to that real spot.
+/// 不带坐标轴钳位的 `freq_to_x`：被推到轴外的频段开始拖拽时位置在绘图区之外，增量
+/// 必须相对那个真实位置来计算。
 fn freq_to_x_unclamped(freq: f32, width: f32) -> f32 {
     let t = (freq.log10() - MIN_FREQ.log10()) / (MAX_FREQ.log10() - MIN_FREQ.log10());
     t * width
 }
 
-/// Nearest dot within reach of the cursor, else the composite curve when its
-/// edge passes close enough.
+/// 光标可及范围内最近的圆点，否则取合成曲线——前提是它的边缘足够接近。
 fn hit_test(
     config: &EqualizerSettings,
     rate: f64,
@@ -218,7 +210,7 @@ fn hit_test(
     }
 }
 
-/// One sample per 2 physical pixels, dense enough that segments read as a smooth curve.
+/// 每 2 个物理像素一个采样，密到分段看起来是平滑曲线。
 fn sample_curve(width: f32, scale: f32, db_at: impl Fn(f64) -> f64) -> Rc<Vec<f32>> {
     let columns = ((width * scale) / 2.0).ceil().max(1.0) as usize;
     (0..columns)
@@ -242,7 +234,7 @@ fn curve_path(builder: &mut PathBuilder, samples: &[f32], plot: Bounds<Pixels>, 
     }
 }
 
-/// Top edge of a spectrum curve as a Catmull-Rom spline, points spread evenly across the width.
+/// 频谱曲线的上边缘，做成 Catmull-Rom 样条，点沿宽度均匀铺开。
 fn spectrum_path(builder: &mut PathBuilder, points: &[f32], plot: Bounds<Pixels>) {
     let width: f32 = plot.size.width.into();
     let height: f32 = plot.size.height.into();
@@ -250,7 +242,7 @@ fn spectrum_path(builder: &mut PathBuilder, points: &[f32], plot: Bounds<Pixels>
     if last == 0 {
         return;
     }
-    // plot-local pixels for a display point index
+    // 显示点下标 -> 绘图区局部像素
     let at = |i: usize| {
         (
             i as f32 / last as f32 * width,
@@ -271,7 +263,7 @@ fn spectrum_path(builder: &mut PathBuilder, points: &[f32], plot: Bounds<Pixels>
     }
 }
 
-/// Fill under a spectrum curve down to the plot's bottom edge, None for empty data.
+/// 频谱曲线下直到绘图区底边的填充，空数据时为 None。
 fn spectrum_fill_path(points: &[f32], plot: Bounds<Pixels>) -> Option<Path<Pixels>> {
     if points.is_empty() {
         return None;
@@ -285,8 +277,7 @@ fn spectrum_fill_path(points: &[f32], plot: Bounds<Pixels>) -> Option<Path<Pixel
     fill.build().ok()
 }
 
-/// Tessellates the three spectrum paths from the latest analyzer data. Same
-/// shapes the paint path used to build per frame.
+/// 用最新的分析器数据镶嵌出三条频谱路径。与绘制路径过去每帧构建的形状完全相同。
 fn build_spectrum_paths(
     spectrum_pre: &[f32],
     spectrum_post: &[f32],
@@ -305,7 +296,7 @@ fn build_spectrum_paths(
     paths
 }
 
-/// Tessellates the three response-curve paths from the cached curves.
+/// 从缓存的曲线镶嵌出三条响应曲线路径。
 fn build_curve_paths(curves: &CurveCache, plot: Bounds<Pixels>, scale: f32) -> EqCurvePaths {
     let plot_height: f32 = plot.size.height.into();
     let zero_y = plot.origin.y + px(db_to_y(0.0, plot_height));
@@ -331,8 +322,8 @@ fn build_curve_paths(curves: &CurveCache, plot: Bounds<Pixels>, scale: f32) -> E
     paths
 }
 
-/// Full-bleed plot: the axis labels are drawn inside it, so no gutter is
-/// reserved. Only the panel's 1px top border stays outside the plot.
+/// 全出血绘图区：坐标轴标签画在它内部，所以不预留边槽。只有面板那 1px 的上边框在
+/// 绘图区之外。
 fn plot_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds::new(
         point(bounds.origin.x, bounds.origin.y + px(1.0)),
@@ -355,7 +346,7 @@ fn shape_label(window: &mut Window, text: SharedString, color: Hsla) -> ShapedLi
         .shape_line(text, px(12.0), &[run], None)
 }
 
-/// The static frequency/dB axis labels with their plot-local anchor points.
+/// 静态的频率/dB 坐标轴标签及其绘图区局部锚点。
 fn shape_axis_labels(
     window: &mut Window,
     label_color: Hsla,
@@ -364,8 +355,7 @@ fn shape_axis_labels(
     let plot_width: f32 = plot.size.width.into();
     let plot_height: f32 = plot.size.height.into();
 
-    // axis labels live inside the full-bleed plot: frequencies hug the
-    // bottom edge, dB values sit just above their grid line at the left
+    // 坐标轴标签就在全出血绘图区内部：频率贴着底边，dB 值坐在左侧各自网格线上方
     let mut labels = Vec::new();
     for freq in LABEL_FREQS {
         let line = shape_label(window, format_hz(freq as f64).into(), label_color);
@@ -391,7 +381,7 @@ fn shape_axis_labels(
     labels
 }
 
-/// Small readout pill anchored above a dot, clamped into the plot horizontally.
+/// 锚在圆点上方的小读数胶囊，水平方向钳进绘图区。
 fn readout_pill(
     window: &mut Window,
     text: SharedString,
@@ -401,7 +391,7 @@ fn readout_pill(
 ) -> (ShapedLine, Bounds<Pixels>) {
     let line = shape_label(window, text, color);
     let width = line.width + px(12.0);
-    // min/max instead of clamp, an inverted range pins to the edge rather than panicking
+    // 用 min/max 而不是 clamp：区间反了时钉在边上，而不是 panic
     let x = (dot.x - width / 2.0)
         .min(plot.origin.x + plot.size.width - width)
         .max(plot.origin.x);
@@ -428,7 +418,7 @@ pub struct EqGraph {
 }
 
 impl EqGraph {
-    /// Device rate the DSP runs at, so the drawn curve matches the audible filter.
+    /// DSP 运行所用的设备采样率，好让画出的曲线与实际听感的滤波器一致。
     pub fn sample_rate(mut self, sample_rate: f64) -> Self {
         self.sample_rate = sample_rate;
         self
@@ -439,14 +429,14 @@ impl EqGraph {
         self
     }
 
-    /// Latest analyzer curves, dB values spread across the plot width, empty vecs paint nothing.
+    /// 最新的分析器曲线，dB 值沿绘图宽度铺开；空 vec 表示什么都不画。
     pub fn spectrum(mut self, pre: Rc<Vec<f32>>, post: Rc<Vec<f32>>) -> Self {
         self.spectrum_pre = pre;
         self.spectrum_post = post;
         self
     }
 
-    /// Fires continuously while a dot is dragged, with the band's new frequency and gain.
+    /// 拖拽圆点期间持续触发，带上该频段新的频率与增益。
     pub fn on_band_change(
         mut self,
         on_band_change: impl FnMut(usize, f64, f64, &mut App) + 'static,
@@ -478,7 +468,7 @@ impl EqGraph {
         self
     }
 
-    /// Adds a band and returns its index, so the graph can immediately drag the new dot.
+    /// 新增一个频段并返回它的下标，好让图表能立刻拖住新圆点。
     pub fn on_add(mut self, on_add: impl FnMut(f64, f64, &mut App) -> usize + 'static) -> Self {
         self.on_add = Some(Rc::new(RefCell::new(on_add)));
         self
@@ -489,7 +479,7 @@ impl EqGraph {
         self
     }
 
-    /// Receives the plot area each frame so popovers can anchor to a band dot.
+    /// 每帧接收绘图区域，好让浮层能锚定到某个频段的圆点。
     pub fn plot_slot(mut self, slot: PlotSlot) -> Self {
         self.plot_slot = Some(slot);
         self
@@ -564,7 +554,7 @@ impl Element for EqGraph {
             && slot.get() != Some(plot)
         {
             slot.set(Some(plot));
-            // re-render so the anchored band editor tracks the new layout
+            // 重渲染，让锚定的频段编辑器跟随新布局
             window.refresh();
         }
         let plot_width: f32 = plot.size.width.into();
@@ -592,7 +582,7 @@ impl Element for EqGraph {
                             || cache.rate != rate
                     });
                     if stale {
-                        // one Biquad per enabled band, evaluated across all columns
+                        // 每个已启用频段一个 Biquad，在所有列上求值
                         let biquads: Vec<Biquad> = config
                             .bands
                             .iter()
@@ -634,7 +624,7 @@ impl Element for EqGraph {
                     }
                 }
 
-                // static axis labels: re-shaped only when font/color/DPI/geometry move
+                // 静态坐标轴标签：只在字体/颜色/DPI/几何变动时重新成形
                 let font = window.text_style().font();
                 let labels = {
                     let mut state_ref = state.borrow_mut();
@@ -664,10 +654,8 @@ impl Element for EqGraph {
                         .clone()
                 };
 
-                // tessellated paths, two independently keyed halves: the
-                // spectrum side rebuilds only when the analyzer data or the
-                // plot geometry moved, the curve side follows the curve
-                // cache — a playing spectrum leaves the response curves alone
+                // 镶嵌好的路径，两个独立记 key 的半边：频谱半边只在分析器数据或绘图
+                // 几何移动时重建，曲线半边跟着曲线缓存走——播放中的频谱不会去动响应曲线
                 let spectrum_paths = {
                     let mut state_ref = state.borrow_mut();
                     let stale = state_ref.spectrum_paths.as_ref().is_none_or(|cache| {
@@ -805,8 +793,7 @@ impl Element for EqGraph {
 
         let plot = prepaint.plot;
 
-        // flush with the window edges: square corners, only a top border
-        // separates the panel from the section header above
+        // 与窗口边缘齐平：直角，只有上边框把它与上方的分区标题分开
         window.paint_quad(quad(
             bounds,
             Corners::default(),
@@ -845,9 +832,8 @@ impl Element for EqGraph {
         }
 
         window.with_content_mask(Some(ContentMask { bounds: plot }), |window| {
-            // paint_path takes the path by value, so each painted path is one
-            // clone from the tessellation cache; the cache hit still saves the
-            // PathBuilder churn and, with the spectrum paused, the rebuilds.
+            // paint_path 按值接收路径，所以每条绘制路径都是镶嵌缓存的一次克隆；
+            // 缓存命中仍然省掉 PathBuilder 的反复构建，频谱暂停时也省掉重建。
             let paths = &prepaint.spectrum_paths;
             if let Some(path) = &paths.pre_fill {
                 window.paint_path(path.clone(), spectrum_pre);
@@ -856,7 +842,7 @@ impl Element for EqGraph {
                 window.paint_path(path.clone(), spectrum_post);
             }
             if let Some(path) = &paths.post_stroke {
-                // dimmed alongside the response curve while the EQ is bypassed
+                // EQ 旁路时与响应曲线一起调暗
                 let mut edge_color: Hsla = spectrum_edge.into_color();
                 if !self.config.enabled {
                     edge_color.alpha *= 0.4;
@@ -882,7 +868,7 @@ impl Element for EqGraph {
             }
         });
 
-        // labels sit on top of the spectrum and curve so they stay readable
+        // 标签画在频谱与曲线之上，保证仍然可读
         for (line, origin) in prepaint.labels.iter() {
             if let Err(err) = line.paint(*origin, px(12.0), TextAlign::Left, None, window, cx) {
                 error!("Failed to paint equalizer label: {:?}", err);
@@ -1029,7 +1015,7 @@ impl Element for EqGraph {
                         return;
                     }
 
-                    // Adds a band and grabs its dot for an immediate drag.
+                    // 新增一个频段并立刻抓住它的圆点开始拖拽。
                     let add_band = |frequency: f64,
                                     gain_db: f64,
                                     position: Point<Pixels>,
@@ -1056,7 +1042,7 @@ impl Element for EqGraph {
                             (drag_active.borrow_mut())(true, cx);
                         }
                     };
-                    // no new bands while the band editor is open
+                    // 频段编辑器打开时不新增频段
                     let editor_closed = selected.is_none();
 
                     match hit_test(&config, rate, plot, ev.position) {
@@ -1065,7 +1051,7 @@ impl Element for EqGraph {
                             cx.stop_propagation();
                             match ev.button {
                                 MouseButton::Left if ev.click_count == 2 => {
-                                    // the second click of an add lands on the new dot, skip it
+                                    // 新增之后的第二次点击落在新圆点上，跳过它
                                     let fresh =
                                         state.borrow().last_add.is_some_and(|(at, band)| {
                                             band == index && at.elapsed().as_millis() < ADD_ECHO_MS
@@ -1115,7 +1101,7 @@ impl Element for EqGraph {
                             let width: f32 = plot.size.width.into();
                             let fx: f32 = (ev.position.x - plot.origin.x).into();
                             let frequency = x_to_freq(fx, width) as f64;
-                            // the ghost previews the snapped curve value, match it
+                            // 幽灵点预览的是已对齐的曲线值，要与它一致
                             let gain_db = composite_db(&config, rate, frequency)
                                 .clamp(-MAX_GAIN_DB, MAX_GAIN_DB);
                             add_band(frequency, gain_db, ev.position, window, cx);
@@ -1124,8 +1110,8 @@ impl Element for EqGraph {
                             if ev.button != MouseButton::Left {
                                 return;
                             }
-                            // a click on empty plot creates a band at the cursor, but
-                            // only with the band editor closed — otherwise it deselects
+                            // 点空白绘图区会在光标处创建一个频段，但仅限频段编辑器
+                            // 关闭时——否则它是取消选中
                             if ev.click_count == 1
                                 && editor_closed
                                 && config.bands.len() < MAX_EQ_BANDS
@@ -1164,7 +1150,7 @@ impl Element for EqGraph {
                             return;
                         };
                         let Some(band) = config.bands.get(drag.index) else {
-                            // the band vanished mid-drag, still release the view's drag latch
+                            // 频段在拖拽中途消失了，仍要释放视图的拖拽闩
                             state.borrow_mut().drag = None;
                             if let Some(drag_active) = &on_drag_active {
                                 (drag_active.borrow_mut())(false, cx);
@@ -1182,8 +1168,8 @@ impl Element for EqGraph {
                         if !drag.moved {
                             return;
                         }
-                        // the start frequency can sit off-axis after an arrow-key nudge,
-                        // map it unclamped so the delta stays relative to the real spot
+                        // 起始频率可能在方向键微调后位于轴外，按不钳位的方式映射，
+                        // 让增量始终相对那个真实位置
                         let start_x = freq_to_x_unclamped(drag.start_frequency as f32, width);
                         let frequency = x_to_freq(start_x + dx * scale, width) as f64;
                         let gain_db = if band.kind.has_gain() {
@@ -1195,8 +1181,8 @@ impl Element for EqGraph {
                         } else {
                             band.gain_db
                         };
-                        // a shift toggle would rescale the whole accumulated delta, so rebase
-                        // the drag origin onto the current value and position
+                        // Shift 的切换会把累计增量整体重新缩放，所以把拖拽原点重设到
+                        // 当前值与当前位置上
                         if ev.modifiers.shift != drag.shift {
                             drag.shift = ev.modifiers.shift;
                             drag.start = ev.position;
@@ -1204,9 +1190,8 @@ impl Element for EqGraph {
                             drag.start_gain_db = gain_db;
                             state.borrow_mut().drag = Some(drag);
                         }
-                        // coalesce the push to ~30 Hz and skip repeat values:
-                        // each push clones the config into the DSP channel and
-                        // re-runs the compensation grid
+                        // 推送合并到约 30 Hz 并跳过重复值：每次推送都会把配置克隆进
+                        // DSP 通道并重跑补偿网格
                         let now = Instant::now();
                         let (due, unchanged) = {
                             let state_ref = state.borrow();
@@ -1250,13 +1235,13 @@ impl Element for EqGraph {
                     let Some(drag) = state.borrow_mut().drag.take() else {
                         return;
                     };
-                    // the next drag starts with a fresh push budget
+                    // 下一次拖拽从全新的推送预算开始
                     state.borrow_mut().last_push = None;
                     if let Some(drag_active) = &on_drag_active {
                         (drag_active.borrow_mut())(false, cx);
                     }
-                    // a click that never moved off the selected dot dismisses it, but a
-                    // double-click's second mouseup must not, it reopens the editor
+                    // 从未离开已选中圆点的一次点击会取消选中，但双击的第二次 mouseup
+                    // 不行——它会重新打开编辑器
                     if !drag.moved
                         && drag.was_selected
                         && ev.click_count <= 1

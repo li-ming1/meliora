@@ -41,10 +41,9 @@ pub(crate) mod alloc_guard {
         }
     }
 
-    /// Run `f` with allocation counting suspended.
+    /// 在挂起分配计数的情况下运行 `f`。
     ///
-    /// This is needed to prevent allocations from other libraries from being
-    /// counted as part of Meliora's own decode/convert path.
+    /// 这是为了阻止其他库的分配被算进 Meliora 自己的解码/转换路径。
     pub(crate) fn exempt<T>(f: impl FnOnce() -> T) -> T {
         let was_counting = COUNTING.with(Cell::get);
         COUNTING.with(|counting| counting.set(false));
@@ -70,7 +69,7 @@ pub(crate) mod alloc_guard {
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // don't care about these right now
+            // 这些暂时不关心
             unsafe { System.dealloc(ptr, layout) }
         }
     }
@@ -90,8 +89,8 @@ pub(crate) struct TestDir {
 
 impl TestDir {
     pub(crate) fn new(prefix: &str) -> Self {
-        // unique per test process: a leftover dir from a crashed/killed run (Windows can refuse
-        // removal while SQLite handles close) must not be reused with its stale contents
+        // 每个测试进程唯一：崩溃/被杀留下的残留目录不能带着旧内容复用（Windows
+        // 可能拒绝删除，因为 SQLite 句柄尚未关闭）
         static RUN_ID: LazyLock<u32> = LazyLock::new(rand::random);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("{prefix}-{}-{id}", *RUN_ID));
@@ -122,7 +121,7 @@ impl Drop for TestDir {
     }
 }
 
-/// Registers the built-in media providers exactly once per test process.
+/// 每个测试进程只注册一次内置媒体 provider。
 pub(crate) fn register_test_media_providers() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -139,12 +138,10 @@ pub(crate) async fn create_test_pool(prefix: &str) -> (TestDir, SqlitePool) {
     (dir, pool)
 }
 
-/// Seeds a synthetic library with raw SQL in one transaction: `artists`
-/// artists, `albums` albums (each linked to its same-numbered artist) and
-/// `albums * tracks_per_album` tracks (each linked to its album's artist).
-/// The shape matches a real scan write closely enough for read-path
-/// benchmarks (10k tracks ≈ 200 albums × 50); the write path itself is
-/// covered by the scan tests and the 100k `scale_probe`.
+/// 在一个事务里用原始 SQL 造一个合成音乐库：`artists` 个艺术家、`albums` 张专辑
+/// （每张挂到同号艺术家）、`albums * tracks_per_album` 首曲目（每首挂到所属专辑的
+/// 艺术家）。形状与真实扫描写入足够接近，可用于读路径基准（1 万曲 ≈ 200 专辑 ×
+/// 50）；写路径本身由扫描测试和 10 万的 `scale_probe` 覆盖。
 pub(crate) async fn seed_library(
     pool: &SqlitePool,
     albums: usize,
@@ -205,15 +202,14 @@ pub(crate) async fn seed_library(
     tx.commit().await.unwrap();
 }
 
-/// Untimed warmup runs before timing; keeps first-call costs (page cache
-/// population, lazy statics) out of the samples.
+/// 计时前的免计时预热轮次；把首次调用的开销（页缓存填充、lazy static）挡在样本
+/// 之外。
 pub(crate) const BENCH_WARMUP: usize = 50;
-/// Timed runs per probe; headline numbers use the min.
+/// 每个探针的计时轮次；结论性数字取最小值。
 pub(crate) const BENCH_ITERATIONS: usize = 400;
 
-/// Times `f` after `BENCH_WARMUP` untimed runs and prints a
-/// min/p50/p90/p99/max/mean summary in microseconds — the micro-query
-/// format the per-row benches read in.
+/// 先跑 `BENCH_WARMUP` 轮免计时再计时 `f`，并以微秒打印
+/// min/p50/p90/p99/max/mean 摘要——逐行基准读的正是这种微查询格式。
 pub(crate) fn bench_summarize(name: &str, mut f: impl FnMut()) {
     for _ in 0..BENCH_WARMUP {
         f();
@@ -237,10 +233,9 @@ pub(crate) fn bench_summarize(name: &str, mut f: impl FnMut()) {
     );
 }
 
-/// [`bench_summarize`] in milliseconds with explicit run counts — for
-/// probes whose single run costs 10s of ms (image pipelines, index
-/// builds), where the default 400 iterations would take minutes.
-/// Percentiles collapse to min/mean below 10 runs.
+/// 与 [`bench_summarize`] 相同，但以毫秒为单位并显式指定轮次——用于单次运行要
+/// 几十 ms 的探针（图像管线、索引构建），那里默认 400 轮要跑几分钟。轮次少于 10
+/// 时百分位退化为 min/mean。
 pub(crate) fn bench_summarize_n(name: &str, warmup: usize, runs: usize, mut f: impl FnMut()) {
     for _ in 0..warmup {
         f();
@@ -321,9 +316,8 @@ pub(crate) async fn add_track_to_playlist(
     playlist_id
 }
 
-/// Strip the Windows verbatim (`\\?\`) prefix that `std::fs::canonicalize`
-/// produces, so the result compares equal to the plain spelling. A no-op on
-/// other platforms and for paths that carry no prefix.
+/// 剥掉 `std::fs::canonicalize` 在 Windows 上产生的 verbatim（`\\?\`）前缀，
+/// 好让结果与普通写法相等。在其他平台、以及本身无前缀的路径上是空操作。
 pub(crate) fn strip_verbatim_prefix(path: Utf8PathBuf) -> Utf8PathBuf {
     #[cfg(windows)]
     if let Some(rest) = path.as_str().strip_prefix(r"\\?\UNC\") {
@@ -343,13 +337,12 @@ pub(crate) async fn count_rows(pool: &SqlitePool, table: &str) -> i64 {
     row.0
 }
 
-/// In-memory synthesis of the audio fixtures that used to live in the deleted
-/// `assets/tests/audio-fixtures` directory.
+/// 原本放在已删除的 `assets/tests/audio-fixtures` 目录里的音频夹具，改为在内存中
+/// 合成。
 ///
-/// Every container starts as a hand-built, spec-conformant minimal "shell"
-/// (audio framing / metadata blocks only) and gets its metadata attached with
-/// lofty's own tag writers, so the synthesized bytes round-trip through
-/// exactly the read path production uses. No binary fixture files are shipped.
+/// 每个容器都从一个手工构造、符合规范的最小"外壳"开始（只有音频帧结构/元数据
+/// 块），再用 lofty 自己的标签写入器挂上元数据，因此合成出的字节会走生产所用的
+/// 那条读取路径往返。不附带任何二进制夹具文件。
 pub(crate) mod audio_fixtures {
     use std::io::Cursor;
 
@@ -360,15 +353,14 @@ pub(crate) mod audio_fixtures {
     use lofty::prelude::ItemKey;
     use lofty::tag::{Tag, TagExt, TagType};
 
-    /// Returns the synthesized bytes of the named fixture.
+    /// 返回具名夹具的合成字节。
     ///
-    /// `cover.jpg` is the folder-art image. Each `fixture.*` track carries the
-    /// metadata the tests assert on: the rich set (title/artist/album artist/
-    /// album/genre/track 2 of 9/disc 1 of 3/ISRC/MusicBrainz album id/
-    /// ReplayGain) and an embedded cover on every container, plus the date on
-    /// `flac/ogg/m4a/wav/aiff/opus` and lyrics on `flac/ogg/m4a/opus` (ID3's
-    /// USLT frame is not normalized to `Lyrics` by lofty, so MP3/AAC/WAV/AIFF
-    /// never exposed lyrics, matching the deleted fixtures).
+    /// `cover.jpg` 是文件夹封面图。每个 `fixture.*` 曲目都带测试要断言的元数据：
+    /// 完整那套（title/artist/album artist/album/genre/track 2 of 9/disc 1 of
+    /// 3/ISRC/MusicBrainz album id/ReplayGain），并且每个容器都嵌入封面；日期在
+    /// `flac/ogg/m4a/wav/aiff/opus`，歌词在 `flac/ogg/m4a/opus`（ID3 的 USLT 帧
+    /// 不会被 lofty 归一化成 `Lyrics`，所以 MP3/AAC/WAV/AIFF 从来不暴露歌词，
+    /// 与被删除的旧夹具一致）。
     pub(crate) fn fixture(name: &str) -> Vec<u8> {
         let (shell, tag_type, id3v23) = match name {
             "fixture.mp3" => (mp3_shell(), TagType::Id3v2, true),
@@ -400,7 +392,7 @@ pub(crate) mod audio_fixtures {
         attach_tag(shell, tag_type, with_date, with_lyrics, id3v23)
     }
 
-    /// 16x16 cover image encoded as JPEG, for tags and folder-art files.
+    /// 16x16 封面图，编码为 JPEG，供标签与文件夹封面文件使用。
     pub(crate) fn cover_jpeg() -> Vec<u8> {
         let image = image::RgbImage::from_pixel(16, 16, image::Rgb([20, 120, 200]));
         let mut encoded = Cursor::new(Vec::new());
@@ -456,11 +448,10 @@ pub(crate) mod audio_fixtures {
             WriteOptions::new()
         };
         if tag_type == TagType::Id3v2 {
-            // lofty 0.25.1's unified Tag -> ID3v2 conversion silently drops
-            // `ItemKey::MusicBrainzReleaseId` (its TXXX branch does not list
-            // that key and the generic fallback only handles 4-char frame
-            // ids), so the MusicBrainz TXXX frame is added by hand. The
-            // reader maps it back through the "MusicBrainz Album Id" entry.
+            // lofty 0.25.1 的统一 Tag -> ID3v2 转换会静默丢弃
+            // `ItemKey::MusicBrainzReleaseId`（它的 TXXX 分支没列这个键，而通用
+            // 回退只处理 4 字符帧 id），所以 MusicBrainz 的 TXXX 帧要手工加。
+            // 读取端经 "MusicBrainz Album Id" 条目把它映射回来。
             let mut id3 = Id3v2Tag::from(tag);
             id3.insert_user_text(
                 "MusicBrainz Album Id".to_string(),
@@ -482,18 +473,18 @@ pub(crate) mod audio_fixtures {
         file.into_inner()
     }
 
-    /// Four MPEG-1 Layer III frames (44.1 kHz, 128 kbps, mono, zero payload).
+    /// 四个 MPEG-1 Layer III 帧（44.1 kHz、128 kbps、单声道、零负载）。
     fn mp3_shell() -> Vec<u8> {
         let mut out = Vec::new();
         for _ in 0..4 {
             out.extend_from_slice(&[0xFF, 0xFB, 0x90, 0xC0]);
-            // frame length: 144 * 128000 / 44100 = 417 bytes (no padding)
+            // 帧长：144 * 128000 / 44100 = 417 字节（无填充）
             out.resize(out.len() + 413, 0);
         }
         out
     }
 
-    /// ADTS stream: MPEG-4, AAC-LC, 44.1 kHz (index 4), stereo, no CRC.
+    /// ADTS 流：MPEG-4、AAC-LC、44.1 kHz（索引 4）、立体声、无 CRC。
     fn aac_shell() -> Vec<u8> {
         const PAYLOAD: usize = 100;
         let frame_len: u16 = 7 + PAYLOAD as u16;
@@ -511,7 +502,7 @@ pub(crate) mod audio_fixtures {
         out
     }
 
-    /// Minimal RIFF/WAVE: PCM fmt chunk plus a small silent data chunk.
+    /// 最小 RIFF/WAVE：一个 PCM fmt 块加一个小的静音 data 块。
     fn wav_shell() -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(b"WAVE");
@@ -534,7 +525,7 @@ pub(crate) mod audio_fixtures {
         out
     }
 
-    /// Minimal FORM/AIFF: COMM chunk plus a small silent SSND chunk.
+    /// 最小 FORM/AIFF：一个 COMM 块加一个小的静音 SSND 块。
     fn aiff_shell() -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(b"AIFF");
@@ -557,35 +548,33 @@ pub(crate) mod audio_fixtures {
         out
     }
 
-    /// Metadata-only FLAC: `fLaC` marker + STREAMINFO (1 s of 16-bit stereo
-    /// 44.1 kHz, so the metadata duration is usable) + an empty PADDING block.
+    /// 只有元数据的 FLAC：`fLaC` 标记 + STREAMINFO（1 秒的 16-bit 立体声
+    /// 44.1 kHz，好让元数据里的时长可用）+ 一个空的 PADDING 块。
     fn flac_shell() -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"fLaC");
-        // STREAMINFO (type 0), 34-byte content, not the last block
+        // STREAMINFO（类型 0），内容 34 字节，不是最后一块
         out.extend_from_slice(&[0, 0, 0, 34]);
         let mut streaminfo = [0u8; 34];
         streaminfo[0..2].copy_from_slice(&4096u16.to_be_bytes()); // min blocksize
         streaminfo[2..4].copy_from_slice(&4096u16.to_be_bytes()); // max blocksize
-        // min/max frame size stay 0 (unknown); MD5 stays 0 (unknown)
+        // min/max 帧长保持 0（未知）；MD5 保持 0（未知）
         let packed = (44_100u64 << 44) | (1u64 << 41) | (15u64 << 36) | 44_100u64; // rate/ch/bps/total samples
         streaminfo[10..18].copy_from_slice(&packed.to_be_bytes());
         out.extend_from_slice(&streaminfo);
-        // PADDING (type 1), empty, last block
+        // PADDING（类型 1），空，最后一块
         out.extend_from_slice(&[0x81, 0, 0, 0]);
-        // A bare frame header, no subframes. symphonia synchronizes its packet
-        // parser to the first audio frame while opening, so a metadata-only
-        // stream runs into EOF and fails the probe. Fixed-blocksize strategy
-        // with frame number 0, block size code 0xC (= the 4096 the STREAMINFO
-        // pins), 44.1 kHz / 2 ch / 16 bits, CRC-8 over the preceding bytes.
+        // 一个裸帧头，没有 subframe。symphonia 在打开时要把 packet 解析器同步到
+        // 第一个音频帧，所以只有元数据的流会撞到 EOF 并让 probe 失败。这里用
+        // fixed-blocksize 策略：帧号 0、块长码 0xC（即 STREAMINFO 钉住的 4096）、
+        // 44.1 kHz / 2 ch / 16 bits、CRC-8 覆盖前面的字节。
         let header = [0xFF, 0xF8, 0xC9, 0x18, 0x00];
         out.extend_from_slice(&header);
         out.push(crc8(&header));
         out
     }
 
-    /// CRC-8 with the ATM/CCITT polynomial (0x07, init 0) that FLAC frame
-    /// headers are checksummed with.
+    /// CRC-8，用 ATM/CCITT 多项式（0x07，初值 0），FLAC 帧头正是用它校验的。
     fn crc8(data: &[u8]) -> u8 {
         let mut crc = 0u8;
         for &byte in data {
@@ -601,8 +590,8 @@ pub(crate) mod audio_fixtures {
         crc
     }
 
-    /// Ogg Vorbis with the three mandatory header packets (identification,
-    /// comment, setup placeholder). lofty verifies the first two signatures.
+    /// Ogg Vorbis，带三个强制的头部包（identification、comment、setup 占位）。
+    /// lofty 会校验前两个签名。
     fn ogg_vorbis_shell() -> Vec<u8> {
         let mut ident = Vec::new();
         ident.extend_from_slice(b"\x01vorbis");
@@ -633,7 +622,7 @@ pub(crate) mod audio_fixtures {
         out
     }
 
-    /// Ogg Opus with the two mandatory header packets.
+    /// Ogg Opus，带两个强制的头部包。
     fn opus_shell() -> Vec<u8> {
         let mut head = Vec::new();
         head.extend_from_slice(b"OpusHead");
@@ -656,7 +645,7 @@ pub(crate) mod audio_fixtures {
         out
     }
 
-    /// A single-packet Ogg page with a correct CRC.
+    /// 单包 Ogg 页，CRC 正确。
     fn ogg_page(out: &mut Vec<u8>, packet: &[u8], bos: bool, sequence: u32) {
         assert!(
             packet.len() < 255,
@@ -680,7 +669,7 @@ pub(crate) mod audio_fixtures {
         out.extend_from_slice(&page);
     }
 
-    /// The Ogg CRC: poly 0x04c11db7, MSB-first, no final inversion.
+    /// Ogg 的 CRC：多项式 0x04c11db7，MSB 优先，末尾不取反。
     fn ogg_crc(data: &[u8]) -> u32 {
         let mut crc = 0u32;
         for &byte in data {
@@ -696,9 +685,9 @@ pub(crate) mod audio_fixtures {
         crc
     }
 
-    /// Minimal MP4: `ftyp` plus a `moov` containing an audio track skeleton
-    /// (`trak > mdia > hdlr(soun) + mdhd`). lofty's tag writer appends the
-    /// `udta > meta > ilst` tree on save.
+    /// 最小 MP4：`ftyp` 加一个含音频轨骨架的 `moov`
+    /// （`trak > mdia > hdlr(soun) + mdhd`）。lofty 的标签写入器在保存时会补上
+    /// `udta > meta > ilst` 这棵树。
     fn mp4_shell() -> Vec<u8> {
         fn atom(ident: &[u8; 4], content: &[u8]) -> Vec<u8> {
             let mut out = Vec::with_capacity(8 + content.len());
@@ -740,11 +729,11 @@ pub(crate) mod audio_fixtures {
     }
 }
 
-/// Hand-run micro-benchmarks that are not tied to a single module. Run with:
+/// 手工运行的微基准，不隶属于某个单一模块。运行方式：
 /// `cargo test --release --features kugou -- bench_image_cache --ignored --nocapture`
 ///
-/// Measured numbers are recorded in each test's doc comment after actual runs
-/// only (GPUI HARDCORE §1: no numbers, no conclusion - never pre-fill).
+/// 实测数字只在真实跑过之后才写进各测试的文档注释
+/// （GPUI HARDCORE §1：没有数据就没有结论——绝不预填）。
 mod benches {
     use std::collections::VecDeque;
     use std::hint::black_box;
@@ -752,29 +741,24 @@ mod benches {
 
     use rustc_hash::{FxBuildHasher, FxHashMap};
 
-    /// Quantifies the LRU-front fast path of `MelioraImageCache::load`
-    /// (src/ui/caching.rs): a hit for the item already at the front of
-    /// `usage_list` skips the O(depth) `position` scan + `remove` +
-    /// `push_front` reorder; every other hit pays it. 200 entries matches the
-    /// artwork tables' `meliora_cache(..., 200)` call site (table.rs).
+    /// 量化 `MelioraImageCache::load`（src/ui/caching.rs）LRU 队首快路径的收益：
+    /// 命中已经在 `usage_list` 队首的条目可以跳过 O(depth) 的 `position` 扫描 +
+    /// `remove` + `push_front` 重排；其他每次命中都要付。200 条对应封面表的
+    /// `meliora_cache(..., 200)` 调用点（table.rs）。
     ///
-    /// The structure below mirrors the hit branch exactly. Excluded on purpose
-    /// (identical across hot/cold paths, so they cancel out): `gpui::hash`
-    /// of the resource and `ImageCacheItem::get()`.
+    /// 下面的结构精确复刻命中分支。刻意排除的项（冷热路径完全一致，会互相抵消）：
+    /// resource 的 `gpui::hash` 与 `ImageCacheItem::get()`。
     ///
-    /// Measurement soundness notes (the naive approach silently measures
-    /// nothing here):
-    /// - the hit key is `black_box`ed per op, otherwise LLVM hoists the entire
-    ///   loop-invariant hot hit (map lookup + front check never mutate) out of
-    ///   the timing loop;
-    /// - mid/cold batches replay a "self-sustaining cycle": repeatedly hitting
-    ///   whatever entry currently sits at `depth` rotates the first depth+1
-    ///   entries back to their start, so *every* timed op is a genuine
-    ///   depth-`d` hit. Hitting the same key repeatedly would leave it at the
-    ///   front after the first op and measure the fast path instead.
+    /// 测量有效性说明（这里用朴素做法会静默量到零）：
+    /// - 命中键逐次操作都过 `black_box`，否则 LLVM 会把整个循环不变的热门命中
+    ///   （map 查找 + 队首检查都不改动状态）提升出计时循环；
+    /// - 中/冷批次重放一个"自维持循环"：反复命中当前正好位于 `depth` 的那个条目，
+    ///   会把前 depth+1 个条目转回它们的起始状态，于是*每次*计时操作都是货真价实的
+    ///   depth-`d` 命中。若反复命中同一个键，它首次操作后就到了队首，量到的反而是
+    ///   快路径。
     struct LruMirror {
         usage_list: VecDeque<u64>,
-        // 32-byte stand-in for `(ImageCacheItem, Resource)` map payloads
+        // 用 32 字节替身模拟 `(ImageCacheItem, Resource)` 的 map 负载
         cache: FxHashMap<u64, [u64; 4]>,
     }
 
@@ -792,7 +776,7 @@ mod benches {
             Self { usage_list, cache }
         }
 
-        /// Returns the depth the item was found at (0 = front / hot).
+        /// 返回该条目被找到时的深度（0 = 队首 / 热）。
         fn hit(&mut self, hash: u64) -> usize {
             if let Some(_item) = self.cache.get_mut(&hash) {
                 if self.usage_list.front() != Some(&hash) {
@@ -810,14 +794,13 @@ mod benches {
             panic!("hit on missing item");
         }
 
-        /// The floor every hit path pays: map lookup without LRU bookkeeping.
+        /// 每条命中路径都要付的下界：只做 map 查找、不含 LRU 记账。
         fn lookup_only(&self, hash: u64) -> bool {
             self.cache.contains_key(&hash)
         }
 
-        /// Precomputes the op sequence whose every hit lands at exactly
-        /// `depth`, leaving the LRU in its starting state once the sequence
-        /// completes (asserted per op).
+        /// 预计算出一条操作序列，让每次命中都正好落在 `depth`，且序列跑完后 LRU
+        /// 回到起始状态（逐次操作断言）。
         fn depth_cycle(&mut self, depth: usize) -> Vec<u64> {
             let initial: Vec<u64> = self.usage_list.iter().copied().collect();
             let mut cycle = Vec::new();
@@ -846,18 +829,17 @@ mod benches {
         v[v.len() / 2]
     }
 
-    /// Measured 2026-09-12 (release, median of 20 batches x 200 ops,
-    /// 200 entries): bare map lookup 2.0 ns, hot/front hit 3.5 ns, depth-100
-    /// hit 64.0 ns (+60.5 ns), depth-199 hit 90.0 ns (+86.5 ns). The front
-    /// check keeps an LRU-hot hit within ~1.5 ns of the bare lookup floor,
-    /// while a back-of-list hit pays ~26x the hot cost - the fast path removes
-    /// ~96% of the hit cost for hot items, which covers the vast majority of
-    /// real hits (the visible grid), so the guard in caching.rs is justified.
+    /// 实测于 2026-09-12（release，20 批 x 200 次操作取中位数，200 条）：裸 map
+    /// 查找 2.0 ns，热/队首命中 3.5 ns，depth-100 命中 64.0 ns（+60.5 ns），
+    /// depth-199 命中 90.0 ns（+86.5 ns）。队首检查让 LRU-热的命中与裸查找下界
+    /// 只差约 1.5 ns，而链表尾部的命中要付热路径约 26 倍的成本——快路径为热条目
+    /// 消除了约 96% 的命中成本，而真实命中绝大多数都落在热区（可见网格），所以
+    /// caching.rs 里那层守卫是有据的。
     #[test]
     #[ignore = "benchmark: run with --ignored"]
     fn bench_image_cache_lru_fast_path() {
-        // usage_list depth = item index (front = 0). Depths mirror the task
-        // spec: hot (front / fast path), mid-cache, and back-of-the-list cold.
+        // usage_list 深度 = 条目下标（队首 = 0）。深度档位对齐任务书：热（队首 /
+        // 快路径）、缓存中部、链表尾部冷。
         let cases: [(&str, usize); 3] = [
             ("hot  (front, fast path)", 0),
             ("warm (depth 100)        ", 100),
@@ -867,7 +849,7 @@ mod benches {
         let mut lru = LruMirror::new(ITEMS);
         let mut results = Vec::new();
 
-        // lookup-only floor, measured with the same structure (opaque key)
+        // 仅查找的下界，用同一结构测（键对外不透明）
         let hash = 100u64.wrapping_mul(SPREAD);
         let mut floor_samples = Vec::new();
         for batch in 0..WARMUP_BATCHES + BATCHES {
@@ -885,7 +867,7 @@ mod benches {
             let cycle = lru.depth_cycle(depth);
             let mut samples = Vec::new();
             let mut op = 0usize; // cumulative across batches: the cycle must
-            // stay aligned with the LRU's rotation state
+            // 与 LRU 的轮转状态保持一致
             for batch in 0..WARMUP_BATCHES + BATCHES {
                 let start = Instant::now();
                 for _ in 0..OPS_PER_BATCH {
@@ -1350,7 +1332,7 @@ mod scale_probe {
 
     /// 会话快照的真实单价：`send_session_with_queue` 每次**深拷贝整条队列**
     /// 再序列化落盘（`queue_manager/session.rs:11-13` 的注释承认这点，并用
-    /// 500ms 前缘去抖把突发压成"每窗口一次快照"）。本机歌单只有 20 项，
+    /// 500ms 前缘防抖把突发压成"每窗口一次快照"）。本机歌单只有 20 项，
     /// 所以"随机播放全部 10 万曲"那档从来没人量过：一次快照 = 一次
     /// O(队列) 深拷贝（发生在喂音频环的那条线程上）+ 一次几十 MB 序列化。
     /// 这条给出 clone / serialize / bytes 三个数，用来判那个极端场景是否

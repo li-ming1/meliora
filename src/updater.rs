@@ -1,19 +1,15 @@
-//! In-app update check, download and install against GitHub Releases.
+//! 针对 GitHub Releases 的应用内更新检查、下载与安装。
 //!
-//! Pipeline: check (`/releases/latest`, tag vs `CARGO_PKG_VERSION`) →
-//! optional automatic download of the bare binary asset (uploaded by the
-//! release workflow next to the zip/tar.gz packages) with sha256 verification
-//! against the release's `checksums.txt` → rename-swap install
-//! (`meliora.exe → meliora.exe.old`, `meliora.exe.new → meliora.exe`) →
-//! explicit user restart. The swap works while the old process runs: Windows
-//! forbids overwriting or deleting a mapped image but allows renaming it,
-//! which is what makes a helper-free single-file update possible.
+//! 流水线：检查（`/releases/latest`，tag 对比 `CARGO_PKG_VERSION`）→ 可选地自动
+//! 下载裸二进制资产（由 release 工作流与 zip/tar.gz 包一同上传），并按 release 的
+//! `checksums.txt` 校验 sha256 → 改名交换式安装
+//! （`meliora.exe → meliora.exe.old`、`meliora.exe.new → meliora.exe`）→ 由用户
+//! 显式重启。旧进程还在跑时交换也能成立：Windows 禁止覆写或删除已映射的镜像，
+//! 但允许改名，正是这一点让"无需辅助程序的单文件更新"成为可能。
 //!
-//! Degradation paths never trap the user: old releases without a bare asset,
-//! read-only install directories and failed verifications all leave the
-//! release page reachable (or the check re-runnable), and a failed download
-//! can never damage the running installation — the swap is two renames with
-//! a rollback.
+//! 降级路径绝不会把用户困住：没有裸资产的旧 release、只读的安装目录、校验失败，
+//! 全都仍然能让 release 页面可打开（或让检查可重跑）；而下载失败绝不可能损坏正在
+//! 运行的安装——交换只是两次改名，带一次回滚。
 
 use std::{cmp::Ordering, path::Path, path::PathBuf, sync::LazyLock, time::Duration};
 
@@ -31,37 +27,35 @@ use crate::{
 const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/li-ming1/meliora/releases/latest";
 
-/// Metadata + checksum fetches are tiny; a hard cap turns an unreachable API
-/// into a `Failed` status instead of a hanging check.
+/// 元数据 + 校验和的抓取都很小；设硬上限能把不可达的 API 变成一个 `Failed` 状态，
+/// 而不是一次挂死的检查。
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
-/// The bare binary is tens of MB on a possibly slow route; the cap only
-/// guards against a stalled stream, not normal download duration.
+/// 裸二进制有几十 MB，且可能走一条很慢的链路；这个上限只防流卡住，不管正常下载
+/// 耗时。
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Toast lifetime for update notices — an update prompt is easy to miss and
-/// cheap to keep up compared to the default 5 s.
+/// 更新提示 toast 的存活时长——相比默认 5 s，更新提示很容易错过，而让它多留一会儿
+/// 成本极低。
 const UPDATE_TOAST_DURATION: Duration = Duration::from_secs(12);
 
-/// The automatic check waits out the startup rush (first scan, audio init)
-/// so its single request never competes with first-frame work.
+/// 自动检查会等过启动高峰（首次扫描、音频初始化），让它那一次请求不与首帧工作
+/// 抢资源。
 const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(8);
 
-// `static`, not `const`: LazyLock is interior-mutable, and a `const` would
-// inline a fresh lazily-initialized client at every use site (clippy::
-// declare_interior_mutable_const).
+// 用 `static` 而不是 `const`：LazyLock 内部可变，写成 `const` 会在每个使用点内联
+// 一份全新的、惰性初始化的客户端（clippy::declare_interior_mutable_const）。
 static UPDATE_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
     zed_reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        // No client-wide timeout: the download streams for minutes. Each
-        // request sets its own cap instead.
+        // 不设客户端级超时：下载要流式跑几分钟。每个请求各自设自己的上限。
         .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| zed_reqwest::Client::new())
 });
 
-/// Release asset identifier matching the bare binaries uploaded by
-/// `.github/workflows/release.yml` (`meliora-vX.Y.Z-<platform>.<ext>`).
+/// 与 `.github/workflows/release.yml` 上传的裸二进制资产相匹配的标识
+/// （`meliora-vX.Y.Z-<platform>.<ext>`）。
 const PLATFORM_ID: &str = if cfg!(target_os = "windows") {
     if cfg!(target_arch = "x86_64") {
         "windows-x64"
@@ -97,9 +91,9 @@ const BINARY_ASSET_EXT: &str = "bin";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckSource {
-    /// The delayed launch-time check: stays silent unless an update is found.
+    /// 延迟到启动时的自动检查：除非发现更新，否则保持静默。
     Startup,
-    /// The settings-page button: feedback lives inline on the page.
+    /// 设置页上的按钮：反馈就地显示在该页面上。
     Manual,
 }
 
@@ -108,9 +102,8 @@ pub enum UpdateStatus {
     Idle,
     Checking,
     UpToDate,
-    /// `url` is the release page (manual fallback when the bare asset is
-    /// missing or the install directory is unwritable); `binary_url` is
-    /// `None` for releases published before the bare binaries existed.
+    /// `url` 是 release 页面（裸资产缺失或安装目录不可写时的人工兜底）；
+    /// `binary_url` 在裸二进制还不存在时发布的 release 上是 `None`。
     Available {
         version: String,
         url: String,
@@ -122,8 +115,8 @@ pub enum UpdateStatus {
         received: u64,
         total: u64,
     },
-    /// The swap already happened; only a restart separates the user from the
-    /// new build. Normal quitting also applies it on the next launch.
+    /// 交换已经完成，用户与新构建之间只差一次重启。正常退出时也会在下次启动应用
+    /// 这次交换。
     ReadyToRestart {
         version: String,
     },
@@ -141,7 +134,7 @@ pub struct UpdaterGlobal {
 
 impl Global for UpdaterGlobal {}
 
-/// Subset of the GitHub Releases API response we consume.
+/// 我们实际消费的 GitHub Releases API 响应子集。
 #[derive(Debug, Deserialize)]
 struct LatestRelease {
     tag_name: String,
@@ -156,25 +149,23 @@ struct ReleaseAsset {
     browser_download_url: String,
 }
 
-/// Publish the updater state and scrub leftovers of a previous update
-/// restart. Called once from the app bootstrap (`online` builds only).
+/// 发布更新器状态，并清扫上一次更新重启留下的残留。由应用启动引导调用一次
+/// （仅 `online` 构建）。
 pub fn init(cx: &mut App) {
     let state = cx.new(|_| UpdateState {
         status: UpdateStatus::Idle,
     });
     cx.set_global(UpdaterGlobal { state });
 
-    // `meliora.exe.old` / `.new` next to the executable: normally the remains
-    // of an update restart, where the previous process still holds the
-    // renamed image for a moment — hence the delay and retries.
+    // 可执行文件旁边的 `meliora.exe.old` / `.new`：通常是上一次更新重启的残留，
+    // 此时前一个进程还短暂持有已改名的镜像——所以才需要延迟与重试。
     crate::RUNTIME.spawn(async {
         tokio::time::sleep(Duration::from_secs(5)).await;
         cleanup_stale_install_files().await;
     });
 }
 
-/// Schedule the once-per-launch automatic check (gated by the
-/// `update.auto_check` setting).
+/// 安排每次启动只跑一次的自动检查（受 `update.auto_check` 设置门控）。
 pub fn schedule_startup_check(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(STARTUP_CHECK_DELAY).await;
@@ -203,8 +194,7 @@ fn set_status(cx: &mut App, status: UpdateStatus) {
     });
 }
 
-/// Run one check. Re-entrant calls while a check or download is in flight
-/// are ignored; the status machine is only ever mutated on the UI thread.
+/// 执行一次检查。检查或下载已在途时的重入调用会被忽略；状态机只在 UI 线程上变更。
 pub fn check_for_updates(cx: &mut App, source: CheckSource) {
     if !cx.has_global::<UpdaterGlobal>() {
         return;
@@ -237,9 +227,8 @@ fn mark_check_failed(cx: &mut App, error: String) {
 fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource) {
     let Some(Ordering::Less) = compare_versions(env!("CARGO_PKG_VERSION"), &release.tag_name)
     else {
-        // Equal or older than the running version, or a tag that doesn't
-        // parse into three numeric components — "cannot judge" must never
-        // offer an update.
+        // 等于或旧于运行中的版本，或者 tag 解析不出三个数字段——"无法判断"绝不能
+        // 提供更新。
         info!(tag = %release.tag_name, "updater: no update over the running version");
         set_status(cx, UpdateStatus::UpToDate);
         return;
@@ -270,8 +259,7 @@ fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource)
         );
     }
 
-    // The toggle is the user's standing instruction; the check origin only
-    // decides whether a toast accompanied the offer.
+    // 这个开关是用户长期有效的指令；检查来源只决定这次提示有没有配 toast。
     let auto_download = cx.has_global::<SettingsGlobal>()
         && cx
             .global::<SettingsGlobal>()
@@ -284,8 +272,8 @@ fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource)
     }
 }
 
-/// Download the bare binary, verify it, and swap it into place. No-op unless
-/// the state machine is sitting on `Available` with a matching asset.
+/// 下载裸二进制、校验并交换到位。除非状态机正停在带匹配资产的 `Available`，
+/// 否则是空操作。
 pub fn start_download(cx: &mut App) {
     if !cx.has_global::<UpdaterGlobal>() {
         return;
@@ -327,8 +315,7 @@ pub fn start_download(cx: &mut App) {
             .await
         });
 
-        // Forward throttled progress to the UI state until the worker either
-        // finishes or drops its sender.
+        // 把节流后的进度转发给 UI 状态，直到 worker 结束或丢掉自己的发送端。
         let mut sender_alive = true;
         let result = loop {
             if !sender_alive {
@@ -394,8 +381,8 @@ pub fn start_download(cx: &mut App) {
     .detach();
 }
 
-/// Spawn the freshly installed binary and quit through gpui so the
-/// `on_app_quit` flushes (stats, storage) still run.
+/// 启动刚装好的新二进制，并走 gpui 退出，让 `on_app_quit` 的落盘（统计、存储）
+/// 仍然执行。
 pub fn restart_to_apply(cx: &mut App) {
     if crate::spawn_replacement() {
         cx.quit();
@@ -443,8 +430,8 @@ async fn http_get_text(url: &str) -> Result<String, String> {
         .map_err(|error| format!("reading {url} failed: {error}"))
 }
 
-/// Download → sha256 → swap. Runs entirely on the tokio runtime; the watch
-/// sender carries throttled `(received, total)` progress to the UI.
+/// 下载 → sha256 → 交换。全程跑在 tokio runtime 上；watch 发送端把节流后的
+/// `(received, total)` 进度带给 UI。
 async fn download_and_swap(
     binary_url: String,
     checksums_url: Option<String>,
@@ -452,10 +439,9 @@ async fn download_and_swap(
     staged_path: PathBuf,
     progress: tokio::sync::watch::Sender<(u64, u64)>,
 ) -> Result<(), String> {
-    // Fail closed: the checksum manifest is the only integrity anchor this
-    // flow has (no code signing, no pinned hash). A missing manifest or entry
-    // means we cannot tell a corrupted download from a tampered one, so the
-    // auto-install is refused and the user is pointed at the release page.
+    // 失败即关闭：校验和清单是这条流程唯一的完整性锚点（没有代码签名、没有钉死
+    // 的哈希）。清单或其条目缺失，就意味着我们无法区分损坏的下载与被篡改的下载，
+    // 因此拒绝自动安装并把用户指向 release 页面。
     let expected_hash = match &checksums_url {
         Some(url) => {
             let manifest = http_get_text(url).await?;
@@ -505,8 +491,7 @@ async fn download_and_swap(
     let mut hasher = Sha256::new();
     let mut received: u64 = 0;
     let mut last_sent: u64 = 0;
-    // ~2% steps (or 1 MB when the size is unknown) — chunk-level updates
-    // would only burn renders.
+    // 约 2% 一档（大小未知时 1 MB）——按 chunk 更新只会白烧重绘。
     let step: u64 = if total >= 100 {
         total / 50
     } else {
@@ -536,8 +521,8 @@ async fn download_and_swap(
     drop(file);
     let _ = progress.send((received, total));
 
-    // Fail-closed guarantee: expected_hash is always Some here (the manifest
-    // check above refuses otherwise), so verification can never be skipped.
+    // 失败即关闭的保证：这里 expected_hash 恒为 Some（上面的清单检查否则就拒绝），
+    // 所以校验绝不可能被跳过。
     let expected = expected_hash.expect("fail-closed checksum presence");
     let actual = hasher
         .finalize()
@@ -555,24 +540,24 @@ async fn download_and_swap(
     Ok(())
 }
 
-/// The two-rename swap with rollback; see the module docs for why renaming a
-/// running image is safe on Windows.
+/// 带滚动的两次改名交换；为什么在 Windows 上给正在运行的镜像改名是安全的，见模块
+/// 文档。
 fn swap_install(exe_path: &Path, staged_path: &Path) -> Result<(), String> {
     let old_path = append_suffix(exe_path, ".old");
-    // A stale backup from an interrupted earlier update must not block us.
+    // 上一次更新被打断留下的陈旧备份文件不能挡住我们。
     let _ = std::fs::remove_file(&old_path);
     std::fs::rename(exe_path, &old_path)
         .map_err(|error| format!("cannot back up the current executable: {error}"))?;
     if let Err(error) = std::fs::rename(staged_path, exe_path) {
-        // Roll the backup back so the installation stays runnable.
+        // 把备份滚回去，让安装保持可运行。
         let _ = std::fs::rename(&old_path, exe_path);
         return Err(format!("cannot move the staged update into place: {error}"));
     }
     Ok(())
 }
 
-/// `(running executable path, staged download path)` — the staged file lives
-/// next to the executable so the final rename stays within one volume.
+/// `(正在运行的可执行文件路径, 暂存的下载路径)`——暂存文件放在可执行文件旁边，
+/// 好让最终的改名留在同一个卷内。
 fn install_paths() -> Option<(PathBuf, PathBuf)> {
     let exe_path = std::env::current_exe().ok()?;
     let staged_path = append_suffix(&exe_path, ".new");
@@ -597,8 +582,7 @@ async fn cleanup_stale_install_files() {
                     break;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                // The just-replaced process may still hold the image for a
-                // moment after an update restart; retry briefly.
+                // 刚被替换掉的进程在更新重启后可能还短暂持有该镜像；稍作重试。
                 Err(_) if attempt < 4 => tokio::time::sleep(Duration::from_secs(2)).await,
                 Err(error) => {
                     warn!(path = %path.display(), error = %error, "updater: could not remove stale update file");
@@ -609,7 +593,7 @@ async fn cleanup_stale_install_files() {
     }
 }
 
-/// `(bare binary asset URL, checksums.txt asset URL)` for this platform.
+/// 本平台对应的 `(裸二进制资产 URL, checksums.txt 资产 URL)`。
 fn find_update_assets(release: &LatestRelease) -> (Option<String>, Option<String>) {
     let binary_name = format!(
         "meliora-{}-{PLATFORM_ID}.{BINARY_ASSET_EXT}",
@@ -627,9 +611,8 @@ fn find_update_assets(release: &LatestRelease) -> (Option<String>, Option<String
     (binary_url, checksums_url)
 }
 
-/// `sha256sum` line format: `<hex> <whitespace> <filename>`, with the
-/// optional `*` binary-mode marker before the filename. Entries whose hash
-/// isn't 64 hex chars are ignored (protects against a mangled manifest).
+/// `sha256sum` 的行格式：`<hex> <空白> <文件名>`，文件名前可有可选的 `*` 二进制
+/// 模式标记。哈希不是 64 个 hex 字符的条目会被忽略（防清单被弄乱）。
 fn lookup_checksum(manifest: &str, asset_name: &str) -> Option<String> {
     manifest.lines().find_map(|line| {
         let mut tokens = line.split_whitespace();
@@ -646,8 +629,8 @@ fn lookup_checksum(manifest: &str, asset_name: &str) -> Option<String> {
     })
 }
 
-/// "v1.2.3" / "1.2.3" → `[1, 2, 3]`. Anything else (rc suffix, missing or
-/// extra components) is unparsable — see [`compare_versions`].
+/// "v1.2.3" / "1.2.3" → `[1, 2, 3]`。其他形态（rc 后缀、段数缺失或多出）都解析
+/// 不了——见 [`compare_versions`]。
 fn parse_version_tag(tag: &str) -> Option<[u64; 3]> {
     let trimmed = tag.trim();
     let digits = trimmed.strip_prefix(['v', 'V']).unwrap_or(trimmed);
@@ -666,10 +649,8 @@ fn parse_version_tag(tag: &str) -> Option<[u64; 3]> {
     Some(out)
 }
 
-/// `Some(Greater)` means the running version is newer than the tag (an older
-/// release); `Some(Less)` means the tag is a newer release than the running
-/// version; `None` means either side didn't parse and no conclusion may be
-/// drawn.
+/// `Some(Greater)` 表示运行中的版本比 tag 更新（即这是个旧 release）；`Some(Less)`
+/// 表示 tag 是比运行版本更新的 release；`None` 表示任一侧解析不了，不得下任何结论。
 fn compare_versions(current: &str, tag: &str) -> Option<Ordering> {
     Some(parse_version_tag(current)?.cmp(&parse_version_tag(tag)?))
 }

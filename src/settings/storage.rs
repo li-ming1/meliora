@@ -76,10 +76,10 @@ pub enum TableViewModeSetting {
 pub struct TableSettings {
     #[serde(default)]
     pub column_widths: HashMap<String, f32>,
-    /// Visible columns in display order. Absent columns are treated as hidden.
+    /// 按显示顺序排列的可见列。缺失的列视为隐藏。
     #[serde(default)]
     pub column_order: Vec<String>,
-    /// Legacy field used to migrate old settings files.
+    /// 用于迁移旧设置文件的遗留字段。
     #[serde(default, skip_serializing)]
     pub hidden_columns: Vec<String>,
     #[serde(default = "default_table_view_mode")]
@@ -90,30 +90,30 @@ fn default_split_fractions() -> HashMap<String, f32> {
     HashMap::new()
 }
 
-/// The five view keys that have independent split fractions.
+/// 拥有各自独立分隔比例的五个视图键。
 pub const SPLIT_FRACTION_KEYS: [&str; 5] = ["albums", "tracks", "artists", "playlist", "files"];
 
-/// Data to store while quitting the app
+/// 退出应用时要存储的数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageData {
     pub current_track: Option<CurrentTrack>,
     #[serde(default = "default_volume")]
     pub volume: f64,
-    /// Width of the library sidebar in pixels
+    /// 音乐库侧栏宽度，单位像素
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
-    /// Width of the queue panel in pixels
+    /// 队列面板宽度，单位像素
     #[serde(default = "default_queue_width")]
     pub queue_width: f32,
     #[serde(default = "default_show_queue")]
     pub show_queue: bool,
     #[serde(default)]
     pub show_lyrics: bool,
-    /// Legacy single split fraction – kept for backward compatibility when
-    /// reading old config files.  New saves always populate `split_fractions`.
+    /// 遗留的单一分隔比例——为了读旧配置文件时的向后兼容而保留。新的保存一律写
+    /// `split_fractions`。
     #[serde(default = "default_split_fraction")]
     pub split_fraction: f32,
-    /// Per-view split fractions keyed by view name (albums, tracks, artists, playlist, files).
+    /// 按视图名分键的每视图分隔比例（albums、tracks、artists、playlist、files）。
     #[serde(default = "default_split_fractions")]
     pub split_fractions: HashMap<String, f32>,
     #[serde(default = "default_table_settings")]
@@ -124,13 +124,13 @@ pub struct StorageData {
     pub playlist_sort_methods: HashMap<i64, PlaylistTrackSortMethod>,
     #[serde(default)]
     pub sidebar_collapsed: bool,
-    /// Fraction (0..1) of the lyrics panel height
+    /// 歌词面板高度的比例（0..1）
     #[serde(default = "default_lyrics_fraction")]
     pub lyrics_fraction: f32,
-    /// Width of the controls left section (info section) in pixels
+    /// 播放栏左段（信息区）宽度，单位像素
     #[serde(default = "default_controls_left_width")]
     pub controls_left_width: f32,
-    /// Width of the controls right section (secondary controls) in pixels
+    /// 播放栏右段（次级控件）宽度，单位像素
     #[serde(default = "default_controls_right_width")]
     pub controls_right_width: f32,
     #[serde(default)]
@@ -180,15 +180,15 @@ impl StorageData {
         px(self.queue_width)
     }
 
-    /// Return the split fraction for a specific view key (e.g. "albums").
-    /// Falls back to the legacy `split_fraction` field, then to the compiled default.
+    /// 取某个视图键（如 "albums"）的分隔比例。回退到遗留的 `split_fraction` 字段，
+    /// 再回退到编译期默认值。
     pub fn split_fraction_for(&self, key: &str) -> Pixels {
         if let Some(&f) = self.split_fractions.get(key)
             && f > 0.0
         {
             return px(f);
         }
-        // Legacy / migration path
+        // 遗留 / 迁移路径
         if self.split_fraction > 0.0 {
             px(self.split_fraction)
         } else {
@@ -234,7 +234,7 @@ impl Default for StorageData {
 
 #[derive(Debug, Clone)]
 pub struct Storage {
-    /// File path to store data
+    /// 存放数据的文件路径
     path: PathBuf,
 }
 
@@ -243,7 +243,7 @@ impl Storage {
         Self { path }
     }
 
-    /// Save `StorageData` on file system
+    /// 把 `StorageData` 保存到文件系统
     ///
     /// 先写同目录临时文件再 rename 原子替换（Windows 侧为
     /// MOVEFILE_REPLACE_EXISTING），断电/崩溃不会留下截断的 `app_data.json`。
@@ -268,17 +268,17 @@ impl Storage {
         }
     }
 
-    /// Load `StorageData` from storage or use `StorageData::default` in case of any errors
+    /// 从存储载入 `StorageData`；出现任何错误时使用 `StorageData::default`
     pub fn load_or_default(&self) -> StorageData {
         fs::File::open(&self.path)
             .and_then(|file| {
                 serde_json::from_reader(file)
                     .map_err(|e| e.into())
                     .map(|data: StorageData| match &data.current_track {
-                        // validate whether path still exists
+                        // 校验路径是否仍然存在
                         Some(current_track) if !current_track.get_path().exists() => StorageData {
                             current_track: None,
-                            // Preserve other settings when invalidating current_track
+                            // 使 current_track 失效时保留其他设置
                             ..data
                         },
                         _ => data,

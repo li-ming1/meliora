@@ -9,7 +9,7 @@ fn default_keep_current_on_queue_clear() -> bool {
     true
 }
 
-/// KuGou online playback format/bitrate. Higher tiers generally need VIP.
+/// 酷狗在线播放的格式/码率。更高的档位一般需要 VIP。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OnlineQuality {
     #[default]
@@ -20,7 +20,7 @@ pub enum OnlineQuality {
 }
 
 impl OnlineQuality {
-    /// The `quality` value passed to the KuGou playback-URL endpoint.
+    /// 传给酷狗播放地址接口的 `quality` 值。
     #[cfg(feature = "kugou")]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -32,74 +32,69 @@ impl OnlineQuality {
     }
 }
 
-/// User-set playback settings, to be passed to the playback thread.
+/// 用户设置的播放选项，会传给播放线程。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlaybackSettings {
-    /// Whether or not the playback thread should allow for repeating to be disabled.
+    /// 播放线程是否应允许"关闭循环"。
     ///
-    /// If the option is false (the default), requests to set the RepeatState to NotRepeating will
-    /// be processed normally. If the option is set to true, the playback thread will turn all
-    /// requests to disable repeating into requests to repeat. In practice, this means that the
-    /// repeat mode selection button will cycle from Repeating -> RepeatingOne instead of
-    /// NotRepeating -> Repeating -> RepeatingOne.
+    /// 如果该选项为 false（默认），把 RepeatState 设为 NotRepeating 的请求会正常
+    /// 处理。如果设为 true，播放线程会把所有"关闭循环"的请求变成"开启循环"。
+    /// 实际效果是循环模式选择按钮从 Repeating -> RepeatingOne 之间循环，而不是
+    /// NotRepeating -> Repeating -> RepeatingOne。
     ///
-    /// Defaults to false.
+    /// 默认为 false。
     #[serde(default)]
     pub always_repeat: bool,
 
-    /// Determines whether or not the playback thread should handle previous track requests by
-    /// jumping to the beginning of the track if the current track has been played for more than
-    /// 5 seconds.
+    /// 决定播放线程处理"上一曲"请求时，是否在当前曲目已播放超过 5 秒后改为跳到
+    /// 本曲开头。
     ///
-    /// If the option is false, requests to go to the previous track always result in the previous
-    /// track in the queue being played. If the option is true, requests to go to the previous
-    /// track will follow the previously described behavior.
+    /// 如果为 false，"上一曲"请求总是播放队列里的上一首。如果为 true，"上一曲"
+    /// 请求按上面描述的行为处理。
     ///
-    /// Currently defaults to false - this may change in the future as this appears to be fairly
-    /// controversial (out of everyone I've asked it's been exactly 50/50 whether or not they
-    /// prefer this behavior)
+    /// 目前默认 false——未来可能会变，因为这个行为看来颇有争议（问到我的人里正好
+    /// 一半一半，各半是否喜欢这个行为）
     #[serde(default)]
     pub prev_track_jump_first: bool,
 
-    /// Determines whether or not clearing the queue should preserve the currently playing track.
+    /// 决定清空队列时是否保留正在播放的曲目。
     ///
-    /// If the option is false, clearing the queue removes all tracks and stops playback. If the
-    /// option is true, the currently playing track will be preserved in the queue when clearing.
+    /// 如果为 false，清空队列会移除全部曲目并停止播放。如果为 true，清空时队列里
+    /// 会保留当前播放的曲目。
     ///
-    /// Defaults to true.
+    /// 默认为 true。
     #[serde(default = "default_keep_current_on_queue_clear")]
     pub keep_current_on_queue_clear: bool,
 
-    /// ReplayGain settings.
+    /// ReplayGain 设置。
     #[serde(default)]
     pub replaygain: ReplayGainSettings,
 
-    /// Parametric equalizer settings.
+    /// 参数化均衡器设置。
     #[serde(default)]
     pub equalizer: EqualizerSettings,
 
-    /// Whether to prevent the system screensaver and sleep while playing.
+    /// 播放时是否阻止系统屏保与睡眠。
     #[serde(default)]
     pub prevent_idle: bool,
 
-    /// When enabled, removes the current track from the queue when it finishes playing.
+    /// 启用后，当前曲目播放完毕即从队列移除。
     ///
-    /// Defaults to false.
+    /// 默认为 false。
     #[serde(default)]
     pub consume: bool,
 
-    /// KuGou online playback quality. Defaults to standard 128 kbps.
+    /// 酷狗在线播放音质。默认标准 128 kbps。
     #[serde(default)]
     pub online_quality: OnlineQuality,
 
-    /// Directory online (KuGou) downloads are written to. `None` uses
-    /// the platform's default Downloads folder.
+    /// 在线（酷狗）下载写入的目录。`None` 表示用平台的默认 Downloads 文件夹。
     #[serde(default)]
     pub download_dir: Option<String>,
 }
 
 impl PlaybackSettings {
-    /// The configured download directory, or the platform default when unset.
+    /// 已配置的下载目录；未设置时用平台默认目录。
     #[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
     pub fn effective_download_dir(&self) -> PathBuf {
         self.download_dir
@@ -110,7 +105,7 @@ impl PlaybackSettings {
     }
 }
 
-/// The platform's default downloads folder (`~/Downloads` on all desktop OSes).
+/// 平台的默认 Downloads 文件夹（所有桌面系统都是 `~/Downloads`）。
 #[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
 pub fn default_download_dir() -> PathBuf {
     let home = std::env::var("USERPROFILE")

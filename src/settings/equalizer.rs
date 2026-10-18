@@ -2,13 +2,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::playback::dsp::equalizer::{MAX_FREQUENCY, MAX_GAIN_DB, MAX_Q, MIN_FREQUENCY, MIN_Q};
 
-/// Maximum number of equalizer bands.
+/// 均衡器频段的最大数量。
 pub const MAX_EQ_BANDS: usize = 16;
 
-/// The filter type of a single equalizer band.
+/// 单个均衡器频段的滤波器类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EqBandKind {
-    /// Peaking filter, the only type that uses `gain_db`.
+    /// Peaking 滤波器，唯一使用 `gain_db` 的类型。
     #[default]
     Bell,
     LowPass,
@@ -18,12 +18,12 @@ pub enum EqBandKind {
 }
 
 impl EqBandKind {
-    /// Whether bands of this type apply their `gain_db`.
+    /// 该类型的频段是否会施加它的 `gain_db`。
     pub fn has_gain(self) -> bool {
         matches!(self, Self::Bell)
     }
 
-    /// The Q a band of this type starts with, Butterworth for the passes.
+    /// 该类型频段的初始 Q；通带用 Butterworth。
     pub fn default_q(self) -> f64 {
         match self {
             Self::Bell => 1.0,
@@ -33,14 +33,14 @@ impl EqBandKind {
     }
 }
 
-/// A single parametric equalizer band.
+/// 单个参数化均衡器频段。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EqBandSettings {
     pub kind: EqBandKind,
-    /// Center/corner frequency in Hz.
+    /// 中心/转折频率，单位 Hz。
     pub frequency: f64,
-    /// Gain in dB. Only used by `Bell`, but serialized regardless so it round-trips type switches.
+    /// 增益，单位 dB。只有 `Bell` 用到，但无论如何都序列化，好让切换类型时能往返。
     pub gain_db: f64,
     pub q: f64,
     pub enabled: bool,
@@ -58,12 +58,12 @@ impl Default for EqBandSettings {
     }
 }
 
-/// Parametric equalizer settings. Wire format to the DSP and the UI's working state.
+/// 参数化均衡器设置。既是给 DSP 的线格式，也是 UI 的工作态。
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct EqualizerSettings {
-    /// Global bypass.
+    /// 全局旁路。
     pub enabled: bool,
-    /// Attenuate the output by the curve's peak boost so band gains cannot clip.
+    /// 按曲线的峰值提升量对输出做衰减，让频段增益无法造成削波。
     pub volume_compensation: bool,
     pub bands: Vec<EqBandSettings>,
 }
@@ -93,7 +93,7 @@ impl<'de> Deserialize<'de> for EqualizerSettings {
             volume_compensation: raw.volume_compensation,
             bands: raw.bands,
         };
-        // hand-edited files can carry out-of-range values
+        // 手工编辑过的文件可能带着越界值
         settings.sanitize();
         Ok(settings)
     }

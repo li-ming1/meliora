@@ -11,21 +11,16 @@ use gpui::{Context, Entity};
 
 use crate::settings::{Settings, save_settings};
 
-/// Trailing-edge debounce for slider drags (equalizer-view pattern): every
-/// tick bumps the generation and schedules a single save ~300ms out, so
-/// `save_settings` - and the PlaybackInterface/ScanInterface pushes it
-/// performs - run once per drag instead of once per mouse-move tick.
-/// Consumers: the interface page's `grid_min_item_width` slider and the
-/// playback page's preamp slider. The disk write keeps its own 500ms
-/// trailing-edge debounce inside `save_settings`.
+/// 拖拽滑块用的后沿防抖（equalizer-view 的同一套模式）：每次 tick 递增代号并安排
+/// 一次约 300ms 后的保存，于是 `save_settings`——以及它做的
+/// PlaybackInterface/ScanInterface 推送——每次拖拽只跑一次，而不是每次 mouse-move
+/// tick 跑一次。使用方：interface 页的 `grid_min_item_width` 滑块与 playback 页的
+/// 前置增益滑块。落盘本身在 `save_settings` 里还有自己 500ms 的后沿防抖。
 ///
-/// The flush is detached and keyed on the generation counter instead of
-/// being stored as a page-owned `Task`: dropping the page (section
-/// switch / settings-window close) cancels a stored Task, which would
-/// silently lose the trailing save - the live slider value sits in the
-/// settings model but never reaches `save_settings`. The save is routed
-/// through the app-lifetime settings entity so it survives the page.
-/// Each page holds its own instance, so the two pages debounce independently.
+/// flush 是脱离所有方的、按代号计数触发的，而不是存成页面持有的 `Task`：页面被
+/// drop（切换分区 / 关闭设置窗口）会取消存着的 Task，从而静默丢掉最后那次保存——
+/// 滑块的实时值在设置模型里，却永远到不了 `save_settings`。保存改走应用生命周期的
+/// 设置实体，因此能活过页面。每个页各持一个实例，两个页面独立防抖。
 pub struct DebouncedSave {
     generation: Arc<AtomicU64>,
 }
@@ -45,7 +40,7 @@ impl DebouncedSave {
             cx.background_executor()
                 .timer(Duration::from_millis(300))
                 .await;
-            // A newer edit superseded this tick; the newest task owns the save.
+            // 有更新的编辑顶掉了这次 tick；最新的那个任务拥有这次保存。
             if generation_counter.load(Ordering::Relaxed) != generation {
                 return;
             }

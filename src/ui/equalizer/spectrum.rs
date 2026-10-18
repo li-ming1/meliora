@@ -1,4 +1,4 @@
-//! Background spectrum analysis, drains the audio taps into smoothed log-frequency curves.
+//! 后台频谱分析：把音频抽头排空成平滑的对数频率曲线。
 
 use std::{
     f32::consts::{LN_2, PI},
@@ -22,39 +22,39 @@ use crate::{
     },
 };
 
-/// Display points per curve, spread across the graph's frequency axis.
+/// 每条曲线的显示点数，沿图表频率轴铺开。
 const SPECTRUM_POINTS: usize = 240;
-/// Analysis window in samples.
+/// 分析窗口的采样数。
 const FFT_SIZE: usize = 4096;
-/// Samples between consecutive windows, overlapping windows analyze every sample.
+/// 相邻窗口之间的采样数；窗口重叠以便分析到每一个采样。
 const HOP_SIZE: usize = 1024;
-/// Publish interval, the analyzer notifies at most 30 times a second.
+/// 发布间隔：分析器每秒最多 notify 30 次。
 const FRAME_MS: u64 = 33;
-/// Poll interval while no equalizer view is open, the rings stay empty without an audience.
+/// 没有均衡器视图打开时的轮询间隔；没有观众时环形缓冲保持为空。
 const PARKED_FRAME_MS: u64 = 1000;
-/// Display tilt, typical program material reads roughly flat.
+/// 显示用的倾斜补偿：典型节目素材读数接近平坦。
 const TILT_DB_PER_OCT: f32 = 4.5;
-/// Smoothing time constant, a frame about 500 ms old carries e^-2 of the weight.
+/// 平滑的时间常数：约 500 ms 前那一帧的权重是 e^-2。
 const SMOOTHING_TAU_MS: f32 = 250.0;
-/// Silent ticks before decay starts, bridges the gaps between engine pushes (~130 ms).
+/// 开始衰减之前的静音 tick 数，用来跨过引擎推送之间的间隙（约 130 ms）。
 const COAST_AFTER_FRAMES: u32 = 8;
-/// Clip latch hold after the last over-full-scale sample, about a second at any tick cadence.
+/// 削波闩在最后一只超过满量程采样之后的保持时长，在任何 tick 节奏下都约一秒。
 const CLIP_HOLD: Duration = Duration::from_secs(1);
-/// Latch threshold, about 1 dB over full scale, resampler overshoot stays below it.
+/// 闩的阈值，约比满量程高 1 dB，重采样器的过冲保持在它之下。
 const CLIP_THRESHOLD: f32 = 1.122;
-/// Assumed device rate while playback hasn't reported one.
+/// 播放尚未上报采样率时假定的设备采样率。
 const DEFAULT_RATE_HZ: f32 = 48_000.0;
 
-/// Latest smoothed curves for the graph, empty vecs mean nothing to paint.
+/// 图表要用的最新平滑曲线；空 vec 表示没东西可画。
 #[derive(Default)]
 pub struct SpectrumData {
     pub pre: Rc<Vec<f32>>,
     pub post: Rc<Vec<f32>>,
-    /// Latched while post-EQ samples exceed full scale.
+    /// EQ 之后的采样超过满量程时置起的闩。
     pub clipping: bool,
 }
 
-/// Process-long analyzer state, equalizer views bump `viewers` while open.
+/// 与进程同寿的分析器状态；均衡器视图打开期间会给 `viewers` 加一。
 pub struct SpectrumState {
     pub data: Entity<SpectrumData>,
     pub viewers: Arc<AtomicUsize>,
@@ -62,7 +62,7 @@ pub struct SpectrumState {
 
 impl Global for SpectrumState {}
 
-/// Start the process-long analyzer on the playback tap, no-op once running or without playback.
+/// 在播放抽头上启动与进程同寿的分析器；已在运行或没有播放时是空操作。
 pub fn ensure_analyzer(cx: &mut App) {
     if cx.has_global::<SpectrumState>() || !cx.has_global::<PlaybackInterface>() {
         return;
@@ -89,7 +89,7 @@ pub fn ensure_analyzer(cx: &mut App) {
                 let rate = cx
                     .try_read_global::<PlaybackInfo, _>(|info, cx| *info.sample_rate.read(cx))
                     .unwrap_or(0);
-                // with the rings empty the tick is trivial, spare the executor hop
+                // 环形缓冲为空时这个 tick 是琐碎的，别浪费执行器的一次 hop
                 let frame = if analyzer.rings_have_data() {
                     let (analyzer_back, frame) = cx
                         .background_executor()
@@ -121,11 +121,11 @@ pub fn ensure_analyzer(cx: &mut App) {
 
 struct TapAnalyzer {
     ring: Consumer<f32>,
-    /// Samples not yet consumed by a full window, newest at the back.
+    /// 尚未被完整窗口消费的采样，最新的在尾部。
     window: Vec<f32>,
-    /// Set once the first full window has been analyzed.
+    /// 第一个完整窗口分析完毕后置位。
     filled: bool,
-    /// Smoothed dB values, one per display point.
+    /// 平滑后的 dB 值，每个显示点一个。
     display: Vec<f32>,
 }
 
@@ -133,7 +133,7 @@ struct FftScratch {
     fft: Arc<dyn RealToComplex<f32>>,
     hann: Vec<f32>,
     freqs: Vec<f32>,
-    /// Octave spacing between display points.
+    /// 显示点之间的倍频程间隔。
     step_oct: f32,
     input: Vec<f32>,
     bins: Vec<Complex32>,
@@ -142,7 +142,7 @@ struct FftScratch {
 
 impl FftScratch {
     fn compute(&mut self, samples: &[f32], rate: f32, display: &mut [f32]) {
-        // newest samples right-aligned, zero-padded until the window first fills
+        // 最新采样右对齐，窗口首次填满之前用零填充
         let pad = FFT_SIZE - samples.len();
         self.input[..pad].fill(0.0);
         self.input[pad..].copy_from_slice(samples);
@@ -151,20 +151,20 @@ impl FftScratch {
         }
         self.fft.process(&mut self.input, &mut self.bins).ok();
 
-        // Hann's coherent gain is 0.5, so a full-scale sine lands at 0 dB
+        // Hann 的相干增益是 0.5，所以满量程正弦落在 0 dB
         let norm = 4.0 / FFT_SIZE as f32;
         for (db, bin) in self.bins_db.iter_mut().zip(&self.bins) {
             *db = 20.0 * (bin.norm() * norm + 1e-12).log10();
         }
 
-        // exponential moving average per hop, older frames weigh less
+        // 每个 hop 一次指数滑动平均，越旧的帧权重越小
         let hop_ms = HOP_SIZE as f32 / rate * 1_000.0;
         let alpha = 1.0 - (-hop_ms / SMOOTHING_TAU_MS).exp();
         let bin_hz = rate / FFT_SIZE as f32;
         let nyquist = self.bins.len() - 1;
         for (i, freq) in self.freqs.iter().enumerate() {
             let center = freq / bin_hz;
-            // triangular kernel at least one bin wide, so sparse low bins still land
+            // 至少一个 bin 宽的三角形核，稀疏的低频 bin 也能落进来
             let half = (center * LN_2 * self.step_oct).max(1.0);
             let lo = (center - half).ceil().max(1.0) as usize;
             let hi = ((center + half) as usize).min(nyquist);
@@ -177,7 +177,7 @@ impl FftScratch {
                     weight += w;
                 }
             }
-            // above Nyquist there is no signal, sit on the floor untilted
+            // 超过 Nyquist 就没有信号了，在未倾斜的下限上待着
             let db = if weight > 0.0 {
                 (sum / weight + TILT_DB_PER_OCT * (freq / 1_000.0).log2())
                     .clamp(SPECTRUM_MIN_DB, CURVE_MAX_DB as f32)
@@ -194,11 +194,11 @@ struct Analyzer {
     pre: TapAnalyzer,
     post: TapAnalyzer,
     scratch: FftScratch,
-    /// Per-channel post-EQ peak from the engine, cleared each tick.
+    /// 每声道来自引擎的 EQ 后峰值，每个 tick 清零。
     post_peak: Arc<AtomicU32>,
-    /// Consecutive ticks with no new audio, decay starts only after COAST_AFTER_FRAMES.
+    /// 没有新音频的连续 tick 数，超过 COAST_AFTER_FRAMES 才开始衰减。
     empty_frames: u32,
-    /// Clip latch deadline, lit by post-EQ samples over full scale.
+    /// 削波闩的截止时间，由超过满量程的 EQ 后采样点亮。
     clip_until: Option<Instant>,
     idle: bool,
 }
@@ -209,7 +209,7 @@ impl Analyzer {
         let hann = (0..FFT_SIZE)
             .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / (FFT_SIZE - 1) as f32).cos()))
             .collect();
-        // unit width, the display points share the graph's own axis mapping
+        // 宽度为 1，显示点共用图表自己的轴映射
         let freqs = (0..SPECTRUM_POINTS)
             .map(|i| x_to_freq(i as f32 / (SPECTRUM_POINTS - 1) as f32, 1.0))
             .collect();
@@ -242,7 +242,7 @@ impl Analyzer {
         self.pre.ring.slots() > 0 || self.post.ring.slots() > 0
     }
 
-    /// Smoothed display curves plus the clip latch, None when frozen or fully floored.
+    /// 平滑后的显示曲线加削波闩；冻结或已完全落到下限时为 None。
     fn tick(&mut self, rate: u32, frame_ms: u64) -> Option<(Vec<f32>, Vec<f32>, bool)> {
         let pre_fresh = drain(&mut self.pre);
         let post_fresh = drain(&mut self.post);
@@ -258,7 +258,7 @@ impl Analyzer {
             return None;
         } else {
             self.empty_frames = self.empty_frames.saturating_add(1);
-            // between engine pushes the windowed audio is unchanged, hold the curve still
+            // 两次引擎推送之间窗内音频没变，曲线保持不动
             if self.empty_frames < COAST_AFTER_FRAMES {
                 return None;
             }
@@ -271,18 +271,18 @@ impl Analyzer {
 
         let coasting = self.empty_frames >= COAST_AFTER_FRAMES;
         let mut live = false;
-        // per-tick decay weight, mirrors the hop-side smoothing at the current tick cadence
+        // 每个 tick 的衰减权重，按当前 tick 节奏复刻 hop 侧的平滑
         let alpha = 1.0 - (-(frame_ms as f32) / SMOOTHING_TAU_MS).exp();
         for (tap, fresh) in [(&mut self.pre, pre_fresh), (&mut self.post, post_fresh)] {
             if fresh {
-                // sliding windows a hop apart, so bursts are analyzed whole
+                // 相隔一个 hop 的滑动窗口，所以突发会被完整分析
                 while tap.window.len() >= FFT_SIZE {
                     self.scratch
                         .compute(&tap.window[..FFT_SIZE], rate, &mut tap.display);
                     tap.window.drain(..HOP_SIZE);
                     tap.filled = true;
                 }
-                // zero-padded partial window until the first full one lands
+                // 零填充的部分窗口，直到第一个完整窗口落地
                 if !tap.filled && !tap.window.is_empty() {
                     self.scratch.compute(&tap.window, rate, &mut tap.display);
                 }
@@ -290,8 +290,7 @@ impl Analyzer {
             } else if coasting {
                 live |= coast(&mut tap.display, alpha);
             }
-            // a non-fresh tap inside the coast grace holds its curve, the sibling keeps the
-            // frame live
+            // 惰行宽限期内一个非新鲜的抽头会让曲线保持不动，兄弟抽头仍让帧保持活跃
         }
 
         if live {
@@ -302,13 +301,13 @@ impl Analyzer {
                 clipping,
             ));
         }
-        // one last frame of empty curves so the graph stops painting
+        // 最后一帧空曲线，让图表停止绘制
         self.idle = true;
         Some((Vec::new(), Vec::new(), false))
     }
 }
 
-/// Moves whatever the ring holds into the tap's window; true when anything arrived.
+/// 把环形缓冲里装的东西搬进抽头的窗口；有内容到达时为 true。
 fn drain(tap: &mut TapAnalyzer) -> bool {
     let available = tap.ring.slots();
     if available == 0 {
@@ -324,12 +323,12 @@ fn drain(tap: &mut TapAnalyzer) -> bool {
     true
 }
 
-/// EMA toward the floor while no new audio arrives, returns false once fully floored.
+/// 没有新音频到达时向下限做 EMA；完全落到下限时返回 false。
 fn coast(display: &mut [f32], alpha: f32) -> bool {
     let mut moving = false;
     for db in display {
         let decayed = SPECTRUM_MIN_DB + (*db - SPECTRUM_MIN_DB) * (1.0 - alpha);
-        // snap the remainder so the analyzer can go idle
+        // 把余量直接对齐，让分析器可以转入空闲
         *db = if decayed - SPECTRUM_MIN_DB < 0.25 {
             SPECTRUM_MIN_DB
         } else {
@@ -359,7 +358,7 @@ mod tests {
         let mut analyzer = Analyzer::new(consumer);
 
         let mut frame = None;
-        // the EMA needs about four time constants to converge on the peak
+        // EMA 大约需要四个时间常数才能收敛到峰值
         for _ in 0..64 {
             push_sine(&mut tap, 1_000.0, 2_048);
             frame = analyzer.tick(48_000, FRAME_MS);
@@ -377,7 +376,7 @@ mod tests {
             (peak_freq - 1_000.0).abs() < 100.0,
             "peak at {peak_freq} Hz, expected 1 kHz"
         );
-        // a full-scale sine sits near 0 dB after tilt
+        // 满量程正弦在倾斜补偿后接近 0 dB
         assert!(pre[peak] > -10.0, "peak at {} dB", pre[peak]);
         assert!(post.iter().all(|db| *db == SPECTRUM_MIN_DB));
     }
@@ -388,7 +387,7 @@ mod tests {
         consumer.viewers.fetch_add(1, Ordering::Relaxed);
         let mut analyzer = Analyzer::new(consumer);
 
-        // a tone in the first half of a burst, silence in the second
+        // 突发前半段有音调，后半段静音
         let tone: Vec<f64> = (0..FFT_SIZE)
             .map(|i| (2.0 * std::f64::consts::PI * 1_000.0 * i as f64 / 48_000.0).sin())
             .collect();
@@ -415,7 +414,7 @@ mod tests {
         consumer.viewers.fetch_add(1, Ordering::Relaxed);
         let mut analyzer = Analyzer::new(consumer);
 
-        // at 24 kHz the bins stop at 12 kHz, points past 14 kHz have empty kernels
+        // 24 kHz 时 bin 只到 12 kHz，14 kHz 以上的点核为空
         for _ in 0..32 {
             push_sine(&mut tap, 1_000.0, 2_048);
             analyzer.tick(24_000, FRAME_MS);
@@ -460,7 +459,7 @@ mod tests {
             .cloned()
             .fold(f32::MIN, f32::max);
 
-        // gaps shorter than COAST_AFTER_FRAMES publish nothing and decay nothing
+        // 短于 COAST_AFTER_FRAMES 的间隙既不发布也不衰减
         for _ in 1..COAST_AFTER_FRAMES {
             assert!(analyzer.tick(48_000, FRAME_MS).is_none());
         }
@@ -474,7 +473,7 @@ mod tests {
             held
         );
 
-        // a stretched-out gap starts the decay
+        // 被拉长的间隙会启动衰减
         let (pre, ..) = analyzer.tick(48_000, FRAME_MS).unwrap();
         let decayed = pre.iter().cloned().fold(f32::MIN, f32::max);
         assert!(
@@ -494,7 +493,7 @@ mod tests {
         let (.., clipping) = analyzer.tick(48_000, FRAME_MS).unwrap();
         assert!(clipping, "over-full-scale post audio did not latch");
 
-        // once the hold elapses, quiet audio releases the latch
+        // 保持期过后，安静的音频会释放这个闩
         analyzer.clip_until = Some(Instant::now() - Duration::from_millis(1));
         let quiet = vec![0.5; 2_048];
         tap.push_post(std::slice::from_ref(&quiet), 2_048, true);
@@ -508,7 +507,7 @@ mod tests {
         consumer.viewers.fetch_add(1, Ordering::Relaxed);
         let mut analyzer = Analyzer::new(consumer);
 
-        // a full-scale sine touches 1.0 but never exceeds it
+        // 满量程正弦碰到 1.0 但从不超出
         let plane: Vec<f64> = (0..2_048)
             .map(|i| (2.0 * std::f64::consts::PI * 1_000.0 * i as f64 / 48_000.0).sin())
             .collect();
@@ -525,7 +524,7 @@ mod tests {
         consumer.viewers.fetch_add(1, Ordering::Relaxed);
         let mut analyzer = Analyzer::new(consumer);
 
-        // +0.4 dB over, the sort of inter-sample peak a sinc resampler produces
+        // 超出满量程 0.4 dB，正是 sinc 重采样器会产生的那种采样间峰值
         tap.push_post(&[vec![1.05; 2_048]], 2_048, true);
         let (.., clipping) = analyzer.tick(48_000, FRAME_MS).unwrap();
         assert!(!clipping, "small overshoot latched the clip indicator");
@@ -537,7 +536,7 @@ mod tests {
         consumer.viewers.fetch_add(1, Ordering::Relaxed);
         let mut analyzer = Analyzer::new(consumer);
 
-        // a hard-panned over-full-scale channel averages to 0.75 in the mono rings
+        // 一只硬声像到极端的、超过满量程的声道在单声道环形缓冲里平均成 0.75
         tap.push_post(&[vec![1.5; 2_048], vec![0.0; 2_048]], 2_048, true);
         let (.., clipping) = analyzer.tick(48_000, FRAME_MS).unwrap();
         assert!(clipping, "per-channel clip hidden by the mono downmix");
@@ -553,7 +552,7 @@ mod tests {
             push_sine(&mut tap, 1_000.0, 2_048);
             analyzer.tick(48_000, FRAME_MS);
         }
-        // coasting from 0 dB to the floor at tau 250 ms takes ~45 frames plus the empty one
+        // 从 0 dB 惰行衰减到下限，tau 250 ms 需要约 45 帧，再加上那一帧空的
         let mut frames: Vec<_> = (0..160)
             .filter_map(|_| analyzer.tick(48_000, FRAME_MS))
             .collect();
@@ -573,7 +572,7 @@ mod tests {
             push_sine(&mut tap, 1_000.0, 2_048);
             analyzer.tick(48_000, FRAME_MS);
         }
-        // parked ticks run ~7.5x longer, so the same decay floors in ~7.5x fewer of them
+        // 停放的 tick 一次跑约 7.5 倍长，所以同样的衰减只需约 7.5 分之一的 tick 数
         let mut frames: Vec<_> = (0..30)
             .filter_map(|_| analyzer.tick(48_000, PARKED_FRAME_MS))
             .collect();

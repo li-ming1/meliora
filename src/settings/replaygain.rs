@@ -9,33 +9,31 @@ pub enum ReplayGainMode {
     Auto,
 }
 
-/// Hint for Auto mode - determines whether track or album gain is preferred.
+/// Auto 模式的提示——决定优先取曲目增益还是专辑增益。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayGainAutoHint {
     PreferTrack,
     PreferAlbum,
 }
 
-// `serde(default)` covers partial hand-edited objects: without it a JSON like
-// `{"replaygain": {"mode": "track"}}` fails field deserialization and the
-// whole settings.json is judged Corrupt, wiping every other saved setting on
-// the next save.
+// `serde(default)` 覆盖手工编辑的部分对象：没有它，像
+// `{"replaygain": {"mode": "track"}}` 这样的 JSON 会让字段反序列化失败，整个
+// settings.json 被判为 Corrupt，并在下次保存时抹掉其他所有已存设置。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ReplayGainSettings {
     pub mode: ReplayGainMode,
-    /// Pre-amp in dB, applied on top of RG gain. Range: -6.0 to +6.0
+    /// 前置增益，单位 dB，叠加在 RG 增益之上。范围：-6.0 到 +6.0
     pub preamp_db: f64,
-    /// Fallback pre-amp in dB, applied when track has no RG data. Range: -6.0 to +6.0
+    /// 回退前置增益，单位 dB，曲目无 RG 数据时使用。范围：-6.0 到 +6.0
     pub fallback_preamp_db: f64,
 }
 
-/// Calculate the linear gain multiplier for a track. Returns the multiplier to apply to audio samples.
+/// 计算曲目的线性增益倍数。返回要施加到音频采样上的倍数。
 ///
-/// `track_peak`/`album_peak` are the tagged sample peaks (0.0..1.0+). When the
-/// selected gain would push the tagged peak past full scale, the gain is
-/// capped at `1.0 / peak` (ReplayGain 1.0-style clipping prevention); the
-/// device-side soft limiter remains as the transient safety net.
+/// `track_peak`/`album_peak` 是标签里的采样峰值（0.0..1.0+）。当所选增益会把标签
+/// 峰值推过满量程时，增益被钳到 `1.0 / peak`（ReplayGain 1.0 式的防削波）；设备侧
+/// 软限幅器仍然作为瞬态的安全网。
 pub fn calculate_gain(
     settings: &ReplayGainSettings,
     auto_hint: ReplayGainAutoHint,
@@ -61,7 +59,7 @@ pub fn calculate_gain(
         None => settings.fallback_preamp_db,
     };
 
-    // Convert dB to linear: 10^(dB/20)
+    // dB 转线性：10^(dB/20)
     let mut gain = 10.0_f64.powf(gain_db / 20.0);
 
     if let Some(peak) = selected_peak.filter(|peak| *peak > 0.0) {
@@ -118,8 +116,8 @@ mod tests {
 
     #[test]
     fn peak_caps_boost_but_not_attenuation() {
-        // -3 dB tag on a 0.9-peak track + 6 dB pre-amp → +3 dB net (1.41×),
-        // which would clip the 0.9 peak → capped at 1/0.9.
+        // 峰值 0.9 的曲目带 -3 dB 标签 + 6 dB 前置 → 净 +3 dB（1.41×），会把 0.9
+        // 峰值削顶 → 钳到 1/0.9。
         let capped = calculate_gain(
             &track_settings(6.0),
             ReplayGainAutoHint::PreferTrack,
@@ -129,7 +127,7 @@ mod tests {
             None,
         );
         assert!((capped - 1.0 / 0.9).abs() < 1e-12);
-        // -9 dB tag + 3 dB pre-amp → net attenuation, untouched.
+        // -9 dB 标签 + 3 dB 前置 → 净衰减，不做钳位。
         let attenuated = calculate_gain(
             &track_settings(3.0),
             ReplayGainAutoHint::PreferTrack,

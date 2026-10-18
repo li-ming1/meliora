@@ -18,13 +18,12 @@ use crate::{
     },
 };
 
-/// Heat-map geometry: Monday..Sunday rows, 9 px cells with a 2 px gap. The
-/// column count is the natural year's week count (52-53), so the grid is
-/// ~580 px wide and fits the settings window without scrolling.
+/// 热力图几何：周一至周日共 7 行，9 px 单元格配 2 px 间隙。列数取自然年的周数
+/// （52-53），于是网格约 580 px 宽，不用滚动就能放进设置窗口。
 const HEAT_ROWS: usize = 7;
 const HEAT_CELL_PX: f32 = 9.0;
 const HEAT_GAP_PX: f32 = 2.0;
-/// Width of the heat-map weekday label column.
+/// 热力图星期标签列的宽度。
 const HEAT_WD_W_PX: f32 = 24.0;
 
 const RANKS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
@@ -94,10 +93,9 @@ enum TopRows {
     Albums(Vec<(String, i64)>),
 }
 
-/// One precomputed Top-10 row: all strings are built when data arrives so the
-/// render path never formats or allocates.
+/// 一行预计算好的 Top-10：所有字符串都在数据到达时构建，渲染路径永不格式化或分配。
 struct TopItem {
-    /// `top-row-{index}` element id, built with the rest of the row data.
+    /// `top-row-{index}` 元素 id，与该行其余数据一起构建。
     row_id: SharedString,
     label: SharedString,
     sub: Option<SharedString>,
@@ -105,17 +103,16 @@ struct TopItem {
     pct: f32,
 }
 
-/// One heat-map day: listening seconds plus the precomputed element id and
-/// tooltip for active days, so render never formats. Colors stay per-frame
-/// from the live theme (caching them made light cells leak into the dark
-/// theme after a switch).
+/// 热力图的一天：收听秒数，外加有收听的那些天预计算好的元素 id 与 tooltip，于是
+/// 渲染永不格式化。颜色仍每帧从实时主题取（缓存它们会让浅色块在切换主题后漏进
+/// 深色主题）。
 struct HeatDay {
     secs: i64,
-    /// (element id, tooltip) once the day has listening time.
+    /// 这一天有收听时间时的 `(元素 id, tooltip)`。
     active: Option<(SharedString, SharedString)>,
 }
 
-/// One heat-map week column; `secs == 0` renders as an empty cell.
+/// 热力图里的一周列；`secs == 0` 渲染成空格。
 struct HeatWeek {
     days: [HeatDay; HEAT_ROWS],
 }
@@ -142,8 +139,8 @@ fn pct_of(secs: i64, max: i64) -> f32 {
     }
 }
 
-/// Consecutive listening days ending today (or yesterday, if today is still
-/// empty — the streak is not dead until a full day passes unlistened).
+/// 到今天为止的连续收听天数（如果今天还是空的，则到昨天——不满一整天没收听，连续
+/// 记录就不算断）。
 fn compute_streak(daily: &BTreeMap<NaiveDate, i64>, today: NaiveDate) -> i64 {
     let mut day = today;
     if daily.get(&day).copied().unwrap_or(0) == 0 {
@@ -157,13 +154,10 @@ fn compute_streak(daily: &BTreeMap<NaiveDate, i64>, today: NaiveDate) -> i64 {
     streak
 }
 
-/// Color scale for the heat map. The two themes get independent palettes,
-/// chosen by the card tone's luma:
-/// - light: a neutral cold-gray grid (a whisper of text over the card color —
-///   background_tertiary yellows when tiled 371×) with a low-anchor accent
-///   ladder that stays crisp on the cream background;
-/// - dark: a gray-blue neutral lift over the near-black card with a stronger
-///   ladder, so the low steps still read against the background.
+/// 热力图的色阶。两套主题各有独立调色板，由卡片底色的亮度选定：
+/// - 浅色：中性冷灰网格（在卡片色上只加一丝文字色——background_tertiary 被 371×
+///   平铺时会发黄），配一个低锚点的强调色阶梯，在奶油底色上保持清利；
+/// - 深色：在近黑卡片上做一次灰蓝中性抬升，阶梯更强，好让低档位仍能读出与背景的差别。
 fn heat_color_scale(theme: &Theme) -> (Rgba, [Rgba; 4]) {
     let s = theme.background_secondary;
     let luma = 0.2126 * s.red + 0.7152 * s.green + 0.0722 * s.blue;
@@ -173,8 +167,7 @@ fn heat_color_scale(theme: &Theme) -> (Rgba, [Rgba; 4]) {
             [0.18f32, 0.40, 0.64, 1.0],
         )
     } else {
-        // Dark: a slightly stronger neutral lift so the grid reads against the
-        // near-black card (reference-style gray-blue squares).
+        // 深色：中性抬升略强一些，好让网格在近黑卡片上读得出来（参考风格的灰蓝方块）。
         (
             lerp_rgba(theme.background_secondary, theme.text, 0.09),
             [0.25f32, 0.50, 0.75, 1.0],
@@ -199,17 +192,17 @@ fn lerp_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
 struct HoursChart {
     hours: [i64; 24],
     hours_max: i64,
-    /// Precomputed hour-bar tooltips and element ids.
+    /// 预计算好的小时柱 tooltip 与元素 id。
     hours_labels: [Option<SharedString>; 24],
     hours_ids: [SharedString; 24],
-    /// Normalized polyline points, one per hour (x, y in 0..1 of the box).
+    /// 归一化的折线点，每小时一个（x、y 取盒子 0..1 的比例）。
     hours_points: [(f32, f32); 24],
-    /// Hour currently hovered (drives the chart crosshair), `None` = none.
+    /// 当前悬停的小时（驱动图表十字线），`None` = 无。
     hover_hour: Option<usize>,
 }
 
 impl HoursChart {
-    /// Pushes a fresh hour histogram (data arrival / 30 s refresh tick).
+    /// 推入一份新的小时直方图（数据到达 / 30 秒刷新 tick）。
     fn apply_hours(&mut self, hours: [i64; 24], cx: &mut Context<Self>) {
         self.hours_max = hours.iter().copied().max().unwrap_or(0);
         self.hours = hours;
@@ -221,7 +214,7 @@ impl HoursChart {
         cx.notify();
     }
 
-    /// Normalized polyline points, one per hour (x, y in 0..1 of the box).
+    /// 归一化的折线点，每小时一个（x、y 取盒子 0..1 的比例）。
     fn normalized_points(hours: &[i64; 24], hours_max: i64) -> [(f32, f32); 24] {
         let max = hours_max.max(1) as f32;
         std::array::from_fn(|hour| {
@@ -239,17 +232,16 @@ pub struct StatsSettings {
     daily: BTreeMap<NaiveDate, i64>,
     max_day_secs: i64,
     hours_chart: Entity<HoursChart>,
-    /// 7 rows (Mon..Sun) × 53 week columns; per-day seconds, `None` = future.
+    /// 7 行（周一..周日）× 53 个周列；每天秒数，`None` = 未来。
     heat_weeks: Vec<HeatWeek>,
-    /// First day of the heat-map window; day dates derive from it at render.
+    /// 热力图窗口的第一天；渲染时的日期由它推导。
     heat_window_start: NaiveDate,
-    /// Shown year; render clips the window's week padding (previous December /
-    /// next January) to it.
+    /// 当前展示的年份；渲染时把窗口的周补齐部分（上一个十二月 / 下一个一月）裁掉。
     heat_year: i32,
-    /// Month labels: (absolute x px from the grid origin, month number).
+    /// 月份标签：`(距网格原点的绝对 x 像素, 月份数字)`。
     month_items: Vec<(f32, SharedString)>,
     heat_window_label: SharedString,
-    /// Year pager: 0 = current year, 1 = last year, …
+    /// 年份翻页器：0 = 今年，1 = 去年，……
     heat_year_offset: i64,
     total_label: SharedString,
     today_label: SharedString,
@@ -258,20 +250,17 @@ pub struct StatsSettings {
     top_tab: TopTab,
     top_range: TopRange,
     top_items: Vec<TopItem>,
-    /// Bumped on every Top query start; a finished query whose snapshot no
-    /// longer matches was superseded by a newer tab/range switch and is
-    /// dropped instead of overwriting fresher rows.
+    /// 每次 Top 查询启动时递增；跑完的查询若快照已不再匹配，说明它被更新的
+    /// tab/范围切换顶掉了，应丢弃而不是覆盖更新的数据行。
     top_generation: u64,
-    /// `(day rows, total seconds, hour-bucket seconds, local day)` of the last
-    /// applied batch. Two schema facts make a matching fingerprint an *exact*
-    /// match rather than a probable one: `listen_event` has
-    /// `CHECK (seconds > 0)` (migrations/20260908000000_listen_stats.sql) and
-    /// nothing in `src/`, `queries/` or `migrations/` ever UPDATEs or DELETEs
-    /// from it — so every insert strictly raises the seconds sum, and the sums
-    /// cannot stay equal across a real change. The day component covers
-    /// midnight: `today_label`/`streak_label` derive from it while data stands still.
-    /// If either fact ever changes (a CHECK relaxation, a retention sweep),
-    /// this guard stops being provable and must become a content comparison.
+    /// 最后一批已应用数据的 `(天行, 总秒数, 小时桶秒数, 本地日)`。两个 schema 事实
+    /// 让"指纹一致"成为*精确*一致而非大概一致：`listen_event` 带
+    /// `CHECK (seconds > 0)`（migrations/20260908000000_listen_stats.sql），且
+    /// `src/`、`queries/`、`migrations/` 里没有任何地方 UPDATE 或 DELETE 它——于是
+    /// 每次插入都严格抬高秒数总和，总和在一次真实变化后不可能相等。天那个分量覆盖
+    /// 跨零点：数据静止时 `today_label`/`streak_label` 也由它派生。
+    /// 一旦这两个事实变了（放宽 CHECK、加保留期清理），这个守卫就不再可证明，必须
+    /// 改成按内容比较。
     applied_fingerprint: Option<(usize, i64, i64, NaiveDate)>,
 }
 
@@ -313,18 +302,16 @@ impl StatsSettings {
         entity
     }
 
-    /// Live refresh while the page is open: listening time lands in the DB in
-    /// 60 s quanta while playing, so a 30 s reload keeps every view within one
-    /// batch of the truth (and rolls "today"/streak over at midnight). The
-    /// stats section entity only lives while this section is active —
-    /// switching away drops it and ends this loop.
+    /// 页面打开期间的实时刷新：播放时收听时间以 60 秒为单位落库，所以 30 秒重载
+    /// 能让每个视图与真实值最多差一批（并在零点把 "today"/连续天数滚过去）。统计
+    /// 分区实体只在本分区激活时存在——切走即 drop，这个循环也随之结束。
     fn spawn_refresh(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_secs(30))
                     .await;
-                // Err = entity released; stop ticking.
+                // Err = 实体已释放；停止 tick。
                 if this
                     .update(cx, |this, cx| this.load_base(cx, false))
                     .is_err()
@@ -336,11 +323,10 @@ impl StatsSettings {
         .detach();
     }
 
-    /// One async batch for the daily map and the hour histogram; the Top list
-    /// follows once the base data (and its color scale) is in place. The
-    /// 30s refresh tick passes `with_top = false` — the Top list only changes
-    /// with tab/range, so re-querying it every tick would just burn a
-    /// `GROUP BY` for identical rows. 任一查询失败则记录 warn 并整批跳过
+    /// 日映射与小时直方图合成一次异步批次；Top 列表等基础数据（及其色阶）就位后再
+    /// 跟上。30 秒刷新 tick 传 `with_top = false`——Top 列表只随 tab/范围变化，每
+    /// tick 都重查只是为相同的行白烧一次 `GROUP BY`。
+    /// 任一查询失败则记录 warn 并整批跳过
     /// apply（保留上次数据），失败不得折叠成权威空结果清掉 has_data。
     fn load_base(&mut self, cx: &mut Context<Self>, with_top: bool) {
         let pool = cx.global::<Pool>().0.clone();
@@ -373,9 +359,8 @@ impl StatsSettings {
                         hours.iter().sum::<i64>(),
                         Local::now().date_naive(),
                     );
-                    // Matching count + sums is an exact match (append-only
-                    // table), so a tick that changed nothing re-parses no
-                    // dates, rebuilds no heat map and requests no repaint.
+                    // 数量 + 各项总和都匹配即为精确匹配（只追加的表），于是一无所变的
+                    // tick 不重新解析日期、不重建热力图、也不请求重绘。
                     if this.applied_fingerprint != Some(fingerprint) {
                         this.applied_fingerprint = Some(fingerprint);
                         this.apply_base(daily, hours, cx);
@@ -404,8 +389,7 @@ impl StatsSettings {
         self.hours_chart
             .update(cx, |chart, cx| chart.apply_hours(hours, cx));
 
-        // Overview numbers are derived from the daily map (single source of
-        // truth for daily_sums and the heat map alike).
+        // 概览数字都从日映射派生（daily_sums 与热力图共用的唯一真相源）。
         let today = Local::now().date_naive();
         let today_secs = self.daily.get(&today).copied().unwrap_or(0);
         let week_secs: i64 = (0..7)
@@ -456,8 +440,8 @@ impl StatsSettings {
                 .await;
             if let Ok(Some(rows)) = rows {
                 let _ = this.update(cx, |this, cx| {
-                    // A newer tab/range switch superseded this query; drop its
-                    // rows instead of overwriting fresher data.
+                    // 更新的 tab/范围切换顶掉了这次查询；丢弃它的行，而不是覆盖更新
+                    // 的数据。
                     if this.top_generation != generation {
                         return;
                     }
@@ -490,7 +474,7 @@ impl StatsSettings {
                     .map(|(title, artist, secs)| (title, Some(artist), secs))
                     .collect(),
             ),
-            // Artists and Albums render identically: a name, no sub-line.
+            // 艺术家与专辑的渲染完全相同：一个名字，无副行。
             TopRows::Artists(rows) | TopRows::Albums(rows) => to_items(
                 rows.into_iter()
                     .map(|(name, secs)| (name, None, secs))
@@ -501,14 +485,11 @@ impl StatsSettings {
 
     fn rebuild_heat(&mut self) {
         let today = Local::now().date_naive();
-        // GitHub-style natural-year window: columns are whole weeks (Mon..Sun)
-        // covering Jan 1 through Dec 31 of the selected year — the current
-        // year included; its future days just render as empty cells.
-        // `heat_year_offset` pages back one year at a time, stopping at the
-        // stats epoch year, before which there is no data at all.
+        // GitHub 风格的自然年窗口：列是覆盖所选年 1 月 1 日到 12 月 31 日的整周
+        // （周一..周日）——今年也算在内；其中未来的日子就渲染成空格。
+        // `heat_year_offset` 一次往前翻一年，到统计起始年就停，更早根本没有数据。
         let year = today.year() - self.heat_year_offset as i32;
-        // A year outside chrono's supported range can't build a heatmap;
-        // keep the current one instead of panicking.
+        // chrono 支持范围之外的年份建不出热力图；此时保留当前年，而不是 panic。
         let (Some(year_start), Some(last_day)) = (
             NaiveDate::from_ymd_opt(year, 1, 1),
             NaiveDate::from_ymd_opt(year, 12, 31),
@@ -525,16 +506,12 @@ impl StatsSettings {
         self.heat_window_label = year.to_string().into();
         self.heat_year = year;
 
-        // Month labels sit exactly above the column holding each month's
-        // first day. Consecutive month starts are always 4-5 columns apart
-        // (a month is >= 28 days), so absolute x positions keep every label
-        // clear of its neighbours — run-length spacers ignored the
-        // accumulated label widths and crowded each label next to the
-        // previous one.
+        // 月份标签正好落在承载该月第一天的那一列上方。相邻月份的起始列恒相隔 4-5 列
+        // （一个月 >= 28 天），所以用绝对 x 定位能让每个标签都与邻居错开——按游程
+        // 排开的 spacer 会忽略已累计的标签宽度，把每个标签挤到上一个旁边。
         self.month_items = (1..=12)
             .filter_map(|month| {
-                // months 1..=12 are always valid; the guard only covers a
-                // year outside chrono's range
+                // months 1..=12 恒合法；这层守卫只覆盖 chrono 范围之外的年份
                 let month_start = NaiveDate::from_ymd_opt(year, month, 1)?;
                 let col = (month_start - window_start).num_days() / 7;
                 Some((
@@ -544,9 +521,8 @@ impl StatsSettings {
             })
             .collect();
 
-        // Per-week day cells with the active day's id + tooltip precomputed
-        // when the data arrives (render never formats); colors come from the
-        // live theme.
+        // 逐周的日格子：有收听那天的 id + tooltip 在数据到达时就算好（渲染永不
+        // 格式化）；颜色取自实时主题。
         let mut heat_weeks: Vec<HeatWeek> = Vec::with_capacity(cols as usize);
         for col in 0..cols {
             let mut days: [HeatDay; HEAT_ROWS] = std::array::from_fn(|_| HeatDay {
@@ -578,7 +554,7 @@ impl StatsSettings {
     }
 
     fn shift_heat(&mut self, delta: i64, cx: &mut Context<Self>) {
-        // The pager stops at the stats epoch year: earlier years hold no data.
+        // 翻页器到统计起始年就停：更早的年份根本没有数据。
         let max_offset =
             (i64::from(Local::now().year()) - i64::from(crate::stats::epoch_year())).max(0);
         let next = (self.heat_year_offset + delta).clamp(0, max_offset);
@@ -660,13 +636,12 @@ impl StatsSettings {
 
     fn render_heatmap(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let window_label = self.heat_window_label.clone();
-        // Theme-derived colors resolve per frame: caching them leaked the
-        // light palette into the dark theme after a live theme switch.
+        // 主题派生的颜色每帧解析：缓存它们会让浅色调色板在实时切换主题后漏进深色
+        // 主题。
         let (empty, levels) = heat_color_scale(theme);
 
-        // Labels are absolutely positioned above their month's first week
-        // column (flex spacers can't measure text width and drift a label per
-        // month). x offset = weekday label column + its margin.
+        // 标签用绝对定位放到该月首个周列的上方（flex spacer 量不到文字宽度，会逐月
+        // 把一个标签挪位）。x 偏移 = 星期标签列 + 它的外边距。
         let month_row = div()
             .relative()
             .h(px(12.0))
@@ -690,7 +665,7 @@ impl StatsSettings {
             None,
         ];
 
-        // Weekday label column sits left of the week columns.
+        // 星期标签列位于各周列的左侧。
         let wd_col = div()
             .flex()
             .flex_col()
@@ -714,18 +689,16 @@ impl StatsSettings {
                 slot
             }));
 
-        // The window pads to whole Mon..Sun weeks: days outside the shown
-        // year (previous December / next January) keep their grid slot for
-        // column alignment but render invisibly.
-        // Sentinels only for the inclusive range check below: a year outside
-        // chrono's range (unreachable — rebuild_heat validates it) renders
-        // every cell as in-window instead of panicking (the sentinels accept
-        // all real dates).
+        // 窗口会补齐到整周（周一..周日）：展示年之外的日子（上一个十二月 / 下一个
+        // 一月）保留格子位置以对齐列，但不可见渲染。
+        // 哨兵值只为下面那个闭区间检查而存在：chrono 范围之外的年份（不可达——
+        // rebuild_heat 已校验）会把每个格子都当作在窗口内渲染，而不是 panic
+        // （哨兵接受所有真实日期）。
         let year_start = NaiveDate::from_ymd_opt(self.heat_year, 1, 1).unwrap_or(NaiveDate::MIN);
         let year_end = NaiveDate::from_ymd_opt(self.heat_year, 12, 31).unwrap_or(NaiveDate::MAX);
 
-        // Cells are stateful (day tooltip, 150 ms rest before it pops — fast
-        // mouse travel never builds one); columns are plain layout.
+        // 格子是有状态的（日 tooltip，停留 150 ms 才弹出——鼠标快速划过不会触发）；
+        // 列只是普通布局。
         let mut grid = div().flex().flex_row().gap(px(HEAT_GAP_PX));
         for (col, week) in self.heat_weeks.iter().enumerate() {
             let mut col_div = div().flex().flex_col().gap(px(HEAT_GAP_PX));
@@ -738,7 +711,7 @@ impl StatsSettings {
                     .rounded(px(2.0))
                     .flex_shrink_0();
                 let base = if date >= year_start && date <= year_end {
-                    // future days share the empty cell color
+                    // 未来的日子共用空格的颜色
                     let color = if day.secs == 0 {
                         empty
                     } else {
@@ -758,7 +731,7 @@ impl StatsSettings {
                 } else {
                     base
                 };
-                // The active day's id + tooltip were precomputed on data arrival.
+                // 有收听那天的 id + tooltip 早在数据到达时就算好了。
                 let cell = if let Some((id, tooltip)) = &day.active {
                     base.id(id.clone())
                         .tooltip_show_delay(Duration::from_millis(150))
@@ -827,7 +800,7 @@ impl StatsSettings {
                             .child(window_label),
                     )
                     .child(
-                        // ‹ pages to older years (+1), › back toward today.
+                        // ‹ 往更早的年份翻（+1），› 往今天方向回退。
                         self.pager_button("stats-heat-prev", "<", theme)
                             .on_click(cx.listener(|this, _, _, cx| this.shift_heat(1, cx))),
                     )
@@ -881,12 +854,12 @@ impl StatsSettings {
         );
 
         let mut rows = div().flex().flex_col().w_full();
-        // Same guaranteed-contrast tint as the hour bars: menu_item_hover is
-        // invisible on this page's background in light mode.
+        // 与小时柱同一款保证对比度的着色：menu_item_hover 在浅色模式下对本页底色
+        // 完全不可见。
         let row_hover = lerp_rgba(theme.background_secondary, theme.text, 0.045);
         for (i, item) in self.top_items.iter().enumerate() {
-            // Stateful rows: hover styles only repaint on elements carrying an
-            // id (element state drives the enter/leave notify).
+            // 有状态的行：hover 样式只在带 id 的元素上才会重绘（元素状态驱动
+            // enter/leave 的 notify）。
             let mut row = div()
                 .id(item.row_id.clone())
                 .flex()
@@ -1007,8 +980,8 @@ impl StatsSettings {
 
 impl Render for HoursChart {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Theme-derived colors resolve per frame: caching them leaked the
-        // light palette into the dark theme after a live theme switch.
+        // 主题派生的颜色每帧解析：缓存它们会让浅色调色板在实时切换主题后漏进深色
+        // 主题。
         let theme = cx.global::<Theme>();
         let points = self.hours_points;
 
@@ -1016,10 +989,9 @@ impl Render for HoursChart {
         let line_color = theme.button_primary;
         let guide_color = lerp_rgba(line_color, theme.background_secondary, 0.6);
 
-        // Interaction overlay: 24 transparent columns drive the crosshair
-        // (written into `hover_hour`; the canvas paints a guide line + marker
-        // at the data point). No column fill: a highlighted column reads as a
-        // bar-chart hover, which is wrong on a line chart.
+        // 交互覆盖层：24 个透明列驱动十字线（写入 `hover_hour`；canvas 在数据点上
+        // 画参考线 + 标记）。不做列填充：高亮一列看起来是柱状图的 hover，用在折线图
+        // 上是错的。
         let entity = cx.entity();
         let mut overlay = div()
             .absolute()
@@ -1055,7 +1027,7 @@ impl Render for HoursChart {
             overlay = overlay.child(col);
         }
 
-        // Filled area under the curve + 2 px line + crosshair, on a canvas.
+        // 曲线下填充 + 2 px 线 + 十字线，画在 canvas 上。
         let paint_entity = entity;
         let chart = canvas(
             move |bounds, _, _| bounds,
@@ -1089,7 +1061,7 @@ impl Render for HoursChart {
                     window.paint_path(path, line_color);
                 }
 
-                // Crosshair: guide line + marker dot at the hovered hour.
+                // 十字线：在悬停小时的参考线 + 标记点。
                 let hover_hour = paint_entity.read(cx).hover_hour;
                 if let Some(hour) = hover_hour
                     && let Some(&(x, y)) = points.get(hour)
@@ -1117,7 +1089,7 @@ impl Render for HoursChart {
         )
         .size_full();
 
-        // Hour labels under the chart.
+        // 图表下方的小时标签。
         let labels = div()
             .flex()
             .flex_row()

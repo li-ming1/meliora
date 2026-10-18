@@ -1,7 +1,5 @@
-//! Shared plumbing for the online provider settings page (`kugou`):
-//! the QR login flow (state machine, poll loop with a failure
-//! cap, modal) and the download-folder field. Feature-gated together with
-//! its user.
+//! 在线 provider 设置页（`kugou`）共用的基础设施：扫码登录流程（状态机、带失败
+//! 上限的轮询循环、模态框）与下载目录输入框。与它的使用方一起受 feature 门控。
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -24,11 +22,11 @@ use crate::{
     },
 };
 
-/// Consecutive transport failures tolerated by the poll loop before it gives
-/// up like an expired code — a dead network must not spin the loop forever.
+/// 轮询循环在放弃（按码失效处理）之前能容忍的连续传输失败次数——网络断了不能让
+/// 循环空转到永远。
 const QR_MAX_POLL_FAILURES: u32 = 10;
 
-/// QR login progress shown inside the modal.
+/// 模态框内展示的扫码登录进度。
 #[derive(Clone)]
 pub(crate) struct QrLoginState {
     image: Option<Arc<RenderImage>>,
@@ -43,8 +41,7 @@ pub(crate) enum QrPhase {
     Expired,
 }
 
-/// Normalized login-status poll outcome; the provider persists its session
-/// before returning `Success`.
+/// 归一化后的登录状态轮询结果；provider 在返回 `Success` 之前先持久化自己的会话。
 pub(crate) enum QrPoll {
     Waiting,
     Scanned,
@@ -52,8 +49,8 @@ pub(crate) enum QrPoll {
     Success,
 }
 
-/// Shared QR-login state: modal content plus a generation counter that
-/// invalidates a running poll loop when the modal is closed or regenerated.
+/// 共享的扫码登录状态：模态框内容，外加一个代号计数——关闭模态框或重新生成时，
+/// 它会让正在跑的轮询循环失效。
 pub(crate) struct QrLogin {
     state: Option<QrLoginState>,
     generation: u64,
@@ -67,10 +64,9 @@ impl QrLogin {
         }
     }
 
-    /// Pushes the QR image currently held in `state` onto the tile-reclaim
-    /// funnel and clears the state. `ImageSource::Render` tiles are only
-    /// freed by an explicit `drop_image`, so every point that discards a QR
-    /// image must route through here.
+    /// 把 `state` 里当前的二维码图推进瓦片回收漏斗并清空状态。
+    /// `ImageSource::Render` 的瓦片只有显式 `drop_image` 才会释放，所以每一个丢弃
+    /// 二维码图的位置都必须走这里。
     fn recycle_current(&mut self) {
         if let Some(state) = self.state.take()
             && let Some(image) = state.image
@@ -79,7 +75,7 @@ impl QrLogin {
         }
     }
 
-    /// Arms the modal for a fresh login; returns the new generation.
+    /// 为一次全新登录武装模态框；返回新的代号。
     fn begin(&mut self) -> u64 {
         self.generation += 1;
         // "重新生成"会直接替换旧 state：旧二维码若已上传进图集，这里的
@@ -92,7 +88,7 @@ impl QrLogin {
         self.generation
     }
 
-    /// Dismisses the modal and invalidates any running flow.
+    /// 关闭模态框并让任何在跑的流程失效。
     pub(crate) fn close(&mut self) {
         self.generation += 1;
         // `ImageSource::Render` 的图不经过任何缓存，瓦片只有显式
@@ -104,12 +100,12 @@ impl QrLogin {
         self.state.as_ref()
     }
 
-    /// True when `generation` no longer matches the running flow.
+    /// `generation` 与在跑的流程不再一致时为 true。
     fn stale(&self, generation: u64) -> bool {
         self.generation != generation
     }
 
-    /// Sets the modal phase; returns whether the value actually changed.
+    /// 设置模态框阶段；返回值是否真的变了。
     fn set_phase(&mut self, phase: QrPhase) -> bool {
         if let Some(state) = &mut self.state
             && state.phase != phase
@@ -131,45 +127,43 @@ impl Drop for QrLogin {
     }
 }
 
-/// Provider hooks for the shared QR login flow, implemented by the online
-/// settings pages. The network calls run on the Tokio runtime; errors are
-/// flattened to strings because the runner only ever logs or toasts them.
+/// 共享扫码登录流程的 provider 钩子，由在线设置页实现。网络调用跑在 Tokio runtime
+/// 上；错误被压平成字符串，因为驱动方只会把它记日志或做 toast。
 pub(crate) trait QrLoginHost: 'static + Sized {
-    /// Delay between login-status polls.
+    /// 登录状态轮询之间的间隔。
     const POLL_INTERVAL: Duration;
 
-    /// Request a fresh login key.
+    /// 申请一个新的登录 key。
     fn create_key() -> impl Future<Output = Result<String, String>> + Send;
-    /// Render the key as a QR image (runs on the blocking pool).
+    /// 把 key 渲染成二维码图（跑在阻塞池）。
     fn build_qr(key: &str) -> Result<Arc<RenderImage>, String>;
-    /// Poll the login status for `key`.
+    /// 轮询 `key` 的登录状态。
     fn poll(key: String) -> impl Future<Output = Result<QrPoll, String>> + Send;
-    /// Toast shown when a request fails.
+    /// 请求失败时展示的 toast 文案。
     fn failed_toast(err: String) -> Toast;
-    /// Copy for the current QR phase.
+    /// 当前扫码阶段的文案。
     fn phase_label(phase: QrPhase) -> SharedString;
-    /// UI follow-ups once the login succeeded; the session is already
-    /// persisted and the runner closes the modal itself.
+    /// 登录成功之后的 UI 跟进动作；会话已经持久化，模态框由驱动方自己关闭。
     fn on_login(&mut self, cx: &mut Context<Self>);
 
-    /// The QR state owned by the page.
+    /// 该页持有的扫码状态。
     fn qr_login(&mut self) -> &mut QrLogin;
 
-    /// Entry point: open the modal and start the flow.
+    /// 入口：打开模态框并启动流程。
     fn start_login(&mut self, cx: &mut Context<Self>) {
         spawn_login::<Self>(cx);
     }
 
-    /// Dismiss the modal.
+    /// 关闭模态框。
     fn close_qr(&mut self, cx: &mut Context<Self>) {
         self.qr_login().close();
         cx.notify();
     }
 }
 
-/// Awaits a Tokio task and flattens the runtime's `Result` wrapper into the
-/// provider's `Result<T, String>`: the inner error is already a string, and
-/// a cancelled or panicked task degrades to the `JoinError`'s message.
+/// 等待一个 Tokio 任务，并把 runtime 的 `Result` 外层压平成 provider 的
+/// `Result<T, String>`：内层错误本来就是字符串，而被取消或 panic 的任务退化成
+/// `JoinError` 的消息。
 async fn flatten_task_result<T>(
     task: tokio::task::JoinHandle<Result<T, String>>,
 ) -> Result<T, String> {
@@ -180,16 +174,16 @@ async fn flatten_task_result<T>(
     }
 }
 
-/// Drives one QR login: request a key, render the image, then poll until
-/// success, expiry or the failure cap. Provider specifics come from `H`.
+/// 驱动一次扫码登录：申请 key、渲染图片，然后轮询直到成功、失效或撞上失败上限。
+/// provider 特有的部分由 `H` 提供。
 fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
     cx.spawn(async move |this, cx| {
         let generation = match this.update(cx, |this, _| this.qr_login().begin()) {
             Ok(generation) => generation,
-            Err(_) => return, // page released while starting
+            Err(_) => return, // 启动期间页面已被释放
         };
 
-        // step 1: request a fresh key and render it as a QR image
+        // 第 1 步：申请一个新 key 并渲染成二维码图
         let key_task = crate::RUNTIME.spawn(async move { H::create_key().await });
         let key = match flatten_task_result(key_task).await {
             Ok(key) => key,
@@ -237,9 +231,8 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
             return;
         }
 
-        // step 2: poll until the mobile app confirms (or the code expires);
-        // repeated transport failures give up like an expired code so a dead
-        // network cannot spin this loop forever.
+        // 第 2 步：轮询直到手机端确认（或码失效）；反复的传输失败会按码失效一样
+        // 放弃，网络断了不能让这个循环空转到永远。
         let mut failures = 0u32;
         loop {
             cx.background_executor().timer(H::POLL_INTERVAL).await;
@@ -305,8 +298,8 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
     .detach();
 }
 
-/// Renders the QR login modal. `title`, `hint` and the button labels come
-/// from the page so each keeps its own i18n keys.
+/// 渲染扫码登录模态框。`title`、`hint` 与按钮文案由页面提供，各自保留自己的 i18n
+/// 键。
 pub(crate) fn render_qr_modal<H: QrLoginHost>(
     qr: &QrLoginState,
     title: SharedString,
@@ -355,7 +348,7 @@ pub(crate) fn render_qr_modal<H: QrLoginHost>(
                         .h(px(260.0))
                         .text_sm()
                         .text_color(theme.text_secondary)
-                        // Same copy as the Generating phase label.
+                        // 与 Generating 阶段标签同文案。
                         .child(H::phase_label(QrPhase::Generating)),
                 })
                 .child(
@@ -391,9 +384,9 @@ pub(crate) fn render_qr_modal<H: QrLoginHost>(
         )
 }
 
-/// Shared download-folder field: a lazily-created textbox plus the native
-/// folder picker. Persisted through `update_playback_settings`, so both
-/// providers write the same `playback.download_dir` setting.
+/// 共用的下载目录输入框：惰性创建的 textbox 加原生文件夹选择器。经
+/// `update_playback_settings` 持久化，因此两个 provider 写的是同一个
+/// `playback.download_dir` 设置。
 pub(crate) struct DownloadDirField {
     input: Option<Entity<Textbox>>,
 }
@@ -403,8 +396,7 @@ impl DownloadDirField {
         Self { input: None }
     }
 
-    /// Lazily-created download directory textbox. Submitting an empty value
-    /// resets to the platform default downloads folder.
+    /// 惰性创建的下载目录 textbox。提交空值即重置为平台默认的 Downloads 文件夹。
     pub(crate) fn input(&mut self, cx: &mut App) -> Entity<Textbox> {
         self.input
             .get_or_insert_with(|| {
@@ -428,8 +420,7 @@ impl DownloadDirField {
             .clone()
     }
 
-    /// Opens the native folder picker; the chosen folder is written into the
-    /// textbox and saved immediately.
+    /// 打开原生文件夹选择器；选中的文件夹写进 textbox 并立刻保存。
     pub(crate) fn browse(&self, prompt: SharedString, cx: &mut App) {
         let path_future = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -457,7 +448,7 @@ impl DownloadDirField {
     }
 }
 
-/// Persists the download directory setting (empty/None = platform default).
+/// 持久化下载目录设置（空/None = 平台默认）。
 fn set_download_dir(cx: &mut App, dir: Option<String>) {
     let settings = cx.global::<SettingsGlobal>().model.clone();
     super::update_playback_settings(&settings, cx, move |playback| {
@@ -479,12 +470,12 @@ mod tests {
         qr.set_phase(QrPhase::Scanned);
         assert_eq!(qr.state().unwrap().phase, QrPhase::Scanned);
 
-        // Regenerating arms a new generation and invalidates the old one.
+        // 重新生成会武装一个新代号并让旧代号失效。
         let g2 = qr.begin();
         assert_ne!(g1, g2);
         assert!(qr.stale(g1));
 
-        // Closing (cancel/logout) invalidates everything and clears the modal.
+        // 关闭（取消/登出）会让全部在途流程失效并清空模态框。
         qr.close();
         assert!(qr.state().is_none());
         assert!(qr.stale(g2));

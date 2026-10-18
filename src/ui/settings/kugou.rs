@@ -1,5 +1,4 @@
-//! KuGou settings section: QR-code login, profile display and logout.
-//! Gated behind the `kugou` cargo feature.
+//! 酷狗设置分区：扫码登录、账号信息展示与登出。受 `kugou` cargo feature 门控。
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -34,7 +33,7 @@ pub struct KugouSettings {
     settings: Entity<Settings>,
     logged_in: bool,
     nickname: Option<SharedString>,
-    /// Human-readable VIP status line ("VIP · till 2026-08-24" / "No VIP").
+    /// 人类可读的 VIP 状态行（"VIP · till 2026-08-24" / "No VIP"）。
     vip_line: Option<SharedString>,
     profile_failed: bool,
     qr: QrLogin,
@@ -86,9 +85,8 @@ impl KugouSettings {
                     }
                     _ => this.profile_failed = true,
                 }
-                // refresh_vip_detail cached the response on the session, so the
-                // VIP line can now be rendered from it - unless the fetch
-                // itself failed, which must not read as "No VIP".
+                // refresh_vip_detail 已把响应缓存在会话上，于是 VIP 行现在可以从它
+                // 渲染——除非这次抓取本身失败，那不能读成 "No VIP"。
                 this.vip_line = Some(match vip_refreshed {
                     Ok(Ok(())) => crate::ui::kugou::vip_status_line(),
                     _ => tr!(
@@ -106,22 +104,22 @@ impl KugouSettings {
 
     fn logout(&mut self, cx: &mut Context<Self>) {
         kugou::shared_client().logout();
-        // The playlist overview is session-cached: drop it so a later login
-        // (possibly a different account) is never served the old data.
+        // 播放列表概要是会话级缓存：把它丢掉，好让之后的登录（可能是另一个账号）
+        // 永远不会被喂到旧数据。
         crate::ui::library::invalidate_online_account_caches();
         self.logged_in = false;
         self.nickname = None;
         self.profile_failed = false;
-        // logout() drops the cached VIP detail; reflect that immediately
-        // instead of leaving the previous account's status line up.
+        // logout() 会丢掉缓存的 VIP 详情；这里立即反映这一点，而不是继续挂着上一个
+        // 账号的状态行。
         self.vip_line = Some(crate::ui::kugou::vip_status_line());
         self.qr.close();
         cx.notify();
     }
 }
 
-/// Localized "select download folder" label, defined once so the i18n
-/// generator never sees a duplicate `SELECT_DOWNLOAD_DIR` key.
+/// 本地化的"选择下载目录"标签，只定义一次，好让 i18n 生成器永远不会看到重复的
+/// `SELECT_DOWNLOAD_DIR` 键。
 fn select_download_dir_label() -> cntp_i18n::I18nString {
     tr!("SELECT_DOWNLOAD_DIR", "Select the download folder...")
 }
@@ -129,9 +127,8 @@ fn select_download_dir_label() -> cntp_i18n::I18nString {
 impl QrLoginHost for KugouSettings {
     const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
-    // Explicit `impl Future + Send`, not `async fn`: the trait contract
-    // requires Send futures (callers spawn them on the runtime), and only the
-    // RPITIT form expresses that bound.
+    // 显式写 `impl Future + Send` 而不是 `async fn`：trait 契约要求 Send 的 future
+    // （调用方会把它们 spawn 到 runtime 上），而只有 RPITIT 形式能表达这个 bound。
     #[allow(clippy::manual_async_fn)]
     fn create_key() -> impl Future<Output = Result<String, String>> + Send {
         async move {
@@ -147,7 +144,7 @@ impl QrLoginHost for KugouSettings {
             .map_err(|err| err.to_string())
     }
 
-    #[allow(clippy::manual_async_fn)] // Send bound required by the trait contract, see create_key
+    #[allow(clippy::manual_async_fn)] // trait 契约要求 Send bound，见 create_key
     fn poll(key: String) -> impl Future<Output = Result<QrPoll, String>> + Send {
         async move {
             let status = kugou::shared_client()
@@ -185,9 +182,8 @@ impl QrLoginHost for KugouSettings {
 
     fn on_login(&mut self, cx: &mut Context<Self>) {
         self.logged_in = true;
-        // Same reason as logout(): a cached overview must never cross an
-        // account identity change, including a silent re-login after the
-        // session expired server-side.
+        // 与 logout() 同理：缓存的概览绝不能跨越账号身份的变化，包括服务端会话过期
+        // 之后的静默重新登录。
         crate::ui::library::invalidate_online_account_caches();
         self.nickname = None;
         self.profile_failed = false;
