@@ -375,6 +375,17 @@ impl MprisController {
 
         Ok(Box::new(MprisController { data, server }))
     }
+
+    /// 重广播一次 `Metadata` 属性，让客户端回来读。三个"改了缓存就要通知"的方法
+    /// （时长 / 元数据 / 专辑图）共用这条尾巴。调用方必须先释放 `data` 写锁——
+    /// `metadata_int()` 要读同一份数据。
+    async fn broadcast_metadata(&self) -> anyhow::Result<()> {
+        self.server
+            .properties_changed([Property::Metadata(
+                self.server.imp().metadata_int().await.unwrap(),
+            )])
+            .await
+    }
 }
 
 #[async_trait]
@@ -407,11 +418,7 @@ impl PlaybackController for MprisController {
         data.last_duration = Some(new_duration);
         drop(data);
 
-        self.server
-            .properties_changed([Property::Metadata(
-                self.server.imp().metadata_int().await.unwrap(),
-            )])
-            .await?;
+        self.broadcast_metadata().await?;
 
         Ok(())
     }
@@ -432,11 +439,7 @@ impl PlaybackController for MprisController {
         data.last_mdata = Some(metadata.clone());
         drop(data);
 
-        self.server
-            .properties_changed([Property::Metadata(
-                self.server.imp().metadata_int().await.unwrap(),
-            )])
-            .await?;
+        self.broadcast_metadata().await?;
 
         Ok(())
     }
@@ -450,11 +453,7 @@ impl PlaybackController for MprisController {
         data.last_album_art = Some(url);
         drop(data);
 
-        self.server
-            .properties_changed([Property::Metadata(
-                self.server.imp().metadata_int().await.unwrap(),
-            )])
-            .await?;
+        self.broadcast_metadata().await?;
 
         Ok(())
     }
