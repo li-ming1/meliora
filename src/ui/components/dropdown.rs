@@ -4,8 +4,8 @@ use crate::ui::design::ICON_MD;
 use cntp_i18n::tr;
 use gpui::{
     Anchor, App, Div, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    RenderOnce, Role, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window,
-    actions, anchored, deferred, div, prelude::FluentBuilder, px,
+    RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, actions,
+    anchored, deferred, div, prelude::FluentBuilder, px,
 };
 use smallvec::SmallVec;
 
@@ -174,7 +174,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
                 .mt(px(4.0))
                 .track_focus(focus_handle)
                 // 弹层是"从固定集合里选一个值"的选项列表，不是命令菜单。
-                .role(Role::ListBox)
+                .role(gpui::Role::ListBox)
                 .key_context("Dropdown")
                 .on_action({
                     let is_open = is_open.clone();

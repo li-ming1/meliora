@@ -114,7 +114,7 @@ impl RenderOnce for ContextMenu {
                         .bg(theme.elevated_background)
                         .id("menu")
                         .track_focus(&focus_handle)
-                        .role(Role::Menu)
+                        .role(gpui::Role::Menu)
                         .on_click(move |_, window, cx| {
                             dismiss_menu(&on_click_close, &state_click, window, cx);
                         })

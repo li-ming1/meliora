@@ -8,7 +8,7 @@ use std::{
 use cntp_i18n::tr;
 use gpui::{
     App, AppContext, Context, DragMoveEvent, Entity, FocusHandle, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder, px, rems, rgba,
     uniform_list,
 };
@@ -740,7 +740,7 @@ impl Render for PlaylistView {
             ))
             .id("playlist-view")
             .track_focus(&self.focus_handle)
-            .role(Role::Table)
+            .role(gpui::Role::Table)
             .key_context("Library")
             .on_action(move |_: &Export, _, cx| {
                 if let Err(err) = export_playlist(cx, pl_id, &playlist_name) {
