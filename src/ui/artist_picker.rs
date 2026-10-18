@@ -109,6 +109,8 @@ impl Render for ArtistPickerView {
                     .bg(theme.elevated_background)
                     .id("artist-picker")
                     .track_focus(&self.focus_handle)
+                    // 从同名艺人的候选集合里挑一个：选项列表，不是菜单。
+                    .role(gpui::Role::ListBox)
                     .on_mouse_down_out(move |_, _, cx| close(cx))
                     .on_action(move |_: &CloseContextMenu, _, cx| close(cx))
                     .child(items),

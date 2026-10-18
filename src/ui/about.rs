@@ -89,7 +89,9 @@ impl RenderOnce for AboutDialog {
 
         modal().on_exit(self.on_exit).child(
             div()
+                .id("about-modal")
                 .track_focus(&self.focus_handle)
+                .role(gpui::Role::Dialog)
                 .p(px(20.0))
                 .pb(px(18.0))
                 .flex()

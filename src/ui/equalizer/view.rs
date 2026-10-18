@@ -472,7 +472,9 @@ impl Render for EqualizerView {
             });
 
         div()
+            .id("equalizer-view")
             .track_focus(&self.focus_handle)
+            .role(gpui::Role::Group)
             .key_context("EqualizerView")
             .on_action(cx.listener(Self::dismiss))
             .on_key_down(cx.listener(Self::nudge))

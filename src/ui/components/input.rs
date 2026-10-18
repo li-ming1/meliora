@@ -984,9 +984,13 @@ impl TextInput {
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            // `.role()` 只在带元素 id 的（stateful）元素上可用；本组件可有多个实例，
+            // 故 id 带 entity 身份，避免同路径下两个输入框串用状态。
+            .id(("text-input", cx.entity_id()))
             .flex()
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
+            .role(gpui::Role::TextInput)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))

@@ -1421,8 +1421,10 @@ impl Render for ImmersiveView {
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
 
         div()
+            .id("immersive-view")
             .key_context("Immersive")
             .track_focus(&self.focus_handle)
+            .role(gpui::Role::Region)
             .relative()
             .size_full()
             .overflow_hidden()

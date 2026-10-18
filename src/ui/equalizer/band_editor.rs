@@ -4,7 +4,7 @@ use crate::ui::design::ICON_SM;
 use cntp_i18n::tr;
 use gpui::{
     Anchor, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
-    RenderOnce, Styled, Window, anchored, deferred, div, point, px,
+    RenderOnce, StatefulInteractiveElement, Styled, Window, anchored, deferred, div, point, px,
 };
 
 use crate::{
@@ -252,6 +252,7 @@ impl RenderOnce for BandEditor {
         let panel = div()
             .id("eq-band-editor")
             .track_focus(&focus)
+            .role(gpui::Role::Group)
             .w(px(260.0))
             .p(px(10.0))
             .flex()

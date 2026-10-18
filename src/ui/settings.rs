@@ -369,7 +369,9 @@ impl Render for SettingsWindow {
 
         window_chrome(
             div()
+                .id("settings-window")
                 .track_focus(&self.focus_handle)
+                .role(gpui::Role::Region)
                 .key_context("SettingsWindow")
                 .size_full()
                 .flex()

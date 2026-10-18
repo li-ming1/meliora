@@ -849,6 +849,8 @@ impl Render for Library {
         div()
             .id("library")
             .track_focus(&self.focus_handle)
+            // 库内容是切换多种视图的顶层区域，不预设表格/网格语义。
+            .role(gpui::Role::Region)
             .key_context("Library")
             .on_action(cx.listener(|this, _: &EscapeBack, _, cx| {
                 let switcher = cx.global::<Models>().switcher_model.clone();
