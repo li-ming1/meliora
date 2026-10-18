@@ -306,6 +306,10 @@ struct KnobState {
     scroll_position: Option<f32>,
     label_caption: Option<CaptionCache>,
     readout_caption: Option<CaptionCache>,
+    /// Last `(value, formatted)` pair: the formatter is a pure function of
+    /// the value, so prepaint can skip its per-frame SharedString allocation
+    /// while the knob stands still. `readout_caption` only avoids re-shaping.
+    readout_text: Option<(f32, SharedString)>,
 }
 
 pub struct KnobPrepaint {
@@ -405,9 +409,20 @@ impl Element for Knob {
             )
         });
         let readout = if textbox.is_none() {
+            let text = {
+                let mut state = state.borrow_mut();
+                match state.readout_text.as_ref() {
+                    Some((value, text)) if *value == self.value => text.clone(),
+                    _ => {
+                        let text = (self.format)(self.value);
+                        state.readout_text = Some((self.value, text.clone()));
+                        text
+                    }
+                }
+            };
             Some(cached_caption(
                 &mut state.borrow_mut().readout_caption,
-                (self.format)(self.value),
+                text,
                 readout_color.into_color(),
                 font,
                 scale_factor,
@@ -726,6 +741,12 @@ impl Element for Knob {
                     let mut state = state.borrow_mut();
                     let base = state.scroll_position.unwrap_or(position);
                     let position = (base + delta).clamp(0.0, 1.0);
+                    // At an endpoint every wheel tick clamps to the same
+                    // value; pushing it re-runs the band edit chain and
+                    // repaints for an unchanged knob.
+                    if position == base {
+                        return;
+                    }
                     state.scroll_position = Some(position);
                     drop(state);
                     (on_change.borrow_mut())(position, cx);

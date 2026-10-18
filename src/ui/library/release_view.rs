@@ -35,10 +35,9 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
         },
-        library_access::LibraryAccess,
         models::{
-            LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
-            is_track_available_snapshot, toggle_album_like,
+            LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, is_track_available_snapshot,
+            toggle_album_like,
         },
         scroll_follow::SmoothScrollFollow,
         theme::Theme,
@@ -73,9 +72,12 @@ fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
     if tracks.is_empty() {
         return false;
     }
-    let ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
-    cx.playlist_contains_all_tracks(LIKED_SONGS_PLAYLIST_ID, &ids)
-        .unwrap_or(false)
+    // The cached set lands asynchronously and this view observes it, so a
+    // like/unlike no longer costs a `block_on` query on the UI thread.
+    let Some(liked) = cx.global::<Models>().liked_ids.read(cx).clone() else {
+        return false;
+    };
+    tracks.iter().all(|track| liked.contains(&track.id))
 }
 
 /// Prebuilt track rows for the release view.
@@ -190,11 +192,10 @@ struct HeaderState {
 impl ReleaseView {
     pub(super) fn new(cx: &mut App, album_id: i64, target_track_id: Option<i64>) -> Entity<Self> {
         cx.new(|cx| {
-            let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-            cx.subscribe(&playlist_tracker, |this: &mut Self, _, ev, cx| {
-                if *ev != PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID) {
-                    return;
-                }
+            // The set, not the playlist tracker: the tracker fires before the
+            // async reload has landed, so a cache read there would be stale.
+            let liked_ids = cx.global::<Models>().liked_ids.clone();
+            cx.observe(&liked_ids, |this: &mut Self, _, cx| {
                 let new_all_liked = compute_all_liked(cx, &this.tracks);
                 if new_all_liked != this.all_liked {
                     this.all_liked = new_all_liked;

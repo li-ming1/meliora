@@ -456,18 +456,7 @@ impl TextInput {
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-
-        utf8_offset
+        byte_offset_from_utf16(&self.content, offset)
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
@@ -569,8 +558,57 @@ impl TextInput {
     /// Replaces the content and moves the cursor to the end of the new text.
     pub fn set_value(&mut self, cx: &mut Context<Self>, value: SharedString) {
         self.content = value;
-        self.move_to(self.content.len(), cx);
+        // The old marked range refers to the previous text: leaving it set
+        // makes prepaint subtract a larger end from the new content length
+        // (underflow) and can keep an IME composition alive over new text.
+        // `move_to` cannot be used for the cursor move because its
+        // unchanged-range guard would skip the repaint when the cursor was
+        // already at the end.
+        self.selected_range = self.content.len()..self.content.len();
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.last_layout = None;
+        self.last_bounds = None;
+        cx.notify();
     }
+}
+
+/// Maps the IME's selection (UTF-16 offsets **within `new_text`**) into the
+/// document: convert against the replacement string, then rebase at the edit
+/// start. Using the edit range's end for the selection end overran the
+/// inserted text and could leave `selected_range.end` past `content.len()`.
+fn rebase_selection(
+    range: Range<usize>,
+    new_text: &str,
+    new_selected_range_utf16: Option<&Range<usize>>,
+) -> Range<usize> {
+    match new_selected_range_utf16 {
+        Some(selected) => {
+            let start = byte_offset_from_utf16(new_text, selected.start);
+            let end = byte_offset_from_utf16(new_text, selected.end);
+            range.start + start..range.start + end
+        }
+        None => {
+            let end = range.start + new_text.len();
+            end..end
+        }
+    }
+}
+
+/// UTF-16 code-unit offset -> byte offset in `text` (clamped to its end).
+fn byte_offset_from_utf16(text: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+
+    for ch in text.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += ch.len_utf16();
+        utf8_offset += ch.len_utf8();
+    }
+
+    utf8_offset
 }
 
 impl EntityInputHandler for TextInput {
@@ -649,11 +687,7 @@ impl EntityInputHandler for TextInput {
         } else {
             self.marked_range = None;
         }
-        self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.selected_range = rebase_selection(range, new_text, new_selected_range_utf16.as_ref());
 
         cx.notify();
     }
@@ -1019,6 +1053,20 @@ impl Focusable for TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ime_selection_rebases_within_replacement_text() {
+        // Replace a 3-byte marked range with "pin", caret at its end.
+        assert_eq!(rebase_selection(2..5, "pin", Some(&(3..3))), 5..5);
+        // The selection is UTF-16 within new_text; multi-byte chars convert
+        // to their byte width ("你" = 3 bytes, one UTF-16 unit).
+        assert_eq!(rebase_selection(0..0, "你a", Some(&(1..1))), 3..3);
+        assert_eq!(rebase_selection(4..7, "你a", Some(&(0..2))), 4..8);
+        // No IME selection: caret lands after the inserted text.
+        assert_eq!(rebase_selection(4..7, "ab", None), 6..6);
+        // The old edit-range end must never leak into the new end.
+        assert_eq!(rebase_selection(0..6, "pin", Some(&(3..3))), 3..3);
+    }
 
     #[test]
     fn word_range_empty_content() {

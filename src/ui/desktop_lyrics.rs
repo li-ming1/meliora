@@ -92,7 +92,7 @@ pub fn open(cx: &mut App) {
         .read(cx)
         .interface
         .desktop_lyrics_pos;
-    let Some(handle) = open_window(cx, lyrics, pos) else {
+    let Some(handle) = open_window(cx, lyrics.clone(), pos) else {
         // 开窗失败（GDI/HWND 资源瞬态等）降级为未开启，不能 panic——
         // release 是 panic=abort，会让整个应用带着播放一起死。
         tracing::error!("desktop lyrics: open failed, degrading to disabled");
@@ -101,6 +101,10 @@ pub fn open(cx: &mut App) {
         return;
     };
     cx.global_mut::<DesktopLyricsState>().window = Some(handle);
+    // This window is the only visible lyrics consumer when the side panel
+    // and immersive view are both closed; fill in a load the visibility
+    // gates skipped while nothing was showing.
+    lyrics.update(cx, |lyrics, cx| lyrics.ensure_loaded(cx));
     set_enabled(cx, true);
     sync_broadcast(cx);
 }
@@ -146,7 +150,10 @@ fn restore_broadcast_after_close(cx: &mut App) {
 /// 关闭后由主窗口激活事件（app.rs 的 activation 观察者）恢复常规双档。
 /// app.rs 的档位写入点以 [`is_open`] 为 OR 条件，两条写入路径不再互踩。
 pub fn is_open(cx: &App) -> bool {
-    cx.global::<DesktopLyricsState>().is_open()
+    // Called from `Lyrics::new` as well, which runs before this Global is
+    // installed; absence simply means "not open".
+    cx.try_global::<DesktopLyricsState>()
+        .is_some_and(DesktopLyricsState::is_open)
 }
 
 fn sync_broadcast(cx: &mut App) {

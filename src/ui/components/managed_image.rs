@@ -1163,8 +1163,144 @@ struct ManagedImageState {
     /// 结果写回 bridge 或 RENDER_CACHE。
     task: Option<tokio::task::AbortHandle>,
     /// 本元素的 (来源, 尺寸) 缓存键——on_release 把图推进回收漏斗时需要
-    /// 它来做"缓存是否仍持有"判定。
+    /// 它来做"缓存是否仍持有"判定；request_layout 也用它判断 keyed state
+    /// 是否被同位置的新图复用（索引键的列表换页/搜索刷新）。
     cache_key: RenderCacheKey,
+}
+
+/// Everything the state holds, moved out for the reclaim funnel. The bridge
+/// can still be shared with an aborted-but-not-yet-dropped retrieve task;
+/// in that case read the ready image through the shared handle instead of
+/// dropping the only remaining reference outside the funnel.
+fn take_held_images(state: &mut ManagedImageState) -> impl Iterator<Item = Arc<RenderImage>> {
+    let bridged = state
+        .bridge
+        .take()
+        .and_then(|bridge| match Arc::try_unwrap(bridge) {
+            Ok(mut once) => once.take().flatten(),
+            Err(bridge) => bridge.get().cloned().flatten(),
+        });
+    state.image.take().into_iter().chain(bridged)
+}
+
+/// Starts the retrieve task and its completion continuation for `key`, and
+/// records the cache key the result will belong to.
+fn request_image(
+    state: &mut ManagedImageState,
+    key: ManagedImageKey,
+    thumb_size: u32,
+    cache: ImageCacheMode,
+    cx: &mut gpui::Context<ManagedImageState>,
+) {
+    let pool = cx.global::<Pool>().0.clone();
+    let bridge: ImageBridge = Arc::new(OnceLock::new());
+    let bridge_clone = bridge.clone();
+    let task_key = key.clone();
+    let result_key = RenderCacheKey {
+        key: key.clone(),
+        thumb: thumb_size,
+    };
+
+    let handle = crate::RUNTIME.spawn(async move {
+        let result = task_key.retrieve(pool, thumb_size, cache).await;
+        let image = match &result {
+            Ok(img) => img.clone(),
+            Err(_) => None,
+        };
+        bridge_clone.set(image).ok();
+        result
+    });
+    let abort = handle.abort_handle();
+
+    cx.spawn(async move |this, cx| {
+        // on_release 中止任务后 handle 返回 JoinError：元素已经
+        // 不在了，不写回任何状态，也不再触发 notify。
+        let result = match handle.await {
+            Ok(result) => result,
+            Err(e) if e.is_cancelled() => return,
+            Err(e) => {
+                error!("Image retrieve task failed: {:?}", e);
+                return;
+            }
+        };
+        match result {
+            Ok(Some(image)) => {
+                // 增强在 retrieve 内部完成（Backdrop 模式先增强后
+                // 入缓存），元素绘制的 Arc 与缓存持有的是同一份。
+                let updated = this.update(cx, |this: &mut ManagedImageState, cx| {
+                    // Same element slot was re-keyed while this retrieve was
+                    // in flight (index-keyed lists). The result belongs to
+                    // the previous key: hand it to the funnel instead of
+                    // painting it over the new image.
+                    if this.cache_key != result_key {
+                        queue_tile_drop(result_key.clone(), image.clone());
+                        return;
+                    }
+                    // keyed state 被同一元素位置跨内容复用时（如
+                    // 正在播放栏逐曲换封面），被覆盖的旧图必须进
+                    // 回收漏斗：普通 Drop 不会释放图集瓦片。推送
+                    // 本身是安全的——drain 的"批外持有者 == 0"判
+                    // 定会拦下仍被绘制或缓存持有的图。
+                    if let Some(old) = this.image.take()
+                        && !Arc::ptr_eq(&old, &image)
+                    {
+                        queue_orphan_tile_drop(old);
+                    }
+                    this.image = Some(image.clone());
+                    this.bridge = None;
+                    cx.notify();
+                });
+                if updated.is_err() {
+                    // 元素已被释放：state 与其 bridge 的引用随之消
+                    // 失，若这是最后一份引用，由这里回收 atlas 瓦
+                    // 片（普通 Drop 不回收瓦片）。
+                    if Arc::strong_count(&image) == 1 {
+                        cx.update(|cx| {
+                            crate::ui::util::reclaim_images_from_app(cx, vec![image]);
+                        });
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                error!("Failed to retrieve image: {:?}", e);
+            }
+        }
+    })
+    .detach();
+
+    state.image = None;
+    state.bridge = Some(bridge);
+    state.task = Some(abort);
+    state.cache_key = RenderCacheKey {
+        key,
+        thumb: thumb_size,
+    };
+}
+
+/// Re-key a reused element state: cancel the old retrieve, return every
+/// image it held to the funnel, and start over under the new key.
+fn restart_image(
+    state: &mut ManagedImageState,
+    key: ManagedImageKey,
+    thumb_size: u32,
+    cache: ImageCacheMode,
+    cx: &mut gpui::Context<ManagedImageState>,
+) {
+    if let Some(task) = state.task.take() {
+        task.abort();
+    }
+    let previous = std::mem::replace(
+        &mut state.cache_key,
+        RenderCacheKey {
+            key: key.clone(),
+            thumb: thumb_size,
+        },
+    );
+    for image in take_held_images(state) {
+        queue_tile_drop(previous.clone(), image);
+    }
+    request_image(state, key, thumb_size, cache, cx);
 }
 
 pub enum ImageReady {
@@ -1275,112 +1411,49 @@ impl Element for ManagedImage {
         let key = self.key.clone();
         let thumb_size = self.thumb_size;
         let cache = self.cache;
+        let init_key = key.clone();
         let entity = window.use_keyed_state("state", cx, move |_window, cx| {
-            let pool = cx.global::<Pool>().0.clone();
-            let bridge: ImageBridge = Arc::new(OnceLock::new());
-            let bridge_clone = bridge.clone();
-            let task_key = key.clone();
-
-            let handle = crate::RUNTIME.spawn(async move {
-                let result = task_key.retrieve(pool, thumb_size, cache).await;
-                let image = match &result {
-                    Ok(img) => img.clone(),
-                    Err(_) => None,
-                };
-                bridge_clone.set(image).ok();
-                result
-            });
-            let abort = handle.abort_handle();
-
-            cx.spawn(async move |this, cx| {
-                // on_release 中止任务后 handle 返回 JoinError：元素已经
-                // 不在了，不写回任何状态，也不再触发 notify。
-                let result = match handle.await {
-                    Ok(result) => result,
-                    Err(e) if e.is_cancelled() => return,
-                    Err(e) => {
-                        error!("Image retrieve task failed: {:?}", e);
-                        return;
-                    }
-                };
-                match result {
-                    Ok(Some(image)) => {
-                        // 增强在 retrieve 内部完成（Backdrop 模式先增强后
-                        // 入缓存），元素绘制的 Arc 与缓存持有的是同一份。
-                        if this
-                            .update(cx, |this: &mut ManagedImageState, cx| {
-                                // keyed state 被同一元素位置跨内容复用时（如
-                                // 正在播放栏逐曲换封面），被覆盖的旧图必须进
-                                // 回收漏斗：普通 Drop 不会释放图集瓦片。推送
-                                // 本身是安全的——drain 的"批外持有者 == 0"判
-                                // 定会拦下仍被绘制或缓存持有的图。
-                                if let Some(old) = this.image.take()
-                                    && !Arc::ptr_eq(&old, &image)
-                                {
-                                    queue_orphan_tile_drop(old);
-                                }
-                                this.image = Some(image.clone());
-                                this.bridge = None;
-                                cx.notify();
-                            })
-                            .is_err()
-                        {
-                            // 元素已被释放：state 与其 bridge 的引用随之消
-                            // 失，若这是最后一份引用，由这里回收 atlas 瓦
-                            // 片（普通 Drop 不回收瓦片）。
-                            if Arc::strong_count(&image) == 1 {
-                                cx.update(|cx| {
-                                    crate::ui::util::reclaim_images_from_app(cx, vec![image]);
-                                });
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        error!("Failed to retrieve image: {:?}", e);
-                    }
-                }
-            })
-            .detach();
-
+            let mut state = ManagedImageState {
+                image: None,
+                bridge: None,
+                task: None,
+                cache_key: RenderCacheKey {
+                    key: init_key.clone(),
+                    thumb: thumb_size,
+                },
+            };
             cx.on_release(|this: &mut ManagedImageState, _cx| {
                 // 先中止未完成的取回任务。瓦片回收统一走回收漏斗：on_release
-                // 只负责把本状态持有的两处引用（image 字段 + bridge 内的就绪
-                // 图）推进队列，由 drain 按"批外持有者 == 0"判定后恰好释放
+                // 只负责把本状态持有的引用（image 字段 + bridge 内可能就绪
+                // 的图）推进队列，由 drain 按"批外持有者 == 0"判定后恰好释放
                 // 一次。直接 drop 会与其他路径的释放交错出二次释放（etagere
                 // 代际断言，2026-09-12/13 闪退），无条件跳过则会泄漏被存活
                 // 元素 paint 复活的瓦片。
                 if let Some(task) = this.task.take() {
                     task.abort();
                 }
-                // image 字段与 bridge 里的就绪图是互斥的两个持有点（任务
-                // 完成时先 set bridge、continuation 再写回字段）。state 以
-                // 普通 Drop 消失时 bridge 里的 Arc 不会回收瓦片，所以两处
-                // 都要推进回收漏斗。
-                let bridged = this.bridge.take().and_then(|bridge| {
-                    // state 是 bridge Arc 的最后持有者（任务闭包已完成或被
-                    // 中止），try_unwrap 拿到所有权后才能 take 出内部的图。
-                    Arc::try_unwrap(bridge)
-                        .ok()
-                        .and_then(|mut once| once.take())
-                        .flatten()
-                });
-                for image in this.image.take().into_iter().chain(bridged) {
-                    queue_tile_drop(this.cache_key.clone(), image);
+                let cache_key = this.cache_key.clone();
+                for image in take_held_images(this) {
+                    queue_tile_drop(cache_key.clone(), image);
                 }
             })
             .detach();
-
-            ManagedImageState {
-                image: None,
-                bridge: Some(bridge),
-                task: Some(abort),
-                cache_key: RenderCacheKey {
-                    key: key.clone(),
-                    thumb: thumb_size,
-                },
-            }
+            request_image(&mut state, init_key, thumb_size, cache, cx);
+            state
         });
+
+        // Keyed state is addressed by element position, so an index-keyed
+        // list (online rows, queue) can hand the same slot a different cover.
+        // Re-key in place instead of painting the stale image forever.
+        let desired = RenderCacheKey {
+            key,
+            thumb: thumb_size,
+        };
+        if entity.read(cx).cache_key != desired {
+            entity.update(cx, |state, cx| {
+                restart_image(state, desired.key.clone(), thumb_size, cache, cx);
+            });
+        }
 
         let (image, bridge) = {
             let state = entity.read(cx);

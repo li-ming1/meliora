@@ -546,14 +546,15 @@ impl KugouPlaylistsView {
             ));
         }
         self.import_open = true;
-        self.import_busy = false;
+        // Do not reset `import_busy`: closing the modal does not abort the
+        // pipeline, and clearing the flag here let a reopen submit a second
+        // import for the same playlist. The Finished event clears it.
         self.import_status = SharedString::default();
         cx.notify();
     }
 
     fn close_import(&mut self, cx: &mut Context<Self>) {
         self.import_open = false;
-        self.import_busy = false;
         cx.notify();
     }
 
@@ -622,7 +623,13 @@ impl KugouPlaylistsView {
                                         );
                                         this.import_status = summary.clone().into();
                                         this.refresh_playlists(cx);
-                                        Some(Toast::success(summary))
+                                        // Zero added means every upload failed:
+                                        // keep the counts but surface an error.
+                                        Some(if matched == 0 {
+                                            Toast::error(summary)
+                                        } else {
+                                            Toast::success(summary)
+                                        })
                                     }
                                     ImportOutcome::ParseFailed(err) => {
                                         this.import_status = SharedString::from(
@@ -677,6 +684,16 @@ impl KugouPlaylistsView {
                     emit_toast(toast);
                 }
             }
+
+            // The channel can close without a Finished event if the import
+            // task dies. Release the busy flag so reopening the modal can
+            // retry instead of staying stuck forever.
+            let _ = this.update(cx, |this, cx| {
+                if this.import_busy {
+                    this.import_busy = false;
+                    cx.notify();
+                }
+            });
         })
         .detach();
     }
@@ -1217,12 +1234,23 @@ async fn run_import(
         return ImportOutcome::NoMatch;
     }
 
+    let mut added = 0i64;
     for chunk in matched.chunks(PLAYLIST_ADD_CHUNK) {
-        let _ = client.playlist_add_songs(listid, chunk).await;
+        match client.playlist_add_songs(listid, chunk).await {
+            Ok(_) => added += chunk.len() as i64,
+            Err(error) => tracing::warn!(
+                %error,
+                added,
+                failed = chunk.len(),
+                "kugou import: failed to add a chunk of matched songs"
+            ),
+        }
     }
 
+    // `matched` now means "actually added": a partial/total upload failure
+    // must not be reported as a full success.
     ImportOutcome::Done {
-        matched: matched.len() as i64,
+        matched: added,
         total: total as i64,
     }
 }

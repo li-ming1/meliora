@@ -567,6 +567,12 @@ impl ImmersiveView {
             }));
         }
         self.image_key = cover_key;
+        // No cover means no accent source: clearing here avoids keeping the
+        // previous track's theme color on the card and lyric highlight.
+        if self.image_key.is_none() {
+            self.accent = None;
+            self.accent_for = None;
+        }
         // 完全停止（无 current_track）时沿用原行为照常布防；只有
         // "槽位与播放中曲目不一致" 的陈旧 resolve 才跳过。
         if resolved_slot_is_current || track_path.is_none() {

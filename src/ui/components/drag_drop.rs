@@ -155,6 +155,10 @@ pub struct DragDropState {
     pub drop_target: Option<(usize, DropPosition)>,
     pub is_dragging: bool,
     pub drag_mouse_y: Option<Pixels>,
+    /// Item count of the list being dragged over. Edge scrolling changes the
+    /// visible slot under a stationary pointer, so the animation-frame
+    /// continuation needs it to recompute the drop target.
+    pub item_count: usize,
 }
 
 impl DragDropState {
@@ -517,6 +521,7 @@ fn update_drag_move_state<V: 'static>(
     // 窗口，行重绘由该机制驱动，不依赖观察者。
     manager.update(cx, |m, _| {
         m.state.is_dragging = true;
+        m.state.item_count = item_count;
         if let Some(indices) = dragging_indices {
             m.state.dragging_indices = indices;
         }
@@ -834,7 +839,9 @@ pub fn schedule_edge_scroll(
         return;
     }
 
-    let should_continue = continue_edge_scroll(manager.read(cx), &scroll_handle);
+    let should_continue = manager.update(cx, |manager, _| {
+        continue_edge_scroll(manager, &scroll_handle)
+    });
 
     if should_continue {
         request_edge_scroll(manager, scroll_handle, window, cx);
@@ -845,7 +852,13 @@ pub fn schedule_edge_scroll(
 /// Continue edge scrolling during an animation frame.
 ///
 /// Returns `true` if scrolling should continue (caller should schedule another frame).
-fn continue_edge_scroll(manager: &DragDropListManager, scroll_handle: &ScrollableHandle) -> bool {
+/// Scrolling moves the rows under a stationary pointer without a DragMoveEvent,
+/// so the drop target must be recomputed here or the indicator (and the drop)
+/// stays on the pre-scroll row.
+fn continue_edge_scroll(
+    manager: &mut DragDropListManager,
+    scroll_handle: &ScrollableHandle,
+) -> bool {
     if !manager.state.is_dragging {
         return false;
     }
@@ -859,5 +872,20 @@ fn continue_edge_scroll(manager: &DragDropListManager, scroll_handle: &Scrollabl
     };
 
     let direction = get_edge_scroll_direction(mouse_y, bounds, &manager.config.scroll_config);
-    perform_edge_scroll(scroll_handle, direction, &manager.config.scroll_config)
+    if !perform_edge_scroll(scroll_handle, direction, &manager.config.scroll_config) {
+        return false;
+    }
+
+    let target = calculate_drop_target(
+        point(bounds.origin.x, mouse_y),
+        bounds,
+        scroll_handle.offset().y,
+        manager.config.item_height,
+        manager.state.item_count,
+    );
+    match target {
+        Some((index, position)) => manager.state.update_drop_target(index, position),
+        None => manager.state.clear_drop_target(),
+    }
+    true
 }

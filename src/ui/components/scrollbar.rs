@@ -690,7 +690,8 @@ impl Element for Scrollbar {
                         let mut state = state_for_scroll.borrow_mut();
                         state.last_interaction_time = Some(Instant::now());
 
-                        if (new_axis_offset - current_axis_offset).abs() > px(0.1) {
+                        let moved = (new_axis_offset - current_axis_offset).abs() > px(0.1);
+                        if moved {
                             let new_offset = match axis {
                                 ScrollbarAxis::Vertical => gpui::Point {
                                     x: current_offset.x,
@@ -709,7 +710,10 @@ impl Element for Scrollbar {
                             window.refresh();
                         }
 
-                        if let Some(handler) = on_interaction_scroll.as_ref() {
+                        // Same guard for the consumer: at an endpoint the
+                        // lyrics handler used to register an interaction and
+                        // notify on every wheel tick with zero movement.
+                        if moved && let Some(handler) = on_interaction_scroll.as_ref() {
                             handler(window, cx);
                         }
                     }

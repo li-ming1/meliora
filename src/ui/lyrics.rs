@@ -148,7 +148,8 @@ impl Lyrics {
             // stale startup load. 可见性门控：面板与沉浸页初始都关闭时整段
             // 加载白付——只置脏，打开时由可见性观察者补跑。
             let startup_visible = *cx.global::<Models>().show_lyrics.read(cx)
-                || *cx.global::<Models>().immersive.read(cx);
+                || *cx.global::<Models>().immersive.read(cx)
+                || crate::ui::desktop_lyrics::is_open(cx);
             if startup_visible {
                 let initial_track_path = initial_track.as_ref().map(|t| t.get_path().clone());
                 let pool = cx.global::<crate::ui::app::Pool>().0.clone();
@@ -178,7 +179,8 @@ impl Lyrics {
                 // 省的是网络往返与解析 CPU。只置脏，打开面板 / 进入沉浸页
                 // 的可见性观察者补跑完整加载路径。
                 let visible = *cx.global::<Models>().show_lyrics.read(cx)
-                    || *cx.global::<Models>().immersive.read(cx);
+                    || *cx.global::<Models>().immersive.read(cx)
+                    || crate::ui::desktop_lyrics::is_open(cx);
                 if !visible {
                     this.load_pending = true;
                     return;
@@ -201,8 +203,7 @@ impl Lyrics {
             let show_lyrics = cx.global::<Models>().show_lyrics.clone();
             cx.observe(&show_lyrics, |this: &mut Lyrics, flag, cx| {
                 if *flag.read(cx) {
-                    this.resolve_accent(cx);
-                    this.load_pending_lyrics(cx);
+                    this.ensure_loaded(cx);
                 }
             })
             .detach();
@@ -456,12 +457,33 @@ impl Lyrics {
                 x: px(0.0),
                 y: px(0.0),
             });
+        } else {
+            // Seed the active line from the live position: a pending load
+            // applied while paused (panel opened after a hidden track
+            // change) gets no position tick, so leaving the list at line 0
+            // would show the wrong lyric until playback resumes.
+            let position_ms = *cx.global::<PlaybackInfo>().position.read(cx);
+            self.position_ms = position_ms;
+            let parsed = self
+                .parsed
+                .as_deref()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let index = parsed.partition_point(|line| line.time_ms <= position_ms);
+            let active = index.checked_sub(1);
+            self.last_active_line = active;
+            self.follow_pending = active.is_some();
+            let reduced_motion = cx
+                .global::<SettingsGlobal>()
+                .model
+                .read(cx)
+                .interface
+                .reduced_motion;
+            self.start_line_emphasis_animation(active, reduced_motion);
         }
         cx.notify();
     }
 
-    /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
-    /// oldest entry past [`LYRIC_CACHE_CAP`].
     /// 缓存查询：正结果原样返回；在线负结果在 TTL 内返回空（免重发
     /// search 请求），过期视为未命中（条目保留，重拉落地后被覆盖）。命中
     /// 即 LRU 续命。
@@ -483,6 +505,8 @@ impl Lyrics {
         hit
     }
 
+    /// Inserts a loaded lyric into the bounded FIFO cache, evicting the
+    /// oldest entry past [`LYRIC_CACHE_CAP`].
     fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Arc<Vec<LrcLine>>>)) {
         // 在线"无歌词"不再裸跳过而是带 TTL 负缓存（见 LYRIC_NEGATIVE_TTL）；
         // 本地路径的空结果仍按正结果缓存——sidecar/DB 本来就没有，重访
@@ -532,13 +556,19 @@ impl Lyrics {
     /// 同一提取器）。取色图从不绘制：`use_cache=false` 解码即弃——零
     /// RENDER_CACHE 条目、零图集瓦片，256px 像素缓冲在提取任务结束时
     /// 就地释放；键未变化时直接返回，重复触发无成本。
+    /// Any consumer became visible (side panel, immersive view, desktop
+    /// lyrics window): fill in what the hidden period skipped.
+    pub(crate) fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
+        self.resolve_accent(cx);
+        self.load_pending_lyrics(cx);
+    }
+
     fn resolve_accent(&mut self, cx: &mut Context<Self>) {
-        // 可见性门控：取色结果只有歌词面板消费（沉浸页有独立的提取链），
-        // 面板关闭时每次切歌的封面解码/提取是纯白付。与位置观察者"隐藏
-        // 时状态照常更新"的取舍不同——那边省的只是一次缓存重放的
-        // notify，这边省的是每曲一次的全图解码。打开面板时由可见性
-        // 观察者补一次解析。
-        if !*cx.global::<Models>().show_lyrics.read(cx) {
+        // 可见性门控：取色结果由歌词面板与桌面歌词窗消费（沉浸页有独立
+        // 的提取链）；两者都关闭时每次切歌的封面解码/提取是纯白付。与
+        // 位置观察者"隐藏时状态照常更新"的取舍不同——这边省的是每曲
+        // 一次的全图解码。打开任一消费者时由可见性观察者补一次解析。
+        if !*cx.global::<Models>().show_lyrics.read(cx) && !crate::ui::desktop_lyrics::is_open(cx) {
             return;
         }
         let queue = cx.global::<Models>().queue.clone();

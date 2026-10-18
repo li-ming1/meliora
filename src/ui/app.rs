@@ -655,18 +655,18 @@ pub fn run() -> anyhow::Result<()> {
         cx.set_global(modal::ModalActive(AtomicBool::new(false)));
 
         let settings_model = cx.global::<SettingsGlobal>().model.clone();
-        // 定向 refresh 第一批（2026-09-26 审计 A-4）：观察回调改为内容级
-        // diff——序列化等价的写入（现有 save 守卫之外的任何后台写入方）不再
-        // 触发整窗重建；跳过是安全的，因为内容未变时渲染结果逐字节等价。
-        // 内容真正变化的写入仍全窗刷新；分区级细粒度（只刷受影响窗口）留
-        // 给 Settings Entity 拆分（路线图中期项）。
-        let mut rendered_settings = serde_json::to_value(settings_model.read(cx)).ok();
+        // 定向 refresh 第一批（2026-09-26 审计 A-4）：观察回调做内容级 diff，
+        // 内容未变的后台写入不再触发整窗重建（内容相等 ⇒ 渲染结果逐字节等
+        // 价）。这里直接比较 `Settings` 的克隆而不是 serde_json::Value：
+        // 结构体没有 skip/自定义序列化字段，两种判据等价，但克隆省掉每次
+        // 通知（滑条拖动可达 60Hz）建一整棵 JSON AST 的分配。
+        let mut rendered_settings = settings_model.read(cx).clone();
         cx.observe(&settings_model, move |model, cx| {
-            let current = serde_json::to_value(model.read(cx)).ok();
-            if current == rendered_settings {
+            let current = model.read(cx);
+            if *current == rendered_settings {
                 return;
             }
-            rendered_settings = current;
+            rendered_settings = current.clone();
             cx.refresh_windows();
         })
         .detach();

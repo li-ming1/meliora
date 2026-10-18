@@ -969,9 +969,11 @@ impl Queue {
                     } else {
                         this.needs_queue_rescan = true;
                     }
+                    // Rows keep their indices on a position-only switch, so
+                    // clearing the selection there only re-rendered every
+                    // live row and dropped a multi-selection for nothing.
+                    this.selection.update(cx, |s, cx| s.clear(cx));
                 }
-
-                this.selection.update(cx, |s, cx| s.clear(cx));
 
                 cx.notify();
             })
