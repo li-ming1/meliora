@@ -1,7 +1,10 @@
-//! 打真实酷狗服务器的联机测试。两个都标了 `#[ignore]`：手动运行用
+//! 打真实酷狗服务器的联机测试。四个都标了 `#[ignore]`：手动运行用
 //! `cargo test --release --features kugou live_ -- --ignored --nocapture`。
 //!
-//! `live_offline_flow` 全自动（设备注册、搜索、播放 URL、歌词）。`live_qr_login` 需要人
+//! `live_offline_flow` 全自动（设备注册、搜索、播放 URL、歌词）。
+//! `live_http_source_decodes_kugou_stream` 解析出一个真实播放地址后，走
+//! `online_sources` 的 range 读取路径直到读元数据。`live_rank_and_recommend`
+//! 拉榜单与每日推荐，并核对 `ui::kugou` 里的解析器。`live_qr_login` 需要人
 //! 用酷狗移动端 App 扫一次二维码，然后列出已登录用户的歌单。
 
 use super::KugouClient;

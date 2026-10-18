@@ -819,7 +819,8 @@ impl OnlineTrackDisplay for KugouTrackInfo {
 
 /// `parse_tracks` 成本基准。为什么存在：每个在线页面都把它的 JSON 投影成
 /// `KugouTrackInfo`，而且是在 `this.update(cx, …)` **里面**——即 gpui 主线程
-/// （kugou_playlists.rs:372/:423、kugou_ranks.rs:270、search/model.rs:482）——
+/// （`ui/library/kugou_playlists.rs` 的分页取曲与单曲解析、`ui/search/model.rs`
+/// 的在线搜索；榜单页另走 `parse_rank_tracks`，它也在主线程）——
 /// 只有网络 `.json()` 那一跳在线程外。准则 §3 禁止在渲染线程上解析，但 §1 禁止
 /// 没有数字就动手，所以这里把它测出来。两种 schema 框住现实：乐观的一种是每个
 /// 字段都在第一个候选键上命中，悲观的一种是把候选列表走到最后一种拼写

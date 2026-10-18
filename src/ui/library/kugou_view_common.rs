@@ -121,10 +121,11 @@ pub(crate) fn kugou_track_row_view<V: 'static>(
 mod tests {
     use super::*;
 
-    /// 钉住「两个视图必须一致」这个契约：uniform_list 用 `ONLINE_TRACK_ROW_HEIGHT`
-    /// 给每一行步进，所以某个视图悄悄偏离这个值就会把行步进算错。
+    /// 回归哨兵：榜单与歌单两个视图取的是同一个常量，行步进的一致由构造保证，
+    /// 不需要这条测试来比对两个视图。它防的是"常量被改而没人注意"；行布局与
+    /// 60.0 是否仍然相符，得靠肉眼或截图核对。
     #[test]
-    fn shared_row_height_matches_the_row_layout_contract() {
+    fn shared_online_row_constants_are_pinned() {
         assert_eq!(ONLINE_TRACK_ROW_HEIGHT, 60.0);
         assert_eq!(LIKE_WATCH_TIMEOUT, Duration::from_secs(30));
     }

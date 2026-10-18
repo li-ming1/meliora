@@ -385,8 +385,7 @@ pub(crate) fn render_qr_modal<H: QrLoginHost>(
 }
 
 /// 共用的下载目录输入框：惰性创建的 textbox 加原生文件夹选择器。经
-/// `update_playback_settings` 持久化，因此两个 provider 写的是同一个
-/// `playback.download_dir` 设置。
+/// `update_playback_settings` 持久化，落在同一个 `playback.download_dir` 上。
 pub(crate) struct DownloadDirField {
     input: Option<Entity<Textbox>>,
 }

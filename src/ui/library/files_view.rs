@@ -557,7 +557,8 @@ impl Render for FilesView {
                     "files-view",
                     flat.len(),
                     move |range: std::ops::Range<usize>, _window, cx| {
-                        // 每次窗口重建只做一次 prune（与 table.rs:827 同一修法）：逐行
+                        // 每次窗口重建只做一次 prune（与 `ui/components/table.rs` 的
+                        // `render` 同一修法）：逐行
                         // 调用是 O(可见行数×缓存键数) 的键迭代，且每次调用各自分配
                         // `to_remove` Vec。`0..1` 是 uniform_list 的模板测量渲染，
                         // 不是可见窗口；按它 prune 只会把 center 钉在 0。

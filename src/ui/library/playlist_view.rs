@@ -1100,7 +1100,8 @@ impl Render for PlaylistView {
                                         cx,
                                     );
 
-                                    // 每次窗口重建只做一次 prune（与 table.rs:827 同一
+                                    // 每次窗口重建只做一次 prune（与
+                                    // `ui/components/table.rs` 的 `render` 同一
                                     // 修法）：逐行调用是 O(可见行数×缓存键数) 的键迭代，
                                     // 且每次调用各自分配 `to_remove` Vec。
                                     if !is_templ_render {

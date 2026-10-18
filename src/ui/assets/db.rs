@@ -103,7 +103,7 @@ fn load_table_asset(
 /// 工作集。
 ///
 /// 2026-10-17 实测校准（`library.db` 全 20 条 `artwork.thumb`）：当代扫描器写的是
-/// `THUMBNAIL_SIZE = 70` 的 BMP（scan/decode.rs:269，实测 70×70 / 19,722 B），
+/// `THUMBNAIL_SIZE = 70` 的 BMP（`scan/decode.rs` 的同名常量，实测 70×70 / 19,722 B），
 /// 所以对当代产物这一步**不改尺寸**（`image::thumbnail` 不放大，70px 源下几何恒等），
 /// 整条函数等于"BMP 解码 + PNG 重编码"。**实测它连"转 PNG 会更小"也不成立**
 /// （`bench_thumb_miss_costs`，他库 20 张真实 thumb）：产物 PNG 25,332 B/张 > 输入 BMP
@@ -112,8 +112,8 @@ fn load_table_asset(
 /// 形态写的，留着会让后人以为这里有一条大的降幅可拿。
 ///
 /// 另一件由同一次实测暴露、**尚未处理**的事：专辑网格单元最小 192 CSS px
-/// （`uniform_grid.rs:10`，1.25 DPR 下 ≥240 设备像素）却用 `/thumb`
-/// （`table.rs:421`）= 70px 源，等于 3.4× 放大。修法应照圆盘那条
+/// （`uniform_grid.rs` 的 `DEFAULT_MIN_ITEM_WIDTH = 192`，1.25 DPR 下 ≥240 设备像素）却用 `/thumb`
+/// （`library/types/table.rs` 里 `Album::get_image_path` 建的那条 URI）= 70px 源，等于 3.4× 放大。修法应照圆盘那条
 /// `fetch_display_cover_bytes_capped`（显示×4 封顶）给网格档换成 `/full`
 /// （库里是 256-1024px JPEG），属可见质量改动，未擅自改。
 const THUMB_MAX_PX: u32 = 128;

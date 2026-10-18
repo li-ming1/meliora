@@ -1162,7 +1162,7 @@ mod scale_probe {
     }
 
     /// 播放歌单点击的主线程成本曲线。`find_playlist_tracks`
-    /// (`ui/library/playlist_view.rs:1315`) 在一次点击里做两件事，都在主线程：
+    /// （`ui/library/playlist_view.rs`）在一次点击里做两件事，都在主线程：
     /// ① `list_playlist_tracks` 的 `block_on` 取行（JOIN + ORDER BY position），
     /// ② 逐行 `QueueItemData::new`（每行一次 String→PathBuf 加一次
     /// `Arc<AtomicI64>` 分配）。日志侧的 `[db] slow ui-thread query`（阈值 2ms）
@@ -1331,7 +1331,7 @@ mod scale_probe {
     }
 
     /// 会话快照的真实单价：`send_session_with_queue` 每次**深拷贝整条队列**
-    /// 再序列化落盘（`queue_manager/session.rs:11-13` 的注释承认这点，并用
+    /// 再序列化落盘（`queue_manager/session.rs` 顶部那条注释承认这点，并用
     /// 500ms 前缘防抖把突发压成"每窗口一次快照"）。本机歌单只有 20 项，
     /// 所以"随机播放全部 10 万曲"那档从来没人量过：一次快照 = 一次
     /// O(队列) 深拷贝（发生在喂音频环的那条线程上）+ 一次几十 MB 序列化。
