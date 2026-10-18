@@ -82,11 +82,7 @@ where
     C: Column + 'static,
 {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = cx
-            .global::<crate::settings::SettingsGlobal>()
-            .model
-            .read(cx);
-        let full_width = settings.interface.effective_full_width();
+        let full_width = crate::ui::util::full_width_enabled(cx);
 
         div()
             .flex()

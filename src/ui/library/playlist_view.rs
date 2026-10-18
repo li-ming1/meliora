@@ -713,11 +713,7 @@ impl Render for PlaylistView {
         }
 
         let theme = cx.global::<Theme>();
-        let settings = cx
-            .global::<crate::settings::SettingsGlobal>()
-            .model
-            .read(cx);
-        let full_width = settings.interface.effective_full_width();
+        let full_width = crate::ui::util::full_width_enabled(cx);
 
         let entity = cx.entity();
         let mut sort_dropdown = dropdown("playlist-sort-dropdown")

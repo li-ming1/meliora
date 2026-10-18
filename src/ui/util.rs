@@ -30,6 +30,16 @@ pub fn reduced_motion_enabled(cx: &App) -> bool {
         .reduced_motion
 }
 
+/// 读取 `interface.effective_full_width()`——库的三个视图（歌单、表格壳、曲目
+/// 列表）曾各自铺开同一条五行链，且 `settings` 除这一个值外别无他用。
+pub fn full_width_enabled(cx: &App) -> bool {
+    cx.global::<SettingsGlobal>()
+        .model
+        .read(cx)
+        .interface
+        .effective_full_width()
+}
+
 /// 距可见窗口这么远之外的行仍保持缓存。在带内滚回去会复用已有的行实体，而不是在
 /// UI 线程上重跑它们的 DB/stat 构建管线；这条带必须比任何视口都宽，
 /// 这样可见的行永不会被修剪掉。
