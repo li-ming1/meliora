@@ -6,6 +6,8 @@ use prelude::FluentBuilder;
 
 use crate::ui::{constants::APP_SHADOW_SIZE, theme::Theme};
 
+use super::window_chrome::round_untiled_corners;
+
 pub struct ModalActive(pub AtomicBool);
 impl Global for ModalActive {}
 
@@ -78,17 +80,7 @@ impl RenderOnce for Modal {
                 .id("modal-bg")
                 .map(|div| match decorations {
                     Decorations::Server => div,
-                    Decorations::Client { tiling } => div
-                        .when(!(tiling.top || tiling.right), |div| {
-                            div.rounded_tr(rounding)
-                        })
-                        .when(!(tiling.top || tiling.left), |div| div.rounded_tl(rounding))
-                        .when(!(tiling.bottom || tiling.right), |div| {
-                            div.rounded_br(rounding)
-                        })
-                        .when(!(tiling.bottom || tiling.left), |div| {
-                            div.rounded_bl(rounding)
-                        })
+                    Decorations::Client { tiling } => round_untiled_corners(div, tiling, rounding)
                         .when(!tiling.top, |div| div.mt(shadow_size))
                         .when(!tiling.bottom, |div| div.mb(shadow_size))
                         .when(!tiling.left, |div| div.ml(shadow_size))

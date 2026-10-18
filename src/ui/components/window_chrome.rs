@@ -160,8 +160,9 @@ pub fn window_chrome(content: impl IntoElement) -> WindowChrome {
 }
 
 /// 只把朝向未贴边屏幕边缘的那几个角圆起来；贴边（tiled）的一侧保持方角，
-/// 让窗口紧贴屏幕边框。
-fn round_untiled_corners<D>(div: D, tiling: Tiling, rounding: Pixels) -> D
+/// 让窗口紧贴屏幕边框。窗口外壳与模态遮罩（`modal.rs`）要的是同一套四角判定，
+/// 后者此前把四个 `.when` 臂逐字抄了一遍。
+pub(crate) fn round_untiled_corners<D>(div: D, tiling: Tiling, rounding: Pixels) -> D
 where
     D: Styled + FluentBuilder,
 {
