@@ -176,6 +176,66 @@ fn parse_m3u(file: File) -> impl futures::Stream<Item = anyhow::Result<M3UEntry>
     })
 }
 
+/// M3U 单条目 → 库内 track id 的两阶段查找。阶段一只做索引化精确路径匹配
+/// （`track.location` 上有 UNIQUE 隐式索引，EXPLAIN 为 SEARCH … USING COVERING
+/// INDEX），只有没命中的少数条目才进阶段二的模糊匹配。原实现把两支放在同一个
+/// 顶层 OR 里，SQLite 因此整体放弃索引 → `SCAN t`，即每条 M3U 曲目一次全表扫描：
+/// 按 100k 实测标尺（`list_all_tracks` 283ms）2000 行的导入要数百秒，且占满
+/// 3 条连接池，饿住行预取那侧 UI 线程的 `block_on`
+/// （见 queries/playlist/lookup_track_by_location.sql）。
+/// 这段本体从 `import_playlist` 的流式映射里原样搬来，一条 SQL 都没改。
+async fn lookup_m3u_track(pool: &SqlitePool, result: anyhow::Result<M3UEntry>) -> Option<i64> {
+    let entry = match result {
+        Ok(entry) => entry,
+        Err(err) => {
+            error!(?err, "Error parsing M3U entry: {err}");
+            return None;
+        }
+    };
+    let location = entry.location.clone();
+    let exact_query = include_str!("../../queries/playlist/lookup_track_by_location.sql");
+    let exact_hit = sqlx::query_scalar::<Sqlite, i64>(exact_query)
+        .bind(entry.location.to_string_lossy().into_owned())
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    if let Some(id) = exact_hit {
+        return Some(id);
+    }
+
+    // 精确匹配本就是原 OR 的第一支，所以命中集严格不劣化。
+    let lookup_query = include_str!("../../queries/playlist/lookup_track.sql");
+    match sqlx::query_scalar::<Sqlite, i64>(lookup_query)
+        .bind(entry.location.to_string_lossy().into_owned())
+        .bind(entry.track_title)
+        .bind(entry.artist_name)
+        .bind(entry.album_title)
+        .bind(entry.track_artist_names)
+        .bind(entry.duration)
+        .bind(format!(
+            "%{}%",
+            entry
+                .location
+                .file_stem()
+                .and_then(OsStr::to_str)
+                .unwrap_or_default()
+        ))
+        .fetch_one(pool)
+        .await
+    {
+        Ok(id) => Some(id),
+        Err(err) => {
+            warn!(
+                ?err,
+                "Failed to find track for '{}': {err}",
+                location.display()
+            );
+            None
+        }
+    }
+}
+
 /// 从用户选中的 M3U 文件把曲目导入 `playlist_id`。歌单 tracker 由 UI 调用方传入
 /// （在紧邻调用之前的那条语句里从全局 `Models` 读出，正是本函数过去自己去取它的同一个
 /// 执行点），因此本模块不引入任何 `crate::ui` 依赖。
@@ -200,66 +260,7 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
             let mut ids: Vec<i64> = parse_m3u(File::open(path).await?)
                 .map(|result| {
                     let pool = pool.clone();
-                    async move {
-                        let entry = match result {
-                            Ok(entry) => entry,
-                            Err(err) => {
-                                error!(?err, "Error parsing M3U entry: {err}");
-                                return None;
-                            }
-                        };
-                        let location = entry.location.clone();
-                        // 阶段一：只做索引化精确路径匹配（`track.location` 上有 UNIQUE
-                        // 隐式索引，EXPLAIN 为 SEARCH … USING COVERING INDEX）。原实现
-                        // 单条查询把精确匹配与前导通配 LIKE 放在同一个顶层 OR 里，
-                        // SQLite 因此整体放弃索引 → 计划为 `SCAN t`，即每条 M3U 曲目一次
-                        // 全表扫描：按 100k 实测标尺（`list_all_tracks` 283ms）2000 行的
-                        // 导入要数百秒，且占满 3 条连接池，饿住行预取那侧 UI 线程的
-                        // `block_on`（见 queries/playlist/lookup_track_by_location.sql）。
-                        let exact_query =
-                            include_str!("../../queries/playlist/lookup_track_by_location.sql");
-                        let exact_hit = sqlx::query_scalar::<Sqlite, i64>(exact_query)
-                            .bind(entry.location.to_string_lossy().into_owned())
-                            .fetch_optional(&pool)
-                            .await
-                            .ok()
-                            .flatten();
-                        if let Some(id) = exact_hit {
-                            return Some(id);
-                        }
-
-                        // 阶段二：仅未命中的少数条目才走既有的模糊匹配。精确匹配本就是
-                        // 原 OR 的第一支，所以命中集严格不劣化。
-                        let lookup_query = include_str!("../../queries/playlist/lookup_track.sql");
-                        match sqlx::query_scalar::<Sqlite, i64>(lookup_query)
-                            .bind(entry.location.to_string_lossy().into_owned())
-                            .bind(entry.track_title)
-                            .bind(entry.artist_name)
-                            .bind(entry.album_title)
-                            .bind(entry.track_artist_names)
-                            .bind(entry.duration)
-                            .bind(format!(
-                                "%{}%",
-                                entry
-                                    .location
-                                    .file_stem()
-                                    .and_then(OsStr::to_str)
-                                    .unwrap_or_default()
-                            ))
-                            .fetch_one(&pool)
-                            .await
-                        {
-                            Ok(id) => Some(id),
-                            Err(err) => {
-                                warn!(
-                                    ?err,
-                                    "Failed to find track for '{}': {err}",
-                                    location.display()
-                                );
-                                None
-                            }
-                        }
-                    }
+                    async move { lookup_m3u_track(&pool, result).await }
                 })
                 .buffered(8)
                 .filter_map(std::future::ready)
