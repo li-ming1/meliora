@@ -19,7 +19,7 @@ use crate::sync::RecoveredMutex;
 use crate::{
     library::{
         db::{self, PlaylistTrackRow, PlaylistTrackSortMethod},
-        playlist::export_playlist,
+        playlist::{announce_playlist_update, export_playlist},
         types::{DBString, Playlist, PlaylistType, Track},
     },
     playback::queue::QueueItemData,
@@ -43,6 +43,7 @@ use crate::{
             tooltip::build_tooltip,
         },
         library::collection_summary::format_collection_summary,
+        library::context_menus::queue_items_from_playlist_rows,
         library::track_item::{
             ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions,
         },
@@ -679,9 +680,7 @@ impl PlaylistView {
                 }
             }
 
-            playlist_tracker.update(cx, |_, cx| {
-                cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-            });
+            announce_playlist_update(&playlist_tracker, cx, playlist_id);
         })
         .detach();
     }
@@ -848,16 +847,7 @@ impl Render for PlaylistView {
                                                                 snapshot.clone()
                                                             };
 
-                                                        playlist_tracks
-                                                            .iter()
-                                                            .map(|row| {
-                                                                QueueItemData::new(
-                                                                    row.location.clone().into(),
-                                                                    Some(row.track_id),
-                                                                    Some(row.album_id),
-                                                                )
-                                                            })
-                                                            .collect()
+                                                        queue_items_from_playlist_rows(&playlist_tracks)
                                                     }
                                                 }
                                             ))
@@ -1067,9 +1057,7 @@ impl Render for PlaylistView {
 
                                                 let tracker =
                                                     cx.global::<Models>().playlist_tracker.clone();
-                                                tracker.update(cx, |_, cx| {
-                                                    cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-                                                });
+                                                announce_playlist_update(&tracker, cx, playlist_id);
                                             },
                                         );
                                     } else if let Some(track_id) = drag_data.track_id {
@@ -1263,14 +1251,5 @@ impl Render for PlaylistView {
 pub fn find_playlist_tracks(cx: &mut App, playlist_id: i64) -> Vec<QueueItemData> {
     let playlist_tracks = cx.list_playlist_tracks(playlist_id).unwrap_or_default();
 
-    playlist_tracks
-        .iter()
-        .map(|row| {
-            QueueItemData::new(
-                row.location.clone().into(),
-                Some(row.track_id),
-                Some(row.album_id),
-            )
-        })
-        .collect()
+    queue_items_from_playlist_rows(&playlist_tracks)
 }

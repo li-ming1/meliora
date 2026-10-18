@@ -12,11 +12,10 @@ use crate::sync::RecoveredRwLock;
 use crate::{
     library::{
         db::{self},
-        playlist::export_playlist,
+        playlist::{announce_playlist_update, export_playlist},
         types::{Playlist, PlaylistType},
     },
     playback::interface::PlaybackInterface,
-    settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
     ui::{
         app::Pool,
@@ -39,7 +38,7 @@ use crate::{
         library_access::LibraryAccess,
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
-        util::reduced_motion_enabled,
+        util::{reduced_motion_enabled, two_column_enabled},
     },
 };
 
@@ -180,9 +179,7 @@ impl PlaylistList {
 
         if let Ok(id) = cx.create_playlist(&name) {
             let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-            playlist_tracker.update(cx, |_, cx| {
-                cx.emit(PlaylistEvent::PlaylistUpdated(id));
-            });
+            announce_playlist_update(&playlist_tracker, cx, id);
         }
 
         self.popover_open = false;
@@ -206,9 +203,7 @@ impl PlaylistList {
                 error!("Failed to rename playlist: {}", err);
             } else {
                 let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-                playlist_tracker.update(cx, |_, cx| {
-                    cx.emit(PlaylistEvent::PlaylistUpdated(pl_id));
-                });
+                announce_playlist_update(&playlist_tracker, cx, pl_id);
             }
         }
 
@@ -279,9 +274,7 @@ fn spawn_add_missing_tracks(
             }
         }
 
-        playlist_tracker.update(cx, |_, cx| {
-            cx.emit(PlaylistEvent::PlaylistUpdated(pl_id));
-        });
+        announce_playlist_update(&playlist_tracker, cx, pl_id);
     })
     .detach();
 }
@@ -362,9 +355,7 @@ impl Render for PlaylistList {
                                 }
 
                                 let tracker = cx.global::<Models>().playlist_tracker.clone();
-                                tracker.update(cx, |_, cx| {
-                                    cx.emit(PlaylistEvent::PlaylistUpdated(source.id));
-                                });
+                                announce_playlist_update(&tracker, cx, source.id);
                             },
                         );
                         cx.notify();
@@ -374,12 +365,7 @@ impl Render for PlaylistList {
 
         let current_view = self.nav_model.read(cx).current();
 
-        let two_column = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .two_column_library;
+        let two_column = two_column_enabled(cx);
 
         let sidebar_view = if two_column && current_view.is_detail_page() {
             self.nav_model

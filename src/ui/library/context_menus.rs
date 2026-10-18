@@ -12,6 +12,7 @@ use crate::sync::RecoveredRwLock;
 use crate::{
     library::{
         db::{self},
+        playlist::announce_playlist_update,
         scan::ScanInterface,
         types::{Album, Track},
     },
@@ -32,7 +33,7 @@ use crate::{
             context_menus::{album::AlbumContextMenu, track::TrackContextMenu},
         },
         library_access::LibraryAccess,
-        models::{Models, PlaybackInfo, PlaylistEvent, PlaylistInfoTransfer, is_song_liked},
+        models::{Models, PlaybackInfo, PlaylistInfoTransfer, is_song_liked},
     },
 };
 
@@ -54,6 +55,22 @@ pub fn queue_items_from_tracks(tracks: &[Track]) -> Vec<QueueItemData> {
             let item = QueueItemData::new(track.location.clone(), Some(track.id), track.album_id);
             item.set_known_duration(Some(track.duration));
             item
+        })
+        .collect()
+}
+
+/// 歌单行 → 队列项，`queue_items_from_tracks` 的 `PlaylistTrackRow` 姊妹。三处
+/// 逐字重复同一条映射（右键菜单的"立即播放/下一首播放"、歌单页的"播放全部"、
+/// `find_playlist_tracks`），而同样的"不做逐行 `exists()` 探测"理由此前只在菜单
+/// 那一处写过。
+pub fn queue_items_from_playlist_rows(rows: &[db::PlaylistTrackRow]) -> Vec<QueueItemData> {
+    rows.iter()
+        .map(|row| {
+            QueueItemData::new(
+                row.location.clone().into(),
+                Some(row.track_id),
+                Some(row.album_id),
+            )
         })
         .collect()
 }
@@ -225,18 +242,8 @@ pub fn play_from_track_listing(
     let queue_items = if let Some(tracks) = queue_context {
         queue_items_from_tracks(&tracks)
     } else if let Some(playlist_id) = playlist_id {
-        // 不做逐行的 exists() 探测：歌单可能有数千行，而播放引擎会跳过丢失的文件
-        cx.list_playlist_tracks(playlist_id)
-            .unwrap_or_default()
-            .iter()
-            .map(|row| {
-                QueueItemData::new(
-                    row.location.clone().into(),
-                    Some(row.track_id),
-                    Some(row.album_id),
-                )
-            })
-            .collect()
+        let rows = cx.list_playlist_tracks(playlist_id).unwrap_or_default();
+        queue_items_from_playlist_rows(&rows)
     } else if let Some(album_id) = track.album_id {
         let tracks = cx.list_tracks_in_album(album_id).unwrap_or_default();
         queue_items_from_tracks(&tracks)
@@ -294,9 +301,7 @@ pub fn remove_from_playlist(
             }
         }
 
-        playlist_tracker.update(cx, |_, cx| {
-            cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-        });
+        announce_playlist_update(&playlist_tracker, cx, playlist_id);
     })
     .detach();
 }

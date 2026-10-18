@@ -3,7 +3,7 @@ use std::{ffi::OsStr, path::PathBuf};
 use anyhow::Context as _;
 use cntp_i18n::tr;
 use futures::{StreamExt as _, TryFutureExt as _, TryStreamExt as _};
-use gpui::{App, Entity, EventEmitter, PathPromptOptions};
+use gpui::{App, AppContext, Entity, EventEmitter, PathPromptOptions};
 use sqlx::{Sqlite, SqlitePool};
 use tokio::{fs::File, io::BufWriter};
 use tracing::{Instrument as _, debug_span, error, info, warn};
@@ -25,6 +25,21 @@ pub enum PlaylistEvent {
 }
 
 impl EventEmitter<PlaylistEvent> for PlaylistInfoTransfer {}
+
+/// 广播"某个歌单变了"，让所有展示它的地方回读。十一个站点写的都是同一条
+/// `update + emit`（都不在渲染路径上：菜单回调、拖放、spawn 完成处），而这条
+/// 广播的唯一出口本来就该是 `PlaylistInfoTransfer` 这一个实体。
+/// 泛型过 `AppContext`：那些站点里多数在 `cx.spawn` 的异步块内，手里的 `cx`
+/// 是 `AsyncApp` 而不是 `App`。
+pub fn announce_playlist_update(
+    tracker: &Entity<PlaylistInfoTransfer>,
+    cx: &mut impl AppContext,
+    playlist_id: i64,
+) {
+    tracker.update(cx, |_, cx| {
+        cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
+    });
+}
 
 #[cfg(windows)]
 const LINE_ENDING: &str = "\r\n";
@@ -290,7 +305,7 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
         let updated = match task.err_into().await.flatten() {
             Ok(updated) => updated,
             Err(err) => {
-                error!(?err, "Failed to import playlist: {err}");
+                error!(?err, "Failed to import playlist");
                 return;
             }
         };
@@ -299,9 +314,7 @@ pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<Play
             return;
         }
 
-        playlist_tracker.update(cx, |_, cx| {
-            cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-        })
+        announce_playlist_update(&playlist_tracker, cx, playlist_id);
     })
     .detach();
 }

@@ -14,6 +14,7 @@ use tracing::error;
 use crate::{
     library::{
         db::{self},
+        playlist::announce_playlist_update,
         types::Playlist,
     },
     ui::{
@@ -24,7 +25,7 @@ use crate::{
             palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
         },
         library_access::LibraryAccess,
-        models::{Models, PlaylistEvent},
+        models::Models,
     },
 };
 
@@ -238,9 +239,7 @@ impl AddToPlaylist {
                         .await
                         .is_some()
                         {
-                            playlist_tracker.update(cx, |_, cx| {
-                                cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-                            });
+                            announce_playlist_update(&playlist_tracker, cx, playlist_id);
                         }
                     })
                     .detach();
@@ -258,9 +257,7 @@ impl AddToPlaylist {
                         .await
                         .is_some()
                         {
-                            playlist_tracker.update(cx, |_, cx| {
-                                cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-                            });
+                            announce_playlist_update(&playlist_tracker, cx, playlist_id);
                         }
                     })
                     .detach();
@@ -328,9 +325,7 @@ impl AddToPlaylist {
                                 return;
                             };
 
-                            playlist_tracker.update(cx, |_, cx| {
-                                cx.emit(PlaylistEvent::PlaylistUpdated(playlist_id));
-                            });
+                            announce_playlist_update(&playlist_tracker, cx, playlist_id);
                         })
                         .detach();
 
