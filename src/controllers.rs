@@ -23,82 +23,72 @@ use crate::{
 };
 
 #[async_trait]
-/// Connects external controllers (like the system's media controls) to Meliora.
+/// 把外部控制器（如系统媒体控制键）接到 Meliora 上。
 ///
-/// When a new file is opened, events are emitted in this order: `new_file -> duration_changed
-/// -> metadata_changed -> album_art_changed`, with `metadata_changed` and `album_art_changed`
-/// occurring only if the track being played has metadata and album art, respectively. Not all
-/// tracks will have metadata: you should still display the file name for a track and allow
-/// controlling of playback.
+/// 打开新文件时事件按此顺序发出：`new_file -> duration_changed
+/// -> metadata_changed -> album_art_changed`；其中 `metadata_changed` 与
+/// `album_art_changed` 仅在该曲目确实带有元数据 / 专辑封面时才发出。
+/// 并非所有曲目都有元数据：仍应显示文件名，并允许控制播放。
 ///
-/// Controllers are created by each platform module's `init` associated function, which
-/// returns a boxed [`PlaybackController`].
+/// 控制器由各平台模块的 `init` 关联函数创建，返回装箱的 [`PlaybackController`]。
 ///
-/// Multiple controllers can be attached at once; they will all be sent the same events and the
-/// same data. Not all `PlaybackController`s must handle all events - if you wish not to handle
-/// a given event, simply implement the function by returning `Ok(())`.
+/// 可同时挂载多个控制器；它们收到完全相同的事件与数据。并非每个
+/// `PlaybackController` 都必须处理所有事件——不想处理某个事件时，
+/// 直接实现该函数并返回 `Ok(())` 即可。
 ///
-/// All implementations of this trait should be preceded by `#[async_trait]`, from the
-/// [`async_trait`] crate.
+/// 本 trait 的所有实现都必须前置 `#[async_trait]`，来自 [`async_trait`] crate。
 pub trait PlaybackController: Send {
-    /// Indicates that the position in the current file has changed.
+    /// 表示当前文件的播放位置发生变化。
     async fn position_changed(&mut self, new_position: u64) -> anyhow::Result<()>;
 
-    /// Indicates that the duration of the current file has changed. This should only occur once
-    /// per file.
+    /// 表示当前文件的时长发生变化。每个文件只应发生一次。
     async fn duration_changed(&mut self, new_duration: u64) -> anyhow::Result<()>;
 
-    /// Indicates that the playback volume has changed.
+    /// 表示播放音量发生变化。
     async fn volume_changed(&mut self, new_volume: f64) -> anyhow::Result<()>;
 
-    /// Whether this controller consumes `volume_changed`. The Windows SMTC and
-    /// macOS implementations treat it as a no-op, so their volume observer is
-    /// skipped entirely; MPRIS (Linux) does consume the events. 编译期折叠为
-    /// 常量，等价于各平台实现分别覆写，但不需要触碰平台模块。
+    /// 本 controller 是否消费 `volume_changed`。Windows SMTC 与 macOS 实现
+    /// 把它当 no-op，因此它们的 volume 观察者整体跳过；MPRIS（Linux）确实
+    /// 消费这些事件。编译期折叠为常量，等价于各平台实现分别覆写，
+    /// 但不需要触碰平台模块。
     fn handles_volume(&self) -> bool {
         cfg!(target_os = "linux")
     }
 
-    /// Indicates that new metadata has been received from the decoder. This may occur more than
-    /// once per track.
+    /// 表示解码器给出了新的元数据。每首曲目可能出现多次。
     async fn metadata_changed(&mut self, metadata: &Metadata) -> anyhow::Result<()>;
 
-    /// Indicates that new album art has been received from the decoder. This may occur more than
-    /// once per track.
+    /// 表示解码器给出了新的专辑封面。每首曲目可能出现多次。
     async fn album_art_changed(&mut self, album_art: &[u8]) -> anyhow::Result<()>;
 
-    /// Indicates that the repeat state has changed.
+    /// 表示单曲循环状态发生变化。
     async fn repeat_state_changed(&mut self, repeat_state: RepeatState) -> anyhow::Result<()>;
 
-    /// Indicates that the playback state has changed. When the provided state is
-    /// [`PlaybackState::Stopped`], no file is queued for playback.
+    /// 表示播放状态发生变化。当传入状态为 [`PlaybackState::Stopped`] 时，
+    /// 队列中没有任何待播放文件。
     async fn playback_state_changed(&mut self, playback_state: PlaybackState)
     -> anyhow::Result<()>;
 
-    /// Indicates that the shuffle state has changed.
+    /// 表示随机播放状态发生变化。
     async fn shuffle_state_changed(&mut self, shuffling: bool) -> anyhow::Result<()>;
 
-    /// Indicates that a new file has started playing. The metadata, duration, position, and album
-    /// art should be reset to default/empty values when this event is received.
+    /// 表示开始播放新文件。收到该事件时，元数据、时长、位置和专辑封面都应
+    /// 重置为默认/空值。
     async fn new_file(&mut self, path: &Path) -> anyhow::Result<()>;
 }
 
-/// The platform playback controller attached at startup, if desktop integration
-/// initialized successfully.
+/// 启动时挂载的平台播放控制器；仅在桌面集成初始化成功时存在。
 type ControllerList = Option<Box<dyn PlaybackController>>;
 
 pub struct PbcHandle {
-    /// Sender half that the observers below write playback-controller events into.
+    /// 下方观察者写入播放控制器事件的发送端。
     event_tx: Sender<PbcEvent>,
-    /// `Arc` identity of the artwork last handed to the playback controller.
-    /// The playback thread re-emits the same embedded cover for every track
-    /// of an album; without this, each emission rebuilt the WinRT thumbnail
-    /// (transient MB-scale allocations) over the whole background session.
+    /// 上次交给播放控制器的封面之 `Arc` 身份。播放线程对同一专辑的每首曲目
+    /// 都会重新发出同一内嵌封面；没有这个判断，后台整段会话里每次发出都会
+    /// 重建一次 WinRT 缩略图（MB 级瞬时分配）。
     last_art: Option<Weak<[u8]>>,
-    /// Last position (seconds) sent to the controller. Position events fire
-    /// at 30 Hz while a window is focused, but the value only changes once a
-    /// second; forwarding each one makes the Windows controller perform two
-    /// WinRT calls per event for nothing.
+    /// 上次发给控制器的位置（秒）。窗口聚焦时位置事件以 30 Hz 触发，但该值
+    /// 每秒才变一次；逐个转发会让 Windows 控制器每个事件白做两次 WinRT 调用。
     last_position_secs: u64,
     /// 初始化时向 controller 查询一次的 volume 消费能力（见
     /// `PlaybackController::handles_volume`）；false 时 volume 实体不注册
@@ -137,20 +127,16 @@ impl PbcEvent {
     }
 }
 
-/// Capacity of the playback-controller event queue. Large enough to absorb a
-/// burst of track-change events, small enough that a stalled consumer (WinRT
-/// calls occasionally block on the shell) cannot pile up cover-sized payloads:
-/// `AlbumArtChanged` carries the full embedded artwork, so 64 slots could pin
-/// ~64 covers (MB-scale each for hi-res art) of stale events, while 16 still
-/// absorbs a multi-track burst (~5 events per track). A full queue sheds the
-/// newest event via `try_send` semantics in `send_pbc_event`, and the next
-/// track refreshes SMTC state anyway.
+/// 播放控制器事件队列的容量。要大到能吸收一阵连续切歌事件，又要小到让消费方
+/// 停滞时（WinRT 调用偶尔会卡在 shell 上）堆不出封面体积的载荷：
+/// `AlbumArtChanged` 携带完整内嵌封面，64 个槽位可能钉住约 64 张封面
+/// （高解析度下单张 MB 级）的陈旧事件，而 16 仍能吸收多曲连跳（每曲约 5 个
+/// 事件）。队列满时 `send_pbc_event` 的 `try_send` 语义 shed 掉最新事件，
+/// 反正下一首曲目就会刷新 SMTC 状态。
 const PBC_CHANNEL_CAP: usize = 16;
 
-/// Sends a playback-controller event, shedding load when the consumer has
-/// fallen behind. Dropping the newest event is safe for every variant: SMTC
-/// state is refreshed by the next track anyway, and a stalled shell only
-/// delays the update momentarily.
+/// 发送一个播放控制器事件；消费方落后时 shed 负载。丢弃最新事件对每个变体都
+/// 安全：SMTC 状态反正会被下一首曲目刷新，而 shell 卡住只是让更新稍晚一点。
 fn send_pbc_event(tx: &Sender<PbcEvent>, event: PbcEvent) {
     use tokio::sync::mpsc::error::TrySendError;
     match tx.try_send(event) {
@@ -164,8 +150,7 @@ fn send_pbc_event(tx: &Sender<PbcEvent>, event: PbcEvent) {
     }
 }
 
-/// Observes `entity` and forwards every notification to the playback
-/// controller as the event built by `make_event`.
+/// 观察 `entity`，把每次通知都转成 `make_event` 构造的事件发给播放控制器。
 fn forward_pbc_events<T: 'static>(
     cx: &mut App,
     entity: &Entity<T>,
@@ -198,8 +183,8 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
         if let Some(track) = e.read(cx) {
             let path = track.get_path().clone();
             let handle = cx.global_mut::<PbcHandle>();
-            // new_file clears the SMTC thumbnail, so the next artwork event
-            // must re-send even if identical to what we sent before.
+            // new_file 会清掉 SMTC 缩略图，所以下一次封面事件必须重发，
+            // 哪怕内容与之前发出的完全相同。
             handle.last_art = None;
             send_pbc_event(&handle.event_tx, PbcEvent::NewFile(path));
         }
@@ -223,8 +208,7 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
 
     cx.subscribe(&albumart, |_, ImageEvent(img), cx| {
         let handle = cx.global_mut::<PbcHandle>();
-        // Deduplicate identical artwork: rebuilding the SMTC thumbnail for a
-        // repeated emission is pure churn over a long background session.
+        // 相同封面去重：重复发出时重建 SMTC 缩略图，在长时间后台会话里纯属空转。
         let already_sent = handle
             .last_art
             .as_ref()
@@ -241,9 +225,8 @@ pub fn register_pbc_event_handlers(cx: &mut App) {
     cx.observe(&position, |e, cx| {
         let &pos = e.read(cx);
         let secs = pos / 1_000;
-        // Position broadcasts arrive every 33-250 ms, but the second value
-        // only changes once per second. Skip the hundreds of duplicate
-        // forwards so the SMTC timeline isn't rebuilt at 4-30 Hz. 先用只读
+        // 位置广播每 33-250 ms 到达一次，但秒值每秒才变。跳过这成百上千次重复
+        // 转发，SMTC 时间线就不会以 4-30 Hz 反复重建。先用只读
         // global() 比较再取可变借用：global_mut 每次调用都入队一个
         // NotifyGlobalObservers effect（本仓未注册任何 global 观察者），
         // 30Hz 下去重通过也推空 effect。
@@ -264,7 +247,7 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
     let cmd_tx = cx.global::<PlaybackInterface>().get_sender();
 
     let rwh = if cfg!(target_os = "linux") {
-        // X11 windows panic with unimplemented and we don't need it here
+        // X11 窗口调用它会 panic（unimplemented），而这里用不到
         None
     } else {
         HasWindowHandle::window_handle(window)

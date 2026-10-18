@@ -10,9 +10,8 @@ pub enum OpenError {
 
 #[derive(PartialEq, Eq, Debug, Clone, Error)]
 pub enum PlaybackStartError {
-    /// This error means that, for whatever reason, the decoder's setup failed in a manner which
-    /// should be impossible. Do not use this error for general decoder errors (use Undecodable
-    /// instead).
+    /// 表示不论出于什么原因，解码器的初始化以一种本不应可能的方式失败了。
+    /// 通用解码错误不要用这个（应使用 Undecodable）。
     #[error("The media file is not valid and cannot be played")]
     InvalidState,
     #[error("Media is open but has no audio")]
@@ -27,9 +26,8 @@ pub enum PlaybackStartError {
 
 #[derive(PartialEq, Eq, Debug, Clone, Error)]
 pub enum PlaybackReadError {
-    /// This error means that, for whatever reason, the decoder's setup failed in a manner which
-    /// should be impossible. Do not use this error for general decoder errors (use DecodeFatal
-    /// instead).
+    /// 表示不论出于什么原因，解码器的初始化以一种本不应可能的方式失败了。
+    /// 通用解码错误不要用这个（应使用 DecodeFatal）。
     #[error("The media file is not valid and cannot be played")]
     InvalidState,
     #[error("Media is open but was never started")]

@@ -1,8 +1,8 @@
 use bitflags::bitflags;
 
 bitflags! {
-    /// A bitmask representing positional audio channels.
-    /// The first 18 bits match Microsoft's `WAVEFORMATEXTENSIBLE` mask.
+    /// 表示位置式音频声道的位掩码。
+    /// 前 18 位与微软 `WAVEFORMATEXTENSIBLE` 掩码一致。
     #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
     pub struct ChannelPosition: u64 {
         const FRONT_LEFT          = 1 << 0;
@@ -24,7 +24,7 @@ bitflags! {
         const TOP_REAR_CENTER     = 1 << 16;
         const TOP_REAR_RIGHT      = 1 << 17;
 
-        // Extended positions beyond the WAVE mask.
+        // 超出 WAVE 掩码范围的扩展位置。
         const LFE2                = 1 << 18;
         const TOP_SIDE_LEFT       = 1 << 19;
         const TOP_SIDE_RIGHT      = 1 << 20;
@@ -37,7 +37,7 @@ bitflags! {
 }
 
 impl ChannelPosition {
-    /// Iterate over each channel position set in this mask, in ascending bit order.
+    /// 按位升序遍历该掩码中置位每个声道位置。
     pub fn positions(self) -> impl Iterator<Item = ChannelPosition> {
         (0..u64::BITS).filter_map(move |bit| {
             ChannelPosition::from_bits(self.bits() & (1u64 << bit)).filter(|pos| !pos.is_empty())
@@ -45,12 +45,12 @@ impl ChannelPosition {
     }
 }
 
-/// A label for a single channel, independent of position.
+/// 单个声道的标签，与位置无关。
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChannelLabel {
-    /// A positioned channel. Exactly one bit of the mask must be set.
+    /// 位置式声道：掩码必须恰好置一位。
     Positioned(ChannelPosition),
-    /// A discrete, independent channel identified by index.
+    /// 按下标识别的独立离散声道。
     Discrete(u16),
 }
 
@@ -60,22 +60,22 @@ impl From<ChannelPosition> for ChannelLabel {
     }
 }
 
-/// A set of channels describing a layout.
+/// 描述某个布局的一组声道。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ChannelLayout {
-    /// Channels are assigned explicit speaker positions.
+    /// 声道各自绑定明确的音箱位置。
     Positioned(ChannelPosition),
-    /// Channels are 0..count, lacking positional information.
+    /// 声道为 0..count，缺少位置信息。
     Discrete(u16),
-    /// Channels are identified by an explicit list of labels.
+    /// 声道由明确的标签列表指定。
     Custom(Box<[ChannelLabel]>),
-    /// No channels.
+    /// 无声道。
     #[default]
     None,
 }
 
 impl ChannelLayout {
-    /// Total number of channels in the layout.
+    /// 布局中的声道总数。
     pub fn count(&self) -> usize {
         match self {
             ChannelLayout::Positioned(pos) => pos.bits().count_ones() as usize,
@@ -85,10 +85,9 @@ impl ChannelLayout {
         }
     }
 
-    /// Resolve a bare channel count to a conventional layout when one is obvious (common surround
-    /// sound configurations).
+    /// 裸声道数能对应明确的常规布局时（常见环绕声配置）就解析成该布局。
     pub fn from_count_canonical(count: u16) -> ChannelLayout {
-        /// Union of the listed positions, folded in list order.
+        /// 按列表顺序折叠求所列表位置的并集。
         fn union_all(positions: &[ChannelPosition]) -> ChannelPosition {
             positions
                 .iter()
@@ -111,7 +110,7 @@ impl ChannelLayout {
             2 => union_all(&[FRONT_LEFT, FRONT_RIGHT]),
             3 => union_all(&[FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER]),
             4 => union_all(&[FRONT_LEFT, FRONT_RIGHT, REAR_LEFT, REAR_RIGHT]),
-            // NB: this could also be 4.1 but 5.0 is more common
+            // 注：这里也可以是 4.1，但 5.0 更常见
             5 => union_all(&[FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, REAR_LEFT, REAR_RIGHT]),
             6 => union_all(&[
                 FRONT_LEFT,

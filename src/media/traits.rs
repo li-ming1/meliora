@@ -15,124 +15,109 @@ use super::{
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq)]
-    /// Media provider feature bitflags.
+    /// 媒体 provider 的 feature 位标志。
     pub struct MediaProviderFeatures: u8 {
-        /// Indicates the provider should be used for retrieving metadata.
+        /// 表示该 provider 应用于读取元数据。
         const PROVIDES_METADATA        = 0b00000001;
-        /// Indicates the provider should be used for decoding media files.
+        /// 表示该 provider 应用于解码媒体文件。
         const PROVIDES_DECODER         = 0b00000010;
-        /// Indicates the provider should be considered for indexing files while scanning.
+        /// 表示扫描时应把该 provider 纳入文件索引的候选。
         const ALLOWS_INDEXING          = 0b00000100;
     }
 }
 
-/// The MediaProvider trait defines the methods used to interact with a media provider. A media
-/// provider is a factory for [MediaStream] objects, which are responsible for decoding and
-/// metadata retrieval from a media file.
+/// MediaProvider trait 定义了与媒体 provider 交互所需的方法。媒体 provider
+/// 是 [MediaStream] 对象的工厂，由后者负责从媒体文件里解码与读取元数据。
 ///
-/// The MediaProvider trait is designed to be flexible, allowing Providers to implement only
-/// Metadata retrieval, decoding, or both. This allows for a decoding Provider to retrieve
-/// in-codec metadata without opening the file twice.
+/// 该 trait 设计得足够灵活，provider 可以只实现元数据读取、只实现解码，或
+/// 两者都实现。这样解码型 provider 无需把文件打开两次就能取到编解码器内
+/// 的元数据。
 pub trait MediaProvider: Send + Sync {
-    /// Requests the Provider open the specified file. The file is provided as a File object, and
-    /// the extension is provided as an Option<&OsStr>. If the extension is not provided, the
-    /// Provider attempts to determine the file type based off of the file's contents.
+    /// 请求 provider 打开指定文件。文件以 File 对象给出，扩展名以
+    /// Option<&OsStr> 给出。若未提供扩展名，provider 会依据文件内容推断类型。
     fn open(&self, file: File, ext: Option<&OsStr>) -> Result<Box<dyn MediaStream>, OpenError>;
 
-    /// Returns a list of file extensions the plugin supports.
+    /// 返回该插件支持的文件扩展名列表。
     fn supported_extensions(&self) -> &[&str];
 
-    /// Returns a list of media provider feature bitflags that the plugin supports.
-    /// See `MediaProviderFeatures` for more information.
+    /// 返回该插件支持的媒体 provider feature 位标志列表。
+    /// 详见 `MediaProviderFeatures`。
     fn supported_features(&self) -> MediaProviderFeatures;
 }
 
-/// The MediaStream trait defines the methods used to interact with an open media stream. A media
-/// stream is responsible for reading samples and metadata from a media file.
+/// MediaStream trait 定义了与已打开的媒体流交互所需的方法。媒体流负责从
+/// 媒体文件读取采样与元数据。
 ///
-/// The current playback pipeline is as follows:
+/// 当前的播放管线顺序如下：
 /// Create -> Open -> Start -> Metadata -> Read -> Read -> ... -> Close
 ///
-/// Note that if your Provider supports metadata retrieval, it will be asked to open, start, and
-/// read metadata many times in rapid succession during library indexing. This is normal and
-/// expected behavior, and your plugin must be able to handle this.
+/// 注意：若你的 provider 支持元数据读取，在音乐库索引期间它会被要求连续
+/// 多次快速地 open、start、read metadata。这是正常且预期的行为，你的插件
+/// 必须能应对。
 ///
-/// `Send` so a stream can be opened on a background thread and handed to the
-/// playback thread (gapless pre-open).
+/// `Send` 是为了让流能在后台线程打开后交给播放线程（无缝播放的预打开）。
 pub trait MediaStream: Send {
-    /// Informs the Provider that the currently opened file is no longer needed. This function is
-    /// not guaranteed to be called before open if a file is already opened.
+    /// 告知 provider 当前打开的文件不再需要。若已有文件处于打开状态，
+    /// 不保证在 open 之前调用本函数。
     fn close(&mut self);
 
-    /// Informs the Provider that playback is about to begin.
+    /// 告知 provider 播放即将开始。
     fn start_playback(&mut self) -> Result<(), PlaybackStartError>;
 
-    /// Informs the Provider that playback has ended and no more samples or metadata will be read.
+    /// 告知 provider 播放已结束，不再读取采样或元数据。
     fn stop_playback(&mut self);
 
-    /// Requests the Provider seek to the specified time in the current file. The time is provided
-    /// in seconds. If no file is opened, this function should return an error.
+    /// 请求 provider 在当前文件中跳转定位到指定时刻，时间以秒给出。
+    /// 若没有文件处于打开状态，本函数应返回错误。
     fn seek(&mut self, time: f64) -> Result<(), SeekError>;
 
-    /// Returns the normal duration of the PlaybackFrames returned by this provider for the current
-    /// open file. If no file is opened, an error should be returned. Note that a PlaybackFrame may
-    /// be shorter than this duration, but it should never be longer.
+    /// 返回当前打开文件下 provider 给出的 PlaybackFrames 的常规时长；没有
+    /// 文件打开时应返回错误。注意 PlaybackFrame 可以比这个时长短，但绝不应
+    /// 更长。
     fn frame_duration(&self) -> Result<u64, FrameDurationError>;
 
-    /// Returns the metadata of the currently opened file, taking ownership of it. If no file is
-    /// opened, or the provider does not support metadata retrieval, this function should return
-    /// an error.
+    /// 返回当前打开文件的元数据并接管其所有权。若没有文件打开，或 provider
+    /// 不支持元数据读取，本函数应返回错误。
     fn read_metadata(&mut self) -> Result<Metadata, MetadataError>;
 
-    /// Returns whether or not there has been a metadata update since the last call to
-    /// read_metadata.
+    /// 返回自上次调用 read_metadata 以来元数据是否发生过更新。
     fn metadata_updated(&self) -> bool;
 
-    /// Retrieves the current image from the track's metadata, if there is any. If no file is
-    /// opened, or the provider does not support image retrieval, this function should return an
-    /// error.
+    /// 从曲目元数据中取当前封面图（若存在）。若没有文件打开，或 provider
+    /// 不支持图像读取，本函数应返回错误。
     fn read_image(&mut self) -> Result<Option<Box<[u8]>>, MetadataError>;
 
-    /// Returns the duration of the currently opened file in milliseconds. If no file is opened,
-    /// or playback has not started, this function should return an error. This function should be
-    /// available immediately after playback has started, and should not require reading any
-    /// samples.
+    /// 返回当前打开文件的时长（毫秒）。若没有文件打开，或播放尚未开始，
+    /// 本函数应返回错误。播放一开始本函数就应可用，且不要求读取任何采样。
     fn duration_ms(&self) -> Result<u64, TrackDurationError>;
 
-    /// Returns the current playback position in milliseconds. If no file is opened, or playback
-    /// has not started, this function should return an error. This function should be available
-    /// immediately after playback has started, and should not require reading any samples.
+    /// 返回当前播放位置（毫秒）。若没有文件打开，或播放尚未开始，本函数
+    /// 应返回错误。播放一开始本函数就应可用，且不要求读取任何采样。
     fn position_ms(&self) -> Result<u64, TrackDurationError>;
 
-    /// Returns the channel specification used by the track being decoded. This function should be
-    /// available immediately after playback has started, and should not require reading any
-    /// samples.
+    /// 返回被解码曲目使用的声道规格。播放一开始本函数就应可用，且不要求
+    /// 读取任何采样。
     ///
-    /// This function is used by the playback thread to determine whether or not the track's
-    /// channel count can be handled by the current device, and if it is, change the channel count.
+    /// 播放线程用它判断当前设备能否处理该曲目的通道数，若能则切换通道数。
     fn channels(&self) -> Result<ChannelSpec, ChannelRetrievalError>;
 
-    /// Returns the sample rate (in Hz) of the track being decoded. This function should be
-    /// available immediately after playback has started, and should not require reading any
-    /// samples.
+    /// 返回被解码曲目的采样率（Hz）。播放一开始本函数就应可用，且不要求
+    /// 读取任何采样。
     ///
-    /// This function is used by the playback thread to determine the correct sample rate for
-    /// resampling when the source rate differs from the device rate.
+    /// 播放线程用它确定源采样率与设备采样率不一致时重采样的正确目标率。
     fn sample_rate(&self) -> Result<u32, ChannelRetrievalError>;
 
-    /// Decode one packet/frame and write samples as f64 directly to the provided ring buffer producers.
-    /// The decoder is responsible for converting from the native sample format to f64.
+    /// 解码一个 packet/frame，并把采样以 f64 直接写入给定的环形缓冲 producer。
+    /// 解码器负责从原生采样格式转换为 f64。
     fn decode_into(
         &mut self,
         output: &mut ChannelProducers,
     ) -> Result<DecodeResult, PlaybackReadError>;
 
-    /// Whether or not the media stream should attempt to use its internal loop handling. With
-    /// Symphonia, the media stream will seek to the loop start point from the EOF or loop end
-    /// point when looping is enabled.
+    /// 媒体流是否应尝试使用其内置的循环处理。Symphonia 在启用循环时，会在
+    /// EOF 或循环结束点跳回循环起始点。
     ///
-    /// This is handled by the media stream itself instead of the audio engine so that the media
-    /// stream implementation can handle the loop behavior natively (for example, if a tracker
-    /// module supports looping natively).
+    /// 这件事由媒体流自身而非音频引擎处理，好让媒体流的实现能原生处理循环
+    /// 行为（例如 tracker module 原生支持循环时）。
     fn set_looping(&mut self, enabled: bool);
 }

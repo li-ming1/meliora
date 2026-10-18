@@ -43,8 +43,8 @@ fn time_to_millis(time: Time) -> u64 {
     (time.as_secs_f64() * 1000.0) as u64
 }
 
-/// Exempt an upstream symphonia call from the test allocation guard, because symphonia
-/// allocates in ways we cannot control.
+/// 让一次上游 symphonia 调用豁免于测试分配守卫，因为 symphonia 的分配方式
+/// 我们无法控制。
 #[inline]
 fn symphonia_alloc_exempt<T>(f: impl FnOnce() -> T) -> T {
     #[cfg(test)]
@@ -87,8 +87,7 @@ fn classify_next_packet_error(err: Error) -> Result<DecodeResult, PlaybackReadEr
     }
 }
 
-/// Surface the I/O error kind on probe failures so the scanner can tell transient read
-/// failures from corrupt files.
+/// probe 失败时把 I/O 错误种类透出，好让扫描器区分瞬时读取失败与文件损坏。
 fn map_probe_error(err: Error) -> OpenError {
     match err {
         Error::IoError(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -99,11 +98,10 @@ fn map_probe_error(err: Error) -> OpenError {
     }
 }
 
-/// LOOP_START / LOOP_END raw tag values are microseconds; they are converted to
-/// seconds for the loop seek.
+/// LOOP_START / LOOP_END 的原始标签值是微秒；循环跳转定位时换算成秒。
 const LOOP_TAG_MICROS_PER_SECOND: f64 = 1_000_000.0;
 
-/// Maps a symphonia standard tag onto our tag model. Unmapped standards are ignored.
+/// 把 symphonia 的标准标签映射到我们的标签模型；未收录的标准直接忽略。
 fn map_standard_tag(std_tag: &StandardTag) -> Option<MetadataTag> {
     match std_tag {
         StandardTag::TrackTitle(s) => Some(MetadataTag::Name((**s).clone())),
@@ -145,8 +143,8 @@ fn map_standard_tag(std_tag: &StandardTag) -> Option<MetadataTag> {
     }
 }
 
-/// Maps a raw (non-standard) tag key onto our tag model: the ReplayGain/R128
-/// family, MusicBrainz album ids, and loop points. Unknown keys are ignored.
+/// 把原始（非标准）标签键映射到我们的标签模型：ReplayGain/R128 一族、
+/// MusicBrainz 专辑 id，以及循环点。未知键直接忽略。
 fn map_raw_tag(tag: &Tag) -> Option<MetadataTag> {
     let key = tag.raw.key.trim_start_matches("TXXX:").to_ascii_lowercase();
     let value = &tag.raw.value;
@@ -175,8 +173,8 @@ fn map_raw_tag(tag: &Tag) -> Option<MetadataTag> {
 #[derive(Default)]
 pub struct SymphoniaProvider;
 
-/// An open symphonia file. Starts empty (`Default`); [`SymphoniaProvider::open_source`]
-/// fills the format reader and reads the initial metadata.
+/// 一个已打开的 symphonia 文件。初始为空（`Default`）；由
+/// [`SymphoniaProvider::open_source`] 填入 format reader 并读取首批元数据。
 #[derive(Default)]
 pub struct SymphoniaStream {
     format: Option<Box<dyn FormatReader>>,
@@ -198,9 +196,8 @@ pub struct SymphoniaStream {
 }
 
 impl SymphoniaStream {
-    /// Free-standing so the decode loop can fold a mid-stream revision in
-    /// while the format reader (which owns the metadata log) is still
-    /// mutably borrowed.
+    /// 刻意写成自由函数：好让解码循环在 format reader（它持有元数据日志）
+    /// 仍处于可变借用时，就能把流中途的元数据修订折叠进来。
     fn apply_tags(tags: &[Tag], metadata: &mut Metadata) {
         for tag in tags {
             let meta_tag = match &tag.std {
@@ -219,7 +216,7 @@ impl SymphoniaStream {
 
         let mut meta_queue = format.metadata();
 
-        // only update metadata if something useful was actually read
+        // 只有确实读到有用的内容时才更新元数据
         let found_metadata = if let Some(metadata) = meta_queue.skip_to_latest() {
             Self::apply_tags(&metadata.media.tags, &mut self.current_metadata);
             if !metadata.media.visuals.is_empty() {
@@ -233,7 +230,7 @@ impl SymphoniaStream {
         self.pending_metadata_update = found_metadata;
     }
 
-    /// The audio parameters of the first track that carries codec params.
+    /// 第一个带编解码参数的轨道的音频参数。
     fn audio_params(&self) -> Result<&AudioCodecParameters, ChannelRetrievalError> {
         let format = self
             .format
@@ -335,8 +332,8 @@ impl SymphoniaStream {
 }
 
 impl SymphoniaProvider {
-    /// Probes any seekable byte source (a local file, an HTTP range stream,
-    /// ...) and builds a [`SymphoniaStream`] around it.
+    /// 探测任意可 seek 的字节源（本地文件、HTTP range 流……），
+    /// 并在其之上构建 [`SymphoniaStream`]。
     pub fn open_source(
         &self,
         source: Box<dyn MediaSource>,
@@ -401,11 +398,10 @@ impl MediaStream for SymphoniaStream {
             .audio()
             .ok_or(PlaybackStartError::NothingToPlay)?;
 
-        // The timebase is known at probe time for every format we open (it is
-        // derived from the sample rate when the container does not set one),
-        // while `num_frames` is not: OGG/Opus only learns it when the last page
-        // is read. Coupling the two left `current_timebase` unset for OGG/Opus,
-        // so packet PTS could never be converted and position stayed at 0.
+        // 对我们打开的所有格式，timebase 在 probe 时就是已知的（容器没给时
+        // 由采样率推导），而 `num_frames` 不是：OGG/Opus 要读到最后一页才知道。
+        // 过去把两者绑定判断，会让 OGG/Opus 的 `current_timebase` 一直为空，
+        // 于是 packet 的 PTS 永远无法换算，播放位置恒为 0。
         self.current_timebase = track.time_base;
         if let (Some(frame_count), Some(tb)) = (track.num_frames, track.time_base)
             && let Some(t) = tb.calc_time(Timestamp::new(frame_count as i64))
@@ -419,10 +415,9 @@ impl MediaStream for SymphoniaStream {
             .map(|c| c.count())
             .unwrap_or(2);
         let frame_capacity = audio_params.max_frames_per_packet.unwrap_or(8192) as usize;
-        // Advertise the worst-case packet size before the first decode: the
-        // pipeline sizes its decode ring from `frame_duration()` (see
-        // setup_pipeline) so one full large packet fits. The first decoded
-        // packet overwrites this with the decoder's real capacity.
+        // 首次解码之前先报出最坏 packet 大小：管线按 `frame_duration()`
+        // （见 setup_pipeline）来定解码环的尺寸，于是一个完整的大 packet 装得下。
+        // 第一个被解码的 packet 会用解码器的真实容量覆盖这个值。
         self.current_duration = frame_capacity as u64;
 
         self.conversion_buffer = (0..channel_count)
@@ -469,7 +464,7 @@ impl MediaStream for SymphoniaStream {
         if self.format.is_none() {
             return Err(MetadataError::InvalidState);
         }
-        // cloned, not taken - playback re-reads metadata as tags update mid-stream
+        // 是克隆而非取走——流中标签更新时播放侧会重新读取元数据
         Ok(self.current_metadata.clone())
     }
 
@@ -481,7 +476,7 @@ impl MediaStream for SymphoniaStream {
         if self.format.is_none() {
             return Err(MetadataError::InvalidState);
         }
-        // the image is handed out once: take clears it as it is returned
+        // 封面图只交付一次：take 在返回的同时把它清掉
         Ok(self.last_image.take().map(|visual| visual.data))
     }
 
@@ -493,9 +488,8 @@ impl MediaStream for SymphoniaStream {
     }
 
     fn position_ms(&self) -> Result<u64, TrackDurationError> {
-        // Position only needs a running decoder: requiring a known length made
-        // formats whose frame count arrives at EOF (OGG/Opus) report no
-        // position for the whole track even though PTS conversion works.
+        // 位置只要求解码器已在运行：若还要求时长已知，那些帧数到 EOF 才确定
+        // 的格式（OGG/Opus）明明 PTS 换算正常，却整首都报不出位置。
         if self.decoder.is_none() {
             return Err(TrackDurationError::NeverStarted);
         }
@@ -588,8 +582,8 @@ impl MediaStream for SymphoniaStream {
             return Err(PlaybackReadError::InvalidState);
         }
 
-        // a malformed file can fail every packet; bail out instead of
-        // spinning through the rest of the stream without ever producing audio
+        // 畸形文件可能每个 packet 都失败；出错就提前返回，
+        // 不要再空转整条流却始终产不出音频
         const MAX_CONSECUTIVE_DECODE_ERRORS: u32 = 256;
         let mut consecutive_decode_errors = 0u32;
 
@@ -609,11 +603,9 @@ impl MediaStream for SymphoniaStream {
                 Err(err) => return classify_next_packet_error(err),
             };
 
-            // A demuxer can push fresh metadata revisions mid-stream (e.g. a
-            // chained OGG stream announcing new tags). The common case costs
-            // one len comparison; on a revision change, consume the log, fold
-            // the latest revision's tags into the current metadata, and let
-            // playback re-read them through check_metadata_update.
+            // demuxer 可能在流中途推入新的元数据修订（例如链式 OGG 流宣告新标签）。
+            // 常见情形只花一次 len 比较；发生修订变化时消费掉日志，把最新修订的标签
+            // 折叠进当前元数据，并让播放侧经 check_metadata_update 重新读取。
             if !format.metadata().is_latest() {
                 let mut meta_queue = format.metadata();
                 if let Some(revision) = meta_queue.skip_to_latest() {
@@ -683,7 +675,7 @@ impl MediaStream for SymphoniaStream {
                         return Err(PlaybackReadError::ChannelCountChanged(channel_count));
                     }
 
-                    // sometimes the hint is wrong, check against actual capacity
+                    // 提示值有时会不准，要以实际容量为准校验
                     let frame_capacity = decoded.capacity();
                     while self.conversion_buffer.len() < channel_count {
                         self.conversion_buffer
@@ -735,9 +727,9 @@ impl MediaStream for SymphoniaStream {
                                     })
                                 })
                                 .collect();
-                            // non-blocking: the consumer (resampler) drains on the same
-                            // playback thread, so a blocking retry write would spin
-                            // against a consumer that cannot run until we return
+                            // 非阻塞：consumer（重采样器）在同一个播放线程上抽取，
+                            // 阻塞式重试写入会对着一个「只有等我们返回才能运行」的
+                            // consumer 空转
                             if let Err(e) = output.write_slices_nonblocking(&counts) {
                                 return Err(map_write_error(e));
                             }
@@ -831,9 +823,9 @@ mod tests {
 
     #[test]
     fn flagged_metadata_update_only_when_metadata_was_read() {
-        // Symphonia exposes no tags for WAV (its RIFF reader never attaches the metadata log),
-        // so opening one must not flag an update: publishing the empty metadata would wipe the
-        // better metadata the UI already has from the library or other providers
+        // Symphonia 对 WAV 不暴露任何标签（它的 RIFF reader 从不挂元数据日志），
+        // 因此打开 WAV 不能标记为有更新：发布空元数据会把 UI 已经从音乐库
+        // 或其它 provider 拿到的更好的元数据冲掉
         let dir = TestDir::new("symphonia-fixture-test");
         assert!(!open_fixture(&dir, "fixture.wav").metadata_updated());
         assert!(open_fixture(&dir, "fixture.flac").metadata_updated());

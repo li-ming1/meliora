@@ -36,7 +36,7 @@ pub enum OpenError {
     Unknown(String),
 }
 
-/// Uninhabited: both in-tree providers close streams infallibly.
+/// 不可实例化：两个内置 provider 关闭流均不会失败。
 #[derive(PartialEq, Eq, Debug, Clone, Error)]
 pub enum CloseError {}
 

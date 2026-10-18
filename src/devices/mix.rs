@@ -22,7 +22,7 @@ impl Default for MixOptions {
 
 #[derive(Clone, Debug, PartialEq)]
 struct MixMatrix {
-    /// `out_channels` rows, `in_channels` columns
+    /// 行为 `out_channels`、列为 `in_channels`
     rows: Vec<Vec<f64>>,
     /// 每输出行的非零 (输入索引, 权重)，按输入索引升序。
     /// 必须在 normalize 之后派生（缩放改变权重终值）；
@@ -92,10 +92,9 @@ impl MixMatrix {
         true
     }
 
-    /// Build a mix matrix from source and destination layouts.
+    /// 由源布局与目标布局构建混合矩阵。
     ///
-    /// Falls back to a generic count-based matrix when either side lacks positional
-    /// information.
+    /// 任一侧缺少位置信息时，退化为通用的按声道数矩阵。
     fn build(src: &ChannelLayout, dst: &ChannelLayout, opts: MixOptions) -> MixMatrix {
         let mut matrix = match (src, dst) {
             (ChannelLayout::Positioned(src_pos), ChannelLayout::Positioned(dst_pos)) => {
@@ -109,8 +108,8 @@ impl MixMatrix {
         matrix
     }
 
-    /// Scale the matrix down when any output row's weights sum past 1.0, so a full-scale input
-    /// can never clip. The scale is uniform across all rows to preserve channel balance.
+    /// 当任一输出行的权重和超过 1.0 时整体缩小矩阵，使满幅输入永远不可能削顶。
+    /// 缩放对所有行统一施加，以保持声道间的平衡。
     fn normalize(&mut self) {
         let max_row_sum = self
             .rows
@@ -126,10 +125,10 @@ impl MixMatrix {
         }
     }
 
-    /// Mix a single frame of planar samples.
+    /// 混合一帧平面样本。
     ///
-    /// `input` and `output` must have lengths `in_channels` and `out_channels`
-    /// respectively. `output` is overwritten (not accumulated).
+    /// `input` 与 `output` 的长度必须分别是 `in_channels` 与 `out_channels`。
+    /// `output` 被覆写（不是累加）。
     fn mix_frame(&self, input: &[f64], output: &mut [f64]) {
         debug_assert_eq!(input.len(), self.in_channels);
         debug_assert_eq!(output.len(), self.out_channels);
@@ -140,25 +139,25 @@ impl MixMatrix {
             for &(j, w) in row_taps {
                 acc += w * input[j as usize];
             }
-            // normalization keeps row sums <= 1.0, so this is a pure safety net
+            // normalize 已保证行和 <= 1.0，这里的钳位纯属安全网
             output[i] = acc.clamp(-1.0, 1.0);
         }
     }
 }
 
-/// Look up the canonical index of a single-bit position within a positioned layout's
-/// channel order (ascending bit order, matching [`ChannelPosition::positions`]).
+/// 在位置式布局的声道顺序里查单个位置位所对应的规范下标
+/// （按位升序，与 [`ChannelPosition::positions`] 一致）。
 fn position_index(haystack: ChannelPosition, needle: ChannelPosition) -> Option<usize> {
     if needle.bits().count_ones() != 1 || !haystack.contains(needle) {
         return None;
     }
-    // Number of set bits strictly below the needle's bit gives the index.
+    // 严格低于 needle 那一位的置位个数即为下标。
     let below = haystack.bits() & (needle.bits() - 1);
     Some(below.count_ones() as usize)
 }
 
 fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions) -> MixMatrix {
-    // Some decoders report mono as FRONT_LEFT; normalize so it plays in both channels.
+    // 有些解码器把单声道报成 FRONT_LEFT；统一归一化，让它两个声道都出声。
     let src = if src.bits().is_power_of_two() {
         ChannelPosition::FRONT_CENTER
     } else {
@@ -183,7 +182,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         rows[oi][ii] += weight;
     };
 
-    // Source channels the destination has no matching slot for need rerouting.
+    // 目标没有对应槽位的源声道需要改道。
     let unmapped = |pos: ChannelPosition| src.contains(pos) && !dst.contains(pos);
 
     let has_l = dst.contains(ChannelPosition::FRONT_LEFT);
@@ -200,7 +199,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         }
     }
 
-    // Non-mono center folds into L/R when the destination has no center.
+    // 非单声道的中置：目标没有中置时折进 L/R。
     if unmapped(ChannelPosition::FRONT_CENTER) && !src_only_mono {
         if has_l {
             route(
@@ -218,7 +217,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         }
     }
 
-    // Stereo to mono averages the front pair.
+    // 双声道转单声道：前置对取平均。
     if !has_l && !has_r && has_c {
         if src.contains(ChannelPosition::FRONT_LEFT) {
             route(
@@ -289,7 +288,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
         }
     }
 
-    // Mono duplicates into L/R when there is no center output.
+    // 单声道：没有中置输出时复制到 L/R。
     if src_only_mono && !has_c {
         if has_l {
             route(
@@ -310,7 +309,7 @@ fn build_positioned(src: ChannelPosition, dst: ChannelPosition, opts: MixOptions
     MixMatrix::from_rows(rows, in_channels, out_channels)
 }
 
-/// Count-only fallback for layouts without usable position metadata.
+/// 布局拿不到可用位置元数据时，退回只按声道数的通用矩阵。
 fn build_count_based(in_count: usize, out_count: usize, _opts: MixOptions) -> MixMatrix {
     let mut rows = vec![vec![0.0f64; in_count]; out_count];
 
@@ -353,7 +352,7 @@ pub struct ChannelMixer {
     output_planes: Vec<Vec<f64>>,
     in_frame: Vec<f64>,
     out_frame: Vec<f64>,
-    // needed for testing only
+    // 仅测试需要
     #[cfg(test)]
     out_channels: usize,
 }
@@ -397,8 +396,8 @@ impl ChannelMixer {
         }
     }
 
-    /// Pre-size the output planes so steady-state `process` calls never allocate. Call once at
-    /// pipeline setup with the largest frame count a cycle can produce.
+    /// 预分配输出平面，使稳态 `process` 调用永不分配。在管线搭建时调用一次，
+    /// 传入单个周期能产出的最大帧数。
     pub fn ensure_output_capacity(&mut self, frames: usize) {
         for plane in &mut self.output_planes {
             if plane.capacity() < frames {
@@ -407,8 +406,7 @@ impl ChannelMixer {
         }
     }
 
-    /// Mix planar per-channel input planes into the output planes, returning the frame count.
-    /// Missing planes or samples are treated as silence.
+    /// 把按声道的平面输入混进输出平面，返回帧数。缺失的平面或缺失的样本按静音处理。
     pub fn mix(&mut self, input: &[Vec<f64>]) -> usize {
         let frames = (0..self.in_channels)
             .filter_map(|ch| input.get(ch).map(Vec::len))
@@ -452,18 +450,18 @@ impl ChannelMixer {
         frames
     }
 
-    /// Planes produced by the last `mix` call.
+    /// 上一次 `mix` 调用产出的平面。
     pub fn output_planes(&self) -> &[Vec<f64>] {
         &self.output_planes
     }
 
-    /// Output planes, mutable so downstream DSP can run in place.
+    /// 输出平面（可变借用），便于下游 DSP 原地处理。
     pub fn output_planes_mut(&mut self) -> &mut [Vec<f64>] {
         &mut self.output_planes
     }
 }
 
-/// Classify labels into the most specific layout without losing channel count.
+/// 把标签归类到不丢声道数的最具体布局。
 pub fn layout_from_labels(labels: Vec<ChannelLabel>) -> ChannelLayout {
     if labels.is_empty() {
         return ChannelLayout::None;
@@ -528,9 +526,9 @@ mod tests {
 
     #[test]
     fn mono_reported_as_front_left_still_duplicates_to_stereo() {
-        // Some decoders report a mono source as FRONT_LEFT (the first WAVE position bit
-        // from Position::from_count(1)) rather than FRONT_CENTER. The mixer must
-        // normalize this so mono plays in both ears, not just the left.
+        // 有些解码器把单声道源报成 FRONT_LEFT（`Position::from_count(1)` 给出的
+        // 第一个 WAVE 位置位）而不是 FRONT_CENTER。混合器必须归一化这种情况，
+        // 让单声道两只耳朵都出声，而不只是左耳。
         let mono_as_fl = ChannelLayout::Positioned(ChannelPosition::FRONT_LEFT);
         let stereo =
             ChannelLayout::Positioned(ChannelPosition::FRONT_LEFT | ChannelPosition::FRONT_RIGHT);
@@ -538,7 +536,7 @@ mod tests {
         let rows = m.rows();
         assert_eq!(m.in_channels(), 1);
         assert_eq!(m.out_channels(), 2);
-        // Both L and R should get the full signal.
+        // L 与 R 都应拿到完整信号。
         assert!(
             (rows[0][0] - 1.0).abs() < 1e-9,
             "L coefficient was {}",
@@ -562,7 +560,7 @@ mod tests {
         let mono = ChannelLayout::Positioned(ChannelPosition::FRONT_CENTER);
         let m = MixMatrix::build(&stereo, &mono, MixOptions::default());
         let rows = m.rows();
-        // FC = 0.5*FL + 0.5*FR (front pair folds into center at full, then divided)
+        // FC = 0.5*FL + 0.5*FR（前置对以满量折进中置，再除以 2）
         assert!((rows[0][0] - 0.5).abs() < 1e-9);
         assert!((rows[0][1] - 0.5).abs() < 1e-9);
 
@@ -585,10 +583,10 @@ mod tests {
         let m = MixMatrix::build(&src, &dst, MixOptions::default());
         let rows = m.rows();
 
-        // Input order (ascending bit): FL, FR, FC, LFE, RL, RR
-        // L = FL + a*FC + a*RL            (LFE dropped by default)
+        // 输入顺序（按位升序）：FL, FR, FC, LFE, RL, RR
+        // L = FL + a*FC + a*RL            （LFE 默认丢弃）
         // R = FR + a*FC + a*RR
-        // then the whole matrix is scaled by n = 1/(1 + 2a) so the rows sum to 1.0
+        // 然后整个矩阵乘以 n = 1/(1 + 2a)，使各行权重和为 1.0
         let a = SURROUND_ATTENUATION;
         let n = 1.0 / (1.0 + 2.0 * a);
         assert!((rows[0][0] - n).abs() < 1e-9); // FL
@@ -625,8 +623,7 @@ mod tests {
         let m = MixMatrix::build(&src, &dst, opts);
         let rows = m.rows();
         let a = SURROUND_ATTENUATION;
-        // LFE is index 3 in input order; it keeps the attenuation ratio relative to FL after
-        // normalization.
+        // LFE 在输入顺序里是下标 3；归一化后它相对 FL 仍保持同样的衰减比例。
         assert!((rows[0][3] / rows[0][0] - a).abs() < 1e-9);
         assert!((rows[1][3] / rows[1][1] - a).abs() < 1e-9);
     }
@@ -656,14 +653,14 @@ mod tests {
         let m = MixMatrix::build(&src, &dst, MixOptions::default());
         let rows = m.rows();
         let a = SURROUND_ATTENUATION;
-        // Output order: FL FR FC LFE RL RR
-        // Input order: FL FR FC LFE RL RR SL SR
-        // The RL/RR rows sum to 1 + a, so the matrix is normalized by n = 1/(1 + a).
+        // 输出顺序：FL FR FC LFE RL RR
+        // 输入顺序：FL FR FC LFE RL RR SL SR
+        // RL/RR 两行的权重和为 1 + a，故矩阵按 n = 1/(1 + a) 归一化。
         let n = 1.0 / (1.0 + a);
-        // SL (index 6) folds into RL (output index 4) at a.
-        assert!((rows[4][4] - n).abs() < 1e-9); // RL identity
+        // SL（下标 6）以系数 a 折进 RL（输出下标 4）。
+        assert!((rows[4][4] - n).abs() < 1e-9); // RL 恒等直通
         assert!((rows[4][6] - a * n).abs() < 1e-9); // SL -> RL
-        // SR (index 7) folds into RR (output index 5) at a.
+        // SR（下标 7）以系数 a 折进 RR（输出下标 5）。
         assert!((rows[5][5] - n).abs() < 1e-9);
         assert!((rows[5][7] - a * n).abs() < 1e-9);
     }
@@ -683,9 +680,9 @@ mod tests {
         );
         let m = MixMatrix::build(&mono, &seven1, MixOptions::default());
         let rows = m.rows();
-        // Input: FC. Output order: FL FR FC LFE RL RR SL SR
-        assert!((rows[2][0] - 1.0).abs() < 1e-9); // FC gets the mono signal
-        // Everything else silent.
+        // 输入：FC。输出顺序：FL FR FC LFE RL RR SL SR
+        assert!((rows[2][0] - 1.0).abs() < 1e-9); // FC 拿到单声道信号
+        // 其余声道全部静音。
         for i in [0, 1, 3, 4, 5, 6, 7] {
             assert!((rows[i][0] - 0.0).abs() < 1e-9);
         }
@@ -707,7 +704,7 @@ mod tests {
         );
         let m = MixMatrix::build(&stereo, &seven1, MixOptions::default());
         let rows = m.rows();
-        // Output order: FL FR FC LFE RL RR SL SR. Input: FL FR.
+        // 输出顺序：FL FR FC LFE RL RR SL SR。输入：FL FR。
         assert!((rows[0][0] - 1.0).abs() < 1e-9);
         assert!((rows[1][1] - 1.0).abs() < 1e-9);
         for i in [2, 3, 4, 5, 6, 7] {
@@ -749,8 +746,8 @@ mod tests {
 
     #[test]
     fn normalization_prevents_clipping() {
-        // 5.1 -> Stereo: L = FL + a*FC + a*RL sums to 1 + 2a ≈ 2.414, so the matrix is scaled
-        // down to keep a full-scale input at exactly 1.0 instead of hard-clipping.
+        // 5.1 -> 立体声：L = FL + a*FC + a*RL 的权重和为 1 + 2a ≈ 2.414，故整个矩阵按比例
+        // 缩小，让满幅输入恰好落在 1.0，而不是靠硬钳位。
         let src = ChannelLayout::Positioned(
             ChannelPosition::FRONT_LEFT
                 | ChannelPosition::FRONT_RIGHT
@@ -762,7 +759,7 @@ mod tests {
         let dst =
             ChannelLayout::Positioned(ChannelPosition::FRONT_LEFT | ChannelPosition::FRONT_RIGHT);
         let m = MixMatrix::build(&src, &dst, MixOptions::default());
-        // Input order: FL, FR, FC, LFE, RL, RR
+        // 输入顺序：FL, FR, FC, LFE, RL, RR
         let out = mix_frame(&m, &[1.0, 1.0, 1.0, 0.0, 1.0, 1.0]);
         assert!(
             out[0] <= 1.0 && (out[0] - 1.0).abs() < 1e-9,
@@ -775,8 +772,7 @@ mod tests {
             out[1]
         );
 
-        // quieter content is attenuated by the same factor, not distorted: the front pair keeps
-        // its balance against the folded channels
+        // 更轻的内容按同一系数衰减而非失真：前置对相对各折入声道保持原有平衡
         let a = SURROUND_ATTENUATION;
         let n = 1.0 / (1.0 + 2.0 * a);
         let quiet = mix_frame(&m, &[0.5, 0.0, 0.0, 0.0, 0.0, 0.0]);
@@ -785,8 +781,7 @@ mod tests {
 
     #[test]
     fn normalization_skips_matrices_that_cannot_clip() {
-        // mono -> stereo duplicates at full gain; every row already sums to 1.0 so the matrix
-        // must be left untouched
+        // 单声道 -> 立体声以满增益复制；每行权重和本就是 1.0，因此矩阵必须原样不动
         let mono = ChannelLayout::Positioned(ChannelPosition::FRONT_CENTER);
         let stereo =
             ChannelLayout::Positioned(ChannelPosition::FRONT_LEFT | ChannelPosition::FRONT_RIGHT);

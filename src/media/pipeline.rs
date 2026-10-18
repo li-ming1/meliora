@@ -4,27 +4,26 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 pub const DEFAULT_BUFFER_FRAMES: usize = 8192;
 
-// Ring-buffer IO primitives shared by the pipeline (decoder -> playback handoff)
-// and the device output stage. They live here, next to the channel buffer types
-// they serve, so the media layer has no reverse dependency on `devices`.
+// 环形缓冲 IO 原语，由管线（解码 -> 播放交接）与设备输出级共用。
+// 它们与所服务的通道缓冲类型放在一起，因此 media 层不需要反向依赖
+// `devices`。
 //
-/// How long a ring-buffer producer sleeps between retries when the buffer is full.
+/// 环形缓冲 producer 在缓冲写满时，两次重试之间休眠多久。
 pub const RING_WRITE_PARK: Duration = Duration::from_millis(1);
-/// How long `write_bounded_planar` keeps retrying a full ring before giving
-/// up and reporting [`RingWriteTimeout`].
+/// `write_bounded_planar` 面对写满的环形缓冲会重试多久，
+/// 之后放弃并上报 [`RingWriteTimeout`]。
 pub const RING_WRITE_DEADLINE: Duration = Duration::from_millis(250);
 
-/// The consumer of a ring buffer stopped draining before the write deadline.
+/// 环形缓冲的 consumer 在写截止时间内没有继续抽取。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RingWriteTimeout {
-    /// Samples written to each ring before the deadline expired.
+    /// 截止时间到期前已写入每条环的采样数。
     pub written: usize,
 }
 
-/// Write as many samples of equal-length planes as currently fit, never
-/// blocking or parking. Returns the total samples written (may be less than
-/// `total`). Use this when the consumer drains on the *same* thread — a
-/// blocking retry loop there can never make progress.
+/// 在当前能容纳的范围内写入等长平面（plane）的采样，绝不阻塞也不休眠。
+/// 返回实际写入的总采样数（可能小于 `total`）。consumer 在*同一*线程抽取时
+/// 用它——那种场合下阻塞式重试循环永远无法推进。
 pub fn try_write_planar<T: Copy>(
     producers: &mut [Producer<T>],
     planes: &[&[T]],
@@ -55,8 +54,8 @@ pub fn try_write_planar<T: Copy>(
     written
 }
 
-/// Write the first `total` samples of equal-length planes to their producers in lockstep, so the
-/// channels never desync
+/// 把等长平面的前 `total` 个采样同步写入各自的 producer，
+/// 使各通道永不失步
 pub fn write_bounded_planar<T: Copy>(
     producers: &mut [Producer<T>],
     planes: &[&[T]],
@@ -70,13 +69,11 @@ pub fn write_bounded_planar<T: Copy>(
             return Err(RingWriteTimeout { written });
         }
         std::thread::sleep(RING_WRITE_PARK);
-        // retry from where the previous attempt stopped: `try_write_planar`
-        // counts from the front of the planes it is given, so hand it the
-        // remaining subslices — passing the full planes again would re-copy
-        // the packet's prefix into the ring (audible as static garbage)
-        // Stack-allocated for realistic channel counts: this runs once per
-        // 1ms retry while the ring is full, and a heap Vec per retry is
-        // allocator churn on the realtime-adjacent path.
+        // 从上次停止处续写：`try_write_planar` 是从所给平面的起始处开始计数的，
+        // 所以要把剩余的子切片交给它——再次传完整平面会把 packet 的前缀
+        // 重复拷进环里（听感上是静电噪声）
+        // 用栈上分配覆盖现实的通道数：环写满期间每 1ms 重试都会走到这里，
+        // 每次重试堆分配一个 Vec 是贴近实时路径上的分配抖动。
         let mut remaining = smallvec::SmallVec::<[&[T]; 8]>::with_capacity(planes.len());
         remaining.extend(planes.iter().map(|plane| &plane[written..]));
         written += try_write_planar(producers, &remaining, total - written);
@@ -115,11 +112,11 @@ pub struct ChannelMismatch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteError {
-    /// The number of planes didn't match the producer set.
+    /// 平面数量与 producer 集合不一致。
     ChannelMismatch(ChannelMismatch),
-    /// The planes weren't all the same length, writing would desync the channels.
+    /// 平面长度不全相等，继续写入会让各通道失步。
     UnequalPlanes { min: usize, max: usize },
-    /// The consumer stopped draining before the write deadline. `dropped` frames were lost.
+    /// consumer 在写截止时间前停止抽取，丢失了 `dropped` 帧。
     Timeout { dropped: usize },
 }
 
@@ -172,8 +169,8 @@ pub struct ChannelProducers {
 }
 
 impl ChannelProducers {
-    /// Validates a planar sample set against this producer set — matching channel count,
-    /// equal-length planes — and returns the common plane length.
+    /// 依据本 producer 集合校验一组平面采样——通道数匹配、平面等长——并返回
+    /// 公共平面长度。
     fn checked_plane_len(&self, samples: &[&[f64]]) -> Result<usize, WriteError> {
         if samples.len() != self.channel_count {
             return Err(WriteError::ChannelMismatch(ChannelMismatch {
@@ -199,9 +196,9 @@ impl ChannelProducers {
         })
     }
 
-    /// Non-blocking variant of [`write_slices`]: writes whatever fits and reports the rest as
-    /// dropped. Required when the consumer drains on the same thread (decoder → resampler), where
-    /// the blocking version would spin against a consumer that can never run until we return.
+    /// [`write_slices`] 的非阻塞版本：写入能容下的部分，其余按丢弃上报。
+    /// 当 consumer 在同一线程抽取时（解码器 → 重采样器）必须用它——阻塞版本
+    /// 会对着一个「只有等我们返回才能运行」的 consumer 空转。
     pub fn write_slices_nonblocking(&mut self, samples: &[&[f64]]) -> Result<(), WriteError> {
         let min = self.checked_plane_len(samples)?;
 
@@ -214,9 +211,9 @@ impl ChannelProducers {
         Ok(())
     }
 
-    /// Non-blocking variant of [`write_slices`]: writes whatever fits and reports the rest as
-    /// dropped. Required when the consumer drains on the same thread (decoder → resampler), where
-    /// the blocking version would spin against a consumer that can never run until we return.
+    /// [`write_slices`] 的非阻塞版本：写入能容下的部分，其余按丢弃上报。
+    /// 当 consumer 在同一线程抽取时（解码器 → 重采样器）必须用它——阻塞版本
+    /// 会对着一个「只有等我们返回才能运行」的 consumer 空转。
     pub fn write_vecs_nonblocking(&mut self, samples: &[Vec<f64>]) -> Result<(), WriteError> {
         if samples.len() != self.channel_count {
             return Err(WriteError::ChannelMismatch(ChannelMismatch {
@@ -229,8 +226,7 @@ impl ChannelProducers {
         self.write_slices_nonblocking(&slices)
     }
 
-    /// Frames that can be written to every channel right now without blocking (the minimum free
-    /// space across channels).
+    /// 此刻无需阻塞就能写入每个通道的帧数（各通道剩余空闲空间的最小值）。
     pub fn available(&self) -> usize {
         self.producers
             .iter()
@@ -239,7 +235,7 @@ impl ChannelProducers {
             .unwrap_or(0)
     }
 
-    /// Number of channels this producer set was built for.
+    /// 本 producer 集合建好时的通道数。
     pub fn channel_count(&self) -> usize {
         self.channel_count
     }
@@ -263,8 +259,8 @@ impl ChannelConsumers {
         available.min(self.staging.first().map(|s| s.capacity()).unwrap_or(0))
     }
 
-    /// Try to read up to `max_count` samples, returning actual count read.
-    /// This is the preferred method when you don't need to know the exact count beforehand.
+    /// 尽力读取至多 `max_count` 个采样，返回实际读到的数量。
+    /// 不需要预先知道确切数量时优先用这个方法。
     pub fn try_read_to_staging(&mut self, max_count: usize) -> usize {
         let count = self
             .consumers
@@ -291,8 +287,8 @@ impl ChannelConsumers {
                     staging.extend_from_slice(second);
                     chunk.commit_all();
                 }
-                // can't happen (count is the min of every channel's slots), but keep the planes
-                // equal-length with silence rather than desyncing the channels downstream
+                // 不可能发生（count 取各通道 slots 的最小值），但用静音把各平面
+                // 补齐成等长，好让下游通道不失步
                 Err(_) => staging.resize(count, 0.0),
             }
         }
@@ -300,7 +296,7 @@ impl ChannelConsumers {
         count
     }
 
-    /// Number of channels this consumer set was built for.
+    /// 本 consumer 集合建好时的通道数。
     pub fn channel_count(&self) -> usize {
         self.channel_count
     }
@@ -309,8 +305,8 @@ impl ChannelConsumers {
         &self.staging
     }
 
-    /// Discard all buffered samples in the ring. Only safe when the producer side isn't writing
-    /// concurrently, which holds on the single playback thread.
+    /// 丢弃环形缓冲里全部已缓冲采样。仅当 producer 侧没有并发写入时才安全，
+    /// 单播放线程的情形满足这一条。
     pub fn drain(&mut self) {
         for consumer in &mut self.consumers {
             let slots = consumer.slots();
@@ -326,39 +322,37 @@ impl ChannelConsumers {
     }
 }
 
-/// The audio pipeline: decoder output -> (resampler) -> (mixer) -> device input. All samples
-/// travel as f64, which is lossless for every source format.
+/// 音频管线：解码器输出 ->（重采样器）->（混音器）-> 设备输入。
+/// 所有采样都以 f64 传输，对任何源格式都是无损的。
 pub struct AudioPipeline {
     pub decoder_output: ChannelProducers,
     pub resampler_input: ChannelConsumers,
-    /// Per-channel output buffer handed from the resampler to the mixer. Pre-allocated once,
-    /// (hopefully) meaning it never needs to be resized (which avoids extra allocations).
+    /// 由重采样器交给混音器的逐通道输出缓冲。一次性预分配，
+    /// （希望）因此永不需要 resize（从而避免额外分配）。
     pub resampler_output: Vec<Vec<f64>>,
     pub device_input_producers: ChannelProducers,
     pub device_input: ChannelConsumers,
     pub source_rate: u32,
     pub target_rate: u32,
-    /// Channel count of the source (decoder) side.
+    /// 源（解码器）侧的通道数。
     pub source_channel_count: usize,
-    /// Channel count of the device side.
+    /// 设备侧的通道数。
     pub device_channel_count: usize,
-    /// Capacity, in frames, of the `device_input` ring. Sized to hold a worst-case cycle's
-    /// resampler output so a single write never overruns it.
+    /// `device_input` 环的容量（帧）。按一个最坏处理周期的重采样输出量设定，
+    /// 使单次写入绝不写爆它。
     pub device_input_capacity: usize,
-    /// Capacity, in frames, of the `decoder_output` ring: sized to hold one
-    /// worst-case decode packet (the stream's `max_frames_per_packet`, floored
-    /// at [`DEFAULT_BUFFER_FRAMES`]) so a full packet always fits. Decode-side
-    /// per-cycle read caps must use this same value or a large packet leaves
-    /// residue in the ring that the next write cannot fit around.
+    /// `decoder_output` 环的容量（帧）：按能装下一个最坏解码 packet
+    /// （流的 `max_frames_per_packet`，下限为 [`DEFAULT_BUFFER_FRAMES`]）设定，
+    /// 于是完整 packet 总能装下。解码侧每个周期的读取上限必须用同一个值，
+    /// 否则大 packet 会在环里留下残余，下一次写入无处可放。
     pub decoder_buffer_frames: usize,
 }
 
-/// Headroom added on top of the scaled frame count so the bound stays a safe upper
-/// bound on one processing cycle's output.
+/// 在换算后的帧数之上追加的余量，让这个界保持为「单个处理周期输出量」的
+/// 安全上界。
 const FRAME_BOUND_HEADROOM_FRAMES: usize = 1024;
 
-/// Upper bound on the frames one processing cycle can hand from the resampler
-/// to the mixer/device stage.
+/// 单个处理周期能从重采样器交给混音器/设备级的帧数上界。
 pub fn output_frame_bound(source_rate: u32, target_rate: u32, buffer_frames: usize) -> usize {
     let scaled = (buffer_frames as u64 * u64::from(target_rate))
         .div_ceil(u64::from(source_rate.max(1))) as usize;
@@ -377,12 +371,11 @@ impl AudioPipeline {
         let (decoder_output, resampler_input) =
             ChannelBuffers::new(source_channel_count, buffer_frames).split();
 
-        // The device-input ring must be able to absorb one full cycle's resampler output (the
-        // resampler reads up to `buffer_frames` and can upsample), so a single write never blocks
-        // on a same-thread consumer. Honoring `min_device_input_capacity` keeps the ring sized to
-        // the largest capacity a previous track needed: when the per-track bound varies (it scales
-        // with the source rate), a constant allocation size lets the heap reuse the same blocks
-        // instead of growing a fresh segment on every track change.
+        // 设备输入环必须能吞下整整一个周期的重采样输出（重采样器最多读
+        // `buffer_frames`，且可能升采样），这样单次写入就不会阻塞在同一个
+        // 线程的 consumer 上。尊重 `min_device_input_capacity` 可让环保持在
+        // 历史最大曲目所需的容量：当每曲的界随之变化（它随源采样率缩放）时，
+        // 恒定的分配大小让堆复用同一批内存块，而不是每次换曲都新开一段。
         let device_input_capacity = output_frame_bound(source_rate, target_rate, buffer_frames)
             .max(min_device_input_capacity);
         let (device_input_producers, device_input) =
@@ -405,16 +398,16 @@ impl AudioPipeline {
         }
     }
 
-    /// Clear the resampler→mixer handoff buffer without freeing its capacity.
+    /// 清空 重采样器→混音器 的交接缓冲，但不归还其容量。
     pub fn clear_resampler_output(&mut self) {
         for ch in &mut self.resampler_output {
             ch.clear();
         }
     }
 
-    /// Grow the resampler→mixer handoff buffer to hold `frames` per channel, so a resampler whose
-    /// worst-case cycle output exceeds the initial estimate never reallocates it mid-playback.
-    /// Called at resampler creation (track start), where allocating is fine.
+    /// 把 重采样器→混音器 的交接缓冲扩容到每通道容 `frames` 帧，
+    /// 这样最坏单周期输出超出初始估计的重采样器也不会在播放中途 realloc。
+    /// 在重采样器创建时（曲目开始）调用，那里分配是允许的。
     pub fn ensure_resampler_output_capacity(&mut self, frames: usize) {
         for ch in &mut self.resampler_output {
             if ch.capacity() < frames {
@@ -423,18 +416,18 @@ impl AudioPipeline {
         }
     }
 
-    /// Whether the device-input ring has room to absorb another decode cycle's worth of output,
-    /// given the current packet size (`frame_duration`).
+    /// 按当前 packet 大小（`frame_duration`）判断，设备输入环是否还有余量
+    /// 吞下再一个解码周期的输出。
     ///
-    /// If we can't, it might cause the decode thread to stall and drop audio.
+    /// 若余量不足，解码线程可能卡停并丢音。
     pub fn can_accept_decode(&self, frame_duration: usize) -> bool {
         let needed = output_frame_bound(self.source_rate, self.target_rate, frame_duration)
             .min(self.device_input_capacity);
         self.device_input_producers.available() >= needed
     }
 
-    /// Drop all buffered audio in the pipeline ring buffers, so a seek while playing is heard
-    /// immediately instead of after the stale buffers drain.
+    /// 丢弃管线环形缓冲里全部已缓冲音频，使播放中跳转定位能立刻被听到，
+    /// 而不是等陈旧缓冲抽干之后。
     pub fn flush_buffers(&mut self) {
         self.resampler_input.drain();
         self.device_input.drain();
@@ -452,7 +445,7 @@ mod tests {
     fn write_slices_rejects_wrong_channel_count() {
         let (mut producers, _consumers) = ChannelBuffers::new(2, 64).split();
 
-        // a plane count that doesn't match the producer errors instead of panicking.
+        // 平面数量与 producer 不匹配时报错，而不是 panic。
         let one: [&[f64]; 1] = [&[0.0; 4]];
         assert_eq!(
             producers.write_slices(&one),
@@ -462,7 +455,7 @@ mod tests {
             }))
         );
 
-        // the matching count still writes fine.
+        // 数量匹配时仍能正常写入。
         let two: [&[f64]; 2] = [&[0.0; 4], &[0.0; 4]];
         assert!(producers.write_slices(&two).is_ok());
     }
@@ -482,8 +475,8 @@ mod tests {
     fn write_slices_reports_timeout_instead_of_dropping_silently() {
         let (mut producers, _consumers) = ChannelBuffers::new(1, 8).split();
 
-        // more samples than the ring holds with nobody draining: the deadline must surface as an
-        // error naming the dropped frames, not a silent Ok
+        // 采样比环能装的还多且无人抽取：截止时间必须以带丢失帧数的错误浮出，
+        // 而不是静默返回 Ok
         let planes: [&[f64]; 1] = [&[0.0; 16]];
         assert_eq!(
             producers.write_slices(&planes),
@@ -495,19 +488,19 @@ mod tests {
     fn write_slices_nonblocking_never_parks_and_reports_dropped() {
         let (mut producers, mut consumers) = ChannelBuffers::new(1, 8).split();
 
-        // fits: full write, Ok
+        // 装得下：完整写入，Ok
         let planes: [&[f64]; 1] = [&[0.0; 8]];
         assert!(producers.write_slices_nonblocking(&planes).is_ok());
 
-        // ring full, same-thread consumer cannot drain: must return immediately with the
-        // remainder reported instead of sleeping to the deadline
+        // 环已写满、同线程 consumer 无法抽取：必须立即返回并上报剩余量，
+        // 而不是一路睡到截止时间
         let overflow: [&[f64]; 1] = [&[1.0; 4]];
         assert_eq!(
             producers.write_slices_nonblocking(&overflow),
             Err(WriteError::Timeout { dropped: 4 })
         );
 
-        // after the consumer drains, the leftover fits again
+        // consumer 抽干之后，剩下的又能装下了
         assert_eq!(consumers.try_read_to_staging(8), 8);
         assert!(producers.write_slices_nonblocking(&overflow).is_ok());
     }
@@ -539,9 +532,8 @@ mod tests {
         assert_eq!(pipeline.device_input.potentially_available(), 0);
     }
 
-    /// Ring smaller than the payload forces the blocking write to park and
-    /// retry; the continuations must append the plane's REMAINDER, not re-copy
-    /// its prefix (regression: duplicated prefixes were audible as static).
+    /// 环小于负载会迫使阻塞写入休眠并重试；续写必须追加平面的剩余部分，
+    /// 而不是重抄它的前缀（回归：重复的前缀听感上是静电噪声）。
     #[test]
     fn write_bounded_planar_retries_continue_at_the_write_offset() {
         const TOTAL: usize = 10;

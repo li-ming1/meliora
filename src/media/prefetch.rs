@@ -1,16 +1,14 @@
-//! Background-prefetch wrapper for remote media sources.
+//! 远程媒体源的后台预取包装层。
 //!
-//! The decoder reads synchronously from the media source on the playback
-//! thread; without this layer a network stall parks the playback main loop
-//! for up to the per-read timeout, the output ring runs dry and playback
-//! sits silent on a "playing" UI. The filler thread owns the source and
-//! keeps a bounded buffer ahead of the decoder, so short network jitter
-//! never reaches the decode path at all, and the playback loop only blocks
-//! once the buffer is fully drained by a longer outage.
+//! 解码器在播放线程上同步读取媒体源；没有这一层时，一次网络卡停会把
+//! 播放主循环按住最长单次读取超时的时间，输出环被抽干，UI 显示"播放中"
+//! 却一片静音。填充线程独占数据源，在解码器前方维持一个有界缓冲，
+//! 于是短暂的网络抖动根本到不了解码路径，播放循环只有在较长断连把缓冲
+//! 完全抽干时才阻塞一次。
 //!
-//! The filler also reconnects after fill errors (a lazy zero-delta seek
-//! makes the range source re-request from its current position), turning
-//! a silently dead TCP connection into a fresh ranged request.
+//! 填充线程还会在填充出错后重连（一次惰性的零位移 seek 让 range 源从
+//! 当前位置重新发请求），把一条已静默死掉的 TCP 连接变成一次全新的
+//! ranged 请求。
 
 use crate::sync::{RecoveredCondvar, RecoveredMutex};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -20,59 +18,52 @@ use std::time::{Duration, Instant};
 
 use symphonia::core::io::MediaSource;
 
-/// Fill ahead up to this many bytes: ~8 s of FLAC (~1 Mbps), ~25 s of
-/// 320 kbps or ~64 s of 128 kbps audio; ~1 MB live only while a track plays.
-/// Sized together with the fill reconnect cadence so a transient server
-/// stall is absorbed invisibly: the buffer rides out the reconnect window
-/// and a fresh ranged request refills before the decoder reaches the bottom.
-/// The old 256 KB high water held ~2 s of FLAC — a 13 s server pause logged
-/// as 981 callback underruns in one session (2026-10-03) with no fill error
-/// and no track change, then resumed on its own.
+/// 向前填充至多这么多字节：约 8 秒 FLAC（~1 Mbps）、约 25 秒 320 kbps
+/// 或约 64 秒 128 kbps 音频；播放一首曲子时实时占用约 1 MB。
+/// 它与填充重连节奏一并定标，好让服务端瞬时卡停被无痕吸收：缓冲能撑过
+/// 重连窗口，解码器到达缓冲底部之前新的 ranged 请求就把缓冲填回去了。
+/// 旧的 256 KB 高水位只够约 2 秒 FLAC——一次 13 秒的服务端暂停在
+/// 一个会话里记下了 981 次回调欠载（2026-10-03），既没有填充错误也没换曲，
+/// 之后自行恢复。
 const HIGH_WATER_BYTES: usize = 1024 * 1024;
-/// One fill step, taken outside every lock so a stalled read never blocks
-/// the consumer.
+/// 单次填充步长，在任何锁之外取，因此卡停的读取永不阻塞 consumer。
 const FILL_CHUNK: usize = 16 * 1024;
-/// How long a consumer read may wait for data before the stream is declared
-/// stalled (surfaces as an IO error, so the track is skipped like any other
-/// decode failure). Reconnects happen inside this window; a recoverable
-/// outage resumes playback seamlessly.
+/// consumer 的一次读取在判定流卡停之前最多可等待多久（以 IO 错误浮出，
+/// 于是该曲目像任何其他解码失败一样被跳过）。重连发生在这个窗口之内；
+/// 可恢复的断连会无缝续上播放。
 const STALL_BUDGET: Duration = Duration::from_secs(30);
-/// Backoff between fill attempts after an error.
+/// 出错后两次填充尝试之间的退避时长。
 const RETRY_BACKOFF: Duration = Duration::from_millis(200);
 
-/// Source health for the fill loop: whether retrying can never succeed.
+/// 填充循环视角下的源健康度：重试是否永远不可能成功。
 ///
-/// A rejected signed URL (HTTP 4xx on a mid-stream re-request) stays rejected
-/// forever; the filler must surface a fatal error instead of spinning until
-/// the consumer's stall budget expires. Default: never dead.
+/// 被拒绝的签名 URL（流中途再次请求收到 HTTP 4xx）会一直被拒绝；填充线程
+/// 必须抛出致命错误，而不是空转到 consumer 的卡停预算耗尽。默认：永不判死。
 pub trait FillSource: Read + Seek + Send {
     fn url_dead(&self) -> bool {
         false
     }
 }
 
-/// Bumps on every seek: in-flight fill results from the old stream position
-/// are discarded instead of appended after the buffer was cleared.
+/// 每次 seek 都会自增：已在途的、来自旧流位置的填充结果被丢弃，
+/// 而不是在缓冲已清空之后追加进去。
 type Epoch = u64;
 
 struct FillState {
     buf: Vec<u8>,
-    /// Consumer read cursor into `buf`. Reads copy from `buf[read_pos..]`
-    /// instead of draining from the front (which memmoved the remaining
-    /// bytes on every read); the buffer is compacted once the cursor passes
-    /// its midpoint, amortizing the move to ≤1 byte per byte consumed.
+    /// consumer 在 `buf` 中的读取游标。读取从 `buf[read_pos..]` 拷贝，
+    /// 而不是从头抽取（那样每读一次都要 memmove 剩余字节）；游标越过
+    /// 缓冲中点后压缩一次，把搬运均摊为 ≤1 字节/已消费字节。
     read_pos: usize,
     epoch: Epoch,
-    /// Absolute target of the latest seek, applied by the filler thread:
-    /// in-flight reads from before the seek are discarded by epoch, but
-    /// they still advance the shared source — only re-applying the seek
-    /// here re-anchors the stream.
+    /// 最近一次 seek 的绝对目标，由填充线程落地：seek 之前已在途的读取
+    /// 会按 epoch 丢弃，但它们仍然推进了共享的源——只有在这里重新施加
+    /// seek 才能把流重新锚定。
     pending_seek: Option<u64>,
     eof: bool,
     shutdown: bool,
-    /// Set by the filler when the source is permanently unusable: the next
-    /// consumer read returns it as an IO error immediately instead of waiting
-    /// out the full stall budget on retries that can never succeed.
+    /// 源永久不可用时由填充线程设置：下一次 consumer 读取会立刻把它当作
+    /// IO 错误返回，而不是在注定不会成功的重试上耗完整个卡停预算。
     fatal: Option<String>,
 }
 
@@ -85,29 +76,26 @@ impl FillState {
 }
 
 struct Shared<S> {
-    /// One inner operation at a time; the filler holds it only across a
-    /// single `read`, so a consumer `seek` waits at most one network step.
+    /// 一次只做一项内部操作；填充线程只在单次 `read` 期间持有它，
+    /// 因此 consumer 的 `seek` 最多等待一个网络步长。
     source: Mutex<S>,
     state: Mutex<FillState>,
     signal: Condvar,
 }
 
-/// Fills the buffer ahead of the decoder. Owns the source; exits at the
-/// next checkpoint after [`PrefetchSource::drop`] signals shutdown.
+/// 在解码器前方填充缓冲。独占数据源；[`PrefetchSource::drop`] 置位关停标志后，
+/// 线程在下一个检查点退出。
 ///
-/// Fill errors trigger a reconnect (zero-delta seek → fresh ranged request)
-/// and are retried with ramping backoff until the shutdown or a seek
-/// resets the stream; whether the outage outlives the consumer's stall
-/// budget is decided on the consumer side alone. A source that reports
-/// itself dead (rejected URL no refresh could fix) ends the retry loop
-/// immediately: the fatal error is handed to the consumer, which skips the
-/// track in seconds instead of playing 30 s of silence first.
+/// 填充出错会触发一次重连（零位移 seek → 全新的 ranged 请求），并以递增
+/// 退避重试，直到关停或某次 seek 重置了流；断连是否超出 consumer 的卡停
+/// 预算，只在 consumer 一侧判定。自报已死的源（刷新也救不回来的被拒 URL）
+/// 立即结束重试循环：致命错误交给 consumer，让它在几秒内跳过该曲目，
+/// 而不是先播 30 秒静音。
 fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
     let mut consecutive_errors = 0u32;
     loop {
-        // Wait for work: a seek to apply, or buffer below the high water
-        // mark. my_epoch tags this fill pass so results from before a
-        // newer seek are discarded.
+        // 等待有活干：有待施加的 seek，或缓冲低于高水位。
+        // my_epoch 给本轮填充打标签，早于更新的 seek 的结果会被丢弃。
         let (my_epoch, seek_target) = {
             let mut st = shared.state.lock_recovered();
             loop {
@@ -153,8 +141,7 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                 let dead = {
                     let mut source = shared.source.lock_recovered();
                     let dead = source.url_dead();
-                    // Zero-delta seek: drops the dead connection and makes the
-                    // next read re-request from the current position.
+                    // 零位移 seek：丢掉死连接，并让下一次 read 从当前位置重新请求。
                     let _ = source.seek(SeekFrom::Current(0));
                     dead
                 };
@@ -182,10 +169,10 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
     }
 }
 
-/// A [`MediaSource`] that reads through a bounded background-filled buffer.
+/// 经有界的后台填充缓冲读取的 [`MediaSource`]。
 pub struct PrefetchSource<S> {
     shared: Arc<Shared<S>>,
-    /// Logical position of the next byte `read` returns.
+    /// 下一次 `read` 返回的首字节的逻辑位置。
     pos: u64,
     byte_len: Option<u64>,
     seekable: bool,
@@ -198,8 +185,8 @@ impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
     }
 
     fn with_budget(source: S, stall_budget: Duration, retry_backoff: Duration) -> Self {
-        // Snapshot the static source properties: symphonia consults them on
-        // the consumer side, while the source itself lives on the filler.
+        // 先取源的静态属性快照：symphonia 在 consumer 侧查询这些，
+        // 而源本体住在填充线程那边。
         let byte_len = source.byte_len();
         let seekable = source.is_seekable();
         let shared = Arc::new(Shared {
@@ -216,12 +203,10 @@ impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
             signal: Condvar::new(),
         });
         let filler_shared = Arc::clone(&shared);
-        // A failed spawn must degrade, not panic: this runs on the playback
-        // thread per online track open, and a panic here kills playback for
-        // good (no one restarts the thread). Same tradeoff as audio_engine's
-        // prepare-thread fallback — lose the buffering, keep the music. With
-        // the shutdown flag set, reads go straight to the source instead of
-        // waiting on a buffer no filler will ever fill.
+        // 启动失败必须降级而不是 panic：每打开一首在线曲目都会在播放线程上
+        // 走到这里，此处 panic 会永久杀死播放（没有谁会重启这个线程）。
+        // 与 audio_engine 的准备线程回退是同一取舍——牺牲缓冲，保住音乐。
+        // 关停标志置位后，读取直通数据源，不再等一个永远没人填的缓冲。
         if thread::Builder::new()
             .name("media-prefetch".into())
             .spawn(move || fill_loop(filler_shared, retry_backoff))
@@ -253,25 +238,21 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
                 let n = available.min(buf.len());
                 buf[..n].copy_from_slice(&st.buf[st.read_pos..st.read_pos + n]);
                 st.read_pos += n;
-                // Amortized compaction: only move the remaining bytes once
-                // the cursor passes the midpoint — at most one byte moved
-                // per byte consumed, instead of a full memmove per read.
+                // 均摊式压缩：只有游标越过中点才搬运剩余字节——
+                // 每个已消费字节至多搬 1 字节，而不是每次读取整段 memmove。
                 let consumed = st.read_pos;
                 if consumed >= st.buf.len() / 2 {
                     st.buf.drain(..consumed);
                     st.read_pos = 0;
                 }
                 self.pos += n as u64;
-                // Wake the filler only when this drain crossed the buffer
-                // from at/above the high water mark to below it: that is the
-                // one transition that can unblock a filler parked in
-                // `signal.wait` (its predicate is `available < HIGH_WATER`,
-                // re-checked under the state lock before every wait, so a
-                // crossing can never be missed). Reads that leave the buffer
-                // below the mark find the filler already filling; reads that
-                // keep it above change nothing for a waiting filler. Steady
-                // state therefore costs one notify per top-up cycle instead
-                // of one per decoder read.
+                // 只有当本次抽取让缓冲从"不低于高水位"跨到"低于高水位"时才唤醒
+                // 填充线程：这是唯一能解开停在 `signal.wait` 上的填充线程的跃迁
+                // （它的谓词是 `available < HIGH_WATER`，每次 wait 前都在 state 锁内
+                // 重新检查，所以一次跨界绝不会被漏掉）。抽取后仍低于水位的读取，
+                // 填充线程本来就在填；抽取后仍高于水位的读取，对等待中的填充线程
+                // 毫无改变。于是稳态下每个补满周期只有一次 notify，
+                // 而不是每次解码读取一次。
                 if available >= HIGH_WATER_BYTES
                     && st.buf.len() - st.read_pos < HIGH_WATER_BYTES
                     && !st.eof
@@ -287,9 +268,8 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
                 return Err(io::Error::other(msg.to_string()));
             }
             if st.shutdown {
-                // No filler thread (spawn failed): nothing will ever fill the
-                // buffer, so read the source directly — unbuffered, blocking
-                // for the source's own read timeout.
+                // 没有填充线程（启动失败）：缓冲永远不会被填，所以直接读源
+                // ——无缓冲，按源自身的读取超时阻塞。
                 drop(st);
                 let n = self.shared.source.lock_recovered().read(buf)?;
                 self.pos += n as u64;
@@ -324,8 +304,8 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
                 "seek target is out of range",
             ));
         };
-        // No filler thread (spawn failed): apply the seek to the source
-        // directly instead of queueing it for a filler that does not exist.
+        // 没有填充线程（启动失败）：把 seek 直接施加到源上，
+        // 不要再排给一个不存在的填充线程。
         {
             let st = self.shared.state.lock_recovered();
             if st.shutdown {
@@ -338,9 +318,8 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
                 return Ok(target);
             }
         }
-        // Lazy re-anchor, mirroring the range source's own seek: the filler
-        // applies the target before its next read, so no in-flight read can
-        // leave the stream positioned past the target.
+        // 惰性重新锚定，与 range 源自身的 seek 同一套语义：填充线程在下一次
+        // read 之前施加目标位置，所以不会有已在途的读取把流停在目标之后。
         let mut st = self.shared.state.lock_recovered();
         st.epoch += 1;
         st.pending_seek = Some(target);
@@ -365,9 +344,8 @@ impl<S> Drop for PrefetchSource<S> {
     fn drop(&mut self) {
         self.shared.state.lock_recovered().shutdown = true;
         self.shared.signal.notify_all();
-        // The filler exits at its next checkpoint. Detached on purpose:
-        // joining could block the playback thread for one inner read
-        // timeout (≤30 s) if it is parked mid-network-read.
+        // 填充线程在它的下一个检查点退出。刻意 detach：若它正卡在一次网络
+        // read 中间，join 会让播放线程多等一个内部 read 超时（≤30 秒）。
     }
 }
 
@@ -376,8 +354,8 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// In-memory source with injectable read failures; mirrors the lazy
-    /// re-request semantics of the range source (seek never touches data).
+    /// 可注入读取失败的内存源；复刻 range 源的惰性重发语义
+    /// （seek 从不触碰数据）。
     struct FakeSource {
         data: Vec<u8>,
         pos: usize,
@@ -485,8 +463,8 @@ mod tests {
 
     #[test]
     fn transient_error_recovers_via_reconnect() {
-        // Two failed reads, then the stream works again — the filler must
-        // reconnect (zero-delta seek) and keep the consumer running.
+        // 两次读取失败，之后流恢复正常——填充线程必须重连（零位移 seek）
+        // 并让 consumer 持续运行。
         let mut source = open(128 * 1024, Arc::new(AtomicUsize::new(2)));
         let mut got = Vec::new();
         read_exact_or_eof(&mut source, &mut got, 128 * 1024);

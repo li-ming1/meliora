@@ -20,7 +20,7 @@ pub struct ToastAction {
     pub callback: Box<dyn FnOnce(&mut gpui::App) + Send + 'static>,
 }
 
-/// A single toast notification queued for the overlay layer.
+/// 一条排队等待浮层渲染的 toast 通知。
 pub struct Toast {
     pub severity: Severity,
     pub message: I18nString,
@@ -67,10 +67,9 @@ impl Toast {
         self
     }
 
-    /// Overrides the default 5 s lifetime — the `duration` field exists for
-    /// callers whose notice is easy to miss and cheap to keep up (e.g. the
-    /// updater's "restart to apply"). The only callers live in the
-    /// online-gated updater, so the builder follows the same gate.
+    /// 覆盖默认的 5s 存活时间——设 `duration` 字段是给那些容易被错过、
+    /// 但多留一会儿代价很低的提示（如更新器的"重启以应用"）。调用方只存在于
+    /// online 门控的更新器里，故该 builder 沿用同一门控。
     #[cfg(feature = "online")]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
@@ -78,8 +77,8 @@ impl Toast {
     }
 }
 
-/// Queue a toast for display. Silently dropped if the sender hasn't been
-/// installed yet (e.g. before `init` is called during very early startup).
+/// 将 toast 排入待显示队列。sender 尚未安装时静默丢弃
+/// （例如极早期启动阶段 `init` 之前）。
 pub fn emit_toast(toast: Toast) {
     if let Some(sender) = TOAST_SENDER.get() {
         let _ = sender.send(toast);

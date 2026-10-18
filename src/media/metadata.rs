@@ -9,10 +9,9 @@ pub(crate) fn parse_rg_float_str(value: &str) -> Option<f64> {
 
 pub(crate) fn parse_rg_gain_str(value: &str) -> Option<f64> {
     let s = value.trim();
-    // Probe the suffix as bytes: the byte check is safe on any input, and only
-    // once it matches is the str slice below guaranteed to sit on a char
-    // boundary — a tag ending in a multi-byte char parses as None instead of
-    // panicking (same contract as strip_quality_suffix).
+    // 按字节探测后缀：字节比较对任何输入都安全，只有它命中后，下面的 str
+    // 切片才一定落在字符边界上——以多字节字符结尾的标签解析为 None，
+    // 而不是 panic（与 strip_quality_suffix 的契约相同）。
     let ends_in_db = s.len() >= 2 && s.as_bytes()[s.len() - 2..].eq_ignore_ascii_case(b"db");
     let s = if ends_in_db {
         s[..s.len() - 2].trim()
@@ -166,8 +165,8 @@ pub struct Metadata {
     pub artist: Option<String>,
     pub artists: SmallVec<[String; 2]>,
     pub album_artist: Option<String>,
-    /// Album artist claim parts: TSO2 split on "&" when every part claims a credited track artist,
-    /// the individual ALBUMARTISTS credits, otherwise the raw TPE2 values.
+    /// 专辑歌手断言项：当每个部分都声称为已署名的曲目歌手时，TSO2 按 "&"
+    /// 切分；否则是逐条的 ALBUMARTISTS 署名，再否则是原始的 TPE2 值。
     pub album_artist_keys: SmallVec<[String; 2]>,
     pub artist_sort: Option<String>,
     pub album_artist_sort: Option<String>,
@@ -179,13 +178,13 @@ pub struct Metadata {
     pub grouping: Option<String>,
     pub bpm: Option<u64>,
     pub compilation: bool,
-    /// Release date metadata. Only one of `date`, `year_month`, or `year` should be set.
+    /// 发行日期元数据。`date`、`year_month`、`year` 三者只应有一个被设置。
     pub date: Option<DateTime<Utc>>,
-    /// Release year/month metadata for partial dates like `1995-06`.
+    /// 发行年/月元数据，用于 `1995-06` 这类不完整的日期。
     pub year_month: Option<(u16, u8)>,
-    /// Optional year field. If the date or year_month field is filled, the year field will be
-    /// empty. This field exists because some tagging software uses the date field as a year field,
-    /// which cannot be handled properly as a date.
+    /// 可选的年份字段。若 date 或 year_month 已有值，year 保持为空。
+    /// 之所以存在这个字段，是因为有些打标签软件把 date 字段当年份用，
+    /// 而这按日期无法正确处理。
     pub year: Option<u16>,
 
     pub track_current: Option<u64>,
@@ -213,9 +212,9 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// Fills title/artist from the filename when the file carries no title tag.
-    /// Download tools commonly name files "<artist> - <title>[_MQ].mp3"; the
-    /// artist prefix is split off and a trailing quality marker is dropped.
+    /// 文件没有标题标签时，用文件名补 标题/歌手。
+    /// 下载工具常把文件命名为 "<artist> - <title>[_MQ].mp3"；这里拆掉歌手
+    /// 前缀并丢弃末尾的质量标记。
     pub fn fill_from_filename(&mut self, path: &Path) {
         if self.name.is_some() {
             return;
@@ -243,13 +242,13 @@ impl Metadata {
     }
 }
 
-/// Downloaders append quality markers like `_MQ`/`_hq` to filenames; drop one
-/// so "天若有情_MQ" displays as "天若有情".
+/// 下载器会在文件名后追加 `_MQ`/`_hq` 这类质量标记；去掉一个，好让
+/// "天若有情_MQ" 显示成 "天若有情"。
 fn strip_quality_suffix(stem: &str) -> &str {
     const MARKERS: [&str; 8] = ["_MQ", "_HQ", "_SQ", "_ZQ", "_mq", "_hq", "_sq", "_zq"];
     for marker in MARKERS {
-        // strip_suffix is char-boundary safe: returns None when the marker
-        // wouldn't align (e.g. the stem ends in a multi-byte char)
+        // strip_suffix 是字符边界安全的：标记对不齐时返回 None
+        // （例如 stem 以多字节字符结尾）
         if let Some(base) = stem.strip_suffix(marker) {
             return base;
         }
@@ -268,19 +267,19 @@ fn utc_midnight(date: NaiveDate) -> DateTime<Utc> {
     DateTime::from_naive_utc_and_offset(date.and_time(NaiveTime::MIN), Utc)
 }
 
-/// Parses `value` as a `T` only when it is exactly `len` ASCII digits.
+/// 仅当 `value` 恰好是 `len` 位 ASCII 数字时，才把它按 `T` 解析。
 fn parse_fixed_digits<T: FromStr>(value: &str, len: usize) -> Option<T> {
     (value.len() == len && value.chars().all(|c| c.is_ascii_digit()))
         .then(|| value.parse().ok())
         .flatten()
 }
 
-/// Parses exact ISO release dates before the generic parser.
+/// 先于通用解析器尝试精确的 ISO 发行日期。
 ///
-/// This preserves the original precision for `YYYY`, `YYYY-MM`, and `YYYY-MM-DD` values.
-/// If a value is not ISO-like, we return `Ok(None)` so the generic parser can still handle
-/// free-form tags like `May 25, 2021`. If a value does look ISO-like but is invalid, we return
-/// `Err(())` so the generic parser does not silently invent a day or otherwise change precision.
+/// 这样能为 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 保留原始精度。
+/// 若值不像 ISO 格式，返回 `Ok(None)`，让通用解析器仍能处理
+/// `May 25, 2021` 这类自由格式标签。若值看起来像 ISO 但不合法，返回
+/// `Err(())`，这样通用解析器就不会擅自补出一个日或改变精度。
 fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> {
     let value = value.trim();
 
@@ -331,8 +330,8 @@ pub(crate) fn parse_release_date(value: &str) -> Option<ParsedReleaseDate> {
         Ok(Some(date)) => Some(date),
         Err(()) => None,
         Ok(None) => {
-            // Non-ISO dates still go through the generic parser, but we pin date-only values to
-            // UTC midnight so they do not pick up local-current-time defaults.
+            // 非 ISO 日期仍走通用解析器，但把纯日期值钉在 UTC 零点上，
+            // 以免它们取到本地当前时间的默认值。
             dateparser::parse_with(value.trim(), &Utc, NaiveTime::MIN)
                 .ok()
                 .map(ParsedReleaseDate::FullDate)
@@ -348,23 +347,23 @@ pub struct ParsedTrackNumber {
     pub is_vinyl: bool,
 }
 
-/// Trailing run of ASCII digits in `s`.
+/// `s` 末尾连续的 ASCII 数字。
 ///
-/// `trim_end_matches` returns a char boundary, unlike a byte offset from
-/// `rfind` plus one: the last non-digit may be multi-byte ("一/12"), and
-/// slicing at its start + 1 panics inside the character.
+/// `trim_end_matches` 返回的是字符边界，不像 `rfind` 加一再切片得到的
+/// 字节偏移：最后一个非数字字符可能是多字节的（"一/12"），
+/// 从它起始处 +1 切片会落在字符内部而 panic。
 fn trailing_digits(s: &str) -> &str {
     let start = s.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     &s[start..]
 }
 
-/// Leading run of ASCII digits in `s`.
+/// `s` 开头连续的 ASCII 数字。
 fn leading_digits(s: &str) -> &str {
     let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     &s[..end]
 }
 
-/// `"3/12"` (anywhere in the string) -> `(3, Some(12))`.
+/// `"3/12"`（出现在字符串任意位置）-> `(3, Some(12))`。
 fn parse_slash_pair(value: &str) -> Option<(u64, Option<u64>)> {
     let (before, after) = value.split_once('/')?;
     let track = trailing_digits(before);
@@ -378,7 +377,7 @@ fn parse_slash_pair(value: &str) -> Option<(u64, Option<u64>)> {
 pub(crate) fn parse_track_number(value: &str) -> Option<ParsedTrackNumber> {
     let mut parsed = ParsedTrackNumber::default();
 
-    // check for vinyl style numbers: one letter side designator + optional number
+    // 检查黑胶式编号：一个字母的面标识 + 可选数字
     let mut chars = value.chars();
     if let Some(side) = chars.next()
         && side.is_ascii_alphabetic()
@@ -388,7 +387,7 @@ pub(crate) fn parse_track_number(value: &str) -> Option<ParsedTrackNumber> {
         parsed.is_vinyl = true;
         parsed.track = trailing_digits(value).parse().ok().unwrap_or(1);
         Some(parsed)
-    // check for MP3-style numbers
+    // 检查 MP3 式编号
     } else if let Some((track, track_max)) = parse_slash_pair(value) {
         parsed.track = track;
         parsed.track_max = track_max;
@@ -448,8 +447,8 @@ mod tests {
 
     #[test]
     fn filename_fallback_handles_multibyte_stems() {
-        // regression: byte-slicing the quality-marker check panicked on stems
-        // ending in a multi-byte char ("...耳机") and killed the playback thread
+        // 回归用例：质量标记检查曾用字节切片，在结尾为多字节字符的 stem
+        // （"...耳机"）上 panic，并打死播放线程
         let mut metadata = Metadata::default();
         metadata.fill_from_filename(Path::new("D:\\music\\木蜘蛛 - 我试着把孤独藏进耳机.mp3"));
         assert_eq!(metadata.name.as_deref(), Some("我试着把孤独藏进耳机"));
@@ -464,7 +463,7 @@ mod tests {
         metadata.fill_from_filename(Path::new("D:\\music\\遗失的心跳-白允y.mp3"));
         assert_eq!(metadata.name.as_deref(), Some("遗失的心跳-白允y"));
 
-        // real tags are never overwritten
+        // 真实标签绝不会被覆盖
         let mut metadata = Metadata {
             name: Some("Real Title".to_string()),
             ..Metadata::default()
@@ -475,8 +474,8 @@ mod tests {
 
     #[test]
     fn rg_gain_handles_multibyte_suffix() {
-        // regression: byte-slicing the "db" suffix check panicked on tag values
-        // ending in a multi-byte char instead of yielding None
+        // 回归用例："db" 后缀检查曾用字节切片，在结尾为多字节字符的标签值上
+        // 会 panic，而不是返回 None
         assert_eq!(parse_rg_gain_str(" -6.5 dB"), Some(-6.5));
         assert_eq!(parse_rg_gain_str("+3.1db"), Some(3.1));
         assert_eq!(parse_rg_gain_str("2.0 DB"), Some(2.0));
@@ -577,8 +576,8 @@ mod tests {
 
     #[test]
     fn parse_slash_pair_does_not_slice_inside_multibyte_chars() {
-        // The part before the slash ends in a multi-byte character; the old
-        // byte-offset slice panicked instead of returning None.
+        // 斜杠前的部分以一个多字节字符结尾；旧的字节偏移切片会 panic
+        // 而不是返回 None。
         assert_eq!(super::parse_track_number("一/12"), None);
         assert_eq!(super::parse_disc_number("Disc 一/12"), None);
         assert_eq!(super::parse_track_number("A一/12"), None);

@@ -27,29 +27,24 @@ pub fn log_dir() -> PathBuf {
     )
 }
 
-/// Moves the data and log directories left behind by the legacy
-/// `li-ming1/meliora` naming under the current `meliora` one.
-/// Rerunning is a no-op once the new directories exist, and the whole move is
-/// skipped when either source is missing. Returns one entry per failed tree
-/// move so `main` can log them once the logger is up (this runs before
-/// `logging::init`).
+/// 把旧 `li-ming1/meliora` 命名遗留的数据目录与日志目录迁到当前 `meliora`
+/// 名下。新目录已存在时重跑即空操作；任一源目录缺失则整段搬迁跳过。
+/// 每棵搬迁失败的目录树各返回一条记录，供 `main` 在 logger 起来后统一
+/// 打日志（本函数运行在 `logging::init` 之前）。
 pub fn migrate_legacy_li_ming1_dirs() -> Vec<std::io::Error> {
     migrate_legacy_dirs_from("li-ming1", "meliora")
 }
 
-/// Moves the data and log directories left behind by the legacy
-/// `mailliw/hummingbird` naming under the current `meliora` one.
-/// Rerunning is a no-op once the new directories exist, and the whole move is
-/// skipped when either source is missing. Returns one entry per failed tree
-/// move so `main` can log them once the logger is up (this runs before
-/// `logging::init`).
+/// 把旧 `mailliw/hummingbird` 命名遗留的数据目录与日志目录迁到当前
+/// `meliora` 名下。新目录已存在时重跑即空操作；任一源目录缺失则整段搬迁跳过。
+/// 每棵搬迁失败的目录树各返回一条记录，供 `main` 在 logger 起来后统一
+/// 打日志（本函数运行在 `logging::init` 之前）。
 pub fn migrate_legacy_dirs() -> Vec<std::io::Error> {
     migrate_legacy_dirs_from("mailliw", "hummingbird")
 }
 
-/// Shared body of the two legacy-directory migrations: moves `org/app`'s data
-/// and local-data directories under the current `meliora` ones. Both trees are
-/// always attempted; each failure is returned separately.
+/// 两个旧目录迁移共用的实现：把 `org/app` 的数据目录与本地数据目录搬到当前
+/// `meliora` 名下。两棵树都会尝试，各自的失败分别返回。
 fn migrate_legacy_dirs_from(org: &str, app: &str) -> Vec<std::io::Error> {
     let legacy = dirs_for(org, app);
     let mut failures = Vec::new();
@@ -74,12 +69,11 @@ fn migrate_tree(old: &Path, new: &Path) -> std::io::Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
     if std::fs::rename(old, new).is_err() {
-        // fall back to copy-then-remove for cross-volume moves
+        // 跨卷搬迁时回退到"先复制再删除"
         if let Err(err) = copy_recursive(old, new) {
-            // a mid-copy failure leaves a half-built `new` behind; remove it so
-            // the next start retries instead of skipping the move forever. Safe
-            // to delete wholesale: the `new.exists()` gate above guarantees
-            // nothing pre-existing here.
+            // 复制中途失败会留下半成品 `new`；删掉它，下次启动才会重试而非
+            // 永久跳过搬迁。整体删除是安全的：上面的 `new.exists()` 门槛保证
+            // 此处没有任何既有内容。
             let _ = std::fs::remove_dir_all(new);
             return Err(err);
         }
@@ -176,9 +170,9 @@ mod tests {
         let locked = old.join("nested").join("locked.bin");
         std::fs::write(&locked, b"locked").unwrap();
 
-        // holding the file open with no sharing flags denies the rename of
-        // `old` (open descendant) and the copy of the file itself, driving
-        // migrate_tree into a copy-then-remove attempt that fails midway
+        // 以无共享标志打开并持有该文件，既拒绝 `old` 的改名（其下有打开的子孙），
+        // 也拒绝该文件自身的复制，从而把 migrate_tree 逼进一次中途失败的
+        // "先复制再删除"尝试
         let lock = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
@@ -194,7 +188,7 @@ mod tests {
         );
         assert!(old.is_dir());
 
-        // with the lock released, the next start completes the move
+        // 锁释放后，下一次启动即可完成搬迁
         migrate_tree(&old, &new).unwrap();
         assert!(new.join("a.txt").exists());
         assert!(new.join("nested").join("locked.bin").exists());

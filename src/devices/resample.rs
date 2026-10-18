@@ -7,7 +7,7 @@ use tracing::{error, info};
 
 use crate::media::pipeline::{ChannelConsumers, DEFAULT_BUFFER_FRAMES};
 
-/// One LSB step of a 24-bit sample under symmetric scaling: 2^23.
+/// 对称缩放下 24-bit 样本的一个 LSB 步长：2^23。
 const I24_SCALE: f64 = 8_388_608.0;
 
 pub trait SampleInto<T> {
@@ -38,28 +38,28 @@ impl SampleInto<f64> for f64 {
     }
 }
 
-/// Convert a scaled `i32` to [`I24`], saturating instead of panicking when a sample lands outside
-/// the 24-bit range (e.g. gain > 1.0 or intersample overs).
+/// 把缩放后的 `i32` 转成 [`I24`]：样本落在 24-bit 范围外时饱和取值而非 panic
+/// （例如增益 > 1.0 或样本间过冲）。
 #[inline]
 pub(crate) fn i24_saturating(scaled: i32) -> I24 {
     let clamped = scaled.clamp(i32::from(I24::MIN), i32::from(I24::MAX));
     I24::try_from(clamped).unwrap_or(I24::MAX)
 }
 
-/// Convert a scaled `u32` to [`U24`], saturating into the 24-bit range.
+/// 把缩放后的 `u32` 转成 [`U24`]：饱和收进 24-bit 范围。
 #[inline]
 pub(crate) fn u24_saturating(scaled: u32) -> U24 {
     U24::try_from(scaled.min(u32::from(U24::MAX))).unwrap_or(U24::MAX)
 }
 
-/// Trait for converting from another sample type.
+/// 从另一种样本类型转换而来的 trait。
 pub trait SampleFrom<T> {
     fn sample_from(value: T) -> Self;
 }
 
 impl SampleFrom<f64> for U24 {
     fn sample_from(value: f64) -> Self {
-        // clamp in the signed domain, then recenter into [0, 2^24)
+        // 先在带符号域钳位，再重新居中到 [0, 2^24)
         let signed = i32::from(I24::sample_from(value));
         u24_saturating((signed + 0x80_0000) as u32)
     }
@@ -67,7 +67,7 @@ impl SampleFrom<f64> for U24 {
 
 impl SampleFrom<f64> for I24 {
     fn sample_from(value: f64) -> Self {
-        // the `as` cast saturates at the i32 bounds and maps NaN to 0
+        // `as` 转换会在 i32 边界饱和，并把 NaN 映射为 0
         i24_saturating((value * I24_SCALE).round() as i32)
     }
 }
@@ -84,10 +84,9 @@ impl SampleFrom<f64> for f64 {
     }
 }
 
-// Signed integers scale symmetrically by 2^(N-1): exact in both directions (a power of two
-// divide/multiply), digital silence lands on 0.0, and i::MIN maps to exactly -1.0. Float -> int
-// rounds to nearest; the `as` cast saturates out-of-range values and maps NaN to 0, so
-// conversion is total.
+// 带符号整数按 2^(N-1) 对称缩放：双向都精确（2 的幂做乘除），数字静音落在 0.0，
+// 且 i::MIN 正好映射到 -1.0。float -> int 取最近舍入；`as` 转换对越界值饱和、
+// 把 NaN 映射为 0，因此转换是全域的。
 macro_rules! impl_signed_sample_f64 {
     ($t:ty, $scale:expr) => {
         impl SampleInto<f64> for $t {
@@ -108,8 +107,8 @@ impl_signed_sample_f64!(i8, 128.0);
 impl_signed_sample_f64!(i16, 32_768.0);
 impl_signed_sample_f64!(i32, 2_147_483_648.0);
 
-// Unsigned integers recenter in the integer domain (a sign-bit flip, exact and free) and share
-// the signed scaling, so the midpoint (digital silence) maps to exactly 0.0.
+// 无符号整数在整数域里重新居中（翻转符号位，精确且零成本），并复用带符号的缩放，
+// 因此中位点（数字静音）恰好映射到 0.0。
 macro_rules! impl_unsigned_sample_f64 {
     ($t:ty, $signed:ty) => {
         impl SampleInto<f64> for $t {
@@ -139,26 +138,25 @@ pub struct Resampler {
     channels: usize,
     source_rate: u32,
     target_rate: u32,
-    /// Total frames fed into the resampler since the last reset.
+    /// 自上次 reset 以来喂入重采样器的总帧数。
     frames_in: u64,
-    /// Total frames emitted by the resampler since the last reset.
+    /// 自上次 reset 以来重采样器吐出的总帧数。
     frames_out: u64,
-    /// Set once [`Self::flush_into`] has drained the tail; the resampler must
-    /// be reset before it can process again.
+    /// [`Self::flush_into`] 排空尾部后置位；重采样器必须先 reset 才能继续处理。
     flushed: bool,
 }
 
 impl Resampler {
-    /// `Err` carries a displayable rubato failure (bad rate ratio/duration from
-    /// a malformed file); the caller treats it as a fatal decode step.
+    /// `Err` 携带可展示的 rubato 失败信息（畸形文件带来的坏速率比/时长）；
+    /// 调用方将其视为致命的解码步骤。
     pub fn new(
         orig_rate: u32,
         target_rate: u32,
         duration: u64,
         channels: u16,
     ) -> Result<Self, String> {
-        // The engine constructs a Resampler unconditionally and switches to
-        // passthrough when rates match, so only log an actual conversion.
+        // 引擎无条件构造 Resampler，速率相同时自行走直通，所以只在真的需要转换时
+        // 打日志。
         if orig_rate != target_rate {
             info!(
                 "Resampling required, resampling from {:?} to {:?} (duration {:?})",
@@ -181,8 +179,8 @@ impl Resampler {
         Ok(Resampler {
             resampler,
             duration,
-            // sized for the largest read a cycle can feed us plus one undrained chunk, so
-            // steady-state processing never grows them
+            // 容量按一个周期能喂进来的最大读取量再加一块未排空的分片来定，
+            // 因此稳态处理过程中永不扩容
             input_buffer: (0..channels_usize)
                 .map(|_| VecDeque::with_capacity(DEFAULT_BUFFER_FRAMES + duration as usize))
                 .collect(),
@@ -205,13 +203,13 @@ impl Resampler {
         self.channels
     }
 
-    /// The resampler's latency in output frames.
+    /// 重采样器的延迟，以输出帧计。
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn output_delay(&self) -> usize {
         self.resampler.output_delay()
     }
 
-    /// Largest number of frames a single process call can emit.
+    /// 单次 process 调用最多能吐出的帧数。
     pub fn output_frames_max(&self) -> usize {
         self.resampler.output_frames_max()
     }
@@ -220,15 +218,12 @@ impl Resampler {
         self.source_rate != self.target_rate
     }
 
-    /// Whether this resampler can serve a stream with these parameters
-    /// without being rebuilt.
+    /// 该重采样器能否不重建就服务这些参数的流。
     ///
-    /// `duration` (the decoder's chunk size) is deliberately not compared: it
-    /// varies per file even at identical rate/channels, and including it
-    /// caused a full rebuild (FFT plan + channel buffers) on nearly every
-    /// track change. Chunk-size differences are harmless: `process_into`
-    /// always feeds the chunk size this resampler was built with, and callers
-    /// size their handoff buffers dynamically.
+    /// `duration`（解码器的分块大小）刻意不参与比较：即使速率/声道完全相同，
+    /// 它也因文件而异，一旦纳入就会导致几乎每次切歌都整体重建
+    /// （FFT 计划 + 声道缓冲区）。分块大小不同是无害的：`process_into`
+    /// 始终按本重采样器构建时的分块大小喂料，调用方的交接缓冲区也是动态定尺。
     pub fn matches_params(&self, source_rate: u32, target_rate: u32, channels: usize) -> bool {
         self.source_rate == source_rate
             && self.target_rate == target_rate
@@ -274,7 +269,7 @@ impl Resampler {
 
         let duration = self.duration as usize;
         if self.input_available() < duration {
-            return 0; // not enough input yet
+            return 0; // 输入还不够一个分块
         }
 
         let mut total_output = 0;
@@ -291,9 +286,8 @@ impl Resampler {
         total_output
     }
 
-    /// Flush the contents of the resampler's input buffer into `output`. Used only when the
-    /// resampler is discarded (not during gapless playback), since it may add some silence to the
-    /// output.
+    /// 把重采样器输入缓冲区里的内容冲入 `output`。仅在重采样器即将被丢弃时使用
+    /// （无间隙播放过程中不要用），因为它可能往输出里掺进一些静音。
     pub fn flush_into(&mut self, output: &mut [Vec<f64>]) -> usize {
         if self.flushed || !self.needs_resampling() || self.frames_in == 0 {
             return 0;
@@ -305,11 +299,11 @@ impl Resampler {
             (self.frames_in as f64 * ratio).ceil() as u64 + self.resampler.output_delay() as u64;
 
         let mut written = 0;
-        // first call carries the buffered partial chunk, later ones pump zeros
+        // 第一次调用带上缓冲区里那截不完整分片，之后的调用灌零
         let mut partial = self.input_available();
 
-        // each pump normally emits ~duration*ratio frames, so this many cycles always
-        // suffices and only a resampler that stops making progress can exceed it
+        // 每次 pump 正常吐出约 duration*ratio 帧，所以这么多轮必然够；
+        // 只有停止产帧的重采样器才会超出该轮数
         let per_cycle = (self.duration as f64 * ratio).max(1.0) as u64;
         let max_cycles = expected_total.div_ceil(per_cycle) + 8;
         let mut cycles = 0;
@@ -332,8 +326,8 @@ impl Resampler {
                 break;
             };
 
-            // truncate the final chunk so the flush ends exactly where the
-            // input did instead of appending extra silence
+            // 截掉最后一块，让 flush 恰好在输入结束处收尾，
+            // 而不是多追加一段静音
             let keep = frames_written.min((expected_total - self.frames_out) as usize);
             self.append_frames(output, keep);
             self.frames_out += keep as u64;
@@ -344,10 +338,9 @@ impl Resampler {
         written
     }
 
-    /// Drain up to `max_frames` frames from the input buffers into `temp_input` and run one
-    /// resampler pass over them, returning the frames it produced. `indexing` carries the
-    /// flush-time partial-chunk length; steady-state processing passes `None`. Returns `None`
-    /// when the resampler errors — the caller owns logging and truncation policy.
+    /// 从输入缓冲区最多取 `max_frames` 帧搬进 `temp_input`，对其跑一遍重采样，
+    /// 返回产出的帧数。`indexing` 携带 flush 时的不完整分片长度；稳态处理传
+    /// `None`。重采样器出错时返回 `None`——日志与截断策略由调用方决定。
     fn pump_resampler(
         &mut self,
         max_frames: usize,
@@ -360,12 +353,10 @@ impl Resampler {
         }
 
         let input_frames = self.temp_input.first().map(|v| v.len()).unwrap_or(0);
-        // Same failure policy as process_into_buffer below: a malformed
-        // adapter (channel mismatch, ragged planes) skips the pass instead of
-        // panicking on the audio path. The equal-length, channel-complete
-        // invariant is maintained by the buffer construction above, so this
-        // is unreachable in practice — but the audio path must not rely on
-        // unwrap for it.
+        // 与下面的 process_into_buffer 同一套失败策略：adapter 畸形（声道数不符、
+        // 平面长短不一）时跳过这一遍，而不是在音频路径上 panic。等长且声道齐全的
+        // 不变量由上面的缓冲区构建保证，所以这条分支实际不可达——
+        // 但音频路径不能拿 unwrap 去依赖它。
         let input_adapter =
             SequentialSliceOfVecs::new(&self.temp_input, self.channels, input_frames).ok()?;
         let output_frames_max = self.temp_output.first().map(|v| v.len()).unwrap_or(0);
@@ -382,7 +373,7 @@ impl Resampler {
         Some(frames_written)
     }
 
-    /// Append the first `frames` samples of every staged channel to `output`.
+    /// 把每个中转声道的前 `frames` 个样本追加到 `output`。
     fn append_frames(&self, output: &mut [Vec<f64>], frames: usize) {
         for (out_buf, temp_ch) in output
             .iter_mut()
@@ -412,7 +403,7 @@ impl Resampler {
         read
     }
 
-    /// Read samples from f64 channel consumers into internal buffers
+    /// 从 f64 声道消费者把样本读进内部缓冲区
     fn read_into_buffers(
         input: &mut ChannelConsumers,
         buffers: &mut [VecDeque<f64>],
@@ -425,9 +416,8 @@ impl Resampler {
 
         let staging = input.staging();
         for (ch, channel) in staging.iter().enumerate() {
-            // Same guard as `passthrough_direct`: a decoder that suddenly
-            // reports more channels than the pipeline was built for must not
-            // abort the process (release is `panic = "abort"`).
+            // 与 `passthrough_direct` 同一道防线：解码器突然报出多于管线构建时的
+            // 声道数，绝不能让整个进程中止（release 是 `panic = "abort"`）。
             if let Some(buffer) = buffers.get_mut(ch) {
                 buffer.extend(&channel[..read]);
             }
@@ -441,8 +431,8 @@ mod tests {
     use super::*;
     use crate::media::pipeline::ChannelBuffers;
 
-    /// Push `frames` frames of constant `value` through the resampler in ring-buffer-sized pieces,
-    /// collecting output into `out`.
+    /// 按环形缓冲区大小分片，把 `frames` 帧恒为 `value` 的样本推过重采样器，
+    /// 输出收集到 `out`。
     fn feed_constant(resampler: &mut Resampler, frames: usize, value: f64, out: &mut [Vec<f64>]) {
         let (mut producers, mut consumers) = ChannelBuffers::new(2, 8192).split();
         let mut remaining = frames;
@@ -453,7 +443,7 @@ mod tests {
             resampler.process_into(&mut consumers, out, 8192);
             remaining -= piece;
         }
-        // pick up anything the last write left in the ring buffer
+        // 把最后一次写入留在环形缓冲里的部分也取出来
         resampler.process_into(&mut consumers, out, 8192);
     }
 
@@ -462,8 +452,7 @@ mod tests {
         let mut resampler = Resampler::new(44_100, 48_000, 1024, 2).unwrap();
         let mut out = vec![Vec::new(), Vec::new()];
 
-        // deliberately not a multiple of the chunk size, so a partial tail is buffered inside the
-        // resampler at "EOF"
+        // 刻意不取分块大小的整数倍，好让一截不完整尾巴在“EOF”时留在重采样器内部
         let frames = 10_000;
         feed_constant(&mut resampler, frames, 1.0, &mut out);
         let before_flush = out[0].len();
@@ -482,8 +471,7 @@ mod tests {
             );
         }
 
-        // steady-state content survives up to the tail (the last output_delay frames decay toward
-        // the zero padding)
+        // 稳态内容一直保真到尾巴之前（最后 output_delay 帧会向零填充衰减）
         let steady_end = expected - resampler.output_delay() - 16;
         assert!(
             (out[0][steady_end] - 1.0).abs() < 1e-3,
@@ -491,10 +479,10 @@ mod tests {
             out[0][steady_end]
         );
 
-        // flushing again is a no-op until reset
+        // 未 reset 前再次 flush 是空操作
         assert_eq!(resampler.flush_into(&mut out), 0);
 
-        // after reset the resampler processes normally again
+        // reset 之后重采样器恢复正常处理
         resampler.reset();
         let mut out2 = vec![Vec::new(), Vec::new()];
         feed_constant(&mut resampler, 4096, 0.5, &mut out2);

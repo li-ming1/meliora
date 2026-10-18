@@ -7,67 +7,59 @@ use super::{
     format::FormatInfo,
 };
 
-/// The DeviceProvider trait defines the methods used to interact with a device provider. A device
-/// provider is responsible for providing a list of devices available to the system, as well as
-/// opening and closing streams on those devices.
+/// DeviceProvider 定义与设备提供方交互所需的方法。设备提供方负责给出系统可用
+/// 设备列表，并在这些设备上开关流。
 pub trait DeviceProvider {
-    /// Requests the device provider prepare itself for use.
+    /// 要求设备提供方完成自身初始化。
     fn initialize(&mut self);
-    /// Returns the default device of the device provider.
+    /// 返回该设备提供方的默认设备。
     fn get_default_device(&mut self) -> Result<Box<dyn Device>, FindError>;
 }
 
 pub trait Device {
-    /// Requests the device open a stream with the given format.
+    /// 要求设备以给定格式打开一个流。
     fn open_device(&mut self, format: FormatInfo) -> Result<Box<dyn OutputStream>, OpenError>;
 
-    /// Returns the device's default format.
+    /// 返回设备的默认格式。
     fn get_default_format(&self) -> Result<FormatInfo, InfoError>;
-    /// Returns the name of the device.
+    /// 返回设备名称。
     fn get_name(&self) -> Result<String, InfoError>;
 }
 
 pub trait OutputStream {
-    /// Closes the stream and releases any resources associated with it.
+    /// 关闭流并释放与之关联的一切资源。
     fn close_stream(&mut self) -> Result<(), CloseError>;
-    /// Tells the device to start playing audio.
+    /// 让设备开始播放音频。
     fn play(&mut self) -> Result<(), StateError>;
-    /// Tells the device to stop playing audio. Note that some providers may not actually stop
-    /// playback at all - this function may be a no-op. Submitting frames after calling this
-    /// without calling play is undefined behavior, and may result in the thread blocking
-    /// indefinitely.
+    /// 让设备停止播放音频。部分提供方可能根本不会真的停下——本函数可以是空操作。
+    /// 调用本函数后未调 `play` 就继续提交帧属未定义行为，可能让线程无限阻塞。
     ///
-    /// When implementing this function, the device should never drop submitted audio data. If the
-    /// options are between dropping audio data and this function being a no-op, the function
-    /// should be a no-op.
+    /// 实现时设备绝不能丢弃已提交的音频数据：在「丢数据」与「本函数空操作」之间，
+    /// 必须选空操作。
     fn pause(&mut self) -> Result<(), StateError>;
-    /// Advances deferred stream work; called every iteration of the playback thread's main loop.
-    /// Lets `pause()` return immediately and finish its fade-out here later. Default: no-op.
+    /// 推进流的延后工作；播放线程主循环每轮都调用一次。让 `pause()` 得以立即返回，
+    /// 其淡出留到此处稍后完成。默认：空操作。
     fn poll(&mut self) -> Result<(), StateError> {
         Ok(())
     }
-    /// Whether deferred stream work is pending and `poll()` must run again soon (e.g. a pause
-    /// fade waiting for its deadline to stop the device). The playback thread keeps its short
-    /// idle cadence while this returns true and only parks on the command channel once it is
-    /// false. Default: none.
+    /// 是否有延后工作待办、因此 `poll()` 很快要再跑一次（例如等待到点才停设备的
+    /// pause 淡出）。返回 true 期间播放线程保持它的短空闲节奏，转为 false 才挂起在
+    /// 命令通道上。默认：无。
     fn has_deferred_work(&self) -> bool {
         false
     }
-    /// Tells the device to reset the buffer. This is useful for restarting playback after a pause,
-    /// in order to avoid playing stale data (e.g. if a user pauses before seeking or changing
-    /// tracks).
+    /// 让设备重置缓冲区。pause 之后重启播放时用它来避免播出陈旧数据（例如用户在
+    /// seek 或切歌前先按了暂停）。
     fn reset(&mut self) -> Result<(), ResetError>;
-    /// Tells the device to set the volume to the given value. The volume should be a value between
-    /// 0.0 and 1.0. Note that some device providers may not support hardware or OS-level volume
-    /// control, and will instead use this value to adjust the volume of the audio data before
-    /// submitting it to the device.
+    /// 让设备把音量设为给定值，取值应在 0.0 到 1.0 之间。部分设备提供方不支持硬件
+    /// 或系统级音量控制，改为在提交给设备之前用该值调整音频数据本身的音量。
     fn set_volume(&mut self, volume: f64) -> Result<(), StateError>;
 
-    /// Sets the ReplayGain multiplier. Applied on top of volume.
+    /// 设置 ReplayGain 乘数，叠加在音量之上。
     fn set_replaygain(&mut self, _gain: f64) -> Result<(), StateError> {
         Ok(())
     }
 
-    /// Consume samples from ring buffer consumers and submit them to the device.
+    /// 从环形缓冲消费者取出样本并提交给设备。
     fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError>;
 }

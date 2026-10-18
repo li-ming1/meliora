@@ -2,7 +2,7 @@ use gpui::{AppContext, Entity, Global};
 
 use crate::playback::thread::PlaybackState;
 
-// --- Windows: Win32 PowerRequest (DisplayRequired + SystemRequired) ---
+// --- Windows：Win32 PowerRequest（DisplayRequired + SystemRequired）---
 
 #[cfg(target_os = "windows")]
 use windows::{
@@ -44,8 +44,7 @@ impl PlatformPower {
                 Version: POWER_REQUEST_CONTEXT_VERSION,
                 Flags: POWER_REQUEST_CONTEXT_SIMPLE_STRING,
                 Reason: REASON_CONTEXT_0 {
-                    // very cool that this requires a mut pointer even though the string is never
-                    // mutated! i love windows
+                    // 真"妙"：字符串从不被修改，接口却硬要一个 mut 指针——Windows API 的风格。
                     SimpleReasonString: PWSTR(reason.as_ptr().cast_mut()),
                 },
             };
@@ -95,7 +94,7 @@ impl PlatformPower {
     }
 }
 
-// --- macOS: NSProcessInfo beginActivity/endActivity ---
+// --- macOS：NSProcessInfo beginActivity/endActivity ---
 
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
@@ -136,7 +135,7 @@ impl PlatformPower {
     }
 }
 
-// --- Linux: org.freedesktop.ScreenSaver via zbus ---
+// --- Linux：经 zbus 调用 org.freedesktop.ScreenSaver ---
 
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
@@ -239,7 +238,7 @@ impl PlatformPower {
     }
 }
 
-// --- Unsupported platforms: no-op stub ---
+// --- 不支持的平台：空实现桩 ---
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 struct PlatformPower;

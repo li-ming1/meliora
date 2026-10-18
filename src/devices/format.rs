@@ -14,22 +14,21 @@ pub enum SampleFormat {
     Unsigned8,
 }
 
-/// Specification of the channels used by a stream.
+/// 流所用声道的规格说明。
 ///
-/// `Count` is used when positional information is unavailable (e.g. for cpal devices
-/// that only report a channel count, or for decoders that don't expose a layout). The
-/// built-in channel mixer resolves `Count` to a canonical positional layout via
-/// [`ChannelLayout::from_count_canonical`].
+/// 拿不到位置信息时用 `Count`（例如只上报声道数的 cpal 设备，或不暴露
+/// 布局的解码器）。内置声道混合器会经 [`ChannelLayout::from_count_canonical`]
+/// 把 `Count` 解析成规范的位置布局。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChannelSpec {
-    /// A bare channel count with no positional information.
+    /// 只有裸声道数，无位置信息。
     Count(u16),
-    /// An explicit channel layout.
+    /// 显式声道布局。
     Layout(ChannelLayout),
 }
 
 impl ChannelSpec {
-    /// Total number of channels.
+    /// 声道总数。
     pub fn count(&self) -> u16 {
         match self {
             ChannelSpec::Count(count) => *count,
@@ -37,8 +36,7 @@ impl ChannelSpec {
         }
     }
 
-    /// Resolve the spec to a positional [`ChannelLayout`], falling back to the canonical
-    /// mapping for bare counts.
+    /// 解析成位置式 [`ChannelLayout`]；裸声道数回退到规范映射。
     pub fn to_layout(&self) -> ChannelLayout {
         match self {
             ChannelSpec::Count(count) => ChannelLayout::from_count_canonical(*count),
@@ -61,7 +59,7 @@ impl From<ChannelLayout> for ChannelSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferSize {
-    /// Inclusive range of supported buffer sizes.
+    /// 支持的缓冲区大小闭区间。
     Range(u32, u32),
     Fixed(u32),
     Unknown,

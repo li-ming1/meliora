@@ -42,7 +42,7 @@ fn item_value_to_bool(value: &ItemValue) -> Option<bool> {
 fn item_value_to_u64(value: &ItemValue) -> Option<u64> {
     match value {
         ItemValue::Text(v) => v.parse().ok(),
-        // try to parse as an unsigned integer, might not work but better than nothing
+        // 试着按无符号整数解析，可能解不出来，但总比没有强
         ItemValue::Binary(v) => match v.len() {
             0 => None,
             2 => Some(u16::from_ne_bytes(v[0..2].try_into().ok()?) as u64),
@@ -54,7 +54,7 @@ fn item_value_to_u64(value: &ItemValue) -> Option<u64> {
     }
 }
 
-/// The front cover if the tag has one, otherwise the first picture of any kind.
+/// 标签里有正面封面就取它，否则取第一张任意类型的图片。
 fn extract_cover(tag: &Tag) -> Option<Box<[u8]>> {
     let picture = tag
         .pictures()
@@ -121,20 +121,19 @@ struct TagsFromFile {
     duration: Option<u64>,
 }
 
-/// The ID3v2 version is needed because v2.3 tags packed several names into one value with `/`;
-/// the unified tag view drops it, so the version has to be recovered from the file. A tag at
-/// offset 0 (the common MPEG/AAC layout) is answered by sniffing the 10-byte header instead of
-/// re-parsing the whole file; everything else (ID3 chunk behind the RIFF/FORM magic of an
-/// AIFF/WAV, junk before the tag, an unsupported v2.2 header) falls back to the full lofty pass
-/// with properties disabled, so the returned value stays exactly what that parse would report.
+/// 需要 ID3v2 版本，是因为 v2.3 标签会把多个名字用 `/` 挤进一个值；
+/// 统一的标签视图会丢掉版本号，所以必须从文件里把它取回来。位于偏移 0 的
+/// 标签（MPEG/AAC 的常见布局）靠嗅探 10 字节头回答，而不是重解析整个文件；
+/// 其余情形（藏在 AIFF/WAV 的 RIFF/FORM 魔数之后的 ID3 chunk、标签前的垃圾
+/// 字节、不受支持的 v2.2 头）回退到关掉 properties 的完整 lofty 解析，
+/// 于是返回值与那次解析本会报告的完全一致。
 fn read_id3v2_version(file: &mut File, file_type: FileType) -> Option<Id3v2Version> {
     use lofty::aac::AacFile;
     use lofty::iff::{aiff::AiffFile, wav::WavFile};
     use lofty::mpeg::MpegFile;
 
-    // A container that does not start with its ID3 chunk can never hit the
-    // header sniff below, so it always takes the re-parse fallback; every other
-    // file type was never re-parsed at all and reports None directly.
+    // 不以自身 ID3 chunk 开头的容器永远走不到下面的头嗅探，所以一律走
+    // 重解析回退；其它文件类型本来就不做重解析，直接报 None。
     if matches!(file_type, FileType::Mpeg | FileType::Aac) {
         file.rewind().ok()?;
         let mut header = [0u8; 10];
@@ -148,8 +147,8 @@ fn read_id3v2_version(file: &mut File, file_type: FileType) -> Option<Id3v2Versi
         }
     }
 
-    // No (or an unsupported-version) ID3v2 header at the front; the tag may
-    // still live elsewhere in the container. Re-parse exactly as before.
+    // 开头没有 ID3v2 头（或版本不受支持）；标签仍可能住在容器的别处。
+    // 按原来的方式重新解析一次。
     file.rewind().ok()?;
     let options = ParseOptions::new().read_properties(false);
 
@@ -170,8 +169,8 @@ fn read_id3v2_version(file: &mut File, file_type: FileType) -> Option<Id3v2Versi
     }
 }
 
-/// Split a raw artist value into names: one item per value, except v2.3-era tags which packed
-/// several names into one value with `/`.
+/// 把原始的 artist 值拆成名字列表：每个值一项；只有 v2.3 时代的标签例外，
+/// 它们用 `/` 把多个名字挤进一个值。
 fn split_artist_names(value: &str, split_slash: bool) -> Vec<String> {
     let raw: Vec<&str> = if split_slash {
         value.split('/').collect()
@@ -185,9 +184,9 @@ fn split_artist_names(value: &str, split_slash: bool) -> Vec<String> {
         .collect()
 }
 
-/// Append a name to a joined list field, adding duplicates once. A value can itself join several
-/// names with the same separator (a multi-artist tag like "A, B" written by several tag systems),
-/// so each of its parts is deduplicated separately against the parts already present.
+/// 往一个拼接列表字段追加一个名字，重复的只加一次。一个值本身就可能用同一个
+/// 分隔符拼了好几个名字（多个标签系统都会写 "A, B" 这种多歌手标签），
+/// 所以它的每一部分都各自与已在场的部分去重。
 fn push_unique_name(field: &mut Option<String>, name: &str, separator: &str) {
     let parts: Vec<&str> = name
         .split(separator)
@@ -217,9 +216,8 @@ fn push_unique_name(field: &mut Option<String>, name: &str, separator: &str) {
     }
 }
 
-/// Artist names collected while applying tags. `tpe1` mirrors the display field, `artists_tag`
-/// holds the individual credits of the ARTISTS tag, `album_artists_tag` the individual credits
-/// of the ALBUMARTISTS tag.
+/// 应用标签期间收集到的歌手名。`tpe1` 与展示字段同步，`artists_tag` 存
+/// ARTISTS 标签的逐条署名，`album_artists_tag` 存 ALBUMARTISTS 标签的逐条署名。
 #[derive(Default)]
 struct ArtistNames {
     tpe1: Vec<String>,
@@ -244,27 +242,27 @@ fn apply_tag_items(
             continue;
         };
         match meta_tag {
-            // no `/` split - v2.3 files pack names unreliably and literal slashes are common
-            // (AC/DC)
+            // 不按 `/` 拆分——v2.3 文件的挤名不可靠，而字面斜杠很常见
+            // （AC/DC）
             MetadataTag::Artist(value) => {
                 push_unique_name(&mut metadata.artist, &value, ", ");
                 push_unique_vec(&mut artist_names.tpe1, value.trim());
             }
-            // display is ", "-joined; seeds the claim/keys list, TSO2 replaces the keys
-            // afterwards (see `finalize_album_artist_keys`)
+            // 展示值用 ", " 拼接；也是断言/keys 列表的种子，之后 TSO2 会替换 keys
+            // （见 `finalize_album_artist_keys`）
             MetadataTag::AlbumArtist(value) => {
                 for name in split_artist_names(&value, split_artists) {
                     push_unique_name(&mut metadata.album_artist, &name, ", ");
                     push_unique_vec(&mut metadata.album_artist_keys, &name);
                 }
             }
-            // the ALBUMARTISTS tag carries the individual album artist credits
+            // ALBUMARTISTS 标签承载逐条的专辑歌手署名
             MetadataTag::AlbumArtists(value) => {
                 for name in split_artist_names(&value, split_artists) {
                     push_unique_vec(&mut artist_names.album_artists_tag, &name);
                 }
             }
-            // the ARTISTS tag carries the individual credits
+            // ARTISTS 标签承载逐条署名
             MetadataTag::Artists(value) => {
                 for name in split_artist_names(&value, split_artists) {
                     push_unique_vec(&mut artist_names.artists_tag, &name);
@@ -281,8 +279,8 @@ fn apply_tag_items(
     }
 }
 
-/// The matching list prefers the ARTISTS credits; TPE1, often a single joined credit, is the
-/// fallback. Called once all tags have been applied.
+/// 匹配列表优先取 ARTISTS 的逐条署名；TPE1 常常是一整条拼接署名，作为兜底。
+/// 所有标签都应用完之后调用一次。
 fn finalize_track_artists(metadata: &mut Metadata, tpe1: Vec<String>, artists_tag: Vec<String>) {
     let names = if artists_tag.is_empty() {
         tpe1
@@ -292,13 +290,13 @@ fn finalize_track_artists(metadata: &mut Metadata, tpe1: Vec<String>, artists_ta
     metadata.artists = names.into_iter().collect();
 }
 
-/// The claim/keys list is the individual ALBUMARTISTS credits when present, TSO2 split on "&"
-/// when every part claims a credited track artist, else the raw TPE2 values collected by
-/// `apply_tag_items`. Called once all tags have been applied.
+/// 断言/keys 列表：有逐条 ALBUMARTISTS 署名时用它；否则当 TSO2 的每一部分
+/// 都声称是某位已署名的曲目歌手时按 "&" 切分 TSO2；再否则用
+/// `apply_tag_items` 收集到的原始 TPE2 值。所有标签应用完之后调用一次。
 fn finalize_album_artist_keys(metadata: &mut Metadata, album_artists: &[String]) {
     if !album_artists.is_empty() {
         metadata.album_artist_keys = album_artists.iter().cloned().collect();
-        // the individual credits also stand in for a missing joined display value
+        // 逐条署名同时也顶替缺失的拼接展示值
         if metadata
             .album_artist
             .as_deref()
@@ -317,11 +315,10 @@ fn finalize_album_artist_keys(metadata: &mut Metadata, album_artists: &[String])
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .collect();
-        // a multi-part sort is only trusted when each part claims a track artist, a single
-        // artist's sort name can itself contain "&" (Simon & Garfunkel); a single-part sort is
-        // trusted only when no individual credits exist to contradict it.
-        // the key list is only built for the multi-part path — the common
-        // single-part album keeps its zero-allocation fast path
+        // 多段排序名只有在每一段都声称是某位曲目歌手时才可信；单个歌手的排序名
+        // 自身就可能含 "&"（Simon & Garfunkel）；单段排序名只在没有逐条署名
+        // 可以反驳它时才可信。
+        // keys 列表只为多段路径构建——常见的单段专辑保住它的零分配快路径
         let multi_part_all_claimed = parts.len() > 1 && {
             let artist_keys: Vec<String> = metadata
                 .artists
@@ -335,7 +332,7 @@ fn finalize_album_artist_keys(metadata: &mut Metadata, album_artists: &[String])
             parts.iter().all(|part| claimed(part))
         };
         let single_part_without_credits = parts.len() == 1 && album_artists.is_empty();
-        // both rules imply `parts` is non-empty, so no extra emptiness check is needed
+        // 两条规则都蕴含 `parts` 非空，所以无需再额外判空
         let trusted = multi_part_all_claimed || single_part_without_credits;
         if trusted {
             metadata.album_artist_keys = parts.into_iter().map(str::to_string).collect();
@@ -379,7 +376,7 @@ fn read_tags_from_file(mut file: File) -> Result<TagsFromFile, OpenError> {
             continue;
         }
 
-        // see comment in `read_id3v2_version`
+        // 缘由见 `read_id3v2_version` 里的注释
         let split_artists =
             tag.tag_type() == TagType::Id3v2 && id3v2_version == Some(Id3v2Version::V3);
         apply_tag_items(tag, split_artists, &mut metadata, &mut artist_names);
@@ -512,8 +509,8 @@ mod tests {
     use super::*;
     use crate::test_support::TestDir;
 
-    /// Writes the synthesized fixture into a scratch directory and opens it
-    /// through the provider, exactly like a real file would be read.
+    /// 把合成出来的测试素材写进临时目录，再经 provider 打开它，
+    /// 与读取真实文件的路径完全一致。
     fn read_fixture(dir: &TestDir, name: &str) -> (Metadata, bool) {
         let path = dir.join(name);
         std::fs::write(&path, crate::test_support::audio_fixtures::fixture(name)).unwrap();
@@ -556,8 +553,8 @@ mod tests {
         "fixture.opus",
     ];
 
-    // The WAV and AIFF fixtures are ID3-tagged and expose their rich fields/date, but Lofty does
-    // not normalize their USLT frame as Lyrics. Keep lyrics assertions to formats that expose it.
+    // WAV 与 AIFF 素材带 ID3 标签，也暴露富字段与日期，但 Lofty 不会把它们的
+    // USLT 帧归一化成 Lyrics。歌词断言只保留会暴露它的格式。
     const LYRICS_FIXTURES: &[&str] =
         &["fixture.flac", "fixture.ogg", "fixture.m4a", "fixture.opus"];
 
@@ -643,7 +640,7 @@ mod tests {
             apply_tag_items(tag, false, &mut metadata, &mut artist_names);
         }
 
-        // ID3v2 wins on shared fields, the INFO-only date still lands
+        // 共有字段上 ID3v2 胜出，只存在于 INFO 里的日期也照样落地
         assert_eq!(metadata.name.as_deref(), Some("Avril 14th (ID3)"));
         let expected_date = Utc.with_ymd_and_hms(2001, 10, 22, 0, 0, 0).unwrap();
         assert_eq!(metadata.date, Some(expected_date));
@@ -709,7 +706,7 @@ mod tests {
     #[test]
     fn sniffs_id3v2_version_from_synthetic_header_bytes() {
         let dir = TestDir::new("lofty-id3v2-version-test");
-        // minimal 10-byte ID3v2 header: "ID3" + major + minor + flags + size
+        // 最简 10 字节 ID3v2 头："ID3" + major + minor + flags + size
         let header = |major: u8| [b'I', b'D', b'3', major, 0, 0, 0, 0, 0, 0];
 
         let version_of = |name: &str, bytes: &[u8], file_type: FileType| {
@@ -719,7 +716,7 @@ mod tests {
             read_id3v2_version(&mut file, file_type)
         };
 
-        // a front-loaded tag header is answered from the 10 header bytes alone
+        // 前置的标签头只靠这 10 个头部字节就能回答
         assert_eq!(
             version_of("v23.bin", &header(3), FileType::Mpeg),
             Some(Id3v2Version::V3)
@@ -733,24 +730,24 @@ mod tests {
             Some(Id3v2Version::V3)
         );
 
-        // other containers were never re-parsed; they still report None
+        // 其它容器本来就不做重解析；它们依旧报 None
         assert_eq!(
             version_of("flac-with-header.bin", &header(3), FileType::Flac),
             None
         );
-        // AIFF/WAV carry their ID3 chunk behind RIFF/FORM magic, so a front
-        // header falls through to the re-parse, which rejects the bare header
+        // AIFF/WAV 的 ID3 chunk 藏在 RIFF/FORM 魔数之后，所以一个位于开头的
+        // 头会落到重解析路径，而重解析不认这个光秃秃的头
         assert_eq!(
             version_of("wav-with-header.bin", &header(3), FileType::Wav),
             None
         );
 
-        // no ID3v2 header: the lofty fallback runs and finds no tag
+        // 没有 ID3v2 头：跑 lofty 回退，它也没找到标签
         assert_eq!(
             version_of("no-header.bin", b"just some bytes", FileType::Mpeg),
             None
         );
-        // a truncated header has no version byte and falls back as well
+        // 被截断的头没有版本字节，同样走回退
         assert_eq!(version_of("truncated.bin", b"ID3", FileType::Mpeg), None);
     }
 
@@ -833,8 +830,8 @@ mod tests {
 
     #[test]
     fn duplicate_joined_album_artist_values_feed_display_and_keys_once() {
-        // beets makes files tagged with ALBUM ARTIST and ALBUMARTIST, which shows up twice so
-        // we need to make sure we are ignoring that
+        // beets 产出的文件会同时带 ALBUM ARTIST 与 ALBUMARTIST，于是同一人出现两次，
+        // 我们得确认自己把这种重复忽略掉了
         let tag = tag_with_items(
             TagType::VorbisComments,
             ItemKey::AlbumArtist,
@@ -853,7 +850,7 @@ mod tests {
 
     #[test]
     fn joined_album_artist_value_dedupes_against_individual_names() {
-        // the joined value and the separately-listed names describe the same artists
+        // 拼接值与逐条列出的名字描述的是同一批歌手
         let tag = tag_with_items(
             TagType::VorbisComments,
             ItemKey::AlbumArtist,
@@ -868,8 +865,8 @@ mod tests {
 
     #[test]
     fn album_artists_individual_credits_feed_claim_keys() {
-        // the joined ALBUM ARTIST value feeds the display, the individual ALBUMARTISTS credits
-        // are the claim parts, even when a joined sort tag is present
+        // 拼接的 ALBUM ARTIST 值喂给展示字段，逐条的 ALBUMARTISTS 署名是断言部分，
+        // 即便存在拼接的排序标签也是如此
         let mut tag = tag_with_items(
             TagType::VorbisComments,
             ItemKey::AlbumArtist,
@@ -898,7 +895,7 @@ mod tests {
 
     #[test]
     fn album_artists_credits_alone_feed_display_and_keys() {
-        // without a joined ALBUM ARTIST value the individual credits stand in for both
+        // 没有拼接的 ALBUM ARTIST 值时，逐条署名同时顶替两者
         let mut tag = Tag::new(TagType::VorbisComments);
         for value in ["Halozy", "556ミリメートル"] {
             assert!(tag.push(TagItem::new(
@@ -919,7 +916,7 @@ mod tests {
 
     #[test]
     fn fully_claimed_sort_replaces_individual_album_artist_credits() {
-        // an "&"-joined sort whose parts all claim a credited artist stays the best claim list
+        // 用 "&" 拼接、且每一部分都声称是某位已署名歌手的排序名，仍是最优断言列表
         let mut tag = tag_with_items(
             TagType::VorbisComments,
             ItemKey::AlbumArtist,
@@ -964,7 +961,7 @@ mod tests {
 
     #[test]
     fn repeated_album_artist_item_with_existing_part_is_skipped() {
-        // a value already covered by an earlier part must not extend the display
+        // 已被前面某部分覆盖的值不得再扩展展示字段
         let mut metadata = Metadata::default();
         let mut artist_names = ArtistNames::default();
         let mut tag = Tag::new(TagType::VorbisComments);
@@ -991,7 +988,7 @@ mod tests {
 
     #[test]
     fn keeps_literal_slash_in_track_artist_for_id3v23() {
-        // TPE1 is never split, v2.3 slash packing is too unreliable to undo (AC/DC)
+        // TPE1 从不拆分，v2.3 的斜杠挤名太不可靠，无法反推（AC/DC）
         let tag = tag_with_items(TagType::Id3v2, ItemKey::TrackArtist, &["Artist A/Artist B"]);
         let metadata = applied_metadata(&tag, true);
         assert_eq!(metadata.artist.as_deref(), Some("Artist A/Artist B"));
@@ -1008,7 +1005,7 @@ mod tests {
 
     #[test]
     fn artists_tag_wins_matching_over_tpe1() {
-        // Picard writes TPE1 as a joined credit and ARTISTS as the individual names
+        // Picard 把 TPE1 写成一条拼接署名，把 ARTISTS 写成逐条名字
         let mut tag = tag_with_items(
             TagType::Id3v2,
             ItemKey::TrackArtist,
@@ -1052,7 +1049,7 @@ mod tests {
 
     #[test]
     fn ampersand_in_single_artist_sort_keeps_tpe2_keys() {
-        // Simon & Garfunkel's sort name contains a literal "&", it must not split into claims
+        // Simon & Garfunkel 的排序名里含一个字面的 "&"，它不得被拆成断言
         let tag = tag_with_items(TagType::Id3v2, ItemKey::AlbumArtist, &["Simon & Garfunkel"]);
         let mut metadata = applied_metadata(&tag, false);
         metadata.artists = names(&["Simon & Garfunkel"]);
@@ -1063,7 +1060,7 @@ mod tests {
 
     #[test]
     fn multi_value_album_artist_sort_accumulates() {
-        // v2.4 null-separated TSO2 arrives as repeated items, all of them form the claim parts
+        // v2.4 用 null 分隔的 TSO2 会以重复条目到达，它们全部构成断言部分
         let mut tag = tag_with_items(
             TagType::Id3v2,
             ItemKey::TrackArtist,

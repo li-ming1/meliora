@@ -6,10 +6,9 @@ pub mod types;
 use gpui::Global;
 use sqlx::SqlitePool;
 
-/// Global handle to the library's SQLite pool. Lives in `library` (not
-/// `ui::app`, where it used to live) so playback/stats/library code can
-/// reach the pool without depending on the UI layer; `ui::app` re-exports
-/// it for the existing `ui::app::Pool` references.
+/// 库 SQLite 连接池的全局句柄。放在 `library`（而非它原先所在的
+/// `ui::app`），让 playback/stats/library 代码不依赖 UI 层也能拿到池；
+/// `ui::app` 再导出它，以保留现有 `ui::app::Pool` 引用。
 pub struct Pool(pub SqlitePool);
 
 impl Global for Pool {}

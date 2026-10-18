@@ -1,11 +1,9 @@
-//! Shared IO layer for the online-source track downloads (KuGou).
+//! 在线音源（酷狗）曲目下载共用的 IO 层。
 //!
-//! F046 fixed the download paths independently and left byte-identical
-//! copies of this machinery in `ui::kugou::download`; this module is the
-//! single copy it calls now, so
-//! the behavior can no longer drift. What is genuinely provider-specific
-//! stays in the caller: URL quality ladders, lyrics sidecar formats, and
-//! KuGou's UA header (passed through `extra_headers`).
+//! F046 各自独立实现了下载路径，在 `ui::kugou::download` 留下逐字节相同的
+//! 副本；本模块是它现在唯一调用的那份，因此
+//! 行为不会再漂移。真正 provider 专属的部分留在调用方：URL 质量梯队、
+//! 歌词 sidecar 格式，以及酷狗的 UA 头（经 `extra_headers` 传入）。
 
 use std::{path::Path, time::Duration};
 
@@ -26,9 +24,8 @@ const WINDOWS_RESERVED_DEVICES: [&str; 22] = [
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// Strips characters that are illegal in Windows file names, and prefixes an
-/// underscore to reserved device-name stems (CON, COM1-9, ...), which Win32
-/// resolves to a device even when a file extension follows.
+/// 剥掉 Windows 文件名中的非法字符，并给保留设备名的 stem（CON、COM1-9 …）
+/// 加下划线前缀——即使后面跟着扩展名，Win32 仍会把它们解析成设备。
 pub fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
@@ -52,19 +49,17 @@ pub fn sanitize_filename(raw: &str) -> String {
     }
 }
 
-/// Upper bound on waiting for any single network event (response headers,
-/// one body chunk). 请求级不设总死线：整曲 FLAC 几十至上百 MB，慢速链路下
+/// 等待任意单个网络事件（响应头、一个 body 块）的上限。
+/// 请求级不设总死线：整曲 FLAC 几十至上百 MB，慢速链路下
 /// 固定总超时必然误杀正常下载，改为按单次网络事件限时、停滞即报错。
 pub const STREAM_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Streams `url` straight into `dest` through a fixed ~64KB write buffer:
-/// the whole track is never held in memory. Returns the accumulated byte
-/// count. Any failure — including fewer than 1KB downloaded — removes the
-/// partial file first, so an `Err` never leaves debris on disk.
+/// 经固定 ~64KB 写缓冲把 `url` 直接灌入 `dest`：全程不把整曲留在内存里。
+/// 返回累计字节数。任何失败——包括下载不足 1KB——都会先删掉半成品文件，
+/// 所以 `Err` 绝不会在磁盘上留下残骸。
 ///
-/// `extra_headers` carries provider-specific headers on top of the shared
-/// client's defaults (KuGou's CDN 403s the default reqwest UA and must pass
-/// its Android UA here).
+/// `extra_headers` 在共用 client 的默认头之上追加 provider 专属头
+/// （酷狗 CDN 对 reqwest 默认 UA 返 403，必须在这里传它的 Android UA）。
 ///
 /// 走 `chunk()` 而非 `bytes_stream()`：后者被 reqwest 的 `stream` feature
 /// 门控（本仓未启用），`chunk()` 无 feature 门，同为逐块拉取。
@@ -127,9 +122,8 @@ pub async fn http_download_to_file(
     Ok(total)
 }
 
-/// Writes title/artist/album, lyrics and the cover into the downloaded file.
-/// Callers destructure the fields out of their own track type (this module is
-/// agnostic of the provider structs).
+/// 把 标题/歌手/专辑、歌词与封面写入已下载的文件。
+/// 调用方自行从各自的曲目类型里拆出字段（本模块不认识 provider 的结构体）。
 pub fn embed_tags(
     path: &Path,
     title: &str,
@@ -159,7 +153,7 @@ pub fn embed_tags(
         ));
     }
     if let Some(bytes) = cover {
-        // JPEG magic bytes; anything else is assumed to be PNG.
+        // JPEG 魔数；其余一律按 PNG 处理。
         let mime = if bytes.len() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
             MimeType::Jpeg
         } else {

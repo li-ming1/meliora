@@ -6,7 +6,7 @@ use crate::media::traits::{MediaProvider, MediaProviderFeatures, MediaStream};
 
 static PROVIDERS: OnceLock<Vec<Box<dyn MediaProvider>>> = OnceLock::new();
 
-/// Registers the media providers. Called once at startup before any reads.
+/// 注册媒体 provider。启动时调用一次，早于任何读取。
 pub fn register_providers(providers: Vec<Box<dyn MediaProvider>>) {
     info!("Registering {} media provider(s)", providers.len());
     if PROVIDERS.set(providers).is_err() {
@@ -24,8 +24,8 @@ fn provider_can_read(
     required_features: MediaProviderFeatures,
     provider: &Box<dyn MediaProvider>,
 ) -> anyhow::Result<bool> {
-    // mime-types are more reliable but windows is too slow to use them
-    // so now we only use extensions
+    // mime-type 更可靠，但 Windows 上取 mime-type 太慢，
+    // 所以现在只看扩展名
     if let Some(ext) = path.extension().and_then(|v| v.to_str())
         && provider
             .supported_extensions()

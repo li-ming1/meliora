@@ -1,13 +1,12 @@
-//! HTTP(S) media source for remote audio URLs (e.g. Kugou direct links).
+//! 远程音频 URL 的 HTTP(S) 媒体源（例如酷狗直链）。
 //!
-//! Implements symphonia's [`MediaSource`] (Read + Seek) on top of HTTP range
-//! requests, so remote tracks can be decoded without downloading the whole
-//! file first. Sequential playback opens a single open-ended `Range` request
-//! and streams it chunk by chunk; seeks drop the body and re-request from the
-//! target offset on the next read.
+//! 在 HTTP range 请求之上实现 symphonia 的 [`MediaSource`]（Read + Seek），
+//! 于是远程曲目无需先整曲下载即可解码。顺序播放只开一次不设尾的 `Range`
+//! 请求并逐块流式读取；跳转定位则丢弃响应体，在下一次读取时从目标偏移
+//! 重新请求。
 //!
-//! The URL is carried in the existing `QueueItemData` path field as an opaque
-//! string, so queue/session serialization needs no changes.
+//! URL 以不透明字符串承载在现有 `QueueItemData` 的 path 字段里，
+//! 因此队列/会话的序列化无需改动。
 
 use std::{
     collections::{
@@ -36,59 +35,50 @@ use zed_reqwest::{
 use crate::media::{symphonia::SymphoniaProvider, traits::MediaStream};
 use crate::sync::RecoveredMutex;
 
-/// Shared client for media streaming. Connection pooling keeps sequential
-/// reads cheap; no overall request timeout is set because an open-ended range
-/// response stays open for the entire track.
+/// 媒体流式传输共用的 client。连接池让顺序读取保持廉价；
+/// 不设整体请求超时，因为一次开放尾的 range 响应要贯穿整首曲子保持打开。
 static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
     zed_reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        // Streaming hops hosts once per track; without explicit caps the pool
-        // defaults to 90 s idle keep-alive with unlimited idle connections
-        // per host (each pinning hyper's read buffer).
+        // 流式传输每首歌换一次主机；不显式设上限时，连接池默认 90 秒空闲
+        // keep-alive 且每台主机不限空闲连接数（每条都钉住 hyper 的读缓冲）。
         .pool_max_idle_per_host(1)
         .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|error| {
-            // Match the other HTTP clients: a backend that refuses the tuned
-            // builder should degrade to defaults instead of aborting playback.
+            // 与其他 HTTP client 保持一致：后端拒绝这套调优参数时，
+            // 应降级为默认配置，而不是中断播放。
             tracing::warn!(%error, "media: falling back to the default HTTP client");
             zed_reqwest::Client::new()
         })
 });
 
-// Upper bound on waiting for any single network event while feeding the
-// decoder (response headers, one body chunk). The constant now lives in
-// `media::download` next to `http_download_to_file` — same per-event bound,
-// one shared definition. The client deliberately has no total request
-// timeout — a range body stays open for the whole track — but the reads
-// below run on the playback thread: without this bound a server that stalls
-// mid-body blocks the playback main loop forever, commands stop being
-// consumed, the no-progress skip never fires and playback sits silent on a
-// "playing" UI. Surfacing it as an IO error lets the engine skip the track
-// like any other decode failure.
+// 喂解码器期间等待任意单个网络事件（响应头、一个 body 块）的上限。
+// 这个常量现在住在 `media::download` 里、紧挨 `http_download_to_file`——
+// 同为按事件限时，只留一份定义。client 刻意不带总请求超时——range 响应体
+// 要贯穿整曲打开——但下面的读取跑在播放线程上：没有这个上限，一个在
+// body 中途卡停的服务端会永久阻塞播放主循环，命令不再被消费，
+// 无进展跳曲也永不触发，于是 UI 显示"播放中"却一片静音。
+// 把它以 IO 错误浮出，引擎就能像对待任何其他解码失败一样跳过这首。
 use super::download::STREAM_IO_TIMEOUT;
 
-/// Tighter per-event bound for the background fill thread: every fill-path
-/// network event (`start_body` request, one body chunk) runs there, so a
-/// stalled event costs a reconnect (zero-delta seek → fresh ranged request)
-/// instead of burning a third of the consumer's stall budget on one blocked
-/// read. A healthy CDN delivers each event in well under a second; the
-/// consumer's 30 s stall budget tolerates ~4 reconnect cycles. `connect`
-/// (inline open on the playback/prepare thread) keeps the wider
-/// [`STREAM_IO_TIMEOUT`].
+/// 后台填充线程专用的更紧的按事件上限：填充路径上的每个网络事件
+/// （`start_body` 请求、一个 body 块）都跑在那里，所以一次事件卡停只换来
+/// 一次重连（零位移 seek → 全新的 ranged 请求），而不是在一次阻塞读取上
+/// 烧掉 consumer 卡停预算的三分之一。健康的 CDN 每个事件远在 1 秒内送达；
+/// consumer 的 30 秒卡停预算容忍约 4 轮重连。`connect`（在播放/准备线程上
+/// 内联打开）保持较宽的 [`STREAM_IO_TIMEOUT`]。
 const FILL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Mid-stream URL refresh hook, called once when a re-request is rejected
-/// with an HTTP 4xx (a signed URL that was valid at open time expired while
-/// the track played). Returns the fresh URL, or `None` when the provider can
-/// no longer produce one. Built by the playback layer (provider identity and
-/// quality settings live there) and installed on the source at open time;
-/// runs on the fill thread, where blocking on the provider call is bounded
-/// by the hook itself.
+/// 流中途的 URL 刷新钩子：当一次重新请求被 HTTP 4xx 拒绝时调用一次
+/// （开流时还有效的签名 URL 在播放途中过期了）。返回新 URL；
+/// provider 已无法给出时返回 `None`。由播放层构造（provider 身份与质量
+/// 设置在那一侧），并在打开时安装到源上；跑在填充线程上，
+/// 对该 provider 调用的阻塞由钩子自身限时。
 pub type MediaUrlRefresh = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
-/// Per-request cap for one-shot cover downloads (`http_cover_bytes`).
+/// 单次封面下载（`http_cover_bytes`）的请求级上限。
 const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// `http_cover_bytes` 收集响应体的硬上限。正常封面（4096px 档）只有几
@@ -97,18 +87,17 @@ const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// 盘路径的容量检查发生在收集之后，拦不住内存峰值。
 const COVER_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Downloads the bytes of a small remote resource (e.g. a KuGou album-cover
-/// image). On any non-success status or empty body returns `None`; the caller
-/// treats that as "no artwork". Uses a fresh request with a short timeout so
-/// cover fetches never block on the long-lived streaming client above.
+/// 下载一个小远程资源的字节（例如酷狗专辑封面图）。
+/// 任何非成功状态或空响应体都返回 `None`；调用方把它当作"无封面"。
+/// 用一次全新请求配较短超时，使封面抓取绝不会被上面那个长连接的流式
+/// client 拖住。
 ///
 /// 返回聚合缓冲本体（`bytes::Bytes`，clone 即引用计数），调用方按需取用，
 /// 不再整体复制。
 pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<bytes::Bytes>> {
-    // Reuse the shared pooled client (TLS config + connection pool) with a
-    // per-request timeout. A fresh Client per cover built a new rustls
-    // config and pool per track and left idle-connection teardown work on
-    // the runtime after every fetch.
+    // 复用带连接池的共用 client（rustls 配置 + 连接池），配 per-request
+    // timeout。每张封面新建一个 Client 会为每首歌重建一套 rustls 配置和
+    // 连接池，并在每次抓取后把空闲连接的拆除工作留给 runtime。
     let request = HTTP_CLIENT.get(url).timeout(COVER_FETCH_TIMEOUT);
 
     let mut response = match request.send().await {
@@ -239,10 +228,9 @@ fn record_cache_write() {
     });
 }
 
-/// Fire-and-forget full prune on startup (cheap when the cache is small).
-/// The periodic sweep only runs after cache writes, so a long gap without
-/// cover fetches would otherwise leave stale entries until the 256MB cap is
-/// hit; one sweep at boot keeps them bounded by the 30-day age window.
+/// 启动时 fire-and-forget 做一次全量清扫（缓存很小时很便宜）。
+/// 周期性清扫只在缓存写入之后触发，所以长时间没有封面抓取会让陈旧条目
+/// 一直留到撞上 256MB 上限；开机扫一次就把它们限制在 30 天的寿命窗口内。
 pub fn prune_image_cache_background() {
     crate::RUNTIME.spawn(async {
         // 启动分级：全量清扫要 read_dir + metadata 数千个缓存文件，t=0 跑会
@@ -271,8 +259,8 @@ fn prune_image_cache() {
         if meta.is_dir() {
             continue;
         }
-        // interrupted `write_cached_cover` rename can leave `.tmp` behind;
-        // they have no hash naming and are never read back, so drop them
+        // `write_cached_cover` 的 rename 被打断会留下 `.tmp`；它们没有散列命名、
+        // 也永远不会被读回，所以直接删掉
         if path.extension() == Some(OsStr::new("tmp")) {
             let _ = std::fs::remove_file(&path);
             continue;
@@ -401,9 +389,8 @@ pub async fn http_cover_bytes_cached(url: &str) -> anyhow::Result<Option<bytes::
     Ok(bytes)
 }
 
-/// Opens the HTTP(S) URL stored in `path` and probes it with the Symphonia
-/// decoder provider. `refresh` arms the source with a mid-stream URL refresh
-/// hook (expired signed URL self-heal).
+/// 打开 `path` 里存放的 HTTP(S) URL，并用 Symphonia 解码 provider 探测它。
+/// `refresh` 为源装上流中途 URL 刷新钩子（过期签名 URL 的自愈）。
 pub fn open_http_media(
     path: &Path,
     refresh: Option<MediaUrlRefresh>,
@@ -418,8 +405,8 @@ pub fn open_http_media(
     let source = HttpRangeSource::connect(url, refresh)
         .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
 
-    // Background fill + reconnect so network jitter never parks the
-    // playback main loop on a synchronous read (see prefetch.rs).
+    // 后台填充 + 重连，让网络抖动绝不会把播放主循环按在一次同步读取上
+    // （见 prefetch.rs）。
     let source = crate::media::prefetch::PrefetchSource::new(source);
 
     SymphoniaProvider
@@ -427,13 +414,11 @@ pub fn open_http_media(
         .map_err(|e| anyhow::anyhow!("failed to probe remote media: {e}"))
 }
 
-/// Upper bound for a "short" extension in [`url_extension`]; longer names are
-/// left to content probing.
+/// [`url_extension`] 认可为"短"扩展名的长度上限；更长的名字交给内容探测。
 const MAX_URL_EXTENSION_LEN: usize = 8;
 
-/// Extracts a probable file extension from the URL path component. Returns
-/// `None` for anything that does not look like a short alphanumeric extension,
-/// letting symphonia probe the format from the content instead.
+/// 从 URL 的 path 分量里取出可能的文件扩展名。凡不像短小字母数字扩展名的
+/// 一律返回 `None`，让 symphonia 改从内容探测格式。
 fn url_extension(url: &Url) -> Option<String> {
     let file_name = url.path().rsplit('/').next()?;
     let (_, ext) = file_name.rsplit_once('.')?;
@@ -446,43 +431,42 @@ fn url_extension(url: &Url) -> Option<String> {
     Some(ext.to_ascii_lowercase())
 }
 
-/// Parses the total length out of a `Content-Range: bytes 0-123/456` header.
+/// 从 `Content-Range: bytes 0-123/456` 头里解析出总长度。
 fn content_range_total(value: &str) -> Option<u64> {
     value.rsplit('/').next()?.trim().parse().ok()
 }
 
-/// A seekable byte stream over a remote HTTP(S) resource backed by range
-/// requests.
+/// 由 range 请求支撑的、可在远程 HTTP(S) 资源上 seek 的字节流。
 ///
-/// The response body is wrapped in a mutex: symphonia requires the media
-/// source to be `Sync` even though only the playback thread ever touches it.
+/// 响应体被包在互斥锁里：symphonia 要求媒体源是 `Sync`，
+/// 尽管实际只有播放线程会碰它。
 struct HttpRangeSource {
     url: Url,
-    /// Logical position of the next byte `read` will return.
+    /// 下一次 `read` 返回的首字节的逻辑位置。
     pos: u64,
-    /// Total resource length, when the server reports it.
+    /// 资源总长度（服务端上报时）。
     total_len: Option<u64>,
-    /// Whether the server honors `Range` requests.
+    /// 服务端是否支持 `Range` 请求。
     range_supported: bool,
-    /// The currently open response body, if any.
+    /// 当前已打开的响应体（若有）。
     body: Option<Mutex<zed_reqwest::Response>>,
-    /// Bytes already received but not yet consumed by `read`.
+    /// 已收到但尚未被 `read` 消费的字节。
     pending: Vec<u8>,
     pending_offset: usize,
-    /// Mid-stream refresh hook for a rejected (expired) signed URL, built by
-    /// the playback layer; `None` when no provider identity is known.
+    /// 针对被拒（过期）签名 URL 的流中途刷新钩子，由播放层构造；
+    /// 不知道 provider 身份时为 `None`。
     refresh: Option<MediaUrlRefresh>,
-    /// Whether the refresh hook already ran for this source: one attempt per
-    /// stream, so a failing provider API is not hammered every backoff cycle.
+    /// 本源的刷新钩子是否已跑过：每条流只试一次，
+    /// 以免每个退避周期都去锤一个失败的 provider API。
     refresh_used: bool,
-    /// The current URL was rejected with a 4xx and the refresh (if any) could
-    /// not fix it: retrying can never succeed, so the filler must stop.
+    /// 当前 URL 被 4xx 拒绝，且刷新（若有）也救不回来：重试永远不会成功，
+    /// 因此填充线程必须停手。
     url_dead: bool,
 }
 
 impl HttpRangeSource {
-    /// Opens the resource and probes range support with a `bytes=0-` request.
-    /// The response body is kept as the initial stream.
+    /// 打开资源，并用一次 `bytes=0-` 请求探测 range 支持。
+    /// 响应体保留为初始流。
     fn connect(url: Url, refresh: Option<MediaUrlRefresh>) -> Result<Self, String> {
         let response = crate::RUNTIME
             .block_on(async {
@@ -531,8 +515,7 @@ impl HttpRangeSource {
         })
     }
 
-    /// Issues a range request for the current position. Returns `false` when
-    /// the position is at/past the end of the resource.
+    /// 为当前位置发起一次 range 请求。位置已到/已过资源末尾时返回 `false`。
     fn start_body(&mut self) -> io::Result<bool> {
         if let Some(len) = self.total_len
             && self.pos >= len
@@ -551,11 +534,10 @@ impl HttpRangeSource {
             Err(err) => err,
         };
 
-        // A signed URL that was valid at open time can expire mid-track: the
-        // re-request is rejected with a client error (403/404). One refresh
-        // attempt buys a fresh URL from the provider hook; a still-rejected
-        // (or unrefreshable) URL is dead and the filler gives up instead of
-        // retrying until the consumer's stall budget expires.
+        // 开流时还有效的签名 URL 可能在曲中过期：重新请求会以客户端错误
+        // （403/404）被拒。一次刷新尝试从 provider 钩子换来新 URL；若 URL
+        // 仍被拒（或根本刷不出来）它就是死的，填充线程就此放弃，
+        // 而不是一路重试到 consumer 的卡停预算耗尽。
         if Self::client_rejected(&last_err)
             && !self.refresh_used
             && let Some(hook) = self.refresh.clone()
@@ -576,9 +558,8 @@ impl HttpRangeSource {
         Err(last_err)
     }
 
-    /// One ranged GET from the current position. Client rejections (4xx) are
-    /// surfaced as `PermissionDenied` so the refresh logic can classify them
-    /// without parsing error strings.
+    /// 从当前位置发起一次 ranged GET。客户端拒绝（4xx）会以 `PermissionDenied`
+    /// 浮出，这样刷新逻辑无需解析错误字符串就能把它归类。
     fn send_range_request(&self) -> io::Result<zed_reqwest::Response> {
         let mut request = HTTP_CLIENT.get(self.url.clone());
         if self.range_supported {
@@ -601,12 +582,11 @@ impl HttpRangeSource {
         err.kind() == io::ErrorKind::PermissionDenied
     }
 
-    /// Stores a successful range response as the active body. Returns an
-    /// error when a server that ignores `Range` answers a non-zero offset
-    /// with a full-body 200.
+    /// 把一次成功的 range 响应存为当前活动响应体。若服务端忽略 `Range`、
+    /// 对非零偏移回一整份 body 的 200，则返回错误。
     fn accept_body(&mut self, response: zed_reqwest::Response) -> io::Result<()> {
-        // A server that ignores the Range header replies 200 with the body
-        // from byte 0; that is only usable when byte 0 is what we asked for.
+        // 忽略 Range 头的服务端会回 200，body 从第 0 字节开始；
+        // 只有当我们请求的就是第 0 字节时它才可用。
         if response.status() != StatusCode::PARTIAL_CONTENT && self.pos != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -618,7 +598,7 @@ impl HttpRangeSource {
         Ok(())
     }
 
-    /// Copies buffered bytes into `buf`, advancing the logical position.
+    /// 把已缓冲的字节拷进 `buf`，并推进逻辑位置。
     fn take_pending(&mut self, buf: &mut [u8]) -> usize {
         let available = &self.pending[self.pending_offset..];
         let count = available.len().min(buf.len());
@@ -648,10 +628,9 @@ impl Read for HttpRangeSource {
                 return Ok(0);
             }
 
-            // fetch the next chunk in its own scope so the body lock is
-            // released before `self` is touched below; the timeout bounds one
-            // fill-thread event — a stall here triggers a reconnect (see
-            // FILL_IO_TIMEOUT), not a playback-thread park
+            // 在独立作用域里取下一个块，好让 body 锁在下面触碰 `self` 之前
+            // 就释放；这里的超时限定的是单个填充线程事件——此处卡停触发的
+            // 是一次重连（见 FILL_IO_TIMEOUT），而不是播放线程的阻塞
             let chunk = {
                 let Some(body) = self.body.as_ref() else {
                     return Ok(0);
@@ -663,10 +642,9 @@ impl Read for HttpRangeSource {
 
             match chunk {
                 Ok(Ok(Some(chunk))) if !chunk.is_empty() => {
-                    // Reuse the buffer's capacity instead of replacing the
-                    // Vec: every body chunk would otherwise drop an old
-                    // allocation and hand the allocator fresh work per
-                    // network chunk (dozens per second).
+                    // 复用缓冲的容量而不是替换整个 Vec：否则每个 body 块都要
+                    // 丢掉一次旧分配，把活儿重新交给分配器，
+                    // 而网络块每秒有几十个。
                     self.pending.clear();
                     self.pending.extend_from_slice(&chunk);
                     self.pending_offset = 0;
@@ -697,7 +675,7 @@ impl Seek for HttpRangeSource {
         let target = match pos {
             SeekFrom::Start(offset) => Some(offset),
             SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
-            // seeking past the end is allowed and reads back EOF
+            // 允许跳到末尾之后，读回来就是 EOF
             SeekFrom::End(delta) => self.total_len.and_then(|len| len.checked_add_signed(delta)),
         };
 
@@ -708,8 +686,7 @@ impl Seek for HttpRangeSource {
             ));
         };
 
-        // Drop any open stream and buffered bytes; the next read re-requests
-        // from the new offset.
+        // 丢掉已打开的流与全部缓冲字节；下一次读取会从新偏移重新请求。
         self.body = None;
         self.pending.clear();
         self.pending_offset = 0;

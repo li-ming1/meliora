@@ -37,42 +37,33 @@ macro_rules! make_unknown_error {
     };
 }
 
-/// Delay between requesting a fade-out and pausing the stream. Must exceed
-/// the gain ramp length (15 ms) plus a few callback periods to ensure the
-/// audio thread drains a buffer at zero gain.
+/// 请求淡出到真正暂停流之间的等待时长。必须超过增益斜坡长度（15 ms）再加几个
+/// 回调周期，才能保证音频线程以零增益把缓冲区排空。
 const PAUSE_FADE_WAIT: Duration = Duration::from_millis(50);
-/// Target callback buffer size.
+/// 目标回调缓冲区大小。
 const DEVICE_BUFFER_TARGET: Duration = Duration::from_millis(20);
-/// Internal ring buffer target. This stays larger than the device buffer so the
-/// decoder can absorb scheduling jitter without underrunning the stream. 100 ms
-/// underran whenever the producer stalled past one buffer (track opens,
-/// online-stream fetches, cover-decode bursts); 250 ms absorbs those while
-/// staying cheap (~1 MB) — seek/pause paths rebuild the stream via `reset()`,
-/// so stale audio is never played from the slack.
+/// 内部环形缓冲目标。它必须大于设备缓冲区，解码器才能吸收调度抖动而不至于把流
+/// 拖到欠载。100 ms 只要生产者停顿超过一个缓冲区就会欠载（开曲、在线流抓取、
+/// 封面解码突发）；250 ms 能吸收这些而代价很小（约 1 MB）——seek/pause 路径经
+/// `reset()` 重建流，所以这段余量里不会播出陈旧音频。
 const RING_BUFFER_TARGET: Duration = Duration::from_millis(250);
-/// A producer stall at least this long is logged. The device ring is 250 ms, so
-/// a stall near that length is what starves the realtime callback; measuring it
-/// beats guessing at the cause of a bare `underran` line.
+/// 生产者停顿达到该时长即记录日志。设备环形缓冲是 250 ms，接近这个长度的停顿
+/// 正是饿死实时回调的那个；量出它，远好过面对一行光秃秃的 `underran` 猜原因。
 const PRODUCER_STALL_REPORT_MS: u64 = 100;
 
-/// Capacity of the fixed error-message slot the realtime error callback writes
-/// into. Longer backend messages are truncated.
+/// 实时错误回调写入的固定长度错误消息槽容量。后端消息过长会被截断。
 const DEVICE_ERROR_MESSAGE_CAP: usize = 256;
-/// Minimum spacing between underrun log lines; bursts within the window are
-/// collapsed into one report.
+/// 欠载日志行的最小间隔；同一窗口内的突发折叠成一条报告。
 const UNDERRUN_LOG_INTERVAL: Duration = Duration::from_secs(1);
-/// Nonzero xorshift seed for the per-sample TPDF dither (the 64-bit
-/// golden-ratio constant; any nonzero value works).
+/// 逐样本 TPDF 抖动的非零 xorshift 种子（64 位黄金比例常数；任何非零值都行）。
 const DITHER_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Latest cpal error, written by the realtime error callback and drained
-/// (logged) by the producer. The callback copies bytes only — no allocation on
-/// the realtime thread; text is rebuilt here on the producer side.
+/// 最近一次 cpal 错误：由实时错误回调写入，由生产者读出（并打日志）。回调只
+/// 拷贝字节——实时线程上不分配；文本在生产者侧重建。
 struct DeviceErrorMessage {
-    /// Error category, used when the backend attached no message (its
-    /// `Display` is a static description).
+    /// 错误类别，用于后端没附消息的情形（其 `Display` 是静态描述）。
     kind: cpal::ErrorKind,
-    /// Bytes of the backend message, when one was attached.
+    /// 后端附带消息的字节数。
     len: usize,
     bytes: [u8; DEVICE_ERROR_MESSAGE_CAP],
 }
@@ -86,16 +77,15 @@ impl DeviceErrorMessage {
         };
         if let Some(message) = err.message() {
             let n = message.len().min(slot.bytes.len());
-            // byte slice on purpose: a str slice panics when the truncation
-            // point lands mid-char, and this runs on the realtime callback
-            // thread; the producer side rebuilds text lossily (`text`)
+            // 刻意按字节切片：按 str 切片会在截断点落在字符中间时 panic，而这段
+            // 跑在实时回调线程上；生产侧用有损方式重建文本（`text`）
             slot.bytes[..n].copy_from_slice(&message.as_bytes()[..n]);
             slot.len = n;
         }
         slot
     }
 
-    /// Rebuild the human-readable text on the (non-realtime) producer side.
+    /// 在（非实时的）生产侧重建供人阅读的文本。
     fn text(&self) -> std::borrow::Cow<'_, str> {
         if self.len > 0 {
             String::from_utf8_lossy(&self.bytes[..self.len])
@@ -213,18 +203,15 @@ fn create_stream_internal<T: CpalSample + SampleFrom<f64>>(
             crate::devices::mmcss::register_audio_thread_once();
             let read = read_available(&mut cons, data);
             if read < data.len() {
-                // Fill the tail with digital silence so an underrun plays
-                // silence instead of whatever stale samples the device buffer
-                // still holds. Quantized 0.0 rather than `T::default()`:
-                // unsigned formats keep silence at the midpoint, while zero
-                // reads back as full-scale negative DC.
+                // 尾部用数字静音填满，这样欠载时播的是静音，而不是设备缓冲区里
+                // 残留的陈旧样本。填的是量化后的 0.0 而非 `T::default()`：无符号
+                // 格式的静音点在中位，而 0 回读成全幅负 DC。
                 data[read..].fill(T::sample_from(0.0));
-                // Before the producer's first submit the silence is the
-                // expected open->prime gap (device stream runs while the
-                // pipeline is still preparing the first track), not an
-                // underrun — counting it logged a ~20-callback false burst
-                // at every session start (2026-09 logs). Gate on primed so
-                // the counter only reports real starvation of a fed stream.
+                // 生产者首次提交之前，这段静音是 open->prime 之间的预期空档
+                // （设备流已在运行，管线还在准备第一条曲目），不是欠载——
+                // 把它计入会在每次会话启动刷出约 20 次回调的虚假突发
+                // （2026-09 日志）。用 primed 设门，让计数器只报告已喂料流的
+                // 真实饥饿。
                 if primed.load(Ordering::Relaxed) {
                     underruns.fetch_add(1, Ordering::Relaxed);
                 }
@@ -234,15 +221,13 @@ fn create_stream_internal<T: CpalSample + SampleFrom<f64>>(
             ramp.apply(data, channels, target);
         },
         move |err| {
-            // Realtime thread: record the error only. Logging (file IO and
-            // text formatting) happens on the producer side when it observes
-            // the flag. The slot copy is byte-for-byte — no allocation here.
+            // 实时线程：只记录错误。打日志（文件 IO 与文本格式化）留给生产者
+            // 观察到旗标时再做。槽位拷贝逐字节进行——这里不分配。
             //
-            // `try_lock`, not `lock`: the producer drains this same mutex, and
-            // a realtime thread must never block on it. If the producer is
-            // draining concurrently this message is dropped — during an
-            // error storm dropping messages is acceptable, and the flag below
-            // still trips the producer-side error path either way.
+            // 用 `try_lock` 而不是 `lock`：生产者也锁这同一把互斥锁，而实时线程
+            // 绝不能在它上面阻塞。若生产者恰好在并发排空，这条消息就被丢弃——
+            // 错误风暴期间丢消息可以接受，且下面的旗标无论如何都会触发生产者侧
+            // 的错误路径。
             if let Ok(mut slot) = device_error_message.try_lock() {
                 *slot = Some(DeviceErrorMessage::record(&err));
             }
@@ -294,7 +279,7 @@ impl CpalDevice {
             last_user_volume: 1.0,
             replaygain: 1.0,
             dither: DITHER_SEED,
-            // worst case: a full pipeline staging buffer, interleaved
+            // 最坏情况：一整个管线中转缓冲区，交织排列
             interleave_buffer: Vec::with_capacity(DEFAULT_BUFFER_FRAMES * channels as usize),
             underruns,
             primed,
@@ -361,38 +346,32 @@ where
     pub device: cpal::Device,
     pub buffer_size: usize,
     pub target_gain: Arc<AtomicF64>,
-    /// Most recent volume the user asked for. This is tracked separately
-    /// from `target_gain` because pause-fades temporarily overwrite the
-    /// shared atomic with 0.0. `play()` restores from this field.
+    /// 用户最近一次要求的音量。它与 `target_gain` 分开跟踪，因为 pause-fade 会
+    /// 临时把共享原子写成 0.0；`play()` 从该字段恢复。
     pub last_user_volume: f64,
     pub replaygain: f64,
-    /// xorshift state feeding per-sample TPDF dither (nonzero).
+    /// 喂养逐样本 TPDF 抖动的 xorshift 状态（非零）。
     pub dither: u64,
     pub interleave_buffer: Vec<T>,
     pub underruns: Arc<AtomicU64>,
-    /// Cleared until the producer's first successful submit (and again on
-    /// `reset`): the realtime callback counts underruns only while this is
-    /// set, so the open->prime silence gap is not counted as starvation.
+    /// 在生产者首次成功提交之前一直是清除态（`reset` 时再次清除）：实时回调
+    /// 只在该位为真时统计欠载，于是 open->prime 之间的静音空档不算饥饿。
     pub primed: Arc<AtomicBool>,
-    /// How many underruns have already been reported, so a burst is not
-    /// logged repeatedly.
+    /// 已经报告过的欠载次数，避免同一突发被反复记录。
     underruns_reported: u64,
     last_underrun_log: Instant,
-    /// When this stream began consuming, used to time the open -> first-audio gap.
+    /// 本流开始消费的时刻，用于计量 open -> 首个音频之间的空档。
     stream_started_at: Instant,
-    /// When the producer last had nothing to submit, cleared on the first
-    /// successful submit. Producer-side only, so the realtime callback stays
-    /// untouched.
+    /// 生产者上次无数据可提交的时刻，首次成功提交时清除。只在生产者侧使用，
+    /// 因此完全不触碰实时回调。
     idle_since: Option<Instant>,
-    /// Whether the open -> first-submit log line has been emitted for this stream.
+    /// 本流是否已经打过 open -> 首次提交 的日志行。
     logged_first_submit: bool,
     device_errored: Arc<AtomicBool>,
-    /// Latest cpal error, written by the realtime error callback and drained
-    /// (logged) by the producer. Fixed-capacity byte slot: keeps both the
-    /// allocation and the logging off the audio thread.
+    /// 最近一次 cpal 错误：由实时错误回调写入，由生产者读出（并打日志）。
+    /// 定容量字节槽：把分配和日志都挪出音频线程。
     device_error_message: Arc<Mutex<Option<DeviceErrorMessage>>>,
-    /// Indicates that the stream is currently fading out and needs to be paused by the specified
-    /// time.
+    /// 表示流正在淡出，需在该时刻之前暂停。
     pause_at: Option<Instant>,
 }
 
@@ -470,7 +449,7 @@ where
         self.stream_started_at = Instant::now();
         self.idle_since = None;
         self.logged_first_submit = false;
-        // The rebuilt stream is unprimed until samples flow again.
+        // 重建后的流尚未布防，直到样本重新流动。
         self.primed.store(false, Ordering::Relaxed);
 
         if pause_pending && let Err(e) = self.stream.pause() {
@@ -496,10 +475,9 @@ where
     #[allow(clippy::needless_range_loop)]
     fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError> {
         if self.device_errored.load(Ordering::Relaxed) {
-            // Take the message under the lock, log outside of it: the realtime
-            // error callback shares this mutex and must never be kept waiting
-            // behind file IO. Recover from a poisoned lock so a panic in some
-            // other lock user can never make the message unrecoverable.
+            // 在锁内取走消息、在锁外打日志：实时错误回调共用这把互斥锁，
+            // 绝不能让它排在文件 IO 后面等待。毒化锁也要恢复，这样别处持锁时
+            // panic 永远不会让消息无从取回。
             let message = self.device_error_message.lock_recovered().take();
             if let Some(msg) = message {
                 warn!("cpal stream error: {}", msg.text());
@@ -522,10 +500,9 @@ where
             return Ok(0);
         }
 
-        // How long the producer had nothing to hand the device ring is what
-        // actually starves the realtime callback, and it is the one number a
-        // bare `underran` line does not give. Logged on the idle -> fed
-        // transition only, so steady playback stays quiet in the log.
+        // 生产者无料可交给设备环形缓冲了多久，这才是真正饿死实时回调的量，
+        // 也是光秃秃一行 `underran` 唯一不给的数字。只在 idle -> 有料的转换处
+        // 记录，稳定播放期间日志保持安静。
         if let Some(since) = self.idle_since.take() {
             let idle_ms = since.elapsed().as_millis() as u64;
             if idle_ms >= PRODUCER_STALL_REPORT_MS {
@@ -558,11 +535,11 @@ where
 
         for i in 0..read {
             for ch in 0..channel_count {
-                // Soft limiting before quantization: gain (ReplayGain / EQ
-                // boost) curves into full scale instead of hard clipping.
+                // 量化之前先做软限幅：让增益（ReplayGain / EQ 提升）曲线趋近
+                // 满幅，而不是硬削顶。
                 let sample = soft_limit(staging[ch][i] * rg);
-                // TPDF dither decorrelates quantization error for shallow
-                // integer targets; floats and ≥24-bit convert untouched.
+                // TPDF 抖动打散浅位整数目标的量化误差噪声相关；float 与
+                // ≥24-bit 原样转换。
                 let sample = match T::DITHER_LSB {
                     Some(lsb) => sample + tpdf(&mut dither) * lsb,
                     None => sample,
@@ -582,8 +559,7 @@ where
             warn!(written = e.written, "ring write timed out");
             SubmissionError::WriteTimeout
         })?;
-        // Samples are in the ring: from here on a starving callback is a
-        // real underrun and gets counted.
+        // 样本已进环形缓冲：此后回调饥饿就是真欠载，要被计数。
         self.primed.store(true, Ordering::Relaxed);
 
         Ok(read)
@@ -601,15 +577,14 @@ mod tests {
     use super::*;
     use crate::devices::resample::SampleInto;
 
-    /// The underrun tail fill must read back as digital silence in every
-    /// dispatched sample format. `T::default()` only does that for signed and
-    /// float targets: unsigned formats place silence at the midpoint, where
-    /// zero reads back as full-scale negative DC, so the value has to come
-    /// from quantizing 0.0 (the sign-bit flip in `SampleFrom`/`SampleInto`).
+    /// 欠载尾部填充必须在每个被派发的样本格式下都回读为数字静音。
+    /// `T::default()` 只对带符号与 float 目标成立：无符号格式把静音放在中位，
+    /// 那里 0 回读成全幅负 DC，所以取值必须来自对 0.0 做量化
+    /// （`SampleFrom`/`SampleInto` 里的符号位翻转）。
     #[test]
     fn underrun_silence_fill_reads_zero_in_every_format() {
         fn assert_silent<T: CpalSample + SampleFrom<f64> + SampleInto<f64>>() {
-            // stale buffer first, then the exact fill the callback performs
+            // 先填入陈旧缓冲区内容，再执行回调实际做的那次填充
             let mut data = [T::default(); 8];
             data.fill(T::sample_from(0.0));
             for (i, sample) in data.iter().enumerate() {

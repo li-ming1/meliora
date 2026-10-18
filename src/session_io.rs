@@ -13,7 +13,7 @@ use zed_reqwest::{Client, ClientBuilder};
 pub fn load<T: serde::de::DeserializeOwned>(path: &Path, provider: &str) -> Option<T> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
-        // Missing credentials is the normal first-run path; stay quiet.
+        // 凭据文件缺失是首次运行的正常路径，保持安静。
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             tracing::debug!(%err, "no {provider} session on disk yet");
             return None;
@@ -42,11 +42,10 @@ pub fn save<T: serde::Serialize + ?Sized>(value: &T, path: &Path, provider: &str
             return;
         }
     };
-    // Write to a temporary file and rename it into place (same pattern as
-    // `playback/session_storage.rs`): an in-place truncate+rewrite can
-    // leave a truncated session file behind when the process dies mid-write.
-    // `fs::rename` replaces an existing target on Windows, so the swap is
-    // atomic on every supported platform.
+    // 先写临时文件再改名就位（与 `playback/session_storage.rs` 同一套路）：
+    // 就地 truncate + 重写，进程在写的中途死掉会留下被截断的会话文件。
+    // Windows 上 `fs::rename` 会替换已存在的目标，因此该交换在所有受支持
+    // 平台都是原子的。
     let tmp = path.with_extension("json.tmp");
     if let Err(err) = std::fs::write(&tmp, json) {
         tracing::warn!(%err, "failed to write {provider} session temp file");
@@ -59,31 +58,27 @@ pub fn save<T: serde::Serialize + ?Sized>(value: &T, path: &Path, provider: &str
     }
 }
 
-/// Cached profile of the logged-in user (nickname + avatar). The provider
-/// persists it inside its own session file (`KugouSession`)
-/// so it never needs a network call after the first fetch; the client
-/// re-exports this type under its `client` module, so the pre-existing
-/// `client::UserProfile` paths keep resolving.
+/// 已登录用户的资料缓存（昵称 + 头像）。provider 把它持久化在自己的会话文件
+/// （`KugouSession`）里，首次拉取之后就不再需要网络调用；client 在其 `client`
+/// 模块下再导出本类型，故既有的 `client::UserProfile` 引用路径继续可解析。
 #[derive(Clone, Debug)]
 pub struct UserProfile {
     pub nickname: String,
     pub avatar_url: String,
 }
 
-/// Builder for the online gateway's shared HTTP client: every request is
-/// bounded (10s connect / 30s total) so a hung gateway request can't wedge
-/// pending fetches or login polling. Returns the builder, not a finished
-/// `Client`, because the client keeps its `.build()` failure policy
-/// (kugou panics).
+/// 在线网关共享 HTTP client 的 builder：每个请求都有上界（连接 10s / 总计
+/// 30s），于是一个卡住的网关请求不会拖住待完成的抓取或登录轮询。返回
+/// builder 而非成品 `Client`，因为 client 保留自己的 `.build()` 失败策略
+/// （kugou 是 panic）。
 pub fn gateway_http_builder() -> ClientBuilder {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
 }
 
-/// True when the provider's login credential is present and non-empty; an
-/// empty-string credential counts as logged out (kugou's `token` shares this
-/// predicate).
+/// provider 的登录凭据存在且非空时为 true；空字符串凭据算作未登录
+/// （kugou 的 `token` 共用这一判定）。
 pub fn credential_present(credential: Option<&str>) -> bool {
     credential.is_some_and(|token| !token.is_empty())
 }
@@ -124,11 +119,10 @@ mod bench {
     const WARMUP: usize = 10;
     const ITERATIONS: usize = 100;
 
-    /// Times `save` `ITERATIONS` times after `WARMUP` untimed runs and prints
-    /// a min/p50/avg/max summary in milliseconds plus the serialized payload
-    /// size. The whole `save` call is timed — serialization happens under the
-    /// session mutex exactly like the disk writes, so both belong in the
-    /// number F022 is about.
+    /// 先跑 `WARMUP` 次不计时，再对 `save` 计时 `ITERATIONS` 次，打印
+    /// min/p50/avg/max（毫秒）摘要与序列化后的载荷大小。计的是整个 `save`
+    /// 调用——序列化与写盘同样发生在 session 互斥锁内，两者都属于 F022 要问的
+    /// 那个数字。
     fn summarize<T: serde::Serialize + ?Sized>(name: &str, path: &Path, provider: &str, value: &T) {
         let bytes = serde_json::to_string_pretty(value)
             .map(|json| json.len())

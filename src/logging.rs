@@ -17,15 +17,14 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-// Span lifecycle events (NEW/CLOSE) are deliberately not emitted: on
-// tracing-subscriber 0.3 they bypass the per-layer EnvFilter entirely, so
-// gpui's hot `#[instrument]` spans (sum_tree cursor seek, ~1 pair per list
-// scroll tick) flood the rotating log even with `sum_tree=warn` in place.
-// `symphonia_bundle_flac` warns on every stream that ends short of its
-// declared frame count — Kugou transcodes do it on every track (68×/2h
-// session), and Meliora already logs EOF and decode failures itself, so the
-// crate's per-stream data quirks are kept to error level only. EnvFilter
-// matches the more specific prefix, other symphonia crates stay at warn.
+// 刻意不发出 span 生命周期事件（NEW/CLOSE）：在 tracing-subscriber 0.3 上
+// 它们完全绕过每层各自的 EnvFilter，于是 gpui 那些热的 `#[instrument]`
+// span（sum_tree 游标 seek，列表滚动每 tick 约一对）即便已写了
+// `sum_tree=warn` 仍会灌满轮转日志。
+// `symphonia_bundle_flac` 对每个实际帧数不足声明帧数的流都告警——酷狗的
+// 转码文件每首都这样（2 小时会话 68 次），而 Meliora 自己已经记录 EOF 与
+// 解码失败，故把该 crate 的逐流数据特性压到只有 error 级。
+// EnvFilter 取更具体的前缀匹配，其余 symphonia crate 仍保持 warn。
 const DEFAULT_LOG_FILTER: &str =
     "info,symphonia=warn,symphonia_bundle_flac=error,zbus=warn,sum_tree=warn";
 const LOG_FILE_NAME: &str = "meliora.log";
@@ -38,7 +37,7 @@ type SharedLogFile = Arc<Mutex<Option<RotatingLogFile>>>;
 static ACTIVE_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static LOG_FILE: OnceLock<SharedLogFile> = OnceLock::new();
 
-/// Initializes logging to stderr and, when available, to a rotating log file.
+/// 初始化日志：输出到 stderr，并尽可能同时写入轮转日志文件。
 pub fn init() -> anyhow::Result<()> {
     // 坏过滤器绝不能让日志初始化整体失败：windows_subsystem 下没有控制台，
     // `?` 会同时摧毁 stderr 与轮转日志两条输出——而坏的 MELIORA_LOG 恰是
@@ -92,9 +91,8 @@ pub fn init() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Installs a panic hook that funnels panics into the rotating log file
-/// (thread, location, payload, backtrace) so crashes leave a trace instead of
-/// dying silently with the message lost on stderr.
+/// 安装一个 panic 钩子，把 panic 归拢进轮转日志文件（线程、位置、payload、
+/// 回溯），让崩溃留下痕迹，而不是消息丢在 stderr 上悄无声息地死掉。
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -102,8 +100,8 @@ fn install_panic_hook() {
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "<unknown>".into());
-        // `payload_as_str` covers both `&'static str` and `String` payloads;
-        // anything else falls through to the non-textual placeholder
+        // `payload_as_str` 同时覆盖 `&'static str` 与 `String` 两种 payload；
+        // 其余情况落到非文本占位符
         let payload = info
             .payload_as_str()
             .unwrap_or("<non-string panic payload>");
@@ -124,7 +122,7 @@ fn install_panic_hook() {
     }));
 }
 
-/// Flushes stderr and the active log file.
+/// 刷出 stderr 与当前日志文件。
 pub fn flush() {
     let _ = io::stderr().flush();
 
@@ -168,8 +166,8 @@ fn open_file_make_writer(log_path: &Path) -> Option<FileMakeWriter> {
     ))
 }
 
-/// Builds a fresh rotating sink. Opened in append mode by file-rotate, so a
-/// rebuild never truncates what is already on disk.
+/// 构建一个全新的轮转落盘通道。file-rotate 以追加模式打开，
+/// 因此重建永远不会截断磁盘上已有的内容。
 fn new_log_rotate(log_path: &Path) -> Option<RotatingLogFile> {
     Some(FileRotate::new(
         log_path,
@@ -180,7 +178,7 @@ fn new_log_rotate(log_path: &Path) -> Option<RotatingLogFile> {
     ))
 }
 
-/// Creates stderr writers for the tracing stderr layer.
+/// 为 tracing 的 stderr 层创建 stderr writer。
 #[derive(Clone, Copy)]
 struct StderrMakeWriter;
 
@@ -194,7 +192,7 @@ impl<'a> MakeWriter<'a> for StderrMakeWriter {
     }
 }
 
-/// Buffers a single formatted log record before writing it to stderr.
+/// 先缓冲单条已格式化的日志记录，再写入 stderr。
 struct StderrWriter {
     buffer: Vec<u8>,
 }
@@ -233,11 +231,11 @@ fn write_stderr(buffer: &[u8]) -> io::Result<()> {
     stderr.write_all(buffer)
 }
 
-/// Creates file writers that share access to the rotating log file state.
+/// 创建共享轮转日志文件状态的 file writer。
 #[derive(Clone)]
 struct FileMakeWriter {
     file: SharedLogFile,
-    /// Path of the active log, kept so a failed write can rebuild the sink.
+    /// 当前日志的路径，保留它是为了在写入失败时重建落盘通道。
     path: PathBuf,
 }
 
@@ -262,7 +260,7 @@ impl<'a> MakeWriter<'a> for FileMakeWriter {
     }
 }
 
-/// Buffers a single formatted log record before writing it to the shared file.
+/// 先缓冲单条已格式化的日志记录，再写入共享文件。
 struct FileWriter {
     file: SharedLogFile,
     path: PathBuf,
@@ -286,10 +284,9 @@ impl FileWriter {
         };
 
         if failed {
-            // A transient error (AV lock, brief FS hiccup) used to kill file
-            // logging for the rest of the session with no trace of why. Reopen
-            // the sink so a hiccup only costs the one in-flight record; only
-            // give up entirely if the path can no longer be opened.
+            // 过去一次瞬时错误（杀毒软件占用、文件系统短暂抖动）会让本次会话
+            // 余下时间的文件日志彻底失效且不留原因。改成重开落盘通道：抖动只为
+            // 当前这一条在途记录买单；只有路径再也打不开时才彻底放弃。
             *state = new_log_rotate(&self.path);
         }
     }
@@ -414,7 +411,7 @@ mod tests {
         });
     }
 
-    /// File sink setup failures leave stderr-only logging available.
+    /// 文件落盘通道搭建失败时，仅 stderr 的日志仍可用。
     #[test]
     fn file_logging_failure_falls_back_to_stderr_only() {
         let dir = create_test_dir();
@@ -427,7 +424,7 @@ mod tests {
         assert!(open_file_make_writer(&invalid_log_path).is_none());
     }
 
-    /// A non-terminal stderr sink still allows the log file to be written.
+    /// stderr 不是终端时，日志文件照常写入。
     #[test]
     fn non_tty_stderr_still_writes_to_log_file() {
         let dir = create_test_dir();
