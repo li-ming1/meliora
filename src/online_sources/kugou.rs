@@ -1,8 +1,6 @@
-//! KuGou shared online-source layer: the stream URL → track registry
-//! ("stream map"), play-URL fetching and the liked-songs cache. A-1 step-①
-//! sink from `crate::ui::kugou`, so the playback thread and stats resolve
-//! streams without touching the UI; the UI keeps calling these through the
-//! re-exports in `crate::ui::kugou`. Gated behind the `kugou` cargo feature.
+//! 酷狗共享在线源层：流 URL → 曲目注册表（「stream map」）、播放 URL 获取与喜欢列表缓存。
+//! 由 `crate::ui::kugou` 下沉而来（A-1 第①步），因此播放线程与统计解析流时不必碰 UI；
+//! UI 仍经 `crate::ui::kugou` 的再导出调用这些。整体受 `kugou` cargo feature 门控。
 
 use std::{
     collections::{HashMap, HashSet},
@@ -20,34 +18,30 @@ use super::stream_registry::{STREAM_MAP_CAP, StreamMapPersistence};
 use crate::kugou;
 use crate::sync::RecoveredRwLock;
 
-/// One online track as shown in search results and playlists.
+/// 搜索结果与歌单里展示的一条在线曲目。
 #[derive(Clone, Debug, PartialEq)]
 pub struct KugouTrackInfo {
     pub title: SharedString,
     pub artist: SharedString,
     pub album: SharedString,
-    /// Duration in seconds (0 when unknown).
+    /// 时长，单位秒（未知为 0）。
     pub duration: i64,
     pub hash: String,
     pub mix_song_id: i64,
     pub album_id: i64,
-    /// Absolute album-art URL from the API (the `{size}` placeholder is
-    /// substituted with a fixed pixel width). Empty when the API gives none.
+    /// API 给的专辑封面绝对 URL（`{size}` 占位符已替换成固定像素宽度）。API 没给则为空。
     pub cover_url: SharedString,
 }
 
 // ---------------------------------------------------------------------------
-// Stream URL → track registry
+// 流 URL → 曲目注册表
 //
-// KuGou play URLs are opaque signed CDN links; the queue (which only carries
-// the URL) cannot resolve lyrics / the like state / the download action on
-// its own. Every resolved play URL is recorded here in memory AND on disk, so
-// a restored queue still matches after a restart — even when the
-// session-restore URL refresh hits a network failure. Mirrors the upstream
-// stream-map design.
+// 酷狗的播放 URL 是不透明的签名 CDN 链接；队列（只带 URL）自己没法解析歌词/喜欢状态/
+// 下载动作。每个解析出来的播放 URL 都同时记在这里的内存里和磁盘上，所以重启后恢复的队列
+// 仍然能匹配上——即使会话恢复期的 URL 刷新撞上网络失败。对照上游的 stream-map 设计。
 // ---------------------------------------------------------------------------
 
-/// On-disk mirror of a registry entry (plain strings, JSON friendly).
+/// 注册表条目的磁盘镜像（纯字符串，JSON 友好）。
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct StreamMapEntry {
     url: String,
@@ -119,16 +113,15 @@ fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
 /// 基线绝不能与其他 provider 共享，否则去重跳写与失败回滚会互相误伤。
 static STREAM_MAP_PERSISTENCE: StreamMapPersistence = StreamMapPersistence::new();
 
-/// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
-/// entry for a track on top and evicting older URLs for the same track.
+/// 记下 `url`（一条酷狗流）属于 `track`：同一曲目最新的条目放最上面，并逐出同一曲目更早的
+/// URL。
 pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     // 锁内只改表：这张表 UI 线程与播放线程都在读，写守卫跨过任何慢操作都会
     // 拖住换歌。快照与序列化都不在这里做（见下）。
     {
         let mut guard = stream_map().write_recovered();
-        // 0 means the endpoint omitted the id. Treating it as a real key would
-        // evict every other id-less track, so unknown-id entries only de-dup
-        // by URL and are never matched by id (see online_track_matching_path).
+        // 0 表示端点省略了 id。把它当成真键会逐掉所有其他无 id 的曲目，所以未知 id 的条目
+        // 只按 URL 去重，永不被 id 匹配（见 online_track_matching_path）。
         guard.retain(|e| {
             e.url != url && (track.mix_song_id == 0 || e.mix_song_id != track.mix_song_id)
         });
@@ -150,11 +143,9 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     });
 }
 
-/// If `path` is a stream reached through this app, returns the remembered
-/// online track for it. Matching keys off the `mixsongid` embedded in the URL
-/// (same heuristic as the queue de-dup logic) before falling back to a
-/// byte-for-byte URL compare, so it still resolves when the redirect target
-/// differs from the URL that produced it.
+/// 若 `path` 是经本应用到达的流，返回为它记下的在线曲目。匹配先用嵌在 URL 里的
+/// `mixsongid`（与队列去重逻辑同一启发式），再退化到逐字节 URL 比较，所以即使重定向目标
+/// 与产生它的 URL 不同也仍能解析出来。
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();
     let path_mix = mixsongid_in_url(&path_str);
@@ -168,9 +159,8 @@ pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
         .map(StreamMapEntry::to_track)
 }
 
-/// KuGou stream URLs embed the mixsong id as `_mx<digits>_` (e.g.
-/// `..._pi2_mx29048099_qu128_...`). The id is stable across differently-signed
-/// URLs for the same track, so it identifies a queued online track reliably.
+/// 酷狗流 URL 以 `_mx<digits>_` 的形式内嵌 mixsong id（例如 `..._pi2_mx29048099_qu128_...`）。
+/// 同一曲目的不同签名 URL 之间这个 id 稳定，所以它能可靠地标识队列里的一条在线曲目。
 pub(crate) fn mixsongid_in_url(url: &str) -> Option<i64> {
     let idx = url.find("_mx")?;
     let rest = &url[idx + 3..];
@@ -181,9 +171,8 @@ pub(crate) fn mixsongid_in_url(url: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-/// Extracts the first playable URL out of a `song_url` response. The direct
-/// links live at the top level under `url` (an array), e.g. the `/v5/url`
-/// response has `{ ..., "url": ["http://...", "http://..."] }`.
+/// 从 `song_url` 响应里取出第一个可播放 URL。直链就在顶层的 `url`（一个数组）下，例如
+/// `/v5/url` 的响应形如 `{ ..., "url": ["http://...", "http://..."] }`。
 pub fn extract_song_url(body: &Value) -> Option<String> {
     match body.get("url") {
         Some(Value::Array(items)) => items
@@ -194,14 +183,12 @@ pub fn extract_song_url(body: &Value) -> Option<String> {
     }
 }
 
-/// Quality tier of the standard 128 kbps clip — the fallback when the
-/// requested tier is unavailable (e.g. no VIP).
+/// 标准 128 kbps 片段的音质档位——请求档位不可用时的兜底（例如没有 VIP）。
 const FALLBACK_QUALITY: &str = "128";
 
-/// Fetches a playable URL for a KuGou track at the requested `quality`,
-/// falling back to the standard 128 kbps clip when the higher tier is
-/// unavailable (e.g. no VIP). Returns `None` when no playable URL comes back
-/// at all. Shared by live playback and the session-restore URL refresh.
+/// 按请求的 `quality` 为酷狗曲目取一个可播放 URL，更高档位不可用时（例如没有 VIP）退化到
+/// 标准 128 kbps 片段。完全没取回可播放 URL 时返回 `None`。实时播放与会话恢复期的 URL
+/// 刷新共用。
 pub async fn fetch_stream_url(
     client: &kugou::KugouClient,
     hash: &str,
@@ -253,18 +240,16 @@ pub async fn fetch_stream_url(
     None
 }
 
-/// `listid` of the user's KuGou liked-songs list.
+/// 用户酷狗喜欢列表的 `listid`。
 const LIKED_LIST_ID: i64 = 2;
-/// Paged-fetch bounds for the liked list: at most these pages of
-/// [`LIKED_LIST_PAGE_SIZE`] entries each; a short page ends the walk.
+/// 喜欢列表的分页拉取上界：最多这些页，每页 [`LIKED_LIST_PAGE_SIZE`] 条；不满一页即结束
+/// 遍历。
 const LIKED_LIST_MAX_PAGES: i64 = 10;
 const LIKED_LIST_PAGE_SIZE: i64 = 100;
 
-/// Lists the `(hash, fileid)` pairs in the user's KuGou liked-songs list
-/// (`listid: 2`). Runs on the Tokio runtime; `None` when not logged in or on
-/// any error (best-effort) — a `None` result says nothing about the list, so
-/// callers must not treat it as "the list is empty". `fileid` is the
-/// in-playlist key required by the `/v4/delete_songs` endpoint.
+/// 列出用户酷狗喜欢列表（`listid: 2`）里的 `(hash, fileid)` 对。跑在 Tokio 运行时上；未登录
+/// 或任何错误（尽力而为）时返回 `None`——`None` 不说明列表的任何情况，所以调用方不能把它
+/// 当作「列表是空的」。`fileid` 是 `/v4/delete_songs` 端点要求的歌单内键。
 async fn liked_entries_raw() -> Option<Vec<(String, i64)>> {
     let client = kugou::shared_client();
     let mut out = Vec::new();
@@ -292,18 +277,16 @@ async fn liked_entries_raw() -> Option<Vec<(String, i64)>> {
                     break;
                 }
             }
-            // A failed page leaves the list incomplete: report the failure so
-            // callers neither replace the liked cache with partial data nor
-            // treat a missing fileid as "already removed".
+            // 有一页失败会让列表不完整：上报失败，这样调用方既不会用部分数据替换喜欢缓存，
+            // 也不会把缺失的 fileid 当作「已经移除」。
             Err(_) => return None,
         }
     }
     Some(out)
 }
 
-/// Wraps `liked_entries_raw` on the Tokio runtime (see the UI-side
-/// `fetch_online_lyric` for why every kugou network call must be spawned onto
-/// it). `None` when the fetch failed or the task was cancelled.
+/// 在 Tokio 运行时上包一层 `liked_entries_raw`（为什么每个 kugou 网络调用都必须 spawn 到它
+/// 上面，见 UI 侧的 `fetch_online_lyric`）。拉取失败或任务被取消时返回 `None`。
 pub(crate) async fn fetch_liked_entries() -> Option<Vec<(String, i64)>> {
     crate::RUNTIME
         .spawn(liked_entries_raw())
@@ -312,48 +295,41 @@ pub(crate) async fn fetch_liked_entries() -> Option<Vec<(String, i64)>> {
         .flatten()
 }
 
-/// In-memory set of hashes currently in the user's KuGou liked-songs list.
-/// Kept so the play-bar like button lights up instantly instead of waiting on
-/// a network round-trip every time the track changes.
+/// 内存里「当前在用户酷狗喜欢列表中」的 hash 集合。留着它是为了让播放栏的喜欢按钮立即点亮，
+/// 而不必每次换歌都等一个网络往返。
 static LIKED_SET: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
-/// Set once the cache has been populated; avoids re-fetching the whole liked
-/// list for every online track when the user simply has an empty one.
+/// 缓存填充过一次后置位；避免用户本来就是空列表时，每条在线曲目都重拉整个喜欢列表。
 pub(crate) static LIKED_SET_INIT: AtomicBool = AtomicBool::new(false);
 
-/// The in-memory liked-hash set. `pub(crate)`: the UI-side like/unlike
-/// actions patch it directly through the re-export in `crate::ui::kugou`.
+/// 内存里的喜欢 hash 集。`pub(crate)`：UI 侧的喜欢/取消喜欢动作经 `crate::ui::kugou` 的再
+/// 导出直接改它。
 pub(crate) fn liked_set() -> &'static RwLock<HashSet<String>> {
     LIKED_SET.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
-/// Fileids for the hashes currently in the liked list. The remove API
-/// (`delete_songs`) needs the fileid, which only the paged list fetch
-/// provides — caching it beside the hash set lets unlike skip that fetch
-/// entirely in the common case instead of re-pulling up to 10 pages of full
-/// song entities per unlike.
+/// 当前在喜欢列表里的 hash 对应的 fileid。移除 API（`delete_songs`）要 fileid，而它只有分页
+/// 列表拉取才提供——把它与 hash 集并排缓存后，常见情况下取消喜欢能完全跳过那次拉取，不必
+/// 每次取消都重拉最多 10 页完整歌曲实体。
 static LIKED_FILEIDS: OnceLock<RwLock<HashMap<String, i64>>> = OnceLock::new();
 
 pub(crate) fn liked_fileids() -> &'static RwLock<HashMap<String, i64>> {
     LIKED_FILEIDS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-/// True when the cache holds `hash` as liked.
+/// 缓存把 `hash` 记为已喜欢时返回 true。
 pub fn liked_set_contains(hash: &str) -> bool {
     liked_set().read_recovered().contains(hash)
 }
 
-/// Serializes the initial liked-list load so concurrent `online_track_is_liked`
-/// queries (e.g. rapid track changes before the cache is primed) wait for the
-/// first full paged fetch to finish instead of each firing their own.
+/// 串行化首次喜欢列表加载，让并发的 `online_track_is_liked` 查询（例如缓存预热前的快速换歌）
+/// 等第一次完整分页拉取跑完，而不是各自发一份。
 pub(crate) fn liked_load_lock() -> &'static tokio::sync::Mutex<()> {
     static LIKED_LOAD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LIKED_LOAD_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-/// Refreshes the in-memory liked-set from the service (best-effort). A failed
-/// fetch leaves the previous cache and the init flag untouched, so the next
-/// query retries instead of trusting an empty list (which would silently
-/// unlike every track until restart).
+/// 从服务刷新内存里的喜欢集（尽力而为）。拉取失败会保留先前的缓存与 init 旗标，于是下次
+/// 查询是重试，而不是相信一个空列表（那会静默地把每首歌都取消喜欢直到重启）。
 pub(crate) async fn refresh_liked_set_from_service() {
     let Some(entries) = fetch_liked_entries().await else {
         return;
@@ -361,8 +337,7 @@ pub(crate) async fn refresh_liked_set_from_service() {
     store_liked_entries(entries);
 }
 
-/// Replaces both liked caches (hash set + hash→fileid map) from one paged
-/// fetch result.
+/// 用一次分页拉取的结果同时替换两个喜欢缓存（hash 集 + hash→fileid 映射）。
 pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
     let mut hashes = HashSet::with_capacity(entries.len());
     let mut fileids = HashMap::with_capacity(entries.len());
@@ -375,8 +350,7 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
-/// The KuGou entry in the compile-time provider registry (A-1 step ②); the
-/// bodies delegate to the free functions above.
+/// 编译期 provider 注册表里的酷狗条目（A-1 第②步）；各方法体委托给上面的自由函数。
 pub struct KugouSource;
 
 #[async_trait::async_trait]
@@ -404,8 +378,7 @@ impl super::OnlineSourceProvider for KugouSource {
         identity: &super::OnlineIdentity,
         ctx: &super::RefreshContext<'_>,
     ) -> Option<String> {
-        // KuGou is the only compiled-in provider, so the registry only ever
-        // hands this trait the KuGou variant.
+        // 酷狗是唯一编进来的 provider，所以注册表交给这个 trait 的永远是酷狗变体。
         let super::OnlineIdentity::Kugou {
             hash,
             mix_song_id,
@@ -417,8 +390,7 @@ impl super::OnlineSourceProvider for KugouSource {
         let mix_song_id = *mix_song_id;
         let album_id = *album_id;
         let kugou_quality = ctx.kugou_quality.to_string();
-        // One clone for the spawned fetch; the original goes into the
-        // registry record below.
+        // spawn 出去的拉取用一份克隆；原件进下面的注册表条目。
         let fetch_hash = hash.clone();
         let url = crate::RUNTIME
             .spawn(async move {

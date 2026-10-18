@@ -14,17 +14,13 @@ pub(crate) const STREAM_MAP_CAP: usize = 200;
 
 /// 一个在线源的流注册表持久化设施。见模块文档：每个在线源各持一份。
 pub struct StreamMapPersistence {
-    /// Bytes of the stream-map JSON last handed to the persistence task. Kept
-    /// so re-recording an unchanged registry (e.g. replaying the same song)
-    /// skips the disk write entirely instead of re-writing identical bytes.
+    /// 最后一次交给持久化任务的 stream map JSON 字节。留着它是为了在重复登记一份没变过的
+    /// 注册表（例如重播同一首歌）时完全跳过磁盘写，而不是把相同的字节再写一遍。
     last: Mutex<Option<Vec<u8>>>,
-    /// Serializes stream-map persistence. The write itself goes to a temp
-    /// file renamed over the target, so a process death mid-write can never
-    /// leave truncated JSON behind; the gate keeps two writers from
-    /// interleaving their temp files. tokio's mutex is fair by poll order
-    /// (not spawn order), so writers land roughly in hand-off order; a stale
-    /// final write only costs a URL refresh on next launch (the registry is a
-    /// cache).
+    /// 串行化 stream map 的持久化。写入本身落到临时文件再 rename 覆盖目标，所以进程写到
+    /// 一半死掉也绝不会留下截断的 JSON；这道门还挡住两个写者交错各自的临时文件。tokio 的
+    /// 互斥锁按 poll 顺序（不是 spawn 顺序）公平，所以写者大致按交接顺序落盘；最后一次写
+    /// 陈旧只多花下次启动的一次 URL 刷新（注册表是缓存）。
     gate: tokio::sync::Mutex<()>,
 }
 
@@ -38,9 +34,8 @@ impl StreamMapPersistence {
         }
     }
 
-    /// Returns `json` back when it differs from the last persisted bytes (and
-    /// records it as the new baseline), or `None` when it is unchanged and the
-    /// write task can be skipped. The mutex is only ever held for a memcmp.
+    /// 与最后一次落盘的字节不同就把 `json` 原样还回（并记为新基线），没变则返回 `None`、
+    /// 写任务可以整个跳过。这把互斥锁只被持有一次 memcmp 的时间。
     pub fn persist_if_changed(&self, json: Vec<u8>) -> Option<Vec<u8>> {
         let mut last = self.last.lock_recovered();
         if last.as_deref() == Some(json.as_slice()) {
@@ -69,10 +64,8 @@ impl StreamMapPersistence {
             };
             if let Err(err) = result {
                 let _ = tokio::fs::remove_file(&tmp).await;
-                // Roll the baseline back so an identical later snapshot
-                // retries instead of silently leaving the old file in place.
-                // Only when the baseline is still our own bytes: a newer
-                // writer may have updated it meanwhile.
+                // 回滚基线，让之后相同的一份快照是重试，而不是静默地把旧文件留在原地。
+                // 仅当基线仍是自己的字节时才回滚：期间可能有更新的写者已经改过它。
                 let mut last = self.last.lock_recovered();
                 if last.as_deref() == Some(json.as_slice()) {
                     last.take();

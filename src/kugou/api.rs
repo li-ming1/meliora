@@ -1,5 +1,5 @@
-//! The 13 KuGou endpoints this app actually uses, one method each.
-//! Mirrors the corresponding modules in `KuGouMusicApi/module/`.
+//! 本应用实际用到的 13 个酷狗端点，每个端点一个方法。
+//! 与 `KuGouMusicApi/module/` 里的对应模块一一对照。
 
 use serde_json::Value;
 
@@ -9,11 +9,10 @@ use super::client::{
 };
 use super::crypto;
 
-/// The h5 login page that QR codes open in the mobile app; the poll request's
-/// `qrcode_txt` points at the same page.
+/// 二维码在移动端 App 里打开的 h5 登录页；轮询请求的 `qrcode_txt` 指向同一个页面。
 const QR_LOGIN_PAGE_URL: &str = "https://h5.kugou.com/apps/loginQRCode/html/index.html";
 
-/// QR login poll states, mirroring `login_qr_check.js`.
+/// 二维码登录的轮询状态，对照 `login_qr_check.js`。
 #[derive(Debug, Clone, PartialEq)]
 pub enum QrStatus {
     Expired,
@@ -22,13 +21,13 @@ pub enum QrStatus {
     Success { token: String, userid: i64 },
 }
 
-/// URL to encode into a QR code for the mobile app to scan.
+/// 编码进二维码、供移动端 App 扫描的 URL。
 pub fn qr_login_url(key: &str) -> String {
     format!("{QR_LOGIN_PAGE_URL}?qrcode={key}")
 }
 
 impl KugouClient {
-    /// Step 1 of QR login: request a fresh QR key.
+    /// 二维码登录第 1 步：申请一个新的二维码 key。
     pub async fn qr_create_key(&self) -> Result<String, KugouError> {
         let spec = KugouRequest::new("https://login-user.kugou.com", "/v2/qrcode")
             .web()
@@ -50,7 +49,7 @@ impl KugouClient {
             })
     }
 
-    /// Step 2 of QR login: poll the key until the mobile app confirms.
+    /// 二维码登录第 2 步：轮询该 key，直到移动端 App 确认。
     pub async fn qr_check(&self, key: &str) -> Result<QrStatus, KugouError> {
         let session = self.credentials();
         let mut spec = KugouRequest::new("https://login-user.kugou.com", "/v2/get_userinfo_qrcode")
@@ -97,9 +96,8 @@ impl KugouClient {
         }
     }
 
-    /// Cached profile (nickname + avatar) of the logged-in user. Hits the
-    /// network exactly once; later reads come from the persisted session, so
-    /// opening the KuGou pages never re-fetches it.
+    /// 已登录用户的缓存资料（昵称 + 头像）。网络上只打一次；后续读取都来自持久化会话，
+    /// 因此打开酷狗页面不会重新拉取。
     pub async fn user_profile(&self) -> Result<UserProfile, KugouError> {
         if let Some(profile) = self.cached_user_profile() {
             return Ok(profile);
@@ -112,8 +110,7 @@ impl KugouClient {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        // KuGou returns an avatar template with a {size} placeholder; pin it
-        // to something small for the UI.
+        // 酷狗返回的是带 {size} 占位符的头像模板，UI 里固定成小尺寸。
         let avatar_url = response
             .body
             .pointer("/data/pic")
@@ -128,14 +125,13 @@ impl KugouClient {
         Ok(profile)
     }
 
-    /// Profile of the logged-in user (nickname, vip state...).
+    /// 已登录用户的资料（昵称、VIP 状态等）。
     pub async fn user_detail(&self) -> Result<KugouResponse, KugouError> {
         let session = self.credentials();
         let clienttime = unix_now_secs();
-        // The envelope is fixed except for the server-controlled token; if it
-        // no longer fits the 128-byte RSA block, fail this request instead of
-        // panicking the process (the token is persisted, so a panic would
-        // reproduce on every start until re-login).
+        // 除服务端控制的 token 之外信封是固定的；若它不再装得进 128 字节的 RSA 分块，
+        // 就让本次请求失败而不是 panic 掉整个进程（token 是持久化的，panic 会在每次
+        // 启动重现，直到重新登录）。
         let envelope = serde_json::json!({
             "token": session.token.clone().unwrap_or_default(),
             "clienttime": clienttime,
@@ -165,9 +161,8 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// VIP entitlement detail: is the account a member, which products
-    /// (`svip`/`tvip`) are active and until when. Mirrors `youth_union_vip.js`
-    /// (`/v1/get_union_vip` on the kugouvip host).
+    /// VIP 权益明细：账号是否会员、哪些商品（`svip`/`tvip`）在生效以及到什么时候。
+    /// 对照 `youth_union_vip.js`（kugouvip 主机上的 `/v1/get_union_vip`）。
     pub async fn user_vip_detail(&self) -> Result<KugouResponse, KugouError> {
         let spec = KugouRequest::new("https://kugouvip.kugou.com", "/v1/get_union_vip")
             .param("busi_type", "concept")
@@ -176,7 +171,7 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// All playlists of the logged-in user. Mirrors `user_playlist.js`.
+    /// 已登录用户的全部歌单。对照 `user_playlist.js`。
     pub async fn user_playlists(
         &self,
         page: i64,
@@ -202,12 +197,10 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Tracks of one playlist. Mirrors `playlist_track_all_new.js`: this is the
-    /// endpoint the reference client uses for the user's own and collected
-    /// playlists. Songs come back under `data.info` (fields `hash`, `name`,
-    /// `mixsongid`, `album_id`, `timelen`, `singerinfo[].name`). The older
-    /// `/pubsongs/v2/get_other_list_file_nofilt` is NOT used: it returns an
-    /// empty list for personal playlists.
+    /// 单个歌单的曲目。对照 `playlist_track_all_new.js`：参考客户端取用户自建歌单与
+    /// 收藏歌单用的就是这个端点。曲目在 `data.info` 下返回（字段 `hash`、`name`、
+    /// `mixsongid`、`album_id`、`timelen`、`singerinfo[].name`）。更早的
+    /// `/pubsongs/v2/get_other_list_file_nofilt` 不用：它对个人歌单返回空列表。
     pub async fn playlist_tracks(
         &self,
         listid: i64,
@@ -238,8 +231,7 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Adds songs to a user playlist. Mirrors `playlist_tracks_add.js`;
-    /// `listid: 2` targets the built-in "liked songs" list.
+    /// 向用户歌单加歌。对照 `playlist_tracks_add.js`；`listid: 2` 指向内置的「我喜欢的」列表。
     pub async fn playlist_add_songs(
         &self,
         listid: i64,
@@ -286,9 +278,8 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Removes songs from a user playlist by their in-playlist file ids.
-    /// Mirrors `playlist_tracks_del.js`; songs are matched by `fileid` (from
-    /// `/v4/get_list_all_file`), and `listid: 2` is the "liked songs" list.
+    /// 按歌曲在歌单内的 file id 从用户歌单移除歌曲。对照 `playlist_tracks_del.js`；歌曲按
+    /// `fileid`（来自 `/v4/get_list_all_file`）匹配，`listid: 2` 是「我喜欢的」列表。
     pub async fn playlist_remove_songs(
         &self,
         listid: i64,
@@ -319,10 +310,9 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Creates a new empty user playlist. Mirrors `playlist_add.js`
-    /// (`/cloudlist.service/v5/add_list`); the returned payload is checked by
-    /// `request`, callers normally resolve the new numeric `listid` from a
-    /// subsequent `user_playlists` call by name.
+    /// 新建一个空的用户歌单。对照 `playlist_add.js`（`/cloudlist.service/v5/add_list`）；
+    /// 返回载荷由 `request` 校验，调用方通常按名字从随后的 `user_playlists` 调用里解析出
+    /// 新的数字 `listid`。
     pub async fn create_playlist(&self, name: &str) -> Result<KugouResponse, KugouError> {
         let session = self.credentials();
         let userid = session.userid.unwrap_or(0);
@@ -352,10 +342,9 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Song search. The Android v3 endpoint was retired server-side (it
-    /// answers error 152 for the reference client too), so this uses the
-    /// web v2 endpoint with the web signature and its own param set
-    /// (clienttime in milliseconds, hex mid/uuid, appid 1014).
+    /// 歌曲搜索。Android v3 端点已被服务端下线（它对参考客户端也回 error 152），所以这里
+    /// 用 web v2 端点 + web 签名与它自己的一套参数（clienttime 为毫秒、hex 形式的
+    /// mid/uuid、appid 1014）。
     pub async fn search(
         &self,
         keyword: &str,
@@ -394,9 +383,8 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Lyric search: hash/keyword -> (id, accesskey) pairs.
-    /// Mirrors `search_lyric.js`: no default params; the reference client's
-    /// `notSign` flag is a no-op, so this stays android-signed.
+    /// 歌词搜索：hash/keyword -> (id, accesskey) 对。对照 `search_lyric.js`：不带默认
+    /// 参数；参考客户端的 `notSign` 旗标是空操作，所以这里仍走 android 签名。
     pub async fn search_lyric(
         &self,
         hash: &str,
@@ -416,7 +404,7 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Shared `/download` request of the lyric endpoints; only `fmt` differs.
+    /// 歌词端点共用的 `/download` 请求；只有 `fmt` 不同。
     async fn lyric_download(
         &self,
         id: &str,
@@ -433,8 +421,8 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Lyric download. With `fmt = "lrc"` the content is plain base64 LRC
-    /// text, which this method decodes. Mirrors `lyric.js`.
+    /// 歌词下载。`fmt = "lrc"` 时 content 是纯 base64 的 LRC 文本，本方法负责解码。
+    /// 对照 `lyric.js`。
     pub async fn lyric_lrc(&self, id: &str, accesskey: &str) -> Result<String, KugouError> {
         let response = self.lyric_download(id, accesskey, "lrc").await?;
         match response.body.get("content").and_then(Value::as_str) {
@@ -452,9 +440,8 @@ impl KugouClient {
         }
     }
 
-    /// Lyric download in KuGou Karaoke (KRC) format. The `content` field is
-    /// the raw base64 of an encrypted, zlib-compressed KRC document; decoding
-    /// lives in `ui::lyrics::krc::decrypt_krc` so the text stays opaque here.
+    /// 酷狗卡拉OK（KRC）格式的歌词下载。`content` 字段是加密且经 zlib 压缩的 KRC 文档的
+    /// 原始 base64；解密在 `ui::lyrics::krc::decrypt_krc`，所以此处文本保持不透明。
     pub async fn lyric_krc(&self, id: &str, accesskey: &str) -> Result<String, KugouError> {
         let response = self.lyric_download(id, accesskey, "krc").await?;
         Ok(response
@@ -465,12 +452,10 @@ impl KugouClient {
             .to_string())
     }
 
-    /// Rank list (`/ocean/v6/rank/list`), each entry carrying a cover.
-    /// Mirrors `RawRankApi.GetRankListAsync`, but with `withsong: 0`: the
-    /// server otherwise attaches the full song entities of every rank to
-    /// every entry (megabytes of JSON the UI never reads — the rank cards
-    /// only show name + cover), and the serde_json::Value tree inflated the
-    /// view-entry memory step by ~100 MB.
+    /// 榜单列表（`/ocean/v6/rank/list`），每一项都带一张封面。对照
+    /// `RawRankApi.GetRankListAsync`，但用 `withsong: 0`：否则服务端会把每个榜单的完整
+    /// 歌曲实体挂到每一项上（几 MB 的 JSON，UI 从不读——榜单卡片只显示名称 + 封面），
+    /// 而 serde_json::Value 树会让进入视图时的内存步进多出 ~100 MB。
     pub async fn rank_list(&self) -> Result<KugouResponse, KugouError> {
         let spec = KugouRequest::new(GATEWAY, "/ocean/v6/rank/list")
             .param("plat", 2)
@@ -479,8 +464,8 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Songs of one rank (`/openapi/kmr/v2/rank/audio`), paged. Requires the
-    /// `kg-tid: 369` header. Mirrors `RawRankApi.GetRankAudioAsync`.
+    /// 单个榜单的歌曲（`/openapi/kmr/v2/rank/audio`），分页。需要 `kg-tid: 369` 头。
+    /// 对照 `RawRankApi.GetRankAudioAsync`。
     pub async fn rank_audio(
         &self,
         rank_id: i64,
@@ -504,9 +489,8 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Daily recommend songs (`/everyday_song_recommend`), routed to the
-    /// everyday-recommend upstream via `x-router`. Mirrors
-    /// `RawDiscoveryApi.GetRecommendSongAsync`.
+    /// 每日推荐歌曲（`/everyday_song_recommend`），经 `x-router` 路由到每日推荐上游。
+    /// 对照 `RawDiscoveryApi.GetRecommendSongAsync`。
     pub async fn everyday_recommend(&self) -> Result<KugouResponse, KugouError> {
         let userid = self.credentials().userid.unwrap_or(0).to_string();
         let spec = KugouRequest::new(GATEWAY, "/everyday_song_recommend")
@@ -519,10 +503,9 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Play URL for one hash. Mirrors `song_url.js`: keyed and android-signed
-    /// (the module's `notSign` flag is a no-op in the reference client), with
-    /// a random per-request dfid. `free_part` returns the trial clip for
-    /// VIP-only songs (about 60s @128k).
+    /// 单个 hash 的播放 URL。对照 `song_url.js`：带 key、走 android 签名（该模块的
+    /// `notSign` 旗标在参考客户端里是空操作），dfid 每次请求随机。`free_part` 对仅 VIP
+    /// 可听的歌曲返回试听片段（约 60s @128k）。
     pub async fn song_url(
         &self,
         hash: &str,
@@ -556,24 +539,21 @@ impl KugouClient {
     }
 }
 
-/// Result of the daily free VIP claim flow. Mirrors the .NET reference
-/// client's youth/day-VIP benefit: receive one day, then upgrade it.
+/// 每日免费 VIP 领取流程的结果。对照 .NET 参考客户端的 youth/日 VIP 权益：先领一天，再升级。
 #[derive(Debug, Clone, PartialEq)]
 pub enum VipClaimOutcome {
-    /// This account earned one day of VIP today (fresh claim or an upgrade
-    /// of an existing `tvip` reward).
+    /// 该账号今天拿到了一天 VIP（全新领取，或把已有的 `tvip` 奖励升级）。
     Claimed,
-    /// Already covered for today — nothing to do.
+    /// 今天已经覆盖——无事可做。
     AlreadyClaimed,
-    /// The account is not logged in; no claim was attempted.
+    /// 账号未登录；没有尝试领取。
     NotLoggedIn,
-    /// Something failed server-side (record query or the claim itself).
+    /// 服务端某一步失败（记录查询或领取本身）。
     Failed { reason: String },
 }
 
 impl KugouClient {
-    /// Free one-day VIP for today. Mirrors `youth_day_vip.js`: fire and
-    /// forget against the youth recharge endpoint.
+    /// 今天免费的一天 VIP。对照 `youth_day_vip.js`：对 youth 充值端点发完不管。
     pub async fn receive_one_day_vip(&self) -> Result<KugouResponse, KugouError> {
         let today = today_utc();
         let spec = KugouRequest::new(GATEWAY, "/youth/v1/recharge/receive_vip_listen_song")
@@ -583,8 +563,7 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Upgrade the day's VIP reward (tvip -> dvip/svip). Mirrors
-    /// `youth_day_vip_upgrade.js`.
+    /// 升级当天的 VIP 奖励（tvip -> dvip/svip）。对照 `youth_day_vip_upgrade.js`。
     pub async fn upgrade_vip_reward(&self) -> Result<KugouResponse, KugouError> {
         let session = self.credentials();
         let spec = KugouRequest::new(GATEWAY, "/youth/v1/listen_song/upgrade_vip_reward")
@@ -594,33 +573,27 @@ impl KugouClient {
         self.request(spec).await
     }
 
-    /// Month of VIP claim records. Mirrors `youth_month_vip_record.js`; the
-    /// caller inspects `data/list` for today's entry to decide whether a
-    /// fresh claim is still needed.
+    /// 当月的 VIP 领取记录。对照 `youth_month_vip_record.js`；调用方检查 `data/list` 里
+    /// 今天那条，判断是否还需要一次全新领取。
     pub async fn get_vip_record(&self) -> Result<KugouResponse, KugouError> {
         let spec = KugouRequest::new(GATEWAY, "/youth/v1/activity/get_month_vip_record")
             .param("latest_limit", 100);
         self.request(spec).await
     }
 
-    /// Fetches VIP entitlement detail and caches it on the session so the
-    /// settings page can display it later. Returns the error so callers can
-    /// tell "fetch failed" apart from "the server says no active VIP".
+    /// 拉取 VIP 权益明细并缓存到会话上，好让设置页之后直接展示。把错误返回给调用方，
+    /// 以便区分「拉取失败」与「服务端说没有生效中的 VIP」。
     pub async fn refresh_vip_detail(&self) -> Result<(), KugouError> {
         let response = self.user_vip_detail().await?;
         self.store_vip_detail(response.body);
         Ok(())
     }
 
-    /// Ensures this account has VIP for today, but never hits the claim
-    /// endpoints more than once per calendar day while VIP is actually
-    /// active.
+    /// 保证该账号今天有 VIP，但在 VIP 确实生效期间，每个自然日最多只打一次领取端点。
     ///
-    /// Loop protection: the attempt marker is persisted on the first try so
-    /// concurrent startup/login triggers don't double-claim. The skip guard
-    /// additionally requires today's VIP to actually be active in the cached
-    /// detail; a failed attempt retries on the next app start or fresh login,
-    /// which is what keeps membership alive across login-expiry windows.
+    /// 防循环：首次尝试就把尝试标记持久化，于是并发的「启动/登录」触发不会重复领取。
+    /// 跳过守卫还额外要求今天的 VIP 在缓存明细里确实生效；失败的尝试会在下次应用启动或
+    /// 重新登录时重试，这正是让会员在登录过期窗口之间不断档的原因。
     pub async fn ensure_daily_vip(&self) -> VipClaimOutcome {
         if !self.logged_in() {
             return VipClaimOutcome::NotLoggedIn;
@@ -628,19 +601,16 @@ impl KugouClient {
 
         let today = today_utc();
 
-        // Same-day guard: skip only when today's attempt actually secured
-        // VIP. A failed attempt (e.g. one made while the login was expired,
-        // failing at get_vip_record with 51002) must not consume the day -
-        // without this the marker poisons the claim and it never retries
-        // even after the user signs in again. Retry frequency stays bounded:
-        // ensure_daily_vip only runs at app startup and after a fresh login.
+        // 同日守卫：只有今天的尝试确实拿到了 VIP 才跳过。失败的尝试（例如在登录已过期时
+        // 发起、在 get_vip_record 处以 51002 失败）不该把这一天用掉——否则标记会毒化领取，
+        // 即使用户重新登录也再也不重试。重试频率仍有界：ensure_daily_vip 只在应用启动和
+        // 重新登录之后运行。
         if self.last_claim_day().as_deref() == Some(today.as_str()) && self.has_active_vip() {
             return VipClaimOutcome::AlreadyClaimed;
         }
 
-        // Mark the attempt now so startup and login triggers racing in the
-        // same session don't double-claim; the guard reads real VIP state,
-        // so a failed attempt still retries on the next launch.
+        // 立刻标记这次尝试，好让同一会话里相互竞争的启动与登录触发不重复领取；守卫读的
+        // 是真实 VIP 状态，所以失败的尝试下次启动仍会重试。
         self.mark_claim_attempted();
 
         let record = match self.get_vip_record().await {
@@ -654,7 +624,7 @@ impl KugouClient {
 
         let list = record.body.pointer("/data/list").and_then(Value::as_array);
 
-        // Refresh cached VIP detail for the settings page (best-effort).
+        // 顺带刷新缓存的 VIP 明细给设置页（尽力而为）。
         let _ = self.refresh_vip_detail().await;
 
         let today_entry = list.and_then(|entries| {
@@ -664,7 +634,7 @@ impl KugouClient {
         });
 
         match today_entry {
-            // Not yet claimed today: claim a day then upgrade it.
+            // 今天还没领取：领一天再升级。
             None => {
                 if let Err(err) = self.receive_one_day_vip().await {
                     return VipClaimOutcome::Failed {
@@ -675,7 +645,7 @@ impl KugouClient {
                 let _ = self.refresh_vip_detail().await;
                 VipClaimOutcome::Claimed
             }
-            // Already claimed but still a base tvip reward, upgrade it.
+            // 已领取但仍是最基础的 tvip 奖励，升级它。
             Some(entry)
                 if entry.get("receive_vip").and_then(Value::as_i64) == Some(1)
                     && entry.get("vip_type").and_then(Value::as_str) == Some("tvip") =>
@@ -684,7 +654,7 @@ impl KugouClient {
                 let _ = self.refresh_vip_detail().await;
                 VipClaimOutcome::Claimed
             }
-            // Covered.
+            // 已覆盖。
             _ => VipClaimOutcome::AlreadyClaimed,
         }
     }

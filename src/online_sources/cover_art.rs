@@ -1,19 +1,13 @@
-//! Cover-art URL helpers for full-screen display.
+//! 全屏展示用的封面 URL 辅助。
 //!
-//! Search/queue payloads carry *thumbnail* cover URLs (KuGou serves
-//! `stdmusic/256`). Stretching those across the immersive backdrop magnifies
-//! them 4-8× and reads as mush. The provider hosts larger variants of the same
-//! art at well-known URL shapes: KuGou's `stdmusic` path takes a size segment
-//! (probed 2026-09-28: 480/1280/1920/2048/4096 all serve real pixels — but only
-//! for covers whose large variants were actually generated).
-//! [`display_cover_candidates`] lays out the size LADDER
-//! (largest variant first, the original thumbnail last) and
-//! [`fetch_display_cover_bytes_capped`] walks it, keeping the biggest variant
-//! that actually serves pixels and falling back to the original thumbnail
-//! only when every rung misses. A silent jump from a
-//! 404'd 2048 straight to the 256px thumbnail is exactly the "immersive
-//! backdrop is mush" report of 2026-09-29 — the ladder plus the winner log
-//! line make the resolution the backdrop actually gets observable.
+//! 搜索/队列载荷带的是*缩略图*封面 URL（酷狗给的是 `stdmusic/256`）。把它们铺满沉浸页背景
+//! 会放大 4-8 倍，看起来一团糊。音源主机在同一张大图的已知 URL 形状上提供更大幅的变体：
+//! 酷狗的 `stdmusic` 路径吃一个尺寸段（2026-09-28 实测：480/1280/1920/2048/4096 都能出
+//! 真像素——但仅当该封面的大图变体确实生成过）。
+//! [`display_cover_candidates`] 排出尺寸梯队（最大变体在前，原始缩略图在最后），
+//! [`fetch_display_cover_bytes_capped`] 沿梯队往下走，保留真正出得了像素的最大变体，只有
+//! 每一档都落空时才回落到原始缩略图。从 404 的 2048 静默跳到 256px 缩略图，正是 2026-09-29
+//! 「沉浸页背景糊」那条反馈的根因——梯队加上命中赢家日志，让背景实际拿到的分辨率可观测。
 
 use crate::sync::RecoveredMutex;
 use std::{
@@ -24,21 +18,16 @@ use std::{
 use anyhow::Context as _;
 use tracing::{info, warn};
 
-/// KuGou `stdmusic` size buckets tried from largest to smallest before the
-/// original URL. The host resizes on the fly to the requested bucket (probed
-/// 2026-09-28: 480/1280/1920/2048/4096 all serve real pixels) — but not
-/// every cover has every variant generated server-side, so the ladder keeps
-/// the largest variant that actually exists. 4096 leads the ladder since the
-/// 2026-09-29 "backdrop must be as sharp as the disc label" directive: at
-/// 4096 the backdrop's band resamples to ~1920 device px at ~0.47×, whose
-/// averaging matches the 4×-downscaled disc label; absent variants cost one
-/// 404 and are negative-cached for the session.
+/// 在原始 URL 之前从最大到最小尝试的酷狗 `stdmusic` 尺寸档位。主机按请求的档位即时缩放
+/// （2026-09-28 实测：480/1280/1920/2048/4096 都出真像素）——但不是每张封面都在服务端生成过
+/// 每个变体，所以梯队保留确实存在的最大变体。自 2026-09-29「背景必须与圆盘小封面同等清晰」
+/// 的指示起 4096 领衔梯队：4096 时背景的裁剪带以约 0.47× 重采样到 ~1920 设备像素，其平均
+/// 效应与 4× 缩采样的圆盘封面一致；缺失的变体只花一次 404 并按会话做负缓存。
 const KUGOU_SIZE_LADDER: [&str; 4] = ["4096", "2048", "1280", "480"];
 
-/// Display-variant URLs that returned no pixels this session. A 404 costs a
-/// round trip; without this set every backdrop retrieve for that cover would
-/// re-pay every failed rung before reaching the cached winner. Session-
-/// scoped on purpose: next launch retries, so a CDN hiccup self-heals.
+/// 本次会话里没返回过像素的展示变体 URL。一次 404 就是一次往返；没有这个集合的话，该封面
+/// 每次背景取图都会在抵达缓存里的赢家之前重复付每一档失败的代价。刻意按会话作用域：下次
+/// 启动会重试，所以 CDN 抽风能自愈。
 static VARIANT_MISSES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -50,8 +39,7 @@ fn note_variant_miss(url: &str) {
     VARIANT_MISSES.lock_recovered().insert(url.to_string());
 }
 
-/// The display-variant URLs for `url`, largest first, ending with the
-/// original thumbnail itself. Pure so the ladder order stays unit-testable.
+/// `url` 的展示变体 URL，最大的在前，末尾是原始缩略图本身。保持纯函数以便梯队顺序可单测。
 pub fn display_cover_candidates(url: &str) -> Vec<String> {
     let mut rungs = Vec::with_capacity(KUGOU_SIZE_LADDER.len() + 1);
     if url.contains("/stdmusic/") {
@@ -63,9 +51,8 @@ pub fn display_cover_candidates(url: &str) -> Vec<String> {
     rungs
 }
 
-/// KuGou album art lives at `…/stdmusic/{size}/{date}/{hash}.jpg` with size
-/// buckets 150/240/256/400/480. Bump whatever bucket the thumbnail carries to
-/// `size`; anything after `stdmusic/` is left untouched.
+/// 酷狗专辑封面位于 `…/stdmusic/{size}/{date}/{hash}.jpg`，尺寸档位有 150/240/256/400/480。
+/// 把缩略图所带的档位抬到 `size`；`stdmusic/` 之后的部分一律不动。
 fn rewrite_kugou_stdmusic_with(url: &str, size: &str) -> String {
     let marker = "/stdmusic/";
     let Some(pos) = url.find(marker).map(|pos| pos + marker.len()) else {
@@ -85,19 +72,13 @@ fn rewrite_kugou_stdmusic_with(url: &str, size: &str) -> String {
     out
 }
 
-/// Walks the provider's size ladder largest-first and returns the biggest
-/// variant that actually serves pixels, falling back to the original
-/// thumbnail when every rung misses. Failed rungs are remembered for the
-/// session so later retrieves for the same cover skip straight to the
-/// winning size. Both winners and misses go through the shared disk cache,
-/// so grid elements fetching the original thumbnail still share entries with
-/// this path.
+/// 按从大到小走音源的尺寸梯队，返回真正出得了像素的最大变体，每一档都落空时回落到原始
+/// 缩略图。失败的档位会按会话记住，所以之后同一封面的取图会直接跳到赢的尺寸。赢家与落空
+/// 都走共享磁盘缓存，因此取原始缩略图的网格元素仍与本路径共享条目。
 ///
-/// The ladder can be capped at `max_side` (0 = uncapped): thumbnail-
-/// class consumers (the 512px vinyl label) must not pay a full 4096² decode
-/// for a small display — display×4 already oversamples at the source, and a
-/// 2048 decode costs a quarter of a 4096 one (2026-09-29 audit). Rungs whose
-/// size cannot be parsed (foreign shapes) always pass.
+/// 梯队可以用 `max_side` 封顶（0 = 不封顶）：缩略图类消费方（512px 圆盘标签）不该为了小
+/// 尺寸展示付一次完整 4096² 解码——显示×4 在源头已经过采样，而 2048 解码的成本只有 4096 的
+/// 1/4（2026-09-29 审计）。尺寸解析不出来的档位（外来形状）一律放行。
 pub async fn fetch_display_cover_bytes_capped(
     url: &str,
     max_side: u32,
@@ -124,9 +105,8 @@ pub async fn fetch_display_cover_bytes_capped(
             }
             Ok(None) => note_variant_miss(&rung),
             Err(error) => {
-                // Transient (timeout/DNS/TLS) failures must not blacklist the
-                // rung for the whole session: only "server says no pixels"
-                // (Ok(None)) is a real miss.
+                // 瞬态失败（超时/DNS/TLS）不该把这一档整个会话拉黑：只有「服务端说没有像素」
+                // （Ok(None)）才是真落空。
                 warn!(target: "backdrop", %error, url = %rung, "display cover variant fetch failed");
                 last_error = Some(error);
             }
@@ -138,9 +118,8 @@ pub async fn fetch_display_cover_bytes_capped(
     }
 }
 
-/// Largest side of a ladder rung URL, when its shape carries one: KuGou
-/// `…/stdmusic/{size}/…`. Unknown shapes return None and are never
-/// capped out.
+/// 梯队某档 URL 的最大边长（当其形状带边长时）：酷狗 `…/stdmusic/{size}/…`。
+/// 未知形状返回 None，永不被封顶掉。
 fn rung_size(url: &str) -> Option<u32> {
     if let Some(rest) = url.split("/stdmusic/").nth(1) {
         return rest
@@ -155,7 +134,7 @@ fn rung_size(url: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
-    /// Largest rung of the ladder — what the old single-shot rewrite did.
+    /// 梯队的最大档——旧的单次重写做的就是这件事。
     fn largest_variant(url: &str) -> String {
         display_cover_candidates(url).swap_remove(0)
     }
@@ -167,7 +146,7 @@ mod tests {
             largest_variant(url),
             "http://imge.kugou.com/stdmusic/4096/20260306/20260306201650909877.jpg"
         );
-        // Already-large URLs still bump to the top rung (2048 → 4096).
+        // 已经很大的 URL 仍然抬到顶档（2048 → 4096）。
         assert_eq!(
             largest_variant("https://imgessl.kugou.com/stdmusic/2048/20200101/abcdef.jpg"),
             "https://imgessl.kugou.com/stdmusic/4096/20200101/abcdef.jpg"
@@ -195,7 +174,7 @@ mod tests {
         let url = "https://example.com/cover/art.png";
         assert_eq!(largest_variant(url), url);
         assert_eq!(display_cover_candidates(url), vec![url.to_string()]);
-        // Non-numeric size segments are left alone.
+        // 非数字的尺寸段保持原样。
         let weird = "http://imge.kugou.com/stdmusic/mid/20200101/x.jpg";
         assert_eq!(largest_variant(weird), weird);
     }
@@ -210,7 +189,7 @@ mod tests {
             rung_size("http://imge.kugou.com/stdmusic/256/20260306/x.jpg"),
             Some(256)
         );
-        // Unknown shapes are never capped out.
+        // 未知形状永不被封顶。
         assert_eq!(rung_size("https://example.com/cover/art.png"), None);
     }
 }

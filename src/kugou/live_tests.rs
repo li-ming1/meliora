@@ -1,10 +1,8 @@
-//! Live tests against the real KuGou servers. Both are `#[ignore]`d: run
-//! them manually with
-//! `cargo test --release --features kugou live_ -- --ignored --nocapture`.
+//! 打真实酷狗服务器的联机测试。两个都标了 `#[ignore]`：手动运行用
+//! `cargo test --release --features kugou live_ -- --ignored --nocapture`。
 //!
-//! `live_offline_flow` is fully automatic (device registration, search,
-//! play URL, lyric). `live_qr_login` needs a human to scan a QR code with
-//! the KuGou mobile app, then lists the logged-in user's playlists.
+//! `live_offline_flow` 全自动（设备注册、搜索、播放 URL、歌词）。`live_qr_login` 需要人
+//! 用酷狗移动端 App 扫一次二维码，然后列出已登录用户的歌单。
 
 use super::KugouClient;
 use super::api::QrStatus;
@@ -21,16 +19,14 @@ fn first_search_result(body: &serde_json::Value) -> Option<serde_json::Value> {
         .cloned()
 }
 
-/// First of the hash fields the search API is known to use (legacy
-/// `FileHash`, then `hash`).
+/// 搜索 API 已知会用到的 hash 字段里取第一个（历史遗留的 `FileHash`，然后是 `hash`）。
 fn song_hash(song: &serde_json::Value) -> Option<&str> {
     song.get("FileHash")
         .or_else(|| song.get("hash"))
         .and_then(|v| v.as_str())
 }
 
-/// (album_audio_id, album_id) for `song_url`, each defaulting to 0 when the
-/// search result lacks the field.
+/// `song_url` 要的 (album_audio_id, album_id)，搜索结果缺字段时各自默认为 0。
 fn song_ids(song: &serde_json::Value) -> (i64, i64) {
     let album_audio_id = song
         .get("MixSongID")
@@ -52,7 +48,7 @@ fn live_offline_flow() {
     let report = crate::RUNTIME.block_on(async {
         let mut report = String::new();
 
-        // device registration happens implicitly inside the client session
+        // 设备注册在客户端会话内部隐式完成
         report.push_str(&format!("dfid: {}\n", client.credentials().dfid));
 
         let search = client.search("周杰伦", 1, 5).await;
@@ -136,13 +132,13 @@ fn live_offline_flow() {
     println!("{report}");
 }
 
-/// End-to-end playback path test: search -> play URL -> open the stream
-/// through the HTTP media source -> start symphonia decode -> read metadata.
+/// 端到端播放路径测试：搜索 -> 播放 URL -> 经 HTTP 媒体源打开流 -> 启动 symphonia 解码
+/// -> 读元数据。
 #[test]
 #[ignore = "live network call against KuGou servers"]
 fn live_http_source_decodes_kugou_stream() {
     let client = client();
-    // 1. resolve a play URL inside the runtime
+    // 1. 在运行时里解析出一个播放 URL
     let (url, _time_length) = crate::RUNTIME.block_on(async {
         let resp = client.search("晴天 周杰伦", 1, 1).await.expect("search");
         let song = first_search_result(&resp.body).expect("search result");
@@ -169,9 +165,8 @@ fn live_http_source_decodes_kugou_stream() {
         (url, time_length)
     });
 
-    // 2. open the stream OUTSIDE the runtime, like the playback thread does.
-    // (open_http_media calls Runtime::block_on internally, so it must not run
-    // while another block_on is in progress.)
+    // 2. 在运行时之外打开流，和播放线程的做法一致。
+    // （open_http_media 内部会调 Runtime::block_on，所以另一个 block_on 正在进行时不能跑它。）
     let path = std::path::PathBuf::from(&url);
     let mut stream =
         crate::media::http_source::open_http_media(&path, None).expect("open http stream");
@@ -264,8 +259,8 @@ fn live_qr_login() {
     });
 }
 
-/// Rank list + rank songs + daily recommend endpoints. Prints the raw shapes
-/// (once) so the parsers in `ui::kugou` can be adjusted if the API drifts.
+/// 榜单列表 + 榜单歌曲 + 每日推荐端点。打印原始结构（各一次），好让 API 漂移时能调整
+/// `ui::kugou` 里的解析器。
 #[test]
 #[ignore = "live network call against KuGou servers"]
 fn live_rank_and_recommend() {

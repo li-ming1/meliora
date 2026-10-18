@@ -1,7 +1,6 @@
-//! Parse NetEase Cloud Music / QQ Music playlist share links into plain song
-//! names, so they can be matched back into KuGou and imported as a new
-//! playlist. Purely HTTP + JSON; no KuGou signing is involved here.
-//! Mirrors `KuGou.Net/ExternalPlaylists/*` in spirit and endpoint.
+//! 把网易云音乐 / QQ 音乐的歌单分享链接解析成纯歌名，以便回填匹配进酷狗并导入成新歌单。
+//! 纯 HTTP + JSON；这里不涉及任何酷狗签名。
+//! 思路与端点都对照 `KuGou.Net/ExternalPlaylists/*`。
 
 use std::{sync::OnceLock, time::Duration};
 
@@ -14,8 +13,7 @@ use zed_reqwest::{
 
 use super::crypto;
 
-/// A parsed external playlist: playlist name and a flat list of song titles
-/// (matching into KuGou happens later).
+/// 解析出的外部歌单：歌单名 + 一层扁平的歌名列表（匹配进酷狗发生在之后）。
 pub struct ExternalPlaylist {
     pub name: String,
     pub songs: Vec<String>,
@@ -60,7 +58,7 @@ fn netease_no_id_error() -> String {
     .to_string()
 }
 
-/// Parses a pasted NetEase/QQ share text into an `ExternalPlaylist`.
+/// 把粘贴进来的网易云/QQ 分享文本解析成 `ExternalPlaylist`。
 pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
     let url = extract_url(text)
         .ok_or_else(|| tr!("KUGOU_IMPORT_NO_VALID_LINK", "No valid link found").to_string())?;
@@ -76,7 +74,7 @@ pub async fn parse_share_link(text: &str) -> Result<ExternalPlaylist, String> {
     }
 }
 
-/// Copies the URL out of arbitrary share text (handles trailing punctuation).
+/// 从任意分享文本里抄出 URL（处理结尾标点）。
 fn extract_url(text: &str) -> Option<String> {
     let trimmed = text.trim();
     let start = trimmed.find("http")?;
@@ -107,8 +105,8 @@ fn host_of(url: &str) -> String {
 
 fn hosted(url: &str, needles: &[&str]) -> bool {
     let host = host_of(url);
-    // Exact host or proper subdomain: a plain `contains` would let
-    // `music.163.com.evil.com` match the `music.163.com` needle.
+    // 精确主机名或真子域：单纯 `contains` 会让 `music.163.com.evil.com` 命中
+    // `music.163.com` 这根针。
     needles
         .iter()
         .any(|n| host == *n || host.ends_with(&format!(".{n}")))
@@ -125,10 +123,9 @@ fn query_value(query: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Value of a bare `id=NNN` whose key ends exactly at `id`: the char before
-/// the match must not be `[A-Za-z0-9_]` (else it is the tail of a longer key
-/// such as `mid=`/`tid=`/`songid=`/`userid=`), and scanning continues past
-/// such longer keys instead of returning their value.
+/// 取裸 `id=NNN` 的值，其键必须正好止于 `id`：匹配位置前的字符不能是 `[A-Za-z0-9_]`（否则它是
+/// `mid=`/`tid=`/`songid=`/`userid=` 这类更长键的尾巴），且扫描要越过这些更长的键继续，
+/// 而不是返回它们的值。
 fn bare_id_value(haystack: &str) -> Option<&str> {
     let mut from = 0;
     while let Some(pos) = haystack[from..].find("id=") {
@@ -150,7 +147,7 @@ fn bare_id_value(haystack: &str) -> Option<&str> {
     None
 }
 
-/// Follows a short link and returns its final URL.
+/// 跟进短链并返回它的最终 URL。
 async fn resolve(url: &str) -> Result<String, String> {
     let resp = http().get(url).send().await.map_err(|e| {
         tr!(
@@ -173,7 +170,7 @@ fn dedupe(v: Vec<String>) -> Vec<String> {
     v.into_iter().filter(|_| flags.next().unwrap()).collect()
 }
 
-// ==== NetEase Cloud Music ====
+// ==== 网易云音乐 ====
 
 fn netease_id(url: &str) -> Option<String> {
     if let Some(id) = query_value(url, "id") {
@@ -192,8 +189,7 @@ fn netease_id(url: &str) -> Option<String> {
 async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
     let url = if hosted(raw, &["163cn.tv"]) {
         let resolved = resolve(raw).await?;
-        // Re-verify after redirects: a shortlink must land on an expected host
-        // before we treat its contents as a NetEase playlist reference.
+        // 重定向后重新校验：短链必须落在预期主机上，我们才能把它的内容当作网易云歌单引用。
         if !hosted(&resolved, &["music.163.com"]) {
             return Err(unsupported_link_error());
         }
@@ -202,9 +198,8 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
         raw.to_string()
     };
     let id = netease_id(&url).ok_or_else(netease_no_id_error)?;
-    // The id goes straight into a form body: reject anything that could add
-    // extra parameters (the bare-id fallback already guarantees digits, but
-    // the query/fragment paths above do not).
+    // id 会直接进 form body：拒绝任何可能追加额外参数的东西（裸 id 兜底已保证是数字，
+    // 但上面的 query/fragment 路径没有）。
     if !id.chars().all(|c| c.is_ascii_digit()) {
         return Err(netease_no_id_error());
     }
@@ -264,7 +259,7 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
         .collect();
 
     let songs = if ids.is_empty() {
-        // fallback: the playlist payload may embed partial `tracks`
+        // 兜底：歌单载荷可能内嵌部分 `tracks`
         playlist
             .get("tracks")
             .and_then(Value::as_array)
@@ -290,7 +285,7 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
     Ok(ExternalPlaylist { name, songs })
 }
 
-/// Ids per `/api/v3/song/detail` request.
+/// 每次 `/api/v3/song/detail` 请求所带的 id 数。
 const NETEASE_SONG_DETAIL_CHUNK: usize = 400;
 
 async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
@@ -317,9 +312,8 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
     out
 }
 
-/// One `/api/v3/song/detail` request for a chunk of ids. Every failure is
-/// logged with the chunk index and reported as `None`: a bad chunk costs at
-/// most its own songs, not the whole import.
+/// 为一块 id 发一次 `/api/v3/song/detail` 请求。每次失败都带块序号记日志并按 `None` 上报：
+/// 一块坏掉最多损失它自己的那些歌，而不是整次导入。
 async fn netease_song_detail(
     headers: &HeaderMap,
     chunk_idx: usize,
@@ -366,7 +360,7 @@ async fn netease_song_detail(
         .ok()
 }
 
-// ==== QQ Music ====
+// ==== QQ 音乐 ====
 
 fn qq_id(url: &str) -> Option<i64> {
     if let Some(pos) = url.find("playlist/") {
@@ -385,7 +379,7 @@ fn qq_id(url: &str) -> Option<i64> {
     {
         return Some(id);
     }
-    // generic trailing `id=NNN`, ignoring longer keys like `mid=`/`songid=`
+    // 通用的尾部 `id=NNN`，忽略 `mid=`/`songid=` 这类更长的键
     bare_id_value(url)?.parse().ok()
 }
 
@@ -399,9 +393,9 @@ const QQ_PLATFORMS: [&str; 7] = [
     "windows",
 ];
 
-/// Songs requested per page when walking a QQ playlist (`song_num` param).
+/// 遍历 QQ 歌单时每页请求的歌曲数（`song_num` 参数）。
 const QQ_PAGE_SIZE: i64 = 30;
-/// Hard cap on the pagination cursor so a bogus `total` can't loop forever.
+/// 分页游标的硬上限，避免一个胡来的 `total` 让循环永不结束。
 const QQ_MAX_PAGE_BEGIN: i64 = 10_000;
 
 struct QqPage {
@@ -413,7 +407,7 @@ struct QqPage {
 async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
     let url = if raw.contains("fcgi-bin") {
         let resolved = resolve(raw).await?;
-        // Redirect re-verification, same rationale as the netease path.
+        // 重定向后的重新校验，缘由与 netease 路径相同。
         if !hosted(
             &resolved,
             &["y.qq.com", "qqmusic.qq.com", "music.qq.com", "c.y.qq.com"],
@@ -448,7 +442,7 @@ async fn qq(raw: &str) -> Result<ExternalPlaylist, String> {
                 songs.extend(page.songs);
                 begin += QQ_PAGE_SIZE;
             }
-            // empty page: legitimate end of the list, no log needed
+            // 空页：列表的正常结束，不需要日志
             Ok(_) => break,
             Err(err) => {
                 tracing::warn!(id, begin, %err, "QQ playlist page fetch failed; stopping pagination");
@@ -556,10 +550,9 @@ fn qq_body(id: i64, platform: &str, begin: i64, num: i64) -> String {
     )
 }
 
-/// `zzb` sign for the u6 gateway (`sign=` query param): picks characters out
-/// of the uppercase MD5, XOR-folds the hex bytes with `L1` and re-encodes
-/// them through the base64 table `T`. The constants, the index picks and the
-/// order of operations are the scheme itself — change nothing here.
+/// u6 网关的 `zzb` sign（`sign=` 查询参数）：从大写 MD5 里按下标挑字符，把 hex 字节与 `L1`
+/// 异或折叠，再经 base64 表 `T` 重新编码。常量、下标挑取与运算顺序就是这个方案本身——
+/// 这里什么都不要改。
 fn qq_sign(param: &str) -> String {
     const L1: [u8; 16] = [
         212, 45, 80, 68, 195, 163, 163, 203, 157, 220, 254, 91, 204, 79, 104, 6,
@@ -612,8 +605,8 @@ mod tests {
 
     #[test]
     fn bare_id_matches_exact_keys_and_skips_longer_key_tails() {
-        // exact `id=` keys keep working, including first-param links where
-        // `query_value` cannot match because the host shares the first segment
+        // 精确 `id=` 键照旧可用，包括第一个参数的 host 与首段混在一起、`query_value`
+        // 匹配不上的那种链接
         assert_eq!(
             bare_id_value("https://y.qq.com/taoge.html?id=456&host=1"),
             Some("456")
@@ -624,13 +617,13 @@ mod tests {
         );
         assert_eq!(bare_id_value("id=1"), Some("1"));
         assert_eq!(bare_id_value("…#id=456"), Some("456"));
-        // longer keys ending in `id=` are skipped, not mistaken for the id
+        // 以 `id=` 结尾的更长键会被跳过，不会被误认作 id
         assert_eq!(bare_id_value("…/playlist?mid=88"), None);
         assert_eq!(bare_id_value("…taoge.html?songid=456"), None);
         assert_eq!(bare_id_value("…?userid=123"), None);
-        // a real `id=` after a longer key is still found
+        // 更长键之后真正的 `id=` 仍然能找到
         assert_eq!(bare_id_value("…?mid=1&id=2"), Some("2"));
-        // empty value terminates as None
+        // 空值以 None 结束
         assert_eq!(bare_id_value("…?id=&tid=5"), None);
     }
 }

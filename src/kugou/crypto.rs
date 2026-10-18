@@ -1,5 +1,5 @@
-//! KuGou protocol crypto: MD5 digests and raw (zero-padded) RSA with the
-//! hardcoded 1024-bit service key. Mirrors `KuGouMusicApi/util/crypto.js`.
+//! 酷狗协议加密：MD5 摘要，以及用硬编码 1024-bit 服务钥的原始（零填充）RSA。
+//! 对照 `KuGouMusicApi/util/crypto.js`。
 
 use std::sync::OnceLock;
 
@@ -8,8 +8,7 @@ use num_bigint_dig::BigUint;
 
 const PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDECi0Np2UR87scwrvTr72L6oO0\n1rBbbBPriSDFPxr3Z5syug0O24QyQO8bg27+0+4kBzTBTBOZ/WWU0WryL1JSXRTX\nLgFVxtzIY41Pe7lPOgsfTCn5kZcvKhYKJesKnnJDNr5/abvTGf+rHG3YRwsCHcQ0\n8/q6ifSioBszvb3QiwIDAQAB\n-----END PUBLIC KEY-----";
 
-/// Random alphanumeric string from the same charset as the JS client
-/// (digits + uppercase letters).
+/// 与 JS 客户端同一字符集的随机字母数字串（数字 + 大写字母）。
 pub fn random_string(len: usize) -> String {
     const CHARSET: &[u8] = b"1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     (0..len)
@@ -17,7 +16,7 @@ pub fn random_string(len: usize) -> String {
         .collect()
 }
 
-/// Lowercase hex, two digits per byte.
+/// 小写 hex，每字节两位。
 fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -46,8 +45,7 @@ pub fn md5_hex(data: &str) -> String {
     hex_lower(&hasher.finalize())
 }
 
-/// Device MID: the MD5 of the GUID interpreted as a 128-bit big-endian
-/// number and rendered in decimal (mirrors `calculateMid` in util.js).
+/// 设备 MID：把 MD5 结果按 128-bit 大端数解释并用十进制表示（对照 util.js 的 `calculateMid`）。
 pub fn calculate_mid(input: &str) -> String {
     let digest = parse_hex(&md5_hex(input)).expect("md5 hex is always valid");
     BigUint::from_bytes_be(&digest).to_string()
@@ -142,14 +140,12 @@ fn parse_spki_pem(pem: &str) -> Option<(BigUint, BigUint)> {
     ))
 }
 
-/// `cryptoRSAEncrypt`: textbook RSA on zero-padded input (no OAEP/PKCS#1),
-/// returns lowercase hex. Callers that need uppercase do it themselves.
+/// `cryptoRSAEncrypt`：对零填充输入做教科书式 RSA（无 OAEP/PKCS#1），返回小写 hex。
+/// 需要大写的调用方自己转。
 ///
-/// The input is zero-padded into a single fixed `key_len` (128-byte) RSA
-/// block, so `data` must not exceed 128 bytes; oversized input returns None
-/// (the sole caller maps that to `KugouError::Api` instead of panicking —
-/// the token in the envelope is server-controlled, and `panic = "abort"`
-/// would kill the whole process on a poisoned persisted session).
+/// 输入被零填充进单个固定 `key_len`（128 字节）的 RSA 分块，所以 `data` 不得超过 128 字节；
+/// 超界返回 None（唯一调用方把它映射成 `KugouError::Api` 而不是 panic——信封里的 token 由
+/// 服务端控制，而 `panic = "abort"` 会在被毒化的持久会话上杀掉整个进程）。
 pub fn rsa_raw_encrypt(data: &str) -> Option<String> {
     let (n, e) = service_key();
     let key_len = n.bits().div_ceil(8);
@@ -181,7 +177,7 @@ mod tests {
     fn mid_is_decimal_of_md5_hex() {
         let mid = calculate_mid("550e8400-e29b-41d4-a716-446655440000");
         assert!(mid.chars().all(|c| c.is_ascii_digit()));
-        assert_eq!(mid.len(), 39); // 128-bit number, no leading zero
+        assert_eq!(mid.len(), 39); // 128-bit 数，无前导零
     }
 
     #[test]
@@ -203,7 +199,7 @@ mod tests {
 
     #[test]
     fn rsa_raw_encrypt_accepts_full_block() {
-        // 128 bytes = key_len, the documented upper bound, still encrypts.
+        // 128 字节 = key_len，即文档写明的上界，仍然加密得出结果。
         let hex = rsa_raw_encrypt(&"a".repeat(128)).unwrap();
         assert_eq!(hex.len(), 256);
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));

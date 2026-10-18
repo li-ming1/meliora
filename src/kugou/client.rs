@@ -1,5 +1,5 @@
-//! KuGou HTTP client: device identity, session persistence and the signed
-//! gateway request engine, mirroring `KuGouMusicApi/util/request.js`.
+//! 酷狗 HTTP 客户端：设备身份、会话持久化与签名的网关请求引擎，
+//! 对照 `KuGouMusicApi/util/request.js`。
 
 use std::{
     collections::BTreeMap,
@@ -18,13 +18,12 @@ use crate::session_io;
 use crate::sync::RecoveredMutex;
 use crate::toasts::{Toast, emit_toast};
 
-/// Payload error_code that empirically accompanies requests made with an
-/// expired KuGou login (playlists, VIP detail, ...): the same session sees
-/// these while stream URLs signed for the old token return 403.
+/// 实测伴随「酷狗登录已过期」请求的 payload error_code（歌单、VIP 明细等）：同一会话会
+/// 看到这些错误，而为旧 token 签名的流 URL 则返回 403。
 const KUGOU_ERR_LOGIN_EXPIRED: i64 = 20017;
 
-/// How long between "login expired" toasts: the reminder must not re-fire on
-/// every failing request, but should re-appear if a later window also fails.
+/// 「登录已过期」toast 的间隔：提醒不能在每个失败的请求上重复弹，但后面的时间窗也失败时
+/// 应当再现。
 const LOGIN_EXPIRED_TOAST_THROTTLE: Duration = Duration::from_secs(30 * 60);
 
 fn login_expired_toast_state() -> &'static Mutex<Option<Instant>> {
@@ -58,7 +57,7 @@ pub const CLIENTVER: i64 = 11440;
 pub const SRCAPPID: i64 = 2919;
 const USER_AGENT: &str = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi";
 
-/// Seconds since the Unix epoch, or 0 if the clock is before it.
+/// Unix epoch 起的秒数；时钟早于 epoch 时为 0。
 pub(super) fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -66,7 +65,7 @@ pub(super) fn unix_now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Today's UTC date as `yyyy-MM-dd`, used as the daily VIP-claim marker.
+/// 今天的 UTC 日期，格式 `yyyy-MM-dd`，用作每日 VIP 领取的标记。
 pub(super) fn today_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
@@ -79,41 +78,36 @@ pub enum KugouError {
     Api {
         status: i64,
         msg: String,
-        /// Payload-level `error_code` when the body carried one; callers
-        /// match on this instead of the message text.
+        /// 载荷层的 `error_code`（响应体带了才非空）；调用方按它匹配，而不是按消息文本。
         error_code: Option<i64>,
     },
 }
 
-/// Persistent device + login state, stored as `kugou_session.json` next to
-/// the other app data.
+/// 持久的设备 + 登录状态，与其他应用数据并存为 `kugou_session.json`。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KugouSession {
     pub guid: String,
-    /// Request-time mid: `calculate_mid(dfid)`, refreshed whenever the
-    /// session enters memory (older files stored `calculate_mid(guid)`,
-    /// a value no request ever signed with).
+    /// 请求期的 mid：`calculate_mid(dfid)`，每次会话进入内存时刷新（旧文件存的是
+    /// `calculate_mid(guid)`，而没有任何请求用那个值签过名）。
     #[serde(default)]
     pub mid: String,
     pub dev: String,
     pub dfid: String,
     pub token: Option<String>,
     pub userid: Option<i64>,
-    /// Optional VIP detail fetched from `/v1/get_union_vip` for display.
+    /// 可选的 VIP 明细，从 `/v1/get_union_vip` 取来用于展示。
     pub vip_detail: Option<Value>,
-    /// UTC date (yyyy-MM-dd) the daily VIP claim was last attempted. Used
-    /// to avoid re-claiming (and re-hitting the endpoint) across restarts on
-    /// the same day.
+    /// 最后一次尝试每日 VIP 领取的 UTC 日期（yyyy-MM-dd）。用于避免同一天跨重启重复领取
+    /// （以及重复打端点）。
     pub last_claim_day: Option<String>,
     pub nickname: Option<String>,
     pub avatar_url: Option<String>,
 }
 
 impl KugouSession {
-    /// Fresh random device identity (mirrors the cookie bootstrap in
-    /// server.js: guid = md5(uuid4), dev random). Requests sign with
-    /// `mid = calculate_mid(dfid)`, so the stored mid derives from the
-    /// dfid (initially "-"), not the guid.
+    /// 全新的随机设备身份（对照 server.js 里的 cookie 引导：guid = md5(uuid4)，dev 随机）。
+    /// 请求用 `mid = calculate_mid(dfid)` 签名，所以存下来的 mid 源自 dfid（初始为 "-"）
+    /// 而不是 guid。
     pub fn generate() -> Self {
         let guid = crypto::md5_hex(&crypto::uuid_v4());
         let dfid = "-".to_string();
@@ -143,15 +137,15 @@ pub struct KugouRequest {
     pub path: &'static str,
     pub method: Method,
     pub query: BTreeMap<String, String>,
-    /// Extra headers sent verbatim (e.g. `kg-tid` on rank endpoints).
+    /// 原样发送的额外请求头（例如榜单端点上的 `kg-tid`）。
     pub headers: Vec<(String, String)>,
-    /// JSON body: serialized once, that exact string is signed and sent.
+    /// JSON 请求体：只序列化一次，签名与发送用的都是那个精确字符串。
     pub json_body: Option<Value>,
     pub x_router: Option<&'static str>,
     pub encrypt: Encrypt,
-    /// adds the `key` parameter required by /v5/url
+    /// 加上 /v5/url 要求的 `key` 参数
     pub need_key: bool,
-    /// replaces dfid with a random one for this request only
+    /// 仅对本次请求把 dfid 换成随机值
     pub random_dfid: bool,
     pub clear_default_params: bool,
 }
@@ -230,14 +224,11 @@ pub struct KugouResponse {
     pub body: Value,
 }
 
-/// Shared profile shape lives in `session_io`; re-exported so the existing
-/// `client::UserProfile` paths keep resolving.
+/// 共享的资料结构住在 `session_io`；这里再导出，让既有的 `client::UserProfile` 路径继续可解析。
 pub use crate::session_io::UserProfile;
 
-/// Narrow copy of the session fields the API methods build their signed
-/// requests from. Cloning the whole session would drag along the potentially
-/// large `vip_detail` JSON tree; request-building callers only ever read
-/// these scalars.
+/// API 方法构造签名请求时所读的会话字段的窄拷贝。整体 clone 会话会连带可能很大的
+/// `vip_detail` JSON 树；构造请求的调用方只会读这些标量。
 #[derive(Clone, Debug)]
 pub struct KugouCredentials {
     pub guid: String,
@@ -258,18 +249,17 @@ impl KugouClient {
         let session_path = data_dir.join("kugou_session.json");
         let mut session =
             session_io::load(&session_path, "kugou").unwrap_or_else(KugouSession::generate);
-        // The dfid never changes in-process, so this rebuild is the one
-        // per-launch cost that lets `build_signed` trust the cached mid.
+        // dfid 在进程内从不改变，所以这次重建是每次启动唯一的一次成本，换来 `build_signed`
+        // 可以放心使用缓存的 mid。
         session.mid = crypto::calculate_mid(&session.dfid);
         Self {
-            // a hung gateway request must not pin `pending_fetches` forever:
-            // without a timeout a track that fails to resolve can never be
-            // retried (the merge guard drops every later click)
+            // 卡死的网关请求不能把 `pending_fetches` 永久钉住：没有超时的话，一首解析失败
+            // 的曲目将永远无法重试（合并守卫会丢掉之后的每次点击）
             http: match session_io::gateway_http_builder().build() {
                 Ok(client) => client,
                 Err(error) => {
-                    // Match the updater/importer fallback: a TLS backend that
-                    // refuses the tuned builder should not abort startup.
+                    // 与更新器/导入器的退化做法保持一致：拒绝接受这个定制 builder 的 TLS
+                    // 后端不该让启动中止。
                     tracing::warn!(%error, "kugou: falling back to the default HTTP client");
                     Client::new()
                 }
@@ -285,8 +275,8 @@ impl KugouClient {
         self.session.lock_recovered()
     }
 
-    /// Narrow credential read for request-building callers (see
-    /// [`KugouCredentials`]); avoids cloning `vip_detail` per request.
+    /// 供构造请求的调用方做的窄凭据读取（见 [`KugouCredentials`]）；避免每个请求 clone
+    /// 一次 `vip_detail`。
     pub fn credentials(&self) -> KugouCredentials {
         let session = self.session_guard();
         KugouCredentials {
@@ -306,20 +296,16 @@ impl KugouClient {
         let mut session = self.session_guard();
         session.token = Some(token);
         session.userid = Some(userid);
-        // VIP detail belongs to the previous login: drop it so the settings
-        // page shows the fresh account's status (fetch_profile refreshes it).
+        // VIP 明细属于上一次登录：丢掉它，好让设置页显示新账号的状态（fetch_profile 会刷新）。
         session.vip_detail = None;
-        // A claim attempt made under the previous (possibly expired) login
-        // must not consume today's attempt for the fresh session: an expired
-        // login fails the claim at get_vip_record and would otherwise block
-        // retrying until tomorrow even though the user just signed in again.
+        // 在上一次（可能已过期）登录下做的领取尝试，不该替新会话把今天的尝试用掉：过期登录
+        // 会在 get_vip_record 处让领取失败，否则即使用户刚重新登录，也会一直挡住重试直到明天。
         session.last_claim_day = None;
         session_io::save(&*session, &self.session_path, "kugou");
-        // The toast path takes its own throttle lock and touches the UI layer;
-        // don't make concurrent request builders wait on the session mutex
-        // while that runs.
+        // toast 路径会拿它自己的节流锁并触碰 UI 层；别让并发的请求构造者在会话互斥锁上等
+        // 它跑完。
         drop(session);
-        // A fresh login may outlive the previous throttle window's start.
+        // 新登录可能晚于上一个节流窗口的起点。
         reset_login_expired_toast();
     }
 
@@ -333,7 +319,7 @@ impl KugouClient {
         session_io::save(&*session, &self.session_path, "kugou");
     }
 
-    /// Profile from the persisted session, without touching the network.
+    /// 从持久化会话取资料，不碰网络。
     pub fn cached_user_profile(&self) -> Option<UserProfile> {
         let session = self.session_guard();
         let nickname = session.nickname.clone()?;
@@ -346,7 +332,7 @@ impl KugouClient {
         })
     }
 
-    /// Persists the fetched profile for later sessions.
+    /// 把取到的资料持久化给之后的会话。
     pub fn update_user_profile(&self, profile: &UserProfile) {
         let mut session = self.session_guard();
         session.nickname = Some(profile.nickname.clone());
@@ -354,14 +340,13 @@ impl KugouClient {
         session_io::save(&*session, &self.session_path, "kugou");
     }
 
-    /// UTC date string of the last daily-VIP claim attempt (yyyy-MM-dd),
-    /// or `None` if never attempted. Persisted so a failed claim isn't retried
-    /// over and over across restarts on the same day.
+    /// 最后一次每日 VIP 领取尝试的 UTC 日期串（yyyy-MM-dd），从未尝试过则为 `None`。持久化
+    /// 它，好让失败的领取不会在同一天跨重启反复重试。
     pub fn last_claim_day(&self) -> Option<String> {
         self.session_guard().last_claim_day.clone()
     }
 
-    /// Marks today's VIP claim as attempted and persists it.
+    /// 把今天的 VIP 领取标为已尝试并持久化。
     pub fn mark_claim_attempted(&self) {
         let today = today_utc();
         let mut session = self.session_guard();
@@ -369,22 +354,20 @@ impl KugouClient {
         session_io::save(&*session, &self.session_path, "kugou");
     }
 
-    /// Stores the raw `/v1/get_union_vip` payload for the settings page to
-    /// render VIP status without another request later.
+    /// 存下 `/v1/get_union_vip` 的原始载荷，让设置页之后无需再发请求就能渲染 VIP 状态。
     pub fn store_vip_detail(&self, detail: Value) {
         let mut session = self.session_guard();
         session.vip_detail = Some(detail);
         session_io::save(&*session, &self.session_path, "kugou");
     }
 
-    /// Raw `/v1/get_union_vip` payload cached on the session, if any.
+    /// 缓存在会话上的 `/v1/get_union_vip` 原始载荷（若有）。
     pub fn vip_detail(&self) -> Option<Value> {
         self.session_guard().vip_detail.clone()
     }
 
-    /// Whether the cached VIP detail shows at least one active product
-    /// (`busi_vip[*].is_vip == 1`). The top-level `is_vip` on that endpoint
-    /// stays 0 even while products are active, so this scans the array.
+    /// 缓存的 VIP 明细里是否有至少一个生效商品（`busi_vip[*].is_vip == 1`）。该端点的顶层
+    /// `is_vip` 即使商品生效也仍是 0，所以这里要扫描数组。
     pub fn has_active_vip(&self) -> bool {
         let session = self.session_guard();
         let Some(detail) = session.vip_detail.as_ref() else {
@@ -399,11 +382,9 @@ impl KugouClient {
             .any(|item| item.get("is_vip").and_then(Value::as_i64) == Some(1))
     }
 
-    /// Builds the signed request for `spec`. `body` is the request body
-    /// serialized exactly once by the caller: signed here, then moved into
-    /// the outgoing request. Holds the session lock by reference throughout:
-    /// this function never awaits, so the guard cannot be parked across a
-    /// poll point.
+    /// 为 `spec` 构造签名请求。`body` 是调用方精确序列化一次的请求体：在这里签名，随后
+    /// 移进出站的请求。全程按引用持会话锁：本函数从不 await，守卫不可能在一个 poll 点
+    /// 之间被挂起。
     fn build_signed(
         &self,
         spec: &KugouRequest,
@@ -418,10 +399,9 @@ impl KugouClient {
         let clienttime = unix_now_secs();
 
         let mut params = BTreeMap::new();
-        // The lite client derives mid from the (usually random) dfid at
-        // request time rather than a fixed device mid. Only the random-dfid
-        // path recomputes: the session dfid is fixed for the process, so its
-        // mid is cached on the session (refreshed in `new`/`generate`).
+        // 概念版客户端在请求期从（通常随机的）dfid 推导 mid，而不是用固定的设备 mid。
+        // 只有随机 dfid 那条路会重算：会话的 dfid 在进程内固定，所以它的 mid 缓存在会话上
+        // （由 `new`/`generate` 刷新）。
         let mid = if spec.random_dfid {
             crypto::calculate_mid(&dfid)
         } else {
@@ -502,12 +482,10 @@ impl KugouClient {
         Ok(builder)
     }
 
-    /// Executes a signed request and checks the payload-level status fields
-    /// (the JS client treats `status == 0` / non-zero `error_code` as failure).
-    /// The response bytes are parsed in place: the multi-megabyte bodies some
-    /// endpoints return must not be copied once more before parsing. A
-    /// response that is neither JSON nor JSONP (e.g. a gateway HTML error
-    /// page) is an explicit error, not an all-empty successful payload.
+    /// 执行签名请求并检查载荷层的 status 字段（JS 客户端把 `status == 0` / 非零
+    /// `error_code` 当作失败）。响应字节就地解析：某些端点返回的几 MB 响应体在解析前不允许
+    /// 再多复制一次。既不是 JSON 也不是 JSONP 的响应（例如网关的 HTML 错误页）是显式错误，
+    /// 而不是一个全空的成功载荷。
     pub async fn request(&self, spec: KugouRequest) -> Result<KugouResponse, KugouError> {
         let body = spec.body_string();
         let response = self
@@ -548,8 +526,7 @@ impl KugouClient {
     }
 }
 
-/// Some web endpoints answer with a JSONP wrapper (`callback123({...})`);
-/// strip it so the payload parses as plain JSON.
+/// 某些 web 端点用 JSONP 包装应答（`callback123({...})`）；剥掉它，载荷才能按普通 JSON 解析。
 fn parse_jsonp(bytes: &[u8]) -> Option<Value> {
     let text = std::str::from_utf8(bytes).ok()?;
     let start = text.find('(')?;
@@ -571,9 +548,8 @@ fn check_payload_status(body: &Value) -> Result<(), KugouError> {
             .and_then(Value::as_str)
             .unwrap_or("unknown error")
             .to_string();
-        // No full-body snippet here: the failing bodies can be multi-MB and
-        // serializing them just for an error string doubles the peak of an
-        // already failed request. status/error_code carry the signal.
+        // 这里不贴完整响应体片段：失败的响应体可达几 MB，仅为一条错误串就序列化它们，会让
+        // 已经失败的请求的峰值翻倍。status/error_code 已带上信号。
         return Err(KugouError::Api {
             status: status.unwrap_or(-1),
             msg,
@@ -583,7 +559,7 @@ fn check_payload_status(body: &Value) -> Result<(), KugouError> {
     Ok(())
 }
 
-/// Whether the payload error is the login-expired signature.
+/// 载荷错误是否为「登录过期」的特征码。
 fn is_login_expired(err: &KugouError) -> bool {
     match err {
         KugouError::Api { error_code, .. } => *error_code == Some(KUGOU_ERR_LOGIN_EXPIRED),
