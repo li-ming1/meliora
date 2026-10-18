@@ -160,8 +160,15 @@ static PENDING_SETTINGS_SAVE: Mutex<Option<PendingSettingsSave>> = Mutex::new(No
 /// 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态还会把
 /// 正常会话误标为 Corrupt。tmp 名带 generation：防抖不保证上一次写盘已
 /// 结束，固定名会让两代写盘截断同一个 tmp 交错写。
-fn write_settings_file(snapshot: &Settings, path: &Path, generation: u64) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("json.tmp{generation}"));
+/// `tmp_tag` 区分写盘来源：防抖路径用 `""`，退出前的强制 flush 用 `"flush"`，
+/// 两条通道即使在同一个 generation 上也不会撞进同一个临时文件。
+fn write_settings_file(
+    snapshot: &Settings,
+    path: &Path,
+    generation: u64,
+    tmp_tag: &str,
+) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("json.tmp{tmp_tag}{generation}"));
     File::create(&tmp)
         .and_then(|file| serde_json::to_writer_pretty(file, snapshot).map_err(|e| e.into()))
         .and_then(|()| fs::rename(&tmp, path))
@@ -198,9 +205,10 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
         if SETTINGS_SAVE_GENERATION.load(Ordering::Relaxed) != generation {
             return;
         }
-        let result =
-            tokio::task::spawn_blocking(move || write_settings_file(&snapshot, &path, generation))
-                .await;
+        let result = tokio::task::spawn_blocking(move || {
+            write_settings_file(&snapshot, &path, generation, "")
+        })
+        .await;
         let written = matches!(&result, Ok(Ok(())));
         match &result {
             Ok(Ok(())) => {
@@ -235,17 +243,7 @@ pub fn flush_pending_settings() {
         return;
     }
     let generation = pending.generation;
-    let tmp = pending
-        .path
-        .with_extension(format!("json.tmpflush{generation}"));
-    let result = File::create(&tmp)
-        .and_then(|file| {
-            serde_json::to_writer_pretty(file, &*pending.snapshot).map_err(|e| e.into())
-        })
-        .and_then(|()| fs::rename(&tmp, &pending.path))
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&tmp);
-        });
+    let result = write_settings_file(&*pending.snapshot, &pending.path, generation, "flush");
     if result.is_ok() {
         SETTINGS_WRITTEN_GENERATION.fetch_max(generation, Ordering::Relaxed);
     } else if let Err(e) = result {
