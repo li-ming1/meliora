@@ -31,8 +31,8 @@ pub enum SearchPaletteItem {
         artist: String,
         artists: String,
         available: bool,
-        /// Precomputed fuzzy-match text, built once at construction so the
-        /// palette matcher never formats strings on the UI thread.
+        /// 预计算的模糊匹配文本，构造时算一次，好让面板匹配器永不在 UI 线程上
+        /// 格式化字符串。
         search_text: Arc<str>,
     },
     Artist {
@@ -47,7 +47,7 @@ pub enum SearchPaletteItem {
         album_id: Option<i64>,
         search_text: Arc<str>,
     },
-    /// Online track streamed from KuGou (kugou feature only).
+    /// 从酷狗串流的在线曲目（仅 kugou feature）。
     #[cfg(feature = "kugou")]
     KugouTrack {
         track: crate::ui::kugou::KugouTrackInfo,
@@ -56,13 +56,12 @@ pub enum SearchPaletteItem {
 }
 
 impl SearchPaletteItem {
-    /// Image-cache URI for an album's thumbnail.
+    /// 某专辑缩略图的图片缓存 URI。
     fn thumbnail_path(album_id: i64) -> String {
         format!("!db://album/{}/thumb", album_id)
     }
 
-    /// Online track titles fall back to the localized UNKNOWN_TRACK label
-    /// when the source provides none.
+    /// 在线曲目的标题在音源没给时退回本地化的 UNKNOWN_TRACK 标签。
     #[cfg(feature = "kugou")]
     fn online_title(title: &str) -> SharedString {
         if title.is_empty() {
@@ -72,10 +71,9 @@ impl SearchPaletteItem {
         }
     }
 
-    /// Builds the local (library) items. The fuzzy-match text each item is
-    /// found by is precomputed here — off the UI thread, once per item — so
-    /// the palette matcher only clones it instead of re-formatting per item
-    /// on every index injection.
+    /// 构建本地（音乐库）条目。每个条目用来被匹配到的模糊文本在这里预计算——
+    /// 在 UI 线程之外、每条目一次——于是面板匹配器只需克隆它，而不是每次注入索引时
+    /// 逐条目重新格式化。
     pub fn from_search_results(
         albums: Vec<(i64, String, Option<String>, String, bool)>,
         artists: Vec<(i64, String)>,
@@ -171,9 +169,8 @@ impl PaletteItem for SearchPaletteItem {
         }
     }
 
-    /// Online results are replaced wholesale on every query change; keeping
-    /// them out of the finder's nucleo index (see `PaletteItem::is_volatile`)
-    /// means refreshing them never rebuilds the whole-library index.
+    /// 在线结果在每次查询变化时整体替换；把它们挡在 finder 的 nucleo 索引之外
+    /// （见 `PaletteItem::is_volatile`），意味着刷新它们永远不会重建全库索引。
     fn is_volatile(&self) -> bool {
         match self {
             #[cfg(feature = "kugou")]
@@ -249,7 +246,7 @@ impl PaletteItem for SearchPaletteItem {
                         });
 
                     if let Ok(track) = track.read(cx) {
-                        // cached liked set: a DB query here would block the UI thread (see is_song_liked docs)
+                        // 已缓存的喜欢集合：在这里查 DB 会阻塞 UI 线程（见 is_song_liked 的文档）
                         let is_liked = is_song_liked(cx, track.id);
                         TrackContextMenu::new(
                             Rc::new((**track).clone()),
@@ -273,8 +270,9 @@ impl PaletteItem for SearchPaletteItem {
         }
     }
 
-    /// Built only when the context menu opens (see `PaletteItem::context_menu_overlay`);
-    /// the entity is keyed window state, so repeated opens reuse it.
+    /// 只在上下文菜单打开时构建（见
+    /// `PaletteItem::context_menu_overlay`）；该实体是按 key 存放的窗口状态，
+    /// 所以反复打开会复用它。
     fn context_menu_overlay(&self, window: &mut Window, cx: &mut App) -> Option<AnyView> {
         match self {
             SearchPaletteItem::Track { id, .. } => {
@@ -291,11 +289,9 @@ impl PaletteItem for SearchPaletteItem {
     }
 }
 
-/// Timing probe for the search-index item construction — the half of a
-/// palette-open rebuild that the DB-side `scale_probe` (its "3) 搜索索引
-/// 四查询" section) does not cover: turning the three query results into
-/// `SearchPaletteItem`s with their precomputed match text. Runs on
-/// `spawn_blocking` at open time, so a regression here is open latency.
+/// 搜索索引条目构建的耗时探针——面板打开重建中，DB 侧 `scale_probe`（它的
+/// "3) 搜索索引四查询"一节）没有覆盖的那一半：把三个查询结果变成带预计算匹配文本的
+/// `SearchPaletteItem`。它在打开时跑在 `spawn_blocking` 上，所以这里的退化就是打开延迟。
 ///
 /// ```text
 /// cargo test --release search_item::bench -- --ignored --nocapture
@@ -352,9 +348,8 @@ mod bench {
     fn report_search_item_build_costs() {
         let data = synthetic_results();
         println!("search index: {ALBUMS} albums, {ARTISTS} artists, {TRACKS} tracks");
-        // The query results are cloned per run (from_search_results consumes
-        // them); at 14k items that clone is a fixed per-run overhead the
-        // build itself must be read against.
+        // 每次运行都会克隆查询结果（from_search_results 按值消费它们）；14k 条目时
+        // 这个克隆是每次运行的固定开销，读构建本身的数字时要把它扣掉。
         bench_summarize_n("from_search_results (14k items)", 2, 50, || {
             let albums = data.albums.clone();
             let artists = data.artists.clone();

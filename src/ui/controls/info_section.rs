@@ -33,8 +33,7 @@ use std::{path::PathBuf, rc::Rc};
 
 use super::observe_notify;
 
-/// The currently playing online track, if any: the running stream URL is
-/// mapped back to its source through the per-source registries.
+/// 当前正在播放的在线曲目（若有）：用运行中的流 URL 经逐音源的注册表反查回它的来源。
 #[cfg(feature = "kugou")]
 #[derive(Clone, Debug, PartialEq)]
 enum OnlinePlayingTrack {
@@ -43,8 +42,7 @@ enum OnlinePlayingTrack {
 
 #[cfg(feature = "kugou")]
 impl OnlinePlayingTrack {
-    /// Identity key used to detect "still the same track" across async
-    /// callbacks: the KuGou hash.
+    /// 跨异步回调判断"还是同一首曲目"所用的身份键：酷狗 hash。
     fn identity(&self) -> String {
         match self {
             OnlinePlayingTrack::Kugou(track) => format!("kugou:{}", track.hash),
@@ -67,8 +65,8 @@ pub struct InfoSection {
     can_navigate_to_artist: bool,
     image_element_key: u64,
     is_liked: Option<i64>,
-    /// Bumped per track change; a background library resolve only lands if its
-    /// generation still matches, so fast switches never apply stale results.
+    /// 每次切歌递增；后台的音乐库解析只有在代号仍然匹配时才落地，所以快速切换
+    /// 永远不会应用过期结果。
     library_resolve_generation: usize,
     #[cfg(feature = "kugou")]
     online_track: Option<OnlinePlayingTrack>,
@@ -103,8 +101,8 @@ impl InfoSection {
             })
             .detach();
 
-            // SongChanged is broadcast before QueuePositionChanged, so re-resolve once the queue
-            // position has caught up with a track switch
+            // SongChanged 先于 QueuePositionChanged 广播，所以在队列位置跟上这次切歌
+            // 之后要重新解析一次
             cx.observe(&queue_model, |this: &mut Self, _, cx| {
                 this.resolve_queue_item_metadata(cx);
             })
@@ -141,9 +139,8 @@ impl InfoSection {
                 playback_info,
                 is_hovering_art: false,
                 current_track_path,
-                // Library-derived state (track row, artist navigability,
-                // liked state) resolves off-thread below; the section starts
-                // with the already-known data only.
+                // 由音乐库派生的状态（曲目行、艺术家可否导航、喜欢状态）在下方线程外
+                // 解析；本区一开始只用已经知道的数据。
                 current_library_track: None,
                 can_navigate_to_album: false,
                 can_navigate_to_artist: false,
@@ -169,11 +166,9 @@ impl InfoSection {
         })
     }
 
-    /// Overwrites the display names with stream metadata. Only values the
-    /// stream actually provides are taken: an online file can carry tags (or
-    /// just cover art / ReplayGain frames) without a usable title/artist, and
-    /// wiping the queue-item-derived names for those left the play bar on
-    /// "Unknown Track" until the next track change.
+    /// 用流元数据覆写展示名。只取流真正提供的值：在线文件可能带标签（或只有封面 /
+    /// ReplayGain 帧）却没有可用的标题/艺术家，为那种情形抹掉由队列条目得出的名字，
+    /// 会让播放栏一直显示 "Unknown Track" 直到下次切歌。
     fn update_track_metadata(&mut self, metadata: &crate::media::metadata::Metadata) {
         if let Some(name) = metadata.name.clone() {
             self.track_name = Some(SharedString::from(name));
@@ -187,8 +182,7 @@ impl InfoSection {
         }
     }
 
-    /// Adopts the queue item's display names only where the section has none:
-    /// names already provided by stream metadata must not be clobbered.
+    /// 只在本区没有名字的地方采用队列条目的展示名：已由流元数据提供的名字不得被覆盖。
     fn fill_missing_names(&mut self, data: QueueItemUIData) {
         if self.track_name.is_none() {
             self.track_name = data.name;
@@ -198,11 +192,10 @@ impl InfoSection {
         }
     }
 
-    /// Re-wires the queue-item subscription to the item at the current queue
-    /// position and adopts whatever display data it already holds.
+    /// 把队列条目的订阅重新接到当前队列位置上的那个条目，并采用它已持有的展示数据。
     fn resolve_queue_item_metadata(&mut self, cx: &mut Context<Self>) {
-        // Dropping cancels the subscription; detaching kept a live observer on the
-        // old queue-item entity for the rest of the session (and let it fire).
+        // drop 会取消订阅；detach 则让整个会话期间旧队列条目实体上仍挂着一个活跃
+        // 观察者（还让它继续触发）。
         drop(self.queue_item_subscription.take());
         self.queue_item_data = None;
 
@@ -212,23 +205,17 @@ impl InfoSection {
 
         let Some(item) = item else { return };
 
-        // The queue position is the single source of truth for "what is playing";
-        // keying off `current_track_path` here breaks cover art whenever the path
-        // lags the queue (e.g. an online URL refreshed after a session restore),
-        // leaving the info-section thumbnail blank while the queue item shows art.
-        // The handle comes from the UI-side metadata side table (P2-B step 4):
-        // the same uid always resolves to the same entity, and the current
-        // track's uid stays live in the queue, so the retained handle and the
-        // subscription below can never go stale.
+        // 队列位置是"什么在播放"的唯一真相源；这里以 `current_track_path` 为准会让
+        // 路径落后于队列时（例如会话恢复之后才刷新的在线 URL）封面必坏，出现队列条目
+        // 有图而本区缩略图空白的状态。句柄来自 UI 侧的元数据旁表（P2-B 第 4 步）：
+        // 同一 uid 恒解析到同一实体，而当前曲目的 uid 在队列里是活的，所以保留的句柄
+        // 与下面的订阅都不可能过期。
         let data = queue_metadata::queue_ui_data(cx, &item);
         self.queue_item_data = Some(data.clone());
 
-        // SongChanged is broadcast before QueuePositionChanged, so this can run
-        // while the UI position still points at the previous track. Only fill the
-        // names from a slot that actually holds the track that just started -
-        // filling from a stale slot latches the wrong track's names (the
-        // fill-if-none policy then blocks the position-change resolve from
-        // correcting them).
+        // SongChanged 先于 QueuePositionChanged 广播，所以这段可能在 UI 位置还指向
+        // 上一首时运行。只从真正装着那首刚开始曲目的槽位填名字——从过期槽位填会把
+        // 错误曲目的名字锁住（随后的"仅在缺失时填"策略又会挡住位置变化那次解析去纠正）。
         let slot_is_current = self
             .current_track_path
             .as_ref()
@@ -256,9 +243,8 @@ impl InfoSection {
         }
     }
 
-    /// Re-resolves the current playback position as an online (KuGou)
-    /// track. Online tracks have no library entry, so `current_library_track`
-    /// stays `None`; we map the running stream URL back to its track instead.
+    /// 把当前播放位置重新解析为在线（酷狗）曲目。在线曲目没有音乐库条目，所以
+    /// `current_library_track` 保持 `None`；我们改为把运行中的流 URL 反查回它的曲目。
     #[cfg(feature = "kugou")]
     fn detect_online_track(&mut self) {
         let matched = self.current_track_path.as_ref().and_then(|path| {
@@ -284,9 +270,8 @@ impl InfoSection {
         self.is_online_liked = false;
     }
 
-    /// Fires off a background query for whether the current online track is
-    /// already in its source's liked list, then reflects the result once it
-    /// lands (so the star lights up by default for already-liked songs).
+    /// 为"当前在线曲目是否已在其音源的喜欢列表里"发起一次后台查询，落地后再反映结果
+    /// （这样本来就已喜欢的歌默认就把星标点亮）。
     #[cfg(feature = "kugou")]
     fn schedule_online_liked_query(&mut self, cx: &mut Context<Self>) {
         let Some(track) = self.online_track.clone() else {
@@ -300,7 +285,7 @@ impl InfoSection {
                 }
             };
             this.update(cx, |this, cx| {
-                // Only apply if we're still on the same track.
+                // 只有仍停在同一首曲目时才应用。
                 if this
                     .online_track
                     .as_ref()
@@ -315,9 +300,8 @@ impl InfoSection {
         .detach();
     }
 
-    /// The star button at the right edge of the section: filled while the
-    /// track is liked (library row or online source), toggling whichever
-    /// like-state applies to the current track.
+    /// 本区右端的星标按钮：曲目被喜欢时（音乐库行或在线音源）填充，切换适用于当前
+    /// 曲目的那套喜欢状态。
     fn like_button(&self, cx: &Context<Self>, is_liked_filled: bool, track_id: Option<i64>) -> Div {
         let theme = cx.global::<Theme>();
 
@@ -370,9 +354,8 @@ impl InfoSection {
         )
     }
 
-    /// Clears all track-derived state and starts a fresh library resolve.
-    /// Name/artist come from the metadata model or the queue item; DB-derived
-    /// state lands when the background resolve completes.
+    /// 清掉所有由曲目派生的状态并启动一次全新的音乐库解析。名称/艺术家来自元数据模型
+    /// 或队列条目；DB 派生的状态在后台解析完成时落地。
     fn update_current_track_state(
         &mut self,
         current_track: Option<&CurrentTrack>,
@@ -390,11 +373,9 @@ impl InfoSection {
         self.spawn_library_resolve(cx);
     }
 
-    /// Resolves the current track's library row, artist navigability and liked
-    /// state on the runtime — three DB queries per resolve that used to park the
-    /// UI thread. The generation guard drops results from a track that has
-    /// already been switched away from; until it lands the section keeps showing
-    /// the already-known metadata (name/artist/cover) without library actions.
+    /// 在 runtime 上解析当前曲目的音乐库行、艺术家可否导航与喜欢状态——每次解析三个
+    /// DB 查询，过去这些会把 UI 线程堵住。代号守卫会丢弃来自已经切走的曲目的结果；
+    /// 落地之前本区继续显示已知的元数据（名称/艺术家/封面），只是没有音乐库动作。
     fn spawn_library_resolve(&mut self, cx: &mut Context<Self>) {
         let Some(track_path) = self.current_track_path.clone() else {
             return;
@@ -433,8 +414,8 @@ impl InfoSection {
                 if this.library_resolve_generation != generation {
                     return;
                 }
-                // A query error or a non-library (online) path just leaves the
-                // cleared state in place - same as the sync path's None result.
+                // 查询出错或非音乐库（在线）路径就让已清空的状态原地保留——与同步路径
+                // 得到 None 的结果一样。
                 if let Ok(Some((track, can_navigate_to_artist, is_liked))) = resolved {
                     this.current_library_track = Some(Rc::new(track));
                     this.can_navigate_to_album = this
@@ -469,8 +450,8 @@ impl Render for InfoSection {
             .as_ref()
             .map(|track| ManagedImageKey::Track(track.id))
             .or_else(|| {
-                // Online tracks have no library track; reuse the current queue
-                // item's stored cover_url, exactly as the queue thumbnails do.
+                // 在线曲目没有音乐库曲目；复用当前队列条目存好的 cover_url，与队列
+                // 缩略图的做法完全一致。
                 #[cfg(feature = "online_sources")]
                 {
                     self.queue_item_data
@@ -535,9 +516,7 @@ impl Render for InfoSection {
                                     cx.notify();
                                 }
                             }))
-                            // Double-click enters the immersive view; the
-                            // single-click path stays free (hover shows the
-                            // big preview).
+                            // 双击进入沉浸视图；单击路径保持空闲（hover 显示大图预览）。
                             .on_click(|event: &ClickEvent, _, cx| {
                                 if event.click_count() == 2 {
                                     crate::ui::immersive::set_immersive(true, cx);
@@ -656,9 +635,8 @@ impl Render for InfoSection {
                     }),
             );
 
-        // An online track without a matched identity leaves the menu with
-        // zero items (artist/album/like/add-to all key off the library track,
-        // and "reveal" is hidden for streams) - don't attach the popup at all.
+        // 没匹配到身份的在线曲目会让菜单只剩 0 项（艺术家/专辑/喜欢/加入全都以音乐库
+        // 曲目为键，而"显示位置"对流是隐藏的）——干脆不要挂这个弹层。
         #[cfg(feature = "kugou")]
         let menu_has_items = self.current_library_track.is_some() || self.online_track.is_some();
         #[cfg(not(feature = "kugou"))]
@@ -670,7 +648,7 @@ impl Render for InfoSection {
             let show_add_to = add_to_state.as_ref().map(|(s, _)| s.clone());
             let add_to = add_to_state.map(|(_, a)| a);
 
-            // online tracks: swap "show in file manager" for a download action
+            // 在线曲目：把"在文件管理器中显示"换成下载动作
             #[cfg(feature = "kugou")]
             let online_download = self.online_track.clone().map(|track| match track {
                 OnlinePlayingTrack::Kugou(track) => (

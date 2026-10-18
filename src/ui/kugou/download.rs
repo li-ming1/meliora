@@ -1,5 +1,5 @@
-//! Download a KuGou online track to local disk: audio (auto-highest quality),
-//! an LRC lyrics sidecar, and the cover + tags embedded into the audio file.
+//! 把酷狗在线曲目下载到本地磁盘：音频（自动取最高音质）、LRC 歌词 sidecar，
+//! 以及嵌进音频文件的封面与标签。
 
 use std::{
     collections::HashSet,
@@ -34,15 +34,14 @@ fn pending_downloads() -> &'static RwLock<HashSet<String>> {
     PENDING_DOWNLOADS.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
-/// Same Android user agent the signed client uses; the CDN returns a 403 for
-/// the default reqwest UA.
+/// 与签名客户端相同的 Android user agent；用 reqwest 默认 UA 时 CDN 返回 403。
 const KUGOU_UA: &str = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi";
 
-/// Quality ladder tried in order; the first tier that yields a playable URL wins.
+/// 按顺序尝试的音质梯队；第一个拿到可播放 URL 的档位胜出。
 const QUALITY_LADDER: [&str; 3] = ["flac", "320", "128"];
 
-/// Best-quality playable URL for `track` (flac -> 320 -> 128), asking for the
-/// full track (`free_part = false`) so downloads never save the ~60s trial.
+/// `track` 的最高音质可播放 URL（flac -> 320 -> 128），并请求完整曲目
+/// （`free_part = false`），这样下载绝不会存下那条约 60 秒的试听片段。
 async fn resolve_best_url(
     client: &KugouClient,
     track: &KugouTrackInfo,
@@ -69,9 +68,8 @@ async fn resolve_best_url(
     .to_string())
 }
 
-/// Fetches the lyrics for `track` from the same search candidate in both
-/// formats: the plain line-timed `.lrc` text and the decrypted word-level
-/// KRC text (karaoke). Either may be absent.
+/// 从同一个搜索候选项取 `track` 的两种格式歌词：按行带时间的纯 `.lrc` 文本，与解密后的
+/// 逐字 KRC 文本（卡拉OK）。两者都可能缺失。
 async fn fetch_lyrics(
     client: &KugouClient,
     track: &KugouTrackInfo,
@@ -98,7 +96,7 @@ async fn fetch_lyrics(
     Ok((lrc, krc))
 }
 
-/// Downloads `track` into `dir` and returns the saved audio file path.
+/// 把 `track` 下载到 `dir` 并返回保存下来的音频文件路径。
 pub async fn download_track(
     client: &KugouClient,
     track: &KugouTrackInfo,
@@ -129,7 +127,7 @@ pub async fn download_track(
         .map_err(|err| format!("create download dir: {err}"))?;
     http_download_to_file(&url, &audio_path, &[("User-Agent", KUGOU_UA.to_string())]).await?;
 
-    // Lyric sidecar + tags/cover are best-effort: the audio file is already saved.
+    // 歌词 sidecar 与标签/封面都是尽力而为：音频文件此时已经存好了。
     let (lrc, krc) = match fetch_lyrics(client, track).await {
         Ok(v) => v,
         Err(err) => {
@@ -139,8 +137,7 @@ pub async fn download_track(
     };
     let tag_lrc = lrc.clone();
     let sidecar_dir = dir.to_path_buf();
-    // spawn_blocking needs 'static: the track reference can't cross the
-    // closure, so the hash is cloned out first.
+    // spawn_blocking 要 'static：曲目引用跨不过闭包，所以先把 hash 克隆出来。
     let sidecar_hash = track.hash.clone();
     if let Err(err) = crate::RUNTIME
         .spawn_blocking(move || {
@@ -171,8 +168,8 @@ pub async fn download_track(
         }
     };
     let tag_path = audio_path.clone();
-    // spawn_blocking needs 'static: the borrowed tag fields are cloned into
-    // owned strings (only title/artist/album are embedded).
+    // spawn_blocking 需要 'static：借来的标签字段被克隆成自有字符串
+    // （实际只嵌入 title/artist/album）。
     let tag_title = track.title.to_string();
     let tag_artist = track.artist.to_string();
     let tag_album = track.album.to_string();
@@ -201,9 +198,8 @@ pub async fn download_track(
     Ok(audio_path)
 }
 
-/// Fire-and-forget entry point used by the UI: downloads on the Tokio runtime
-/// and reports the outcome with a toast. Cheap, so it is safe to call from a
-/// click handler.
+/// UI 使用的发射后不管入口：在 Tokio runtime 上下载，并用 toast 报告结果。
+/// 开销很低，所以从 click handler 里调用也安全。
 ///
 /// 去重 + 并发上限：同一曲目在下载进行中时的再次点击直接忽略；全局
 /// 同时只允许 `DOWNLOAD_PERMITS` 个下载在跑，其余在 RUNTIME 上排队
@@ -235,9 +231,8 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
                 download_track(&client, &track, &dir).await
             })
             .await;
-        // Keep the business error (HTTP status, empty file, …) distinct from a
-        // genuinely panicked task; flattening both into one string used to
-        // report every failure as "download task panicked".
+        // 把业务错误（HTTP 状态、空文件…）与真正 panic 的任务区分开；两者过去被
+        // 压成同一个字符串，于是所有失败都报成 "download task panicked"。
         let result = match joined {
             Ok(Ok(path)) => Ok(path),
             Ok(Err(err)) => Err(err),

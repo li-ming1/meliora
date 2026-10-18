@@ -11,11 +11,9 @@ use rustc_hash::FxHashMap;
 use sqlx::SqlitePool;
 use url::Url;
 
-/// Transparent 1×1 PNG. Returning this instead of `None` for albums without
-/// artwork keeps gpui's asset loader on the success path, so a missing cover
-/// is not logged as "asset not found" on every re-render (and does not
-/// re-query the DB each time). Visually identical: the row's background block
-/// shows through the transparent image.
+/// 全透明 1×1 PNG。专辑没有封面时返回它而不是 `None`，好让 gpui 的资产加载器留在
+/// 成功路径上——这样缺封面不会每次重渲染都被记成 "asset not found"（也不必每次都
+/// 重查 DB）。视觉上完全一致：透明图会透出那一行的背景块。
 fn placeholder_png() -> Cow<'static, [u8]> {
     static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
     Cow::Borrowed(BYTES.get_or_init(|| {
@@ -28,9 +26,8 @@ fn placeholder_png() -> Cow<'static, [u8]> {
     }))
 }
 
-/// Loads a `!db://<table>/<id>/<thumb|full>` artwork asset, where `table` is
-/// `album` or `track`. Resolves to the transparent placeholder when the row
-/// has no artwork, and to `Ok(None)` for any other host.
+/// 载入 `!db://<table>/<id>/<thumb|full>` 形式的封面资产，其中 `table` 是 `album`
+/// 或 `track`。行里没有封面时解析为透明占位图；其他 host 一律返回 `Ok(None)`。
 pub fn load(pool: &SqlitePool, url: Url) -> gpui::Result<Option<Cow<'static, [u8]>>> {
     let host = url
         .host_str()
@@ -38,13 +35,12 @@ pub fn load(pool: &SqlitePool, url: Url) -> gpui::Result<Option<Cow<'static, [u8
     match host {
         "album" => load_table_asset(pool, "album", url),
         "track" => load_table_asset(pool, "track", url),
-        // other tables carry no artwork
+        // 其他表不存封面
         _ => Ok(None),
     }
 }
 
-/// Loads artwork for one of the two tables that store it. `table` keys both
-/// the thumb cache and the queries below.
+/// 载入两张存封面的表之一。`table` 同时作为缩略图缓存与下面这些查询的键。
 fn load_table_asset(
     pool: &SqlitePool,
     table: &'static str,
@@ -72,7 +68,7 @@ fn load_table_asset(
         ("album", "full") => include_str!("../../../queries/assets/find_album_art.sql"),
         ("track", "thumb") => include_str!("../../../queries/assets/find_track_thumb.sql"),
         ("track", "full") => include_str!("../../../queries/assets/find_track_art.sql"),
-        // unknown image type = no asset
+        // 未知图像类型 = 没有资产
         _ => return Ok(Some(placeholder_png())),
     };
 
@@ -89,25 +85,22 @@ fn load_table_asset(
     match row {
         Some((Some(image),)) if !image.is_empty() => {
             if image_type == "thumb" {
-                // Thumbnails are rendered at list/grid sizes (≤ ~200px)
-                // yet stored full-ish, so decoding them at full size
-                // leaves multi-hundred-KB RGBA buffers stuck in every
-                // bounded image cache slot (tables cache 200 items,
-                // the global cache 12). Shrink before returning so the
-                // caches stay small.
+                // 缩略图按列表/网格的尺寸渲染（约 ≤200px）却以接近全尺寸入库，于是按
+                // 全尺寸解码会让几十 KB 的 RGBA 缓冲卡在每一个有界图像缓存槽位里
+                // （表缓存 200 项，全局缓存 12）。返回前先缩小，让缓存保持小。
                 if let Some(shrunken) = shrink_thumb_cached(table, id, &image) {
                     return Ok(Some(Cow::Owned(shrunken)));
                 }
             }
             Ok(Some(Cow::Owned(image)))
         }
-        // no artwork stored → transparent placeholder, not `None`
+        // 没存封面 → 透明占位图，而不是 `None`
         _ => Ok(Some(placeholder_png())),
     }
 }
 
-/// Upper bound for thumb assets after shrinking. The UI never paints thumb
-/// tiles larger than this, so anything bigger is wasted working set.
+/// 缩略图资产缩小之后的上界。UI 从不绘制比这更大的缩略图瓦片，再大的都只是浪费
+/// 工作集。
 ///
 /// 2026-10-17 实测校准（`library.db` 全 20 条 `artwork.thumb`）：当代扫描器写的是
 /// `THUMBNAIL_SIZE = 70` 的 BMP（scan/decode.rs:269，实测 70×70 / 19,722 B），
@@ -127,21 +120,21 @@ const THUMB_MAX_PX: u32 = 128;
 
 /// 缩略图资产缓存条目上限。当代扫描器写的 thumb 是 70×70 BMP（实测 19,722 B/张），
 /// 不大于 `THUMB_MAX_PX` 时原样缓存 ⇒ 256 条约 5 MB；只有历史代/外部写入的较大 thumb
-/// 才会被缩小并重编码成 PNG。写满后按最近使用 LRU 淘汰，绝不无界增长。
+/// 才会被缩小并重编码成 PNG。写满后按最近使用 LRU 逐出，绝不无界增长。
 const SHRUNK_THUMB_CACHE_MAX: usize = 256;
 
-/// 已缩到 128px 的 thumb 资产内存缓存，键为（表, id），LRU 淘汰（命中即
+/// 已缩到 128px 的 thumb 资产内存缓存，键为（表, id），LRU 逐出（命中即
 /// 续命）。`!db://` 资产在滚动中会被 gpui 的资产加载器反复请求，无缓存时
 /// 每次都要在后台线程上 block_on 查库 + decode（+ 仅对大于上限的源做缩放重编码）；
 /// 缓存命中后连数据库查询都省掉。"写满即止"会让第 257 个起的资产永远走这条
-/// 慢路径（永久性能悬崖），所以满时必须淘汰——FIFO 会把大库网格往返
+/// 慢路径（永久性能悬崖），所以满时必须逐出——FIFO 会把大库网格往返
 /// 滚动中仍在屏的热条目按插入顺序挤掉（每 miss 重走整条慢路径），LRU
 /// 让最近访问的可见集驻留。thumb 来源（扫描器的 70×70 BMP）在扫描后
 /// 不再变化，且扫描完成时整体清空（见 `clear_shrunk_thumb_cache`），不
 /// 存在陈旧条目问题。
 struct ShrunkThumbCache {
     entries: FxHashMap<(&'static str, i64), Vec<u8>>,
-    /// 由旧到新的访问序，供 LRU 淘汰；键集合与 `entries` 保持一致。
+    /// 由旧到新的访问序，供 LRU 逐出；键集合与 `entries` 保持一致。
     order: VecDeque<(&'static str, i64)>,
 }
 
@@ -158,7 +151,7 @@ fn shrunk_thumbs() -> &'static Mutex<ShrunkThumbCache> {
 
 type ThumbCacheGuard = std::sync::MutexGuard<'static, ShrunkThumbCache>;
 
-/// 锁定缓存；中毒时直接恢复守卫数据——它只是纯内存缓存，无值得传播
+/// 锁定缓存；毒化时直接恢复守卫数据——它只是纯内存缓存，无值得传播
 /// panic 的不变量。
 fn lock_thumb_cache() -> ThumbCacheGuard {
     shrunk_thumbs().lock_recovered()
@@ -184,7 +177,7 @@ fn promote_thumb_key(order: &mut VecDeque<(&'static str, i64)>, key: (&'static s
 }
 
 /// 写缓存；已存在的键提升为最近使用（字节不变——thumb 来源在扫描代内
-/// 不变），超出上限时淘汰最久未用条目（纯内存操作，无 IO）。
+/// 不变），超出上限时逐出最久未用条目（纯内存操作，无 IO）。
 fn thumb_cache_put(table: &'static str, id: i64, bytes: Vec<u8>) {
     let mut cache = lock_thumb_cache();
     if cache.entries.contains_key(&(table, id)) {
@@ -209,11 +202,9 @@ pub(crate) fn clear_shrunk_thumb_cache() {
     cache.order.clear();
 }
 
-/// Best-effort downscale of a thumb asset down to at most 128×128, memoized
-/// in the bounded `SHRUNK_THUMBS` cache so a repeated request for the same
-/// asset skips the decode + shrink + PNG-encode entirely. Returns `None` on
-/// any (unexpected) failure so the caller keeps the raw bytes rather than
-/// breaking art rendering.
+/// 尽力把缩略图资产降到最大 128×128，并在有界的 `SHRUNK_THUMBS` 缓存里记忆化，于是
+/// 对同一资产的重复请求完全跳过解码 + 缩小 + PNG 编码。任何（意料之外的）失败都返回
+/// `None`，让调用方保留原始字节而不是把封面渲染弄坏。
 fn shrink_thumb_cached(table: &'static str, id: i64, data: &[u8]) -> Option<Vec<u8>> {
     if let Some(cached) = thumb_cache_get(table, id) {
         return Some(cached);
@@ -223,9 +214,8 @@ fn shrink_thumb_cached(table: &'static str, id: i64, data: &[u8]) -> Option<Vec<
     Some(shrunken)
 }
 
-/// Best-effort downscale of a thumb asset down to at most 128×128. Returns
-/// `None` on any (unexpected) encode failure so the caller keeps the raw
-/// bytes rather than breaking art rendering.
+/// 尽力把缩略图资产降到最大 128×128。任何（意料之外的）编码失败都返回 `None`，
+/// 让调用方保留原始字节而不是把封面渲染弄坏。
 fn shrink_thumb(data: &[u8]) -> Option<Vec<u8>> {
     let image = image::load_from_memory(data).ok()?;
     // 源已经不大于显示上限时**原样返回**，不再重编码。

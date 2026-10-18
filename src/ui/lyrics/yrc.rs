@@ -1,6 +1,5 @@
-//! YRC (word-level karaoke lyric) parser. Plain text, unlike KuGou's
-//! encrypted KRC. The format originated with NetEase Cloud Music and is also
-//! read from local `.yrc` sidecar files next to a track. Line shapes:
+//! YRC（逐字卡拉OK 歌词）解析器。纯文本，不像酷狗的加密 KRC。该格式源自网易云音乐，
+//! 也会从曲目旁边的本地 `.yrc` sidecar 文件读取。行的形态：
 //!   `[6700,2780](6700,240,0)作(6940,240,0)词...` — line timing + word tokens
 //!   `[{"t":0,"c":[{"tx":"作词: ..."}]}]`        — credits/metadata line
 
@@ -9,13 +8,13 @@ use serde_json::Value;
 
 use super::lrc::{LrcLine, LrcWord};
 
-/// Parses YRC text into timed lines. Returns `None` when nothing parsed.
+/// 把 YRC 文本解析成带时间的行；什么都没解析出来时返回 `None`。
 pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
     let mut lines = Vec::new();
     for raw in content.lines() {
         let line = raw.trim();
-        // Timed lines start with `[...`; credits/metadata lines are bare JSON
-        // objects in real payloads (older writers wrapped them in `[...]`).
+        // 带时间的行以 `[...` 开头；真实负载里署名/元数据行是裸 JSON 对象
+        // （较旧的写入器会把它们包进 `[...]`）。
         if !(line.starts_with('[') || line.starts_with('{')) {
             continue;
         }
@@ -46,8 +45,7 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
         let mut words = Vec::new();
         let mut plain = String::new();
         let mut rest = body;
-        // word tokens look like `(start,duration,0)text`; a line without
-        // any word marker is an instrumental/interlude line
+        // 字 token 形如 `(start,duration,0)text`；没有任何字标记的行是间奏/纯音乐行
         while let Some(token_start) = rest.strip_prefix('(') {
             let Some(close) = token_start.find(')') else {
                 break;
@@ -86,10 +84,10 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LrcLine>> {
     (!lines.is_empty()).then_some(lines)
 }
 
-/// Metadata line: `[{"t":0,"c":[{"tx":"作词: ..."},{"tx":"作曲: ..."}]}]` from
-/// older writers, or bare `{"t":0,...}` as real payloads ship it. Multiple tx
-/// fragments are concatenated into one plain line. The JSON object is located
-/// by its braces so both wrappers parse.
+/// 元数据行：较旧写入器写出的
+/// `[{"t":0,"c":[{"tx":"作词: ..."},{"tx":"作曲: ..."}]}]`，或真实负载里那种裸
+/// `{"t":0,...}`。多个 tx 片段会拼接成一行纯文本。JSON 对象按花括号定位，所以两种
+/// 包裹形态都能解析。
 fn parse_metadata_line(line: &str, lines: &mut Vec<LrcLine>) {
     let (Some(json_start), Some(json_end)) = (line.find('{'), line.rfind('}')) else {
         return;
@@ -148,13 +146,13 @@ mod tests {
         assert_eq!(lines[1].words[0].duration_ms, 630);
         assert_eq!(lines[1].words[3].text, "声");
 
-        // interlude: timed but empty
+        // 间奏：带时间但内容为空
         assert_eq!(lines[2].time_ms, 100000);
         assert!(lines[2].text.is_empty());
     }
 
     /// Real payload head from `孤勇者` (captured live, anonymous session):
-    /// JSON credits lines carry extra `li`/`or` fields that must be ignored.
+    /// JSON 署名行带着多余的 `li`/`or` 字段，必须忽略。
     #[test]
     fn parses_real_payload_with_credit_links() {
         let sample = r#"{"t":0,"c":[{"tx":"作词: "},{"tx":"唐恬","li":"http://p1.music.126.net/x.jpg","or":"orpheus://nm/artist/home?id=28245490"}]}
@@ -170,9 +168,8 @@ mod tests {
         assert_eq!(lines[2].words[4].text, "的");
     }
 
-    /// Real payloads can carry out-of-order lines and a trailing `{"t":0,...}`
-    /// credit; `partition_point` consumers (lyrics pane / immersive view)
-    /// binary-search on `time_ms`, so lines must come back sorted.
+    /// 真实负载可能带乱序的行和末尾那个 `{"t":0,...}` 署名；`partition_point` 的
+    /// 消费方（歌词面板 / 沉浸视图）按 `time_ms` 做二分查找，所以返回的行必须是排好序的。
     #[test]
     fn sorts_unordered_lines_and_trailing_credit() {
         let sample = "[1315,6740](1315,545,0)都(1860,240,0)是\n\
@@ -186,7 +183,7 @@ mod tests {
         assert_eq!(lines[1].text, "都是");
         assert_eq!(lines[2].time_ms, 9000);
 
-        // Same lookup as lyrics.rs / immersive.rs: last line with time <= pos.
+        // 与 lyrics.rs / immersive.rs 用的是同一种查找：时间 <= pos 的最后一行。
         let pos_ms = 5_000;
         let idx = lines.partition_point(|l| l.time_ms <= pos_ms);
         assert_eq!(idx, 2);

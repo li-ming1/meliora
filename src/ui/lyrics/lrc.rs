@@ -1,32 +1,31 @@
 use gpui::SharedString;
 
-/// A single timed word inside a lyric line (KuGou KRC karaoke data).
-///
-/// Texts are `SharedString` so the per-frame render clones are refcount bumps
-/// instead of fresh heap `String` allocations.
+/// 歌词行内的一个带时间的字（酷狗 KRC 卡拉OK 数据）。
+/// 文本用 `SharedString`，好让逐帧渲染的克隆只是引用计数加一，而不是新起一次堆上
+/// `String` 分配。
 #[derive(Clone)]
 pub struct LrcWord {
-    /// Word start offset in milliseconds (relative to the track).
+    /// 字的起始偏移，单位毫秒（相对整首曲目）。
     pub time_ms: u64,
-    /// Word duration in milliseconds.
+    /// 字的持续时长，单位毫秒。
     pub duration_ms: u64,
     pub text: SharedString,
 }
 
-/// A single timed line from an LRC file.
+/// LRC 文件里的一条带时间的行。
 #[derive(Clone)]
 pub struct LrcLine {
-    /// Timestamp in milliseconds.
+    /// 时间戳，单位毫秒。
     pub time_ms: u64,
     pub text: SharedString,
-    /// Optional translation, populated by KRC parsing (`[language:]` block).
+    /// 可选的译文，由 KRC 解析填充（`[language:]` 块）。
     pub translation: Option<SharedString>,
-    /// Per-word karaoke timing; empty for plain LRC lines.
+    /// 逐字卡拉OK 时间；普通 LRC 行为空。
     pub words: Vec<LrcWord>,
 }
 
-/// Parse an LRC time tag of the form `mm:ss.xx` or `mm:ss.xxx`.
-/// Returns the time in milliseconds, or `None` if the format is invalid.
+/// 解析形如 `mm:ss.xx` 或 `mm:ss.xxx` 的 LRC 时间标签。
+/// 返回毫秒时间；格式非法时返回 `None`。
 fn parse_time_tag(tag: &str) -> Option<u64> {
     let colon = tag.find(':')?;
     let minutes: u64 = tag[..colon].trim().parse().ok()?;
@@ -35,7 +34,7 @@ fn parse_time_tag(tag: &str) -> Option<u64> {
     let seconds: u64 = after_colon[..dot].trim().parse().ok()?;
     let frac_str = after_colon[dot + 1..].trim();
 
-    // normalize to milliseconds
+    // 归一化成毫秒
     let frac_ms = match frac_str.len() {
         1 => frac_str.parse::<u64>().ok()? * 100,
         2 => frac_str.parse::<u64>().ok()? * 10,
@@ -46,9 +45,8 @@ fn parse_time_tag(tag: &str) -> Option<u64> {
     Some(minutes * 60_000 + seconds * 1_000 + frac_ms)
 }
 
-/// Attempt to parse a single line of an LRC file.
-/// Returns `Some(vec)` with one entry per timestamp on the line, or `None` if the line has no
-/// valid time tags.
+/// 尝试解析 LRC 文件的一行。行上有多个时间标签时返回带对应数量条目的
+/// `Some(vec)`；这行没有有效时间标签时返回 `None`。
 fn parse_lrc_line(line: &str) -> Option<Vec<LrcLine>> {
     let mut timestamps: Vec<u64> = Vec::new();
     let mut rest = line;
@@ -61,7 +59,7 @@ fn parse_lrc_line(line: &str) -> Option<Vec<LrcLine>> {
         if let Some(ms) = parse_time_tag(tag) {
             timestamps.push(ms);
         } else {
-            // Metadata or unknown tag — stop consuming tags.
+            // 元数据或未知标签——停止继续消耗标签。
             break;
         }
     }
@@ -84,10 +82,10 @@ fn parse_lrc_line(line: &str) -> Option<Vec<LrcLine>> {
     )
 }
 
-/// Try to parse `content` as an LRC file.
+/// 尝试把 `content` 当作 LRC 文件解析。
 ///
-/// Returns `Some(lines)` sorted by timestamp when at least one timed line is found.
-/// Returns `None` when no time tags are present (plain-text).
+/// 至少找到一条带时间的行时，返回按时间戳排好序的 `Some(lines)`。
+/// 完全没有时间标签时返回 `None`（纯文本）。
 pub fn parse_lrc(content: &str) -> Option<Vec<LrcLine>> {
     let mut lines: Vec<LrcLine> = Vec::new();
 

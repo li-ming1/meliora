@@ -131,8 +131,7 @@ impl Render for ReplayGainButton {
     }
 }
 
-/// The "ReplayGain Mode" label and segmented control; writes the chosen mode
-/// straight through to settings.
+/// "ReplayGain Mode" 标签与分段控件；选中的模式直接写进设置。
 fn replaygain_mode_section(settings: Entity<Settings>, mode: ReplayGainMode, theme: &Theme) -> Div {
     div()
         .flex()

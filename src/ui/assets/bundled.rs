@@ -4,8 +4,8 @@ use gpui::SharedString;
 use rust_embed::RustEmbed;
 use url::Url;
 
-/// The compile-time embedded subset of `assets/` (fonts, icons, images),
-/// served through the `!bundled://` scheme.
+/// `assets/` 在编译期内嵌的那个子集（fonts、icons、images），
+/// 经 `!bundled://` scheme 提供。
 #[derive(RustEmbed)]
 #[folder = "./assets"]
 #[include = "fonts/*"]
@@ -17,15 +17,13 @@ use url::Url;
 pub struct BundledAssets;
 
 impl BundledAssets {
-    /// Bytes of the embedded asset at `url`'s path; `None` when nothing is
-    /// embedded there.
+    /// `url` 路径处内嵌资产的字节；那里没有内嵌内容时为 `None`。
     pub fn load(url: Url) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         let path = url.path().trim_start_matches('/');
         Ok(Self::get(path).map(|f| f.data))
     }
 
-    /// Embedded asset paths (prefixed with `!bundled:`) that start with
-    /// `path`.
+    /// 以 `path` 开头的内嵌资产路径（前缀为 `!bundled:`）。
     pub fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
         Ok(Self::iter()
             .map(|p| format!("!bundled:{p}"))

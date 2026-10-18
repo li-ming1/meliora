@@ -25,7 +25,7 @@ use tracing::{info, warn};
 
 use crate::{library::scan::ScanInterface, playback::interface::PlaybackInterface};
 
-/// User preferences persisted to `settings.json`.
+/// 持久化到 `settings.json` 的用户偏好。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -56,18 +56,16 @@ fn apply_legacy_theme_selection(path: &Path, settings: &mut Settings, has_theme_
     }
 }
 
-/// Defaults with the legacy `theme.json` migration applied; used whenever the
-/// settings file cannot be read or parsed. `has_theme_setting` is the raw
-/// [`has_stored_theme_setting`] verdict, or `false` when there is no file.
+/// 套用了旧版 `theme.json` 迁移的默认值；设置文件读不到或解析不了时一律走它。
+/// `has_theme_setting` 是 [`has_stored_theme_setting`] 的原始判定，没有文件时为 `false`。
 fn fallback_settings(path: &Path, has_theme_setting: bool) -> Settings {
     let mut settings = Settings::default();
     apply_legacy_theme_selection(path, &mut settings, has_theme_setting);
     settings
 }
 
-/// Result of reading `settings.json`: either the parsed [`Settings`], or
-/// defaults paired with the offending path so the UI can surface a corruption
-/// notice (see [`SettingsGlobal::initial_corrupt_path`]).
+/// 读取 `settings.json` 的结果：要么解析出 [`Settings`]，要么给出默认值并附带出错
+/// 路径，好让 UI 弹出损坏提示（见 [`SettingsGlobal::initial_corrupt_path`]）。
 #[derive(Debug)]
 pub enum SettingsLoadOutcome {
     Loaded(Settings),
@@ -75,7 +73,7 @@ pub enum SettingsLoadOutcome {
 }
 
 impl SettingsLoadOutcome {
-    /// The settings to run with, whether or not the file was corrupt.
+    /// 无论文件是否损坏，实际用来运行的设置。
     pub fn into_settings(self) -> Settings {
         match self {
             SettingsLoadOutcome::Loaded(settings) => settings,
@@ -84,20 +82,18 @@ impl SettingsLoadOutcome {
     }
 }
 
-/// Health of the settings file as observed at load/reload time: `Ok` when it
-/// parses, `Corrupt` carrying the offending path when it does not (surfaced by
-/// the UI's corrupt-settings notice; see `SettingsGlobal::initial_corrupt_path`).
+/// 加载/重载时观测到的设置文件健康度：能解析是 `Ok`；不能解析则是 `Corrupt`
+/// 并携带出错路径（由 UI 的损坏设置提示浮出，见 `SettingsGlobal::initial_corrupt_path`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingsHealth {
     Ok,
     Corrupt { path: PathBuf },
 }
 
-/// Read the settings file at `path`, applying the legacy `theme.json`
-/// migration to the result. Only `NotFound` counts as `Loaded` defaults: any
-/// other read error (sharing violation from an indexer/AV, permissions) is
-/// reported as `Corrupt` so the watcher preserves the in-memory settings
-/// instead of replacing them with defaults and saving those back.
+/// 读取 `path` 处的设置文件，并对结果套用旧版 `theme.json` 迁移。
+/// 只有 `NotFound` 才算 `Loaded` 默认值：其它任何读取错误（索引器/杀软引起的共享冲突、
+/// 权限问题）都必须报 `Corrupt`，这样 watcher 才保留内存态设置，
+/// 而不是拿默认值替换掉再把默认值存回磁盘。
 pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -175,8 +171,8 @@ fn write_settings_file(snapshot: &Settings, path: &Path, generation: u64) -> std
         })
 }
 
-/// Push `settings` onto the playback thread and the scanner immediately, then
-/// debounce the disk write (trailing edge, see [`SETTINGS_SAVE_DEBOUNCE`]).
+/// 立即把 `settings` 推给播放线程与扫描器，再对磁盘写入做防抖（trailing edge，
+/// 见 [`SETTINGS_SAVE_DEBOUNCE`]）。
 pub fn save_settings(cx: &mut App, settings: &Settings) {
     let playback = cx.global::<PlaybackInterface>();
     playback.update_settings(settings.playback.clone());
@@ -187,8 +183,8 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
     let path = cx.global::<SettingsGlobal>().path.clone();
     let snapshot = Arc::new(settings.clone());
 
-    // The globals above must take effect live; only the disk write collapses
-    // into one trailing-edge write (same pattern as the equalizer's save).
+    // 上面这些全局对象必须实时生效；只有磁盘写入会被合并为
+    // 一次 trailing-edge 写入（与均衡器的保存同一套路）。
     let generation = SETTINGS_SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     if let Ok(mut pending) = PENDING_SETTINGS_SAVE.lock() {
         *pending = Some(PendingSettingsSave {
@@ -260,20 +256,19 @@ pub fn flush_pending_settings() {
 pub struct SettingsGlobal {
     pub model: Entity<Settings>,
     pub path: PathBuf,
-    /// `Some(path)` when the initial load at startup found a corrupt settings file.
-    /// Consumed by `build_models` to set up `SettingsHealth`, is `None` afterwards.
+    /// 启动时的首次加载发现设置文件损坏时为 `Some(path)`。
+    /// 由 `build_models` 消费用来建立 `SettingsHealth`，之后为 `None`。
     pub initial_corrupt_path: Option<PathBuf>,
-    /// Never read: exists only so the notify watcher stays alive through
-    /// ownership — dropping it unregisters the watch and silently breaks
-    /// settings.json hot reload.
+    /// 从不被读：存在的唯一意义是让 notify watcher 靠所有权保活——
+    /// 丢弃它会注销 watch，从而静默断掉 settings.json 的热重载。
     #[allow(dead_code)]
     pub watcher: Option<Box<dyn Watcher>>,
 }
 
 impl Global for SettingsGlobal {}
 
-/// Load settings from `path`, publish [`SettingsGlobal`], and watch the
-/// containing directory so hand edits to `settings.json` are re-read live.
+/// 从 `path` 加载设置、发布 [`SettingsGlobal`]，并 watch 所在目录，
+/// 使手工编辑的 `settings.json` 能被实时重读。
 pub fn setup_settings(cx: &mut App, path: PathBuf) {
     let outcome = create_settings(&path);
     let initial_corrupt_path = match &outcome {
@@ -281,9 +276,9 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
         SettingsLoadOutcome::Loaded(_) => None,
     };
     let settings = cx.new(|_| outcome.into_settings());
-    let settings_model = settings.clone(); // for the closure
+    let settings_model = settings.clone(); // 供 watcher 闭包使用
 
-    // create and setup file watcher
+    // 创建并配置 settings.json 的文件 watcher
     let (tx, rx) = channel::<notify::Result<Event>>();
 
     let watcher = notify::recommended_watcher(tx);
@@ -335,9 +330,8 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
                 }
             }
 
-            // settings.json is hand-edited; a 1 s poll reacts within
-            // perception without waking the main thread multiple times a
-            // second.
+            // settings.json 是被手工改的；1 s 轮询能在可感知时间内反应，
+            // 又不会每秒多次唤醒主线程。
             app.background_executor()
                 .timer(Duration::from_secs(1))
                 .await;
@@ -355,10 +349,9 @@ pub fn setup_settings(cx: &mut App, path: PathBuf) {
     cx.set_global(global);
 }
 
-/// Applies a fresh [`SettingsLoadOutcome`] produced by the file watcher. When the file parses
-/// cleanly the in-memory `Settings` is replaced and health is marked `Ok`; when the file is
-/// corrupt the existing `Settings` is preserved (so the scanner keeps using the last known-good
-/// configuration) and health is flipped to `Corrupt`.
+/// 应用文件 watcher 产出的新鲜 [`SettingsLoadOutcome`]。文件能干净解析时替换内存中的
+/// `Settings` 并把健康度标为 `Ok`；文件损坏时保留现有 `Settings`（扫描器因此继续用
+/// 最后一份已知良好的配置）并把健康度翻成 `Corrupt`。
 fn apply_settings_outcome(
     cx: &mut Context<Settings>,
     current: &mut Settings,
@@ -368,8 +361,8 @@ fn apply_settings_outcome(
 
     let next_health = match outcome {
         SettingsLoadOutcome::Loaded(settings) => {
-            // deliver external edits to the playback thread and the scanner, save_settings
-            // pushes on its own and its reload diff is empty
+            // 把外部编辑派发给播放线程与扫描器；save_settings 自己会推送，
+            // 且它的 reload diff 是空的
             if current.playback != settings.playback && cx.has_global::<PlaybackInterface>() {
                 cx.global::<PlaybackInterface>()
                     .update_settings(settings.playback.clone());
@@ -378,17 +371,17 @@ fn apply_settings_outcome(
                 cx.global::<ScanInterface>()
                     .update_settings(settings.scanning.clone());
             }
-            // prevent_idle lives outside the playback thread's SettingsChanged
-            // consumption: the power manager needs its own diff push or a
-            // hand-edited settings.json would only apply after a restart.
+            // prevent_idle 不在播放线程的 SettingsChanged 消费路径里：
+            // 电源管理器需要自己那条 diff 推送，否则手工改的
+            // settings.json 要等到重启才生效。
             if current.playback.prevent_idle != settings.playback.prevent_idle
                 && cx.has_global::<crate::power::PowerManager>()
             {
                 let power = cx.global::<crate::power::PowerManager>().clone();
                 power.set_prevent_idle(cx, settings.playback.prevent_idle);
             }
-            // same-content reloads (our own save echo, notify storms) must not
-            // cascade into the app-wide refresh_windows observer
+            // 内容相同的 reload（我们自己保存的回声、notify 风暴）不得
+            // 级联触发全应用的 refresh_windows 观察者
             let changed = *current != settings;
             *current = settings;
             if changed {
@@ -460,9 +453,8 @@ mod tests {
         assert_eq!(settings.interface.theme.as_deref(), Some("custom.json"));
     }
 
-    /// A non-`NotFound` read failure must not masquerade as "no file": the
-    /// watcher would then replace live settings (EQ, ReplayGain, scan paths)
-    /// with defaults and save them back.
+    /// 非 `NotFound` 的读取失败不得伪装成「没有文件」：那样 watcher 会拿默认值
+    /// 覆盖生效中的设置（EQ、ReplayGain、扫描路径）再把默认值存回磁盘。
     #[test]
     fn create_settings_unreadable_file_reports_corrupt() {
         let dir = create_test_dir();
