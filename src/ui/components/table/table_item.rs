@@ -13,8 +13,10 @@ use super::{
 };
 use crate::ui::theme::Theme;
 
-/// Fixed height of every row cell; matches the table header height.
-const ROW_HEIGHT: f32 = 36.0;
+/// Fixed height of every row cell; matches the table header height. Also the
+/// outer height the shell passes when caching this row view (the cache path
+/// never measures content).
+pub(crate) const ROW_HEIGHT: f32 = 36.0;
 
 #[derive(Clone)]
 pub struct TableItem<T, C>
@@ -116,6 +118,7 @@ where
     C: Column + 'static,
 {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::TableItem);
         let row_data = self.row.clone();
         let is_available = self.is_available;
         let context_menu = self.row.as_ref().and_then(|row| {

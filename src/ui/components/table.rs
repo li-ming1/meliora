@@ -38,7 +38,7 @@ use table_data::{
     Column, ColumnReorderDrag, DEFAULT_COLUMN_WIDTH, GridContext, MIN_COLUMN_WIDTH,
     TABLE_HEADER_GROUP, TABLE_IMAGE_COLUMN_WIDTH, TableData, TableSort,
 };
-use table_item::TableItem;
+use table_item::{ROW_HEIGHT, TableItem};
 
 type RowMap<T, C> = FxHashMap<usize, Entity<TableItem<T, C>>>;
 
@@ -838,24 +838,35 @@ where
                                                     .map(|(idx, item)| {
                                                         let idx = idx + start;
 
-                                                        div()
-                                                            .w_full()
-                                                            .child(create_or_retrieve_view(
-                                                                &views_model,
-                                                                idx,
-                                                                |cx| {
-                                                                    TableItem::new(
-                                                                        cx,
-                                                                        item.clone(),
-                                                                        &columns,
-                                                                        list_handler.clone(),
-                                                                        list_context_menu_context
-                                                                            .clone(),
-                                                                    )
-                                                                },
-                                                                cx,
-                                                            ))
-                                                            .into_any_element()
+                                                        // 缓存行视图：行的全部动态输入都有
+                                                        // notify 契约（列宽由行自身观察、
+                                                        // 封面/菜单状态经 use_keyed_state 的
+                                                        // 观察器回落到行实体、hover/mousedown
+                                                        // 走 notify/整窗 refresh，数据重载时
+                                                        // clear_row_views 重建实体）。不缓存
+                                                        // 时一张封面加载完成会让 Library 重建并
+                                                        // 重渲所有可见行（O(可见行) 扇出）。
+                                                        AnyView::from(create_or_retrieve_view(
+                                                            &views_model,
+                                                            idx,
+                                                            |cx| {
+                                                                TableItem::new(
+                                                                    cx,
+                                                                    item.clone(),
+                                                                    &columns,
+                                                                    list_handler.clone(),
+                                                                    list_context_menu_context
+                                                                        .clone(),
+                                                                )
+                                                            },
+                                                            cx,
+                                                        ))
+                                                        .cached(
+                                                            StyleRefinement::default()
+                                                                .w_full()
+                                                                .h(px(ROW_HEIGHT)),
+                                                        )
+                                                        .into_any_element()
                                                     })
                                                     .collect()
                                             },
@@ -955,10 +966,13 @@ where
                                         // per-item image_cache here either: GridItem draws its artwork
                                         // through managed_image, which never touches the gpui image
                                         // cache the wrapper would feed.
+                                        // 与列表行同一契约：GridItem 无自持动态状态，
+                                        // 缓存后一次封面/菜单 update 只重渲它自己，
+                                        // 而不是整个可见网格。
                                         match view {
-                                            Some(view) => {
-                                                div().size_full().child(view).into_any_element()
-                                            }
+                                            Some(view) => AnyView::from(view)
+                                                .cached(StyleRefinement::default().size_full())
+                                                .into_any_element(),
                                             None => div().into_any_element(),
                                         }
                                     },

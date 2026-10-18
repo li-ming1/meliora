@@ -472,6 +472,10 @@ impl Render for ArtistDetailView {
         let album_ids = self.album_ids.clone();
         let grid_views_model = self.grid_views.clone();
         let grid_render_counter = self.grid_render_counter.clone();
+        // 网格逐单元回调里只在**本帧第一个单元**做 prune（table.rs:913 / finder.rs:672
+        // 的同一修法）：uniform_grid 的闭包按单元逐个调用，无 range 可算 center，
+        // 所以用门控；逐单元 prune 是 O(可见单元×缓存键数) 的键迭代。
+        let prune_gate = std::cell::Cell::new(false);
         let nav_model = self.nav_model.clone();
 
         let is_playing =
@@ -801,12 +805,16 @@ impl Render for ArtistDetailView {
                                             album_count,
                                             None,
                                             move |idx, _, cx| {
-                                                prune_views(
-                                                    &grid_views_model,
-                                                    &grid_render_counter,
-                                                    idx,
-                                                    cx,
-                                                );
+                                                if prune_gate.replace(true) {
+                                                    grid_render_counter.update(cx, |m, _| *m = idx);
+                                                } else {
+                                                    prune_views(
+                                                        &grid_views_model,
+                                                        &grid_render_counter,
+                                                        idx,
+                                                        cx,
+                                                    );
+                                                }
 
                                                 // Fallible equivalent of
                                                 // `create_or_retrieve_view`: an album

@@ -304,12 +304,18 @@ where
         let mut category_counts: Vec<usize> = Vec::new();
         let mut has_uncategorized = false;
 
-        for item in matches {
-            if let Some(cat) = item.category() {
-                if let Some(pos) = category_order.iter().position(|c| *c == cat) {
+        // 分类只查一次并缓存：`category()` 内部是 `tr!`（全局 RwLock 读 + 哈希
+        // 查表 + I18nString 构造），而下面共有三趟全量扫描——各自重取就是
+        // n×(2+k) 次（n ≤ MAX_MATCHES=100、k≈4-5 ≈ 700 次/重建）。本函数在
+        // 匹配集每次变化时都跑（连打字符即每秒数次）。
+        let cats: Vec<Option<I18nString>> = matches.iter().map(|item| item.category()).collect();
+
+        for cat in cats.iter() {
+            if let Some(cat) = cat {
+                if let Some(pos) = category_order.iter().position(|c| c == cat) {
                     category_counts[pos] += 1;
                 } else {
-                    category_order.push(cat);
+                    category_order.push(cat.clone());
                     category_counts.push(1);
                 }
             } else {
@@ -327,8 +333,8 @@ where
         let mut display_list = Vec::with_capacity(matches.len() + category_order.len());
 
         if has_uncategorized {
-            for item in matches {
-                if item.category().is_none() {
+            for (item, cat) in matches.iter().zip(cats.iter()) {
+                if cat.is_none() {
                     display_list.push(DisplayEntry::Item(item.clone()));
                 }
             }
@@ -345,8 +351,8 @@ where
             };
 
             let mut emitted = 0;
-            for item in matches {
-                if item.category().as_ref() == Some(cat) {
+            for (item, item_cat) in matches.iter().zip(cats.iter()) {
+                if item_cat.as_ref() == Some(cat) {
                     if emitted < limit {
                         display_list.push(DisplayEntry::Item(item.clone()));
                     }

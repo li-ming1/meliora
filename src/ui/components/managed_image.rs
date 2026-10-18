@@ -2100,7 +2100,12 @@ mod bench {
     #[test]
     #[ignore = "timing report, run with --ignored --nocapture"]
     fn report_image_pipeline_costs() {
-        for source_px in [2048u32, 1280] {
+        // 4096 必须在列：全语料日志里"背景解析到大图变体"的 15 张去重封面
+        // **全部**命中 4096 档（压缩字节 p50 1.36MB / max 3.04MB），AGENTS.md
+        // 记的"4096 级仅 ~2%"是 2026-10-06 的 98 样本读数，与本机 29h 语料不符。
+        // 4096 既是解码缓冲的最大项（67MB），也是管线瞬态的上界，不测它等于
+        // 用偏样本给回归基线定尺。
+        for source_px in [4096u32, 2048, 1280] {
             let jpeg = synthetic_jpeg(source_px);
             println!(
                 "source: {source_px}px synthetic JPEG, {} KB",
@@ -2120,7 +2125,8 @@ mod bench {
 
         // Immersive backdrop pipeline: full-size source → cover crop →
         // denoise → resample → unsharp, to a 1920x1080 device-pixel target.
-        for source_px in [2048u32, 1280] {
+        // 4096 与上面同一理由：在线封面的背景档实测全部解析到 4096。
+        for source_px in [4096u32, 2048, 1280] {
             let source = synthetic_source(source_px);
             bench_summarize_n(
                 &format!("backdrop_sharp_fill {source_px}->1080p"),

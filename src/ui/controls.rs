@@ -139,6 +139,7 @@ impl Controls {
 
 impl Render for Controls {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Controls);
         let decorations = window.window_decorations();
         let theme = cx.global::<Theme>();
 
@@ -215,6 +216,7 @@ impl PlaybackSection {
 
 impl Render for PlaybackSection {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::PlaybackSection);
         let state = self.info.playback_state.read(cx);
         let shuffling = self.info.shuffling.read(cx);
         let repeating = *self.info.repeating.read(cx);
@@ -489,6 +491,7 @@ impl Scrubber {
 
 impl Render for Scrubber {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Scrubber);
         let theme = cx.global::<Theme>();
         let position_ms = *self.position.read(cx);
         let duration_ms = *self.duration.read(cx);

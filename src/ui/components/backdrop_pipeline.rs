@@ -175,6 +175,19 @@ pub(super) fn sharpen_rgba(image: &mut image::RgbaImage) {
 
 /// Parameterized core of [`sharpen_rgba`]: `amount` scales the unsharp
 /// response, `sigma` sets the halo radius in output pixels.
+///
+/// 模糊基保持 `imageops::blur`。曾把它和下面中值的 `sort_unstable` 一起换成
+/// `fast_blur`（Kovesi 三重盒式，u8 域）+ `select_nth_unstable`：前者确实把
+/// 管线过路瞬态从两块整幅 `Vec<f32>`（1920×1080 RGBA ≈33MB×2）压到两块 u8
+/// （≈8MB×2，省 ~49MB），但**同环境同进程序列的实测是整条管线慢 25-79%**
+/// （2048→1080p 588.8 vs 833.9ms、1280 档 320.0 vs 574.1ms、4096 档 753.7 vs
+/// 942.4ms；旧实现 588.8ms 与 2026-10-15 基线 566-592ms 吻合，可作环境未漂移
+/// 的旁证）。两处改动是合并测得、未单独归因，因此整体回退。
+///
+/// 教训（写给下一轮）：那 49MB 是"用 ms 换 MB"的显式取舍，不是免费午餐；
+/// 而且**跨进程的 bench 序列不可直接比**——第一次跑只有 2048/1280 两个用例，
+/// 加了 4096 之后同进程后半段的用例普遍变慢，我就是这样把一次回归读成了
+/// −28~31% 的收益。对照必须同环境、同序列、同进程。
 fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
     let blurred = image::imageops::blur(image, sigma);
     for (src, blur) in image.pixels_mut().zip(blurred.pixels()) {
@@ -240,6 +253,10 @@ pub(super) fn denoise_rgba(image: &mut image::RgbaImage) {
                     next_row[xp + c],
                 ];
                 window.sort_unstable();
+                // 保持全排序写法：换成 `select_nth_unstable(4)` 与上面的
+                // `fast_blur` 是**同一轮**改的、也是同一轮合并测得变慢，
+                // 没有单独归因过这一处；在没有独立收益证据的前提下，
+                // 不动一个已被实测拖累的函数体（§39）。
                 *out_cell = window[4];
             }
         }

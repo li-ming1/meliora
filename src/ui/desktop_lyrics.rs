@@ -428,6 +428,7 @@ impl DesktopLyricsView {
 
 impl Render for DesktopLyricsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::DesktopLyrics);
         // 渲染期缓存窗口位置与自身句柄：on_release 持久化/清理的唯一数据
         // 源（机制见 persist_position 与 self_handle 注释）。
         self.last_bounds = match window.window_bounds() {

@@ -143,7 +143,8 @@ impl QrLoginHost for KugouSettings {
     }
 
     fn build_qr(key: &str) -> Result<Arc<RenderImage>, String> {
-        crate::ui::kugou::build_login_qr(key).map_err(|err| err.to_string())
+        crate::ui::online_common::build_qr_render_image(&kugou::api::qr_login_url(key))
+            .map_err(|err| err.to_string())
     }
 
     #[allow(clippy::manual_async_fn)] // Send bound required by the trait contract, see create_key

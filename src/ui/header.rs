@@ -6,7 +6,6 @@ use super::{
 use crate::ui::design::ICON_SM;
 use crate::{
     library::scan::ScanEvent,
-    settings::SettingsGlobal,
     ui::{
         components::{
             icons::{ARROW_LEFT, ARROW_RIGHT, FOLDER_BOLT, FOLDER_SEARCH, SEARCH, icon},
@@ -81,14 +80,12 @@ pub struct Header {
 
 impl Header {
     pub fn new(cx: &mut App) -> Entity<Self> {
-        let settings = cx.global::<SettingsGlobal>().model.clone();
-
         cx.new(|cx| {
-            cx.observe(&settings, |_, _, cx| cx.notify()).detach();
-
-            let sidebar_width = cx.global::<Models>().sidebar_width.clone();
-            cx.observe(&sidebar_width, |_, _, cx| cx.notify()).detach();
-
+            // 只观察 render 真正读的两个宽度：拖拽期 sidebar_width 的变化由
+            // Sidebar 自己的逐帧同步（sidebar.rs:250 带 `!=` 守卫）搬进
+            // animated_sidebar_width 后再传到这里，settings 变更由 app.rs:655
+            // 的内容级 diff → refresh_windows 兜底，两个旧观察者只会让整条
+            // 标题栏（~40 元素 + tr! + logo 资源查找）在拖拽/改设置时白重建。
             let animated_sidebar_width = cx.global::<Models>().animated_sidebar_width.clone();
             cx.observe(&animated_sidebar_width, |_, _, cx| cx.notify())
                 .detach();
@@ -106,6 +103,7 @@ impl Header {
 
 impl Render for Header {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Header);
         let mut header = header().main_window(true);
 
         // 侧边栏视觉延伸块：与侧边栏同宽同背景，占满顶栏左侧高度，

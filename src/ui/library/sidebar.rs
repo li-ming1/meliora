@@ -198,6 +198,7 @@ impl Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Sidebar);
         let theme = cx.global::<Theme>().clone();
         let current_view = self.nav_model.read(cx).current();
         let two_column = cx

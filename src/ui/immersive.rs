@@ -984,6 +984,7 @@ struct ImmersiveProgress {
 
 impl Render for ImmersiveProgress {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::ImmersiveProgress);
         // PlaybackInfo positions and durations are both in milliseconds.
         let position_ms = *self.position.read(cx);
         let duration_ms = *self.duration.read(cx);
@@ -1070,6 +1071,7 @@ fn lyric_window(
 
 impl Render for ImmersiveView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Immersive);
         // Keyboard focus for the Esc binding (AboutDialog pattern; idempotent).
         self.focus_handle.focus(window, cx);
 

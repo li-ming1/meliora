@@ -276,8 +276,13 @@ impl QueueItem {
         })
     }
 
-    pub fn update_idx(&mut self, idx: usize) {
-        self.idx = idx;
+    /// 行被缓存后，槽位号只在这里变：点击处理与高亮都读 `idx`，不 notify
+    /// 就会继续作用于旧槽位（重排/滚动后点错曲目）。
+    pub fn update_idx(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.idx != idx {
+            self.idx = idx;
+            cx.notify();
+        }
     }
 
     /// Opens (creating on first use) the row's add-to-playlist palette over
@@ -298,6 +303,7 @@ impl QueueItem {
 
 impl Render for QueueItem {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::QueueRow);
         let album_id = self.item.get_db_album_id();
         let track_id = self.item.get_db_id();
         let data_entity = queue_metadata::queue_ui_data(cx, &self.item);
@@ -1041,6 +1047,7 @@ impl Queue {
 
 impl Render for Queue {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Queue);
         check_drag_cancelled(self.drag_drop_manager.clone(), cx);
 
         // A content change arrived while the panel was hidden: catch up now,
@@ -1448,10 +1455,20 @@ impl Render for Queue {
                                             cx,
                                         );
                                         if view.read(cx).idx != idx {
-                                            view.update(cx, |q, _| q.update_idx(idx));
+                                            view.update(cx, |q, cx| q.update_idx(idx, cx));
                                         }
 
-                                        div().child(view)
+                                        // 缓存行视图：行的动态输入（队列位置/元数据/
+                                        // 选中/索引）全部有 notify 契约，拖拽期 gpui 的
+                                        // 整窗 refresh 也会绕过缓存。不缓存时每一帧根
+                                        // 重绘都会按可见行数重跑 render（2026-10-17
+                                        // 实测 queue-row≈8×Queue 次数）。
+                                        AnyView::from(view).cached(
+                                            StyleRefinement::default()
+                                                .w_full()
+                                                .h(px(QUEUE_ITEM_HEIGHT))
+                                                .flex_shrink_0(),
+                                        )
                                     })
                                     .collect()
                             } else {

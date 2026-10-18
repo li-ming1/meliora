@@ -562,10 +562,14 @@ impl Render for FilesView {
                     "files-view",
                     flat.len(),
                     move |range: std::ops::Range<usize>, _window, cx| {
+                        // 每次窗口重建只做一次 prune（与 table.rs:827 同一修法）：逐行
+                        // 调用是 O(可见行数×缓存键数) 的键迭代，且每次调用各自分配
+                        // `to_remove` Vec。
+                        let center = range.start + (range.end - range.start) / 2;
+                        prune_views(&row_views, &render_counter, center, cx);
+
                         range
                             .map(|idx| {
-                                prune_views(&row_views, &render_counter, idx, cx);
-
                                 let row = flat[idx].clone();
                                 let fv = self_entity.clone();
 

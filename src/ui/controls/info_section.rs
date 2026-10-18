@@ -458,6 +458,7 @@ impl InfoSection {
 
 impl Render for InfoSection {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::InfoSection);
         let add_to_state = self.current_library_track.as_ref().map(|track| {
             crate::ui::library::context_menus::add_to_playlist_state(
                 "info-section-menu-state",

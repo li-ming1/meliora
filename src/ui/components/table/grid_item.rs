@@ -76,6 +76,7 @@ where
     C: Column + 'static,
 {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::GridItem);
         let is_available = self.is_available;
         // shared-row variant: the menu builder holds an `Arc` refcount and
         // deep-clones the row only when the menu opens, not every frame

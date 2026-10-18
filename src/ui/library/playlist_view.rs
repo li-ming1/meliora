@@ -1160,6 +1160,13 @@ impl Render for PlaylistView {
                                         cx,
                                     );
 
+                                    // 每次窗口重建只做一次 prune（与 table.rs:827 同一
+                                    // 修法）：逐行调用是 O(可见行数×缓存键数) 的键迭代，
+                                    // 且每次调用各自分配 `to_remove` Vec。
+                                    if !is_templ_render {
+                                        prune_views(&views_model, &render_counter, center, cx);
+                                    }
+
                                     let items = &items_clone[range];
 
                                     items
@@ -1167,10 +1174,6 @@ impl Render for PlaylistView {
                                         .enumerate()
                                         .map(|(idx, item)| {
                                             let idx = idx + start;
-
-                                            if !is_templ_render {
-                                                prune_views(&views_model, &render_counter, idx, cx);
-                                            }
 
                                             let drag_drop_manager = drag_drop_manager.clone();
                                             let list_id = list_id.clone();

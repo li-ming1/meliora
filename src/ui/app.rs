@@ -86,6 +86,12 @@ pub(crate) struct MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::MainWindow);
+        // 启动可观测性：首帧落地的时刻直接读日志行的前缀（logging.rs 用的是
+        // `fmt::time::uptime()`，即进程年龄），所以这里不需要自带耗时字段。
+        // 代价 = 每次重绘一次 `Once` 的原子读。
+        static FIRST_FRAME: std::sync::Once = std::sync::Once::new();
+        FIRST_FRAME.call_once(|| tracing::info!("[startup] first frame"));
         cx.global::<ModalActive>().0.store(false, Ordering::Relaxed);
 
         let show_about = *self.show_about.read(cx);
@@ -582,7 +588,15 @@ pub fn run() -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
         cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
 
+        let fonts_started_at = std::time::Instant::now();
         find_fonts(cx).expect("unable to load fonts");
+        // 启动关键路径上的同步工作：全部内嵌字体（实测 2.75MB / 10 个文件）
+        // 在主线程注册。此前 `[startup]` 只有数据库池一个标记，"打开到能听/
+        // 看得见"这段时间完全不可测（轮转日志也取不到启动行，见 §44 第十五轮）。
+        tracing::info!(
+            elapsed_ms = fonts_started_at.elapsed().as_millis() as u64,
+            "[startup] fonts registered"
+        );
 
         let storage = Storage::new(data_dir.join("app_data.json"));
         let storage_data = storage.load_or_default();

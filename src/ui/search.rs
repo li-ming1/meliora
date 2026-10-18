@@ -82,6 +82,7 @@ impl SearchView {
 
 impl Render for SearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Search);
         let show = self.show.clone();
         let is_open = show.read(cx);
         let weak = cx.weak_entity();

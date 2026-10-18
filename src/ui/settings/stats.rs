@@ -262,6 +262,17 @@ pub struct StatsSettings {
     /// longer matches was superseded by a newer tab/range switch and is
     /// dropped instead of overwriting fresher rows.
     top_generation: u64,
+    /// `(day rows, total seconds, hour-bucket seconds, local day)` of the last
+    /// applied batch. Two schema facts make a matching fingerprint an *exact*
+    /// match rather than a probable one: `listen_event` has
+    /// `CHECK (seconds > 0)` (migrations/20260908000000_listen_stats.sql) and
+    /// nothing in `src/`, `queries/` or `migrations/` ever UPDATEs or DELETEs
+    /// from it — so every insert strictly raises the seconds sum, and the sums
+    /// cannot stay equal across a real change. The day component covers
+    /// midnight: `today_label`/`streak_label` derive from it while data stands still.
+    /// If either fact ever changes (a CHECK relaxation, a retention sweep),
+    /// this guard stops being provable and must become a content comparison.
+    applied_fingerprint: Option<(usize, i64, i64, NaiveDate)>,
 }
 
 impl StatsSettings {
@@ -293,6 +304,7 @@ impl StatsSettings {
             top_range: TopRange::Week,
             top_items: Vec::new(),
             top_generation: 0,
+            applied_fingerprint: None,
         });
         entity.update(cx, |this, cx| {
             this.load_base(cx, true);
@@ -355,11 +367,23 @@ impl StatsSettings {
                 .await;
             if let Ok(Some((daily, hours))) = base {
                 let _ = this.update(cx, |this, cx| {
-                    this.apply_base(daily, hours, cx);
+                    let fingerprint = (
+                        daily.len(),
+                        daily.iter().map(|(_, total)| *total).sum::<i64>(),
+                        hours.iter().sum::<i64>(),
+                        Local::now().date_naive(),
+                    );
+                    // Matching count + sums is an exact match (append-only
+                    // table), so a tick that changed nothing re-parses no
+                    // dates, rebuilds no heat map and requests no repaint.
+                    if this.applied_fingerprint != Some(fingerprint) {
+                        this.applied_fingerprint = Some(fingerprint);
+                        this.apply_base(daily, hours, cx);
+                        cx.notify();
+                    }
                     if with_top {
                         this.load_top(cx);
                     }
-                    cx.notify();
                 });
             }
         })

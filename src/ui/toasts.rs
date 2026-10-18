@@ -1,8 +1,10 @@
+use std::time::{Duration, Instant};
+
 use crate::ui::design::{ICON_LG, ICON_SM};
 use gpui::{
-    Anchor, Animation, AnimationExt, App, AppContext, Context, ElementId, Entity,
-    InteractiveElement, IntoElement, ParentElement, Render, Rgba, StatefulInteractiveElement,
-    Styled, Window, anchored, deferred, div, point, prelude::FluentBuilder, px, relative,
+    Anchor, App, AppContext, Context, ElementId, Entity, InteractiveElement, IntoElement,
+    ParentElement, Render, Rgba, StatefulInteractiveElement, Styled, Window, anchored, deferred,
+    div, point, prelude::FluentBuilder, px, relative,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -20,6 +22,18 @@ use crate::{
 
 const MAX_VISIBLE: usize = 4;
 
+/// Repaint cadence of the auto-dismiss countdown bar. `AnimationExt::with_animation`
+/// pumps `window.request_animation_frame()` once per frame for the animation's whole
+/// duration, and each such request notifies the rendering view — which dirties the
+/// complete view-ancestor chain (`Window::mark_view_dirty` walks `view_path_reversed`),
+/// so a 5s toast alone re-drew `MainWindow` at 60Hz (~300 full-window draws, ~0.8s of
+/// main-thread CPU at the ledger's measured ~2.7ms/frame constant) while the user did
+/// nothing at all. The bar is decorative and dismissal is timer-driven, so the width is
+/// now computed from elapsed time and refreshed on this tick instead: 10x/s keeps the
+/// countdown legible (a 360px bar over 5s moves 7px per tick) at 1/6 the frames.
+/// Same substitution the scrollbar fade already uses for its pre-fade wait.
+const PROGRESS_TICK: Duration = Duration::from_millis(100);
+
 /// Action buttons pack `(toast id, action index)` into one integer element
 /// id: the index lives in the low bits, the toast id above it.
 const ACTION_INDEX_SHIFT: u32 = 16;
@@ -27,11 +41,31 @@ const ACTION_INDEX_SHIFT: u32 = 16;
 struct ActiveToast {
     id: u64,
     toast: Toast,
+    /// When the toast appeared, so the countdown bar can derive its width
+    /// from elapsed time rather than from a per-frame animation delta.
+    shown_at: Instant,
+}
+
+impl ActiveToast {
+    /// Fraction of the auto-dismiss countdown still left, for the progress bar.
+    /// Clamped because a frame can land between the last tick and the dismissal.
+    fn remaining(&self) -> f32 {
+        let Some(duration) = self.toast.duration else {
+            return 0.0;
+        };
+        let elapsed = Instant::now().saturating_duration_since(self.shown_at);
+        (1.0 - elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+    }
 }
 
 pub struct ToastLayer {
     toasts: Vec<ActiveToast>,
     next_id: u64,
+    /// Toasts on screen that draw a countdown bar. One pump at `PROGRESS_TICK`
+    /// covers all of them (each bar's width comes from its own `shown_at`), so
+    /// the repaint rate stays flat as toasts stack up.
+    bar_count: usize,
+    ticker_running: bool,
 }
 
 impl ToastLayer {
@@ -48,6 +82,8 @@ impl ToastLayer {
             Self {
                 toasts: Vec::new(),
                 next_id: 1,
+                bar_count: 0,
+                ticker_running: false,
             }
         })
     }
@@ -57,13 +93,22 @@ impl ToastLayer {
         self.next_id += 1;
 
         let duration = toast.duration;
-        self.toasts.push(ActiveToast { id, toast });
+        let shown_at = Instant::now();
+        self.toasts.push(ActiveToast {
+            id,
+            toast,
+            shown_at,
+        });
 
         if self.toasts.len() > MAX_VISIBLE {
-            self.toasts.remove(0);
+            let evicted = self.toasts.remove(0);
+            self.retire(&evicted);
         }
 
         if let Some(duration) = duration {
+            self.bar_count += 1;
+            self.start_ticker(cx);
+
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(duration).await;
                 this.update(cx, |layer, cx| layer.dismiss(id, cx)).ok();
@@ -74,9 +119,58 @@ impl ToastLayer {
         cx.notify();
     }
 
+    /// A toast left the layer: release its claim on the countdown pump.
+    fn retire(&mut self, removed: &ActiveToast) {
+        if removed.toast.duration.is_some() {
+            self.bar_count = self.bar_count.saturating_sub(1);
+        }
+    }
+
+    /// One `PROGRESS_TICK` pump serves every bar on screen, since each bar's
+    /// width comes from its own `shown_at` at render time. Per-toast pumps would
+    /// stack: four visible toasts (the batch-download case, `MAX_VISIBLE`) meant
+    /// four repaint requests per tick — 40/s instead of 60/s, barely a win.
+    fn start_ticker(&mut self, cx: &mut Context<Self>) {
+        if self.ticker_running || self.bar_count == 0 {
+            return;
+        }
+        self.ticker_running = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                if !this.update(cx, |layer, cx| layer.tick(cx)).unwrap_or(false) {
+                    return;
+                }
+                cx.background_executor().timer(PROGRESS_TICK).await;
+            }
+        })
+        .detach();
+    }
+
+    /// One pump tick: request a repaint while any bar is on screen, stand down
+    /// when none is. `reduced_motion` is read live rather than at push time, so
+    /// flipping the setting mid-toast can't freeze a bar that is being drawn —
+    /// with the setting on, the pump still wakes, but asks for no frames.
+    fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.bar_count == 0 {
+            self.ticker_running = false;
+            return false;
+        }
+        if !cx
+            .global::<SettingsGlobal>()
+            .model
+            .read(cx)
+            .interface
+            .reduced_motion
+        {
+            cx.notify();
+        }
+        true
+    }
+
     fn dismiss(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(pos) = self.toasts.iter().position(|t| t.id == id) {
-            self.toasts.remove(pos);
+            let removed = self.toasts.remove(pos);
+            self.retire(&removed);
             cx.notify();
         }
     }
@@ -86,6 +180,7 @@ impl ToastLayer {
             return;
         };
         let mut removed = self.toasts.remove(pos);
+        self.retire(&removed);
         cx.notify();
 
         if idx < removed.toast.actions.len() {
@@ -254,12 +349,11 @@ fn render_toast(
                 })),
         );
 
-    let progress_bar = toast.duration.filter(|_| !reduced_motion).map(|duration| {
-        div().h(px(2.0)).w_full().bg(colors.track).with_animation(
-            ElementId::from(("toast-progress", id)),
-            Animation::new(duration),
-            |this, delta| this.w(relative(1.0 - delta)),
-        )
+    let progress_bar = toast.duration.filter(|_| !reduced_motion).map(|_| {
+        div()
+            .h(px(2.0))
+            .w(relative(active.remaining()))
+            .bg(colors.track)
     });
 
     div()

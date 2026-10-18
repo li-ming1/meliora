@@ -144,13 +144,18 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .enable_all()
         .worker_threads(2)
         // Every spawn_blocking shares this ceiling: the scan pipeline runs up
-        // to 15 metadata-decode workers (MAX_METADATA_WORKERS on a 16-core
-        // machine) and the same pool serves art processing, availability
-        // statting, the backdrop sharp-fill and online URL refreshes. Capping
-        // it at 4 serialized the whole scan behind the pool. Idle blocking
-        // threads only reserve stack — no committed pages — so this does not
-        // fight the memory caps.
-        .max_blocking_threads(16)
+        // to 15 metadata reads (normal_worker_count = cores-1, one short
+        // spawn_blocking per file) plus up to 8 artwork decodes/resizes
+        // (cores/2, guarded by its own semaphore) — a peak of 23 concurrent
+        // blocking items on this machine. At 16 the surplus submits land in the
+        // pool's unbounded FIFO behind them, so interactive work that also
+        // needs the pool (backdrop sharp-fill, cover decode, row metadata,
+        // settings/session writes, QR) waits up to one artwork resize (~0.5s)
+        // for the rest of the scan. 32 leaves headroom over the scan's own
+        // self-limit without raising scan concurrency (the scan caps itself).
+        // Idle blocking threads only reserve stack — no committed pages — so
+        // this does not fight the memory caps.
+        .max_blocking_threads(32)
         .build()
         .unwrap()
 });
@@ -428,22 +433,154 @@ pub fn register_frame_window_label(handle: gpui::AnyWindowHandle, label: &'stati
     }
 }
 
+/// `[frame]` 渲染归属探针。gpui 侧只能看到窗口级 draw 聚合，`invalidations_max`
+/// 不给归属；而 `mark_view_dirty` 会把一次 notify 的**整条祖先链**标脏
+/// （gpui window.rs:1937），非 `.cached()` 的视图在脏祖先下逐层重跑 `render()`
+/// （view.rs:387 的子树回放只对"自己不脏"的视图生效）。于是"切一首先歌到底让
+/// 多少层重渲"这个问题在宿主侧完全不可见——本表把每个视图的 render 次数与
+/// 耗时（µs 总和/峰值）按 30s 窗口差分出来，输出成 `[frame] render tally` 行。
+///
+/// 顺序必须与 [`RenderedView::LABELS`] 一致，编译期由下方 const assert 钉住。
+#[derive(Clone, Copy)]
+pub enum RenderedView {
+    MainWindow,
+    Library,
+    Sidebar,
+    Header,
+    Controls,
+    PlaybackSection,
+    Scrubber,
+    InfoSection,
+    Lyrics,
+    Queue,
+    QueueRow,
+    TrackRow,
+    TableItem,
+    GridItem,
+    Immersive,
+    ImmersiveProgress,
+    DesktopLyrics,
+    Search,
+    Equalizer,
+}
+
+impl RenderedView {
+    const LABELS: [&'static str; 19] = [
+        "main",
+        "library",
+        "sidebar",
+        "header",
+        "controls",
+        "playback",
+        "scrubber",
+        "info",
+        "lyrics",
+        "queue",
+        "queue-row",
+        "track-row",
+        "table-item",
+        "grid-item",
+        "immersive",
+        "imm-progress",
+        "desk-lyrics",
+        "search",
+        "eq",
+    ];
+}
+
+const _: () = assert!(RenderedView::Equalizer as usize + 1 == RenderedView::LABELS.len());
+
+static RENDER_TALLY: [std::sync::atomic::AtomicU64; RenderedView::LABELS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; RenderedView::LABELS.len()];
+/// 每个视图 render 的 CPU 时间（µs）：窗口内总和 / 单次峰值。次数只说明
+/// "被重渲了"，耗时才回答"值不值得缓存它"。
+static RENDER_MICROS: [std::sync::atomic::AtomicU64; RenderedView::LABELS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; RenderedView::LABELS.len()];
+static RENDER_PEAK_MICROS: [std::sync::atomic::AtomicU64; RenderedView::LABELS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; RenderedView::LABELS.len()];
+/// 与 `[frame]` 探针同开关（`MELIORA_FRAME_TRACE`）：关闭时调用点只剩一次
+/// relaxed load，不分配、不写。
+static RENDER_TALLY_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 一次 `render()` 调用的测量作用域：进入时计数，Drop 时记账。绑定到函数
+/// 作用域即可覆盖整个 render 体（元素构建的成本全在返回前发生）。
+#[must_use = "bind it for the whole render body (`let _render = tally_render(..)`) or the timing is meaningless"]
+pub struct RenderProbe {
+    view: usize,
+    started: Option<std::time::Instant>,
+}
+
+/// 视图 `render()` 入口调用一次。
+pub fn tally_render(view: RenderedView) -> RenderProbe {
+    use std::sync::atomic::Ordering::Relaxed;
+    let enabled = RENDER_TALLY_ENABLED.load(Relaxed);
+    if enabled {
+        RENDER_TALLY[view as usize].fetch_add(1, Relaxed);
+    }
+    RenderProbe {
+        view: view as usize,
+        started: enabled.then(std::time::Instant::now),
+    }
+}
+
+impl Drop for RenderProbe {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(started) = self.started else { return };
+        let micros = started.elapsed().as_micros() as u64;
+        RENDER_MICROS[self.view].fetch_add(micros, Relaxed);
+        RENDER_PEAK_MICROS[self.view].fetch_max(micros, Relaxed);
+    }
+}
+
+/// 取窗口内增量并清零，拼成一行 `label=次数/µs总和/µs峰值`；无重渲的视图
+/// 不出现（空闲就该是空串）。每个 30s 窗口一次分配，随日志行一起释放。
+/// 探针本体是 `#[cfg(not(test))]`，本函数只被它调用，同门下编译。
+#[cfg(not(test))]
+fn take_render_tally() -> String {
+    use std::fmt::Write as _;
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut out = String::new();
+    let rows = RenderedView::LABELS
+        .iter()
+        .zip(&RENDER_TALLY)
+        .zip(RENDER_MICROS.iter().zip(&RENDER_PEAK_MICROS));
+    for ((label, count), (micros, peak)) in rows {
+        let n = count.swap(0, Relaxed);
+        let total_us = micros.swap(0, Relaxed);
+        let peak_us = peak.swap(0, Relaxed);
+        if n > 0 {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            let _ = write!(out, "{label}={n}/{total_us}/{peak_us}");
+        }
+    }
+    out
+}
+
 /// 聚合并记录自上次调用以来的帧计时（`[frame] periodic`）。draw 时长是
 /// gpui `Window::draw` 的 CPU 段（场景构建 + 元素绘制）；dirty→draw 含
 /// 调度与合并延迟（上限为一个帧间隔属正常，持续超一个帧间隔才是问题）。
-/// gpui 的帧计时环形缓冲是全窗口共享的：按 `window_id` 分组，每个有帧
-/// 的窗口各输出一行（`win=` 字段）。无帧窗口不记日志——空闲 UI 本就不
-/// 该有帧，出现即异常信号。
+/// gpui 的帧计时环形缓冲是全窗口共享的：按 `window_id` 分组，每个有帧的
+/// 窗口各输出一行（`win=` 字段）。登记过但本窗口零帧的标签也各输出一行
+/// `frames=0`——隐藏/遮挡期间 gpui 不产生帧回调（省电，正确行为），但
+/// "探针活着而这个窗没画"与"探针压根没数据"必须在日志里长得不一样，
+/// 否则无法据此验证"扫描期根视图重绘归零"这类结论。
+#[cfg(not(test))]
+/// `[frame]` 延迟归因的下限：低于这个值的等待不做遮挡判断（正常一帧的重绘
+/// 区间内本来就落不下别的帧，全部会被误报成遮挡）。见 log_frame_aggregate。
+const SLOW_DRAW_GAP_US: u64 = 500_000;
+
 #[cfg(not(test))]
 fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     let frames = collector.collect_unseen();
-    if frames.is_empty() {
-        return;
-    }
     let mut by_window: HashMap<gpui::WindowId, Vec<&gpui::profiler::FrameTiming>> = HashMap::new();
     for frame in &frames {
         by_window.entry(frame.window_id).or_default().push(frame);
     }
+    let drawn: Vec<gpui::WindowId> = by_window.keys().copied().collect();
     let mut windows: Vec<(gpui::WindowId, Vec<&gpui::profiler::FrameTiming>)> =
         by_window.into_iter().collect();
     windows.sort_by_key(|(id, _)| id.as_u64());
@@ -480,10 +617,35 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
             .map(|frame| frame.invalidations)
             .max()
             .unwrap_or(0);
-        // 遮挡/最小化期间 gpui 无帧回调、失效只累积；恢复窗口的首帧会把
-        // 几十分钟的 dirty_at 一次性排空——dirty→draw 超过 60s 即视为该
-        // 伪影而非调度问题（判读细节见 AGENTS.md [frame] 节）。
-        let occluded_gap = dirty_to_draw_max_us > 60_000_000;
+        // 延迟归因用直接证据，不用"dirty→draw 超过 60s 就算遮挡"的事后阈值。
+        // 在最大延迟那一帧的 (dirty_at, draw_end) 区间里数本窗口还落地过几帧：
+        //   0 帧   ⇒ 这段时间根本没产生帧回调（隐藏/最小化/遮挡的省电正确行为，
+        //            或主线程被长时间占死）——到底是哪种，看同一时间戳的
+        //            [db] slow ui-thread query / [mem] 行来分辨；
+        //   ≥1 帧  ⇒ 帧循环是活的，这一帧却被压住了 = 真实的调度/卡顿问题。
+        // 阈值版的实证错误就在日志里：真遮挡的 9 个样本恰好全 >60s，而 47.97s
+        // 与 54.67s 两个样本被报成"非遮挡"，落在盲区里既不能证实也不能排除。
+        // 下限 SLOW_DRAW_GAP_US 以下的延迟不做归因：一次正常重绘的区间里
+        // 本来就落不下别的帧，会把每一帧都误报成"遮挡"。
+        let late = frames
+            .iter()
+            .filter_map(|frame| frame.dirty_to_draw_duration().map(|d| (d, frame)))
+            .max_by_key(|(d, _)| *d);
+        let frames_in_gap = late
+            .and_then(|(_, late)| {
+                late.dirty_at.map(|dirty_at| {
+                    frames
+                        .iter()
+                        .filter(|frame| {
+                            !std::ptr::eq(*frame, late)
+                                && frame.draw_end > dirty_at
+                                && frame.draw_end < late.draw_end
+                        })
+                        .count()
+                })
+            })
+            .unwrap_or(0);
+        let occluded_gap = dirty_to_draw_max_us > SLOW_DRAW_GAP_US && frames_in_gap == 0;
         tracing::info!(
             win = %win,
             frames = n,
@@ -494,10 +656,33 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
             over_16ms = over(16_000),
             over_33ms = over(33_000),
             dirty_to_draw_max_us,
+            frames_in_gap,
             invalidations_max,
             occluded_gap,
             "[frame] periodic"
         );
+    }
+
+    // 登记过、本窗口内零帧的标签：显式 frames=0，按标签排序保持日志可读顺序。
+    if let Some(labels) = labels.as_ref() {
+        let mut silent: Vec<&'static str> = labels
+            .iter()
+            .filter(|(_, id)| !drawn.contains(id))
+            .map(|(label, _)| *label)
+            .collect();
+        silent.sort_unstable();
+        for label in silent {
+            tracing::info!(win = %label, frames = 0, "[frame] periodic");
+        }
+    }
+
+    // 渲染归属：这一窗口内每个视图重渲了几次。切歌/悬停/滚动三类场景的判读
+    // 全靠这行——见 `RenderedView` 文档注释。
+    if RENDER_TALLY_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        let tally = take_render_tally();
+        if !tally.is_empty() {
+            tracing::info!(tally = %tally, "[frame] render tally");
+        }
     }
 }
 
@@ -577,6 +762,8 @@ fn spawn_memory_probe() {
         let frame_trace = env_override("MELIORA_FRAME_TRACE", 1) != 0;
         if frame_trace {
             gpui::profiler::set_frame_trace_enabled(true);
+            // 渲染归属计数与帧计时同开关（关掉时调用点仅一次 relaxed load）。
+            RENDER_TALLY_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let mut frame_collector = gpui::profiler::FrameTimingCollector::new();
         // CPU 占用差分状态：上次采样的累计 kernel+user 时间（100ns）。
@@ -587,12 +774,16 @@ fn spawn_memory_probe() {
                 log_frame_aggregate(&mut frame_collector);
             }
             let (private, working) = process_memory_mb();
-            // 全机逻辑核归一的进程 CPU 百分比：差分 / 采样间隔。空闲应为
-            // ~0%；与 [frame] frames 联手定位"空闲却忙碌"。
-            let cpu_pct = {
+            // 全机逻辑核归一的进程 CPU 占用（千分比）。用千分比而不是百分比：
+            // 16 核 × 30 s 归一化下 1% = 480 ms 核心时间，而本应用的全部工作
+            // 区间都在 1% 以下（一条 4096 背景管线 570 ms 单线程 ≈ 0.2%），
+            // 整数百分比把它们一律显示成 0——实测一整轮会话 172 个采样全为
+            // 0，探针因此无法履行"检测空闲却忙碌"的本职。与 [frame] frames
+            // 联手定位"空闲却忙碌"。
+            let cpu_permille = {
                 let now = std::time::Instant::now();
                 let total = process_cpu_times_100ns();
-                let pct = last_cpu
+                let permille = last_cpu
                     .and_then(|(prev, prev_at)| {
                         let wall_us = prev_at.elapsed().as_micros() as u64;
                         (wall_us > 0).then(|| {
@@ -600,12 +791,12 @@ fn spawn_memory_probe() {
                                 .map(|n| n.get() as u64)
                                 .unwrap_or(1);
                             let cpu_us = total.saturating_sub(prev) / 10;
-                            (cpu_us * 100) / wall_us.saturating_mul(cores)
+                            (cpu_us * 1000) / wall_us.saturating_mul(cores)
                         })
                     })
                     .unwrap_or(0);
                 last_cpu = Some((total, now));
-                pct
+                permille
             };
             let render_cache = crate::ui::components::managed_image::render_cache_mb();
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
@@ -650,8 +841,20 @@ fn spawn_memory_probe() {
             // churn drift, so a breach means fragmentation the eager
             // page-reset options failed to hold down (or a fresh leak).
             let watchdog_purge = private >= MEMORY_SOFT_CAP_MB;
-            let mi_collect_reclaim_mb = (scheduled_collect || watchdog_purge)
-                .then(|| mimalloc_force_collect_reclaim_mb(mi_commit_mb));
+            let mi_collect_reclaim_mb = if scheduled_collect || watchdog_purge {
+                // mi_collect(true) 是整堆扫描（10-06 实测一次回收 206MB 的就是它）。
+                // 探针跑在只有 2 个 worker 的 RUNTIME 上，同步执行等于长期占住一半
+                // 异步产能数十至上百 ms，而软顶看门狗触发时正是最需要响应的时候——
+                // 交阻塞池，与本探针内 covers_mb 的既有做法一致。
+                Some(
+                    crate::RUNTIME
+                        .spawn_blocking(move || mimalloc_force_collect_reclaim_mb(mi_commit_mb))
+                        .await
+                        .unwrap_or(0),
+                )
+            } else {
+                None
+            };
             if watchdog_purge && tick_count.is_multiple_of(4) {
                 tracing::warn!(
                     private_mb = private,
@@ -793,7 +996,7 @@ fn spawn_memory_probe() {
                     working_mb = working,
                     heap_commit_mb = heap_committed_mb,
                     non_heap_mb = private.saturating_sub(heap_committed_mb),
-                    cpu_pct = cpu_pct,
+                    cpu_permille = cpu_permille,
                     mi_rss_mb = mi_rss_mb,
                     mi_collect_reclaim_mb = mi_collect_reclaim_mb,
                     atlas = ?atlas_field,

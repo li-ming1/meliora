@@ -19,7 +19,7 @@ use std::{
 };
 
 use cntp_i18n::tr;
-use gpui::{App, RenderImage, SharedString};
+use gpui::{App, SharedString};
 use serde_json::Value;
 
 use crate::{
@@ -841,11 +841,6 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
     .detach();
 }
 
-/// Renders a QR code for the given QR login key, encoded from the login URL.
-pub fn build_login_qr(key: &str) -> anyhow::Result<Arc<RenderImage>> {
-    crate::ui::online_common::build_qr_render_image(&kugou::api::qr_login_url(key))
-}
-
 impl OnlineTrackDisplay for KugouTrackInfo {
     fn title(&self) -> &SharedString {
         &self.title
@@ -864,5 +859,136 @@ impl OnlineTrackDisplay for KugouTrackInfo {
     }
     fn download_label() -> cntp_i18n::I18nString {
         download_label()
+    }
+}
+
+/// `parse_tracks` cost bench. Why it exists: every online page projects its
+/// JSON into `KugouTrackInfo` **inside `this.update(cx, …)`** — the gpui main
+/// thread (kugou_playlists.rs:372/:423, kugou_ranks.rs:270, search/model.rs:482)
+/// — while only the network `.json()` hop is off-thread. Doctrine §3 forbids
+/// parsing on the render thread, but §1 forbids acting without the number, so
+/// this measures it. Two schemas bracket reality: the optimistic one where each
+/// field hits on its first candidate key, and the pessimistic one where the
+/// candidate list is walked to the last spelling (and `duration` arrives as a
+/// numeric *string* in ms, forcing a parse).
+#[cfg(test)]
+mod parse_costs {
+    use super::*;
+
+    const PAGE: usize = 100;
+    const ROUNDS: usize = 300;
+
+    /// The filler keys stand in for the ~20 fields a real KuGou track object
+    /// carries beyond the ones we read: they set the size of the object map,
+    /// which is what a `BTreeMap` lookup cost actually scales with.
+    const FILLER: &[&str] = &[
+        "KSR_DECODE",
+        "MVhash",
+        "PubTime",
+        "ownercount",
+        "sourceid",
+        "typesong",
+        "res_groupid",
+        "ftitle",
+        "FNVAudio",
+        "a_id",
+        "user_id",
+        "is_vip",
+        "pay_type",
+        "album_status",
+        "singerId",
+        "bytes",
+        "_nr",
+        "_rk",
+    ];
+
+    fn object(pairs: &[(&str, Value)]) -> Value {
+        let mut map = serde_json::Map::new();
+        for (key, value) in pairs {
+            map.insert((*key).to_owned(), value.clone());
+        }
+        for (i, key) in FILLER.iter().enumerate() {
+            map.insert((*key).to_owned(), Value::String(format!("v{i}")));
+        }
+        Value::Object(map)
+    }
+
+    fn text(value: impl Into<String>) -> Value {
+        Value::String(value.into())
+    }
+
+    fn number(value: i64) -> Value {
+        Value::Number(value.into())
+    }
+
+    fn fixture(pascal: bool) -> Value {
+        let cover = "http://imgtest.kugou.com/get?cover={size}&hash=abc";
+        let items = (0..PAGE)
+            .map(|i| {
+                if pascal {
+                    let artist = Value::Array(vec![object(&[(
+                        "ArtistName",
+                        text(format!("歌手 {}", i % 40)),
+                    )])]);
+                    object(&[
+                        ("FileHash", text("9ae8bf8fa997c0c4bc68fa6342cb85b7")),
+                        ("SongName", text(format!("轨道 {i} 的歌名"))),
+                        ("Artist", artist),
+                        ("AlbumName", text(format!("专辑 {}", i % 12))),
+                        ("Duration", number(180 + i as i64)),
+                        ("Image", text(cover)),
+                        ("MixSongID", number(1_000_000 + i as i64)),
+                        ("AlbumID", number(500_000 + i as i64)),
+                    ])
+                } else {
+                    object(&[
+                        ("hash", text("9ae8bf8fa997c0c4bc68fa6342cb85b7")),
+                        ("name", text(format!("轨道 {i} 的歌名"))),
+                        ("author_name", text(format!("歌手 {}", i % 40))),
+                        ("album_name", text(format!("专辑 {}", i % 12))),
+                        ("timelength", text(format!("{}", (180 + i) * 1000))),
+                        ("pic", text(cover)),
+                        ("mixsongid", number(1_000_000 + i as i64)),
+                        ("album_id", number(500_000 + i as i64)),
+                    ])
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut info = serde_json::Map::new();
+        info.insert("info".to_owned(), Value::Array(items));
+        let mut data = serde_json::Map::new();
+        data.insert("data".to_owned(), Value::Object(info));
+        Value::Object(data)
+    }
+
+    fn report(label: &str, body: &Value) {
+        let mut microseconds = Vec::with_capacity(ROUNDS);
+        let mut items = 0usize;
+        for round in 0..ROUNDS {
+            let started = std::time::Instant::now();
+            let parsed = parse_tracks(body, "/data/info");
+            let elapsed = started.elapsed().as_micros() as u64;
+            items += parsed.len();
+            // Round 0 runs against a cold allocator/branch layout.
+            if round > 0 {
+                microseconds.push(elapsed);
+            }
+        }
+        microseconds.sort_unstable();
+        let at = |p: usize| microseconds[microseconds.len() * p / 100];
+        println!(
+            "parse_tracks page={PAGE} schema={label} min={}us p50={}us p95={}us max={}us items={items}",
+            at(0),
+            at(50),
+            at(95),
+            microseconds[microseconds.len() - 1],
+        );
+    }
+
+    #[test]
+    #[ignore = "cost bench: JSON projection of one online page, explicit run only"]
+    fn report_online_page_parse_costs() {
+        report("pascal_first_hit", &fixture(true));
+        report("snake_last_hit", &fixture(false));
     }
 }

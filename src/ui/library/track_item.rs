@@ -163,6 +163,7 @@ impl TrackItem {
 
 impl Render for TrackItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::TrackRow);
         let track_id = self.track.id;
         let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track_id, window, cx);
 

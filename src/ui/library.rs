@@ -724,6 +724,7 @@ fn library_view_key(view: &LibraryView) -> &'static str {
 
 impl Render for Library {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Library);
         if self._focus_lost_sub.is_none() {
             self._focus_lost_sub = Some(cx.on_focus_lost(window, |this, window, _cx| {
                 this.focus_handle.focus(window, _cx);

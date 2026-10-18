@@ -324,6 +324,7 @@ impl EqualizerView {
 
 impl Render for EqualizerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Equalizer);
         // key events only reach this view while it sits on the focus path
         if self.focus_pending {
             self.focus_pending = false;

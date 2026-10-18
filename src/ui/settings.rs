@@ -77,29 +77,37 @@ fn open_or_focus_settings_window(cx: &mut App, section: Option<SettingsSectionKi
         cx,
     ));
 
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(bounds),
-            window_background: WindowBackgroundAppearance::Opaque,
-            window_decorations: Some(WindowDecorations::Client),
-            window_min_size: Some(gpui::size(px(640.0), px(420.0))),
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from(tr!("SETTINGS", "Settings"))),
-                appears_transparent: true,
-                traffic_light_position: Some(gpui::Point {
-                    x: px(12.0),
-                    y: px(11.0),
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(bounds),
+                window_background: WindowBackgroundAppearance::Opaque,
+                window_decorations: Some(WindowDecorations::Client),
+                window_min_size: Some(gpui::size(px(640.0), px(420.0))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(SharedString::from(tr!("SETTINGS", "Settings"))),
+                    appears_transparent: true,
+                    traffic_light_position: Some(gpui::Point {
+                        x: px(12.0),
+                        y: px(11.0),
+                    }),
                 }),
-            }),
-            kind: WindowKind::Normal,
-            ..Default::default()
-        },
-        move |window, cx| {
-            window.set_window_title(tr!("SETTINGS").to_string().as_str());
-            SettingsWindow::new(section, cx)
-        },
-    )
-    .ok();
+                kind: WindowKind::Normal,
+                ..Default::default()
+            },
+            move |window, cx| {
+                window.set_window_title(tr!("SETTINGS").to_string().as_str());
+                SettingsWindow::new(section, cx)
+            },
+        )
+        .ok();
+    // 登记 `[frame]` 探针的按窗口归因标签。均衡器与统计页都在这扇窗里，而它此前只能以
+    // `win-<id>` 出现（2026-10-17 真机实测：该窗 frames 186-214/30s、draw_p50 5235µs、
+    // p99 24.8ms，比主窗的 2.5-3.2ms 贵近一倍），帧成本无法与主窗分开判读。
+    // 同标签重开会覆盖，与 desktop-lyrics 同一套约定。
+    if let Some(handle) = handle {
+        crate::register_frame_window_label(handle.into(), "settings");
+    }
 }
 
 pub(super) fn close_orphaned_settings_windows(cx: &mut App) {

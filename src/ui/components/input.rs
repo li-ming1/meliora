@@ -400,6 +400,14 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        // 拖框选/点击时每个鼠标 report 都会打进来（125-1000Hz），纵向移动与
+        // 同一字形内的水平移动算出的 offset 不变；状态没变时渲染结果逐字节
+        // 相同，跳过 notify（§5 事件合并 / §33 丢弃已被覆盖的工作）。
+        // `selection_reversed` 不在这里改写，而折叠区间下 `cursor_offset()`
+        // 会读它——所以只需比 range。
+        if self.selected_range == (offset..offset) {
+            return;
+        }
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -431,6 +439,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let before = (self.selected_range.clone(), self.selection_reversed);
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -440,7 +449,10 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
-        cx.notify()
+        // 同 `move_to`：鼠标没跨过字形边界时区间与反向位都没变。
+        if (self.selected_range.clone(), self.selection_reversed) != before {
+            cx.notify()
+        }
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
