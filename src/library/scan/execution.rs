@@ -85,7 +85,7 @@ impl ScanFailures {
             self.worker_panic, self.file, self.transaction
         );
 
-        // 注意：占位符刻意不叫 `count`——`tr!` 把这个名字留给单复数选择，
+        // 占位符刻意不叫 `count`——`tr!` 把这个名字留给单复数选择，
         // 并把它标成 `isize` 类型。
         if self.worker_panic > 0 {
             emit_toast(Toast::error(tr!(

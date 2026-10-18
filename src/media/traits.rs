@@ -51,7 +51,7 @@ pub trait MediaProvider: Send + Sync {
 /// 当前的播放管线顺序如下：
 /// Create -> Open -> Start -> Metadata -> Read -> Read -> ... -> Close
 ///
-/// 注意：若你的 provider 支持元数据读取，在音乐库索引期间它会被要求连续
+/// 若你的 provider 支持元数据读取，在音乐库索引期间它会被要求连续
 /// 多次快速地 open、start、read metadata。这是正常且预期的行为，你的插件
 /// 必须能应对。
 ///

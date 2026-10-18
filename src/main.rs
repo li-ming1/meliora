@@ -735,7 +735,7 @@ fn spawn_memory_probe() {
         // draw 延迟），作为渲染优化的测量基线。空闲 UI 不产生帧：frames
         // 长期偏高 = notify 泄漏/无谓重绘，本探针兼任其检测器。环形缓冲
         // 有界（16MiB），无驻留风险；MELIORA_FRAME_TRACE=0 关闭。
-        // 注意：首个 [frame] 行最早出现在启动后 ~90s（60s 延迟 + 30s 首
+        // 首个 [frame] 行最早出现在启动后 ~90s（60s 延迟 + 30s 首
         // 个聚合窗口），更早检查日志看到零行不是探针失效。
         let frame_trace = env_override("MELIORA_FRAME_TRACE", 1) != 0;
         if frame_trace {
