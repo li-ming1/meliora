@@ -243,9 +243,9 @@ fn read_metadata_for_unreadable_file_is_transient() {
 /// 3000x3000 -> 70x70      140.647 ms   90.652 ms   35.217 ms   10.270 ms
 /// 3000x3000 -> 1024x1024  152.339 ms  116.527 ms   87.504 ms   (production main-image site)
 /// 1024x1024 -> 1024x1024   ~0.29 ms for every filter: image 0.25.10
-///                          short-circuits same-size resize to a plain copy
-///                          (imageops/sample.rs:985) - no filter involved;
-///                          production keeps <=1024 images as-is anyway.
+///                          对同尺寸缩放短路成一次纯拷贝
+///                          (imageops/sample.rs:985)——不涉及任何滤波器；
+///                          而且生产路径本来就把 <=1024 的图原样留着。
 /// ```
 ///
 /// 结论：保留 Lanczos3。在唯一的生产位点上 CatmullRom 没达到 >=30% 这条线

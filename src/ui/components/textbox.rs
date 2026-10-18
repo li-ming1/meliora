@@ -121,6 +121,9 @@ impl Render for Textbox {
 
         main.style().refine(&self.style);
 
+        // 本容器**刻意不声明 a11y role**：真正的可编辑元素是下面的 `self.input`
+        // （TextInput 自己声明 `Role::TextInput`），这里再套一层输入角色会让辅助
+        // 技术读到"多行输入里套一个输入"。它带 focus 只为了点边框也能取焦。
         main.track_focus(&self.handle)
             .border_1()
             .text_sm()
