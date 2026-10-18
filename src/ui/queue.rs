@@ -916,6 +916,9 @@ impl Queue {
                         this.rescan_views_and_summary(cx);
                     } else {
                         this.needs_queue_rescan = true;
+                        // 摘要/修剪可以推迟到重新显示，槽位回收不行：见
+                        // `reclaim_stale_slots` 的缘由。
+                        this.reclaim_stale_slots(cx);
                     }
                     // 仅位置切换时各行索引保持不变，此时清空选中只会让每条
                     // 活行重绘一遍，还白白丢掉一次多选。
@@ -949,6 +952,32 @@ impl Queue {
                 last_seen_content_epoch: initial_content_epoch,
             }
         })
+    }
+
+    /// 只回收"已经离开队列的槽位"：行视图与元数据旁表各 retain 一次。这是
+    /// `rescan_views_and_summary` 里与显示无关的那一半，面板隐藏时由观察者单独跑。
+    ///
+    /// 为什么要跑：旁表以 `QueueItemData::uid` 为键，而 uid 是单调自增、永不复用的，
+    /// 每个首次触到的条目都会 `cx.new` 出一个实体槽位。此前清理只发生在重扫里，
+    /// 而重扫被面板可见性推迟——面板关着时 `Queue::render` 根本不入树，于是
+    /// "下一首 / 加入队列"每动一次就永久留下一批槽位（无界增长），并把全部清理
+    /// 压到重新显示后的第一帧。这里付一次 O(n) 的 uid 收集，换来上界与首帧平滑。
+    fn reclaim_stale_slots(&mut self, cx: &mut App) {
+        let key_set: FxHashSet<u64> = cx
+            .global::<Models>()
+            .queue
+            .clone()
+            .read(cx)
+            .data
+            .read_recovered()
+            .iter()
+            .map(|item| item.uid())
+            .collect();
+
+        self.views_model.update(cx, |m, _| {
+            m.retain(|k, _| key_set.contains(k));
+        });
+        queue_metadata::gc_retaining(cx, key_set.into_iter());
     }
 
     /// 面板可见期间每次队列内容变化都跑一遍的对队列数据单趟扫描（仅位置变化的

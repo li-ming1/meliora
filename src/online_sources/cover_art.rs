@@ -31,12 +31,20 @@ const KUGOU_SIZE_LADDER: [&str; 4] = ["4096", "2048", "1280", "480"];
 static VARIANT_MISSES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+/// 负缓存的条数上界。丢条目的代价只是"再付一次 404"，所以越界时整表清空——
+/// 比逐条 LRU 简单，又不会让一次长会话把无界的 URL 集合留在内存里。
+const VARIANT_MISSES_CAP: usize = 4096;
+
 fn variant_missed(url: &str) -> bool {
     VARIANT_MISSES.lock_recovered().contains(url)
 }
 
 fn note_variant_miss(url: &str) {
-    VARIANT_MISSES.lock_recovered().insert(url.to_string());
+    let mut misses = VARIANT_MISSES.lock_recovered();
+    if misses.len() >= VARIANT_MISSES_CAP {
+        misses.clear();
+    }
+    misses.insert(url.to_string());
 }
 
 /// `url` 的展示变体 URL，最大的在前，末尾是原始缩略图本身。保持纯函数以便梯队顺序可单测。
