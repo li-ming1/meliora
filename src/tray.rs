@@ -174,8 +174,17 @@ pub fn init(cx: &mut App) {
     let current_track_observer = current_track.clone();
     let refresh = {
         let platform = Rc::clone(&platform);
+        // 内容守卫：metadata 与 current_track 两个观察者会在同一次切歌里连着
+        // 触发，播放桥的 MetadataUpdate 也没有相等守卫，实测 86 分钟会话里
+        // 133 行日志（占全日志 16%）+ 等量 NIM_MODIFY IPC 中有相当部分是
+        // 同文本重放。文本没变就既不刷壳也不记日志。
+        let last_text = std::cell::RefCell::new(String::new());
         Rc::new(move |cx: &mut App| {
             let text = tray_tooltip(cx, &metadata, &current_track);
+            if text == *last_text.borrow() {
+                return;
+            }
+            *last_text.borrow_mut() = text.clone();
             // 诊断：tooltip 不显示时区分"文本就是空"与"API 调用失败"
             // （后者在 tray/windows.rs 的 notify() 里有 GetLastError 日志）。
             tracing::info!(target: "tray", text_len = text.len(), "tray tooltip refresh");

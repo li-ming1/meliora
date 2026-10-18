@@ -121,20 +121,30 @@ static STREAM_MAP_PERSISTENCE: StreamMapPersistence = StreamMapPersistence::new(
 /// Records that `url` (a KuGou stream) belongs to `track`, keeping the newest
 /// entry for a track on top and evicting older URLs for the same track.
 pub fn remember_online_track(url: String, track: KugouTrackInfo) {
-    // Only mutate + snapshot under the lock; serialization and the disk write
-    // both happen outside of it: the map is read on both the UI thread and
-    // the playback thread, so holding the write guard across either lets a
-    // slow FS stall song changes.
-    let snapshot = {
+    // 锁内只改表：这张表 UI 线程与播放线程都在读，写守卫跨过任何慢操作都会
+    // 拖住换歌。快照与序列化都不在这里做（见下）。
+    {
         let mut guard = stream_map().write().unwrap_or_else(|e| e.into_inner());
         guard.retain(|e| e.url != url && e.mix_song_id != track.mix_song_id);
         guard.insert(0, StreamMapEntry::from((url, track)));
         guard.truncate(STREAM_MAP_CAP);
-        guard.clone()
-    };
-    // Write off-thread and outside the lock. Two racing writers may persist
-    // in either order; a stale file only costs a URL refresh on next launch.
-    STREAM_MAP_PERSISTENCE.persist_snapshot(stream_map_path(), &snapshot, "kugou");
+    }
+    // 全表 clone + 54KB JSON 序列化交运行时，不在调用线上做：两个调用点
+    // （UI 点歌与在线源取流）都处在 gpui `cx.spawn` 的 await 恢复点，也就是
+    // **主线程**，200 条 clone + 序列化实测数量级 0.2-0.5ms ≈ 主窗一帧 draw
+    // 的 10-20%。挪走之后写锁临界区也只剩三次比较级操作，与播放线程读者的
+    // 竞争面同步缩小。
+    //
+    // 顺序性不变：落盘仍由 `persist_snapshot` 的写门串行化；两次快连点谁先
+    // 落盘无所谓——注册表是缓存，陈旧只多一次 URL 刷新（与原
+    // "racing writers" 语义一致）。
+    crate::RUNTIME.spawn(async move {
+        let snapshot = stream_map()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        STREAM_MAP_PERSISTENCE.persist_snapshot(stream_map_path(), &snapshot, "kugou");
+    });
 }
 
 /// If `path` is a stream reached through this app, returns the remembered

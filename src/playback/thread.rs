@@ -692,6 +692,14 @@ impl PlaybackThread {
     }
 
     fn recompute_rg_auto_hint(&mut self) -> bool {
+        // hint 只被 Auto 档的 calculate_gain 消费，而默认档是 Off：非 Auto
+        // 时不做整队 `all_items_same_album` 扫描，也就不必为每次离散队列
+        // 操作去抢那把与 UI/歌词面板共享的队列读锁。Off→Auto 的切换在
+        // settings_changed 里补算，hint 不会停在过期值上。
+        if self.playback_settings.replaygain.mode != ReplayGainMode::Auto {
+            return false;
+        }
+
         let next_hint = if !self.queue.is_shuffle_enabled() && self.queue.all_items_same_album() {
             ReplayGainAutoHint::PreferAlbum
         } else {
@@ -704,9 +712,8 @@ impl PlaybackThread {
     }
 
     fn refresh_rg_auto_hint(&mut self) {
-        if self.recompute_rg_auto_hint()
-            && self.playback_settings.replaygain.mode == ReplayGainMode::Auto
-        {
+        // 走到这里说明处于 Auto 档（非 Auto 时 recompute 恒返回 false）。
+        if self.recompute_rg_auto_hint() {
             self.reapply_replaygain();
         }
     }
@@ -1335,6 +1342,9 @@ impl PlaybackThread {
         self.queue.update_settings(settings.clone());
         self.playback_settings = settings;
         self.send_event(PlaybackEvent::RepeatChanged(self.queue.repeat_state()));
+        // 补算 hint：非 Auto 档它长期短路在 Off 上，切进 Auto 的瞬间必须
+        // 有一次真实值，否则 reapply 会按上一次离开 Auto 时的陈旧 hint 取增益。
+        self.recompute_rg_auto_hint();
         self.reapply_replaygain();
     }
 
