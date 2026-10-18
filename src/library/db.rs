@@ -52,6 +52,18 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
     // 桌面应用读写并发有限：限制连接数（默认 10 个连接 × 各自 page cache 徒增常驻内存）
     let pool = SqlitePoolOptions::new()
         .max_connections(3)
+        // 留一枚常驻连接。默认 `min_connections = 0` 且 `idle_timeout = 10min`：
+        // 桌面应用的库访问是稀疏的（点一下才查），闲置十分钟后连接全关，下一次
+        // UI 线程查询要付整次重开——`sqlite3_open` + `journal_mode=WAL` +
+        // `cache_size` 建页缓存。同库实测（同一份 66 曲库、OS 文件缓存已热）：
+        // 暖连接里 100 次专辑主键查询 125ms（≈0.13ms/次，含 prepare），
+        // 而 100 次「关闭 + 重开 + 设 PRAGMA + 查询」1301ms → **每次重开 ≈11.8ms**。
+        // 这正是日志里 `[db] slow ui-thread query` 唯一还在出现的两种形态
+        // （`get_album_by_id` 4759µs / 2824µs、启动 `list_all_playlists` 2318µs）
+        // 的量级来源：慢的不是 SQL，是连接生命周期。
+        // 常驻一枚的代价上界：一份 8MB 页缓存额度（按需真实占用），
+        // 与上面把连接数压到 3 的取舍同源；突发仍会借到 3 枚。
+        .min_connections(1)
         .connect_with(options)
         .await?;
 
