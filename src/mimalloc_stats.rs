@@ -1,13 +1,10 @@
-//! Direct readout of mimalloc v3's aggregated size-bin statistics, so the
-//! `[mem]` probe can separate live allocation bytes from allocator page
-//! retention without an external profiler: `committed - live` after a forced
-//! purge is stranded pages, and the per-bin breakdown identifies *which
-//! allocation sizes* hold the retained memory.
+//! 直接读出 mimalloc v3 的按尺寸分档聚合统计，让 `[mem]` 探针不必依赖外部 profiler
+//! 就能把实时分配字节与分配器的页驻留分开：强制 purge 之后的
+//! `committed - live` 就是搁浅页，而分档明细指出*是哪些分配尺寸*持有这些驻留内存。
 //!
-//! The `mi_stats_t` mirror below is layout-pinned to the vendored v3 tree
-//! (libmimalloc-sys 0.1.49, `MI_STAT_VERSION` 5); the structure self-reports
-//! its size and version, so a dependency bump that changes the layout makes
-//! `read()` return `None` instead of logging garbage.
+//! 下面的 `mi_stats_t` 镜像按内置 v3 树的布局钉死（libmimalloc-sys 0.1.49，
+//! `MI_STAT_VERSION` 5）；该结构会自报大小与版本，所以依赖升级改动布局时 `read()`
+//! 返回 `None`，而不是打出垃圾数据。
 
 #![allow(non_camel_case_types, non_snake_case)]
 
@@ -35,11 +32,11 @@ struct mi_stat_counter_t {
 }
 
 #[repr(C)]
-#[allow(dead_code)] // full-layout mirror: most fields exist for layout, only a few are read
+#[allow(dead_code)] // 全布局镜像：多数字段只为布局存在，真正读取的只有几个
 struct mi_stats_t {
     size: usize,
     version: usize,
-    // MI_STAT_FIELDS(), in the exact order of include/mimalloc-stats.h.
+    // MI_STAT_FIELDS()，顺序与 include/mimalloc-stats.h 完全一致。
     pages: mi_stat_count_t,
     reserved: mi_stat_count_t,
     committed: mi_stat_count_t,
@@ -93,15 +90,14 @@ unsafe extern "C" {
     );
 }
 
-/// `mi_subproc_id_t`: an abstract pointer-sized handle.
+/// `mi_subproc_id_t`：一个抽象的、指针大小的句柄。
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct mi_subproc_id_t {
     _id: *mut c_void,
 }
 
-/// `mi_output_fun`: mimalloc feeds the stats table through this callback in
-/// arbitrarily-sized fragments.
+/// `mi_output_fun`：mimalloc 通过这个回调把统计表喂出来，碎片大小任意。
 type mi_output_fun = extern "C" fn(msg: *const c_char, arg: *mut c_void);
 
 thread_local! {
@@ -112,7 +108,7 @@ extern "C" fn dump_out(msg: *const c_char, _arg: *mut c_void) {
     if msg.is_null() {
         return;
     }
-    // SAFETY: mimalloc passes a NUL-terminated string for the duration of the call.
+    // SAFETY: mimalloc 传入以 NUL 结尾的字符串，仅在本次调用期间有效。
     let chunk = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy();
     DUMP_LINE.with(|buf| {
         let mut buf = buf.borrow_mut();
@@ -129,15 +125,13 @@ extern "C" fn dump_out(msg: *const c_char, _arg: *mut c_void) {
     });
 }
 
-/// Per-process budget for the full stats dump, so a browsing session cannot
-/// spam the log (`dump_once` becomes a no-op once spent).
+/// 完整统计表 dump 的每进程预算，防止浏览会话刷屏（预算耗尽后 `dump_once` 变成
+/// 空操作）。
 const MAX_DUMPS: u32 = 3;
 
-/// Logs mimalloc's complete statistics table (per heap: peak / total /
-/// current per category plus the page counters). Called from the probe's
-/// `mem step` alert so the allocator state right after suspicious growth is
-/// captured. A three-dump budget per process keeps a browsing session from
-/// spamming the log; later calls are no-ops.
+/// 记录 mimalloc 的完整统计表（按堆：各类别的 peak / total / current，外加页计数）。
+/// 由探针的 `mem step` 告警调用，以便在可疑增长之后立刻抓取分配器状态。每进程三次
+/// dump 的预算能防止浏览会话刷屏；之后的调用是空操作。
 pub fn dump_once() {
     static DUMP_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     if DUMP_COUNT
@@ -149,9 +143,8 @@ pub fn dump_once() {
         return;
     }
     tracing::info!("[mem] mi stats dump | --- full mimalloc stats table ---");
-    // SAFETY: pure statistics output into our callback. The subprocess-wide
-    // variant prints the aggregate *and* every heap's own table, including
-    // the malloc size-bin breakdown that the plain mi_stats_print_out omits.
+    // SAFETY: 纯粹的统计输出，写进我们自己的回调。subprocess 版本会打印聚合值
+    // *以及*每个堆各自的表，其中含普通 mi_stats_print_out 省略的 malloc 分档明细。
     unsafe {
         mi_subproc_heap_stats_print_out(mi_subproc_current(), dump_out, std::ptr::null_mut())
     };
@@ -164,9 +157,9 @@ pub fn dump_once() {
     });
 }
 
-/// Trusted subset of the aggregated stats at one probe point.
+/// 某个探针时刻上，聚合统计中可信的子集。
 pub struct MemStatsSnapshot {
-    /// Committed heap bytes per the allocator's own accounting.
+    /// 按分配器自身记账的已提交堆字节。
     pub committed_bytes: u64,
     pub abandoned_pages: u64,
     pub threads: u64,
@@ -179,35 +172,30 @@ fn current(count: &mi_stat_count_t) -> u64 {
 
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 
-/// The allocator's own committed-heap accounting, in MiB. `mi_process_info`
-/// returns the OS commit charge (see the comment in the probe), so this is
-/// the number to subtract from process-private bytes to get the driver/D3D
-/// share. `None` when the stats call or the pinned mirror fails.
+/// 分配器自己的已提交堆记账，单位 MiB。`mi_process_info` 返回的是 OS 提交电荷
+/// （见探针里那条注释），所以要用进程 private 字节减去它才能得到驱动/D3D 的份额。
+/// stats 调用或钉死布局的镜像失败时返回 `None`。
 pub fn committed_mb() -> Option<u64> {
     read().map(|snapshot| snapshot.committed_bytes / BYTES_PER_MIB)
 }
 
-/// Guards the one-time failure warn in `log_snapshot`.
+/// 守护 `log_snapshot` 里那条只告警一次的失败提示。
 static READ_FAILURE_LOGGED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Reads the aggregated stats, or `None` when the call fails or the C
-/// structure no longer matches the pinned mirror (dependency bump). Only
-/// fields the linked build actually maintains are read out: the malloc
-/// per-bin currents are aggregated under `MI_STAT > 1` only, so they are
-/// always zero here and the live-bytes attribution comes from the dumps.
+/// 读取聚合统计；调用失败，或 C 结构已与钉死的镜像不再匹配（依赖升级）时返回
+/// `None`。只读出链接进来的构建确实维护的字段：malloc 的逐档 current 仅在
+/// `MI_STAT > 1` 下才聚合，所以这里恒为零，live 字节的归因要靠 dump。
 pub fn read() -> Option<MemStatsSnapshot> {
-    // Zeroed heap buffer, not a stack value: the structure is ~4 KiB and the
-    // callers' stacks include the audio thread's.
+    // 用归零的堆缓冲区而不是栈上值：这个结构约 4 KiB，而调用方的栈里含音频线程的。
     let layout = Layout::new::<mi_stats_t>();
     let raw = unsafe { alloc_zeroed(layout) };
     if raw.is_null() {
         return None;
     }
     let stats = raw as *mut mi_stats_t;
-    // v3 API contract: the caller fills the destination header first (size +
-    // version, what mi_stats_init does on the C side); mi_stats_copy validates
-    // it against the linked build and rejects mismatches before copying.
+    // v3 API 约定：调用方先填好目标头部（size + version，即 C 侧 mi_stats_init 做的
+    // 事）；mi_stats_copy 会拿它与链接进来的构建校验，不匹配就先拒绝再拷贝。
     unsafe {
         (*stats).size = std::mem::size_of::<mi_stats_t>();
         (*stats).version = MI_STAT_VERSION;
@@ -227,23 +215,20 @@ pub fn read() -> Option<MemStatsSnapshot> {
             theaps: current(&stats.theaps),
         })
     };
-    // SAFETY: allocated above with the same layout, never freed elsewhere.
+    // SAFETY: 上面用同一布局分配，且别处从不释放。
     unsafe { dealloc(raw, layout) };
     result
 }
 
-/// Logs one `[mem] mi stats` line. Meant to run right after the probe's
-/// forced `mi_collect`, where stranded pages are at their minimum, so a
-/// large `stranded_mb` at that point is fragmentation the collector could
-/// not return and a large `live_mb` is real retained data. The full stats
-/// table is dumped separately by the probe's step alerts (`dump_once`), not
-/// here — the baseline idle state is known and the dump budget is reserved
-/// for post-growth captures.
+/// 记录一行 `[mem] mi stats`，只给聚合口径：`committed_mb` / `abandoned_pages` /
+/// `threads` / `theaps` / `collect_reclaim_mb`。刻意设计成紧跟探针的强制
+/// `mi_collect` 之后运行——那时搁浅页处于最少，此刻 `abandoned_pages` 仍高才说明
+/// 有线程抛弃的页没被收走。逐档 current 给不出，所以本行**不**含 live/stranded
+/// 的归因；那份数据在探针 step 告警的完整 dump（`dump_once`）里。
 pub fn log_snapshot(collect_reclaim_mb: Option<u64>) {
     let Some(snapshot) = read() else {
-        // Warn exactly once with the observed header so a mirror/layout drift
-        // after a dependency bump is visible in the log instead of silently
-        // dropping the whole `[mem] mi stats` series.
+        // 只告警一次并带上实测到的头部值，这样依赖升级导致的镜像/布局漂移会在日志
+        // 里可见，而不是静默丢掉整条 `[mem] mi stats` 序列。
         if !READ_FAILURE_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             tracing::warn!(
                 expected_size = std::mem::size_of::<mi_stats_t>(),
@@ -255,10 +240,9 @@ pub fn log_snapshot(collect_reclaim_mb: Option<u64>) {
         return;
     };
     let mb = |bytes: u64| bytes / BYTES_PER_MIB;
-    // Only the aggregated `committed` / thread counters are trusted here: the
-    // malloc per-bin currents are not maintained by the linked build
-    // (MI_STAT==1 gates their aggregation), so live/stranded attribution
-    // comes from the step-alert dumps instead.
+    // 这里只信聚合的 `committed` / 线程计数：malloc 的逐档 current 不由链接进来的
+    // 构建维护（MI_STAT==1 会关掉它们的聚合），所以 live/stranded 的归因改由
+    // step 告警的 dump 提供。
     tracing::info!(
         committed_mb = mb(snapshot.committed_bytes),
         abandoned_pages = snapshot.abandoned_pages,
