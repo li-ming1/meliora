@@ -1,25 +1,29 @@
 use cntp_i18n::tr;
 use gpui::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, px,
-};
-
-use crate::ui::{
-    components::{
-        button::{ButtonIntent, ButtonStyle, button},
-        label::{Label, label},
-        section_header::section_header,
-    },
-    global_actions::{About, Issues},
-    troubleshooting::{CopyTroubleshootingInfo, OpenLog},
+    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div, px,
 };
 
 use super::action_row;
 
+use crate::ui::{
+    components::section_header::section_header,
+    global_actions::{About, Issues},
+    troubleshooting::{CopyTroubleshootingInfo, OpenLog},
+};
+
+// 下面两组只服务于更新开关与状态行：没有 `online` 时这一页只剩动作行，而动作行的
+// 构造已经搬到 `super::action_row`。
+#[cfg(feature = "online")]
+use gpui::SharedString;
+
 #[cfg(feature = "online")]
 use crate::{
     settings::{SettingsGlobal, save_settings},
-    ui::components::checkbox::checkbox,
+    ui::components::{
+        button::{ButtonIntent, ButtonStyle, button},
+        checkbox::checkbox,
+        label::{Label, label},
+    },
     updater::{CheckSource, UpdateStatus, UpdaterGlobal},
 };
 
