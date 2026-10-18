@@ -222,7 +222,7 @@ impl ActionDialog {
         let items = paths.into_iter().map(|p| {
             let s: SharedString = p.into();
             match s.strip_prefix(WINDOWS_EXTENDED_PATH_PREFIX) {
-                Some(rest) => SharedString::from(rest.to_owned()),
+                Some(rest) => SharedString::from(rest),
                 None => s,
             }
         });

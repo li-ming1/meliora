@@ -197,7 +197,8 @@ impl AddToPlaylist {
             })
             .detach();
 
-            let matcher: MatcherFunc = Box::new(|playlist, _| playlist.1.name.0.to_string().into());
+            let matcher: MatcherFunc =
+                Box::new(|playlist, _| Utf32String::from(playlist.1.name.0.as_str()));
 
             let show_clone = show.clone();
 

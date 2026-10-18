@@ -317,7 +317,7 @@ impl CommandPalette {
     pub fn new(cx: &mut App, _: &mut Window) -> Entity<Self> {
         cx.new(|cx| {
             let show = cx.new(|_| false);
-            let matcher: MatcherFunc = Box::new(|item, _| item.name.to_string().into());
+            let matcher: MatcherFunc = Box::new(|item, _| Utf32String::from(item.name.as_str()));
 
             let show_clone = show.clone();
             let on_accept: OnAccept = Box::new(move |item, cx| {

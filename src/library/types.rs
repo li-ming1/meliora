@@ -23,7 +23,7 @@ impl From<String> for DBString {
 
 impl From<&str> for DBString {
     fn from(data: &str) -> Self {
-        Self(SharedString::from(data.to_string()))
+        Self(SharedString::from(data))
     }
 }
 

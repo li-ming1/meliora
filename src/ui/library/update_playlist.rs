@@ -75,7 +75,8 @@ impl UpdatePlaylist {
             })
             .detach();
 
-            let matcher: MatcherFunc = Box::new(|playlist, _| playlist.name.0.to_string().into());
+            let matcher: MatcherFunc =
+                Box::new(|playlist, _| Utf32String::from(playlist.name.0.as_str()));
 
             // 接受一个已存在的歌单会向它启动 M3U 导入（走 `import_playlist`）并关闭对话框。
             let show_on_accept = show.clone();
