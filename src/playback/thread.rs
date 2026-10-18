@@ -39,36 +39,32 @@ use queue_manager::{
     QueueNavigationResult, ReplaceResult, Reshuffled, ShuffleResult, UndoResult,
 };
 
-// throttle position broadcasts to prevent excess CPU utilization, especially while the application isn't
-// focused
+// 对位置广播节流，避免占用过多 CPU，应用未获得焦点时尤其如此
 const ACTIVE_POSITION_BROADCAST_INTERVAL_MS: u64 = 33;
 const BACKGROUND_POSITION_BROADCAST_INTERVAL_MS: u64 = 250;
 
-/// Consecutive no-progress cycles while playing before the current track is skipped.
+/// 播放中连续多少个无进展周期之后跳过当前曲目。
 const MAX_NO_PROGRESS_CYCLES: u32 = 50;
 
-/// Cap on the online-URL refresh inside the playback loop: the provider
-/// clients carry no per-request timeout, and this retry runs synchronously on
-/// the playback thread, so an unresponsive API must not stall the audio loop.
-/// Only consumed by `build_refresh_hook` (online_sources-gated).
+/// 播放循环内在线 URL 刷新的上限：提供者客户端没有逐请求超时，而这个重试在播放
+/// 线程上同步执行，所以无响应的 API 绝不能拖住音频循环。
+/// 只由 `build_refresh_hook` 消费（online_sources 门控）。
 #[cfg(feature = "online_sources")]
 const STREAM_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
-/// Sleep after a no-progress cycle, growing exponentially from 2 ms to 50 ms so a persistent error
-/// doesn't pin a core.
+/// 无进展周期之后的休眠：从 2 ms 指数增长到 50 ms，让持续错误不至于占死一个核。
 fn no_progress_backoff(cycles: u32) -> std::time::Duration {
     let shift = cycles.saturating_sub(1).min(5);
     let ms = (2_u64 << shift).min(50);
     std::time::Duration::from_millis(ms)
 }
 
-/// Lead time before the current track ends at which the next track's media
-/// stream is pre-opened in the background (gapless advance). Covers the
-/// worst online open (signed-URL refresh + connect + probe).
+/// 当前曲目结束前多早就在后台预打开下一曲的媒体流（无缝切歌前进）。这段提前量
+/// 覆盖最慢的在线打开（签名 URL 刷新 + 连接 + 探测）。
 const PREPARE_LEAD_MS: u64 = 15_000;
 
-/// Whether a queue item's path points at something playable: a local file that still exists, or
-/// (with the kugou feature) an HTTP(S) stream URL.
+/// 队列条目的路径是否指向可播放的东西：仍存在的本地文件，或（启用酷狗 feature 时）
+/// 一个 HTTP(S) 流 URL。
 fn path_playable(path: &Path) -> bool {
     #[cfg(feature = "online_sources")]
     if crate::media::is_http_path(path) {
@@ -95,45 +91,43 @@ impl From<EngineState> for PlaybackState {
     }
 }
 
-/// The playback thread orchestrates audio playback by coordinating
-/// between the audio engine and queue manager.
+/// 播放线程通过协调音频引擎与队列管理器来编排音频播放。
 pub struct PlaybackThread {
-    /// The playback settings. Received on thread startup.
+    /// 播放设置，线程启动时接收。
     playback_settings: PlaybackSettings,
     commands_rx: UnboundedReceiver<PlaybackCommand>,
     events_tx: UnboundedSender<PlaybackEvent>,
-    /// The last timestamp of the current track in milliseconds. This is used to determine if the
-    /// position has changed since the last update.
+    /// 当前曲目最近一次的时间戳（毫秒），用于判断位置自上次更新后是否变化。
     last_timestamp: u64,
-    /// The last timestamp emitted to the UI and metadata broadcast services.
+    /// 已经发给 UI 与元数据广播服务的最近时间戳。
     last_broadcast_timestamp: u64,
-    /// Whether position updates should be emitted at full frequency.
+    /// 位置更新是否应当按满频率发出。
     position_broadcast_active: bool,
     engine: AudioEngine,
     queue: QueueManager,
-    /// The volume to apply on startup (restored from persisted settings).
+    /// 启动时要应用的音量（从持久化设置恢复）。
     initial_volume: f64,
-    /// Current auto-mode hint for ReplayGain.
+    /// ReplayGain 自动模式当前的取向提示。
     rg_auto_hint: ReplayGainAutoHint,
-    /// Cached track gain from last metadata update.
+    /// 上次元数据更新缓存下来的曲目增益。
     last_track_gain: Option<f64>,
-    /// Cached album gain from last metadata update.
+    /// 上次元数据更新缓存下来的专辑增益。
     last_album_gain: Option<f64>,
-    /// Cached track/album sample peaks, used for clipping-safe gain capping.
+    /// 缓存的曲目/专辑样本峰值，用于防削波的增益封顶。
     last_track_peak: Option<f64>,
     last_album_peak: Option<f64>,
-    /// Duration of the current track in ms, when known; drives gapless prepare.
+    /// 已知时当前曲目的时长（毫秒），驱动无缝切歌预备。
     duration_ms: Option<u64>,
     stop_after_current: bool,
-    /// Consecutive no-progress cycles while playing; drives the backoff and skip.
+    /// 播放中连续的无进展周期数；驱动退避与跳过。
     no_progress_cycles: u32,
-    /// Command pulled off the channel while parked in the idle wait, handed to
-    /// the next `command_intake` so the waking command is never dropped.
+    /// 空闲等待挂起期间从通道取出的命令，交给下一次 `command_intake`，
+    /// 因此唤醒它的那条命令绝不会丢。
     pending_command: Option<PlaybackCommand>,
 }
 
 impl PlaybackThread {
-    /// Creates a new playback interface and starts the playback thread.
+    /// 创建新的播放接口并启动播放线程。
     pub fn start(
         queue: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
         playback_settings: PlaybackSettings,
@@ -184,9 +178,9 @@ impl PlaybackThread {
         PlaybackInterface::new(commands_tx, events_rx, tap_consumer)
     }
 
-    /// Initialize engine and run the main loop.
+    /// 初始化引擎并运行主循环。
     pub fn run(&mut self) {
-        // Initialize the audio engine (media provider, device provider, initial stream)
+        // 初始化音频引擎（媒体提供者、设备提供者、初始流）
         if let Err(e) = self.engine.initialize() {
             error!("Failed to initialize audio engine: {:?}", e);
         }
@@ -204,20 +198,17 @@ impl PlaybackThread {
         }
     }
 
-    /// Start command intake and audio playback loop.
+    /// 收取命令并运行音频播放循环。
     pub fn main_loop(&mut self) {
         self.command_intake();
 
-        // Finish any deferred device work (e.g. an async pause fade) without blocking intake.
+        // 先把设备的延后工作收尾（例如异步暂停淡出），但不因此阻塞命令收取。
         self.engine.poll();
 
-        // Collect a finished gapless pre-open, if any. A prepare that
-        // succeeded with a path other than the requested one recovered an
-        // expired online URL on the prepare thread: write the fresh URL back
-        // to the queue entry the prepare was requested for, so the EOF
-        // advance opens the ready stream instead of the expired URL.
-        // `replace_next_path` silently drops the write when the resolved
-        // next entry no longer matches the request.
+        // 收集已完成的无缝切歌预备（若有）。预备成功但落地路径与所请求的不同，
+        // 说明预备线程把过期的在线 URL 救了回来：把新 URL 写回当初请求预备的那个
+        // 队列条目，这样 EOF 前进时打开的是就绪的流而不是过期 URL。
+        // 若解析出的下一条目已与请求不符，`replace_next_path` 会静默丢弃这次写入。
         if let Some(report) = self.engine.poll_prepared()
             && report.succeeded
             && report.path != report.requested
@@ -239,7 +230,7 @@ impl PlaybackThread {
                     self.no_progress_cycles = 0;
                     self.next(false, false);
                 } else {
-                    // we didn't block waiting for the device so we have to sleep here
+                    // 我们没有阻塞等待设备，所以必须在这里休眠
                     sleep(no_progress_backoff(self.no_progress_cycles));
                 }
             }
@@ -247,27 +238,22 @@ impl PlaybackThread {
             self.no_progress_cycles = 0;
         }
 
-        // Flush debounced queue-session snapshots: batch mutations coalesce to
-        // one full-queue snapshot per debounce window.
+        // 冲刷防抖的队列会话快照：批量变更合并成每个防抖窗口一次全队列快照。
         self.queue.flush_pending_session();
 
         self.process_metadata_update();
 
-        // Park while nothing is playing, after the session flush so a dirty
-        // snapshot can never be stranded behind a park. The legacy 10 ms
-        // cadence survives only inside idle_wait while deferred device work
-        // (the pause-fade deadline) is pending.
+        // 没有播放时让线程挂起；放在会话冲刷之后，脏快照才不会被搁在挂起后面。
+        // 旧的 10 ms 节奏只在 idle_wait 内、设备延后工作（暂停淡出截止）仍未完成时保留。
         if self.engine.state() != EngineState::Playing {
             self.idle_wait();
         }
     }
 
-    /// Park the thread until real work arrives while stopped or paused. Blocks
-    /// on the command channel so an idle player costs zero wakeups instead of
-    /// a 100 Hz spin; a deferred pause fade (its `poll` deadline has not fired
-    /// yet) keeps the legacy 10 ms cadence. A waking command is stashed for the
-    /// next `command_intake` — parking happens at the end of a pass, so the
-    /// command is processed on the following one at zero extra latency.
+    /// 停止或暂停时让线程挂起，直到真的有活可干。阻塞在命令通道上，空闲的播放器
+    /// 因此零次唤醒，而不是 100 Hz 空转；延后的暂停淡出（其 `poll` 截止尚未到）
+    /// 仍沿用旧的 10 ms 节奏。唤醒它的命令会暂存给下一次 `command_intake`——
+    /// 挂起发生在一轮 pass 的末尾，所以该命令在下一轮就被处理，零额外延迟。
     fn idle_wait(&mut self) {
         if self.engine.has_deferred_work() {
             sleep(std::time::Duration::from_millis(10));
@@ -275,28 +261,26 @@ impl PlaybackThread {
         }
         match self.commands_rx.blocking_recv() {
             Some(command) => self.pending_command = Some(command),
-            // Senders dropped (app shutdown): keep the legacy cadence until the
-            // process exits instead of spinning on a disconnected channel.
+            // 发送端已全部丢弃（应用正在退出）：保持旧节奏直到进程退出，
+            // 而不是在断开的通道上空转。
             None => sleep(std::time::Duration::from_millis(10)),
         }
     }
 
-    /// Read incoming commands from the command channel, and process them.
-    /// Consecutive Next/Seek runs are collapsed first (see below).
+    /// 从命令通道读取进来的命令并处理。连续的 Next/Seek 串会先做折叠（见下文）。
     pub fn command_intake(&mut self) {
         let mut commands: Vec<PlaybackCommand> = Vec::new();
-        // The command that woke the parked idle wait leads the batch so runs of
-        // Next/Seek spanning the wake collapse as usual.
+        // 唤醒挂起 idle_wait 的那条命令排在批次最前，这样跨越唤醒的
+        // Next/Seek 串照常折叠。
         if let Some(command) = self.pending_command.take() {
             commands.push(command);
         }
         while let Ok(command) = self.commands_rx.try_recv() {
             commands.push(command);
         }
-        // Collapse runs of consecutive Next commands (rapid clicks) and Seek
-        // commands (scrubber drag emits at ~30 Hz) into the last of each run:
-        // every executed Seek rebuilds the audio stream and re-anchors online
-        // sources, so intermediate positions are pure waste.
+        // 把连续的 Next（快速连点）与 Seek（进度条拖动约 30 Hz 发出）各自折叠成
+        // 该串的最后一个：每执行一次 Seek 都会重建音频流并重新锚定在线源，
+        // 中间位置纯属浪费。
         let mut collapsed: Vec<PlaybackCommand> = Vec::with_capacity(commands.len());
         for command in commands {
             let repeats_last = matches!(
@@ -352,12 +336,12 @@ impl PlaybackThread {
             }
         }
     }
-    /// Get the current playback state.
+    /// 取当前播放状态。
     fn state(&self) -> PlaybackState {
         self.engine.state().into()
     }
 
-    /// Pause playback.
+    /// 暂停播放。
     pub fn pause(&mut self) {
         if self.state() == PlaybackState::Paused {
             return;
@@ -372,7 +356,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Resume playback. If the last track was the end of the queue, the queue will be restarted.
+    /// 恢复播放。若上次播放的曲目是队列末尾，则从头重启队列。
     pub fn play(&mut self) {
         let current_state = self.state();
 
@@ -390,7 +374,7 @@ impl PlaybackThread {
             return;
         }
 
-        // If stopped and queue is not empty, start playing from the beginning
+        // 处于停止且队列非空时，从头开始播放
         if current_state == PlaybackState::Stopped
             && let Some((path, index)) = self.queue.first_playable_path()
         {
@@ -400,40 +384,36 @@ impl PlaybackThread {
         }
     }
 
-    /// Open a media file and prepare it for playback.
+    /// 打开媒体文件并准备好播放。
     fn open(&mut self, path: &Path) -> Result<(), PlaybackStartError> {
         self.open_with_resampler(path, false)
     }
 
-    /// Open a track for playback, logging a failure instead of propagating
-    /// it: the queue operation in progress must complete even if this track
-    /// cannot be opened.
+    /// 打开曲目用于播放；失败只记日志而不向上抛：即便这首打不开，
+    /// 正在进行的那次队列操作也必须走完。
     fn open_or_log(&mut self, path: &Path) {
         if let Err(err) = self.open(path) {
             error!(path = %path.display(), ?err, "Unable to open file: {err}");
         }
     }
 
-    /// [`Self::open_or_log`] across a transition that may reuse the resampler
-    /// (gapless advance).
+    /// 跨越一次可能复用重采样器的切换时调用 [`Self::open_or_log`]
+    /// （无缝切歌前进）。
     fn open_or_log_resampled(&mut self, path: &Path, preserve_resampler: bool) {
         if let Err(err) = self.open_with_resampler(path, preserve_resampler) {
             error!(path = %path.display(), ?err, "Unable to open file: {err}");
         }
     }
 
-    /// One-shot retry for expired online stream URLs: a persisted
-    /// KuGou direct link eventually 403s (signed URL), so before
-    /// skipping the track this re-fetches a fresh URL from the current item's
-    /// provider identity, updates the queue item, and returns the new path.
+    /// 过期在线流 URL 的一次性重试：持久化的酷狗直链迟早会 403（签名 URL），
+    /// 所以在跳过本曲之前，先用当前条目的提供者身份重新取一个全新 URL、
+    /// 更新队列条目，并返回新路径。
     #[cfg(feature = "online_sources")]
     fn refresh_expired_online_url(&mut self) -> Option<PathBuf> {
         let identity = self.queue.current_online_identity().or_else(|| {
-            // Playlist items persist only the plain stream URL, without the
-            // provider identity. The provider's stream registry remembers
-            // the tracks behind those URLs (KuGou embeds a `mx{mixsongid}`
-            // token), so the compile-time
-            // registry recovers the full identity for a fresh fetch.
+            // 歌单条目只持久化裸的流 URL，没有提供者身份。提供者的流注册表记得
+            // 这些 URL 背后的曲目（酷狗在 URL 里嵌了 `mx{mixsongid}` 标记），
+            // 于是编译期注册表能为重新取链还原出完整身份。
             let path = self.queue.current_path()?;
             crate::online_sources::identify_path(&path).map(|m| m.identity)
         })?;
@@ -452,11 +432,9 @@ impl PlaybackThread {
         None
     }
 
-    /// Mid-stream refresh hook for the track being opened: present only for
-    /// HTTP paths with a resolvable provider identity (the queue item's
-    /// persisted identity, or the stream-registry fallback). Installed on the
-    /// source at open time so an expired signed URL self-heals on the fill
-    /// thread instead of stalling into a fatal skip.
+    /// 待打开曲目的流中刷新钩子：只在 HTTP 路径且提供者身份可解析时存在
+    /// （队列条目持久化的身份，或流注册表兜底）。在打开时就装到 source 上，
+    /// 过期的签名 URL 于是在填充线程自愈，而不是拖到触发致命跳过。
     #[cfg(feature = "online_sources")]
     fn build_current_refresh_hook(&self) -> Option<crate::media::http_source::MediaUrlRefresh> {
         let path = self.queue.current_path()?;
@@ -479,29 +457,24 @@ impl PlaybackThread {
         None
     }
 
-    /// The shared core of every expired-URL refresh site — the transition's
-    /// synchronous retry ([`Self::refresh_expired_online_url`]), the
-    /// background prepare's on-error hook and the mid-stream refresh hook
-    /// installed on each opened stream ([`Self::build_current_refresh_hook`],
-    /// [`AudioEngine::prepare_next`]) — so the provider call, its timeout and
-    /// the quality settings live in exactly one place. Returns a shareable
-    /// hook: each call re-fetches a fresh path, or `None` when the provider
-    /// can no longer produce one.
+    /// 所有过期 URL 刷新点共用的内核——切换时的同步重试
+    /// （[`Self::refresh_expired_online_url`]）、后台预备的 on-error 钩子，
+    /// 以及装到每条已打开流上的流中刷新钩子（[`Self::build_current_refresh_hook`]、
+    /// [`AudioEngine::prepare_next`]）——提供者调用、它的超时与音质设置因此
+    /// 只存在于这一处。返回可共享的钩子：每次调用重新取一个新路径，
+    /// 提供者再也给不出时返回 `None`。
     ///
-    /// The hook blocks on the provider refresh, bounded by
-    /// [`STREAM_REFRESH_TIMEOUT`], and must only run where blocking is
-    /// acceptable: the playback thread (the transition gap is already
-    /// audible) or the dedicated media-prepare / fill std threads. All are
-    /// plain threads, so `block_on` parks that thread alone — it can never
-    /// occupy a tokio worker and starve the runtime.
+    /// 钩子会阻塞在提供者刷新上，上界是 [`STREAM_REFRESH_TIMEOUT`]，只能跑在
+    /// 允许阻塞的地方：播放线程（切换间隙本就听得见）或专用的 media-prepare /
+    /// fill std 线程。它们都是普通线程，所以 `block_on` 只挂住该线程本身——
+    /// 绝不可能占住 tokio worker 而饿到 runtime。
     #[cfg(feature = "online_sources")]
     fn build_refresh_hook(
         &self,
         identity: crate::online_sources::OnlineIdentity,
         display: crate::online_sources::OnlineDisplay,
     ) -> crate::media::http_source::MediaUrlRefresh {
-        // `as_str` yields `&'static str`, so the quality snapshot rides in
-        // the closure without borrowing `self`.
+        // `as_str` 返回 `&'static str`，因此音质快照能直接随闭包带走，不必借用 `self`。
         #[cfg(feature = "kugou")]
         let kugou_quality = self.playback_settings.online_quality.as_str();
         Arc::new(move || {
@@ -532,21 +505,18 @@ impl PlaybackThread {
         })
     }
 
-    /// Arms the background prepare with the on-error hook for `next_path`:
-    /// present only for HTTP paths with a resolvable provider identity (the
-    /// queue item's persisted identity, or the stream-registry fallback).
-    /// Everything the hook needs is captured before the prepare spawn; it
-    /// runs on the dedicated media-prepare std thread, where blocking on the
-    /// provider refresh cannot stall the playback loop.
+    /// 用 `next_path` 的 on-error 钩子武装后台预备：只对能解析出提供者身份的
+    /// HTTP 路径存在（队列条目持久化的身份，或流注册表兜底）。钩子所需的一切
+    /// 在预备任务 spawn 之前捕获完毕；它跑在专用的 media-prepare std 线程上，
+    /// 在那里阻塞等待提供者刷新不会拖住播放循环。
     #[cfg(feature = "online_sources")]
     fn build_prepare_refresh(&self, next_path: &Path) -> Option<OnlineRefresh> {
         if !crate::media::is_http_path(next_path) {
             return None;
         }
         let identity = self.queue.peek_next_online_identity().or_else(|| {
-            // Same fallback as the transition retry: playlist items persist
-            // only the plain stream URL, and every provider's stream
-            // registry remembers the tracks behind those URLs.
+            // 与切换重试同一兜底：歌单条目只持久化裸流 URL，而各提供者的流
+            // 注册表记得这些 URL 背后的曲目。
             crate::online_sources::identify_path(next_path).map(|m| m.identity)
         })?;
         let display = self
@@ -558,8 +528,7 @@ impl PlaybackThread {
         })
     }
 
-    /// Local files never need a URL refresh; the prepare behaves exactly as
-    /// before this hook existed.
+    /// 本地文件从不需要 URL 刷新；预备的行为与该钩子存在之前完全一致。
     #[cfg(not(feature = "online_sources"))]
     fn build_prepare_refresh(&self, _next_path: &Path) -> Option<OnlineRefresh> {
         None
@@ -578,15 +547,14 @@ impl PlaybackThread {
         self.last_album_peak = None;
 
         let (duration, open_path) = {
-            // Arm the opened stream's mid-stream URL refresh (an expired
-            // signed URL self-heals on the fill thread); None for local files.
+            // 为已打开的流装上流中 URL 刷新（过期的签名 URL 会在 fill 线程上自愈）；
+            // 本地文件为 None。
             let refresh = self.build_current_refresh_hook();
             match self.engine.open(path, preserve_resampler, refresh) {
                 Ok(duration) => (duration, path.to_path_buf()),
                 Err(first_error) => {
-                    // A persisted online direct link is signed and expires (403).
-                    // Before skipping, re-fetch a fresh URL from the item's
-                    // provider identity and retry the open once.
+                    // 持久化的在线直链带签名、会过期（403）。跳过之前先用该条目的
+                    // 提供者身份重新取一个新 URL，并重试打开一次。
                     let fresh_path = if crate::media::is_http_path(path) {
                         self.refresh_expired_online_url()
                     } else {
@@ -603,13 +571,12 @@ impl PlaybackThread {
             }
         };
 
-        // [mem] probe: sample on every track change so a long session's log
-        // shows whether committed private bytes keep climbing song by song or
-        // return to a stable base (genuine live growth, not working-set noise).
+        // [mem] 探针：每次换曲都采样，让长会话的日志能看出已提交的 private 字节是
+        // 逐曲持续爬升还是回落到稳定基线（真实的存活增长，而非工作集噪声）。
         let (private, working) = crate::process_memory_mb();
         tracing::info!(path = %open_path.display(), private_mb = private, working_mb = working, "[mem] track open");
 
-        // Enable loop-point-aware decoding if repeat-one is active
+        // 单曲循环开启时启用循环点感知解码
         self.engine
             .set_looping(self.queue.repeat_state() == RepeatState::RepeatingOne);
 
@@ -627,13 +594,10 @@ impl PlaybackThread {
         Ok(())
     }
 
-    /// Pre-open the next track's media stream when the current one is about
-    /// to end, so the EOF transition attaches a ready stream instead of
-    /// blocking on connect+probe (the audible part of track gaps on online
-    /// sources). Queue mutations invalidate the prepared stream. For an HTTP
-    /// next entry the prepare is armed with a URL-refresh hook, so an
-    /// expired signed URL is recovered — refresh + reopen — on the prepare
-    /// thread inside this lead window instead of blocking the transition.
+    /// 当前曲目即将结束时预打开下一曲的媒体流，让 EOF 切换挂上的是就绪的流，而不是
+    /// 阻塞在连接+探测上（在线源听感上的切歌间隙就出在这里）。队列变更会使已预备的
+    /// 流失效。若下一条目是 HTTP 路径，预备会带上 URL 刷新钩子，于是过期的签名 URL
+    /// 在这个提前窗口内由预备线程自行救回（刷新 + 重开），而不是阻塞切换。
     fn maybe_prepare_next(&mut self) {
         if self.stop_after_current || self.playback_settings.consume {
             return;
@@ -644,18 +608,16 @@ impl PlaybackThread {
         if duration.saturating_sub(self.last_timestamp) > PREPARE_LEAD_MS {
             return;
         }
-        // Cheap guard before taking the queue lock and cloning a PathBuf:
-        // inside the 15s lead window this runs every decode cycle, and once
-        // the next stream is prepared/in-flight every call is pure overhead.
+        // 在取队列锁并克隆 PathBuf 之前的廉价守卫：15s 提前窗口内每个解码周期都会
+        // 走到这里，而下一流一旦已预备/已在途，之后的每次调用都是纯开销。
         if self.engine.is_next_prepared() {
             return;
         }
         let Some(next_path) = self.queue.peek_next_path() else {
             return;
         };
-        // The failure cooldown lasts 30 s and this runs per decode cycle:
-        // skip the registry scan and the closure allocation while
-        // prepare_next would only reject the attempt anyway.
+        // 失败冷却长达 30 s，而这里每个解码周期都跑：当 prepare_next 只会拒绝这次
+        // 尝试时，先跳过注册表扫描与闭包分配。
         if self.engine.prepare_rejected(&next_path) {
             return;
         }
@@ -718,7 +680,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Skip to the next track in the queue.
+    /// 跳到队列中的下一曲。
     fn next(&mut self, user_initiated: bool, preserve_resampler: bool) {
         if user_initiated {
             self.set_stop_after_current(false);
@@ -762,11 +724,11 @@ impl PlaybackThread {
         }
     }
 
-    /// Skip to the previous track in the queue.
+    /// 跳到队列中的上一曲。
     fn previous(&mut self) {
         self.set_stop_after_current(false);
 
-        // If we're past 5 seconds, seek to start instead of going to previous track
+        // 已超过 5 秒时改为跳转到开头，而不是退回上一曲
         if self.state() == PlaybackState::Playing
             && self.playback_settings.prev_track_jump_first
             && self.last_timestamp > 5_000
@@ -775,10 +737,9 @@ impl PlaybackThread {
             return;
         }
 
-        // Handle stopped state - start playing from the last track. The
-        // playable slot is not necessarily `len() - 1`: trailing unplayable
-        // entries would leave the cursor past the actually opened track, and
-        // the next `next()` would then hit EndOfQueue instead of continuing.
+        // 处理停止态——从最后一曲开始播。可播槽位未必是 `len() - 1`：末尾若
+        // 有无用可播的条目，游标会停在真正打开的那曲之后，下一次 `next()`
+        // 就会撞上 EndOfQueue 而不是继续播。
         if self.state() == PlaybackState::Stopped {
             if let Some((path, index)) = self.queue.last_playable_path() {
                 self.open_or_log(&path);
@@ -803,14 +764,13 @@ impl PlaybackThread {
                 self.open_or_log(&path);
             }
             QueueNavigationResult::EndOfQueue => {
-                // At the beginning of the queue, do nothing
+                // 已在队列开头，什么都不做
             }
         }
     }
 
-    /// If nothing is playing, open and start playing the just-inserted item
-    /// at `first_index`. Unplayable paths are skipped; the caller's trailing
-    /// QueueUpdated still announces the queue change either way.
+    /// 若当前没在播任何东西，就打开并开始播放刚插入到 `first_index` 的那个条目。
+    /// 不可播的路径会被跳过；无论如何调用方随后那条 QueueUpdated 仍会播报队列变更。
     fn start_playing_inserted_if_stopped(&mut self, item: &QueueItemData, first_index: usize) {
         if self.state() != PlaybackState::Stopped || !path_playable(item.get_path()) {
             return;
@@ -821,9 +781,8 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueuePositionChanged(first_index));
     }
 
-    /// If nothing is playing, open and start playing the first playable item
-    /// of a just-inserted batch: `first` is `(index within the batch, item)`
-    /// and `first_index` the queue slot the batch starts at.
+    /// 若当前没在播任何东西，就打开并开始播放刚插入的这批里第一个可播条目：
+    /// `first` 是 `(批次内下标, 条目)`，`first_index` 是这批落在队列里的起始槽位。
     fn start_playing_first_inserted_if_stopped(
         &mut self,
         first: Option<(usize, QueueItemData)>,
@@ -842,7 +801,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueuePositionChanged(position));
     }
 
-    /// Add a new [`QueueItemData`] to the queue. If nothing is playing, start playing it.
+    /// 往队列新增一个 [`QueueItemData`]。若当前没在播任何东西，就开始播放它。
     fn queue_item(&mut self, item: &QueueItemData) {
         info!("Adding file to queue: {}", item);
 
@@ -853,8 +812,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueueUpdated);
     }
 
-    /// Add a list of [`QueueItemData`] to the queue. If nothing is playing, start playing the
-    /// first track.
+    /// 往队列新增一组 [`QueueItemData`]。若当前没在播任何东西，就开始播放第一曲。
     fn queue_list(&mut self, items: Vec<QueueItemData>) {
         if items.is_empty() {
             return;
@@ -882,10 +840,9 @@ impl PlaybackThread {
             let path = first.get_path();
             self.open_or_log(path);
             let position = first_index + relative_idx;
-            // With shuffle on, `queue_items` shuffled the appended batch, so
-            // the opened item no longer sits at `first_index + relative_idx`;
-            // resolve its actual slot through the original order so the cursor
-            // tracks the opened path (jump persists the state itself).
+            // 随机播放开启时 `queue_items` 会把追加的整批打乱，被打开的那个条目
+            // 便不再位于 `first_index + relative_idx`；经原始顺序解析出它的真实
+            // 槽位，让游标跟着已打开的路径走（jump 自己会持久化状态）。
             let position = match self.queue.jump_unshuffled(position) {
                 JumpResult::Jumped { .. } => self.queue.current_position().unwrap_or(position),
                 JumpResult::OutOfBounds => {
@@ -899,7 +856,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueueUpdated);
     }
 
-    /// Move an item from one position to another in the queue.
+    /// 把队列里的一个条目从一个位置挪到另一个位置。
     fn move_item(&mut self, from: usize, to: usize) {
         match self.queue.move_item(from, to, true) {
             MoveResult::Moved => {
@@ -927,7 +884,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Undo the most recent queue mutation.
+    /// 撤销最近一次队列变更。
     fn undo(&mut self) {
         let previous_state = self.state();
         let previous_shuffle = self.queue.is_shuffle_enabled();
@@ -984,11 +941,10 @@ impl PlaybackThread {
         }
     }
 
-    /// After removing the currently playing track: open the track that took
-    /// its slot (keeping the resampler across the transition when asked), or
-    /// stop when the queue has nothing left to play.
+    /// 移除当前播放曲目之后：打开顶替它槽位的那曲（按要求在这次切换中保留
+    /// 重采样器），或者队列已无可播内容时停止。
     fn play_after_removal(&mut self, new_path: Option<PathBuf>, preserve_resampler: bool) {
-        // Play the next track if there is one
+        // 还有下一曲就播它
         let Some(path) = new_path else {
             self.stop();
             return;
@@ -999,7 +955,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Remove an item from the queue.
+    /// 从队列移除一个条目。
     fn remove(&mut self, idx: usize) {
         self.remove_with_resampler(idx, false);
     }
@@ -1038,15 +994,14 @@ impl PlaybackThread {
         }
     }
 
-    /// Insert a [`QueueItemData`] at the specified position in the queue.
-    /// If nothing is playing, start playing it.
+    /// 在队列的指定位置插入一个 [`QueueItemData`]。若当前没在播任何东西，就开始播放它。
     fn insert_at(&mut self, item: &QueueItemData, position: usize) {
         info!("Inserting file to queue at position {}: {}", position, item);
 
         match self.queue.insert_item(position, item.clone()) {
             InsertResult::Inserted { first_index } => {
                 self.refresh_rg_auto_hint();
-                // If stopped, start playing the inserted item
+                // 停止态时开始播放刚插入的条目
                 self.start_playing_inserted_if_stopped(item, first_index);
             }
             InsertResult::InsertedMovedCurrent {
@@ -1056,7 +1011,7 @@ impl PlaybackThread {
                 self.refresh_rg_auto_hint();
                 self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
 
-                // If stopped, start playing the inserted item
+                // 停止态时开始播放刚插入的条目
                 self.start_playing_inserted_if_stopped(item, first_index);
             }
             InsertResult::Unchanged => {}
@@ -1065,8 +1020,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueueUpdated);
     }
 
-    /// Insert a list of [`QueueItemData`] at the specified position in the queue.
-    /// If nothing is playing, start playing the first track.
+    /// 在队列的指定位置插入一组 [`QueueItemData`]。若当前没在播任何东西，就开始播放第一曲。
     fn insert_list_at(&mut self, items: Vec<QueueItemData>, position: usize) {
         if items.is_empty() {
             return;
@@ -1093,7 +1047,7 @@ impl PlaybackThread {
         match self.queue.insert_items(position, items) {
             InsertResult::Inserted { first_index } => {
                 self.refresh_rg_auto_hint();
-                // If stopped, start playing the first inserted item
+                // 停止态时开始播放这批里第一个插入的条目
                 self.start_playing_first_inserted_if_stopped(first, first_index);
             }
             InsertResult::InsertedMovedCurrent {
@@ -1103,7 +1057,7 @@ impl PlaybackThread {
                 self.refresh_rg_auto_hint();
                 self.send_event(PlaybackEvent::QueuePositionChanged(new_position));
 
-                // If stopped, start playing the first inserted item
+                // 停止态时开始播放这批里第一个插入的条目
                 self.start_playing_first_inserted_if_stopped(first, first_index);
             }
             InsertResult::Unchanged => {}
@@ -1112,7 +1066,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueueUpdated);
     }
 
-    /// Emit a [`PositionChanged`] event if the timestamp has changed.
+    /// 时间戳有变化时发出一条 [`PositionChanged`] 事件。
     fn update_ts(&mut self, force: bool) {
         if let Some(timestamp) = self.engine.position_ms() {
             self.last_timestamp = timestamp;
@@ -1140,7 +1094,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Seek to the specified timestamp (in seconds).
+    /// 跳转到指定时间戳（单位：秒）。
     fn seek(&mut self, timestamp: f64) {
         if let Err(e) = self.engine.seek(timestamp) {
             warn!("Failed to seek: {:?}", e);
@@ -1149,7 +1103,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Jump to the specified index in the queue.
+    /// 跳转到队列中的指定下标。
     fn jump(&mut self, index: usize) {
         match self.queue.jump(index) {
             JumpResult::Jumped { path } => {
@@ -1163,15 +1117,14 @@ impl PlaybackThread {
         }
     }
 
-    /// Jump to the specified index in the queue, disregarding shuffling. This means that the
-    /// original queue item at the specified index will be played, rather than the shuffled item.
-    /// Returns whether a track was opened.
+    /// 忽略随机播放，跳转到队列中的指定下标：播放的是原始队列里该下标上的条目，
+    /// 而不是洗牌后的条目。返回是否打开了曲目。
     fn jump_unshuffled(&mut self, index: usize) -> bool {
         match self.queue.jump_unshuffled(index) {
             JumpResult::Jumped { path } => {
                 self.set_stop_after_current(false);
                 self.open_or_log(&path);
-                // Get the actual position in the (possibly shuffled) queue
+                // 取在（可能已洗牌的）队列里的真实位置
                 if let Some(pos) = self.queue.current_position() {
                     self.send_event(PlaybackEvent::QueuePositionChanged(pos));
                 }
@@ -1184,7 +1137,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Replace the current queue with the given paths.
+    /// 用给定的一组路径替换当前队列。
     fn replace_queue(&mut self, paths: Vec<QueueItemData>) {
         debug!(
             count = paths.len(),
@@ -1220,13 +1173,11 @@ impl PlaybackThread {
         match self.queue.replace_queue(paths) {
             ReplaceResult::Replaced { .. } => {
                 self.refresh_rg_auto_hint();
-                // The requested slot can be gone (the restored playlist shrank,
-                // or the shuffled mapping no longer contains it). Leaving the
-                // cursor unset used to keep whatever was playing while the UI
-                // lost its position; fall back to the first playable slot like
-                // `replace_queue` does.
-                // `first_playable_index` is an index into the (possibly
-                // shuffled) playback queue, so use the plain jump here.
+                // 所请求的槽位可能已经没了（恢复的歌单变短，或洗牌映射不再包含它）。
+                // 游标留空在过去会让正在播的东西继续播、而 UI 丢了位置；这里像
+                // `replace_queue` 那样退回到第一个可播槽位。
+                // `first_playable_index` 是（可能已洗牌的）播放队列的下标，
+                // 所以此处用普通的 jump。
                 if !self.jump_unshuffled(idx)
                     && let Some(first) = self.queue.first_playable_index()
                 {
@@ -1242,7 +1193,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueueUpdated);
     }
 
-    /// Clear the current queue.
+    /// 清空当前队列。
     fn clear_queue(&mut self) {
         self.set_stop_after_current(false);
 
@@ -1261,7 +1212,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::QueueUpdated);
     }
 
-    /// Stop the current playback.
+    /// 停止当前播放。
     fn stop(&mut self) {
         self.set_stop_after_current(false);
         self.engine.stop();
@@ -1300,7 +1251,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::StopAfterCurrentChanged(stop_after_current));
     }
 
-    /// Toggle shuffle mode. This will result in the queue being duplicated and shuffled.
+    /// 切换随机播放模式。这会导致队列被复制一份并洗牌。
     fn toggle_shuffle(&mut self) {
         let (shuffled, new_position) = match self.queue.toggle_shuffle() {
             ShuffleResult::Shuffled => (true, None),
@@ -1316,8 +1267,8 @@ impl PlaybackThread {
         }
     }
 
-    /// Forces shuffle mode to a specific value. SMTC / MPRIS deliver an
-    /// explicit on/off request, so toggling there would flip the wrong way.
+    /// 把随机播放强制设为指定值。SMTC / MPRIS 递来的是明确的开/关请求，
+    /// 在那里做切换会朝反方向翻。
     fn set_shuffle(&mut self, shuffle: bool) {
         if self.queue.shuffled() == shuffle {
             return;
@@ -1325,7 +1276,7 @@ impl PlaybackThread {
         self.toggle_shuffle();
     }
 
-    /// Sets the volume of the playback stream.
+    /// 设置播放流的音量。
     fn set_volume(&mut self, volume: f64) {
         if let Err(e) = self.engine.set_volume(volume) {
             warn!("Failed to set volume: {:?}", e);
@@ -1334,7 +1285,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::VolumeChanged(volume));
     }
 
-    /// Sets the repeat mode.
+    /// 设置循环模式。
     fn set_repeat(&mut self, state: RepeatState) {
         self.queue.set_repeat(state);
         self.engine.set_looping(state == RepeatState::RepeatingOne);
@@ -1342,7 +1293,7 @@ impl PlaybackThread {
         self.send_event(PlaybackEvent::RepeatChanged(self.queue.repeat_state()));
     }
 
-    /// Toggles between play/pause.
+    /// 在播放/暂停之间切换。
     #[cfg(not(target_os = "windows"))]
     fn toggle_play_pause(&mut self) {
         match self.state() {
@@ -1352,7 +1303,7 @@ impl PlaybackThread {
         }
     }
 
-    /// Handles a change in playback settings.
+    /// 处理播放设置发生变更。
     fn settings_changed(&mut self, settings: PlaybackSettings) {
         self.engine.update_settings(&settings);
         self.queue.update_settings(settings.clone());
@@ -1364,7 +1315,7 @@ impl PlaybackThread {
         self.reapply_replaygain();
     }
 
-    /// Applies new equalizer settings live. Persistence happens separately through save_settings.
+    /// 实时应用新的均衡器设置。持久化由 save_settings 另行负责。
     fn set_equalizer(&mut self, settings: EqualizerSettings) {
         self.engine.set_equalizer(&settings);
         self.playback_settings.equalizer = settings;
@@ -1375,8 +1326,7 @@ impl PlaybackThread {
         self.update_ts(true);
     }
 
-    /// Process audio samples through the engine and send to device. Returns whether the engine
-    /// made forward progress this cycle.
+    /// 让引擎处理音频样本并送往设备。返回引擎在这个周期是否有前进。
     fn play_audio(&mut self) -> bool {
         match self.engine.process_cycle() {
             EngineCycleResult::Continue => {
@@ -1410,16 +1360,15 @@ impl PlaybackThread {
     }
 
     fn send_event(&mut self, event: PlaybackEvent) {
-        // A queue mutation can change which track plays next: the gapless
-        // pre-open (if any) is stale from this point on — but only when the
-        // next entry actually changed. Edits elsewhere (metadata refreshes,
-        // reorders not touching next) keep a valid pre-open instead of
-        // re-paying a full open in the prepare cooldown window.
+        // 队列变更可能改变接下来要播哪一曲：从此刻起无缝衔接的预打开（若有）就
+        // 已过期——但仅限"下一条条目确实变了"的情况。别处的编辑（元数据刷新、
+        // 不触及 next 的重排）留下的预打开仍然有效，不必在预备冷却窗口里重付
+        // 一次完整打开。
         if matches!(event, PlaybackEvent::QueueUpdated) {
             let next = self.queue.peek_next_path();
             self.engine.drop_prepared_unless_next(next.as_deref());
         }
-        // an Err just means the UI (and its receiver) is already gone
+        // Err 只代表 UI（连同它的接收端）已经没了
         let _ = self.events_tx.send(event);
     }
 }

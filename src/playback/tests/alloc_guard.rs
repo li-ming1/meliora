@@ -13,7 +13,7 @@ const FRAMES: usize = RATE as usize * 30;
 fn process_cycle_does_not_allocate() {
     let _guard = engine_lock();
     configure_dummy_device(RATE, "S16", 2);
-    // destroy any capture sink to prevent misc allocations
+    // 先卸载采集 sink，否则它自身的分配会混进被守护的循环里。
     dummy::uninstall_capture();
 
     let dir = TestDir::new("hb-alloc-guard");

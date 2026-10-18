@@ -18,7 +18,7 @@ fn device_death_mid_playback_recovers_without_dropping_frames() {
     let _guard = engine_lock();
     let rate = 44_100;
     configure_dummy_device(rate, "S16", CHANNELS);
-    // fault once, part way through the track.
+    // 让设备在曲目中途失败一次。
     configure_device_death(5_000);
 
     let dir = TestDir::new("hb-robustness-device-death");
@@ -57,13 +57,13 @@ fn seek_while_playing_flushes_and_continues() {
 
     let mut engine = engine_playing(&path);
 
-    // play part way into the track so there is buffered audio to flush.
+    // 先播放一段，让缓冲区里确实有待冲刷的音频。
     for _ in 0..50 {
         engine.process_cycle();
     }
 
-    // seeking while playing must flush device + pipeline buffers and keep playing to EOF,
-    // rather than deferring the reset or hanging.
+    // 播放中跳转定位必须冲刷设备与管线缓冲并继续播到 EOF，
+    // 而不是推迟复位或挂住。
     engine.seek(0.0).expect("seek while playing failed");
     run_to_eof(&mut engine, MAX_CYCLES);
     engine.stop();

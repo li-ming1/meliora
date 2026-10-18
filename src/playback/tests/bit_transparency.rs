@@ -14,8 +14,7 @@ const CHANNELS: usize = 2;
 const FRAMES: usize = 32_768;
 const MAX_CYCLES: usize = 100_000;
 
-/// Plays `path` to EOF on the already-configured dummy device and returns
-/// the captured device-layer planes.
+/// 在已配置好的 dummy 设备上把 `path` 播到 EOF，返回设备层采集到的分声道平面。
 fn captured_planes(path: &Path) -> dummy::CapturedPlanes {
     let capture = dummy::install_capture();
     let mut engine = engine_playing(path);

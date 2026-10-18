@@ -49,8 +49,8 @@ fn u16_round_trip_exhaustive() {
     );
 }
 
-// we could probably exhaustively test all 2^24 values, but it's unlikely that this will really
-// miss anything and after 16-bit the space gets quite large
+// 理论上能把 2^24 个值全穷举一遍，但 16 位之后取值空间太大，
+// 密采样几乎不会漏掉真问题。
 #[test]
 fn i24_round_trip_dense() {
     let mut state = 0x9E37_79B9_7F4A_7C15;
@@ -119,8 +119,8 @@ fn f32_round_trip_dense() {
     let mut failures = 0;
     for _ in 0..DENSE_SWEEP_SAMPLES {
         let v = (xorshift64(&mut state) as u32 as i32) as f32 / (i32::MAX as f32 + 1.0);
-        // compared on bits, which is stricter than the PartialEq inside
-        // `round_trips`: -0.0 and 0.0 are equal but not identical
+        // 按比特比较，比 `round_trips` 内部的 PartialEq 更严：
+        // -0.0 与 0.0 相等但比特形态不同
         if f32::sample_from(SampleInto::<f64>::sample_into(v)).to_bits() != v.to_bits() {
             failures += 1;
         }
@@ -133,7 +133,7 @@ fn f32_round_trip_dense() {
 
 #[test]
 fn edge_values_round_trip() {
-    // signed extremes and zero
+    // 有符号极值与零
     assert!(round_trips(i8::MIN));
     assert!(round_trips(i8::MAX));
     assert!(round_trips(0i8));
@@ -147,7 +147,7 @@ fn edge_values_round_trip() {
     assert!(round_trips(I24::MAX));
     assert!(round_trips(I24::try_from(0i32).unwrap()));
 
-    // unsigned extremes and midpoints (digital silence)
+    // 无符号极值与中点（数字静音）
     assert!(round_trips(u8::MIN));
     assert!(round_trips(u8::MAX));
     assert!(round_trips(1u8 << 7));
@@ -161,7 +161,7 @@ fn edge_values_round_trip() {
     assert!(round_trips(U24::try_from(0xFF_FFFFu32).unwrap()));
     assert!(round_trips(U24::try_from(1u32 << 23).unwrap()));
 
-    // float special values
+    // 浮点特殊值
     assert!(round_trips(0.0f32));
     assert!(round_trips(1.0f32));
     assert!(round_trips(-1.0f32));
@@ -187,8 +187,8 @@ fn unsigned_midpoint_is_digital_silence() {
 
 #[test]
 fn scaled_conversion_is_total() {
-    // the values just outside [-1.0, 1.0] stress the saturating conversion (they were also what
-    // i16::MIN produced under the old /32767 scaling)
+    // 略微超出 [-1.0, 1.0] 的值专门压饱和转换（旧的 /32767 缩放下
+    // i16::MIN 算出来的正是这类值）
     let bases = [-1.0000305, -1.0, -0.5, 0.0, 0.5, 1.0, 1.0000305];
     for gain in [0.5, 1.0, 2.0] {
         for base in bases {
@@ -208,7 +208,7 @@ fn scaled_conversion_is_total() {
 
 #[test]
 fn float_to_int_rounds_to_nearest() {
-    // 100.4 / 32768 should land on 100, 100.6 on 101 — truncation would give 100 for both
+    // 100.4 / 32768 应落在 100、100.6 应落在 101 —— 截断会让两者都得 100
     assert_eq!(i16::sample_from(100.4 / 32_768.0f64), 100);
     assert_eq!(i16::sample_from(100.6 / 32_768.0f64), 101);
     assert_eq!(i16::sample_from(-100.4 / 32_768.0f64), -100);
@@ -234,14 +234,14 @@ fn out_of_range_floats_saturate() {
         U24::try_from(0xFF_FFFFu32).unwrap()
     );
     assert_eq!(U24::sample_from(-2.0f64), U24::try_from(0u32).unwrap());
-    // NaN must not panic; it maps to whatever the saturating cast gives (0 -> midpoint)
+    // NaN 不得 panic；它落到饱和转换给出的值（0 -> 中点）
     assert_eq!(i16::sample_from(f64::NAN), 0);
     assert_eq!(u16::sample_from(f64::NAN), 1u16 << 15);
 }
 
 #[test]
 fn signed_extremes_map_symmetrically() {
-    // ÷2^(N-1) scaling: MIN lands exactly on -1.0, silence exactly on 0.0
+    // ÷2^(N-1) 缩放：MIN 精确落到 -1.0，静音精确落到 0.0
     assert_eq!(SampleInto::<f64>::sample_into(i16::MIN), -1.0);
     assert_eq!(SampleInto::<f64>::sample_into(0i16), 0.0);
     assert_eq!(SampleInto::<f64>::sample_into(i32::MIN), -1.0);

@@ -24,18 +24,16 @@ pub struct CompleteMetadata {
     pub album_art: Option<Arc<[u8]>>,
 }
 
-/// A media stream opened off the playback thread, ready to be attached
-/// instantly at a track transition (gapless advance).
+/// 在播放线程之外打开好的媒体流，曲目切换时可立即挂上（无缝切歌前进）。
 pub struct PreparedMedia {
     pub(crate) path: PathBuf,
     pub(crate) stream: Box<dyn MediaStream>,
     pub(crate) duration_ms: Option<u64>,
 }
 
-/// Controller for media stream management.
+/// 媒体流管理的控制器。
 ///
-/// This component handles all interactions with media providers and streams,
-/// including opening/closing files, decoding audio, and retrieving metadata.
+/// 本组件负责与媒体提供者及流的所有交互：开合文件、解码音频、读取元数据。
 pub struct MediaController {
     media_stream: Option<Box<dyn MediaStream>>,
     current_path: Option<PathBuf>,
@@ -49,20 +47,19 @@ impl MediaController {
         }
     }
 
-    /// Check if a media stream is currently open.
+    /// 当前是否已有媒体流处于打开状态。
     pub fn has_stream(&self) -> bool {
         self.media_stream.is_some()
     }
 
-    /// Open a media file into a standalone stream without touching controller
-    /// state; shared by [`Self::open`] (playback thread) and gapless prepare
-    /// (background thread). `refresh` arms an HTTP source with the mid-stream
-    /// URL refresh hook (expired signed URL self-heal on the fill thread).
+    /// 把媒体文件打开成独立的流，不触碰控制器状态；[`Self::open`]（播放线程）与
+    /// 无缝切歌预备（后台线程）共用。`refresh` 给 HTTP 源装上流中 URL 刷新钩子
+    /// （签名 URL 过期时在填充线程自愈）。
     pub(super) fn open_stream(
         path: &Path,
         refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<(Box<dyn MediaStream>, Option<u64>), PlaybackStartError> {
-        // remote HTTP(S) streams bypass the file-based provider lookup
+        // 远端 HTTP(S) 流绕过基于文件的提供者查找
         #[cfg(feature = "online_sources")]
         let src = if crate::media::is_http_path(path) {
             crate::media::http_source::open_http_media(path, refresh).map(Some)
@@ -95,10 +92,9 @@ impl MediaController {
         Ok((media_stream, duration_ms))
     }
 
-    /// Open a media file and prepare it for playback.
+    /// 打开媒体文件并准备好播放。
     ///
-    /// Returns the track duration in milliseconds if known, used to configure
-    /// the audio pipeline and device.
+    /// 返回已知的曲目时长（毫秒），用于配置音频管线与设备。
     pub fn open(
         &mut self,
         path: &Path,
@@ -106,7 +102,7 @@ impl MediaController {
     ) -> Result<Option<u64>, PlaybackStartError> {
         debug!("Opening track '{}'", path.display());
 
-        // Close any existing stream
+        // 先关掉已有的流
         self.close();
 
         let (media_stream, duration_ms) = Self::open_stream(path, refresh)?;
@@ -123,9 +119,8 @@ impl MediaController {
         Ok(duration_ms)
     }
 
-    /// Install a stream pre-opened by [`AudioEngine::prepare_next`]. The
-    /// stream was fully validated (start + channels) at prepare time, so this
-    /// cannot block on the network.
+    /// 挂上由 [`AudioEngine::prepare_next`] 预先打开的流。预备阶段已完成全部校验
+    /// （start + channels），所以这里不可能被网络阻塞。
     pub fn attach_prepared(
         &mut self,
         prepared: PreparedMedia,
@@ -142,7 +137,7 @@ impl MediaController {
         Ok(duration_ms)
     }
 
-    /// Close the current media stream, if any.
+    /// 关闭当前媒体流（若有）。
     pub fn close(&mut self) {
         if let Some(mut stream) = self.media_stream.take() {
             stream.stop_playback();
@@ -156,7 +151,7 @@ impl MediaController {
         self.current_path.as_deref()
     }
 
-    /// Seek to the specified time in seconds.
+    /// 跳转定位到指定时刻，单位秒。
     pub fn seek(&mut self, time: f64) -> Result<(), SeekError> {
         if let Some(stream) = &mut self.media_stream {
             stream.seek(time)
@@ -165,7 +160,7 @@ impl MediaController {
         }
     }
 
-    /// Decode audio samples into the provided ring buffer producers.
+    /// 把音频样本解码进给定的环形缓冲生产者。
     pub fn decode_into(
         &mut self,
         output: &mut ChannelProducers,
@@ -178,10 +173,9 @@ impl MediaController {
         stream.decode_into(output)
     }
 
-    /// Check for metadata updates and return them if available.
+    /// 检查元数据是否更新，有则返回。
     ///
-    /// Returns a tuple of (metadata, optional album art) if there's an update,
-    /// or None if there's no update.
+    /// 有更新时返回 (metadata, 可选封面图) 二元组；没有更新则返回 None。
     pub fn check_metadata_update(&mut self) -> Option<CompleteMetadata> {
         let stream = self.media_stream.as_mut()?;
 

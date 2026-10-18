@@ -1,4 +1,4 @@
-//! Digital signal processing for the playback thread. Pure and UI-free.
+//! 播放线程的数字信号处理：纯计算，不依赖 UI。
 
 pub mod equalizer;
 pub mod spectrum;

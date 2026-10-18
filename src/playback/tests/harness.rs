@@ -23,7 +23,7 @@ pub fn engine_lock() -> MutexGuard<'static, ()> {
 }
 
 pub fn configure_dummy_device(rate: u32, bit_format: &str, channels: u16) {
-    // doesn't get read or changed elsewhere, should be fine
+    // 这些环境变量别处既不读也不改，直接设置即可。
     unsafe {
         std::env::set_var("DEVICE_PROVIDER", "dummy");
         std::env::set_var("HB_DUMMY_SAMPLE_RATE", rate.to_string());
@@ -49,7 +49,7 @@ pub fn configure_device_death(frames: usize) {
     crate::devices::dummy::arm_device_death();
 }
 
-/// Initialize a new audio engine that is playing `path` on the dummy device.
+/// 新建一个已在 dummy 设备上播放 `path` 的音频引擎。
 pub fn engine_playing(path: &Path) -> AudioEngine {
     register_test_media_providers();
 
@@ -65,8 +65,8 @@ pub fn engine_playing(path: &Path) -> AudioEngine {
     engine
 }
 
-/// Run `process_cycle` until EOF, panicking on fatal errors or if EOF is
-/// never reached. Returns the number of cycles run.
+/// 反复调用 `process_cycle` 直到 EOF；遇到致命错误、或 EOF 始终不来就 panic。
+/// 返回实际跑掉的周期数。
 pub fn run_to_eof(engine: &mut AudioEngine, max_cycles: usize) -> usize {
     for cycle in 0..max_cycles {
         match engine.process_cycle() {
@@ -78,7 +78,7 @@ pub fn run_to_eof(engine: &mut AudioEngine, max_cycles: usize) -> usize {
     panic!("engine did not reach EOF within {max_cycles} cycles");
 }
 
-/// WAVE format tags for the RIFF `fmt ` chunk written by [`write_wav`].
+/// [`write_wav`] 写入 RIFF `fmt ` 块时使用的 WAVE 格式标记。
 const WAVE_FORMAT_PCM: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 
@@ -163,7 +163,7 @@ fn write_wav(
 ) {
     let block_align = channels * bits / 8;
     let byte_rate = rate * u32::from(block_align);
-    // fmt chunk + data chunk header + (for float) a fact chunk
+    // fmt 块 + data 块头 +（浮点格式时）fact 块
     let fact_len: u32 = if format_tag == WAVE_FORMAT_IEEE_FLOAT {
         12
     } else {

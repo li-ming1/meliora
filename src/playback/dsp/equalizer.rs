@@ -1,25 +1,25 @@
-//! See https://www.w3.org/TR/audio-eq-cookbook/
+//! 系数公式见 https://www.w3.org/TR/audio-eq-cookbook/
 
 use std::f64::consts::PI;
 
 use crate::settings::equalizer::{EqBandKind, EqBandSettings, EqualizerSettings, MAX_EQ_BANDS};
 
 pub const MIN_FREQUENCY: f64 = 10.0;
-/// Further clamped to 0.45 × sample rate at coefficient time.
+/// 计算系数时还会进一步夹到 0.45 × 采样率。
 pub const MAX_FREQUENCY: f64 = 30_000.0;
 pub const MAX_GAIN_DB: f64 = 24.0;
 pub const MIN_Q: f64 = 0.1;
 pub const MAX_Q: f64 = 40.0;
 
-/// ~2.7 ms at 48 kHz.
+/// 48 kHz 下约 2.7 ms。
 const SUB_BLOCK_FRAMES: usize = 128;
 const SMOOTHING_TAU_SECONDS: f64 = 0.030;
-/// Relative tolerance for a smoothed parameter counting as settled onto its target.
+/// 判定平滑参数已落到目标值上的相对容差。
 const CONVERGENCE_TOLERANCE: f64 = 1e-4;
-/// Structural changes crossfade over one sub-block.
+/// 结构性变更跨一个子块做交叉淡化。
 const CROSSFADE_FRAMES: usize = SUB_BLOCK_FRAMES;
 const DENORMAL_THRESHOLD: f64 = 1e-30;
-/// Log-spaced samples of the composite response when searching for its peak.
+/// 搜索合成响应峰值时所用的对数间隔采样点数。
 const COMP_GRID_POINTS: usize = 512;
 
 #[inline]
@@ -31,14 +31,13 @@ fn sanitize(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
     }
 }
 
-/// Highest usable band frequency for a sample rate: above it the cookbook formulas leave the
-/// range where they stay stable and accurate.
+/// 给定采样率下可用的最高频段频率：超过它，cookbook 公式就脱离稳定且准确的区间。
 fn frequency_ceiling(sample_rate: f64) -> f64 {
-    // 0.45 × rate can dip below MIN_FREQUENCY at tiny rates, never clamp against min > max
+    // 采样率极小时 0.45 × rate 会跌到 MIN_FREQUENCY 以下，绝不能拿 min > max 去 clamp
     MAX_FREQUENCY.min(0.45 * sample_rate).max(MIN_FREQUENCY)
 }
 
-/// Clamp into the range where the cookbook formulas stay stable and accurate.
+/// 夹到 cookbook 公式保持稳定且准确的区间内。
 pub fn clamp_frequency(frequency: f64, sample_rate: f64) -> f64 {
     sanitize(
         frequency,
@@ -63,7 +62,7 @@ fn converged(current: f64, target: f64) -> bool {
     (current - target).abs() <= CONVERGENCE_TOLERANCE * target.abs().max(1.0)
 }
 
-/// Normalized (a0 = 1) biquad coefficients.
+/// 归一化（a0 = 1）的双二阶系数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Biquad {
     pub b0: f64,
@@ -74,7 +73,7 @@ pub struct Biquad {
 }
 
 impl Biquad {
-    /// RBJ cookbook coefficients for one band.
+    /// 单个频段的 RBJ cookbook 系数。
     pub fn new(kind: EqBandKind, sample_rate: f64, frequency: f64, gain_db: f64, q: f64) -> Self {
         let frequency = clamp_frequency(frequency, sample_rate);
         let q = sanitize(q, MIN_Q, MAX_Q, 1.0);
@@ -123,13 +122,13 @@ impl Biquad {
             a1: a1 / a0,
             a2: a2 / a0,
         };
-        // poles inside the unit circle by construction, verify in debug
+        // 按构造极点就在单位圆内，debug 下核验一把
         debug_assert!(coeffs.a2.abs() < 1.0);
         debug_assert!(coeffs.a1.abs() <= 1.0 + coeffs.a2 + 1e-12);
         coeffs
     }
 
-    /// Analytic magnitude response in dB at angular frequency `omega`.
+    /// 角频率 `omega` 处的解析幅频响应，单位 dB。
     pub fn magnitude_db(&self, omega: f64) -> f64 {
         let (c1, c2) = (omega.cos(), (2.0 * omega).cos());
         let (s1, s2) = (omega.sin(), (2.0 * omega).sin());
@@ -140,7 +139,7 @@ impl Biquad {
         10.0 * (num / den).log10()
     }
 
-    /// One transposed-direct-form-II step.
+    /// 转置直接 II 型（TDF-II）的单步计算。
     #[inline]
     fn process(&self, x: f64, state: &mut BiquadState) -> f64 {
         let y = self.b0 * x + state.s1;
@@ -150,7 +149,7 @@ impl Biquad {
     }
 }
 
-/// Per-band, per-channel filter state.
+/// 每频段、每声道的滤波器状态。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BiquadState {
     s1: f64,
@@ -169,14 +168,13 @@ impl BiquadState {
     }
 }
 
-/// Analytic response of a single band in dB. Used by the UI to draw the curve, so display and DSP
-/// can never disagree.
+/// 单个频段的解析响应，单位 dB。UI 画曲线也用它，显示与 DSP 因此不可能对不上。
 pub fn band_response_db(band: &EqBandSettings, sample_rate: f64, at_frequency: f64) -> f64 {
     Biquad::new(band.kind, sample_rate, band.frequency, band.gain_db, band.q)
         .magnitude_db(omega(at_frequency, sample_rate))
 }
 
-/// Composite response in dB: the sum over enabled bands, 0 dB when bypassed.
+/// 合成响应（dB）：所有启用频段之和，旁路时为 0 dB。
 #[cfg(test)]
 pub fn config_response_db(config: &EqualizerSettings, sample_rate: f64, at_frequency: f64) -> f64 {
     if !config.enabled {
@@ -191,8 +189,7 @@ pub fn config_response_db(config: &EqualizerSettings, sample_rate: f64, at_frequ
         .sum()
 }
 
-/// Angular frequencies of the shared log response grid, precomputed once per sample rate and
-/// reused by every band's cached table.
+/// 共用对数响应网格的角频率：每种采样率预计算一次，各频段的缓存表都复用它。
 fn log_grid_omega(sample_rate: f64) -> Vec<f64> {
     let max = frequency_ceiling(sample_rate);
     let ratio = max / MIN_FREQUENCY;
@@ -220,7 +217,7 @@ impl SmoothedParams {
         }
     }
 
-    /// One-pole step of every field toward `target`.
+    /// 各字段向 `target` 走一步单极点平滑。
     #[inline]
     fn step_toward(&mut self, target: &Self, coeff: f64) {
         self.frequency += (target.frequency - self.frequency) * coeff;
@@ -228,7 +225,7 @@ impl SmoothedParams {
         self.q += (target.q - self.q) * coeff;
     }
 
-    /// Whether every field has settled onto `target` within the convergence tolerance.
+    /// 是否每个字段都已在收敛容差内落到 `target` 上。
     #[inline]
     fn converged_with(&self, target: &Self) -> bool {
         converged(self.frequency, target.frequency)
@@ -266,8 +263,8 @@ impl BandRuntime {
         }
     }
 
-    /// Fresh bells start at 0 dB and smooth up to their target gain, so adding one mid-playback
-    /// needs no crossfade.
+    /// 新建的 bell 从 0 dB 起步、平滑爬到目标增益，所以播放中途添加它
+    /// 不需要交叉淡化。
     fn bell_ramp_in(band: &EqBandSettings, sample_rate: f64) -> Self {
         let target = SmoothedParams::from_band(band);
         let current = SmoothedParams {
@@ -296,7 +293,7 @@ impl BandRuntime {
         self.moving = !self.current.converged_with(&self.target);
     }
 
-    /// Recompute the coefficients from the current smoothed params.
+    /// 由当前平滑参数重新计算系数。
     #[inline]
     fn recompute_coeffs(&mut self, sample_rate: f64) {
         self.coeffs = Biquad::new(
@@ -308,7 +305,7 @@ impl BandRuntime {
         );
     }
 
-    /// One-pole step toward the target, then recompute coefficients.
+    /// 向目标走一步单极点平滑，然后重新计算系数。
     fn advance(&mut self, coeff: f64, sample_rate: f64) {
         if !self.moving {
             return;
@@ -322,7 +319,7 @@ impl BandRuntime {
     }
 }
 
-/// Volume compensation gain, one-pole smoothed toward the target like the band params.
+/// 音量补偿增益，与频段参数一样按单极点平滑逼近目标。
 #[derive(Debug, Clone, Copy, Default)]
 struct CompGain {
     current_db: f64,
@@ -353,7 +350,7 @@ impl CompGain {
         }
     }
 
-    /// Exactly 1.0 once settled at 0 dB, so the streaming path can skip the multiply.
+    /// 收敛到 0 dB 后恰好是 1.0，流式路径因此可以跳过这次乘法。
     fn linear(&self) -> f64 {
         if self.current_db == 0.0 {
             1.0
@@ -363,28 +360,27 @@ impl CompGain {
     }
 }
 
-/// Snapshot of the outgoing configuration, faded out linearly over one window.
+/// 即将退场配置的快照，在一个窗口内线性淡出。
 struct Crossfade {
     bands: Vec<Biquad>,
     states: Vec<Vec<BiquadState>>,
-    /// Compensation gain the outgoing configuration was playing at.
+    /// 退场配置当时正在使用的补偿增益。
     gain: f64,
     remaining: usize,
 }
 
-/// Cached response of one band over the shared log grid. The response depends only on the band
-/// kind, the clamp-corrected parameters and the sample rate, so an unchanged band reuses its table
-/// and a parameter drag rescans just that band.
+/// 单个频段在共用对数网格上的响应缓存。响应只取决于频段类型、经 clamp 校正的参数
+/// 与采样率，因此未变动的频段直接复用其表，拖动参数只重扫那一个频段。
 struct BandResponse {
     kind: EqBandKind,
-    /// Clamp-corrected center frequency: the raw target saturates at the rate ceiling, where
-    /// distinct requests share one response, and a rate change re-anchors the clamp.
+    /// 经 clamp 校正的中心频率：原始目标在采样率天花板上饱和，此时不同的请求共享
+    /// 同一条响应，而采样率变化会重新锚定这个 clamp。
     center: f64,
     gain_db: f64,
     q: f64,
     sample_rate: f64,
     biquad: Biquad,
-    /// Magnitudes in dB over the `COMP_GRID_POINTS` grid points, f32 to keep the cache tiny.
+    /// `COMP_GRID_POINTS` 个网格点上的 dB 幅值，用 f32 以让缓存保持极小。
     table: Vec<f32>,
 }
 
@@ -411,19 +407,19 @@ impl BandResponse {
         }
     }
 
-    /// Whether this cached response still matches the band's response inputs.
+    /// 这份缓存响应是否仍与频段的响应输入相符。
     fn matches(&self, kind: EqBandKind, params: &SmoothedParams, sample_rate: f64) -> bool {
         self.kind == kind
             && self.sample_rate == sample_rate
             && self.gain_db == params.gain_db
             && self.q == params.q
-            // the clamp-corrected frequency, not the raw target: keying on the raw value would
-            // hand an over-ceiling band a stale table across rate changes
+            // 比对的是 clamp 校正后的频率而非原始目标：拿原始值作键，会让超出天花板的
+            // 频段在采样率变化后拿到一张过期表
             && self.center == clamp_frequency(params.frequency, sample_rate)
     }
 }
 
-/// Serial cascade of smoothed biquads. No allocation in the streaming path.
+/// 平滑双二阶的串联级联。流式路径零分配。
 pub struct EqualizerProcessor {
     sample_rate: f64,
     channels: usize,
@@ -435,12 +431,12 @@ pub struct EqualizerProcessor {
     smoothing_coeff: f64,
     crossfade: Option<Crossfade>,
     scratch: Vec<Vec<f64>>, // [channel][SUB_BLOCK_FRAMES] crossfade buffer
-    /// Last applied config: an identical re-push short-circuits to a no-op.
+    /// 最后一次生效的配置：完全相同的重复推送直接短路为空操作。
     last_config: Option<EqualizerSettings>,
-    /// Per-band grid responses backing `compensation_target`, aligned with `bands`: only bands
-    /// whose response inputs changed are recomputed, so a drag no longer rescans every band.
+    /// 支撑 `compensation_target` 的分频段网格响应，与 `bands` 对齐：只重算响应输入
+    /// 发生变化的频段，因此拖动参数不再重扫所有频段。
     comp_tables: Vec<Option<BandResponse>>,
-    /// Angular frequencies of the response grid for `grid_rate`, precomputed once per sample rate.
+    /// `grid_rate` 对应响应网格的角频率，每种采样率预计算一次。
     grid_omega: Vec<f64>,
     grid_rate: f64,
 }
@@ -465,14 +461,14 @@ impl EqualizerProcessor {
         }
     }
 
-    /// Whether the EQ currently alters the signal, false while bypassed or all bands are off.
+    /// EQ 当前是否改变了信号；处于旁路或所有频段都关闭时为 false。
     pub fn audible(&self) -> bool {
         self.enabled && self.bands.iter().any(|band| band.enabled)
     }
 
     pub fn set_config(&mut self, config: &EqualizerSettings) {
-        // an identical re-push (settings echoes, drag ticks that didn't move a value) would
-        // retarget every band onto its current value - skip straight through as a no-op
+        // 完全相同的重复推送（设置回声、值没动的拖动刻度）会把每个频段重新指向其当前
+        // 值——直接当空操作跳过
         if self.last_config.as_ref() == Some(config) {
             return;
         }
@@ -488,7 +484,7 @@ impl EqualizerProcessor {
                 }
                 Some(_) => structural = true, // type change
                 None => {
-                    // appended bells ramp in from 0 dB instead of crossfading
+                    // 追加的 bell 从 0 dB 爬升，而不是走交叉淡化
                     structural |= band.enabled && band.kind != EqBandKind::Bell;
                 }
             }
@@ -515,7 +511,7 @@ impl EqualizerProcessor {
                     new_states.push(if band.enabled {
                         states
                     } else {
-                        // don't let a frozen ring fire on re-enable
+                        // 别让冻结的滤波器环在重新启用时突然发响
                         vec![BiquadState::default(); self.channels]
                     });
                 }
@@ -538,8 +534,8 @@ impl EqualizerProcessor {
         self.states = new_states;
         self.last_config = Some(config.clone());
 
-        // a crossfade or silence masks the level jump, and the incoming configuration must
-        // arrive fully compensated rather than settle audibly after the fade
+        // 交叉淡化或静音会掩盖这次的电平跳变，而新进场的配置必须一步到位地带好补偿，
+        // 不能在淡出之后还能听出它在爬
         let target = self.compensation_target();
         if self.crossfade.is_some() || !was_audible {
             self.comp.snap(target);
@@ -548,10 +544,9 @@ impl EqualizerProcessor {
         }
     }
 
-    /// Compensation for the current band targets, so an in-flight ramp lands on the right level.
-    /// Each band's response over the log grid is cached per band and only recomputed when that
-    /// band's response inputs change; the peak is the per-point sum over enabled bands plus each
-    /// band's center, so a single-band drag no longer rescans every band.
+    /// 按当前频段目标算出的补偿量，好让已在途的爬升落到正确的电平上。每个频段在对数
+    /// 网格上的响应按频段缓存，只有该频段的响应输入变化才重算；峰值取所有启用频段的
+    /// 逐点相加再加上各频段的中心点，因此单频段拖动不再重扫全部频段。
     fn compensation_target(&mut self) -> f64 {
         if !self.compensate {
             return 0.0;
@@ -626,7 +621,7 @@ impl EqualizerProcessor {
         });
     }
 
-    /// Process `frames` samples in place. Bit-exact passthrough when bypassed or nothing is audible
+    /// 就地处理 `frames` 个样本。旁路或无可听效果时按位原样直通
     pub fn process(&mut self, planar: &mut [Vec<f64>], frames: usize) {
         if !self.audible() && self.crossfade.is_none() {
             return;
@@ -644,7 +639,7 @@ impl EqualizerProcessor {
 
         let mut offset = 0;
         while offset < frames {
-            // sub-blocks never outlast the remaining crossfade window
+            // 子块绝不会长过剩余的交叉淡化窗口
             let n = SUB_BLOCK_FRAMES.min(frames - offset).min(
                 crossfade
                     .as_ref()
@@ -658,7 +653,7 @@ impl EqualizerProcessor {
             comp.advance(smoothing_coeff);
             let gain_end = comp.linear();
 
-            // outgoing configuration on a copy of the dry input
+            // 退场配置跑在干信号的副本上
             if let Some(xf) = crossfade.as_mut() {
                 for ch in 0..channels {
                     scratch[ch][..n].copy_from_slice(&planar[ch][offset..offset + n]);
@@ -692,8 +687,8 @@ impl EqualizerProcessor {
                         }
                     }
                 }
-                // interpolated per sample - a per-block step would zipper, the biquads get away
-                // with block-rate updates only because their state carries across the boundary
+                // 逐样本插值——按块步进会打出 zipper 噪声；双二阶之所以能用块速率更新，
+                // 只因为它们的状态跨越了块边界
                 if gain_start != 1.0 || gain_end != 1.0 {
                     let step = (gain_end - gain_start) / n as f64;
                     for channel in planar.iter_mut().take(channels) {
@@ -735,7 +730,7 @@ impl EqualizerProcessor {
         }
     }
 
-    /// Zero all filter state (seek/flush) and cancel any in-flight crossfade.
+    /// 清零所有滤波器状态（跳转定位/冲刷），并取消一切已在途的交叉淡化。
     pub fn reset(&mut self) {
         for band_states in &mut self.states {
             band_states.fill(BiquadState::default());
@@ -743,7 +738,7 @@ impl EqualizerProcessor {
         self.crossfade = None;
     }
 
-    /// Recompute all coefficients and reset state.
+    /// 重新计算所有系数并复位状态。
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         if sample_rate == self.sample_rate {
             return;
@@ -753,13 +748,13 @@ impl EqualizerProcessor {
         for band in &mut self.bands {
             band.recompute_coeffs(sample_rate);
         }
-        // Nyquist clamping shifts responses, and the hard reset already masks the jump
+        // 奈氏频率 clamp 会挪动响应，而硬复位本就掩盖了这次跳变
         let target = self.compensation_target();
         self.comp.snap(target);
         self.reset();
     }
 
-    /// Resize state to the device channel layout and reset.
+    /// 按设备声道布局调整状态尺寸并复位。
     pub fn set_channel_count(&mut self, channels: usize) {
         if channels == self.channels {
             return;
@@ -804,7 +799,7 @@ mod tests {
         }
     }
 
-    /// Compensation target for a band set, read back through the processor.
+    /// 一组频段的补偿目标，经由处理器读回。
     fn comp_target(bands: &[EqBandSettings], sample_rate: f64) -> f64 {
         let mut proc = EqualizerProcessor::new(sample_rate, 1);
         proc.set_config(&comp_config(true, bands));
@@ -843,7 +838,7 @@ mod tests {
         }
     }
 
-    /// Reference values computed independently from the cookbook formulas.
+    /// 由 cookbook 公式独立算出的参考值。
     #[test]
     fn coefficients_match_cookbook_goldens() {
         let goldens: [(EqBandKind, f64, f64, f64, f64, [f64; 5]); 8] = [
@@ -931,7 +926,7 @@ mod tests {
                     0.953_281_959_705_200_2,
                 ],
             ),
-            // clamps to 0.45 × Fs
+            // 夹到 0.45 × Fs
             (
                 EqBandKind::LowPass,
                 44_100.0,
@@ -946,7 +941,7 @@ mod tests {
                     0.641_307_084_742_889_1,
                 ],
             ),
-            // clamps to 10 Hz
+            // 夹到 10 Hz
             (
                 EqBandKind::Bell,
                 48_000.0,
@@ -992,7 +987,7 @@ mod tests {
             );
         }
 
-        // Butterworth Q sits at -3.01 dB at the cutoff
+        // Butterworth Q 在截止频率处正好落在 -3.01 dB
         let lp = Biquad::new(EqBandKind::LowPass, FS, 5_000.0, 0.0, 0.707);
         assert!(
             (lp.magnitude_db(omega(5_000.0, FS)) - -3.011_611_724_062_016).abs() < 1e-9,
@@ -1000,13 +995,12 @@ mod tests {
             lp.magnitude_db(omega(5_000.0, FS))
         );
 
-        // a notch bottoms out at its exact frequency
+        // notch 在其精确频率处达到谷底
         let notch = Biquad::new(EqBandKind::Notch, FS, 3_000.0, 0.0, 8.0);
         assert!(notch.magnitude_db(omega(3_000.0, FS)) < -150.0);
     }
 
-    /// Steady-state amplitude measured by correlation over an exact integer number of cycles,
-    /// exercising the actual processing path.
+    /// 稳态幅值：在恰好整数个周期上做相关测量，走的是真实的处理路径。
     fn measured_response_db(biquad: &Biquad, cycles: usize, sample_rate: f64) -> f64 {
         const N: usize = 32_768;
         let w = omega(test_frequency(cycles, sample_rate), sample_rate);
@@ -1023,15 +1017,15 @@ mod tests {
         20.0 * amplitude.log10()
     }
 
-    /// `cycles` periods per 32768 samples, so measurement windows hold whole cycles.
+    /// 每 32768 个样本 `cycles` 个周期，这样测量窗口装的都是完整周期。
     fn test_frequency(cycles: usize, sample_rate: f64) -> f64 {
         cycles as f64 * sample_rate / 32_768.0
     }
 
-    /// Proves the drawn curve (analytic response) matches the audible filter.
+    /// 证明画出来的曲线（解析响应）与真正出声的滤波器一致。
     #[test]
     fn processing_matches_analytic_response() {
-        // 20.5 Hz .. 20.9 kHz in ~half-octave steps
+        // 20.5 Hz .. 20.9 kHz，约半倍频一步
         const CYCLES: [usize; 21] = [
             14, 20, 28, 40, 56, 79, 112, 158, 224, 316, 447, 632, 894, 1264, 1788, 2528, 3575,
             5056, 7150, 10111, 14298,
@@ -1051,7 +1045,7 @@ mod tests {
             for cycles in CYCLES {
                 let frequency = test_frequency(cycles, FS);
                 let analytic = biquad.magnitude_db(omega(frequency, FS));
-                // skip points buried past the measurement floor
+                // 跳过沉在测量下限之下的点
                 if analytic < -60.0 {
                     continue;
                 }
@@ -1088,13 +1082,13 @@ mod tests {
     fn bypass_is_bit_exact() {
         let input = noise_planar(2, 1_000);
 
-        // before any config at all
+        // 完全还没推送过任何配置
         let mut proc = EqualizerProcessor::new(FS, 2);
         let mut output = input.clone();
         proc.process(&mut output, 1_000);
         assert_eq!(input, output);
 
-        // globally bypassed with an audible band configured
+        // 已配置可听频段，但整体处于旁路
         proc.set_config(&config(
             false,
             &[band(EqBandKind::Bell, 1_000.0, 24.0, 1.0)],
@@ -1116,7 +1110,7 @@ mod tests {
         assert!(proc.bands[0].moving);
         assert_ne!(proc.bands[0].coeffs, before);
 
-        // ~340 ms of audio settles the 30 ms smoother onto the target
+        // 约 340 ms 音频之后，30 ms 平滑器落到目标值
         let mut block = noise_planar(1, 16_384);
         proc.process(&mut block, 16_384);
         assert!(!proc.bands[0].moving);
@@ -1132,7 +1126,7 @@ mod tests {
         let mut proc = EqualizerProcessor::new(FS, 1);
         proc.set_config(&config(false, std::slice::from_ref(&lp)));
 
-        // enabling with an audible band crossfades for exactly one window
+        // 带可听频段启用时，交叉淡化恰好持续一个窗口
         proc.set_config(&config(true, std::slice::from_ref(&lp)));
         assert!(proc.crossfade.is_some());
         let mut block = noise_planar(1, SUB_BLOCK_FRAMES);
@@ -1140,7 +1134,7 @@ mod tests {
         assert!(proc.crossfade.is_none());
         assert_finite_and_bounded(&block, 1e3);
 
-        // bypassing fades out, then returns to bit-exact passthrough
+        // 旁路时先淡出，随后回到按位原样直通
         proc.set_config(&config(false, std::slice::from_ref(&lp)));
         assert!(proc.crossfade.is_some());
         let mut block = noise_planar(1, SUB_BLOCK_FRAMES);
@@ -1152,8 +1146,8 @@ mod tests {
         assert_eq!(input, output);
     }
 
-    /// 10 s of noise with a random parameter/config walk re-targeted every sub-block: drag
-    /// simulation plus add/remove crossfade churn.
+    /// 10 秒噪声，每个子块重设一次随机参数/配置游走：既模拟拖动，也制造增删带来的
+    /// 交叉淡化反复切换。
     #[test]
     fn random_walks_stay_finite_and_bounded() {
         const KINDS: [EqBandKind; 5] = [
@@ -1208,14 +1202,13 @@ mod tests {
         }
     }
 
-    /// Toggling bypass while playing must not click. Fades never overlap here, so any
-    /// discontinuity means the crossfade is broken. (Structural changes landing mid-fade stay
-    /// bounded instead - see the fuzz test.)
+    /// 播放中切换旁路不得发出爆音。这里的淡化从不重叠，所以任何不连续都意味着交叉
+    /// 淡化坏了。（落在淡化中途的结构性变更只是保持有界——见模糊测试。）
     #[test]
     fn bypass_toggles_during_playback_stay_click_free() {
         let bell = band(EqBandKind::Bell, 1_000.0, 24.0, 1.0);
         let mut proc = EqualizerProcessor::new(FS, 1);
-        // toggle every 2 windows so each fade completes before the next starts
+        // 每 2 个窗口切换一次，让每次淡化都在下一次开始前走完
         let input = sine(1_000.0, FS, 256 * 32);
         let mut previous = input[0];
         for i in 0..32 {
@@ -1268,21 +1261,21 @@ mod tests {
         proc.process(&mut block, 512);
         let before = proc.states.clone();
 
-        // parameter-only change keeps state
+        // 只改参数时保留状态
         let mut changed = bands;
         changed[0].gain_db = 9.0;
         proc.set_config(&config(true, &changed));
         assert_eq!(proc.states[0][0].s1, before[0][0].s1);
         assert_eq!(proc.states[1][0].s1, before[1][0].s1);
 
-        // a type change resets that band's state only
+        // 改类型只复位该频段的状态
         let mut changed = bands;
         changed[0].kind = EqBandKind::LowPass;
         proc.set_config(&config(true, &changed));
         assert_eq!(proc.states[0][0].s1, 0.0);
         assert_eq!(proc.states[1][0].s1, before[1][0].s1);
 
-        // disabling drops the band's frozen state
+        // 关闭频段会丢弃它冻结的状态
         let mut changed = bands;
         changed[1].enabled = false;
         proc.set_config(&config(true, &changed));
@@ -1333,8 +1326,8 @@ mod tests {
         assert_finite_and_bounded(&block, 1e3);
     }
 
-    /// A band above 0.45 × the old rate keeps its requested frequency and is re-anchored against
-    /// the new rate, not left at the old clamp.
+    /// 频率高于 0.45 × 旧采样率的频段保留所请求的频率，并按新采样率重新锚定，
+    /// 而不是留在旧的 clamp 上。
     #[test]
     fn sample_rate_change_restores_rate_clamped_frequency() {
         let mut proc = EqualizerProcessor::new(44_100.0, 1);
@@ -1342,7 +1335,7 @@ mod tests {
             true,
             &[band(EqBandKind::Bell, 25_000.0, 12.0, 1.0)],
         ));
-        // settle the ramp-in smoother onto the target
+        // 让爬升平滑器收敛到目标值
         let mut block = noise_planar(1, 16_384);
         proc.process(&mut block, 16_384);
 
@@ -1440,8 +1433,8 @@ mod tests {
         assert!((target + 12.0).abs() < 0.05, "{target}");
     }
 
-    /// The passes boost through resonance alone, `gain_db` never enters their coefficients, so a
-    /// max-band-gain heuristic would see 0 dB here.
+    /// 这两个滤波器只靠谐振提升，`gain_db` 从不进入它们的系数，所以"取最大频段增益"
+    /// 的启发式在这里会看到 0 dB。
     #[test]
     fn compensation_catches_resonance_without_band_gain() {
         let target = comp_target(&[band(EqBandKind::HighPass, 1_000.0, 0.0, 4.0)], FS);
@@ -1463,7 +1456,7 @@ mod tests {
         assert_eq!(proc.comp.target_db, 0.0);
     }
 
-    /// A compensated boost nets out to unity at its own center frequency.
+    /// 带补偿的提升在其自身中心频率处净增益为单位增益。
     #[test]
     fn compensation_restores_unity_at_boost_center() {
         const N: usize = 32_768;
@@ -1478,7 +1471,7 @@ mod tests {
         let mut block = vec![(0..2 * N).map(|i| (w * i as f64).sin()).collect::<Vec<_>>()];
         proc.process(&mut block, 2 * N);
 
-        // second half only, the ramp-in has settled by then
+        // 只看后半段，此时爬升已经收敛
         let (mut sin_acc, mut cos_acc) = (0.0, 0.0);
         for (i, &sample) in block[0].iter().enumerate().skip(N) {
             sin_acc += sample * (w * i as f64).sin();
@@ -1516,7 +1509,7 @@ mod tests {
     fn compensation_with_flat_curve_is_bit_exact() {
         let input = noise_planar(2, 1_000);
 
-        // zero-gain bell, compensation settled at exactly 0 dB
+        // 零增益 bell，补偿恰好落在 0 dB
         let mut proc = EqualizerProcessor::new(FS, 2);
         proc.set_config(&comp_config(
             true,
@@ -1526,7 +1519,7 @@ mod tests {
         proc.process(&mut output, 1_000);
         assert_eq!(input, output);
 
-        // bypassed with compensation on
+        // 补偿开启、但整体旁路
         let mut proc = EqualizerProcessor::new(FS, 2);
         proc.set_config(&comp_config(
             false,
@@ -1553,8 +1546,8 @@ mod tests {
         );
     }
 
-    /// The compensation cache must recompute when a band target moves and ride through pure
-    /// flag toggles unchanged: a stale peak shifts levels, a missed reuse re-runs the sweep.
+    /// 频段目标移动时补偿缓存必须重算，纯开关翻转时则必须原样沿用：峰值过期会挪动
+    /// 电平，漏掉复用则会重跑一遍扫频。
     #[test]
     fn compensation_cache_invalidates_on_band_change_and_survives_toggles() {
         let bell = band(EqBandKind::Bell, 1_000.0, 6.0, 1.0);
@@ -1563,17 +1556,17 @@ mod tests {
         let boost_target = proc.comp.target_db;
         assert!((boost_target + 6.0).abs() < 0.05, "{boost_target}");
 
-        // global bypass toggle: bands untouched, the cached peak is reused unchanged
+        // 整体旁路翻转：频段没动，缓存峰值原样复用
         proc.set_config(&comp_config(false, std::slice::from_ref(&bell)));
         assert_eq!(proc.comp.target_db, boost_target);
 
-        // compensation off zeroes the target, back on restores the cached peak
+        // 关闭补偿把目标清零，重新打开则恢复缓存峰值
         proc.set_config(&config(true, std::slice::from_ref(&bell)));
         assert_eq!(proc.comp.target_db, 0.0);
         proc.set_config(&comp_config(true, std::slice::from_ref(&bell)));
         assert_eq!(proc.comp.target_db, boost_target);
 
-        // a band parameter change invalidates the cache: the peak follows the new gain
+        // 频段参数变化让缓存失效：峰值跟随新的增益
         proc.set_config(&comp_config(
             true,
             &[band(EqBandKind::Bell, 1_000.0, 12.0, 1.0)],
@@ -1582,8 +1575,8 @@ mod tests {
         assert_ne!(proc.comp.target_db, boost_target);
     }
 
-    /// Fresh per-band response: biquad from the raw settings, f64 magnitudes over the grid
-    /// quantized to the cached f32 precision, plus the clamp-corrected center.
+    /// 现算的分频段响应：双二阶取自原始设置，网格上的 f64 幅值量化到缓存所用的 f32
+    /// 精度，再加上 clamp 校正后的中心频率。
     fn direct_response(
         band: &EqBandSettings,
         sample_rate: f64,
@@ -1597,8 +1590,8 @@ mod tests {
         (table, clamp_frequency(band.frequency, sample_rate), biquad)
     }
 
-    /// Composite peak from per-band direct responses: per-point sum over the enabled bands in slot
-    /// order, then each enabled band's center - the processor's accumulation order.
+    /// 由分频段直接响应合成峰值：按槽位顺序对启用频段逐点求和，再加上每个启用频段
+    /// 的中心点——也就是处理器的累加顺序。
     fn direct_peak(responses: &[(Vec<f32>, f64, Biquad)], enabled: &[usize]) -> f64 {
         let mut peak = 0.0f64;
         for i in 0..COMP_GRID_POINTS {
@@ -1619,9 +1612,8 @@ mod tests {
         peak
     }
 
-    /// The per-band cached tables and the composite they produce must equal a fresh per-band
-    /// computation point for point, including after a single band's parameters change: only that
-    /// band's entry is recomputed, and the result still matches a from-scratch sweep.
+    /// 分频段缓存表以及由它们合成的结果，必须与现算的分频段结果逐点相等，单个频段
+    /// 参数变化之后也一样：只重算该频段的条目，结果仍与从零扫一遍相符。
     #[test]
     fn compensation_tables_match_direct_per_band_computation() {
         let mut disabled = band(EqBandKind::LowPass, 2_000.0, 0.0, 0.707);
@@ -1643,18 +1635,18 @@ mod tests {
         let mut proc = EqualizerProcessor::new(FS, 1);
         proc.set_config(&comp_config(true, &bands));
 
-        // every enabled slot's cached table equals the fresh per-band computation, point for point
+        // 每个启用槽位的缓存表都等于现算的分频段结果，逐点相等
         for &i in &enabled {
             let cached = proc.comp_tables[i].as_ref().unwrap();
             assert_eq!(cached.table, direct[i].0, "band {i} grid table");
             assert_eq!(cached.center, direct[i].1, "band {i} center");
         }
 
-        // the composite peak equals the direct per-band sum over the grid plus the center samples
+        // 合成峰值等于网格上的分频段直接求和，再加上中心点采样
         let expected = -direct_peak(&direct, &enabled);
         assert_eq!(proc.comp.target_db, expected);
 
-        // changing one band's parameters recomputes that band's entry onto the new response
+        // 改动一个频段的参数会把该频段条目重算成新响应
         let mut changed = bands;
         changed[0].gain_db = 12.0;
         proc.set_config(&comp_config(true, &changed));
@@ -1675,10 +1667,9 @@ mod tests {
         assert_eq!(proc.comp.target_db, cold.comp.target_db);
     }
 
-    /// A band above the ceiling keeps its requested frequency in the settings, so the cached
-    /// response must key on the clamp-corrected frequency: a rate change re-anchors it instead of
-    /// serving the stale table for the unchanged raw target, while distinct over-ceiling requests
-    /// at one rate share one entry.
+    /// 超出天花板的频段在设置里保留其请求频率，因此缓存响应必须以 clamp 校正后的频率
+    /// 为键：采样率变化会重新锚定它，而不是因为原始目标未变就端出一张过期表；同一
+    /// 采样率下不同的超天花板请求则共享一个条目。
     #[test]
     fn compensation_cache_keys_on_clamped_frequency() {
         let mut proc = EqualizerProcessor::new(44_100.0, 1);
@@ -1692,7 +1683,7 @@ mod tests {
         let target_44k = proc.comp.target_db;
         assert!((target_44k + 12.0).abs() < 0.05, "{target_44k}");
 
-        // a different raw target saturating to the same clamp shares the cached response
+        // 另一个原始目标饱和到同一个 clamp 时，共享这份缓存响应
         proc.set_config(&comp_config(
             true,
             &[band(EqBandKind::Bell, 30_000.0, 12.0, 1.0)],
@@ -1700,7 +1691,7 @@ mod tests {
         assert_eq!(proc.comp_tables[0].as_ref().unwrap().center, clamped_44k);
         assert_eq!(proc.comp.target_db, target_44k);
 
-        // same raw target, new rate: the clamp moves and the entry must follow it
+        // 原始目标不变、采样率变了：clamp 随之移动，条目必须跟上
         proc.set_config(&comp_config(
             true,
             &[band(EqBandKind::Bell, 25_000.0, 12.0, 1.0)],
@@ -1724,14 +1715,14 @@ mod tests {
         );
     }
 
-    /// An identical re-push must be a state no-op: no crossfade, no retarget of a mid-ramp
-    /// smoother, no comp gain move.
+    /// 完全相同的重复推送必须是状态空操作：不启动交叉淡化、不改写正在爬升的平滑器
+    /// 目标、补偿增益也不动。
     #[test]
     fn identical_config_repush_is_a_state_no_op() {
         let cfg = comp_config(true, &[band(EqBandKind::Bell, 1_000.0, 12.0, 1.0)]);
         let mut proc = EqualizerProcessor::new(FS, 1);
         proc.set_config(&cfg);
-        // half-settle the ramp-in smoother so the state is visibly mid-ramp
+        // 让爬升平滑器只收敛一半，使状态明显处于爬升中途
         let mut block = noise_planar(1, SUB_BLOCK_FRAMES);
         proc.process(&mut block, SUB_BLOCK_FRAMES);
         assert!(proc.bands[0].moving);

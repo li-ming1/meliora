@@ -10,22 +10,20 @@ const DEVICE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
 const MAX_CYCLES: usize = 100_000;
 
-/// Length of the constant marker `signal_with_tail_marker` appends.
+/// `signal_with_tail_marker` 在末尾附加的常量标记长度。
 const TAIL_MARKER_LEN: usize = 1024;
 
-/// Frames examined at the end of a capture when hunting for a track's
-/// end-of-stream marker.
+/// 在采集结果尾部搜寻曲目结束标记时检查的帧数。
 const TAIL_WINDOW: usize = 4096;
 
-/// The tail markers are written at ±`i16::MAX / 2` (≈ ±0.5 after the device
-/// layer scales to [-1, 1]); a tail only counts as present beyond this.
+/// 尾部标记写在 ±`i16::MAX / 2`（设备层缩放到 [-1, 1] 后约 ±0.5）处；
+/// 只有越过此阈值才认定尾部存在。
 const MARKER_THRESHOLD: f64 = 0.4;
 
-/// Flat-line deviation across the seam that still reads as gapless, in
-/// scaled sample units.
+/// 接缝处仍可判为无缝切歌的平线偏移上限，按缩放后的采样值计。
 const SEAM_DROPOUT_TOLERANCE: f64 = 2_000.0;
 
-/// A signal ending in a constant marker so a truncated tail is detectable.
+/// 以常量标记收尾的信号，使尾部被截断时可被检出。
 fn signal_with_tail_marker(frames: usize, marker: i16) -> Vec<i16> {
     (0..frames * CHANNELS as usize)
         .map(|i| {
@@ -33,7 +31,7 @@ fn signal_with_tail_marker(frames: usize, marker: i16) -> Vec<i16> {
             if frame >= frames - TAIL_MARKER_LEN {
                 marker
             } else {
-                // low-amplitude ramp body
+                // 低幅度的斜坡主体
                 ((frame % 1000) as i16) - 500
             }
         })
@@ -48,8 +46,7 @@ fn constant_signal(frames: usize, value: i16) -> Vec<i16> {
     super::harness::constant_signal(frames, CHANNELS as usize, value)
 }
 
-/// Both tracks must land on the device in full, and track B's negative
-/// end-of-stream marker must be present in the captured tail.
+/// 两条曲目都要完整落到设备上，且采集尾部必须出现曲目 B 的负极结束标记。
 fn assert_both_tracks_reached_device(planes: &[Vec<f64>], expected_min: usize) {
     for (ch, plane) in planes.iter().enumerate() {
         assert!(
@@ -72,7 +69,7 @@ fn gapless_transition_under_backpressure_drops_no_frames() {
     let _guard = engine_lock();
     let rate = 44_100;
     configure_dummy_device(rate, "S16", CHANNELS);
-    // small ring to simulate backpressure, so the pipeline must not drop frames
+    // 用小环形缓冲模拟背压，此时管线一帧都不许丢
     configure_bounded_device(4096, 512);
 
     let dir = TestDir::new("hb-eof-drain-backpressure");
@@ -86,7 +83,7 @@ fn gapless_transition_under_backpressure_drops_no_frames() {
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
     run_to_eof(&mut engine, MAX_CYCLES);
-    // gapless transition into track B while the device ring is still full of A
+    // 设备环形缓冲里仍是 A 的数据时就无缝切入曲目 B
     engine
         .open(&path_b, true, None)
         .expect("failed to open the second track");
@@ -112,8 +109,7 @@ fn gapless_transition_under_backpressure_drops_no_frames() {
 #[test]
 fn gapless_transition_has_no_seam_dropout() {
     let _guard = engine_lock();
-    // resampling is active (44.1k source -> 48k device), so the resampler state is what has to
-    // carry across the track boundary
+    // 重采样在生效（44.1k 源 -> 48k 设备），所以必须跨曲目边界延续的是重采样器状态
     configure_dummy_device(DEVICE_RATE, "S16", CHANNELS);
 
     let dir = TestDir::new("hb-eof-drain-gapless-continuity");
@@ -123,7 +119,7 @@ fn gapless_transition_has_no_seam_dropout() {
     let value = 12_000_i16;
     let path_a = dir.join("a.wav");
     let path_b = dir.join("b.wav");
-    // both tracks are the same constant DC, so a seamless join is a flat line
+    // 两条曲目是同一个常量直流，接缝无缝即表现为一条平线
     write_wav_i16(
         &path_a,
         source_rate,
@@ -150,7 +146,7 @@ fn gapless_transition_has_no_seam_dropout() {
     let planes = capture.lock().unwrap();
     assert_eq!(planes.len(), CHANNELS as usize);
 
-    // make sure the output remains constant across the seam
+    // 确认输出在接缝前后保持恒定
     let expected = f64::from(value);
     let guard = 8_192;
 
@@ -163,7 +159,7 @@ fn gapless_transition_has_no_seam_dropout() {
 
         let interior_end = plane.len() - guard;
         for (frame, &sample) in plane.iter().enumerate().take(interior_end).skip(guard) {
-            // sample is f64 in [-1, 1] scaled from i16
+            // sample 是由 i16 缩放来的 [-1, 1] 区间 f64
             let scaled = sample * f64::from(i16::MAX);
             assert!(
                 (scaled - expected).abs() < SEAM_DROPOUT_TOLERANCE,
@@ -182,7 +178,7 @@ fn resampled_track_tail_reaches_device_at_end_of_playback() {
     let dir = TestDir::new("hb-eof-drain-tail");
     let path = dir.join("source.wav");
     let source_rate = 44_100;
-    // not a clean multiple of a chunk size, should leave data in the resampler
+    // 帧数不是块长的整数倍，理应让重采样器里残留数据
     let frames = 33_100;
     write_wav_i16(
         &path,
@@ -195,7 +191,7 @@ fn resampled_track_tail_reaches_device_at_end_of_playback() {
     let mut engine = engine_playing(&path);
     run_to_eof(&mut engine, MAX_CYCLES);
 
-    // should flush remaining resampler tail to the device
+    // 应把重采样器剩余尾部冲刷到设备
     engine.stop();
     dummy::uninstall_capture();
 
@@ -210,7 +206,7 @@ fn resampled_track_tail_reaches_device_at_end_of_playback() {
             plane.len()
         );
 
-        // find the end-of-track marker
+        // 找曲目结束标记
         let tail = &plane[plane.len().saturating_sub(TAIL_WINDOW)..];
         let peak = tail.iter().fold(0.0_f64, |acc, &s| acc.max(s));
         assert!(
@@ -248,7 +244,7 @@ fn gapless_same_rate_tracks_lose_no_frames() {
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
     run_to_eof(&mut engine, MAX_CYCLES);
-    // gapless transition: the resampler (and its tail) carries over
+    // 无缝切歌：重采样器（连同其尾部数据）延续下来
     engine
         .open(&path_b, true, None)
         .expect("failed to open the second track");
@@ -289,8 +285,8 @@ fn rate_change_between_tracks_flushes_previous_tail() {
     let capture = dummy::install_capture();
     let mut engine = engine_playing(&path_a);
     run_to_eof(&mut engine, MAX_CYCLES);
-    // preserve requested, but the rate change forces a rebuild — the old
-    // resampler's tail must be flushed, not dropped
+    // 已请求保留状态，但采样率变化必然重建 —— 旧重采样器的尾部
+    // 必须冲刷出去，不能丢弃
     engine
         .open(&path_b, true, None)
         .expect("failed to open the second track");

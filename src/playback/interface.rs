@@ -11,16 +11,14 @@ use super::{
     queue::QueueItemData,
 };
 
-/// The playback interface struct that will be used to communicate between the playback thread and
-/// the main thread. This implementation takes advantage of the GPUI Global trait to allow any
-/// function (so long as it is running on the main thread) to send commands to the playback thread.
+/// 播放接口结构体，负责播放线程与主线程之间的通信。实现借助 GPUI 的 Global
+/// trait，使任意函数（只要运行在主线程上）都能向播放线程发送命令。
 ///
-/// The command half lives here; the event half (reading `PlaybackEvent`s off
-/// the channel and mirroring them into the UI models, plus the frame-interval
-/// atlas-tile drains) lives in `ui::playback_bridge`, which takes the
-/// receiver via [`PlaybackInterface::take_events_rx`].
+/// 命令半边留在这里；事件半边（从通道读取 `PlaybackEvent` 并镜像进 UI models，
+/// 外加按帧间隔跑的图集瓦片回收排空）在 `ui::playback_bridge`，接收端经
+/// [`PlaybackInterface::take_events_rx`] 取走。
 ///
-/// For the functions provided by this interface, see the documentation for the playback thread.
+/// 本接口提供的函数，见播放线程的文档。
 pub struct PlaybackInterface {
     cmd_tx: UnboundedSender<PlaybackCommand>,
     events_rx: Option<UnboundedReceiver<PlaybackEvent>>,
@@ -42,15 +40,13 @@ impl PlaybackInterface {
         }
     }
 
-    /// Consumer half of the spectrum taps, taken once when the spectrum analyzer starts.
+    /// 频谱抽头的消费端，频谱分析器启动时取走一次。
     pub fn take_spectrum_tap(&mut self) -> Option<SpectrumTapConsumer> {
         self.spectrum_tap.take()
     }
 
-    /// Fire-and-forget send to the playback thread. An unbounded channel send
-    /// only fails once the receiver is gone (the playback thread already torn
-    /// down), which is harmless for these UI-originated commands — hence the
-    /// deliberately ignored result.
+    /// 即发即忘地送往播放线程。无界通道发送只在接收端已消失（播放线程早已
+    /// 拆除）时才失败，对这些由 UI 发起的命令无害——故刻意忽略返回值。
     fn send(&self, command: PlaybackCommand) {
         let _ = self.cmd_tx.send(command);
     }
@@ -159,18 +155,16 @@ impl PlaybackInterface {
         self.cmd_tx.clone()
     }
 
-    /// Hands the event-channel receiver to the UI-side broadcast loop
-    /// (`ui::playback_bridge::start_broadcast`), which mirrors playback
-    /// events into the UI models and drives the atlas-tile reclaim drains.
-    /// Returns `None` when the receiver was already taken: the loop must
-    /// run exactly once, so the bridge panics in that case (same contract
-    /// as the former `PlaybackInterface::start_broadcast`).
+    /// 把事件通道的接收端交给 UI 侧广播循环（`ui::playback_bridge::start_broadcast`）：
+    /// 它把播放事件镜像进 UI models，并驱动图集瓦片的回收排空。接收端已被
+    /// 取走时返回 `None`：该循环必须只跑一次，所以那种情况下 bridge 会 panic
+    /// （与原 `PlaybackInterface::start_broadcast` 同一契约）。
     pub fn take_events_rx(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>> {
         self.events_rx.take()
     }
 }
 
-/// Replace the current queue with the given items.
+/// 用给定条目替换当前队列。
 pub fn replace_queue(items: Vec<QueueItemData>, app: &mut App) {
     let playback_interface = app.global::<PlaybackInterface>();
     playback_interface.replace_queue(items);

@@ -1,4 +1,4 @@
-//! Lock-free mono taps bracketing the EQ stage, feeding the UI's spectrum analyzer.
+//! 环绕 EQ 级的无锁单声道抽头，为 UI 的频谱分析器供数。
 
 use std::sync::{
     Arc,
@@ -7,10 +7,10 @@ use std::sync::{
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
-/// Ring capacity per tap, a worst-case decode burst at 384 kHz plus headroom.
+/// 每个抽头的环形缓冲容量：384 kHz 下最坏情况的解码突发再加余量。
 const TAP_CAPACITY: usize = 65536;
 
-/// Producer half of the taps, lives in the audio engine.
+/// 抽头的生产端，留在音频引擎里。
 pub struct SpectrumTap {
     viewers: Arc<AtomicUsize>,
     pre: Producer<f32>,
@@ -18,11 +18,11 @@ pub struct SpectrumTap {
     post_peak: Arc<AtomicU32>,
 }
 
-/// Consumer half plus the viewer count, handed to the UI once at startup.
+/// 消费端外加观看者计数，启动时一次性交给 UI。
 pub struct SpectrumTapConsumer {
-    /// Open equalizer views, the producer feeds the rings only while this is non-zero.
+    /// 已打开的均衡器视图数；仅当它非零时生产端才向环形缓冲供数。
     pub viewers: Arc<AtomicUsize>,
-    /// Highest post-EQ per-channel peak since the UI last cleared it, as f32 bits.
+    /// 自 UI 上次清零以来最高的 EQ 后分声道峰值，以 f32 位形式存放。
     pub post_peak: Arc<AtomicU32>,
     pub pre: Consumer<f32>,
     pub post: Consumer<f32>,
@@ -49,21 +49,21 @@ pub fn spectrum_tap() -> (SpectrumTap, SpectrumTapConsumer) {
 }
 
 impl SpectrumTap {
-    /// Tap the planes before the EQ stage, returns how many of the newest frames landed.
+    /// 在 EQ 级之前抽头，返回最新帧中有多少落进了环形缓冲。
     pub fn push_pre(&mut self, planes: &[Vec<f64>], frames: usize) -> usize {
         push(&mut self.pre, &self.viewers, planes, frames)
     }
 
-    /// Tap the planes after the EQ stage, pass push_pre's return so the rings stay aligned.
-    /// Peak tracking is skipped while the EQ is bypassed, the clip indicator warns about
-    /// headroom the EQ consumes, a flat curve has none to warn about.
+    /// 在 EQ 级之后抽头；传入 push_pre 的返回值以保持两个环形缓冲对齐。
+    /// EQ 被旁路时跳过峰值跟踪：削波指示器提醒的是 EQ 吃掉的余量，
+    /// 平坦曲线没有余量可提醒。
     pub fn push_post(&mut self, planes: &[Vec<f64>], frames: usize, track_peak: bool) {
         let written = push(&mut self.post, &self.viewers, planes, frames);
         if written == 0 || !track_peak {
             return;
         }
-        // per-channel peak, a hard-panned clip must not hide inside the mono downmix
-        // scan the whole block, the ring may have dropped the clipped part
+        // 分声道取峰值：极端声像的削波不许藏进单声道下混里
+        // 扫描整个块：环形缓冲可能已把削波那一段丢掉
         let block = frames.min(common_frame_count(planes));
         let mut peak = 0.0f32;
         for plane in planes {
@@ -75,14 +75,14 @@ impl SpectrumTap {
     }
 }
 
-/// Number of frames present in every plane, i.e. the shortest plane's length.
+/// 每个平面都具备的帧数，也就是最短平面的长度。
 #[inline]
 fn common_frame_count(planes: &[Vec<f64>]) -> usize {
     planes.iter().map(Vec::len).min().unwrap_or(0)
 }
 
-// Downmix to mono and push the newest frames, dropping the oldest of a block that does not
-// fit - the analyzer is best-effort and must never block the audio thread
+// 下混成单声道并推入最新帧，装不下的块丢掉最旧的部分——分析器尽力而为，
+// 绝不能阻塞音频线程
 fn push(
     ring: &mut Producer<f32>,
     viewers: &AtomicUsize,
@@ -179,7 +179,7 @@ mod tests {
         let peak = f32::from_bits(consumer.post_peak.swap(0, Ordering::Relaxed));
         assert_eq!(peak, 1.5);
 
-        // clearing resets the accumulation
+        // 清零会重置累计值
         tap.push_post(&[vec![0.5; 64], vec![0.0; 64]], 64, true);
         let peak = f32::from_bits(consumer.post_peak.load(Ordering::Relaxed));
         assert_eq!(peak, 0.5);
@@ -190,7 +190,7 @@ mod tests {
         let (mut tap, consumer) = spectrum_tap();
         consumer.viewers.fetch_add(1, Ordering::Relaxed);
 
-        // leave fewer free slots than the next block holds
+        // 预留的空闲槽位少于下一块所装的帧数
         tap.push_post(&[vec![0.0; TAP_CAPACITY - 64]], TAP_CAPACITY - 64, false);
 
         let mut block = vec![0.0; 256];

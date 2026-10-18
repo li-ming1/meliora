@@ -11,17 +11,17 @@ use crate::{
     media::pipeline::ChannelConsumers,
 };
 
-// magic numbers for piecewise volume % to float scale function
+// 分段"音量百分比 → 浮点缩放"函数所用的魔数
 pub const LN_50: f64 = 3.91202300543_f64;
 pub const LINEAR_SCALING_COEFFICIENT: f64 = 0.295751527165_f64;
 
-/// [`DeviceController::set_volume`] snaps to full volume at or above this input level.
+/// 输入达到或超过该水平时，[`DeviceController::set_volume`] 直接锁到满音量。
 const FULL_VOLUME_MIN_INPUT: f64 = 0.99;
-/// [`DeviceController::set_volume`] uses the plain linear ramp instead of the exp curve below
-/// this input level.
+/// 输入低于该水平时，[`DeviceController::set_volume`] 改用普通线性斜坡，
+/// 不用指数曲线。
 const LINEAR_SEGMENT_MAX_INPUT: f64 = 0.1;
 
-/// Error type for device controller operations.
+/// 设备控制器操作的错误类型。
 #[derive(Debug)]
 pub enum DeviceError {
     NoProvider,
@@ -81,11 +81,10 @@ impl std::fmt::Display for DeviceError {
 
 impl std::error::Error for DeviceError {}
 
-/// Controller for audio device and stream management.
+/// 音频设备与流管理的控制器。
 ///
-/// This component handles all interactions with device providers, devices,
-/// and output streams, including device selection, stream creation,
-/// playback control, and volume management.
+/// 本组件负责与设备提供者、设备、输出流的所有交互：选设备、建流、播放控制、
+/// 音量管理。
 pub struct DeviceController {
     device_provider: Option<Box<dyn DeviceProvider>>,
     device: Option<Box<dyn Device>>,
@@ -107,7 +106,7 @@ impl DeviceController {
         }
     }
 
-    /// Initialize the device provider based on the environment or platform defaults.
+    /// 依据环境变量或平台默认值初始化设备提供者。
     pub fn initialize_provider(&mut self) {
         let requested_device_provider =
             std::env::var("DEVICE_PROVIDER").unwrap_or_else(|_| "cpal".to_string());
@@ -115,7 +114,7 @@ impl DeviceController {
         self.initialize_provider_by_name(&requested_device_provider);
     }
 
-    /// Initialize a specific device provider by name.
+    /// 按名称初始化指定的设备提供者。
     pub fn initialize_provider_by_name(&mut self, provider_name: &str) {
         let mut provider: Box<dyn DeviceProvider> = match provider_name {
             "cpal" => Box::new(CpalProvider::default()),
@@ -130,15 +129,14 @@ impl DeviceController {
         self.device_provider = Some(provider);
     }
 
-    /// Check if a stream is currently open.
+    /// 当前是否已有流处于打开状态。
     pub fn has_stream(&self) -> bool {
         self.stream.is_some()
     }
 
-    /// Create a new stream with the specified channel configuration.
+    /// 按指定的声道配置创建新流。
     ///
-    /// If `channels` is None, uses the device's default format.
-    /// Returns the format that was actually opened.
+    /// `channels` 为 None 时使用设备的默认格式；返回实际打开的格式。
     pub fn create_stream(
         &mut self,
         channels: Option<ChannelSpec>,
@@ -156,7 +154,7 @@ impl DeviceController {
             .get_default_format()
             .map_err(|_| DeviceError::NoDevice)?;
 
-        // the requested channel layout on top of the device's default format
+        // 在设备默认格式之上叠加所请求的声道布局
         let requested = channels.map(|ch| FormatInfo {
             channels: ch,
             ..default_format.clone()
@@ -178,7 +176,7 @@ impl DeviceController {
             (device.open_device(default_format.clone())?, default_format)
         };
 
-        // restore the last applied volume/ReplayGain on the fresh stream
+        // 在新流上恢复上一次生效的音量 / ReplayGain
         stream.set_volume(self.last_volume).ok();
         stream.set_replaygain(self.last_replaygain).ok();
 
@@ -197,7 +195,7 @@ impl DeviceController {
         Ok(opened_format)
     }
 
-    /// Close the current stream.
+    /// 关闭当前流。
     pub fn close_stream(&mut self) {
         if let Some(mut stream) = self.stream.take()
             && let Err(e) = stream.close_stream()
@@ -207,20 +205,19 @@ impl DeviceController {
         self.current_format = None;
     }
 
-    /// Start playback on the current stream.
+    /// 在当前流上开始播放。
     pub fn play(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
         Ok(stream.play()?)
     }
 
-    /// Pause playback on the current stream.
+    /// 暂停当前流的播放。
     pub fn pause(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
         Ok(stream.pause()?)
     }
 
-    /// Advance any deferred stream work (e.g. completing an async pause fade). No-op with no
-    /// stream.
+    /// 推进流的延后工作（例如完成异步暂停淡出）。没有流时是空操作。
     pub fn poll(&mut self) -> Result<(), DeviceError> {
         if let Some(stream) = &mut self.stream {
             stream.poll()?;
@@ -228,27 +225,27 @@ impl DeviceController {
         Ok(())
     }
 
-    /// Whether the stream has deferred work pending and `poll` must run soon (see
-    /// `OutputStream::has_deferred_work`). No stream means no deferred work.
+    /// 流是否有延后工作待办、因此必须尽快跑 `poll`（见
+    /// `OutputStream::has_deferred_work`）。没有流即没有延后工作。
     pub fn has_deferred_work(&self) -> bool {
         self.stream
             .as_ref()
             .is_some_and(|stream| stream.has_deferred_work())
     }
 
-    /// Reset the stream buffer.
+    /// 重置流缓冲。
     pub fn reset(&mut self) -> Result<(), DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
         Ok(stream.reset()?)
     }
 
-    /// Consume samples from ring buffer consumers and submit them to the device.
+    /// 从环形缓冲消费者取走样本并提交给设备。
     pub fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, DeviceError> {
         let stream = self.stream.as_mut().ok_or(DeviceError::NoStream)?;
         Ok(stream.consume_from(input)?)
     }
 
-    /// Set the playback volume (0.0 to 1.0, already scaled).
+    /// 设置播放音量（0.0 到 1.0，已完成缩放）。
     pub fn set_volume(&mut self, volume: f64) -> Result<(), DeviceError> {
         let volume_scaled = if volume >= FULL_VOLUME_MIN_INPUT {
             1.0
@@ -267,7 +264,7 @@ impl DeviceController {
         Ok(())
     }
 
-    /// Set the ReplayGain multiplier (linear).
+    /// 设置 ReplayGain 倍数（线性）。
     pub fn set_replaygain(&mut self, gain: f64) -> Result<(), DeviceError> {
         self.last_replaygain = gain;
 
@@ -278,7 +275,7 @@ impl DeviceController {
         Ok(())
     }
 
-    /// Get the current stream format, if a stream is open.
+    /// 取当前流格式，前提是有流处于打开状态。
     pub fn current_format(&self) -> Option<&FormatInfo> {
         self.current_format.as_ref()
     }

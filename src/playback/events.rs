@@ -15,125 +15,117 @@ pub enum RepeatState {
     RepeatingOne,
 }
 
-/// A command to the playback thread. This is used to control the playback thread from other
-/// threads. The playback thread receives these commands from an MPSC channel, and processes them
-/// in the order they are received: immediately whenever it wakes, and while stopped it parks on
-/// the channel until a command or a deferred device task arrives.
+/// 发往播放线程的命令，供其它线程控制播放线程。播放线程从 MPSC 通道收取这些
+/// 命令并按到达顺序处理：每次唤醒立即处理；停止时挂在这条通道上，直到有命令
+/// 或延后的设备任务到达。
 #[derive(Debug, PartialEq, Clone)]
 pub enum PlaybackCommand {
-    /// Requests that the playback thread begin playback.
+    /// 请求播放线程开始播放。
     Play,
-    /// Requests that the playback thread pause playback.
+    /// 请求播放线程暂停播放。
     Pause,
-    /// Requests that, if the playback thread is playing, it pauses, and vice versa.
-    /// Only constructed by the macOS remote-command and Linux MPRIS controllers.
+    /// 正在播放就暂停、否则就开始播放。仅 macOS 远程控制与 Linux MPRIS
+    /// 控制器会构造它。
     #[cfg(not(target_os = "windows"))]
     TogglePlayPause,
-    /// Requests that the playback thread queue the specified file for playback after the current
-    /// file. If there is no current file, the specified file will be played immediately.
+    /// 请求播放线程把指定文件排在当前文件之后播放。若无正在播放的文件，
+    /// 该文件立即播放。
     Queue(QueueItemData),
-    /// Requests that the playback thread queue a list of files for playback after the current
-    /// file. If there is no current file, the first file in the list will be played immediately.
+    /// 请求播放线程把一批文件依次排在当前文件之后播放。若无正在播放的文件，
+    /// 列表第一个文件立即播放。
     QueueList(Vec<QueueItemData>),
-    /// Requests that the playback thread insert the specified file at the given position in the
-    /// queue. If the position is greater than the queue length, it will be appended to the end.
+    /// 请求播放线程把指定文件插入队列的给定位置。位置超出队列长度时追加到末尾。
     InsertAt {
         item: QueueItemData,
         position: usize,
     },
-    /// Requests that the playback thread insert a list of files at the given position in the
-    /// queue. If the position is greater than the queue length, they will be appended to the end.
+    /// 请求播放线程把一批文件插入队列的给定位置。位置超出队列长度时依次追加到
+    /// 末尾。
     InsertListAt {
         items: Vec<QueueItemData>,
         position: usize,
     },
-    /// Requests that the playback thread skip to the next file in the queue.
+    /// 请求播放线程跳到队列中的下一个文件。
     Next,
-    /// Requests that the playback thread skip to the previous file in the queue.
-    /// If the current file is more than 5 seconds in, it will be restarted.
+    /// 请求播放线程跳到队列中的上一个文件。
+    /// 当前文件已播放超过 5 秒时改为从头重播。
     Previous,
-    /// Requests that the playback thread clear the queue.
+    /// 请求播放线程清空队列。
     ClearQueue,
-    /// Jumps to the specified position in the queue.
+    /// 跳到队列中的指定位置。
     Jump(usize),
-    /// Requests that the playback thread seek to the specified position in the current file.
+    /// 请求播放线程在当前文件中跳转定位到指定位置。
     Seek(f64),
-    /// Requests that the playback thread set the volume to the specified level.
+    /// 请求播放线程把音量设为指定值。
     SetVolume(f64),
-    /// Requests that the playback thread replace the current queue with the specified queue.
-    /// This will set the current playing track to the first item in the queue.
+    /// 请求播放线程用指定队列替换当前队列。这会把正在播放的曲目设为队列第一项。
     ReplaceQueue(Vec<QueueItemData>),
-    /// Requests that the playback thread stop playback.
-    /// Only constructed by the Windows SMTC and Linux MPRIS controllers.
+    /// 请求播放线程停止播放。仅 Windows SMTC 与 Linux MPRIS 控制器会构造它。
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     Stop,
-    /// Toggles whether playback should stop when the current track finishes.
+    /// 切换"当前曲目播完后是否停止播放"。
     StopAfterCurrent,
-    /// Requests that the playback thread shuffle (or stop shuffling) the next tracks in the
-    /// queue. Note that this currently results in duplication of the *entire* queue.
+    /// 请求播放线程打乱（或停止打乱）队列中后续的曲目。注意当前实现会复制
+    /// *整个* 队列。
     ToggleShuffle,
-    /// Requests that the playback thread set shuffle mode to the specified value.
+    /// 请求播放线程把随机播放模式设为指定值。
     SetShuffle(bool),
-    /// Requests that the repeating setting should be set to the specified RepeatState.
+    /// 请求把循环播放设置设为指定的 RepeatState。
     SetRepeat(RepeatState),
-    /// Requests that the item at the index provided be removed from the queue.
+    /// 请求把给定索引处的条目从队列移除。
     RemoveItem(usize),
-    /// Requests that the items at the indices provided be removed from the queue.
+    /// 请求把给定索引列表处的条目从队列移除。
     RemoveItems(Vec<usize>),
-    /// Requests that an item be moved from one position to another in the queue.
-    /// The first usize is the source index, the second is the destination index.
+    /// 请求把某个条目在队列中从一个位置移到另一个位置。
+    /// 第一个 usize 是源索引，第二个是目标索引。
     MoveItem { from: usize, to: usize },
-    /// Requests that multiple items be moved to a single destination in the queue.
-    /// The source indices are sorted in ascending order; the destination is the final
-    /// position after all items have been moved.
+    /// 请求把多个条目移到队列中的同一个目标位置。源索引按升序排列；目标是
+    /// 全部条目移动完成后的最终位置。
     MoveItems { indices: Vec<usize>, to: usize },
-    /// Requests that the last queue mutation be undone.
+    /// 请求撤销最近一次队列变更。
     Undo,
-    /// Informs the playback thread that the playback settings have changed.
+    /// 告知播放线程播放设置已变更。
     SettingsChanged(PlaybackSettings),
-    /// Requests that the playback thread apply new equalizer settings live. Unlike
-    /// `SettingsChanged`, nothing is persisted.
+    /// 请求播放线程实时应用新的均衡器设置。与 `SettingsChanged` 不同，这里
+    /// 不落盘持久化。
     SetEqualizer(EqualizerSettings),
-    /// Informs the playback thread whether the app window is currently focused.
+    /// 告知播放线程应用窗口当前是否获得焦点。
     SetPositionBroadcastActive(bool),
-    /// Requests that the playback thread replace the current queue with the specified queue.
-    /// Unlike ReplaceQueue, the playback thread will jump to the specified index in the new queue,
-    /// instead of the first item.
+    /// 请求播放线程用指定队列替换当前队列。与 ReplaceQueue 不同，播放线程会
+    /// 跳到新队列中指定的索引，而不是第一项。
     ReplaceQueueWithIndex(Vec<QueueItemData>, usize),
 }
 
-/// An event from the playback thread. This is used to communicate information from the playback
-/// thread to other threads. The playback thread sends these events to an MPSC channel, and the
-/// main thread processes them in the order they are received.
+/// 来自播放线程的事件：把播放线程的信息传达到其它线程。播放线程把这些事件发
+/// 到一个 MPSC 通道，主线程按到达顺序处理。
 #[derive(Debug, PartialEq, Clone)]
 pub enum PlaybackEvent {
-    /// Indicates that the playback state has changed.
+    /// 播放状态已变更。
     StateChanged(PlaybackState),
-    /// Indicates that the current file has changed providing the path to the new file.
+    /// 当前文件已变更，携带新文件的路径。
     SongChanged(PathBuf),
-    /// Indicates that the duration of the current file has changed. The u64 is the new duration,
-    /// in milliseconds.
+    /// 当前文件的时长已变更。u64 是新时长，单位毫秒。
     DurationChanged(u64),
-    /// Indicates that the queue has been updated.
+    /// 队列已更新。
     QueueUpdated,
-    /// Indicates that the position in the queue has changed. The usize is the new position.
+    /// 队列中的位置已变更。usize 是新位置。
     QueuePositionChanged(usize),
-    /// Indicates that the MediaProvider has provided new metadata to be consumed by the user
-    /// interface. The Metadata is boxed to avoid enum size bloat.
+    /// MediaProvider 给出了供 UI 消费的新元数据。Metadata 装箱以避免枚举体积
+    /// 膨胀。
     MetadataUpdate(Box<Metadata>),
-    /// Indicates that the MediaProvider has provided a new album art image to be consumed by the
-    /// user interface. `Arc` so the bytes are shared across models without a copy per handler.
+    /// MediaProvider 给出了供 UI 消费的新专辑封面图。用 `Arc` 让字节在多个
+    /// models 之间共享，而不是每个处理者各拷一份。
     AlbumArtUpdate(Option<Arc<[u8]>>),
-    /// Indicates that the position in the current file has changed, in milliseconds.
+    /// 当前文件的播放位置已变更，单位毫秒。
     PositionChanged(u64),
-    /// Notification for when shuffling is disabled or enabled by the thread.
+    /// 线程内随机播放被开启或关闭时的通知。
     ShuffleToggled(bool),
-    /// Indicates that repeat state has been changed.
+    /// 循环播放状态已变更。
     RepeatChanged(RepeatState),
-    /// Indicates that the volume has changed. The f64 is the new volume, from 0.0 to 1.0.
+    /// 音量已变更。f64 是新音量，取值 0.0 到 1.0。
     VolumeChanged(f64),
-    /// Indicates that stop-after-current has been set or cleared.
+    /// "播完当前曲目即停止"被置位或清除。
     StopAfterCurrentChanged(bool),
-    /// Indicates that the output stream's sample rate has changed.
+    /// 输出流的采样率已变更。
     SampleRateChanged(u32),
 }

@@ -6,10 +6,8 @@ use tracing::{error, warn};
 
 use crate::playback::{events::RepeatState, queue::QueueItemData};
 
-/// Queue snapshots are `Arc`-shared between the playback thread and this
-/// worker: a session send bumps refcounts instead of deep-copying a
-/// 100k-item queue, and the worker serializes its own ref without blocking
-/// further sends.
+/// 队列快照在播放线程与本 worker 之间以 `Arc` 共享：发送会话只加引用计数，
+/// 不会深拷贝 10 万条队列；worker 序列化自己那一份引用，不阻塞后续发送。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackSessionData {
     pub queue: Arc<Vec<QueueItemData>>,
@@ -43,13 +41,11 @@ impl PlaybackSessionStorageWorker {
 
     pub async fn run(mut self) {
         while self.rx.changed().await.is_ok() {
-            // Clone the session out of the watch borrow before serializing:
-            // with Arc'd queues this is two refcounts, and serialization no
-            // longer blocks the playback thread's next send.
+            // 序列化前先把会话从 watch 借用里克隆出来：队列是 Arc 的，克隆只加
+            // 两个引用计数，序列化不再阻塞播放线程的下一次发送。
             let session = self.rx.borrow_and_update().clone();
-            // Serialize off the async executor: a 100k-item queue takes tens of
-            // ms of pure CPU, enough to stall other tasks sharing the runtime.
-            // The loop awaits the result, so writes stay strictly ordered.
+            // 序列化放到异步执行器之外：10 万条队列要吃几十 ms 的纯 CPU，足以拖住
+            // 共享同一 runtime 的其它任务。循环会 await 结果，写入因此严格有序。
             let serialized_session = tokio::task::spawn_blocking(move || {
                 serde_json::to_vec(&session).map(|mut json| {
                     json.push(b'\n');
@@ -70,11 +66,10 @@ impl PlaybackSessionStorageWorker {
                 }
             };
 
-            // Write to a temporary file and rename it into place (same pattern
-            // as `library/scan/record.rs`): an in-place truncate+rewrite can
-            // leave a truncated playback_session.json behind when the process
-            // dies mid-write. `fs::rename` replaces an existing target on
-            // Windows, so the swap is atomic on every supported platform.
+            // 先写临时文件再改名就位（与 `library/scan/record.rs` 同一套路）：就地
+            // truncate + 重写，进程写到一半死掉时会留下被截断的
+            // playback_session.json。`fs::rename` 在 Windows 上可替换已存在的目标，
+            // 因此在所有受支持平台上这次交换都是原子的。
             let tmp_path = self.file_path.with_extension("json.tmp");
 
             let mut file = match fs::File::create(&tmp_path).await {
@@ -144,8 +139,8 @@ mod tests {
         TestDir::new("meliora-session-storage-test")
     }
 
-    /// `load` must yield exactly the neutral default on any unusable input:
-    /// no queue rows, no position, shuffle off, no repeat.
+    /// 任何不可用的输入，`load` 都必须给出完全中性的默认值：没有队列条目、没有
+    /// 位置、随机播放关闭、循环关闭。
     fn assert_default(session: &PlaybackSessionData) {
         let default = PlaybackSessionData::default();
         assert!(session.queue.is_empty());
@@ -197,11 +192,10 @@ mod tests {
         assert_eq!(session.repeat, expected.repeat);
     }
 
-    /// Startup-path evidence for GPUI_HARDCORE §31: `load` runs on the main
-    /// thread before the first frame, so this quantifies what a huge restored
-    /// queue actually costs (parse of queue + original_queue, 10k items each,
-    /// plus the extra `queue.clone()` app.rs pays for the watch channel).
-    /// Run with: cargo test --release --features kugou -- bench_large_session --ignored --nocapture
+    /// GPUI_HARDCORE §31 的启动路径实测依据：`load` 在首帧之前跑在主线程上，所以
+    /// 这里量化"恢复超大队列到底贵在哪"（解析 queue + original_queue，各 10k 条，
+    /// 另加 app.rs 为 watch 通道付出的那次 `queue.clone()`）。
+    /// 运行方式：cargo test --release --features kugou -- bench_large_session --ignored --nocapture
     #[test]
     #[ignore = "benchmark: run with --ignored"]
     fn bench_large_session_load() {
@@ -227,7 +221,7 @@ mod tests {
         let file_bytes = fs::metadata(&path).unwrap().len();
         println!("session file: {file_bytes} bytes (20k queue items)");
 
-        // warm-up + 10 measured rounds, report the median
+        // 预热 + 10 轮计时，报告中位数
         let mut rounds: Vec<std::time::Duration> = Vec::with_capacity(11);
         for _ in 0..11 {
             let start = std::time::Instant::now();
