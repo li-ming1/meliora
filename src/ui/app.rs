@@ -587,11 +587,30 @@ pub fn run() -> anyhow::Result<()> {
             "[startup] fonts registered"
         );
 
+        // 字体注册之后到首帧之间是一段**从未被拆开过的静默等待**：9 个会话里
+        // 4 次跨 279-300ms、5 次只 50-69ms（双峰，旧构建同样存在，日志在那段
+        // 一行不出）。下面按步打点，把"我们的这段"分成 存储恢复 / 会话恢复 /
+        // 建窗 / 托盘 四档，剩下的差额就归首绘（`[startup] first frame`）。
+        // 出数只需一次常规构建；本段任何耗时结论都必须来自这几档，不许猜。
+        // 打点记的是**距字体注册的累计毫秒**（相邻两行相减即得每档耗时）：这样
+        // 锚点只读不写，也不会有"最后一次赋值没人读"的告警。
+        let startup_anchor = std::time::Instant::now();
+        macro_rules! startup_step {
+            ($label:literal) => {
+                tracing::info!(
+                    since_fonts_ms = startup_anchor.elapsed().as_millis() as u64,
+                    concat!("[startup] ", $label)
+                );
+            };
+        }
+
         let storage = Storage::new(data_dir.join("app_data.json"));
         let storage_data = storage.load_or_default();
+        startup_step!("app data restored");
 
         let session_file = data_dir.join("playback_session.json");
         let playback_session = PlaybackSessionStorageWorker::load(&session_file);
+        startup_step!("session restored");
         let initial_position = playback_session
             .queue_position
             .filter(|position| *position < playback_session.queue.len());
@@ -798,6 +817,7 @@ pub fn run() -> anyhow::Result<()> {
         }
 
         let main_window = ensure_main_window(cx, toast_layer_entity).unwrap();
+        startup_step!("main window created");
         main_window
             .update(cx, |_, window, cx| {
                 init_pbc_task(cx, window);
@@ -810,6 +830,7 @@ pub fn run() -> anyhow::Result<()> {
         // Linux 无托盘模块，不建壳（关闭行为由 window_header 就地回退）。
         #[cfg(any(windows, target_os = "macos"))]
         crate::tray::init(cx);
+        startup_step!("tray and media keys wired");
 
         // 桌面歌词悬浮窗：设置开启即随主窗口恢复（句柄与歌词实体已在主
         // 窗口构建时注入 Global）。
@@ -822,6 +843,7 @@ pub fn run() -> anyhow::Result<()> {
         {
             crate::ui::desktop_lyrics::open(cx);
         }
+        startup_step!("desktop lyrics window opened");
     });
 
     Ok(())
