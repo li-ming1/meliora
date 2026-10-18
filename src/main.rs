@@ -44,6 +44,13 @@ mod updater;
 
 const VERSION_STRING: &str = env!("MELIORA_VERSION_STRING");
 
+/// Set on the replacement process spawned by [`spawn_replacement`]. The old
+/// instance is still tearing down (gpui allows quit handlers 200ms, plus
+/// destructors), so the child would otherwise see the single-instance mutex
+/// held, activate the dying window and exit — "restart to apply" closing the
+/// app. With this marker the child waits for the old instance to release it.
+const RESTART_HANDOFF_ENV: &str = "MELIORA_RESTART_HANDOFF";
+
 // count allocations during testing, needed for testing the allocation behavior of the playback
 // pipeline
 #[cfg(test)]
@@ -279,6 +286,7 @@ fn process_cpu_times_100ns() -> u64 {
 
 #[cfg(all(not(target_os = "windows"), not(test)))]
 fn process_cpu_times_100ns() -> u64 {
+    // Not implemented off Windows: the probe's `cpu_permille` stays 0 there.
     0
 }
 
@@ -410,6 +418,7 @@ pub(crate) fn spawn_replacement() -> bool {
         .and_then(|exe| {
             std::process::Command::new(exe)
                 .args(std::env::args_os().skip(1))
+                .env(RESTART_HANDOFF_ENV, "1")
                 .spawn()
                 .ok()
         })
@@ -664,6 +673,9 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     }
 
     // 登记过、本窗口内零帧的标签：显式 frames=0，按标签排序保持日志可读顺序。
+    // 只在"静默集合变化"时记：主窗常驻托盘/设置窗关闭后集合稳定，逐窗口重放
+    // 会变成每分钟数行、每天约 1MB 的纯噪声；而进入静默的那一次仍会留下证据。
+    static LAST_SILENT: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
     if let Some(labels) = labels.as_ref() {
         let mut silent: Vec<&'static str> = labels
             .iter()
@@ -671,8 +683,12 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
             .map(|(label, _)| *label)
             .collect();
         silent.sort_unstable();
-        for label in silent {
-            tracing::info!(win = %label, frames = 0, "[frame] periodic");
+        let mut last = LAST_SILENT.lock().unwrap_or_else(|e| e.into_inner());
+        if silent != *last {
+            for label in &silent {
+                tracing::info!(win = %label, frames = 0, "[frame] periodic");
+            }
+            *last = silent;
         }
     }
 
@@ -1071,45 +1087,62 @@ fn init_windows_restart() -> anyhow::Result<()> {
 #[cfg(target_os = "windows")]
 fn enforce_single_instance() -> anyhow::Result<()> {
     use windows::{
-        Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
+        Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError},
         Win32::System::Threading::CreateMutexW,
         Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW},
         core::w,
     };
 
-    // `HANDLE` has no Drop impl: the binding alone keeps the mutex held for
-    // the whole function — i.e. the process lifetime. The kernel reclaims it
-    // at exit, so a crash can never leave a stale lock behind.
-    let _mutex = unsafe { CreateMutexW(None, false, w!("Local\\MelioraSingleInstance"))? };
-    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        // 已有实例：优先唤回它的窗口（托盘宿主窗口接收激活消息；窗口隐藏
-        // 时这是用户唯一的"再点一次桌面图标"恢复路径）。唤回失败（目标实例
-        // 可能还在启动中、托盘壳未建）才退回提示对话框。
-        if !crate::tray::activate_existing_instance() {
-            // Runs before logging/i18n init, so the notice is a plain dialog with
-            // a fixed bilingual text rather than a tr! lookup.
-            unsafe {
-                MessageBoxW(
-                    None,
-                    w!(
-                        "Meliora is already running.\nMeliora \u{5df2}\u{7ecf}\u{5728}\u{8fd0}\u{884c}\u{3002}"
-                    ),
-                    w!("Meliora"),
-                    MB_OK | MB_ICONINFORMATION,
-                );
-            }
+    // A restart-to-apply child races the parent's teardown: gpui gives quit
+    // handlers up to 200ms and destructors add more, so the mutex can still be
+    // held when the child reaches this point. Wait a bounded while instead of
+    // activating the dying parent and exiting.
+    let handoff = std::env::var_os(RESTART_HANDOFF_ENV).is_some();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let mutex = unsafe { CreateMutexW(None, false, w!("Local\\MelioraSingleInstance"))? };
+        if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+            // `HANDLE` has no Drop impl: discarding the binding leaves the
+            // kernel handle open, so the mutex stays held for the process
+            // lifetime. The kernel reclaims it at exit (a crash cannot leave
+            // a stale lock behind).
+            let _ = mutex;
+            return Ok(());
         }
-        std::process::exit(0);
+        let _ = unsafe { CloseHandle(mutex) };
+        if !handoff || std::time::Instant::now() >= deadline {
+            // 已有实例：优先唤回它的窗口（托盘宿主窗口接收激活消息；窗口隐藏
+            // 时这是用户唯一的"再点一次桌面图标"恢复路径）。唤回失败（目标实例
+            // 可能还在启动中、托盘壳未建）才退回提示对话框。
+            if !crate::tray::activate_existing_instance() {
+                // Runs before logging/i18n init, so the notice is a plain dialog with
+                // a fixed bilingual text rather than a tr! lookup.
+                unsafe {
+                    MessageBoxW(
+                        None,
+                        w!(
+                            "Meliora is already running.\nMeliora \u{5df2}\u{7ecf}\u{5728}\u{8fd0}\u{884c}\u{3002}"
+                        ),
+                        w!("Meliora"),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+            }
+            std::process::exit(0);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     enforce_single_instance()?;
 
+    // RegisterApplicationRestart can fail on policies/older builds; that is a
+    // nice-to-have OS integration, never a reason to refuse to start. The
+    // logger is not up yet, so carry the error until it is.
     #[cfg(target_os = "windows")]
-    init_windows_restart()?;
+    let restart_registration_error = init_windows_restart().err();
 
     // disable the GPUI mini profiler immediately to avoid unnecessary allocations
     set_trace_enabled(false);
@@ -1131,6 +1164,11 @@ fn main() -> anyhow::Result<()> {
 
     for err in migration_failures {
         tracing::warn!(%err, "failed to migrate legacy data dir");
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(error) = restart_registration_error {
+        tracing::warn!(%error, "failed to register application restart; continuing");
     }
 
     tracing::info!("version {VERSION_STRING}");

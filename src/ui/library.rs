@@ -47,9 +47,15 @@ pub mod files_view;
 #[cfg(feature = "kugou")]
 mod kugou_playlists;
 #[cfg(feature = "kugou")]
-pub(crate) use kugou_playlists::invalidate_cached_playlists;
-#[cfg(feature = "kugou")]
 mod kugou_ranks;
+
+/// Account identity changed (login/logout or a fresh account): drop every
+/// session cache that is keyed to the signed-in user.
+#[cfg(feature = "kugou")]
+pub(crate) fn invalidate_online_account_caches() {
+    kugou_playlists::invalidate_cached_playlists();
+    kugou_ranks::invalidate_cached_recommend();
+}
 #[cfg(feature = "kugou")]
 mod kugou_view_common;
 pub mod missing_folder_dialog;

@@ -11,7 +11,7 @@ pub mod sign;
 #[cfg(all(test, feature = "kugou"))]
 mod live_tests;
 
-pub use client::{KugouClient, KugouError, LoginExtras};
+pub use client::{KugouClient, KugouError};
 
 use std::sync::{Arc, OnceLock};
 

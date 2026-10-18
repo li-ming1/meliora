@@ -129,7 +129,9 @@ pub async fn fetch_display_cover_bytes_capped(
             }
             Ok(None) => note_variant_miss(&rung),
             Err(error) => {
-                note_variant_miss(&rung);
+                // Transient (timeout/DNS/TLS) failures must not blacklist the
+                // rung for the whole session: only "server says no pixels"
+                // (Ok(None)) is a real miss.
                 warn!(target: "backdrop", %error, url = %rung, "display cover variant fetch failed");
                 last_error = Some(error);
             }

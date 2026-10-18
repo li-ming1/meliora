@@ -125,7 +125,12 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     // 拖住换歌。快照与序列化都不在这里做（见下）。
     {
         let mut guard = stream_map().write().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|e| e.url != url && e.mix_song_id != track.mix_song_id);
+        // 0 means the endpoint omitted the id. Treating it as a real key would
+        // evict every other id-less track, so unknown-id entries only de-dup
+        // by URL and are never matched by id (see online_track_matching_path).
+        guard.retain(|e| {
+            e.url != url && (track.mix_song_id == 0 || e.mix_song_id != track.mix_song_id)
+        });
         guard.insert(0, StreamMapEntry::from((url, track)));
         guard.truncate(STREAM_MAP_CAP);
     }
@@ -159,7 +164,8 @@ pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     guard
         .iter()
         .find(|entry| {
-            entry.url == path_str.as_ref() || path_mix.is_some_and(|id| id == entry.mix_song_id)
+            entry.url == path_str.as_ref()
+                || path_mix.is_some_and(|id| id != 0 && id == entry.mix_song_id)
         })
         .map(StreamMapEntry::to_track)
 }
@@ -206,27 +212,45 @@ pub async fn fetch_stream_url(
     quality: &str,
 ) -> Option<String> {
     let free_part = !client.has_active_vip();
-    if let Ok(resp) = client
+    match client
         .song_url(hash, mix_song_id, album_id, quality, free_part)
         .await
-        && let Some(url) = extract_song_url(&resp.body)
     {
-        return Some(url);
+        Ok(resp) => {
+            if let Some(url) = extract_song_url(&resp.body) {
+                return Some(url);
+            }
+            tracing::debug!(hash, quality, "kugou: response carried no playable URL");
+        }
+        Err(error) => {
+            tracing::debug!(%error, hash, quality, "kugou: URL request failed");
+        }
     }
-    tracing::debug!(hash, quality, "kugou: no playable URL at requested quality");
     if quality != FALLBACK_QUALITY {
-        let Ok(resp) = client
+        let resp = match client
             .song_url(hash, mix_song_id, album_id, FALLBACK_QUALITY, free_part)
             .await
-        else {
-            tracing::warn!(
-                hash,
-                quality = FALLBACK_QUALITY,
-                "kugou: fallback URL request failed"
-            );
-            return None;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    hash,
+                    quality = FALLBACK_QUALITY,
+                    "kugou: fallback URL request failed"
+                );
+                return None;
+            }
         };
-        return extract_song_url(&resp.body);
+        let url = extract_song_url(&resp.body);
+        if url.is_some() {
+            tracing::debug!(
+                hash,
+                requested = quality,
+                "kugou: fell back to the standard quality"
+            );
+        }
+        return url;
     }
     None
 }

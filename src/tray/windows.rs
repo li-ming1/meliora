@@ -11,7 +11,7 @@
 //! 收到时重新 NIM_ADD。
 
 use std::sync::{
-    OnceLock,
+    Mutex, OnceLock,
     atomic::{AtomicUsize, Ordering},
     mpsc::Sender,
 };
@@ -53,6 +53,11 @@ static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
 /// explorer 重启后发来的 `TaskbarCreated` 注册消息 id。
 static TASKBAR_CREATED_MSG: OnceLock<u32> = OnceLock::new();
 
+/// 最近一次 tooltip 文本。explorer 重启时 UI 侧不会再有 notify，重注册若
+/// 只会回落应用名，tooltip 就会一直错到下一次切歌；这里让 NIM_ADD 带上
+/// 重启前的内容。
+static LAST_TOOLTIP: Mutex<Option<String>> = Mutex::new(None);
+
 const TRAY_CLASS: windows::core::PCWSTR = w!("MelioraTrayHost");
 const TRAY_ID: u32 = 1;
 /// 托盘回调消息（`NOTIFYICONDATAW::uCallbackMessage`）与二次启动激活消息。
@@ -76,8 +81,9 @@ pub(super) struct WindowsTray {
 
 impl WindowsTray {
     pub(super) fn set_tooltip(&self, text: &str) {
-        // 失败无所谓：壳瞬态（explorer 重启中）下 tooltip 保持旧值，
-        // 下一次 TaskbarCreated 重注册后会跟上。
+        // 先记下文本再走 IPC：失败无所谓（explorer 重启中），
+        // TaskbarCreated 重注册会用这个缓存补上。
+        *LAST_TOOLTIP.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
         unsafe {
             notify(
                 self.hwnd,
@@ -282,7 +288,7 @@ unsafe fn notify(
             "tray shell: Shell_NotifyIconW failed"
         );
     } else {
-        tracing::info!(
+        tracing::debug!(
             target: "tray",
             tip_len = tip.map(str::len),
             "tray shell: Shell_NotifyIconW ok"
@@ -328,11 +334,16 @@ unsafe extern "system" fn tray_wndproc(
             // explorer 崩溃重启：重新注册图标。
             m if Some(m) == TASKBAR_CREATED_MSG.get().copied() => {
                 let icon = load_icon();
+                let tip = LAST_TOOLTIP
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .unwrap_or_else(super::app_name_label);
                 notify(
                     hwnd,
                     NIM_ADD,
                     NIF_ICON | NIF_MESSAGE | NIF_TIP,
-                    Some(&super::app_name_label()),
+                    Some(tip.as_str()),
                     icon,
                 );
                 LRESULT(0)

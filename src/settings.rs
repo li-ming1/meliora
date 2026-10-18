@@ -94,11 +94,23 @@ pub enum SettingsHealth {
 }
 
 /// Read the settings file at `path`, applying the legacy `theme.json`
-/// migration to the result. A missing file counts as `Loaded` defaults; a
-/// parse or deserialize failure yields `Corrupt` carrying the path.
+/// migration to the result. Only `NotFound` counts as `Loaded` defaults: any
+/// other read error (sharing violation from an indexer/AV, permissions) is
+/// reported as `Corrupt` so the watcher preserves the in-memory settings
+/// instead of replacing them with defaults and saving those back.
 pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return SettingsLoadOutcome::Loaded(fallback_settings(path, false));
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return SettingsLoadOutcome::Loaded(fallback_settings(path, false));
+        }
+        Err(error) => {
+            warn!(%error, path = %path.display(), "Failed to read settings file");
+            return SettingsLoadOutcome::Corrupt {
+                settings: fallback_settings(path, false),
+                path: path.to_path_buf(),
+            };
+        }
     };
 
     let value: serde_json::Value = match serde_json::from_str(&contents) {
@@ -446,6 +458,20 @@ mod tests {
         settings.interface.theme = Some("custom.json".to_string());
         apply_legacy_theme_selection(&settings_path, &mut settings, false);
         assert_eq!(settings.interface.theme.as_deref(), Some("custom.json"));
+    }
+
+    /// A non-`NotFound` read failure must not masquerade as "no file": the
+    /// watcher would then replace live settings (EQ, ReplayGain, scan paths)
+    /// with defaults and save them back.
+    #[test]
+    fn create_settings_unreadable_file_reports_corrupt() {
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            create_settings(&path),
+            SettingsLoadOutcome::Corrupt { path: reported, .. } if reported == path
+        ));
     }
 
     #[test]

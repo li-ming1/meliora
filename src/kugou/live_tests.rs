@@ -8,7 +8,6 @@
 
 use super::KugouClient;
 use super::api::QrStatus;
-use super::client::LoginExtras;
 use crate::paths;
 
 fn client() -> KugouClient {
@@ -219,7 +218,7 @@ fn live_qr_login() {
                 Ok(QrStatus::Waiting) => {}
                 Ok(QrStatus::Scanned) => println!("已扫码，请在手机上点确认"),
                 Ok(QrStatus::Success { token, userid }) => {
-                    client.store_login(token, userid, LoginExtras::default());
+                    client.store_login(token, userid);
                     println!("=== 登录成功，userid={userid} ===");
 
                     match client.user_detail().await {

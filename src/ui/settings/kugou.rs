@@ -108,7 +108,7 @@ impl KugouSettings {
         kugou::shared_client().logout();
         // The playlist overview is session-cached: drop it so a later login
         // (possibly a different account) is never served the old data.
-        crate::ui::library::invalidate_cached_playlists();
+        crate::ui::library::invalidate_online_account_caches();
         self.logged_in = false;
         self.nickname = None;
         self.profile_failed = false;
@@ -159,11 +159,7 @@ impl QrLoginHost for KugouSettings {
                 QrStatus::Scanned => QrPoll::Scanned,
                 QrStatus::Expired => QrPoll::Expired,
                 QrStatus::Success { token, userid } => {
-                    kugou::shared_client().store_login(
-                        token,
-                        userid,
-                        kugou::LoginExtras::default(),
-                    );
+                    kugou::shared_client().store_login(token, userid);
                     QrPoll::Success
                 }
             })
@@ -192,7 +188,7 @@ impl QrLoginHost for KugouSettings {
         // Same reason as logout(): a cached overview must never cross an
         // account identity change, including a silent re-login after the
         // session expired server-side.
-        crate::ui::library::invalidate_cached_playlists();
+        crate::ui::library::invalidate_online_account_caches();
         self.nickname = None;
         self.profile_failed = false;
         crate::ui::kugou::claim_daily_vip_async();

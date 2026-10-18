@@ -1,28 +1,29 @@
 //! 流注册表（stream map）落盘的共享设施：去重基线（只写真变了的字节）+
-//! 写闸门（串行化 truncate+write，防 JSON 撕裂）。与具体 provider 无关，
+//! 写闸门（串行化临时文件写与 rename，防 JSON 撕裂）。与具体 provider 无关，
 //! 无条件编译，不依赖任何 provider feature。
 //!
-//! 关键约束：每个 provider 必须各持一份 `static` 实例。
-//! 基线是各注册表自己的状态——共享同一实例会让一侧的去重跳写与失败回滚
-//! 覆盖/误伤另一侧的写入。
+//! 关键约束：每个在线源必须各持一份 `static` 实例。
+//! 基线是各注册表自己的状态——共享同一实例会让去重跳写与失败回滚
+//! 覆盖/误伤另一份注册表的写入。
 
 use std::{path::PathBuf, sync::Mutex};
 
-/// 注册表条目上限：LRU 语义，最新条目在头部。两侧 provider 共用同一口径。
+/// 注册表条目上限：LRU 语义，最新条目在头部。各在线源共用同一口径。
 pub(crate) const STREAM_MAP_CAP: usize = 200;
 
-/// 一个 provider 的流注册表持久化设施。见模块文档：每个 provider 各持一份。
+/// 一个在线源的流注册表持久化设施。见模块文档：每个在线源各持一份。
 pub struct StreamMapPersistence {
     /// Bytes of the stream-map JSON last handed to the persistence task. Kept
     /// so re-recording an unchanged registry (e.g. replaying the same song)
     /// skips the disk write entirely instead of re-writing identical bytes.
     last: Mutex<Option<Vec<u8>>>,
-    /// Serializes stream-map persistence. Two overlapping truncate+write on
-    /// the same file can interleave into torn, unparseable JSON — which would
-    /// drop the whole registry on next launch — so every write takes this
-    /// gate first. tokio's mutex is fair by poll order (not spawn order), so
-    /// writers land roughly in hand-off order; a stale final write only costs
-    /// a URL refresh on next launch (the registry is a cache).
+    /// Serializes stream-map persistence. The write itself goes to a temp
+    /// file renamed over the target, so a process death mid-write can never
+    /// leave truncated JSON behind; the gate keeps two writers from
+    /// interleaving their temp files. tokio's mutex is fair by poll order
+    /// (not spawn order), so writers land roughly in hand-off order; a stale
+    /// final write only costs a URL refresh on next launch (the registry is a
+    /// cache).
     gate: tokio::sync::Mutex<()>,
 }
 
@@ -60,7 +61,13 @@ impl StreamMapPersistence {
     ) {
         crate::RUNTIME.spawn(async move {
             let _gate = self.gate.lock().await;
-            if let Err(err) = tokio::fs::write(&path, &json).await {
+            let tmp = path.with_extension("json.tmp");
+            let result = match tokio::fs::write(&tmp, &json).await {
+                Ok(()) => tokio::fs::rename(&tmp, &path).await,
+                Err(err) => Err(err),
+            };
+            if let Err(err) = result {
+                let _ = tokio::fs::remove_file(&tmp).await;
                 // Roll the baseline back so an identical later snapshot
                 // retries instead of silently leaving the old file in place.
                 // Only when the baseline is still our own bytes: a newer
@@ -74,8 +81,8 @@ impl StreamMapPersistence {
         });
     }
 
-    /// 两侧 `remember_online_track` 的持久化尾部：序列化 → 去重 → 门控写，
-    /// 单点维护。`provider` 仅进失败日志文案。序列化失败按两侧既有语义
+    /// 各在线源 `remember_online_track` 的持久化尾部：序列化 → 去重 → 门控写，
+    /// 单点维护。`provider` 仅进失败日志文案。序列化失败按既有语义
     /// 静默跳过（缓存是优化，显示不依赖它）。
     pub fn persist_snapshot(
         &'static self,

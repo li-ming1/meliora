@@ -100,10 +100,6 @@ pub struct KugouSession {
     pub dfid: String,
     pub token: Option<String>,
     pub userid: Option<i64>,
-    /// opaque ticket returned by the token refresh endpoint
-    pub t1: Option<String>,
-    pub vip_type: Option<i64>,
-    pub vip_token: Option<String>,
     /// Optional VIP detail fetched from `/v1/get_union_vip` for display.
     pub vip_detail: Option<Value>,
     /// UTC date (yyyy-MM-dd) the daily VIP claim was last attempted. Used
@@ -129,9 +125,6 @@ impl KugouSession {
             dfid,
             token: None,
             userid: None,
-            t1: None,
-            vip_type: None,
-            vip_token: None,
             vip_detail: None,
             last_claim_day: None,
             nickname: None,
@@ -273,9 +266,15 @@ impl KugouClient {
             // a hung gateway request must not pin `pending_fetches` forever:
             // without a timeout a track that fails to resolve can never be
             // retried (the merge guard drops every later click)
-            http: session_io::gateway_http_builder()
-                .build()
-                .expect("kugou http client"),
+            http: match session_io::gateway_http_builder().build() {
+                Ok(client) => client,
+                Err(error) => {
+                    // Match the updater/importer fallback: a TLS backend that
+                    // refuses the tuned builder should not abort startup.
+                    tracing::warn!(%error, "kugou: falling back to the default HTTP client");
+                    Client::new()
+                }
+            },
             session: Mutex::new(session),
             session_path,
         }
@@ -305,13 +304,10 @@ impl KugouClient {
         session_io::credential_present(self.session_guard().token.as_deref())
     }
 
-    pub fn store_login(&self, token: String, userid: i64, extra: LoginExtras) {
+    pub fn store_login(&self, token: String, userid: i64) {
         let mut session = self.session_guard();
         session.token = Some(token);
         session.userid = Some(userid);
-        session.t1 = extra.t1.or(session.t1.take());
-        session.vip_type = extra.vip_type;
-        session.vip_token = extra.vip_token;
         // VIP detail belongs to the previous login: drop it so the settings
         // page shows the fresh account's status (fetch_profile refreshes it).
         session.vip_detail = None;
@@ -333,9 +329,6 @@ impl KugouClient {
         let mut session = self.session_guard();
         session.token = None;
         session.userid = None;
-        session.t1 = None;
-        session.vip_type = None;
-        session.vip_token = None;
         session.nickname = None;
         session.avatar_url = None;
         session.vip_detail = None;
@@ -555,13 +548,6 @@ impl KugouClient {
         }
         Ok(KugouResponse { body })
     }
-}
-
-#[derive(Default)]
-pub struct LoginExtras {
-    pub t1: Option<String>,
-    pub vip_type: Option<i64>,
-    pub vip_token: Option<String>,
 }
 
 /// Some web endpoints answer with a JSONP wrapper (`callback123({...})`);

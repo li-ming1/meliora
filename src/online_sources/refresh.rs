@@ -11,7 +11,7 @@
 
 use super::{OnlineIdentity, OnlineSourceProvider};
 
-/// Display metadata shape shared by both providers:
+/// Display metadata shape shared by the online sources:
 /// `(name, artist, duration, cover_url)`.
 pub type OnlineDisplay = (Option<String>, Option<String>, Option<i64>, Option<String>);
 

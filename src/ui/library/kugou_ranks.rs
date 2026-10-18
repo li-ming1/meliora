@@ -27,8 +27,8 @@ use crate::{
         },
         library::{EscapeBack, kugou_view_common, view_header::view_header},
         online_common::{
-            CachedRoot, LoadMoreSpec, cached_root, online_list_container, page_scroll_container,
-            store_root,
+            CachedRoot, LoadMoreSpec, cached_root, clear_root, online_list_container,
+            page_scroll_container, store_root,
         },
         theme::Theme,
     },
@@ -42,6 +42,12 @@ const TRACKS_PER_PAGE: i64 = 30;
 type CachedTabRoot<T> = LazyLock<Mutex<Option<CachedRoot<Vec<T>>>>>;
 static CACHED_RANKS: CachedTabRoot<KugouRank> = LazyLock::new(|| Mutex::new(None));
 static CACHED_RECOMMEND: CachedTabRoot<Arc<KugouTrackInfo>> = LazyLock::new(|| Mutex::new(None));
+
+/// Daily recommendations are fetched for the signed-in userid; drop them
+/// whenever the account identity changes, like the playlist overview.
+pub(crate) fn invalidate_cached_recommend() {
+    clear_root(&CACHED_RECOMMEND);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tab {

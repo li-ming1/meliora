@@ -176,15 +176,12 @@ mod bench {
         session
     }
 
-    /// 酷狗现实上界：小负载 + ~1.5KB 的 `t1` 刷新票据 + 携带 40 条
-    /// `busi_vip` 产品数组的 `vip_detail`（设置页与 `has_active_vip` 实际
-    /// 消费的结构，前两条置 is_vip=1 走活跃分支）。
+    /// 酷狗现实上界：小负载 + 携带 40 条 `busi_vip` 产品数组的
+    /// `vip_detail`（设置页与 `has_active_vip` 实际消费的结构，前两条
+    /// 置 is_vip=1 走活跃分支）。
     #[cfg(feature = "kugou")]
     fn kugou_large() -> KugouSession {
         let mut session = kugou_small();
-        session.t1 = Some("1".repeat(1536));
-        session.vip_type = Some(1);
-        session.vip_token = Some("v".repeat(64));
         session.last_claim_day = Some("2026-10-05".to_string());
         let products: Vec<Value> = (0..40)
             .map(|i| {
