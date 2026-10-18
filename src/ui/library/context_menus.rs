@@ -44,10 +44,9 @@ pub struct PlaylistMenuInfo {
 
 type TrackPlayFromHereHandler = Rc<dyn Fn(&mut App, &Track) + 'static>;
 
-/// Library tracks -> queue items. No per-track `Path::exists` probe: the
-/// callers hand over whole tables/playlists (10k stats per click on a large
-/// library) and the playback engine skips files that went missing. Row
-/// availability is already visible to the user from the row data.
+/// 库曲目 → 队列项。不做逐曲目的 `Path::exists` 探测：调用方交来的是整张表/整个歌单
+/// （大库下一次点击就是 10k 次 stat），而播放引擎会跳过已丢失的文件。
+/// 行的可用性用户从行数据里本来就看得见。
 pub fn queue_items_from_tracks(tracks: &[Track]) -> Vec<QueueItemData> {
     tracks
         .iter()
@@ -88,8 +87,7 @@ pub(crate) struct AddToPlaylistState {
     pub add_to: Entity<AddToPlaylist>,
 }
 
-/// Creates or retrieves the `AddToPlaylist` keyed state for the given track,
-/// returning the show toggle and the playlist entity.
+/// 为给定曲目创建或取回 `AddToPlaylist` 的 keyed state，返回 show 开关与歌单实体。
 pub(crate) fn add_to_playlist_state(
     key: &'static str,
     track_id: i64,
@@ -105,11 +103,9 @@ pub(crate) fn add_to_playlist_state(
     (state.show.clone(), state.add_to.clone())
 }
 
-/// Creates or retrieves the `AddToPlaylist` keyed state for the given album,
-/// returning the show toggle and the playlist entity. The album's track ids
-/// load in the background the first time the submenu opens instead of here —
-/// this initializer runs per newly-seen album row while the grid scrolls,
-/// where a `block_on` query per album stalled the scroll.
+/// 为给定专辑创建或取回 `AddToPlaylist` 的 keyed state，返回 show 开关与歌单实体。
+/// 专辑的曲目 ids 是在子菜单首次打开时于后台加载，而不是在这里——这个初始化器在网格
+/// 滚动时每个新见到的专辑行都要跑一次，在那里每专辑一次 `block_on` 查询会把滚动拖住。
 pub(crate) fn add_album_to_playlist_state(
     key: &'static str,
     album_id: i64,
@@ -150,10 +146,8 @@ pub(crate) fn add_album_to_playlist_state(
     (state.show.clone(), state.add_to.clone())
 }
 
-/// Builds the track context menu for a table row. The row enters the builder
-/// as an `Arc` refcount; the full `Track` (PathBuf included) is deep-cloned
-/// only when the menu actually opens, not once per row per frame while the
-/// table renders.
+/// 为表格行构造曲目右键菜单。行以 `Arc` 引用计数进入构建器；完整的 `Track`
+/// （含 PathBuf）只在菜单真正打开时才深拷贝，而不是表格渲染时每行每帧一次。
 pub(crate) fn track_menu_for_table_shared(
     track: Arc<Track>,
     is_available: bool,
@@ -164,14 +158,13 @@ pub(crate) fn track_menu_for_table_shared(
     let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track.id, window, cx);
 
     let context = context.clone();
-    // the builder reruns on every render while the menu is open, so its body
-    // may only read caches/snapshots — no blocking queries or system calls
-    // (TrackContextMenu::render's artist lookup is the one remaining query,
-    // left for a dedicated caching change)
+    // 菜单打开期间构建器每次渲染都重跑，所以它的函数体只能读缓存/快照——
+    // 不得有阻塞查询或系统调用（TrackContextMenu::render 的艺术家查找是唯一剩下的
+    // 查询，留给专门的缓存改动）
     let builder: ContextMenuBuilder = Rc::new(move |_, cx| {
-        // cached liked set: a DB query here would block the UI thread (see is_song_liked docs)
+        // 用缓存的已点赞集合：这里跑 DB 查询会阻塞 UI 线程（见 is_song_liked 的文档）
         let is_liked = is_song_liked(cx, track.id);
-        // deep clone deferred to menu-open; per-frame cost is the Arc refcount
+        // 深拷贝推迟到菜单打开时；每帧成本只是 Arc 引用计数
         let track = Rc::new((*track).clone());
         TrackContextMenu::new(
             track,
@@ -187,8 +180,8 @@ pub(crate) fn track_menu_for_table_shared(
     (builder, Some(add_to.into_any_element()))
 }
 
-/// Builds the album context menu for a table row; see
-/// [`track_menu_for_table_shared`] for the refcount-vs-deep-clone tradeoff.
+/// 为表格行构造专辑右键菜单；引用计数 vs 深拷贝的取舍见
+/// [`track_menu_for_table_shared`]。
 pub(crate) fn album_menu_for_table_shared(
     album: Arc<Album>,
     context: &AlbumContextMenuContext,
@@ -232,8 +225,7 @@ pub fn play_from_track_listing(
     let queue_items = if let Some(tracks) = queue_context {
         queue_items_from_tracks(&tracks)
     } else if let Some(playlist_id) = playlist_id {
-        // no per-row exists() probe: playlists can be thousands of rows and
-        // the playback engine skips missing files
+        // 不做逐行的 exists() 探测：歌单可能有数千行，而播放引擎会跳过丢失的文件
         cx.list_playlist_tracks(playlist_id)
             .unwrap_or_default()
             .iter()
@@ -259,8 +251,8 @@ pub fn play_from_track_listing(
     play_from_track(cx, track, queue_items);
 }
 
-/// Star icon and localized label for a track's like/unlike toggle, keyed on
-/// its current liked state (the liked row id, or `None` when unliked).
+/// 曲目点赞/取消赞切换用的星标图标与本地化标签，按当前已点赞状态取键
+/// （已点赞行的 id，未点赞时为 `None`）。
 pub(crate) fn like_toggle_icon_and_label(is_liked: Option<i64>) -> (&'static str, I18nString) {
     if is_liked.is_some() {
         (STAR_FILLED, tr!("UNLIKE"))
@@ -309,7 +301,7 @@ pub fn remove_from_playlist(
     .detach();
 }
 
-/// Length of the playback queue right now; tolerates a poisoned queue lock.
+/// 此刻播放队列的长度；容忍队列锁毒化。
 fn current_queue_length(cx: &App) -> usize {
     cx.global::<Models>()
         .queue
@@ -319,8 +311,7 @@ fn current_queue_length(cx: &App) -> usize {
         .len()
 }
 
-/// Queue slot the "play next" insertion point occupies: one past the
-/// currently playing item.
+/// 「下一首播放」插入点占据的队列槽位：当前播放项之后一位。
 fn next_queue_position(cx: &App) -> usize {
     cx.global::<Models>().queue.read(cx).position + 1
 }
@@ -342,7 +333,7 @@ pub(crate) fn queue_item(cx: &mut App, data: QueueItemData) {
     cx.global::<PlaybackInterface>().queue(data);
 }
 
-/// Append `items` to the queue and jump to the first of them.
+/// 把 `items` 追加到队列并跳转到其中第一条。
 pub(crate) fn play_items_now(cx: &mut App, items: impl IntoIterator<Item = QueueItemData>) {
     // 空选集早退必须保留：否则 queue_list 空转后仍会 jump 到队尾
     let items: Vec<_> = items.into_iter().collect();
@@ -355,7 +346,7 @@ pub(crate) fn play_items_now(cx: &mut App, items: impl IntoIterator<Item = Queue
     playback_interface.jump(queue_length);
 }
 
-/// Insert `items` directly after the current queue position, in order.
+/// 把 `items` 按顺序插到当前队列位置之后。
 pub(crate) fn play_items_next(cx: &mut App, items: impl IntoIterator<Item = QueueItemData>) {
     let queue_position = next_queue_position(cx);
     cx.global::<PlaybackInterface>()

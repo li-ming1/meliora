@@ -97,8 +97,7 @@ pub(super) async fn load_dir_entries(path: PathBuf, pool: sqlx::SqlitePool) -> V
 }
 
 async fn lookup_tracks(locs: &[String], pool: &sqlx::SqlitePool) -> FxHashMap<String, TrackRef> {
-    // Locations are bound in chunks so one statement never exceeds the
-    // backend's host-parameter limit.
+    // 位置参数分块绑定，使任何单条语句都不超过后端的宿主参数上限。
     const SQL_BIND_CHUNK: usize = 900;
 
     let mut track_map: FxHashMap<String, TrackRef> = FxHashMap::default();

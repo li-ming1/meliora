@@ -44,8 +44,8 @@ impl AlbumView {
 
 impl Render for AlbumView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // Render the shell as a child view entity: calling shell.render inside
-        // an update closure would return an element borrowing window/cx.
+        // 把 shell 作为子视图实体渲染：在 update 闭包里调用 shell.render 会返回一个
+        // 借用 window/cx 的元素。
         self.shell.clone().into_any_element()
     }
 }

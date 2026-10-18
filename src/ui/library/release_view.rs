@@ -47,14 +47,12 @@ use crate::{
 
 const RELEASE_SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(250);
 
-/// Fixed size of the album cover box and its image in the release header.
+/// 发行页头部里专辑封面盒子及其图像的固定尺寸。
 const COVER_SIZE_PX: f32 = 160.0;
 
-/// Placeholder shown until the background load lands: only the id is known,
-/// so the header renders empty and the track list stays blank. Everything
-/// else fills in when `reload` completes. An album deleted under us (e.g. a
-/// cleanup scan) never gets real data either — it keeps rendering this empty
-/// release page instead of panicking the UI thread.
+/// 后台加载落地前显示的占位：此刻只知道 id，所以头部渲染为空、曲目列表保持空白，
+/// 其余字段等 `reload` 完成时填入。在我们脚下被删除的专辑（例如清理扫描）同样永远
+/// 拿不到真实数据——它持续渲染这张空发行页，而不是把 UI 线程 panic 掉。
 fn placeholder_album(album_id: i64) -> Album {
     Album {
         id: album_id,
@@ -73,15 +71,15 @@ fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
     if tracks.is_empty() {
         return false;
     }
-    // The cached set lands asynchronously and this view observes it, so a
-    // like/unlike no longer costs a `block_on` query on the UI thread.
+    // 缓存集合是异步落地的、本视图观察它，所以点赞/取消赞不再花一次 UI 线程上的
+    // `block_on` 查询。
     let Some(liked) = cx.global::<Models>().liked_ids.read(cx).clone() else {
         return false;
     };
     tracks.iter().all(|track| liked.contains(&track.id))
 }
 
-/// Prebuilt track rows for the release view.
+/// 发行视图预先构造好的曲目行。
 struct TrackListing {
     tracks: Arc<Vec<Entity<TrackItem>>>,
     original_tracks: Arc<Vec<Track>>,
@@ -96,7 +94,7 @@ impl TrackListing {
         show_go_to_album: bool,
         show_go_to_artist: bool,
     ) -> Self {
-        // find biggest track number and provide it to track item for measurement
+        // 找出最大的曲目号并交给 track item 用于测量宽度
         let max_track_num_str = tracks
             .iter()
             .filter_map(|t| t.track_number)
@@ -140,8 +138,8 @@ impl TrackListing {
         &self.original_tracks
     }
 
-    /// Returns track rows as a lazy iterator: the caller's `.children(...)`
-    /// consumes it directly, avoiding a per-frame `Vec<AnyElement>` allocation.
+    /// 把曲目行作为惰性迭代器返回：调用方的 `.children(...)` 直接消费它，
+    /// 避免每帧一次 `Vec<AnyElement>` 分配。
     fn track_elements(&self) -> impl Iterator<Item = AnyElement> + '_ {
         self.tracks
             .iter()
@@ -154,11 +152,11 @@ pub struct ReleaseView {
     album: Arc<Album>,
     artist_name: Option<DBString>,
     tracks: Arc<Vec<Track>>,
-    /// Per-track availability, computed once at load instead of N stats per frame.
+    /// 逐曲目的可用性，加载时算一次，而不是每帧 N 次 stat。
     tracks_available: Arc<Vec<bool>>,
     track_listing: TrackListing,
-    /// Bumped on every load so a slow load that finishes after a newer one
-    /// cannot overwrite it (same guard as `Table::reload_rows`).
+    /// 每次加载都自增，使晚于新一轮完成的慢加载不能覆盖它（与 `Table::reload_rows`
+    /// 同一个守卫）。
     load_generation: u64,
     collection_summary: SharedString,
     release_info: Option<SharedString>,
@@ -168,21 +166,20 @@ pub struct ReleaseView {
     scroll_follow: SmoothScrollFollow,
     scroll_frame_scheduled: bool,
     all_liked: bool,
-    /// Cached at load: `tracks_available` is immutable once built, so the
-    /// header no longer rescans it every render.
+    /// 加载时算好并缓存：`tracks_available` 一旦建就不可变，于是头部不再每次渲染
+    /// 都重扫一遍。
     has_available_tracks: bool,
-    /// Whether the currently playing track belongs to this album. Derived
-    /// from `PlaybackInfo::current_track`; recomputed on track change (the
-    /// observer below) and at load — never per frame.
+    /// 当前播放的曲目是否属于本专辑。由 `PlaybackInfo::current_track` 推导；
+    /// 在曲目变更时（下面的观察者）与加载时重算——绝不每帧重算。
     current_track_in_album: bool,
     menu_open: bool,
     track_ids: std::rc::Rc<[i64]>,
-    /// Parsed once; the footer renders it every frame otherwise.
+    /// 只解析一次；否则页脚每帧都要重新解析它。
     release_date_utc: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Header render flags for [`ReleaseView::render_header`], bundled so the
-/// method doesn't take a pile of positional bools.
+/// [`ReleaseView::render_header`] 的头部渲染标志位，打包成一个结构体，
+/// 好让该方法不必收一堆位置参数 bool。
 struct HeaderState {
     has_available_tracks: bool,
     current_track_in_album: bool,
@@ -193,8 +190,8 @@ struct HeaderState {
 impl ReleaseView {
     pub(super) fn new(cx: &mut App, album_id: i64, target_track_id: Option<i64>) -> Entity<Self> {
         cx.new(|cx| {
-            // The set, not the playlist tracker: the tracker fires before the
-            // async reload has landed, so a cache read there would be stale.
+            // 观察的是集合本身而不是歌单追踪器：追踪器在异步 reload 落地前就触发，
+            // 那时读缓存会是陈旧的。
             let liked_ids = cx.global::<Models>().liked_ids.clone();
             cx.observe(&liked_ids, |this: &mut Self, _, cx| {
                 let new_all_liked = compute_all_liked(cx, &this.tracks);
@@ -205,11 +202,9 @@ impl ReleaseView {
             })
             .detach();
 
-            // The header highlights the current track when it belongs to this
-            // album. Recomputed here on track change (with a `!=` guard) so
-            // render never scans the track list — and so the highlight no
-            // longer goes stale on track change, which nothing else in this
-            // view observed.
+            // 头部在当前曲目属于本专辑时高亮它。就在这里于曲目变更时重算（带 `!=` 守卫），
+            // 于是 render 从不扫描曲目列表——也让高亮不再因曲目变更而失真，
+            // 而这一件事本视图其他任何地方都没观察过。
             let current_track = cx.global::<PlaybackInfo>().current_track.clone();
             cx.observe(&current_track, |this: &mut Self, _, cx| {
                 let in_album = this.compute_current_track_in_album(cx);
@@ -256,19 +251,16 @@ impl ReleaseView {
                 release_date_utc: None,
                 load_generation: 0,
             };
-            // Opening the view loads the album header and its track list on
-            // the runtime (see reload); until it lands the view shows the
-            // placeholder header and an empty list.
+            // 打开视图时在运行时上加载专辑头部与其曲目列表（见 reload）；
+            // 落地前视图显示占位头部与空列表。
             this.reload(cx, target_track_id);
             this
         })
     }
 
-    /// Loads the album header and its track list on the background runtime:
-    /// opening the view used to block the UI thread on the album row plus the
-    /// full track-list query (and the liked-album membership check). The view
-    /// keeps showing the placeholder until the load lands; a generation guard
-    /// drops results superseded by a newer load.
+    /// 在后台运行时上加载专辑头部及其曲目列表：打开视图过去会在「专辑行 + 完整曲目列表
+    /// 查询（外加已点赞专辑归属检查）」上阻塞 UI 线程。加载落地前视图继续显示占位；
+    /// 世代守卫丢弃被更新一轮加载取代的结果。
     fn reload(&mut self, cx: &mut Context<Self>, target_track_id: Option<i64>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
@@ -282,10 +274,9 @@ impl ReleaseView {
                     let tracks = db::list_tracks_in_album(&pool, album_id)
                         .await
                         .unwrap_or_else(|_| Arc::new(Vec::new()));
-                    // Same liked-album check as `compute_all_liked` (including
-                    // its empty-list early return), but off the UI thread: the
-                    // ids only exist once the track list is loaded, so the
-                    // check rides along here.
+                    // 与 `compute_all_liked` 完全相同的已点赞专辑检查（含它的空列表
+                    // 提前返回），但挪出 UI 线程：这些 id 只在曲目列表加载完后才存在，
+                    // 所以检查就搭在这里跑。
                     let all_liked = if tracks.is_empty() {
                         false
                     } else {
@@ -300,7 +291,7 @@ impl ReleaseView {
                 .unwrap_or((None, Arc::new(Vec::new()), false));
 
             let _ = this.update(cx, |this, cx| {
-                // A newer load superseded this one: this result is stale.
+                // 更新的加载已取代这一轮：本结果陈旧。
                 if this.load_generation != generation {
                     return;
                 }
@@ -311,9 +302,8 @@ impl ReleaseView {
         .detach();
     }
 
-    /// Fills the placeholder with one background load's results. Derived state
-    /// (rows, availability, scroll target) is rebuilt here on the UI thread —
-    /// only the queries themselves run off-thread.
+    /// 用一次后台加载的结果填掉占位。派生状态（行、可用性、滚动目标）在这里的
+    /// UI 线程上重建——只有查询本身在线程外跑。
     fn apply_loaded(
         &mut self,
         album: Option<Arc<Album>>,
@@ -322,9 +312,8 @@ impl ReleaseView {
         target_track_id: Option<i64>,
         cx: &mut Context<Self>,
     ) {
-        // A failed album fetch keeps the placeholder: an album deleted under
-        // us (e.g. a cleanup scan) renders an empty release page instead of
-        // panicking the UI thread.
+        // 专辑取回失败时保留占位：在我们脚下被删除的专辑（例如清理扫描）会渲染一张
+        // 空发行页，而不是把 UI 线程 panic 掉。
         if let Some(album) = album {
             self.artist_name = album.artist_display_override.clone();
             self.release_info = match (&album.label, &album.catalog_number) {
@@ -337,7 +326,7 @@ impl ReleaseView {
                 (None, Some(catalog_number)) => Some(catalog_number.0.to_string()),
                 (None, None) => None,
             }
-            // an empty result (e.g. a blank label) renders no footer line
+            // 结果为空（例如厂牌为空白）时不渲染页脚行
             .filter(|info| !info.is_empty())
             .map(SharedString::from);
             self.release_date_utc = album.release_date.as_ref().and_then(|date| {
@@ -378,17 +367,16 @@ impl ReleaseView {
                 .position(|track| track.id == track_id && is_track_available_snapshot(cx, track))
         });
         self.all_liked = all_liked;
-        // Derived header state, computed once per load instead of per frame.
+        // 派生的头部状态，每次加载算一次而不是每帧算。
         self.has_available_tracks = self.tracks_available.iter().any(|&a| a);
         self.current_track_in_album = self.compute_current_track_in_album(cx);
 
         cx.notify();
     }
 
-    /// Whether the currently playing track is one of this album's available
-    /// tracks: borrow the current path (no clone) and pair each track with
-    /// its precomputed availability — no per-frame stats, and the scan runs
-    /// only on track change / load, not on every render.
+    /// 当前播放曲目是否属于本专辑可用曲目之一：借用当前路径（不 clone），
+    /// 并把每首曲目与它预先算好的可用性配对——没有每帧 stat，而且这次扫描只在
+    /// 曲目变更 / 加载时跑，不在每次渲染跑。
     fn compute_current_track_in_album(&self, cx: &App) -> bool {
         cx.global::<PlaybackInfo>()
             .current_track
@@ -445,9 +433,8 @@ impl ReleaseView {
                             .max_h(px(COVER_SIZE_PX))
                             .overflow_hidden()
                             .flex()
-                            // TODO: Ideally this should be ObjectFit::Cover, but this
-                            // breaks rounding
-                            // FIXME: This is a GPUI bug
+                            // TODO: 理想情况这里应是 ObjectFit::Cover，但那样会破坏圆角
+                            // FIXME: 这是一个 GPUI bug
                             .object_fit(ObjectFit::Fill)
                             .rounded(px(theme.radius_lg)),
                     ),
@@ -649,9 +636,8 @@ impl ReleaseView {
                         }
                     }
                     DATE_PRECISION_YEAR => {
-                        // release_date missing or shorter than a 4-char year
-                        // prefix (malformed metadata): skip the release-year
-                        // line instead of panicking the render pass
+                        // release_date 缺失或短于 4 字符年份前缀（元数据畸形）时：
+                        // 跳过发行年这一行，而不是让渲染过程 panic
                         let year = self
                             .album
                             .release_date
@@ -764,9 +750,8 @@ impl Render for ReleaseView {
         let two_column = settings.interface.two_column_library;
         if self.pending_scroll.is_some() || self.scroll_follow.is_active() {
             if reduced_motion {
-                // Reduced motion still needs one pass to resolve pending layout and snap any
-                // in-flight scroll animation to its final position; we just skip scheduling
-                // another animated frame afterward.
+                // 减弱动效下仍需一趟来敲定待定布局，并把在途的滚动动画吸附到终值；
+                // 只是之后不再安排新的动画帧。
                 self.advance_scroll_animation(window, cx, reduced_motion);
             } else {
                 self.schedule_scroll_frame(window, cx);

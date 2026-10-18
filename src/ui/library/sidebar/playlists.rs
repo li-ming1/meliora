@@ -44,18 +44,17 @@ use crate::{
 };
 
 const PLAYLIST_SIDEBAR_LIST_ID: &str = "sidebar-playlists";
-const PLAYLIST_SIDEBAR_ITEM_HEIGHT: f32 = 55.0; // effective height is + 1 px because of gap
+const PLAYLIST_SIDEBAR_ITEM_HEIGHT: f32 = 55.0; // 因为有 gap，实际高度还要 + 1 px
 
 pub struct PlaylistList {
     playlists: Arc<Vec<Playlist>>,
-    /// Bumped on every reload so a load that finishes after a newer one
-    /// cannot overwrite it (same guard as `Table::reload_rows`).
+    /// 每次重载都自增，使晚于新一轮完成的慢加载不能覆盖它（与 `Table::reload_rows`
+    /// 同一个守卫）。
     playlists_generation: u64,
-    /// A reload is currently running on the runtime.
+    /// 有一次重载正在运行时上执行。
     reload_in_flight: bool,
-    /// Set when a PlaylistEvent arrives while a reload is in flight: the
-    /// in-flight snapshot may predate that event's DB write, so exactly one
-    /// follow-up reload is queued instead of one query per event.
+    /// 重载已在途期间收到 PlaylistEvent 时置位：在途的快照可能早于该事件的 DB 写入，
+    /// 所以只排一次后续重载，而不是每个事件一次查询。
     reload_queued: bool,
     nav_model: Entity<NavigationHistory>,
     scroll_handle: ScrollHandle,
@@ -123,18 +122,16 @@ impl PlaylistList {
                 pending_delete_playlist: None,
                 drag_drop_manager,
             };
-            // Initial list load happens off the UI thread (see reload_playlists).
+            // 首次列表加载发生在 UI 线程之外（见 reload_playlists）。
             this.reload_playlists(cx);
             this
         })
     }
 
-    /// Reloads the playlist list (one GROUP BY/SUM aggregate) on the
-    /// background runtime: construction and every like/unlike used to run it
-    /// synchronously on the UI thread. The sidebar keeps showing its previous
-    /// entries until the fresh list lands. A generation guard drops results
-    /// superseded by a newer reload; events arriving mid-flight coalesce into
-    /// one follow-up load instead of one query per event.
+    /// 在后台运行时上重载歌单列表（一条 GROUP BY/SUM 聚合）：构造时以及每一次
+    /// 点赞/取消赞过去都在 UI 线程上同步跑它。新列表落地前侧栏继续显示原有条目。
+    /// 世代守卫丢弃被更新一次重载取代的结果；途中到达的事件合并为一次后续加载，
+    /// 而不是每个事件一次查询。
     fn reload_playlists(&mut self, cx: &mut Context<Self>) {
         if self.reload_in_flight {
             self.reload_queued = true;
@@ -152,7 +149,7 @@ impl PlaylistList {
 
             let _ = this.update(cx, |this, cx| {
                 this.reload_in_flight = false;
-                // A newer reload superseded this one: drop the stale result.
+                // 更新的一次重载已取代这一轮：丢弃陈旧结果。
                 if this.playlists_generation != generation {
                     return;
                 }
@@ -254,10 +251,8 @@ fn delete_playlist_and_refresh(pl_id: i64, cx: &mut App) {
     })
 }
 
-/// Adds a batch of tracks to a playlist on the background runtime (rows
-/// already present are skipped) and broadcasts PlaylistUpdated on success;
-/// fire-and-forget. `what` only feeds the log wording ("tracks" / "album
-/// tracks").
+/// 在后台运行时上把一批曲目加入歌单（已在的行走跳过）并在成功时广播 PlaylistUpdated；
+/// 发后即忘。`what` 只用于日志措辞（"tracks" / "album tracks"）。
 fn spawn_add_missing_tracks(
     pl_id: i64,
     track_ids: Vec<i64>,
@@ -326,9 +321,8 @@ impl Render for PlaylistList {
                             reduced_motion,
                         );
 
-                        // repaint only when something visible moved: drag move
-                        // fires at mouse report rate and an unconditional notify
-                        // re-rendered the whole sidebar on every move
+                        // 只在可见内容真的移动时重绘：drag move 以鼠标上报频率触发，
+                        // 无条件 notify 会让每次移动都把整个侧栏重渲染一遍
                         let changed = {
                             let manager = this.drag_drop_manager.read(cx);
                             scrolled
@@ -519,15 +513,14 @@ impl Render for PlaylistList {
                 ));
 
             let rename_open = self.rename_popover_playlist == Some(pl_id);
-            // snapshot for the lazy menu builder: it runs when the menu opens
-            // and captures this render's state (a re-render after the confirm
-            // click rebuilds the builder with the fresh value)
+            // 供惰性菜单构建器使用的快照：它在菜单打开时运行，并捕获本次渲染的状态
+            // （确认点击之后的重新渲染会用新值重建构建器）
             let pending_delete_open = self.pending_delete_playlist == Some(pl_id);
             let weak_self = weak_entity.clone();
             let weak_self2 = weak_entity.clone();
             let weak_context = weak_entity.clone();
-            // the lazy builder is a move closure rebuilt every render, so it
-            // gets its own refcount instead of consuming `weak_entity`
+            // 惰性构建器是每次渲染都重建的 move 闭包，所以让它自己拿一份引用计数，
+            // 而不是把 `weak_entity` 消费掉
             let menu_weak_entity = weak_entity.clone();
             let name = playlist.name.0.clone();
 
@@ -545,9 +538,8 @@ impl Render for PlaylistList {
                                     });
                                 }
                             })
-                            // menu tree is built only when the menu opens, off
-                            // the per-item repaint path (same lazy pattern as
-                            // grid_item's context menu)
+                            // 菜单树只在菜单打开时构建，绕开逐项重绘路径
+                            // （与 grid_item 的右键菜单同一套惰性模式）
                             .menu_on_open(move |_, cx| {
                                 let theme = cx.global::<Theme>();
                                 div().bg(theme.elevated_background).child(
@@ -609,10 +601,9 @@ impl Render for PlaylistList {
                                                 Some(PENCIL),
                                                 tr!("RENAME_PLAYLIST", "Rename playlist"),
                                                 {
-                                                    // the lazy builder is an Fn (the menu can
-                                                    // open repeatedly): give the handler its own
-                                                    // refcounts instead of moving the builder's
-                                                    // captures out
+                                                    // 惰性构建器是 Fn（菜单可反复打开）：
+                                                    // 给处理器自己一份引用计数，
+                                                    // 而不是把构建器的捕获移动出来
                                                     let weak_self = weak_self.clone();
                                                     let name = name.clone();
                                                     move |_, window, cx| {

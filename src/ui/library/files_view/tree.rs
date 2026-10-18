@@ -78,7 +78,7 @@ impl FileTree {
         Arc::new(rows)
     }
 
-    /// Finds a node path (the indexes of successive children) for a given filesystem path.
+    /// 为给定的文件系统路径找出节点路径（各级子项的下标序列）。
     fn locate(&self, target: &Path) -> Option<NodePath> {
         'roots: for (root_idx, root) in self.roots.iter().enumerate() {
             if !target.starts_with(root.entry.path.as_ref()) {
@@ -210,11 +210,9 @@ fn collect_loaded_dirs(node: &FileNode, out: &mut FxHashSet<PathBuf>) {
     }
 }
 
-/// Collects the directories that must survive LRU eviction (see `evict_lru`
-/// in `cache.rs`): loaded dirs that are expanded themselves or lie on the
-/// path to an expanded descendant. Returns whether the subtree rooted at
-/// `node` contains an expanded dir, so callers can keep their own ancestors
-/// protected without being expanded themselves.
+/// 收集必须挺过 LRU 逐出的目录（见 `cache.rs` 的 `evict_lru`）：自身已展开、或位于
+/// 某个展开后代路径上的已加载目录。返回以 `node` 为根的子树是否含有展开目录，
+/// 于是调用方能保护自己的祖先节点，而不必自身被展开。
 fn collect_protected_loaded_dirs(node: &FileNode, out: &mut FxHashSet<PathBuf>) -> bool {
     let ChildState::Loaded(children) = &node.children else {
         return node.entry.is_dir && node.expanded;

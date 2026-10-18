@@ -3,7 +3,7 @@ use gpui::{
     App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
-// the online-source account avatars are the only users of these
+// 在线音源的账号头像它们是这些唯一的用处
 #[cfg(feature = "kugou")]
 use gpui::InteractiveElement;
 use std::time::{Duration, Instant};
@@ -67,7 +67,7 @@ fn login_label() -> SharedString {
 /// 不是头像照片：导航语境里品牌可识别性优先，照片只会变成一张突兀的随机图；
 /// 折叠时退化为 28px 图标圆钮，与折叠态其他条目的形态一致。
 #[cfg(feature = "kugou")]
-#[allow(clippy::too_many_arguments)] // pill styling facets; callers pass theme-derived values
+#[allow(clippy::too_many_arguments)] // 药丸的样式分项；调用方传入由主题派生的值
 fn account_pill(
     id: &'static str,
     brand_icon: &'static str,
@@ -129,7 +129,7 @@ fn account_pill(
     }
 }
 
-/// Width animation driven on the sidebar view: collapses/expands `animated_sidebar_width`.
+/// 挂在侧栏视图上驱动的宽度动画：折叠/展开 `animated_sidebar_width`。
 struct WidthTween {
     from: f32,
     to: f32,
@@ -208,8 +208,8 @@ impl Render for Sidebar {
             .interface
             .two_column_library;
 
-        // In two-column mode, the sidebar should reflect the *left* pane, not the
-        // right (detail) pane.  Derive the effective view the same way Library does.
+        // 两栏模式下侧栏应反映*左*栏而不是右栏（详情栏）。按 Library 的同样方式来
+        // 推导有效视图。
         let sidebar_view = if two_column && current_view.is_detail_page() {
             self.nav_model
                 .read(cx)
@@ -223,7 +223,7 @@ impl Render for Sidebar {
         let animated_sidebar_width = cx.global::<Models>().animated_sidebar_width.clone();
         let collapsed = *sidebar_collapsed_entity.read(cx);
 
-        // Drive the open/close tween and keep the rendered width in sync with the source of truth.
+        // 驱动开/合补间，并让渲染宽度与权威来源保持一致。
         let target_width = if collapsed {
             f32::from(COLLAPSED_SIDEBAR_WIDTH)
         } else {
@@ -514,7 +514,7 @@ impl Render for Sidebar {
         let sidebar_content = sidebar_content.child(bottom);
 
         if collapsed || self.width_tween.is_some() {
-            // During an open/close tween (or when collapsed) render at the animated width.
+            // 开/合补间进行中（或已折叠）时，按动画宽度渲染。
             div()
                 .w(animated_width)
                 .h_full()

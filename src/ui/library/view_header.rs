@@ -1,8 +1,6 @@
-//! Shared page header for every top-level view: a min-48px row with a bottom
-//! hairline, a bold title with an optional subtitle on the left and an
-//! optional action bar on the right. Albums/tracks/artists, the files tree and
-//! the KuGou playlists page all render through this so headers read as one
-//! system.
+//! 每个顶层视图共享的页面头部：最小 48px 的一行加底部细发丝线，左侧粗体标题（可带
+//! 副标题），右侧可选的操作条。专辑/曲目/艺术家、文件树与酷狗云歌单页都经它渲染，
+//! 于是各处头部读起来像同一套体系。
 use gpui::*;
 use prelude::FluentBuilder;
 
@@ -17,21 +15,21 @@ pub struct ViewHeader {
 }
 
 impl ViewHeader {
-    /// Secondary line rendered under the title (e.g. "5 tracks · 23 min").
+    /// 渲染在标题下方的次要行（例如「5 首曲目 · 23 分钟」）。
     #[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
     pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
-    /// Element placed before the title (e.g. a back button).
+    /// 放在标题之前的元素（例如返回按钮）。
     #[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
     pub fn left(mut self, left: impl IntoElement) -> Self {
         self.left = Some(left.into_any_element());
         self
     }
 
-    /// Element placed at the trailing edge (e.g. view-mode toggles).
+    /// 放在尾侧的元素（例如视图模式切换）。
     pub fn right(mut self, right: impl IntoElement) -> Self {
         self.right = Some(right.into_any_element());
         self

@@ -1,15 +1,11 @@
-//! Shared parts of the two KuGou discovery views (`kugou_ranks` and
-//! `kugou_playlists`): the fixed track-row height, the like/unlike outcome
-//! watcher and the track-row view builder. Gated behind the `kugou` cargo
-//! feature together with its two users.
+//! 两个酷狗发现视图（`kugou_ranks` 与 `kugou_playlists`）的共享部分：固定的曲目行高、
+//! 赞/取消赞结果监视器、曲目行视图构造器。与它的两个使用者一起受 `kugou` cargo
+//! feature 门控。
 //!
-//! These are the pieces that were byte-identical between the two views
-//! (2026-10-15 收编台阶 D) once every real difference — element id prefix,
-//! duration padding, liked predicate, rollback snapshot — is injected as a
-//! parameter. Provider-agnostic layout pieces of the same consolidation
-//! (list container, page scroller, Load More pill) live in
-//! `ui::online_common`; this file holds the parts that are KuGou-specific
-//! by nature (the liked-set predicate, the play/like/download callbacks).
+//! 这里放的是当所有真实差异——元素 id 前缀、时长补齐、已点赞谓词、回滚快照——都改为
+//! 参数注入后，两个视图之间逐字节相同的片段（2026-10-15 收编台阶 D）。同一轮收编里与
+//! 音源无关的布局片段（列表容器、页面滚动器、Load More 药丸）住在 `ui::online_common`；
+//! 本文件只收天生属于酷狗的部分（liked-set 谓词、播放/点赞/下载回调）。
 
 use std::{sync::Arc, time::Duration};
 
@@ -21,29 +17,22 @@ use crate::ui::{
     theme::Theme,
 };
 
-/// uniform_list strides rows by one fixed height measured from the first
-/// row, so track rows are pinned to their natural height: 8px vertical
-/// padding twice, a text_sm title line, a 1px gap, a text_xs subtitle line
-/// and a 1px bottom border. Both discovery views render the same row
-/// layout, so they share this value.
+/// uniform_list 按第一行量出的单一固定高度步进各行，所以曲目行钉死为自然高度：
+/// 上下 padding 8px 各一次、一个 text_sm 标题行、1px 间隔、一个 text_xs 副标题行，
+/// 再加 1px 下边框。两个发现视图渲染同一套行布局，因此共用这个值。
 pub(crate) const ONLINE_TRACK_ROW_HEIGHT: f32 = 60.0;
 
-/// How long the like/unlike watcher waits for the shared helper to confirm
-/// the outcome through the global liked-set before rolling the optimistic
-/// update back.
+/// 点赞/取消赞监视器在回滚乐观更新之前，等多久让共享辅助函数经全局 liked-set 确认结果。
 pub(crate) const LIKE_WATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Watches a like/unlike request until the process-wide liked-set confirms
-/// it (or the deadline passes), releasing the view's in-flight click-dedup
-/// marker either way and rolling the optimistic snapshot back on failure.
+/// 监视一次赞/取消赞请求，直到进程级 liked-set 确认它（或截止时间到），
+/// 两条路径都会释放视图的「已在途」点击去重标记，失败时把乐观快照回滚。
 ///
-/// The shared like/unlike helpers flip the global liked-set on success and
-/// leave it untouched on failure, so the outcome is observable via
-/// `crate::ui::kugou::liked_set_contains`; the optimistic update must be
-/// undone when the request did not land, or a failed like leaves a wrong
-/// star. `take_in_flight` drops the per-view dedup marker (called on both
-/// paths); `rollback` restores the pre-click snapshot (failure path only,
-/// hence `FnOnce` — each view captures its own snapshot there).
+/// 共享的赞/取消赞辅助函数成功时翻转全局 liked-set、失败时原样不动，所以结果可由
+/// `crate::ui::kugou::liked_set_contains` 观测；请求没落地时必须撤销乐观更新，
+/// 否则一次失败的点赞会留下错误的星标。`take_in_flight` 丢掉每视图的去重标记
+/// （两条路径都调）；`rollback` 还原点击前的快照（只在失败路径调，因此是 `FnOnce`
+/// ——每个视图在那里捕获自己的快照）。
 pub(crate) fn spawn_like_watcher<V: 'static>(
     cx: &mut Context<V>,
     hash: String,
@@ -58,7 +47,7 @@ pub(crate) fn spawn_like_watcher<V: 'static>(
                 .timer(Duration::from_millis(250))
                 .await;
             if crate::ui::kugou::liked_set_contains(&hash) == want_liked {
-                // landed: release the dedup marker, nothing to roll back
+                // 已落地：释放去重标记，无需回滚
                 this.update(cx, |this, _| take_in_flight(this, &hash)).ok();
                 return;
             }
@@ -66,7 +55,7 @@ pub(crate) fn spawn_like_watcher<V: 'static>(
                 break;
             }
         }
-        // never confirmed: undo the optimistic update
+        // 从未被确认：撤销乐观更新
         this.update(cx, |this, cx| {
             take_in_flight(this, &hash);
             rollback(this, &hash);
@@ -77,17 +66,13 @@ pub(crate) fn spawn_like_watcher<V: 'static>(
     .detach();
 }
 
-/// Builds one discovery track row for either view. The row itself is
-/// [`track_row`]; what differs between the views is only the element id
-/// prefix, whether durations are padded to whole minutes, the liked
-/// predicate and the like callback — all injected, so the per-row closure
-/// plumbing (Arc clones instead of deep clones, the weak-entity upgrade)
-/// exists once instead of twice.
+/// 为两个视图之一构造一行发现曲目。行本身是 [`track_row`]；两个视图之间的差异只有
+/// 元素 id 前缀、时长是否补齐到整分钟、已点赞谓词与点赞回调——全部注入，于是逐行的
+/// 闭包管道（用 Arc clone 而非深拷贝、弱实体 upgrade）只存在一份而不是两份。
 ///
-/// Rows are built from inside the uniform_list render closure where only
-/// `&App` is available, so there is no `cx.listener` here: the like handler
-/// reaches the view through a weak handle.
-#[allow(clippy::too_many_arguments)] // builder-style row API, mirrors track_row it feeds
+/// 行是在 uniform_list 的渲染闭包内部构造的，那里只有 `&App`，因此这里没有
+/// `cx.listener` 可用：点赞处理器改经弱句柄抵达视图。
+#[allow(clippy::too_many_arguments)] // 构建器风格的行 API，与它喂给的 track_row 同形
 pub(crate) fn kugou_track_row_view<V: 'static>(
     view: &V,
     entity: &Entity<V>,
@@ -101,9 +86,8 @@ pub(crate) fn kugou_track_row_view<V: 'static>(
 ) -> AnyElement {
     let theme = cx.global::<Theme>();
     let liked = is_liked(view, &track.hash);
-    // The row closures must own their data ('static): capture Arc clones
-    // (refcount bump only) instead of three deep clones per visible row
-    // per redraw — a full clone re-allocates `hash: String` each time.
+    // 行闭包必须持有自己数据的拥有权（'static）：捕获 Arc clone（只加引用计数），
+    // 而不是每个可见行每次重绘三次深拷贝——完整 clone 每次都重新分配 `hash: String`。
     let play = track.clone();
     let like = track.clone();
     let download = track.clone();
@@ -137,9 +121,8 @@ pub(crate) fn kugou_track_row_view<V: 'static>(
 mod tests {
     use super::*;
 
-    /// Pins the "both views must agree" contract: uniform_list strides every
-    /// row by `ONLINE_TRACK_ROW_HEIGHT`, so a view that silently drifts off
-    /// this value would mis-stride its rows.
+    /// 钉住「两个视图必须一致」这个契约：uniform_list 用 `ONLINE_TRACK_ROW_HEIGHT`
+    /// 给每一行步进，所以某个视图悄悄偏离这个值就会把行步进算错。
     #[test]
     fn shared_row_height_matches_the_row_layout_contract() {
         assert_eq!(ONLINE_TRACK_ROW_HEIGHT, 60.0);

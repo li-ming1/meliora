@@ -14,8 +14,7 @@ use crate::{
     },
 };
 
-/// Builds the play queue from table rows. Shared by the double-click handler
-/// and the context menu's "play from here" action below.
+/// 从表格行构造播放队列。双击处理器与下面右键菜单的「从这里播放」共用它。
 fn queue_items_from_rows(items: &[(i64, Option<i64>, String)]) -> Vec<QueueItemData> {
     items
         .iter()
@@ -43,18 +42,14 @@ impl TrackView {
                 return;
             };
 
-            // no per-track `Path::exists` probe here: filtering
-            // the whole table stat'd one file per track (10k
-            // syscalls per double-click on a large library)
-            // before anything could start. Missing files are
-            // skipped by the playback engine instead, and row
-            // availability is already greyed from the row data.
+            // 这里不做逐曲目的 `Path::exists` 探测：过滤整张表就是每首曲目 stat 一个
+            // 文件（大库上双击一次就是 10k 次系统调用），在此之前什么都播不了。
+            // 丢失的文件改由播放引擎跳过，而行可用性已经据行数据置灰了。
             if items.is_empty() {
                 return;
             }
 
-            // The clicked row's index falls out of the item scan
-            // directly — no second pass over the built queue.
+            // 被点击行的下标直接从这次 items 扫描里得出——不再对建好的队列走第二遍。
             let index = items
                 .iter()
                 .position(|(row_id, _, _)| *row_id == id.0)
@@ -80,9 +75,8 @@ impl TrackView {
                         return;
                     };
 
-                    // no per-track exists() probe (same reason as the
-                    // double-click handler above); playback skips files
-                    // that went missing
+                    // 不做逐曲目的 exists() 探测（理由与上面的双击处理器相同）；
+                    // 播放时跳过丢失的文件
                     let queue_items = queue_items_from_rows(&items);
 
                     play_from_track(cx, track, queue_items);

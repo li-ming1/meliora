@@ -24,9 +24,8 @@ use crate::{
 
 use super::FilesView;
 
-/// Menu action for a file entry: queues the file as an id-less queue item
-/// (path only, no DB row behind it) and runs `op` on it — the shared body of
-/// the play / play-next / add-to-queue items.
+/// 文件项的菜单动作：把文件作为一个无 id 的队列项入队（只有路径，背后没有 DB 行），
+/// 并对它执行 `op`——播放 / 下一首播放 / 加入队列这三项的共享主体。
 fn file_menu_action(
     path: Arc<Path>,
     op: fn(&mut App, QueueItemData),
@@ -37,8 +36,7 @@ fn file_menu_action(
     }
 }
 
-/// Menu action for a folder entry: runs a `FilesView` folder operation on
-/// `path`.
+/// 文件夹项的菜单动作：对 `path` 执行一次 `FilesView` 的文件夹操作。
 fn folder_menu_action(
     path: Arc<Path>,
     files_view: Entity<FilesView>,
@@ -49,8 +47,8 @@ fn folder_menu_action(
 
 #[derive(IntoElement)]
 pub struct FileContextMenu {
-    // Arc-shared with the row that spawned this menu: cloning the PathBuf the
-    // menu was built from cost an allocation on every render of every row.
+    // 与催生本菜单的那一行 Arc 共享：clone 菜单构建自的那个 PathBuf，
+    // 会让每一行的每次渲染都多一次分配。
     path: Arc<Path>,
     is_dir: bool,
     is_audio: bool,

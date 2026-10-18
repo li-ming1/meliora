@@ -7,7 +7,7 @@ use gpui::SharedString;
 pub struct TrackRef {
     pub id: i64,
     pub album_id: Option<i64>,
-    /// Liked Songs playlist item ID, if one exists
+    /// 「我喜欢的」歌单项 id，若存在
     pub liked: Option<i64>,
 }
 
@@ -22,8 +22,8 @@ pub struct RawEntry {
 
 #[derive(Clone, Debug)]
 pub struct FlatRow {
-    /// Arc-shared: rows are cloned per visible frame, and a per-row `Rc<PathBuf>`
-    /// clone for the render closures was a fresh heap allocation each time.
+    /// Arc 共享：行每个可见帧都要 clone，而给渲染闭包做逐行 `Rc<PathBuf>` clone
+    /// 每次都是一次全新的堆分配。
     pub path: Arc<Path>,
     pub name: SharedString,
     pub depth: usize,

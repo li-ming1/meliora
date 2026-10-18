@@ -47,11 +47,9 @@ use crate::ui::design::ICON_MD;
 
 type GridHandler = dyn Fn(&mut App, &(u32, String)) + 'static;
 
-/// Per-track availability, computed once per track-list load from the
-/// background snapshot: re-statting every file on every render frame is far
-/// too expensive, and one `path.exists()` per track at load time is a syscall
-/// on the UI thread — both replaced by the `available_tracks` set that
-/// `reload_availability` maintains off-thread.
+/// 逐曲目的可用性，每次加载曲目列表时按后台快照算一次：每帧都对所有文件重新 stat
+/// 代价高得离谱，而加载时每行一次 `path.exists()` 又是 UI 线程上的系统调用——
+/// 两者都由 `reload_availability` 在线程外维护的 `available_tracks` 集合取代。
 fn availability_map(cx: &App, tracks: &[Track]) -> Arc<Vec<bool>> {
     Arc::new(
         tracks
@@ -61,10 +59,8 @@ fn availability_map(cx: &App, tracks: &[Track]) -> Arc<Vec<bool>> {
     )
 }
 
-/// Builds one `TrackItem` row per track. Every row carries its full source
-/// list (for queue context) and hides the artist name when it matches the
-/// track's own; the remaining flags are identical for both artist track
-/// lists.
+/// 每首曲目构造一个 `TrackItem` 行。每行都携带完整的来源列表（供队列上下文使用），
+/// 艺术家名与曲目自身相同时隐藏；其余标志位对两个艺术家曲目列表完全一致。
 fn track_items(
     cx: &mut App,
     tracks: &Arc<Vec<Track>>,
@@ -92,8 +88,7 @@ fn track_items(
         .collect()
 }
 
-/// True when the currently playing path is one of `tracks` (rows whose
-/// availability snapshot says unavailable don't count as playing).
+/// 当前播放路径属于 `tracks` 时为真（可用性快照判定为不可用的行不算在播）。
 fn contains_current_track(
     current_path: Option<&Path>,
     tracks: &[Track],
@@ -107,13 +102,12 @@ fn contains_current_track(
     })
 }
 
-/// uniform_list needs one fixed row height; 40px is what the non-virtualized
-/// wrappers (`div().h(px(40.0))`) already pinned every TrackItem to.
+/// uniform_list 需要固定行高；40px 正是非虚拟化的包装（`div().h(px(40.0))`）
+/// 原本就把每个 TrackItem 钉住的高度。
 const TRACK_ROW_HEIGHT: f32 = 40.0;
 
-/// uniform_list only culls rows while its own viewport is smaller than its
-/// content, so a list keeps its natural height up to this many rows and
-/// scrolls internally beyond that instead of stretching the page scroll.
+/// uniform_list 只有在自身视口小于内容时才裁剪行，所以列表在这个行数以内保持自然
+/// 高度，超出后内部滚动，而不是把页面滚动撑长。
 const MAX_VISIBLE_TRACK_ROWS: usize = 12;
 
 pub struct ArtistDetailView {
@@ -129,8 +123,8 @@ pub struct ArtistDetailView {
     standalone_tracks: Arc<Vec<Track>>,
     standalone_tracks_available: Arc<Vec<bool>>,
     scroll_handle: ScrollHandle,
-    /// Scroll state of the two virtualized track lists; kept for the view's
-    /// lifetime so a re-sort keeps the reader's position, like PlaylistView.
+    /// 两个虚拟化曲目列表的滚动状态；与视图同生命周期保留，因此重新排序时读者的
+    /// 位置不丢，做法同 PlaylistView。
     liked_scroll_handle: UniformListScrollHandle,
     standalone_scroll_handle: UniformListScrollHandle,
     grid_views: Entity<FxHashMap<usize, Entity<GridItem<Album, AlbumColumn>>>>,
@@ -138,11 +132,11 @@ pub struct ArtistDetailView {
     nav_model: Entity<super::NavigationHistory>,
     liked_sort: LikedTrackSortMethod,
     standalone_sort: LikedTrackSortMethod,
-    /// Bumped on every liked-tracks reload so a slow load that finishes after
-    /// a newer one cannot overwrite it (same guard as `Table::reload_rows`).
+    /// 每次重载「已点赞曲目」都自增，使晚于新一轮完成的慢加载不能覆盖它
+    /// （与 `Table::reload_rows` 同一个守卫）。
     liked_load_generation: u64,
-    /// Bumped on the full-view load so a slow load that finishes after a
-    /// newer one cannot overwrite it (same guard as `Table::reload_rows`).
+    /// 整视图加载时自增，使晚于新一轮完成的慢加载不能覆盖它
+    /// （与 `Table::reload_rows` 同一个守卫）。
     load_generation: u64,
 }
 
@@ -190,9 +184,8 @@ impl ArtistDetailView {
                 liked_load_generation: 0,
                 load_generation: 0,
             };
-            // Opening the view loads the artist header, album grid and the
-            // three track lists on the runtime (see reload); until it lands
-            // the view shows an empty page.
+            // 打开视图时在运行时上加载艺术家头部、专辑网格与三个曲目列表（见 reload）；
+            // 落地前视图显示空页。
             this.reload(cx);
             this
         });
@@ -200,13 +193,10 @@ impl ArtistDetailView {
         view
     }
 
-    /// Loads the artist header, album grid and the three track lists on the
-    /// background runtime: opening the view used to block the UI thread on
-    /// five queries back to back. The view stays empty until the load lands;
-    /// a generation guard drops results superseded by a newer load, and the
-    /// liked list is additionally gated on `liked_load_generation` so a
-    /// like/unlike or liked-sort reload racing this one is never overwritten
-    /// by this slower full load.
+    /// 在后台运行时上加载艺术家头部、专辑网格与三个曲目列表：打开视图过去会连着
+    /// 五条查询阻塞 UI 线程。加载落地前视图保持空白；世代守卫丢弃被更新一轮加载
+    /// 取代的结果，且已点赞列表额外受 `liked_load_generation` 把关，因此与本轮赛跑的
+    /// 点赞/取消赞或已点赞排序重载，绝不会是这个更慢的整视图加载覆盖掉的。
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
@@ -252,7 +242,7 @@ impl ArtistDetailView {
                 ));
 
             let _ = this.update(cx, |this, cx| {
-                // A newer load superseded this one: this result is stale.
+                // 更新的加载已取代这一轮：本结果陈旧。
                 if this.load_generation != generation {
                     return;
                 }
@@ -263,9 +253,8 @@ impl ArtistDetailView {
                 this.all_tracks = all_tracks;
                 this.all_tracks_available = availability_map(cx, &this.all_tracks);
                 this.set_standalone_tracks(standalone_tracks, cx);
-                // A liked reload that started while this full load was in
-                // flight owns the liked list: skip the stale snapshot here and
-                // let its own generation guard deliver the newer one.
+                // 在本轮整视图加载在途期间启动的已点赞重载才拥有已点赞列表：这里跳过
+                // 陈旧快照，让它自己的世代守卫交付更新的那一份。
                 if this.liked_load_generation == liked_generation {
                     this.set_liked_tracks(liked_tracks, cx);
                 }
@@ -276,12 +265,10 @@ impl ArtistDetailView {
         .detach();
     }
 
-    /// Reloads the artist's liked-tracks list on the background runtime: every
-    /// like/unlike (`PlaylistUpdated`) and liked-sort change used to run the
-    /// query synchronously on the UI thread. The in-memory liked-ids cache is
-    /// not enough here — the liked ordering (release order, recently added)
-    /// lives in the SQL — so the query itself moves off-thread. A generation
-    /// guard drops results superseded by a newer reload.
+    /// 在后台运行时上重载艺术家的已点赞曲目列表：每一次点赞/取消赞（`PlaylistUpdated`）
+    /// 与已点赞排序变更过去都在 UI 线程上同步跑这条查询。内存里的 liked-ids 缓存这里
+    /// 不够用——已点赞的顺序（发行顺序、最近添加）活在 SQL 里——所以查询本身必须移出线程。
+    /// 世代守卫丢弃被更新一次重载取代的结果。
     fn reload_liked_tracks(&mut self, cx: &mut Context<Self>) {
         self.liked_load_generation = self.liked_load_generation.wrapping_add(1);
         let generation = self.liked_load_generation;
@@ -300,7 +287,7 @@ impl ArtistDetailView {
                 .unwrap_or_else(|_| Arc::new(Vec::new()));
 
             let _ = this.update(cx, |this, cx| {
-                // A newer reload superseded this one: this result is stale.
+                // 更新的一次重载已取代这一轮：本结果陈旧。
                 if this.liked_load_generation != generation {
                     return;
                 }
@@ -320,7 +307,7 @@ impl ArtistDetailView {
 
         self.liked_sort = next_sort;
         self.sync_sort_with_model(cx);
-        // The re-sorted list loads on the runtime (see reload_liked_tracks).
+        // 重排后的列表在运行时上加载（见 reload_liked_tracks）。
         self.reload_liked_tracks(cx);
     }
 
@@ -481,9 +468,8 @@ impl Render for ArtistDetailView {
         let is_playing =
             cx.global::<PlaybackInfo>().playback_state.read(cx) == &PlaybackState::Playing;
 
-        // Borrow the current track's path once: the three membership checks
-        // below only compare against each row's own location (no clones), and
-        // availability comes from the precomputed per-track maps.
+        // 当前曲目的路径只借用一次：下面三次归属判断只拿每行自身的 location 比较
+        // （不 clone），可用性则来自预先算好的逐曲目映射表。
         let current_path = cx
             .global::<PlaybackInfo>()
             .current_track
@@ -707,10 +693,8 @@ impl Render for ArtistDetailView {
             None
         };
 
-        // Virtualized track lists: heights are capped so a long list scrolls
-        // internally instead of inflating the page scroll, and rows are read
-        // through the entity inside the uniform_list closure (which outlives
-        // the render borrow).
+        // 虚拟化的曲目列表：高度设了上限，所以长列表内部滚动而不是把页面滚动撑长；
+        // 行在 uniform_list 闭包内经实体读取（闭包比 render 的借用活得更久）。
         let liked_row_count = self.liked_track_items.len();
         let liked_list_height =
             px(TRACK_ROW_HEIGHT * liked_row_count.min(MAX_VISIBLE_TRACK_ROWS) as f32);
@@ -816,14 +800,11 @@ impl Render for ArtistDetailView {
                                                     );
                                                 }
 
-                                                // Fallible equivalent of
-                                                // `create_or_retrieve_view`: an album
-                                                // can vanish between
-                                                // list_albums_by_artist and this
-                                                // frame (a cleanup pass deleted it,
-                                                // or its query failed), and the old
-                                                // `.unwrap` here panicked the whole
-                                                // app off a stale album_ids snapshot.
+                                                // `create_or_retrieve_view` 的可失败等价物：
+                                                // 专辑可能在 list_albums_by_artist 与本帧之间
+                                                // 消失（清理轮删了它，或其查询失败），而这里的
+                                                // 旧 `.unwrap` 曾在陈旧的 album_ids 快照上把
+                                                // 整个 app panic 掉。
                                                 let cached_view =
                                                     grid_views_model.read(cx).get(&idx).cloned();
 
@@ -855,10 +836,9 @@ impl Render for ArtistDetailView {
                                                                     .child(view)
                                                                     .into_any_element()
                                                             }
-                                                            // Album is gone: render a blank
-                                                            // cell for this frame; the
-                                                            // reload already in flight
-                                                            // replaces the stale snapshot.
+                                                            // 专辑已消失：本帧渲染一个空白格；
+                                                            // 已在途的那次 reload 会替换掉
+                                                            // 陈旧快照。
                                                             None => div().into_any_element(),
                                                         }
                                                     }
@@ -877,11 +857,8 @@ impl Render for ArtistDetailView {
                                         .w_full()
                                         .border_t_1()
                                         .border_color(theme.border_color)
-                                        // bounded LRU instead of retain-all: the
-                                        // liked list can hold hundreds of row
-                                        // covers, and 128×72px thumbs (~3 MB)
-                                        // still covers the viewport plus the
-                                        // scroll neighborhood without re-decode
+                                        // 用有界 LRU 而非全量保留：已点赞列表可能挂着数百张行封面，
+                                        // 128×72px 缩略图（~3 MB）仍足以覆盖视口加滚动邻域且不必重解码
                                         .image_cache(meliora_cache(
                                             "artist_liked_tracks_cache",
                                             128,

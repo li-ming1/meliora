@@ -1,6 +1,5 @@
-//! Modal shown when a scan finds library folders that no longer exist: the
-//! user chooses whether to keep or delete the items inside, optionally
-//! remembering the choice as the default policy in Settings.
+//! 扫描发现库文件夹已不存在时弹出的模态框：用户选择保留还是删除其中的条目，
+//! 并可选地把这次选择记为设置里的默认策略。
 
 use cntp_i18n::tr;
 use gpui::{App, AppContext, Context, Entity, IntoElement, Render, Window, div};
@@ -30,9 +29,8 @@ impl MissingFolderDialog {
         })
     }
 
-    /// Persists `policy` to settings when the user checked "don't ask
-    /// again"; the checkbox resets either way so the next dialog starts
-    /// unchecked.
+    /// 用户勾选「不再询问」时把 `policy` 持久化到设置；无论是否勾选都重置复选框，
+    /// 所以下一次对话框从「未勾选」开始。
     fn maybe_persist_policy(&mut self, policy: MissingFolderPolicy, cx: &mut Context<Self>) {
         if self.remember_choice {
             let settings = cx.global::<SettingsGlobal>().model.clone();
@@ -60,12 +58,10 @@ impl MissingFolderDialog {
 
 impl Render for MissingFolderDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Mounted unconditionally by the root view (app.rs); hidden states
-        // render an empty div, same contract as `CorruptSettingsDialog`.
-        // Reading `scan_state` in the root view instead would re-render the
-        // whole window chrome at the scan-progress rate (250 ms). The
-        // corrupt-settings precedence mirrors the root view's old
-        // `!show_corrupt_settings_dialog &&` gate.
+        // 由根视图（app.rs）无条件挂载；隐藏状态渲染一个空 div，契约与
+        // `CorruptSettingsDialog` 相同。若改为在根视图里读 `scan_state`，整个窗口
+        // 装饰就会按扫描进度频率（250 ms）重渲染。损坏设置对话框的优先级镜像了
+        // 根视图原来的 `!show_corrupt_settings_dialog &&` 门。
         let models = cx.global::<Models>();
         if matches!(
             *models.settings_health.read(cx),

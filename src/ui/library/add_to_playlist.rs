@@ -31,9 +31,8 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 enum TrackList {
     Single(i64),
-    // Shared: every row of the dialog snapshots the selection, and the
-    // snapshot's ids are never read back (accept reads the live list), so
-    // handing each row a fresh Vec clone is O(playlists x selection) dead data.
+    // 共享形态：对话框每一行都对选区做快照，而快照里的 ids 从不被读回（accept 读的是
+    // 活列表），所以给每行发一份新的 Vec clone 就是 O(歌单数 x 选区数) 的死数据。
     Multi(Arc<[i64]>),
 }
 
@@ -49,10 +48,9 @@ impl TrackList {
     fn first(&self) -> i64 {
         match self {
             TrackList::Single(id) => *id,
-            // An empty multi list is the album flow's initial state: its track
-            // ids are loaded in the background after the dialog opens. Track
-            // id 0 can never exist in the database, so it degrades to the
-            // "not in playlist" branch instead of panicking on the index.
+            // 空的 multi 列表是专辑流程的初始状态：它的曲目 ids 在对话框打开之后才由
+            // 后台加载。曲目 id 0 在数据库中绝不可能存在，所以它退化到「不在歌单里」
+            // 分支，而不是在索引上 panic。
             TrackList::Multi(ids) => ids.first().copied().unwrap_or(0),
         }
     }
@@ -69,21 +67,18 @@ impl TrackList {
     }
 }
 
-/// Main-thread shared handle to the current track selection. All access is on
-/// the UI thread (the entity and its palette provider closures), so a
-/// `RefCell` is enough — no locks, no atomics.
+/// 当前曲目选区的主线程共享句柄。所有访问都在 UI 线程上（实体本身与它的调色板提供者
+/// 闭包），所以 `RefCell` 就够——不需要锁，也不需要原子量。
 type SharedTrackList = Rc<RefCell<TrackList>>;
 
 fn read_track_list(shared: &SharedTrackList) -> TrackList {
     shared.borrow().clone()
 }
 
-/// One palette row: the selection snapshot, the target playlist, and whether
-/// the single track is already in that playlist. The third slot is resolved
-/// once per rebuild via a single membership-set query so that
-/// `middle_content` never queries the database — previously it ran a
-/// UI-thread `block_on` `playlist_has_track` query for every visible row on
-/// every palette rebuild (each keystroke; doctrine §2.3 / §14).
+/// 一行调色板条目：选区快照、目标歌单，以及那首单曲是否已在该歌单里。第三个槽位每次
+/// 重建只解析一次——用一条归属集合查询——于是 `middle_content` 从不查数据库；
+/// 过去它对每次调色板重建（每敲一个键）的每个可见行都跑一次 UI 线程
+/// `block_on` `playlist_has_track` 查询（教义 §2.3 / §14）。
 type PlaylistEntry = (TrackList, Playlist, bool);
 
 /// 单曲时一次查询该曲目已在的全部歌单；多选返回 None（行内不做已有标记，
@@ -102,9 +97,8 @@ fn track_playlist_ids(track_list: &TrackList, cx: &mut App) -> Option<FxHashSet<
     }
 }
 
-/// Awaits a spawned playlist DB task and logs its two failure modes with the
-/// call site's message; yields the payload only when the task fully
-/// succeeded, so callers can gate the follow-up event on it.
+/// 等待派生的歌单 DB 任务，并用调用点的消息记录它的两种失败形态；只有任务完全成功时
+/// 才交出载荷，于是调用方可以据此决定要不要发后续事件。
 async fn await_playlist_task<T>(
     task: tokio::task::JoinHandle<Result<T, sqlx::Error>>,
     failure_log: &'static str,
@@ -175,8 +169,7 @@ impl AddToPlaylist {
 
                 let current = read_track_list(&track_list_for_observe);
                 this.palette.update(cx, |palette, cx| {
-                    // a failed query keeps the palette's current list instead
-                    // of panicking the observer
+                    // 查询失败时保留调色板当前的列表，而不是让观察者 panic
                     let Ok(playlists) = cx.list_all_playlists() else {
                         error!("Failed to load playlists for the add-to-playlist dialog");
                         return;
@@ -208,11 +201,9 @@ impl AddToPlaylist {
 
             let show_clone = show.clone();
 
-            // Accept reads the shared track list at click time, not the
-            // per-item snapshot: in the album flow the ids land in the shared
-            // list after the dialog has already opened, so the snapshot
-            // captured when the items were built is still empty and accepting
-            // it would silently add nothing on the first open.
+            // Accept 在点击时读共享曲目列表，而不是逐项快照：专辑流程里 ids 是在对话框
+            // 已经打开之后才落到共享列表里的，所以构造那些项时抓下的快照仍是空的，
+            // 按它 accept 会让首次打开静默地什么都不加。
             let track_list_for_accept = track_list.clone();
 
             let on_accept: OnAccept = Box::new(move |playlist, cx| {
@@ -277,26 +268,22 @@ impl AddToPlaylist {
                 show_clone.write(cx, false);
             });
 
-            // MELIORA RELIABILITY AUDIT (2026-09-13): items are deliberately
-            // NOT resolved here. The palette is only ever visible while `show`
-            // is true, and every open path flips `show` after creation, which
-            // makes the observer above rebuild the full list — with a fresh
-            // per-playlist `has_track` — in the same effect flush, before the
-            // modal's first frame. Resolving here cost one `list_all_playlists`
-            // block_on plus one `playlist_has_track` block_on per playlist on
-            // every keyed-state creation; that state is dropped whenever the
-            // row scrolls out of the virtualized list (gpui `Frame::finish`
-            // keeps only element states accessed in the last frame), so the
-            // queries recurred on every scroll pass for rows the user never
-            // right-clicked (doctrine §2.3 / §14 / §34).
+            // MELIORA 可靠性审计（2026-09-13）：这里刻意「不」解析 items。调色板只在
+            // `show` 为真时才可见，而每条打开路径都在创建之后翻转 `show`，这让上面的
+            // 观察者在同一次 effect 冲刷、模态框第一帧之前重建完整列表——并带上全新的
+            // 逐歌单 `has_track`。在这里解析的代价是：每次 keyed-state 创建都要一次
+            // `list_all_playlists` block_on 加每歌单一次 `playlist_has_track` block_on；
+            // 而那份额有状态在行滚出虚拟化列表时就被丢弃（gpui `Frame::finish` 只保留
+            // 上一帧访问过的元素状态），于是用户从未右键点过的行在每次滚动时都重复这些
+            // 查询（教义 §2.3 / §14 / §34）。
             let items: Vec<Arc<PlaylistEntry>> = Vec::new();
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 
             let track_list_for_create = track_list.clone();
             let show_for_create = show.clone();
-            // Main-thread-only palette: the closure captures gpui entities
-            // (not Send), which is fine for a provider invoked on the UI thread.
+            // 只在主线程使用的调色板：闭包捕获了 gpui 实体（非 Send），
+            // 对只在 UI 线程上调用的提供者来说这没问题。
             #[allow(clippy::arc_with_non_send_sync)]
             let provider: ExtraItemProvider = Arc::new(move |query: &str| {
                 let name = query.trim();

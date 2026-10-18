@@ -1,8 +1,6 @@
-//! KuGou cloud playlists page: lists the logged-in user's playlists and their
-//! tracks. Tracks are streamed on click via a freshly fetched play URL (the
-//! shared row ignores the second click of a double-click, so a double-click
-//! does not run the fetch + open churn twice).
-//! Gated behind the `kugou` cargo feature.
+//! 酷狗云歌单页：列出已登录用户的歌单及其曲目。点击行时现取播放链接再串流
+//! （共享行会忽略双击的第二次点击，故双击不会把「取链接 + 打开」跑两遍）。
+//! 受 `kugou` cargo feature 门控。
 
 use std::{
     collections::HashSet,
@@ -43,39 +41,34 @@ use crate::{
     },
 };
 
-/// How many tracks to fetch per page.
+/// 每页抓取多少条曲目。
 const TRACKS_PER_PAGE: i64 = 100;
 
-/// How many user playlists to fetch per page (playlist overview).
+/// 歌单总览每页抓取多少个用户歌单。
 const PLAYLISTS_PER_PAGE: i64 = 100;
 
-/// Songs are uploaded into the new playlist in chunks of this size.
+/// 歌曲按这个块大小分批上传进新建的歌单。
 const PLAYLIST_ADD_CHUNK: usize = 100;
 
-/// Session cache for the playlist overview (TTL + helpers in
-/// `online_common`): the view entity is rebuilt on every tab switch, so a
-/// fresh entry skips the re-fetch entirely. Mutations inside this view
-/// (import, retry) go through `refresh_playlists`, which bypasses the cache
-/// and refills it, so user-driven changes are never masked.
+/// 歌单总览的会话缓存（TTL 与辅助函数在 `online_common`）：视图实体每次切标签
+/// 都会重建，缓存新鲜时整轮重取直接跳过。本视图内的变更（导入、重试）都走
+/// `refresh_playlists`，它绕过缓存并重新回填，因此用户引起的变化不会被掩盖。
 static CACHED_PLAYLISTS: LazyLock<Mutex<Option<CachedRoot<Vec<KugouPlaylistInfo>>>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Account identity changed (login/logout, possibly to a different account):
-/// drop the cached overview so it can never be served across accounts.
+/// 账号身份变化（登录/登出，可能换到另一个账号）：丢弃缓存的总览，
+/// 使它绝不可能跨账号被命中。
 pub(crate) fn invalidate_cached_playlists() {
     clear_root(&CACHED_PLAYLISTS);
 }
 
-/// Concurrent KuGou song searches while matching an imported playlist.
-/// Deliberately small: one shared client against the signed web search
-/// endpoint, where a throttled search silently drops the song (the local
-/// M3U lookup tolerates 8).
+/// 匹配导入歌单时的并发酷狗歌曲搜索数。刻意取小：只有一个共享客户端去打签名的
+/// web 搜索端点，被限流的搜索会静默丢掉这首歌（本地 M3U 查找可容忍 8）。
 const KUGOU_MATCH_CONCURRENCY: usize = 4;
 
-/// Overview playlist rows are pinned to their natural height: 8px vertical
-/// padding × 2 + title line (text_sm) + 1px bottom border (the single-line
-/// name dominates; the 16px icon and count line are shorter). Track rows
-/// use the shared `kugou_view_common::ONLINE_TRACK_ROW_HEIGHT`.
+/// 总览歌单行钉死为自然高度：上下 padding 8px × 2 + 标题行（text_sm）+
+/// 1px 下边框（占主导的是单行歌单名；16px 图标与数量行更矮）。曲目行用共享的
+/// `kugou_view_common::ONLINE_TRACK_ROW_HEIGHT`。
 const PLAYLIST_ROW_HEIGHT: f32 = 40.0;
 
 enum PlaylistsState {
@@ -100,8 +93,8 @@ enum TracksState {
     Failed(SharedString),
 }
 
-/// Outcome of the import pipeline, produced on the Tokio runtime and mapped
-/// to UI state on the main thread (locale-sensitive strings are built there).
+/// 导入管线的结果，在 Tokio 运行时上产生，回到主线程才映射为 UI 状态
+/// （与 locale 相关的字符串在主线程构造）。
 enum ImportOutcome {
     Done { matched: i64, total: i64 },
     ParseFailed(String),
@@ -110,8 +103,8 @@ enum ImportOutcome {
     NoMatch,
 }
 
-/// Messages the import pipeline streams to the UI while it runs: per-song
-/// match progress and the final outcome (which also closes the channel).
+/// 导入管线运行期间流向 UI 的消息：逐曲匹配进度，以及最终结果
+/// （发出结果的同时关闭通道）。
 enum ImportEvent {
     Progress { done: usize, total: usize },
     Finished(ImportOutcome),
@@ -122,44 +115,40 @@ struct SelectedPlaylist {
     global_collection_id: String,
     listid: i64,
     name: SharedString,
-    /// track count as reported by the playlist list; lets load_first_page
-    /// fetch the last page directly instead of probing page 1 for the count
+    /// 歌单列表报回的曲目数；让 load_first_page 直接取最后一页，
+    /// 而不必为了总数去探测第 1 页
     count: i64,
 }
 
 pub struct KugouPlaylistsView {
     playlists: PlaylistsState,
     selected: Option<SelectedPlaylist>,
-    /// Arc-shared so the row closures capture refcounts, not deep clones
-    /// (every visible row re-clones its track every redraw).
+    /// 用 Arc 共享，好让行闭包捕获的是引用计数而非深拷贝
+    /// （每个可见行每次重绘都会重新 clone 自己那条曲目）。
     tracks: Vec<Arc<KugouTrackInfo>>,
     tracks_state: TracksState,
-    /// last playlist page that was loaded (1-based, counts DOWN because the
-    /// API returns tracks newest-first while we display oldest-first)
+    /// 已加载的歌单最后一页（1 基；方向是 DOWN，因为 API 按最新优先返回曲目，
+    /// 而界面按最旧优先显示）
     track_page: i64,
-    /// whether the playlist has more tracks than currently loaded
+    /// 歌单里是否还有比当前已加载更多的曲目
     has_more_tracks: bool,
-    /// Bumped on every track-list (re)load; in-flight page responses whose
-    /// generation no longer matches are dropped, so quickly closing and
-    /// reopening the same playlist cannot append a stale page twice.
+    /// 每次（重）加载曲目列表都自增；世代号不再匹配的在途分页响应会被丢弃，
+    /// 于是快速关闭再打开同一歌单也不可能把同一陈旧页追加两次。
     track_generation: u64,
-    /// hashes of tracks liked during this session (drives the star icon)
+    /// 本次会话内点过赞的曲目 hash（驱动星标图标）
     liked: HashSet<String>,
-    /// hashes the user explicitly unliked during this session. Only relevant
-    /// while viewing the "liked songs" playlist (listid 2), where every track
-    /// is already liked by default.
+    /// 本次会话内用户显式取消赞的 hash。只在查看「我喜欢的」歌单
+    /// （listid 2）时有意义——那里每首曲目默认都已点赞。
     unliked: HashSet<String>,
-    /// hashes with a like/unlike request in flight; extra clicks on those
-    /// rows are ignored until the request settles
+    /// 有赞/取消赞请求已在途的 hash；这些行上的额外点击在请求落地前一律忽略
     like_in_flight: HashSet<String>,
     scroll_handle: ScrollHandle,
-    /// Scroll position of the virtualized playlist overview; reset when a
-    /// playlist is opened so returning to the overview starts at the top.
+    /// 虚拟化歌单总览的滚动位置；打开某个歌单时重置，
+    /// 使返回总览时从顶部开始。
     playlists_scroll_handle: UniformListScrollHandle,
-    /// Scroll position of the virtualized track list; reset per playlist so
-    /// a newly opened playlist starts at the top.
+    /// 虚拟化曲目列表的滚动位置；按歌单重置，使新开歌单从顶部开始。
     tracks_scroll_handle: UniformListScrollHandle,
-    /// Import dialog state.
+    /// 导入对话框状态。
     import_open: bool,
     import_input: Option<Entity<Textbox>>,
     import_busy: bool,
@@ -202,9 +191,8 @@ impl KugouPlaylistsView {
         })
     }
 
-    /// Initial load on view construction: serve the session cache when fresh
-    /// (the entity is rebuilt on every tab switch), else fall through to the
-    /// network path, which also refills the cache.
+    /// 视图构造时的首次加载：缓存新鲜就直接命中会话缓存（实体每次切标签都会
+    /// 重建），否则落到网络路径，顺带回填缓存。
     fn load_playlists_initial(&mut self, cx: &mut Context<Self>) {
         if let Some(playlists) = cached_root(&CACHED_PLAYLISTS) {
             self.playlists = PlaylistsState::Ready(playlists);
@@ -214,8 +202,8 @@ impl KugouPlaylistsView {
         self.refresh_playlists(cx);
     }
 
-    /// Fetch the user profile once if the cache is empty, then notify so the
-    /// header card appears without a re-request on later visits.
+    /// 缓存为空时抓取一次用户资料，然后 notify，使头部卡片出现，
+    /// 后续再访问不必重新请求。
     fn ensure_profile(&mut self, cx: &mut Context<Self>) {
         let client = kugou::shared_client();
         if client.cached_user_profile().is_some() {
@@ -270,8 +258,7 @@ impl KugouPlaylistsView {
         self.tracks_state = TracksState::Loading;
         self.track_page = 0;
         self.has_more_tracks = false;
-        // invalidates pages still in flight from a previous session of this
-        // or another playlist
+        // 使上一次会话（本歌单或别的歌单）仍留在途的分页响应失效
         self.track_generation += 1;
         self.unliked.clear();
         self.scroll_handle = ScrollHandle::new();
@@ -279,8 +266,7 @@ impl KugouPlaylistsView {
         self.tracks_scroll_handle = UniformListScrollHandle::new();
         cx.notify();
 
-        // warm the liked-set cache so the play-bar star lights up instantly
-        // for tracks of this playlist
+        // 预热已点赞集合缓存，让播放条上的星标对本歌单的曲目即刻点亮
         if playlist.listid == 2 {
             crate::ui::kugou::prime_liked_cache();
         }
@@ -289,13 +275,13 @@ impl KugouPlaylistsView {
     }
 
     fn load_more_tracks(&mut self, cx: &mut Context<Self>) {
-        // one page in flight at a time: tracks_state stays Loading from the
-        // click until the response lands, so extra clicks are ignored
+        // 一次只让一页在途：从点击到响应落地 tracks_state 一直是 Loading，
+        // 所以多余的点击被忽略
         if self.track_page <= 1 || matches!(self.tracks_state, TracksState::Loading) {
             return;
         }
-        // pages count DOWN: the API returns newest-first, we display
-        // oldest-first, so "more" means the next older page
+        // 分页方向是 DOWN：API 按最新优先返回、我们按最旧优先显示，
+        // 所以「更多」指的是再往旧的一页
         let next_page = self.track_page - 1;
         self.tracks_state = TracksState::Loading;
         cx.notify();
@@ -308,12 +294,11 @@ impl KugouPlaylistsView {
         self.load_first_page(cx);
     }
 
-    /// Loads the first batch of tracks for the selected playlist.
+    /// 加载所选歌单的第一批曲目。
     ///
-    /// The v4 endpoint returns tracks newest-first (fsort descending), while
-    /// the UI shows oldest-first. So a cheap probe of page 1 reads the total
-    /// `data.count`, then the actual first batch is fetched from the LAST page
-    /// and reversed; `load_more_tracks` walks backwards from there.
+    /// v4 端点按最新优先返回曲目（fsort 降序），界面却按最旧优先显示。
+    /// 于是先用一次廉价的第 1 页探测读出总数 `data.count`，真正的首批曲目
+    /// 改从最后一页取回再反转；`load_more_tracks` 从那里往回走。
     fn load_first_page(&mut self, cx: &mut Context<Self>) {
         let Some(selected) = self.selected.clone() else {
             return;
@@ -327,9 +312,8 @@ impl KugouPlaylistsView {
             let count = selected.count;
             let request = crate::RUNTIME
                 .spawn(async move {
-                    // The playlist list already carries the track count, so
-                    // the last page is fetched directly; the page-1 probe is
-                    // only the fallback for lists that came back without one.
+                    // 歌单列表本身已带上曲目数，所以直接取最后一页；探测第 1 页
+                    // 只作为列表没返回曲目数时的兜底。
                     if count > 0 {
                         let total_pages = page_count(selected.count);
                         let response = client
@@ -359,9 +343,8 @@ impl KugouPlaylistsView {
 
             let _ = this
                 .update(cx, |this, cx| {
-                    // the selection may have changed, or the playlist may have
-                    // been closed and reopened, while this request was in
-                    // flight; a stale response must not clobber the new state
+                    // 请求已在途期间选择项可能变了，或歌单可能被关闭后重开；
+                    // 陈旧响应不得覆盖新状态
                     let still_current =
                         this.selected.as_ref().is_some_and(|s| {
                             s.global_collection_id == selected.global_collection_id
@@ -410,9 +393,8 @@ impl KugouPlaylistsView {
 
             let _ = this
                 .update(cx, |this, cx| {
-                    // the selection may have changed, or the playlist may have
-                    // been closed and reopened, while this request was in
-                    // flight; a stale response must not clobber the new state
+                    // 请求已在途期间选择项可能变了，或歌单可能被关闭后重开；
+                    // 陈旧响应不得覆盖新状态
                     let still_current =
                         this.selected.as_ref().is_some_and(|s| {
                             s.global_collection_id == selected.global_collection_id
@@ -459,11 +441,9 @@ impl KugouPlaylistsView {
         cx.notify();
     }
 
-    /// Whether `hash` should show as liked right now. Everywhere but the
-    /// "liked songs" playlist (listid 2) that's the session set OR the
-    /// process-wide liked-set (which the shared like/unlike helpers keep in
-    /// sync); inside listid 2 the global set decides, minus hashes the user
-    /// unliked this session.
+    /// `hash` 此刻该不该显示为已点赞。除「我喜欢的」歌单（listid 2）之外，
+    /// 判据都是会话集合 OR 进程级已点赞集合（由共享的赞/取消赞辅助函数保持同步）；
+    /// 在 listid 2 内部由全局集合决定，再减去本会话被用户取消赞的 hash。
     fn is_track_liked(&self, hash: &str) -> bool {
         if self.selected.as_ref().is_some_and(|s| s.listid == 2) {
             crate::ui::kugou::liked_set_contains(hash) && !self.unliked.contains(hash)
@@ -472,19 +452,17 @@ impl KugouPlaylistsView {
         }
     }
 
-    /// Optimistic like/unlike with click dedup; the outcome watcher rolls
-    /// the snapshot back if the request does not land. Mirrors
-    /// `KugouRanksView::toggle_like`, plus the `unliked` set the "liked
-    /// songs" playlist (listid 2) needs.
+    /// 带点击去重的乐观赞/取消赞；请求没落地时结果监视器把快照回滚。
+    /// 对齐 `KugouRanksView::toggle_like`，外加「我喜欢的」歌单（listid 2）
+    /// 需要的 `unliked` 集合。
     fn toggle_like(&mut self, track: &KugouTrackInfo, cx: &mut Context<Self>) {
         let hash = track.hash.clone();
-        // one like/unlike request per track at a time; clicks while a request
-        // is in flight are ignored
+        // 每首曲目同时只有一个赞/取消赞请求；请求已在途期间的点击被忽略
         if !self.like_in_flight.insert(hash.clone()) {
             return;
         }
         let want_liked = !self.is_track_liked(&hash);
-        // snapshot for the rollback watcher
+        // 供回滚监视器使用的快照
         let was_liked = self.liked.contains(&hash);
         let was_unliked = self.unliked.contains(&hash);
         if want_liked {
@@ -500,11 +478,9 @@ impl KugouPlaylistsView {
         self.watch_like_outcome(hash, want_liked, was_liked, was_unliked, cx);
     }
 
-    /// The shared like/unlike helpers flip the process-wide liked-set on
-    /// success and leave it untouched on failure, so the outcome is
-    /// observable via `crate::ui::kugou::liked_set_contains`. Watch it
-    /// (bounded) and roll the optimistic update of `liked`/`unliked` back to
-    /// the pre-click snapshot when the request did not land.
+    /// 共享的赞/取消赞辅助函数成功时翻转进程级已点赞集合、失败时原样不动，
+    /// 因此结果可由 `crate::ui::kugou::liked_set_contains` 观测。监视它
+    /// （有界），请求未落地时把 `liked`/`unliked` 的乐观更新回滚到点击前快照。
     fn watch_like_outcome(
         &mut self,
         hash: String,
@@ -535,7 +511,7 @@ impl KugouPlaylistsView {
         );
     }
 
-    // ---- External playlist import (NetEase / QQ → KuGou) ----
+    // ---- 外部歌单导入（网易云 / QQ → 酷狗）----
 
     fn open_import(&mut self, cx: &mut Context<Self>) {
         if self.import_input.is_none() {
@@ -546,9 +522,8 @@ impl KugouPlaylistsView {
             ));
         }
         self.import_open = true;
-        // Do not reset `import_busy`: closing the modal does not abort the
-        // pipeline, and clearing the flag here let a reopen submit a second
-        // import for the same playlist. The Finished event clears it.
+        // 不要重置 `import_busy`：关闭模态框并不会中止管线，而在这里清旗标
+        // 会让重新打开的模态框对同一歌单提交第二次导入。由 Finished 事件清除。
         self.import_status = SharedString::default();
         cx.notify();
     }
@@ -574,18 +549,16 @@ impl KugouPlaylistsView {
         self.import_busy = true;
         self.import_status =
             SharedString::from(tr!("KUGOU_IMPORT_PARSING", "Parsing link…").to_string());
-        // resolved here on the UI thread so the localized fallback name uses
-        // the right locale once the pipeline runs on the Tokio runtime
+        // 在 UI 线程就地解析，好让本地化的兜底名称在管线跑到 Tokio 运行时上之后
+        // 仍用对 locale
         let default_name = tr!("KUGOU_IMPORT_DEFAULT_NAME", "Imported playlist").to_string();
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            // every pipeline step is a network call; they all run on the
-            // Tokio runtime — reqwest's DNS resolver panics on the gpui
-            // executor (see `ui::kugou::fetch_online_lyric`). The task owns
-            // the channel sender, so this loop ends when the pipeline sends
-            // its final outcome (or dies, which leaves the stale busy state
-            // exactly as the old JoinHandle-error path did).
+            // 管线的每一步都是网络调用，全部跑在 Tokio 运行时上——reqwest 的
+            // DNS 解析器在 gpui executor 上会 panic（见 `ui::kugou::fetch_online_lyric`）。
+            // 任务持有通道的发送端，所以管线发出最终结果时本循环自然结束
+            // （任务死掉时也一样结束，留下与旧 JoinHandle 错误路径完全相同的陈旧 busy 态）。
             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
             crate::RUNTIME.spawn(async move {
                 let outcome = run_import(text, default_name, &progress_tx).await;
@@ -593,7 +566,7 @@ impl KugouPlaylistsView {
             });
 
             while let Some(event) = progress_rx.recv().await {
-                // a burst of match completions collapses into one status update
+                // 一口气涌入的匹配完成事件合并为一次状态更新
                 let mut event = event;
                 while let Ok(next) = progress_rx.try_recv() {
                     event = next;
@@ -603,9 +576,8 @@ impl KugouPlaylistsView {
                     .update(cx, |this, cx| {
                         let done_toast = match event {
                             ImportEvent::Progress { done, total } => {
-                                // matching progress reuses the generic
-                                // "Importing…" entry (a dedicated key would
-                                // have to be added to the catalogs too)
+                                // 匹配进度复用通用的「正在导入…」词条
+                                // （专用键还得往词条目录里另外加）
                                 this.import_status =
                                     format!("{} {}/{}", tr!("KUGOU_IMPORT_RUNNING"), done, total)
                                         .into();
@@ -623,8 +595,8 @@ impl KugouPlaylistsView {
                                         );
                                         this.import_status = summary.clone().into();
                                         this.refresh_playlists(cx);
-                                        // Zero added means every upload failed:
-                                        // keep the counts but surface an error.
+                                        // 添加数为 0 意味着每次上传都失败了：
+                                        // 计数保留，但要把错误暴露出来。
                                         Some(if matched == 0 {
                                             Toast::error(summary)
                                         } else {
@@ -685,9 +657,8 @@ impl KugouPlaylistsView {
                 }
             }
 
-            // The channel can close without a Finished event if the import
-            // task dies. Release the busy flag so reopening the modal can
-            // retry instead of staying stuck forever.
+            // 导入任务死掉时通道可能在没有 Finished 事件的情况下关闭。
+            // 释放 busy 旗标，好让重新打开模态框能重试，而不是永远卡住。
             let _ = this.update(cx, |this, cx| {
                 if this.import_busy {
                     this.import_busy = false;
@@ -725,10 +696,9 @@ impl KugouPlaylistsView {
         }
     }
 
-    /// Rows are built from inside the overview uniform_list render closure
-    /// where only `&App` is available, so the click handler reaches the view
-    /// through a weak handle instead of `cx.listener` (same pattern as the
-    /// track rows and the import modal's callbacks).
+    /// 行是在总览 uniform_list 的渲染闭包内部构造的，那里只有 `&App`，
+    /// 所以点击处理器经弱句柄抵达视图，而不是用 `cx.listener`
+    /// （与曲目行、导入模态框回调同一套模式）。
     fn render_playlist_row(
         &self,
         index: usize,
@@ -790,10 +760,9 @@ impl KugouPlaylistsView {
             })
     }
 
-    /// Rows are built from inside the uniform_list render closure where only
-    /// `&App` is available, so there is no `cx.listener` here: the like
-    /// handler reaches the view through a weak handle instead (same pattern
-    /// as the import modal's callbacks).
+    /// 行是在 uniform_list 的渲染闭包内部构造的，那里只有 `&App`，
+    /// 因此这里没有 `cx.listener` 可用：点赞处理器改经弱句柄抵达视图
+    /// （与导入模态框回调同一套模式）。
     fn render_track_row(
         &self,
         track: &Arc<KugouTrackInfo>,
@@ -825,13 +794,13 @@ fn load_failed_message(err: &impl std::fmt::Display) -> SharedString {
     .into()
 }
 
-/// Total 1-based page count for `count` items at `TRACKS_PER_PAGE` per page.
+/// `count` 条曲目按每页 `TRACKS_PER_PAGE` 算出的 1 基总页数。
 fn page_count(count: i64) -> i64 {
     (count + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE
 }
 
-/// Localized "{count} track(s)" label. Single place where the plural string is
-/// defined so the i18n generator doesn't see duplicate definitions.
+/// 本地化的「{count} 首曲目」标签。复数字符串只在这一处定义，
+/// 好让 i18n 生成器看不到重复定义。
 fn kugou_track_count(count: i64) -> cntp_i18n::I18nString {
     trn!(
         "KUGOU_TRACK_COUNT",
@@ -846,9 +815,8 @@ impl Render for KugouPlaylistsView {
         let theme = cx.global::<Theme>();
         let scroll_handle = self.scroll_handle.clone();
 
-        // Both large lists (track list, playlist overview) scroll inside
-        // their own virtualized uniform_list; the page-level scroller only
-        // serves the small loading/error/empty states.
+        // 两个大列表（曲目列表、歌单总览）都在各自虚拟化的 uniform_list 内滚动；
+        // 页面级滚动器只服务于小的加载/错误/空态。
         let tracks_ready = self.selected.is_some() && !self.tracks.is_empty();
         let overview_ready = self.selected.is_none()
             && matches!(&self.playlists, PlaylistsState::Ready(playlists) if !playlists.is_empty());
@@ -856,7 +824,7 @@ impl Render for KugouPlaylistsView {
         let mut content = div().flex().flex_col().pb(px(24.0));
 
         if self.selected.is_some() {
-            // track list of the open playlist
+            // 已打开歌单的曲目列表
             match &self.tracks_state {
                 TracksState::Loading if self.tracks.is_empty() => {
                     content = content.child(muted_line(tr!("KUGOU_LOADING"), theme));
@@ -877,12 +845,12 @@ impl Render for KugouPlaylistsView {
                         theme,
                     ));
                 }
-                // loaded tracks are rendered by the virtualized uniform_list
-                // in the scroll branch below, not by page-flow content
+                // 已加载的曲目由下面滚动分支里的虚拟化 uniform_list 渲染，
+                // 不由 page-flow 内容渲染
                 _ => {}
             }
         } else {
-            // playlist overview
+            // 歌单总览
             match &self.playlists {
                 PlaylistsState::LoggedOut => {
                     content = content
@@ -929,9 +897,8 @@ impl Render for KugouPlaylistsView {
                             theme,
                         ));
                     }
-                    // a non-empty overview is rendered by the virtualized
-                    // uniform_list in the scroll branch below, not by
-                    // page-flow content
+                    // 非空的总览由下面滚动分支里的虚拟化 uniform_list 渲染，
+                    // 不由 page-flow 内容渲染
                 }
             }
         }
@@ -947,8 +914,7 @@ impl Render for KugouPlaylistsView {
             .child(self.render_header(cx));
 
         if tracks_ready {
-            // the uniform_list is its own scroll container, so the page-level
-            // scroller is replaced wholesale while tracks are on screen
+            // uniform_list 本身就是滚动容器，所以曲目在屏时页面级滚动器整体被替换
             let tracks_scroll_handle = self.tracks_scroll_handle.clone();
 
             root = root.child(online_list_container(
@@ -973,9 +939,8 @@ impl Render for KugouPlaylistsView {
                 }),
             ));
         } else if overview_ready {
-            // the playlist overview is its own scroll container, so the
-            // page-level scroller is replaced wholesale here (same as the
-            // track list above)
+            // 歌单总览本身就是滚动容器，所以这里页面级滚动器同样整体被替换
+            // （与上面的曲目列表一致）
             let playlist_count = self.playlists.as_ready().map_or(0, |p| p.len());
             let list_entity = cx.entity();
             let playlists_scroll_handle = self.playlists_scroll_handle.clone();
@@ -1131,9 +1096,9 @@ impl KugouPlaylistsView {
     }
 }
 
-/// Searches KuGou for the first playable track matching `name`. Returns
-/// `(title, hash, album_id, mix_song_id)` for `playlist_add_songs`. Must run
-/// on the Tokio runtime (network call).
+/// 在 `name` 上搜索酷狗，返回第一首可播放的匹配曲目。给出
+/// `(title, hash, album_id, mix_song_id)` 供 `playlist_add_songs` 使用。
+/// 必须在 Tokio 运行时上运行（网络调用）。
 async fn kugou_match(
     client: &kugou::KugouClient,
     name: &str,
@@ -1151,10 +1116,9 @@ async fn kugou_match(
     ))
 }
 
-/// Resolves the just-created playlist's numeric listid from the user's list
-/// by name. The create response does not reliably carry it, and the list may
-/// not reflect the new playlist immediately, so retry with a short pause.
-/// Must run on the Tokio runtime (network calls + sleep).
+/// 按名称从用户列表里解析刚建歌单的数值 listid。创建响应并不可靠地带上它，
+/// 且列表未必立刻反映新歌单，所以带短暂停顿重试。
+/// 必须在 Tokio 运行时上运行（网络调用 + sleep）。
 async fn find_playlist_id(client: &kugou::KugouClient, name: &str) -> Option<i64> {
     for attempt in 0..3 {
         if let Ok(resp) = client.user_playlists(1, PLAYLISTS_PER_PAGE).await
@@ -1171,11 +1135,9 @@ async fn find_playlist_id(client: &kugou::KugouClient, name: &str) -> Option<i64
     None
 }
 
-/// The whole import pipeline (resolve share link → create playlist → match
-/// every song → upload in chunks), run on the Tokio runtime so none of the
-/// network awaits touch the gpui executor. Match progress streams through
-/// `progress`; the caller forwards the returned outcome as the channel's
-/// final event.
+/// 整条导入管线（解析分享链接 → 建歌单 → 逐曲匹配 → 分块上传），
+/// 跑在 Tokio 运行时上，因此没有任何网络 await 触碰 gpui executor。
+/// 匹配进度经 `progress` 流出；调用方把返回的结果作为通道的最后一个事件转发。
 async fn run_import(
     text: String,
     default_name: String,
@@ -1204,20 +1166,19 @@ async fn run_import(
 
     let total = parsed.songs.len();
     let mut matched: Vec<(String, String, i64, i64)> = Vec::new();
-    // bounded, order-preserving concurrency: `buffered` yields results in
-    // `parsed.songs` order no matter which search answers first, and a
-    // `None` (failed search or no hit) still just skips the song
+    // 有界且保序的并发：无论哪个搜索先回答，`buffered` 都按 `parsed.songs`
+    // 的顺序产出结果，而 `None`（搜索失败或没命中）仍然只是跳过这首歌
     let _ = progress.send(ImportEvent::Progress { done: 0, total });
-    // owned songs + a per-future `Arc` clone: nothing in the stream borrows
-    // from the surrounding frame, so the buffered futures stay sendable
+    // 持有所有权的歌曲 + 每个 future 一次 `Arc` clone：流里没有任何东西借用
+    // 外层栈帧，所以 buffered 的 future 保持可发送
     let mut searches = stream::iter(parsed.songs)
         .map(|song| {
             let client = client.clone();
             async move { kugou_match(&client, &song).await }
         })
         .buffered(KUGOU_MATCH_CONCURRENCY);
-    // progress counts every handled song, not just matches — with a low hit
-    // rate a match-only counter stalls and reads as a hung import
+    // 进度统计每一首处理过的曲目，不只是命中的——命中率低时只数命中会让计数器
+    // 停滞，看起来像导入卡死
     let mut processed = 0usize;
     while let Some(m) = searches.next().await {
         if let Some(m) = m {
@@ -1247,8 +1208,8 @@ async fn run_import(
         }
     }
 
-    // `matched` now means "actually added": a partial/total upload failure
-    // must not be reported as a full success.
+    // `matched` 现在指「真正加进去的」：部分/全部上传失败
+    // 不得被报告成完整成功。
     ImportOutcome::Done {
         matched: added,
         total: total as i64,

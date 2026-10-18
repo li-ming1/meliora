@@ -39,15 +39,14 @@ use loader::{collect_audio_recursive, load_dir_entries, queue_items_from_entries
 pub use model::{FlatRow, RawEntry, TrackRef};
 use tree::{ChildState, FileNode, FileTree, collect_expanded_paths};
 
-/// The multi-selection payload consumed by every selected row's batch context
-/// menu. Rc-shared so each selected row's render clones a refcount instead of
-/// rebuilding (or deep-cloning) the whole batch.
+/// 每个选中行的批量右键菜单都要消费的多元选载荷。用 Rc 共享，所以每个选中行的 render
+/// 只 clone 一个引用计数，而不是重建（或深拷贝）整批数据。
 type BatchItems = (Rc<Vec<(Arc<Path>, Option<TrackRef>)>>, Rc<Vec<i64>>);
-/// The same selection as owned `Vec`s, as returned by
-/// [`FilesView::selected_batch_items`] for the menu snapshot.
+/// 同一选区的持有所有权的 `Vec` 形态，即 [`FilesView::selected_batch_items`]
+/// 为菜单快照返回的类型。
 type SelectedBatch = (Vec<(Arc<Path>, Option<TrackRef>)>, Vec<i64>);
 
-/// Root paths currently configured for scanning in settings.
+/// 设置里当前配置的扫描根路径。
 fn configured_root_paths(cx: &App) -> Vec<PathBuf> {
     cx.global::<SettingsGlobal>()
         .model
@@ -59,8 +58,8 @@ fn configured_root_paths(cx: &App) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Scrolls the uniform list so its top sits `top` pixels below the list start
-/// (scroll handles encode that as a negative y offset).
+/// 滚动 uniform list，使其顶部落在列表起点下方 `top` 像素处
+/// （滚动句柄把这个编码成负的 y 偏移）。
 fn set_scroll_top(handle: &UniformListScrollHandle, top: f32) {
     handle.0.borrow().base_handle.set_offset(Point {
         x: px(0.0),
@@ -68,9 +67,8 @@ fn set_scroll_top(handle: &UniformListScrollHandle, top: f32) {
     });
 }
 
-// This is all deliberately awkward: it balances memory consumption against
-// UX. It could be simplified, but that would use more memory once you leave
-// the tab.
+// 这一整套刻意别扭：它在内存占用与体验之间做权衡。可以简化，但那样离开这个标签页之后
+// 就要占用更多内存。
 pub struct FilesView {
     tree: FileTree,
     flat: Arc<Vec<FlatRow>>,
@@ -86,8 +84,8 @@ pub struct FilesView {
     cached_node_count: usize,
     restore_expanded: FxHashSet<PathBuf>,
     pending_scroll: Option<f32>,
-    /// Recomputed once per `FilesView::render` (not once per selected row),
-    /// `None` while fewer than two rows are selected.
+    /// 每次 `FilesView::render` 只重算一次（不是每个选中行一次），
+    /// 选中不足两行时为 `None`。
     selected_batch: Option<BatchItems>,
 }
 
@@ -210,8 +208,8 @@ impl FilesView {
         self.selected.len() > 1
     }
 
-    /// `(audio files with their track refs, track ids)` snapshot of the
-    /// current multi-selection, for the batch add-to-playlist menu.
+    /// 当前多元选的 `(含 track refs 的音频文件, 曲目 ids)` 快照，
+    /// 供批量加入歌单菜单使用。
     pub fn selected_batch_items(&self) -> SelectedBatch {
         let mut audio_items = Vec::with_capacity(self.selected.len());
         let mut track_ids = Vec::with_capacity(self.selected.len());
@@ -255,9 +253,8 @@ impl FilesView {
             return;
         }
 
-        // The per-entry availability stats run on the blocking pool (see
-        // available_paths) instead of one stat per sibling on the UI thread;
-        // the queue swap then happens exactly as before, one task-hop later.
+        // 逐项可用性 stat 改在阻塞池上跑（见 available_paths），而不是在 UI 线程上
+        // 每个同级项 stat 一次；队列交换随后照旧发生，只是晚一个任务跳转。
         let paths: Vec<PathBuf> = audio_entries
             .iter()
             .map(|(entry_path, _)| entry_path.clone())
@@ -268,8 +265,7 @@ impl FilesView {
                 .spawn_blocking(move || available_paths(paths))
                 .await
                 .unwrap_or_default();
-            // a newer click supersedes this one (last-click-wins, see
-            // BATCH_ACTION_TICKET)
+            // 更新的点击已取代这一次（后点击优先，见 BATCH_ACTION_TICKET）
             if ticket != BATCH_ACTION_TICKET.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
@@ -511,9 +507,8 @@ impl Render for FilesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.process_restore(cx);
 
-        // Build the multi-selection batch once per frame; every selected row's
-        // context menu then reads this shared snapshot instead of each walking
-        // the whole flat list again (which was O(rows x selection) per frame).
+        // 多元选批量每帧只构造一次；之后每个选中行的右键菜单都读这份共享快照，
+        // 而不是各自行走一遍整个扁平列表（那过去是每帧 O(行数 x 选区)）。
         self.selected_batch = if self.selected.len() > 1 {
             let (audio_items, track_ids) = self.selected_batch_items();
             Some((Rc::new(audio_items), Rc::new(track_ids)))

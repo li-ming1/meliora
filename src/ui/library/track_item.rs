@@ -33,23 +33,21 @@ pub enum ArtistNameVisibility {
 pub type TrackPlaylistInfo = PlaylistMenuInfo;
 
 pub struct TrackItem {
-    /// Rc-shared so the click/context-menu closures clone a refcount instead
-    /// of the whole track (PathBuf included) on every render.
+    /// 用 Rc 共享，好让点击/右键菜单闭包 clone 的是引用计数，而不是每次渲染都
+    /// clone 整条曲目（含 PathBuf）。
     pub track: Rc<Track>,
     pub is_start: bool,
     pub artist_name_visibility: ArtistNameVisibility,
     pub is_liked: Option<i64>,
     pub hover_group: SharedString,
-    /// Measured once (font metrics don't change per frame); `None` until the
-    /// first render with a window available.
+    /// 只测量一次（字体度量不会每帧变）；在第一次有窗口可用的渲染之前都是 `None`。
     max_track_num_width: Option<Pixels>,
     track_number_label: SharedString,
-    /// Precomputed at construction; `format_duration` ran per frame otherwise.
+    /// 构造时算好；否则 `format_duration` 要每帧跑一遍。
     duration_text: SharedString,
-    /// Drag payload prebuilt once; `on_drag` takes it by value every frame, so
-    /// render clones this small struct instead of re-running `from_track`
-    /// (a per-frame `PathBuf` allocation). `Some` only when this row has no
-    /// playlist of its own — playlists install their own drag handler.
+    /// 拖拽负载预先构造一次；`on_drag` 每帧按值取走它，所以 render 只 clone 这个小
+    /// 结构体，不再重跑 `from_track`（那是每帧一次 `PathBuf` 分配）。
+    /// 仅当本行不属于任何歌单时才是 `Some`——歌单会装上自己的拖拽处理器。
     drag_data: Option<TrackDragData>,
     left_field: TrackItemLeftField,
     album_art: Option<SharedString>,
@@ -68,8 +66,8 @@ pub enum TrackItemLeftField {
     Art,
 }
 
-/// Display flags for [`TrackItem::new`], bundled so the constructor doesn't
-/// take a pile of positional bools.
+/// [`TrackItem::new`] 的显示标志位，打包成一个结构体，好让构造函数不必收一堆
+/// 位置参数 bool。
 #[derive(Default)]
 pub struct TrackItemOptions {
     pub(crate) is_start: bool,
@@ -120,9 +118,8 @@ impl TrackItem {
                 track.track_number.unwrap_or_default().to_string().into();
             let duration_text: SharedString = format_duration(track.duration, false).into();
 
-            // drag payload prebuilt once: `on_drag` takes it by value every
-            // frame, so render clones this small struct instead of re-running
-            // `from_track` (a per-frame `PathBuf` allocation)
+            // 拖拽负载预先构造一次：`on_drag` 每帧按值取走它，所以 render 只 clone
+            // 这个小结构体，不再重跑 `from_track`（每帧一次 `PathBuf` 分配）
             let drag_data = if pl_info.is_none() {
                 Some(TrackDragData::from_track(
                     track.id,
@@ -175,7 +172,7 @@ impl Render for TrackItem {
                 .map(|max_num_str| measure_track_number_width(window, max_num_str))
                 .unwrap_or(px(22.0))
         });
-        // only an equality check against the row's own path - no need to clone
+        // 只是与本行自己的路径做相等比较——不需要 clone
         let is_current = cx
             .global::<PlaybackInfo>()
             .current_track
@@ -240,7 +237,7 @@ impl Render for TrackItem {
                                         .text_color(theme.text_secondary)
                                         .text_sm()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        // 22px (from track # width) + 18 + 13
+                                        // 22px（来自 track # 宽度）+ 18 + 13
                                         .px(px(track_num_width.to_f64() as f32 + 18.0 + 13.0))
                                         .border_b_1()
                                         .w_full()
@@ -251,7 +248,7 @@ impl Render for TrackItem {
                                         .when_some(self.track.disc_number, |this, num| {
                                             if self.vinyl_numbering && (1..=26).contains(&num) {
                                                 let side = (b'A' + (num - 1) as u8) as char;
-                                                // i18n interpolation only takes strings
+                                                // i18n 插值只接受字符串
                                                 let side = side.to_string();
                                                 this.child(tr!(
                                                     "TRACK_SIDE",
@@ -296,8 +293,7 @@ impl Render for TrackItem {
                                         this.hover(|this| this.bg(theme.nav_button_hover))
                                             .active(|this| this.bg(theme.nav_button_active))
                                     })
-                                    // only handle drag when we're not in a playlist
-                                    // playlists have their own drag handler
+                                    // 只在不属于歌单时处理拖拽：歌单有自己的拖拽处理器
                                     .when(is_available, |this| {
                                         match self.drag_data.clone() {
                                             Some(drag) => {
@@ -306,7 +302,7 @@ impl Render for TrackItem {
                                                     DragPreview::new(cx, display_name.clone())
                                                 })
                                             }
-                                            // playlist rows have no drag payload of their own
+                                            // 歌单行没有自己的拖拽负载
                                             None => this,
                                         }
                                     })
@@ -321,8 +317,8 @@ impl Render for TrackItem {
                                                 .text_align(TextAlign::Right)
                                                 .mr(px(13.0))
                                                 .text_color(theme.text_secondary)
-                                                // numerals come from the prebuilt
-                                                // track_number_label; alignment is width-capped
+                                                // 数字取自预先构造好的 track_number_label；
+                                                // 对齐靠宽度上限保证
                                                 .child(self.track_number_label.clone()),
                                         )
                                     })
@@ -414,9 +410,8 @@ impl Render for TrackItem {
                             ),
                     )
                     .menu_on_open({
-                        // menu tree (TrackContextMenu's artist DB lookup, path stat,
-                        // translations) builds only when the menu opens, off the
-                        // per-row repaint path
+                        // 菜单树（TrackContextMenu 的艺术家 DB 查找、path stat、翻译）
+                        // 只在菜单打开时构建，绕开逐行重绘路径
                         let track = self.track.clone();
                         let track_menu_context = track_menu_context;
                         let pl_info = self.pl_info;

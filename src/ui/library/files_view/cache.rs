@@ -12,7 +12,7 @@ impl super::FilesView {
     }
 
     pub(super) fn evict_lru(&mut self) {
-        // 未超容量时无需驱逐：提前返回，避免每次调用都全树遍历保护集并克隆。
+        // 未超容量时无需逐出：提前返回，避免每次调用都全树遍历保护集并克隆。
         if self.cached_node_count <= MAX_CACHED_NODES {
             return;
         }

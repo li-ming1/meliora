@@ -26,19 +26,17 @@ use super::{
 pub struct InfoSectionContextMenu {
     current_path: Option<PathBuf>,
     track: Option<Rc<Track>>,
-    /// Artist navigability of `track`, resolved by the parent's background
-    /// job and handed over at construction: menu construction must not run
-    /// the DB's `block_on` query per frame the menu stays open.
+    /// `track` 的艺术家可导航性，由父级的后台任务解析好、在构造时交进来：
+    /// 构造菜单绝不能在每个保持打开的帧都跑一次 DB 的 `block_on` 查询。
     can_go_to_artist: bool,
     is_liked: Option<i64>,
     show_add_to: Option<Entity<bool>>,
-    /// Present only for online (KuGou) tracks: label plus a fire-and-forget
-    /// download action. Takes the place of "show in file manager", which is
-    /// meaningless for a stream URL.
+    /// 只出现在线（酷狗）曲目上：标签加一个发后即忘的下载动作。
+    /// 它顶替的是「在文件管理器中显示」——那对流媒体 URL 毫无意义。
     online_download: Option<OnlineDownloadAction>,
 }
 
-/// Online download menu entry: `(localized label, fire-and-forget action)`.
+/// 在线下载菜单项：`(本地化标签, 发后即忘的动作)`。
 type OnlineDownloadAction = (SharedString, Rc<dyn Fn(&mut gpui::App)>);
 
 impl InfoSectionContextMenu {
@@ -66,11 +64,9 @@ impl RenderOnce for InfoSectionContextMenu {
         let reveal_path = self.current_path;
         let is_online = reveal_path.as_deref().is_some_and(is_online_path);
         let track = self.track;
-        // availability snapshot read: a per-render `path.exists()` syscall here
-        // would block the UI thread every frame the menu stays open. Without a
-        // library row yet (resolve window, non-library file) the fresh stat
-        // stays, so a path that exists is not read as missing until the next
-        // snapshot reload lands.
+        // 读的是可用性快照：这里每渲染一次就 `path.exists()` 一次系统调用，会在菜单
+        // 保持打开的每一帧阻塞 UI 线程。还没有库行时（解析窗口、非库文件）保留新鲜
+        // stat，因此一条存在的路径不会被误读成缺失，直到下一次快照重载落地。
         let can_reveal_track = match track.as_deref() {
             Some(t) => is_track_available_snapshot(cx, t),
             None => !is_online && reveal_path.as_deref().is_some_and(is_track_path_available),

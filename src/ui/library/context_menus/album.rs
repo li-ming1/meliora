@@ -50,8 +50,8 @@ impl RenderOnce for AlbumContextMenu {
         let album_for_rescan = self.album.clone();
         let show_add_to = self.show_add_to;
         let show_go_to_artist = self.context.show_go_to_artist;
-        // cached availability snapshot: this render runs while the menu opens,
-        // and the old check issued a block_on query plus a stat per track
+        // 用缓存的可用性快照：这次 render 在菜单打开时运行，而旧的检查是每首曲目
+        // 一次 block_on 查询加一次 stat
         let is_available = cx
             .global::<Models>()
             .available_albums

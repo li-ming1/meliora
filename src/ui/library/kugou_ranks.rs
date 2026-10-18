@@ -1,6 +1,5 @@
-//! KuGou discovery page: the platform rank list with per-rank tracks and the
-//! daily recommend playlist. Streams online tracks like the playlists page.
-//! Gated behind the `kugou` cargo feature.
+//! 酷狗发现页：平台榜单列表（含每个榜单的曲目）与每日推荐歌单。在线曲目的串流
+//! 方式与云歌单页相同。受 `kugou` cargo feature 门控。
 
 use std::{
     collections::HashSet,
@@ -36,15 +35,13 @@ use crate::{
 
 const TRACKS_PER_PAGE: i64 = 30;
 
-/// Session cache for the two tab roots (TTL + helpers in `online_common`):
-/// the view entity is rebuilt on every tab switch, so a fresh entry skips
-/// the root-list re-fetch entirely.
+/// 两个标签页根数据的会话缓存（TTL 与辅助函数在 `online_common`）：视图实体每次
+/// 切标签都会重建，缓存新鲜时整轮根列表重取直接跳过。
 type CachedTabRoot<T> = LazyLock<Mutex<Option<CachedRoot<Vec<T>>>>>;
 static CACHED_RANKS: CachedTabRoot<KugouRank> = LazyLock::new(|| Mutex::new(None));
 static CACHED_RECOMMEND: CachedTabRoot<Arc<KugouTrackInfo>> = LazyLock::new(|| Mutex::new(None));
 
-/// Daily recommendations are fetched for the signed-in userid; drop them
-/// whenever the account identity changes, like the playlist overview.
+/// 每日推荐是按已登录 userid 抓取的；账号身份一变就丢弃，做法与歌单总览相同。
 pub(crate) fn invalidate_cached_recommend() {
     clear_root(&CACHED_RECOMMEND);
 }
@@ -61,10 +58,8 @@ enum RanksState {
     Ready(Vec<KugouRank>),
 }
 
-/// Grid geometry for the virtualized rank-card grid. Five cards fill the
-/// 900px content column (with the 16px side padding); `GRID_ROW_H` covers
-/// the 148px cover plus the single-line name — `withsong: 0` means the
-/// cards carry no song-preview line anymore.
+/// 虚拟化榜单卡片网格的几何。5 张卡片填满 900px 内容列（算上左右各 16px padding）；
+/// `GRID_ROW_H` 覆盖 148px 封面加单行名称——`withsong: 0` 意味着卡片不再有歌曲预览行。
 const GRID_COLS: usize = 5;
 use crate::ui::online_track_row::RANK_CARD_W as GRID_CARD_W;
 const GRID_GAP: f32 = 18.0;
@@ -80,8 +75,8 @@ enum RecommendState {
     Idle,
     Loading,
     Failed(SharedString),
-    /// Arc-shared so the track-row closures capture refcounts, not deep
-    /// clones (every visible row re-clones its track every redraw).
+    /// 用 Arc 共享，好让曲目行闭包捕获的是引用计数而非深拷贝
+    /// （每个可见行每次重绘都会重新 clone 自己那条曲目）。
     Ready(Vec<Arc<KugouTrackInfo>>),
 }
 
@@ -93,20 +88,17 @@ pub struct KugouRanksView {
     tracks_state: TracksState,
     track_page: i64,
     has_more_tracks: bool,
-    /// Bumped on every track-list (re)load; in-flight page responses whose
-    /// generation no longer matches are dropped, so quickly closing and
-    /// reopening the same rank cannot append a stale page twice.
+    /// 每次（重）加载曲目列表都自增；世代号不再匹配的在途分页响应会被丢弃，
+    /// 于是快速关闭再打开同一榜单也不可能把同一陈旧页追加两次。
     track_generation: u64,
     recommend: RecommendState,
-    /// hashes liked during this session (drives the star icon)
+    /// 本次会话内点过赞的 hash（驱动星标图标）
     liked: HashSet<String>,
-    /// hashes with a like/unlike request in flight; extra clicks on those
-    /// rows are ignored until the request settles
+    /// 有赞/取消赞请求已在途的 hash；这些行上的额外点击在请求落地前一律忽略
     like_in_flight: HashSet<String>,
     scroll_handle: ScrollHandle,
-    /// Scroll position of the virtualized track list (open rank or daily
-    /// recommend); reset whenever the visible list changes so it starts at
-    /// the top.
+    /// 虚拟化曲目列表（打开的榜单或每日推荐）的滚动位置；可见列表一变就重置，
+    /// 使其从顶部开始。
     tracks_scroll_handle: UniformListScrollHandle,
 }
 
@@ -134,8 +126,7 @@ impl KugouRanksView {
     }
 
     fn load_ranks(&mut self, cx: &mut Context<Self>) {
-        // Session cache hit: the view is rebuilt on every tab switch, so a
-        // fresh cached rank list skips the network entirely.
+        // 会话缓存命中：视图每次切标签都会重建，所以新鲜的缓存榜单列表整段跳过网络。
         if let Some(ranks) = cached_root(&CACHED_RANKS) {
             self.ranks = RanksState::Ready(ranks);
             cx.notify();
@@ -258,8 +249,7 @@ impl KugouRanksView {
 
             let _ = this
                 .update(cx, |this, cx| {
-                    // the rank may have been closed and reopened while this
-                    // request was in flight; a stale page must not append twice
+                    // 请求已在途期间榜单可能被关闭后重开；陈旧页不得追加两次
                     let still_current = this
                         .selected
                         .as_ref()
@@ -297,8 +287,8 @@ impl KugouRanksView {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        // one page in flight at a time: tracks_state stays Loading from the
-        // click until the response lands, so extra clicks are ignored
+        // 一次只让一页在途：从点击到响应落地 tracks_state 一直是 Loading，
+        // 所以多余的点击被忽略
         if self.has_more_tracks && !matches!(self.tracks_state, TracksState::Loading) {
             let next_page = self.track_page + 1;
             self.load_tracks_page(next_page, cx);
@@ -322,15 +312,14 @@ impl KugouRanksView {
 
     fn toggle_like(&mut self, track: &KugouTrackInfo, cx: &mut Context<Self>) {
         let hash = track.hash.clone();
-        // one like/unlike request per track at a time; clicks while a request
-        // is in flight are ignored
+        // 每首曲目同时只有一个赞/取消赞请求；请求已在途期间的点击被忽略
         if !self.like_in_flight.insert(hash.clone()) {
             return;
         }
         let want_liked = !self.is_liked(&hash);
-        // snapshot for the rollback watcher
+        // 供回滚监视器使用的快照
         let was_liked = self.liked.contains(&hash);
-        // optimistic update
+        // 乐观更新
         if want_liked {
             self.liked.insert(hash.clone());
             crate::ui::kugou::like_track(cx, track);
@@ -342,11 +331,9 @@ impl KugouRanksView {
         self.watch_like_outcome(hash, want_liked, was_liked, cx);
     }
 
-    /// The shared like/unlike helpers flip the process-wide liked-set on
-    /// success and leave it untouched on failure, so the outcome is
-    /// observable via `crate::ui::kugou::liked_set_contains`. Watch it
-    /// (bounded) and roll the optimistic local update back when the request
-    /// did not land, so a failed like doesn't leave a wrong star.
+    /// 共享的赞/取消赞辅助函数成功时翻转进程级已点赞集合、失败时原样不动，
+    /// 因此结果可由 `crate::ui::kugou::liked_set_contains` 观测。监视它（有界），
+    /// 请求未落地时回滚乐观的本地更新，于是失败的点赞不会留下错误的星标。
     fn watch_like_outcome(
         &mut self,
         hash: String,
@@ -483,9 +470,8 @@ impl KugouRanksView {
             .into_any_element()
     }
 
-    /// One rank card. Built from inside the uniform_list closure where only
-    /// `&App` is available, so the click reaches the view through the weak
-    /// entity handle (same pattern as the track rows below).
+    /// 单张榜单卡片。它在 uniform_list 闭包内部构造，那里只有 `&App`，
+    /// 所以点击经弱实体句柄抵达视图（与下面的曲目行同一套模式）。
     fn render_rank_card(
         rank: &KugouRank,
         index: usize,
@@ -511,10 +497,8 @@ impl KugouRanksView {
         )
     }
 
-    /// The rows the virtualized container renders: the open rank's tracks, or
-    /// the daily-recommend list while that tab is showing. Both lists used to
-    /// render from their own state; the container reads a single slice, so
-    /// this picks the right one.
+    /// 虚拟化容器要渲染的那些行：打开的榜单的曲目，或该标签显示时的每日推荐列表。
+    /// 两个列表过去各自从自己的状态渲染；容器只读一个切片，所以由这里挑出正确的那个。
     fn visible_tracks(&self) -> &[Arc<KugouTrackInfo>] {
         if self.selected.is_some() || self.tab != Tab::DailyRecommend {
             &self.tracks
@@ -525,10 +509,8 @@ impl KugouRanksView {
         }
     }
 
-    /// Rows are built from inside the uniform_list render closure where only
-    /// `&App` is available, so there is no `cx.listener` here: the like
-    /// handler reaches the view through a weak handle instead (same pattern
-    /// as kugou_playlists).
+    /// 行是在 uniform_list 的渲染闭包内部构造的，那里只有 `&App`，因此这里没有
+    /// `cx.listener` 可用：点赞处理器改经弱句柄抵达视图（与 kugou_playlists 同一套模式）。
     fn render_track_row(
         &self,
         track: &Arc<KugouTrackInfo>,
@@ -572,9 +554,8 @@ impl KugouRanksView {
                         ),
                     )
                     .into_any_element(),
-                // unreachable in practice: Render::render routes a Ready rank
-                // grid to the virtualized container below; this arm only
-                // keeps the match exhaustive
+                // 实践中不可达：Render::render 会把 Ready 的榜单网格交给下面的虚拟化
+                // 容器；这个 arm 只是让 match 保持穷尽
                 RanksState::Ready(_) => div().into_any_element(),
             },
             Tab::DailyRecommend => match &self.recommend {
@@ -598,24 +579,21 @@ impl KugouRanksView {
                         ),
                     )
                     .into_any_element(),
-                // unreachable in practice: Render::render routes a Ready
-                // daily-recommend to the virtualized container below; this arm
-                // only keeps the match exhaustive
+                // 实践中不可达：Render::render 会把 Ready 的每日推荐交给下面的虚拟化
+                // 容器；这个 arm 只是让 match 保持穷尽
                 RecommendState::Ready(_) => div().into_any_element(),
             },
         }
     }
 }
 
-/// Muted placeholder line for the loading and empty states of both the rank
-/// grid and the track lists.
+/// 榜单网格与曲目列表两者的加载态、空态所用的静默占位行。
 impl Render for KugouRanksView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let scroll_handle = self.scroll_handle.clone();
 
-        // Mirror kugou_playlists: while a track list is on screen it is its
-        // own scroll container and replaces the page-level scroller wholesale,
-        // so the accumulated rows stay virtualized regardless of page count.
+        // 对齐 kugou_playlists：曲目列表在屏时它本身就是滚动容器，并整体替换页面级
+        // 滚动器，所以无论翻了多少页，累计的行都保持虚拟化。
         let tracks_ready = if self.selected.is_some() {
             !(matches!(
                 &self.tracks_state,
@@ -624,9 +602,8 @@ impl Render for KugouRanksView {
         } else {
             self.tab == Tab::DailyRecommend && matches!(self.recommend, RecommendState::Ready(_))
         };
-        // the rank-card grid is a uniform_list too: like the track lists it
-        // must be the scroll container itself, not a child of the page
-        // scroller, or the virtualization culls nothing
+        // 榜单卡片网格同样是 uniform_list：和曲目列表一样，它必须自己就是滚动容器，
+        // 而不是页面级滚动器的子节点，否则虚拟化裁剪不掉任何东西
         let grid_ready = self.selected.is_none()
             && self.tab == Tab::Ranks
             && matches!(self.ranks, RanksState::Ready(_));
@@ -635,7 +612,7 @@ impl Render for KugouRanksView {
             .id("kugou-ranks-view")
             .key_context("KugouRanks")
             .on_action(cx.listener(|this, _: &EscapeBack, _, cx| {
-                // Escape leaves the rank detail back to the discovery list
+                // Escape 从榜单详情退回发现列表
                 if this.selected.is_some() {
                     this.close(cx);
                 }
@@ -676,8 +653,8 @@ impl Render for KugouRanksView {
         } else if grid_ready {
             root = root.child(self.render_ranks_grid(cx));
         } else {
-            // Borrowed only inside this fallback branch: all `&mut cx` uses
-            // above (header, grid, load-more) are already done.
+            // 只在这个兜底分支里借用：上面所有 `&mut cx` 的用法
+            // （头部、网格、加载更多）都已经结束。
             let theme = cx.global::<Theme>();
             let content: AnyElement = if self.selected.is_some() {
                 match &self.tracks_state {
@@ -687,8 +664,8 @@ impl Render for KugouRanksView {
                     TracksState::Failed(message) if self.tracks.is_empty() => {
                         error_line(message.clone(), theme).into_any_element()
                     }
-                    // unreachable while tracks_ready routes non-empty lists to
-                    // the virtualized container; kept exhaustive for the compiler
+                    // tracks_ready 已把非空列表路由到虚拟化容器，此处不可达；
+                    // 保留它是为了让编译器满足穷尽性
                     _ => div().into_any_element(),
                 }
             } else {

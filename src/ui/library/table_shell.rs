@@ -9,14 +9,11 @@ use crate::ui::{
     models::Models,
 };
 
-/// Shared scaffold of the three top-level library tables (albums / artists /
-/// tracks). Owns the table entity and its view-mode header, restores the
-/// initial scroll offset, wires the scan-completion refresh, and renders the
-/// standard full-width/max-width page column. Extracted verbatim from
-/// AlbumView/ArtistView (whose renders were byte-identical); each view keeps
-/// only its own row-open handler and context-menu context — and, for the
-/// track table, its extra inner wrapper div (that view keeps its own
-/// `Render` impl so every view's element tree stays exactly as before).
+/// 三个顶层库表格（专辑 / 艺术家 / 曲目）共享的骨架。持有表格实体及其视图模式头部，
+/// 恢复初始滚动偏移，接上扫描完成的刷新，并渲染标准的全宽/最大宽度页面列。
+/// 逐字抽取自 AlbumView/ArtistView（两者的 render 原本逐字节相同）；每个视图只保留
+/// 自己的行打开处理器与右键菜单上下文——曲目表还额外保留它自己的内层包装 div
+/// （该视图保留自己的 `Render` 实现，好让每个视图的元素树与之前完全一致）。
 pub struct TableShell<T, C>
 where
     T: TableData<C> + 'static,
@@ -67,14 +64,13 @@ where
         self.table.read(cx).get_scroll_offset(cx)
     }
 
-    /// The wrapped table entity. The track view needs it to hand its
-    /// self-referential queue builder a weak handle right after construction.
+    /// 被包装的表格实体。曲目表视图需要它在构造完成后立刻给自己的自引用队列构建器
+    /// 递一个弱句柄。
     pub fn table(&self) -> &Entity<Table<T, C>> {
         &self.table
     }
 
-    /// The wrapped view-mode header entity (the track view's own render
-    /// wrapper places it inside its extra div).
+    /// 被包装的视图模式头部实体（曲目视图自己的 render 包装会把它放进那个额外的 div 里）。
     pub fn header(&self) -> &Entity<TableViewHeader<T, C>> {
         &self.header
     }

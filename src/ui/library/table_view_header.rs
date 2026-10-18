@@ -31,9 +31,8 @@ where
         cx.new(|_| Self { table })
     }
 
-    /// One list/grid view-mode toggle. Both buttons share this shape and
-    /// differ only in element id, target mode, active state (which drives
-    /// both the icon and the pressed styling) and tooltip text.
+    /// 列表/网格视图模式的一个切换按钮。两个按钮共用这个形状，只在元素 id、目标模式、
+    /// 激活状态（它同时决定图标与按下样式）和 tooltip 文案上不同。
     #[allow(clippy::too_many_arguments)]
     fn view_mode_button(
         theme: &Theme,
@@ -102,8 +101,7 @@ where
             None
         };
 
-        // The view-mode toggles ride on the shared page header, keeping every
-        // top-level view's header visually identical.
+        // 视图模式切换挂在共享的页面头部上，让每个顶层视图的头部在观感上完全一致。
         view_header(Table::<T, C>::get_table_name()).when_some(right, |h, right| h.right(right))
     }
 }

@@ -58,23 +58,20 @@ use crate::ui::design::ICON_LG;
 
 actions!(playlist, [Export, Import]);
 
-// height + border
+// 行高 + 边框
 const PLAYLIST_ITEM_HEIGHT: f32 = 40.0;
 
-/// Prefetch band: when the visible-row center moves more than half this many
-/// rows, the view batch-prefetches full rows for `center ± ROW_PREFETCH_PAD`
-/// on the async runtime into the view-local row cache, so newly built rows hit
-/// the cache instead of one UI-thread `block_on` DB hit per row.
+/// 预取带宽：当可见行中心移动超过该行数的一半时，视图就在异步运行时上批量预取
+/// `center ± ROW_PREFETCH_PAD` 的整行，写入视图本地的行缓存，于是新建的行命中
+/// 缓存，而不是每行一次 UI 线程 `block_on` DB 查询。
 const ROW_PREFETCH_PAD: usize = 256;
 
-/// Upper bound of the row prefetch cache (simple FIFO, no LRU dependency): two
-/// full ±256-row prefetch windows plus slack.
+/// 行预取缓存的上界（简单 FIFO，不依赖 LRU）：两个 ±256 行的完整预取窗口再加余量。
 const ROW_CACHE_CAPACITY: usize = 1024;
 
-/// Prefetched playlist rows. `generation` invalidates in-flight prefetch
-/// tasks: `reload` clears the cache and bumps it, so a task started before the
-/// reload can never write pre-reload rows back. Same shape as the table's row
-/// cache in `library::types::table`, but view-local on purpose.
+/// 预取到的歌单行。`generation` 用于使在途预取任务失效：`reload` 清空缓存并自增
+/// 世代号，因此 reload 之前启动的任务绝不可能把 reload 之前的行写回。
+/// 形状与 `library::types::table` 里的表格行缓存相同，但刻意做成视图本地的。
 struct PrefetchedRows {
     generation: u64,
     order: VecDeque<i64>,
@@ -83,14 +80,13 @@ struct PrefetchedRows {
 
 type PrefetchedRowsHandle = Arc<Mutex<PrefetchedRows>>;
 
-/// Cached row lookup; a short `Mutex` critical section.
+/// 缓存行查找；`Mutex` 只持有极短的临界区。
 fn prefetched_track(cache: &PrefetchedRowsHandle, track_id: i64) -> Option<Arc<Track>> {
     cache.lock_recovered().rows.get(&track_id).cloned()
 }
 
-/// FIFO-bounded insert; returns false when the cache generation changed
-/// mid-prefetch (a reload cleared it), which tells the prefetch task to stop
-/// writing stale rows.
+/// FIFO 有界插入；缓存世代号在预取中途发生变化（reload 清空了缓存）时返回 false，
+/// 据此告诉预取任务别再写陈旧行。
 fn insert_prefetched(cache: &PrefetchedRowsHandle, track: Arc<Track>, generation: u64) -> bool {
     let mut cache = cache.lock_recovered();
     if cache.generation != generation {
@@ -111,18 +107,15 @@ fn insert_prefetched(cache: &PrefetchedRowsHandle, track: Arc<Track>, generation
     true
 }
 
-/// Same insert from the UI-thread fallback path: rendering and event handling
-/// run on the same thread and never interleave with a reload, so reading the
-/// current generation and inserting with it can never race the cache being
-/// cleared.
+/// 从 UI 线程兜底路径做同一次插入：渲染与事件处理跑在同一线程，不会与 reload
+/// 交错，因此读当前世代号再按它插入，绝不可能与缓存被清空构成竞态。
 fn insert_prefetched_current(cache: &PrefetchedRowsHandle, track: Arc<Track>) {
     let generation = cache.lock_recovered().generation;
     insert_prefetched(cache, track, generation);
 }
 
-/// Drops the prefetched rows and invalidates in-flight prefetch tasks. Runs on
-/// every reload: the track list (and with it every track_id) can change
-/// underneath the cached rows.
+/// 丢弃预取到的行并使在途预取任务失效。每次 reload 都执行：曲目列表
+/// （连同每一个 track_id）可能在缓存行的脚下发生变化。
 fn clear_prefetched_rows(cache: &PrefetchedRowsHandle) {
     let mut cache = cache.lock_recovered();
     cache.rows.clear();
@@ -130,14 +123,11 @@ fn clear_prefetched_rows(cache: &PrefetchedRowsHandle) {
     cache.generation = cache.generation.wrapping_add(1);
 }
 
-/// Schedules a background row prefetch when the visible center has moved half
-/// a prefetch band since the last one. `state` tracks (cache generation,
-/// center) so a stationary list costs one `Cell` read and one uncontended
-/// lock per frame. On schedule the full rows for `center ± ROW_PREFETCH_PAD`
-/// are fetched on the async runtime into the view's row cache (cleared on
-/// every reload), turning the per-row `cx.get_track_by_id` UI-thread
-/// `block_on` into a cache hit for rows past the keep-around band. Same shape
-/// as the table's `schedule_row_prefetch`.
+/// 可见中心相比上次调度移动了半个预取带宽时，安排一次后台行预取。`state` 记录
+/// （缓存世代号，可见中心），因此静止的列表每帧只花一次 `Cell` 读 + 一次无竞争的
+/// 锁。一旦安排，就在异步运行时上取回 `center ± ROW_PREFETCH_PAD` 的整行写入视图的
+/// 行缓存（每次 reload 清空），把逐行的 `cx.get_track_by_id` UI 线程 `block_on`
+/// 变成超出 keep-around 带的那些行的缓存命中。形状与表格的 `schedule_row_prefetch` 相同。
 fn schedule_row_prefetch(
     state: &Rc<Cell<(u64, usize)>>,
     rows_cache: &PrefetchedRowsHandle,
@@ -164,11 +154,11 @@ fn schedule_row_prefetch(
     let track_ids: Vec<i64> = items[start..end].iter().map(|row| row.track_id).collect();
     let rows_cache = rows_cache.clone();
 
-    // dropping the JoinHandle detaches the task
+    // 丢弃 JoinHandle 即让任务脱离托管
     #[allow(clippy::let_underscore_future)]
     let _ = crate::RUNTIME.spawn(async move {
-        // skip rows the cache already holds: overlapping windows stay cheap;
-        // dedup repeated ids so a track listed twice costs a single fetch
+        // 跳过缓存已持有的行：重叠窗口保持廉价；重复 id 去重，
+        // 让同一首曲目列两次也只付一次取回
         let mut seen = FxHashSet::default();
         let mut to_fetch = Vec::new();
         for track_id in track_ids {
@@ -177,8 +167,7 @@ fn schedule_row_prefetch(
             }
         }
 
-        // Locations are bound in chunks so one statement never exceeds the
-        // backend's host-parameter limit.
+        // 位置参数分块绑定，使任何单条语句都不超过后端的宿主参数上限。
         const SQL_BIND_CHUNK: usize = 900;
         for chunk in to_fetch.chunks(SQL_BIND_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(",");
@@ -195,14 +184,13 @@ fn schedule_row_prefetch(
                 Ok(fetched) => {
                     let mut fetched: FxHashMap<i64, Track> =
                         fetched.into_iter().map(|track| (track.id, track)).collect();
-                    // write back in window order so the FIFO cache keeps the
-                    // eviction order of the old row-by-row prefetch
+                    // 按窗口顺序写回，让 FIFO 缓存保持旧的逐行预取的逐出顺序
                     for track_id in chunk {
                         let Some(track) = fetched.remove(track_id) else {
                             continue;
                         };
                         if !insert_prefetched(&rows_cache, Arc::new(track), generation) {
-                            // cache was cleared (reload): stop writing stale rows
+                            // 缓存已被清空（reload）：停止写陈旧行
                             return;
                         }
                     }
@@ -252,16 +240,16 @@ const BASE_SORT_METHODS: [PlaylistTrackSortMethod; 6] = [
     PlaylistTrackSortMethod::RecentlyAdded,
 ];
 
-/// Wrapper component for playlist track items that adds drag-and-drop support
+/// 歌单曲目行的包装组件，外加拖放支持
 pub struct PlaylistTrackItem {
     track_item: Entity<TrackItem>,
     idx: usize,
     playlist_item_id: i64,
     track_title: SharedString,
     drag_drop_manager: Entity<DragDropListManager>,
-    /// Drag payload prebuilt once; `on_drag` takes it by value every frame, so
-    /// render clones this small struct instead of re-running `from_track` (a
-    /// per-frame `PathBuf` allocation). `Some` only when reordering is enabled.
+    /// 拖拽负载预先构造一次；`on_drag` 每帧按值取走它，所以 render 只 clone 这个小
+    /// 结构体，不再重跑 `from_track`（那是每帧一次 `PathBuf` 分配）。
+    /// 仅在允许重排时为 `Some`。
     drag_data: Option<TrackDragData>,
 }
 
@@ -281,9 +269,8 @@ impl PlaylistTrackItem {
         drag_enabled: bool,
     ) -> Entity<Self> {
         cx.new(|_| {
-            // drag payload prebuilt once: `on_drag` takes it by value every
-            // frame, so render clones this small struct instead of re-running
-            // `from_track` (a per-frame `PathBuf` allocation)
+            // 拖拽负载在构造时预先建好：`on_drag` 每帧按值取走它，所以 render 只
+            // clone 这个小结构体，不再重跑 `from_track`（每帧一次 `PathBuf` 分配）
             let drag_data = if drag_enabled {
                 Some(
                     TrackDragData::from_track(track_id, album_id, track_path, track_title.clone())
@@ -325,8 +312,7 @@ impl Render for PlaylistTrackItem {
                 theme.button_primary,
             ));
 
-        // payload prebuilt at construction; `on_drag` takes it by value every
-        // frame, so render clones the small struct
+        // 负载在构造时预先建好；`on_drag` 每帧按值取走它，所以 render 只 clone 小结构体
         if let Some(drag_data) = self.drag_data.clone() {
             element = element.on_drag(drag_data, move |_, _, _, cx| {
                 DragPreview::new(cx, track_title.clone())
@@ -339,12 +325,12 @@ impl Render for PlaylistTrackItem {
 
 pub struct PlaylistView {
     playlist: Arc<Playlist>,
-    /// Summary line derived from `playlist` on construction and reload;
-    /// render only clones it (precomputed field, same as `ReleaseView`).
+    /// 汇总行在构造与 reload 时由 `playlist` 推导；render 只 clone 它
+    /// （预先算好的字段，与 `ReleaseView` 同法）。
     collection_summary: SharedString,
     playlist_track_ids: Arc<Vec<PlaylistTrackRow>>,
-    /// Bumped on every load so a slow load that finishes after a newer one
-    /// cannot overwrite it (same guard as `Table::reload_rows`).
+    /// 每次加载都自增，使晚于新一轮完成的慢加载不能把它覆盖（与
+    /// `Table::reload_rows` 同一个守卫）。
     load_generation: u64,
     views: Entity<FxHashMap<usize, Entity<PlaylistTrackItem>>>,
     render_counter: Entity<usize>,
@@ -354,19 +340,16 @@ pub struct PlaylistView {
     drag_drop_manager: Entity<DragDropListManager>,
     list_id: gpui::ElementId,
     sort_method: PlaylistTrackSortMethod,
-    /// Prefetched full rows filled on the async runtime (see
-    /// `schedule_row_prefetch`); row creation reads this before falling back
-    /// to the per-row UI-thread `block_on` query. Cleared on every reload.
+    /// 在异步运行时上填充的预取整行（见 `schedule_row_prefetch`）；构造行时先读它，
+    /// 再退回到逐行的 UI 线程 `block_on` 查询。每次 reload 清空。
     track_row_cache: PrefetchedRowsHandle,
-    /// Last scheduled row prefetch: (cache generation, visible center). See
-    /// `schedule_row_prefetch`.
+    /// 上一次安排的行预取：（缓存世代号，可见中心）。见 `schedule_row_prefetch`。
     prefetch_state: Rc<Cell<(u64, usize)>>,
 }
 
-/// Placeholder shown until the background load lands: the id is already
-/// known, and the Liked Songs playlist is a fixed system playlist (models::
-/// LIKED_SONGS_PLAYLIST_ID), so its header can render correctly right away.
-/// Everything else fills in when `reload` completes.
+/// 后台加载落地前显示的占位：id 此刻已知，而「我喜欢的」歌单是固定的系统歌单
+/// （models::LIKED_SONGS_PLAYLIST_ID），所以它的头部可以立刻正确渲染。
+/// 其余字段等 `reload` 完成后填入。
 fn placeholder_playlist(playlist_id: i64) -> Playlist {
     let is_liked_songs = playlist_id == LIKED_SONGS_PLAYLIST_ID;
     Playlist {
@@ -460,20 +443,17 @@ impl PlaylistView {
                 track_row_cache,
                 prefetch_state,
             };
-            // Opening the view loads the playlist header + its sorted track
-            // list on the runtime (see reload); until it lands the view shows
-            // the placeholder header and an empty list.
+            // 打开视图时在运行时上加载歌单头部 + 其排序后的曲目列表（见 reload）；
+            // 结果落地前视图显示占位头部与空列表。
             this.reload(cx);
             this
         })
     }
 
-    /// Loads the playlist header and its sorted track list on the background
-    /// runtime: opening the view (and every PlaylistUpdated reload / sort
-    /// change) used to block the UI thread on the playlist aggregate plus a
-    /// full-table JOIN. The view keeps showing its previous data until the
-    /// new rows land; a generation guard drops results superseded by a newer
-    /// load.
+    /// 在后台运行时上加载歌单头部及其排序后的曲目列表：打开视图（以及每一次
+    /// PlaylistUpdated 触发的 reload / 排序变更）过去会在「歌单聚合 + 全表 JOIN」上
+    /// 阻塞 UI 线程。新行落地前视图继续显示原有数据；世代守卫会丢弃被更新一轮
+    /// 加载取代的结果。
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
@@ -494,7 +474,7 @@ impl PlaylistView {
                 .unwrap_or((None, None));
 
             let _ = this.update(cx, |this, cx| {
-                // A newer load superseded this one: this result is stale.
+                // 更新的加载已取代这一轮：本结果陈旧。
                 if this.load_generation != generation {
                     return;
                 }
@@ -509,9 +489,8 @@ impl PlaylistView {
                 }
                 this.views = cx.new(|_| FxHashMap::default());
                 this.render_counter = cx.new(|_| 0);
-                // cached rows must never outlive a reload: the track list (and
-                // with it every track_id) can change underneath them; the
-                // generation bump also invalidates in-flight prefetch tasks
+                // 缓存行绝不得比 reload 活得更久：曲目列表（连同每一个 track_id）
+                // 可能在它们脚下变化；世代号自增同时使在途预取任务失效
                 clear_prefetched_rows(&this.track_row_cache);
                 cx.notify();
             });
@@ -539,8 +518,7 @@ impl PlaylistView {
             return;
         }
         self.sort_method = method;
-        // The re-sorted rows load on the runtime (see reload); the view keeps
-        // the previous order until they land.
+        // 重排后的行在运行时上加载（见 reload）；落地前视图保持原有顺序。
         self.reload(cx);
 
         let playlist_sort_methods = cx.global::<Models>().playlist_sort_methods.clone();
@@ -854,16 +832,12 @@ impl Render for PlaylistView {
                                                 false,
                                                 false,
                                                 {
-                                                    // The click builds the queue from the
-                                                    // on-screen snapshot (WYSIWYG): it plays
-                                                    // exactly the order the user sees instead
-                                                    // of re-running the sorted aggregate query
-                                                    // under a UI-thread block_on. reload() on
-                                                    // PlaylistUpdated keeps the snapshot's
-                                                    // staleness window tiny; the blocking
-                                                    // fallback below is purely defensive (with
-                                                    // an empty list the buttons render without
-                                                    // on_click and cannot fire).
+                                                    // 点击时按屏上快照建队列（所见即所得）：
+                                                    // 播放的顺序正是用户看到的顺序，而不是在
+                                                    // UI 线程 block_on 下重跑排序聚合查询。
+                                                    // PlaylistUpdated 时的 reload() 把快照的
+                                                    // 陈旧窗口压得很小；下面的阻塞兜底纯属防御
+                                                    // （空列表时按钮不带 on_click 渲染，无法触发）。
                                                     let snapshot = items_clone.clone();
                                                     move |cx| {
                                                         let playlist_tracks =
@@ -966,7 +940,7 @@ impl Render for PlaylistView {
                                     );
 
                                     if scrolled {
-                                        // guarded, at most one pending frame chain
+                                        // 有守卫，最多挂起一条帧链
                                         request_edge_scroll(
                                             this.drag_drop_manager.clone(),
                                             this.scroll_handle.clone().into(),
@@ -975,10 +949,9 @@ impl Render for PlaylistView {
                                         );
                                     }
 
-                                    // repaint only when something visible moved:
-                                    // drag move fires at mouse report rate and an
-                                    // unconditional notify re-rendered the whole
-                                    // view on every move
+                                    // 只在可见内容真的移动时重绘：drag move 以鼠标
+                                    // 上报频率触发，无条件 notify 会让每次移动都把整
+                                    // 个视图重渲染一遍
                                     let changed = {
                                         let manager = this.drag_drop_manager.read(cx);
                                         scrolled
@@ -1024,7 +997,7 @@ impl Render for PlaylistView {
                                         );
                                     }
 
-                                    // same gating as the track handler above
+                                    // 与上面的曲目处理器采用同一套门控
                                     let changed = {
                                         let manager = this.drag_drop_manager.read(cx);
                                         scrolled
@@ -1052,9 +1025,9 @@ impl Render for PlaylistView {
                                             drag_data,
                                             cx,
                                             |from_idx, to_idx, cx| {
-                                                // The list can reload between drag start
-                                                // and drop (async PlaylistUpdated): a
-                                                // stale source index must not panic here.
+                                                // 拖拽起点到落点之间列表可能已 reload
+                                                // （异步 PlaylistUpdated）：陈旧的源索
+                                                // 引在这里绝不能 panic。
                                                 let Some(source_row) =
                                                     playlist_track_ids.get(from_idx)
                                                 else {
@@ -1064,8 +1037,8 @@ impl Render for PlaylistView {
 
                                                 let new_position = if to_idx < playlist_track_ids.len() {
                                                     let target_item_id = playlist_track_ids[to_idx].playlist_item_id;
-                                                    // a missing item (concurrent removal) skips
-                                                    // this move instead of panicking the handler
+                                                    // 条目缺失（并发移除）时跳过这次移动，
+                                                    // 而不是让处理器 panic
                                                     let target_item = match cx.get_playlist_item(target_item_id) {
                                                         Ok(item) => item,
                                                         Err(e) => {
@@ -1075,7 +1048,7 @@ impl Render for PlaylistView {
                                                     };
                                                     target_item.position
                                                 } else if let Some(last_row) = playlist_track_ids.last() {
-                                                    // last row (to_idx beyond the end)
+                                                    // 最后一行（to_idx 越过末尾）
                                                     let last_item = match cx.get_playlist_item(last_row.playlist_item_id) {
                                                         Ok(item) => item,
                                                         Err(e) => {
@@ -1085,7 +1058,7 @@ impl Render for PlaylistView {
                                                     };
                                                     last_item.position + 1
                                                 } else {
-                                                    // empty snapshot: nothing to move against
+                                                    // 快照为空：没有可参照的移动目标
                                                     return;
                                                 };
 
@@ -1133,8 +1106,7 @@ impl Render for PlaylistView {
                                     let is_templ_render = range.start == 0 && range.end == 1;
                                     let center = start + (range.end - range.start) / 2;
 
-                                    // keep the row prefetch one band ahead of the
-                                    // visible window so new rows hit the row cache
+                                    // 让行预取保持在可见窗口前一个带宽，新行即可命中行缓存
                                     schedule_row_prefetch(
                                         &prefetch_state,
                                         &track_row_cache,
@@ -1169,9 +1141,9 @@ impl Render for PlaylistView {
                                                     &views_model,
                                                     idx,
                                                     move |cx| {
-                                                        // both row paths below wire up the same
-                                                        // TrackItem/PlaylistTrackItem pair and
-                                                        // differ only in the data they carry
+                                                        // 下面两条行路径装配的都是同一对
+                                                        // TrackItem/PlaylistTrackItem，
+                                                        // 只是携带的数据不同
                                                         let make_row = |cx: &mut App,
                                                                         track: Track,
                                                                         track_title: SharedString,
@@ -1186,11 +1158,11 @@ impl Render for PlaylistView {
                                                                     id: pl_id,
                                                                     item_id: playlist_item_id,
                                                                 }),
-                                                                None, // max_track_num - not needed for Art left field
-                                                                None, // queue_context - playlist uses pl_id instead
+                                                                None, // max_track_num：Art 左栏字段用不到
+                                                                None, // queue_context：歌单改用 pl_id
                                                                 TrackItemOptions {
                                                                     is_start: false,
-                                                                    // vinyl_numbering - not applicable for playlists
+                                                                    // vinyl_numbering：歌单不适用
                                                                     vinyl_numbering: false,
                                                                     show_go_to_album: true,
                                                                     show_go_to_artist: true,
@@ -1212,9 +1184,9 @@ impl Render for PlaylistView {
                                                             )
                                                         };
 
-                                                        // prefetched rows first: a hit avoids the
-                                                        // UI-thread `block_on` below (one per newly
-                                                        // built row past the keep-around band)
+                                                        // 先查预取行：命中就避免下面的 UI 线程
+                                                        // `block_on`（超出 keep-around 带的每个
+                                                        // 新建行都要付一次）
                                                         let track = match prefetched_track(
                                                             &track_row_cache,
                                                             track_id,
@@ -1223,22 +1195,18 @@ impl Render for PlaylistView {
                                                             None => {
                                                                 match cx.get_track_by_id(track_id) {
                                                                     Ok(track) => {
-                                                                        // cache the fallback's
-                                                                        // result so re-entering rows
-                                                                        // hit the cache instead of
-                                                                        // re-running the blocking query
+                                                                        // 把兜底查询的结果也写入缓存，
+                                                                        // 于是重新进入的行命中缓存，
+                                                                        // 不再重跑那个阻塞查询
                                                                         insert_prefetched_current(
                                                                             &track_row_cache,
                                                                             track.clone(),
                                                                         );
                                                                         track
                                                                     }
-                                                                    // The track vanished from the
-                                                                    // library between the playlist
-                                                                    // snapshot and this view's
-                                                                    // creation: render an empty
-                                                                    // placeholder row (same height)
-                                                                    // instead of panicking.
+                                                                    // 曲目在歌单快照与本视图构造之间
+                                                                    // 从库里消失了：渲染一个等高的空
+                                                                    // 占位行，而不是 panic。
                                                                     Err(_) => {
                                                                         return make_row(
                                                                             cx,

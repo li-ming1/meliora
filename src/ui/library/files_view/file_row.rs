@@ -57,8 +57,7 @@ pub struct FileRowItem {
     is_liked: Option<i64>,
     show_add_to: Entity<bool>,
     add_to: Option<Entity<AddToPlaylist>>,
-    /// Stable element-id hash for the row context menu; the path never
-    /// changes for a row view's lifetime.
+    /// 行右键菜单的稳定元素 id 哈希；路径在一行视图的生命周期内永不变化。
     path_hash: usize,
 }
 
@@ -74,13 +73,11 @@ impl FileRowItem {
             cx.observe(&files_view, |_, _, cx| cx.notify()).detach();
             let files_view = files_view.downgrade();
 
-            // Row construction is pure in-memory state: the full track row
-            // (needed by the context menu) and the file-availability stat are
-            // resolved lazily when the menu actually opens, like the rest of
-            // the menu tree. Construction used to block_on one DB query plus
-            // one stat per row.
-            // TrackRef.liked is the playlist_item row id; rows store the track
-            // id convention (see HasLikedState), so reduce it to a liked flag.
+            // 行的构造只是纯内存状态：完整的曲目行（右键菜单要用）与文件可用性 stat
+            // 都在菜单真正打开时才惰性解析，和菜单树的其余部分一样。
+            // 构造过去要每行一次 block_on DB 查询再加一次 stat。
+            // TrackRef.liked 是 playlist_item 的行 id；行里存的是曲目 id 约定
+            // （见 HasLikedState），所以把它归约成一个已点赞标志。
             let is_liked = flat_row
                 .track
                 .as_ref()
@@ -114,10 +111,9 @@ impl FileRowItem {
         show_add_to: Entity<bool>,
         cx: &mut App,
     ) -> AnyElement {
-        // Cached liked-ids set (see is_song_liked): the batch menu only needs
-        // the liked/unliked boolean for icon and label, and unlike deletes by
-        // track id — zero DB access here, so a shift-selected 500-row menu
-        // opens without touching the database.
+        // 缓存的 liked-ids 集合（见 is_song_liked）：批量菜单只需要点赞/未点赞这个布尔值
+        // 来选图标与标签，而取消赞是按曲目 id 删除的——这里零 DB 访问，所以 shift 选中
+        // 500 行的菜单打开时完全不碰数据库。
         let liked_ids: SmallVec<[i64; 32]> = track_ids
             .iter()
             .copied()
@@ -230,11 +226,9 @@ enum BatchAction {
     Enqueue,
 }
 
-/// Availability for a whole selection, resolved in one blocking-task batch:
-/// the synchronous loop used to stat one file per selected row on the UI
-/// thread, and a single `Path::exists` on a stale network mount can take
-/// milliseconds. The available subset then queues exactly as before, one
-/// task-hop later.
+/// 整个选区的可用性在一次 blocking-task 批次里解析：同步循环过去要在 UI 线程上
+/// 每个选中行 stat 一个文件，而失活网络挂载上单次 `Path::exists` 就能花掉几毫秒。
+/// 可用子集随后照旧排队，只是晚一个任务跳转。
 fn queue_batch_items(
     items: Rc<Vec<(Arc<Path>, Option<TrackRef>)>>,
     action: BatchAction,
@@ -247,8 +241,7 @@ fn queue_batch_items(
             .spawn_blocking(move || available_paths(paths))
             .await
             .unwrap_or_default();
-        // a newer click supersedes this one (last-click-wins, see
-        // BATCH_ACTION_TICKET)
+        // 更新的点击已取代这一次（后点击优先，见 BATCH_ACTION_TICKET）
         if ticket != BATCH_ACTION_TICKET.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
@@ -288,7 +281,7 @@ impl HasLikedState for FileRowItem {
 
 impl Render for FileRowItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Arc refcount bump; the row is cloned out of the shared flat list
+        // Arc 引用计数自增；行是从共享的扁平列表里 clone 出来的
         let FlatRow {
             path,
             name,
@@ -349,10 +342,9 @@ impl Render for FileRowItem {
             }
         };
 
-        // The AddToPlaylist overlay entities are cheap to create eagerly (their
-        // track ids load on first open via keyed state); the menu trees move
-        // into menu_on_open so their per-item DB queries and stats only run
-        // when the user actually opens a menu.
+        // AddToPlaylist 的浮层实体尽早创建很廉价（它们的曲目 ids 首次打开时经 keyed
+        // state 加载）；菜单树则挪进 menu_on_open，于是逐条目的 DB 查询与 stat 只在
+        // 用户真的打开菜单时才跑。
         let add_to_element: Option<AnyElement> = if batch_items
             .as_ref()
             .is_some_and(|(items, _)| !items.is_empty())
@@ -368,7 +360,7 @@ impl Render for FileRowItem {
         let show_add_to = self.show_add_to.clone();
         let entity_for_menu = cx.entity();
         let is_liked = self.is_liked;
-        // Resolved when the menu opens (see menu_on_open below), not per row.
+        // 在菜单打开时才解析（见下面的 menu_on_open），不是每行一次。
         let menu_track_id = track_ref.as_ref().map(|track| track.id);
         let path_for_menu = path.clone();
         let files_view_for_menu = files_view.clone();
@@ -525,9 +517,8 @@ impl Render for FileRowItem {
                         cx,
                     )
                 } else if let Some(track_id) = menu_track_id {
-                    // Full track row + availability stat load lazily here
-                    // (one DB query + one stat per menu open) instead of once
-                    // per row at construction.
+                    // 完整的曲目行 + 可用性 stat 在这里惰性加载（每次打开菜单一次 DB
+                    // 查询 + 一次 stat），而不是构造时每行一次。
                     let is_file_available = is_track_path_available(&path_for_menu);
 
                     if let Ok(track) = cx.get_track_by_id(track_id) {

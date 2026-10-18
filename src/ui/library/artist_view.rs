@@ -38,7 +38,7 @@ impl ArtistView {
 
 impl Render for ArtistView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // Child view entity: see album_view for the borrow rationale.
+        // 子视图实体：借用的缘由见 album_view。
         self.shell.clone().into_any_element()
     }
 }

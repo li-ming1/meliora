@@ -59,8 +59,7 @@ impl UpdatePlaylist {
         cx.new(|cx| {
             cx.observe(&show, move |this: &mut Self, _, cx| {
                 this.palette.update(cx, |this, cx| {
-                    // a failed query keeps the palette's current list instead
-                    // of panicking the observer
+                    // 查询失败时保留调色板当前的列表，而不是让观察者 panic
                     let Ok(playlists) = cx.list_all_playlists() else {
                         error!("Failed to load playlists for the update dialog");
                         return;
@@ -78,8 +77,7 @@ impl UpdatePlaylist {
 
             let matcher: MatcherFunc = Box::new(|playlist, _| playlist.name.0.to_string().into());
 
-            // Accepting an existing playlist starts the M3U import into it
-            // (via `import_playlist`) and closes the dialog.
+            // 接受一个已存在的歌单会向它启动 M3U 导入（走 `import_playlist`）并关闭对话框。
             let show_on_accept = show.clone();
 
             let on_accept: OnAccept = Box::new(move |playlist, cx| {
@@ -113,8 +111,8 @@ impl UpdatePlaylist {
                     name = name
                 );
 
-                // A fresh clone per invocation: every returned extra item
-                // owns its own handle so accepting it closes the dialog.
+                // 每次调用都发一份新的 clone：返回的每个额外项都持有自己的句柄，
+                // 所以接受它会关闭对话框。
                 let show_on_create = show_for_create.clone();
 
                 vec![ExtraItem {
