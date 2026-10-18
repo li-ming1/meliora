@@ -55,7 +55,7 @@
   },
   "ABOUT_OPEN": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:250",
+    "definedIn": "src/ui/settings/about.rs:254",
     "plural": false,
     "description": null
   },
@@ -67,25 +67,25 @@
   },
   "ABOUT_SECTION_ABOUT_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:246",
+    "definedIn": "src/ui/settings/about.rs:250",
     "plural": false,
     "description": null
   },
   "ABOUT_SECTION_COPY_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:270",
+    "definedIn": "src/ui/settings/about.rs:274",
     "plural": false,
     "description": null
   },
   "ABOUT_SECTION_ISSUE_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:258",
+    "definedIn": "src/ui/settings/about.rs:262",
     "plural": false,
     "description": null
   },
   "ABOUT_SECTION_LOG_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:282",
+    "definedIn": "src/ui/settings/about.rs:286",
     "plural": false,
     "description": null
   },
@@ -103,7 +103,7 @@
   },
   "ACTION_COPY": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:274",
+    "definedIn": "src/ui/settings/about.rs:278",
     "plural": false,
     "description": null
   },
@@ -331,13 +331,13 @@
   },
   "CODEBERG_ISSUES": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:256",
+    "definedIn": "src/ui/settings/about.rs:260",
     "plural": false,
     "description": null
   },
   "CODEBERG_ISSUES_OPEN": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:262",
+    "definedIn": "src/ui/settings/about.rs:266",
     "plural": false,
     "description": null
   },
@@ -511,13 +511,13 @@
   },
   "EQ_CLIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:519",
+    "definedIn": "src/ui/equalizer/view.rs:523",
     "plural": false,
     "description": null
   },
   "EQ_CLIP_TOOLTIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:510",
+    "definedIn": "src/ui/equalizer/view.rs:514",
     "plural": false,
     "description": null
   },
@@ -1375,7 +1375,7 @@
   },
   "OPEN_LOG_OPEN": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:286",
+    "definedIn": "src/ui/settings/about.rs:290",
     "plural": false,
     "description": null
   },
@@ -2395,25 +2395,25 @@
   },
   "UPDATE_AUTO_CHECK": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:300",
+    "definedIn": "src/ui/settings/about.rs:304",
     "plural": false,
     "description": null
   },
   "UPDATE_AUTO_CHECK_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:302",
+    "definedIn": "src/ui/settings/about.rs:306",
     "plural": false,
     "description": null
   },
   "UPDATE_AUTO_DOWNLOAD": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:312",
+    "definedIn": "src/ui/settings/about.rs:316",
     "plural": false,
     "description": null
   },
   "UPDATE_AUTO_DOWNLOAD_SUBTEXT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:314",
+    "definedIn": "src/ui/settings/about.rs:318",
     "plural": false,
     "description": null
   },
@@ -2425,25 +2425,25 @@
   },
   "UPDATE_CHECK_NOW": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:196",
+    "definedIn": "src/ui/settings/about.rs:200",
     "plural": false,
     "description": null
   },
   "UPDATE_CURRENT": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:181",
+    "definedIn": "src/ui/settings/about.rs:185",
     "plural": false,
     "description": null
   },
   "UPDATE_DOWNLOAD_NOW": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:206",
+    "definedIn": "src/ui/settings/about.rs:210",
     "plural": false,
     "description": null
   },
   "UPDATE_OPEN_RELEASE": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:216",
+    "definedIn": "src/ui/settings/about.rs:220",
     "plural": false,
     "description": null
   },
@@ -2467,55 +2467,55 @@
   },
   "UPDATE_RESTART_NOW": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:224",
+    "definedIn": "src/ui/settings/about.rs:228",
     "plural": false,
     "description": null
   },
   "UPDATE_SECTION": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:294",
+    "definedIn": "src/ui/settings/about.rs:298",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_AVAILABLE": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:139",
+    "definedIn": "src/ui/settings/about.rs:143",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_CHECKING": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:117",
+    "definedIn": "src/ui/settings/about.rs:121",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_DOWNLOADING": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:155",
+    "definedIn": "src/ui/settings/about.rs:159",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_FAILED": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:126",
+    "definedIn": "src/ui/settings/about.rs:130",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_IDLE": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:113",
+    "definedIn": "src/ui/settings/about.rs:117",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_READY": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:165",
+    "definedIn": "src/ui/settings/about.rs:169",
     "plural": false,
     "description": null
   },
   "UPDATE_STATUS_UP_TO_DATE": {
     "context": "about.rs",
-    "definedIn": "src/ui/settings/about.rs:121",
+    "definedIn": "src/ui/settings/about.rs:125",
     "plural": false,
     "description": null
   },
