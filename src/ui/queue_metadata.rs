@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use futures::TryFutureExt as _;
 use gpui::{App, AppContext, Entity, Global, SharedString};
@@ -32,6 +32,19 @@ pub struct QueueMetadataStore(FxHashMap<u64, Entity<Option<QueueItemUIData>>>);
 
 impl Global for QueueMetadataStore {}
 
+/// 旁表当前的槽位数，供 `[mem] periodic` 探针读取。探针跑在 tokio 线程上，拿不到
+/// gpui 的 `App`，所以由两个改表的地方顺手把长度写进一个 relaxed 原子：插入路径
+/// 每条目一次、GC 路径每次回收一次，都在本来就要走表的操作之内。数值应当贴着
+/// "当前队列长度"浮动；单调爬升就是回收没跑起来。
+static STORE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+/// 读取方只有 `#[cfg(not(test))]` 的内存探针，所以按 not(test) 声明（与 main.rs
+/// 里 mimalloc 记账的 extern 声明同一处理方式），否则测试构建报 dead_code。
+#[cfg(not(test))]
+pub(crate) fn store_entries() -> u64 {
+    STORE_ENTRIES.load(Ordering::Relaxed)
+}
+
 /// 从以 [`QueueItemData::uid`] 为键的表里返回该条目的 UI 元数据槽位，首次使用时
 /// 创建空壳，并按三条分支播种（持久化恢复 → 库加载 → 磁盘元数据加载）。
 pub fn queue_ui_data(cx: &mut App, item: &QueueItemData) -> Entity<Option<QueueItemUIData>> {
@@ -48,9 +61,9 @@ pub fn queue_ui_data(cx: &mut App, item: &QueueItemData) -> Entity<Option<QueueI
         Some(entity) => entity,
         None => {
             let shell = cx.new(|_| None);
-            cx.default_global::<QueueMetadataStore>()
-                .0
-                .insert(uid, shell.clone());
+            let store = cx.default_global::<QueueMetadataStore>();
+            store.0.insert(uid, shell.clone());
+            STORE_ENTRIES.store(store.0.len() as u64, Ordering::Relaxed);
             shell
         }
     };
@@ -144,6 +157,7 @@ pub(crate) fn gc_retaining(cx: &mut App, live: impl Iterator<Item = u64>) {
     let live: FxHashSet<u64> = live.collect();
     let store = cx.default_global::<QueueMetadataStore>();
     store.0.retain(|uid, _| live.contains(uid));
+    STORE_ENTRIES.store(store.0.len() as u64, Ordering::Relaxed);
 }
 
 #[tracing::instrument(level = "trace")]

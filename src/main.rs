@@ -778,6 +778,9 @@ fn spawn_memory_probe() {
             };
             let render_cache = crate::ui::components::managed_image::render_cache_mb();
             let render_cache_entries = crate::ui::components::managed_image::render_cache_entries();
+            // 队列元数据旁表的槽位数（relaxed 原子，由插入与 GC 两处顺手回写）：
+            // 正常应贴着当前队列长度浮动，单调爬升就说明回收没跑起来。
+            let queue_meta_entries = crate::ui::queue_metadata::store_entries();
             let (img_entries, img_mb) = crate::ui::caching::image_cache_stats();
             let funnel = crate::ui::components::managed_image::tile_drop_stats();
             let (funnel_pending_mb, funnel_pending_large, funnel_pushed_large) =
@@ -979,6 +982,7 @@ fn spawn_memory_probe() {
                     backdrop_cache_entries,
                     img_cache_mb = img_mb,
                     img_cache_entries = img_entries,
+                    queue_meta_entries,
                     funnel_pending = funnel.0,
                     funnel_pushed = funnel.1,
                     funnel_pending_mb,
