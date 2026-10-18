@@ -349,8 +349,12 @@ pub struct ParsedTrackNumber {
 }
 
 /// Trailing run of ASCII digits in `s`.
+///
+/// `trim_end_matches` returns a char boundary, unlike a byte offset from
+/// `rfind` plus one: the last non-digit may be multi-byte ("一/12"), and
+/// slicing at its start + 1 panics inside the character.
 fn trailing_digits(s: &str) -> &str {
-    let start = s.rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+    let start = s.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     &s[start..]
 }
 
@@ -569,6 +573,15 @@ mod tests {
         assert_eq!(super::parse_track_number("Intro"), None);
         assert_eq!(super::parse_track_number("Side A"), None);
         assert_eq!(super::parse_track_number(""), None);
+    }
+
+    #[test]
+    fn parse_slash_pair_does_not_slice_inside_multibyte_chars() {
+        // The part before the slash ends in a multi-byte character; the old
+        // byte-offset slice panicked instead of returning None.
+        assert_eq!(super::parse_track_number("一/12"), None);
+        assert_eq!(super::parse_disc_number("Disc 一/12"), None);
+        assert_eq!(super::parse_track_number("A一/12"), None);
     }
 
     #[test]

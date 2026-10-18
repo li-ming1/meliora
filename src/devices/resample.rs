@@ -425,7 +425,12 @@ impl Resampler {
 
         let staging = input.staging();
         for (ch, channel) in staging.iter().enumerate() {
-            buffers[ch].extend(&channel[..read]);
+            // Same guard as `passthrough_direct`: a decoder that suddenly
+            // reports more channels than the pipeline was built for must not
+            // abort the process (release is `panic = "abort"`).
+            if let Some(buffer) = buffers.get_mut(ch) {
+                buffer.extend(&channel[..read]);
+            }
         }
         read
     }

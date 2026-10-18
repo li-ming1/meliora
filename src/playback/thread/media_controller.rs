@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     devices::format::ChannelSpec,
@@ -104,7 +104,7 @@ impl MediaController {
         path: &Path,
         refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<Option<u64>, PlaybackStartError> {
-        info!("Opening track '{}'", path.display());
+        debug!("Opening track '{}'", path.display());
 
         // Close any existing stream
         self.close();

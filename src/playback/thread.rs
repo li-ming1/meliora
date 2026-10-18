@@ -775,13 +775,15 @@ impl PlaybackThread {
             return;
         }
 
-        // Handle stopped state - start playing from the last track
+        // Handle stopped state - start playing from the last track. The
+        // playable slot is not necessarily `len() - 1`: trailing unplayable
+        // entries would leave the cursor past the actually opened track, and
+        // the next `next()` would then hit EndOfQueue instead of continuing.
         if self.state() == PlaybackState::Stopped {
-            if let Some((path, _)) = self.queue.last_playable_path() {
+            if let Some((path, index)) = self.queue.last_playable_path() {
                 self.open_or_log(&path);
-                let last_index = self.queue.len().saturating_sub(1);
-                self.queue.set_position(last_index);
-                self.send_event(PlaybackEvent::QueuePositionChanged(last_index));
+                self.queue.set_position(index);
+                self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
             return;
         }
@@ -1163,7 +1165,8 @@ impl PlaybackThread {
 
     /// Jump to the specified index in the queue, disregarding shuffling. This means that the
     /// original queue item at the specified index will be played, rather than the shuffled item.
-    fn jump_unshuffled(&mut self, index: usize) {
+    /// Returns whether a track was opened.
+    fn jump_unshuffled(&mut self, index: usize) -> bool {
         match self.queue.jump_unshuffled(index) {
             JumpResult::Jumped { path } => {
                 self.set_stop_after_current(false);
@@ -1172,9 +1175,11 @@ impl PlaybackThread {
                 if let Some(pos) = self.queue.current_position() {
                     self.send_event(PlaybackEvent::QueuePositionChanged(pos));
                 }
+                true
             }
             JumpResult::OutOfBounds => {
                 warn!("Jump unshuffled index {} out of bounds", index);
+                false
             }
         }
     }
@@ -1215,7 +1220,18 @@ impl PlaybackThread {
         match self.queue.replace_queue(paths) {
             ReplaceResult::Replaced { .. } => {
                 self.refresh_rg_auto_hint();
-                self.jump_unshuffled(idx);
+                // The requested slot can be gone (the restored playlist shrank,
+                // or the shuffled mapping no longer contains it). Leaving the
+                // cursor unset used to keep whatever was playing while the UI
+                // lost its position; fall back to the first playable slot like
+                // `replace_queue` does.
+                // `first_playable_index` is an index into the (possibly
+                // shuffled) playback queue, so use the plain jump here.
+                if !self.jump_unshuffled(idx)
+                    && let Some(first) = self.queue.first_playable_index()
+                {
+                    self.jump(first);
+                }
             }
             ReplaceResult::Empty => {
                 self.refresh_rg_auto_hint();

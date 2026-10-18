@@ -401,11 +401,16 @@ impl MediaStream for SymphoniaStream {
             .audio()
             .ok_or(PlaybackStartError::NothingToPlay)?;
 
+        // The timebase is known at probe time for every format we open (it is
+        // derived from the sample rate when the container does not set one),
+        // while `num_frames` is not: OGG/Opus only learns it when the last page
+        // is read. Coupling the two left `current_timebase` unset for OGG/Opus,
+        // so packet PTS could never be converted and position stayed at 0.
+        self.current_timebase = track.time_base;
         if let (Some(frame_count), Some(tb)) = (track.num_frames, track.time_base)
             && let Some(t) = tb.calc_time(Timestamp::new(frame_count as i64))
         {
             self.current_length = Some(time_to_millis(t));
-            self.current_timebase = Some(tb);
         }
 
         let channel_count = audio_params
@@ -488,7 +493,10 @@ impl MediaStream for SymphoniaStream {
     }
 
     fn position_ms(&self) -> Result<u64, TrackDurationError> {
-        if self.decoder.is_none() || self.current_length.is_none() {
+        // Position only needs a running decoder: requiring a known length made
+        // formats whose frame count arrives at EOF (OGG/Opus) report no
+        // position for the whole track even though PTS conversion works.
+        if self.decoder.is_none() {
             return Err(TrackDurationError::NeverStarted);
         }
         Ok(self.current_position_ms)

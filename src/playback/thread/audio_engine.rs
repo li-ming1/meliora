@@ -5,7 +5,7 @@ use std::sync::{
     mpsc::{self, TryRecvError},
 };
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info, trace_span, warn};
+use tracing::{debug, error, info, trace_span, warn};
 
 use crate::{
     devices::{
@@ -257,21 +257,23 @@ impl AudioEngine {
         self.prepare_rx.is_some() || self.prepared.is_some()
     }
 
-    /// Whether `prepare_next` would reject `path` right now: already
-    /// prepared/in flight, or inside a dropped/failed cooldown. Lets the
-    /// caller skip building the refresh hook — a queue lock, a registry scan
-    /// and a closure allocation per decode cycle during the 30 s failure
-    /// cooldown — before paying for it.
-    pub fn prepare_rejected(&self, path: &Path) -> bool {
+    /// Shared admission check for `prepare_rejected` and `prepare_next`:
+    /// already prepared/in flight, or inside a dropped/failed cooldown.
+    fn prepare_blocked(&self, path: &Path) -> bool {
         if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
             return true;
         }
+        // A prepare of this track was invalidated moments ago by a queue
+        // mutation: defer until the edits settle instead of re-opening the
+        // stream (connect+probe, or a wasted HTTP request) once per edit.
         if let Some((dropped, at)) = &self.dropped_prepare
             && dropped == path
             && at.elapsed() < PREPARE_COOLDOWN
         {
             return true;
         }
+        // The last prepare of this path failed (dead URL, unreadable file):
+        // back off instead of paying a full open attempt once per cycle.
         if let Some((failed, at)) = &self.failed_prepare
             && failed == path
             && at.elapsed() < PREPARE_FAILURE_COOLDOWN
@@ -279,6 +281,14 @@ impl AudioEngine {
             return true;
         }
         false
+    }
+
+    /// Whether `prepare_next` would reject `path` right now. Lets the caller
+    /// skip building the refresh hook — a queue lock, a registry scan and a
+    /// closure allocation per decode cycle during the 30 s failure cooldown —
+    /// before paying for it.
+    pub fn prepare_rejected(&self, path: &Path) -> bool {
+        self.prepare_blocked(path)
     }
 
     /// Pre-open `path`'s media stream on a background thread so the track
@@ -291,24 +301,7 @@ impl AudioEngine {
     /// unidentifiable streams) keeps the previous behavior unchanged.
     /// Ignored when that track is already prepared or being prepared.
     pub fn prepare_next(&mut self, path: &Path, on_open_error: Option<OnlineRefresh>) {
-        if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
-            return;
-        }
-        // A prepare of this track was invalidated moments ago by a queue
-        // mutation: defer until the edits settle instead of re-opening the
-        // stream (connect+probe, or a wasted HTTP request) once per edit.
-        if let Some((dropped, at)) = &self.dropped_prepare
-            && dropped == path
-            && at.elapsed() < PREPARE_COOLDOWN
-        {
-            return;
-        }
-        // The last prepare of this path failed (dead URL, unreadable file):
-        // back off instead of paying a full open attempt once per cycle.
-        if let Some((failed, at)) = &self.failed_prepare
-            && failed == path
-            && at.elapsed() < PREPARE_FAILURE_COOLDOWN
-        {
+        if self.prepare_blocked(path) {
             return;
         }
         // A prepared stream for a different track is stale by definition.
@@ -477,7 +470,7 @@ impl AudioEngine {
         preserve_resampler: bool,
         refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<Option<u64>, PlaybackStartError> {
-        info!("AudioEngine: Opening track '{}'", path.display());
+        debug!("AudioEngine: Opening track '{}'", path.display());
 
         self.drain = DrainState::Inactive;
         self.rebuild_attempts = 0;

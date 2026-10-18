@@ -19,7 +19,7 @@ static NEXT_UID: AtomicU64 = AtomicU64::new(0);
 /// `(name, artist, duration, cover)`. Shared by the queue item's
 /// `persisted_display` and the stream registry re-registration path.
 #[cfg(feature = "online_sources")]
-pub type PersistedDisplay = (Option<String>, Option<String>, Option<i64>, Option<String>);
+pub type PersistedDisplay = PersistedUiRestore;
 
 #[derive(Clone, Debug)]
 pub struct QueueItemData {
@@ -251,14 +251,7 @@ impl QueueItemData {
     /// Display metadata persisted with the item: (name, artist, duration, cover).
     #[cfg(feature = "online_sources")]
     pub fn persisted_display(&self) -> Option<PersistedDisplay> {
-        self.persisted_ui.as_ref().map(|p| {
-            (
-                p.name.clone(),
-                p.artist_name.clone(),
-                p.duration,
-                p.cover_url.clone(),
-            )
-        })
+        self.persisted_restore()
     }
 
     /// This item's per-instance identity: the key under which the UI-side

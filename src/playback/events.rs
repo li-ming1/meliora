@@ -17,8 +17,8 @@ pub enum RepeatState {
 
 /// A command to the playback thread. This is used to control the playback thread from other
 /// threads. The playback thread receives these commands from an MPSC channel, and processes them
-/// in the order they are received. They are processed every 10ms when playback is stopped, or
-/// every time additional decoding is required to fill the ring buffer during playback.
+/// in the order they are received: immediately whenever it wakes, and while stopped it parks on
+/// the channel until a command or a deferred device task arrives.
 #[derive(Debug, PartialEq, Clone)]
 pub enum PlaybackCommand {
     /// Requests that the playback thread begin playback.

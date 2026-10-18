@@ -48,7 +48,12 @@ static HTTP_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
         .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
         .build()
-        .expect("media HTTP client build failed")
+        .unwrap_or_else(|error| {
+            // Match the other HTTP clients: a backend that refuses the tuned
+            // builder should degrade to defaults instead of aborting playback.
+            tracing::warn!(%error, "media: falling back to the default HTTP client");
+            zed_reqwest::Client::new()
+        })
 });
 
 // Upper bound on waiting for any single network event while feeding the
