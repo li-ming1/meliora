@@ -1,10 +1,22 @@
 @echo off
-rem 工具链（非标准布局）构建脚本模板。
-rem 复制为 build-release.cmd，把下面的占位路径替换成本机实际路径；
-rem 该文件已 gitignore，不要提交真实路径。
-rem 其余环境变量（INCLUDE/LIB/linker/jobs 等）由 .cargo/config.toml 提供。
-rem 默认启用 kugou（酷狗）功能；如需追加其它 feature 直接加参数即可。
+rem Toolchain template for the non-standard local layout. Copy to build-release.cmd
+rem and replace the placeholders below with the real local paths. The file is
+rem gitignored; do not commit real paths.
+rem The rest of the environment (INCLUDE/LIB/linker/jobs, etc.) comes from
+rem .cargo/config.toml.
+rem kugou (Kugou) is enabled by default; append extra features as arguments.
 set "PATH=<MSVC_BIN>;<SDK_BIN>;<CMAKE_BIN>;%PATH%"
-rem 运行中的 meliora.exe 会锁住 exe 导致链接失败；编译前先优雅关闭（不带 /F，播放会话可在 WM_CLOSE 时保存）。
+rem A running meliora.exe locks the exe and fails the link: close it gracefully first
+rem (no /F, so the playback session saves on WM_CLOSE), then force-kill unconditionally.
+rem Do NOT gate the force-kill on a tasklist/find probe: when this script is invoked from a
+rem POSIX shell, the quoted /FI filter is swallowed, stderr is silenced by 2>nul, find
+rem reports "not found" and the escalation never runs - that is exactly how a build silently
+rem failed to replace meliora.exe while the (hidden, tray-resident) process lived on.
+rem The wait must use System32 ping, not timeout: under a POSIX shell PATH, timeout resolves
+rem to GNU coreutils (rejects /t and returns immediately), and Windows timeout also fails
+rem when stdin is redirected. ping does not read stdin and really waits in both call styles.
 taskkill /IM meliora.exe >nul 2>&1
+"%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul
+taskkill /F /IM meliora.exe >nul 2>&1
+"%SystemRoot%\System32\ping.exe" -n 2 127.0.0.1 >nul
 cargo build --release --features kugou %*
