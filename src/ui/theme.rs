@@ -79,7 +79,7 @@ fn parse_hex_color(value: &str) -> Result<Rgba, String> {
     Ok(Rgba::new(r, g, b, a))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Theme {
     pub background_primary: Rgba,
     pub background_secondary: Rgba,
@@ -1073,12 +1073,10 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
 
 #[cfg(test)]
 mod tests {
-    /// 主题反序列化的完整性契约：`Theme` 的每个字段都要在键清单里出现恰好一次，
-    /// 且形态固定为「键名 == 字段名」。少一条不会有任何运行时迹象——未知键被宏的
-    /// 忽略支吃掉，那个颜色就永远停在默认值——所以拿本文件源码里
-    /// `macro_rules! color_arms` 到 `deserialize_map` 之间那段当数据核对。
-    #[test]
-    fn every_theme_field_has_exactly_one_deserialization_key() {
+    use super::*;
+
+    /// 把宏体里那份「键名 => 字段名」清单当数据取出来，两个测试共用。
+    fn deserialization_arms() -> Vec<(String, String)> {
         let source = include_str!("theme.rs");
         let mapping = source
             .split("macro_rules! color_arms")
@@ -1086,7 +1084,7 @@ mod tests {
             .and_then(|tail| tail.split("deserializer.deserialize_map").next())
             .expect("键清单段落");
 
-        let mut keys: Vec<&str> = Vec::new();
+        let mut arms = Vec::new();
         for line in mapping.lines() {
             let Some(rest) = line.trim().strip_prefix('"') else {
                 continue;
@@ -1106,16 +1104,29 @@ mod tests {
                 .rsplit('.')
                 .next()
                 .unwrap_or_default();
-            assert_eq!(key, field, "键名必须与字段名同名，分支：{line}");
-            keys.push(key);
+            arms.push((key.to_string(), field.to_string()));
         }
+        arms
+    }
 
+    /// 主题反序列化的命名契约：`Theme` 的每个字段都要在键清单里出现恰好一次，
+    /// 且形态固定为「键名 == 字段名」。少一条不会有任何运行时迹象——未知键被宏的
+    /// 忽略支吃掉，那个颜色就永远停在默认值。
+    #[test]
+    fn every_theme_field_has_exactly_one_deserialization_key() {
+        let arms = deserialization_arms();
+        for (key, field) in &arms {
+            assert_eq!(key, field, "键名必须与字段名同名，分支：{key} => {field}");
+        }
+        let mut keys: Vec<String> = arms.iter().map(|(key, _)| key.clone()).collect();
+
+        let source = include_str!("theme.rs");
         let struct_body = source
             .split("pub struct Theme {")
             .nth(1)
             .and_then(|tail| tail.split("\n}").next())
             .expect("Theme 结构体");
-        let mut fields: Vec<&str> = Vec::new();
+        let mut fields: Vec<String> = Vec::new();
         for line in struct_body.lines() {
             let Some(rest) = line.trim().strip_prefix("pub ") else {
                 continue;
@@ -1124,7 +1135,7 @@ mod tests {
                 continue;
             };
             if matches!(ty.trim().trim_end_matches(','), "Rgba" | "f32") {
-                fields.push(name.trim());
+                fields.push(name.trim().to_string());
             }
         }
 
@@ -1133,8 +1144,51 @@ mod tests {
             "字段扫描明显不对，只找到 {}",
             fields.len()
         );
-        keys.sort_unstable();
-        fields.sort_unstable();
+        keys.sort();
+        fields.sort();
         assert_eq!(fields, keys, "Theme 字段与反序列化键必须一一对应");
+    }
+
+    /// 行为面：文本核对只能证明"键名与字段名同名"，证明不了宏展开出来的赋值
+    /// 真的发生（写错目标字段、少一个 `=`，键名照样对得上）。这里把清单里每个键
+    /// 都赋成同一个醒目值真解析一遍，再数这些值在结果里出现的次数。
+    #[test]
+    fn every_deserialization_key_actually_assigns_its_field() {
+        const PROBE_HEX: &str = "#01020304";
+        const PROBE_RADIUS: f32 = 7.5;
+
+        let probe = format!("{:?}", parse_hex_color(PROBE_HEX).expect("探针色应能解析"));
+        let mut doc = serde_json::Map::new();
+        let mut color_keys = 0usize;
+        for (key, _) in deserialization_arms() {
+            if key.starts_with("radius_") {
+                doc.insert(key, serde_json::Value::from(PROBE_RADIUS));
+            } else {
+                doc.insert(key, serde_json::Value::from(PROBE_HEX));
+                color_keys += 1;
+            }
+        }
+        // 未知键必须被忽略支安静吃掉，不能让整个文档解析失败。
+        doc.insert(
+            "definitely_not_a_theme_key".into(),
+            serde_json::json!(PROBE_HEX),
+        );
+
+        let theme: Theme =
+            serde_json::from_value(serde_json::Value::Object(doc)).expect("整份键清单应能解析");
+        let rendered = format!("{theme:?}");
+        let assigned = rendered.matches(probe.as_str()).count();
+
+        assert_eq!(
+            assigned,
+            color_keys,
+            "有 {} 个色键没被真的赋值（宏分支缺失或写错了目标字段）",
+            color_keys - assigned
+        );
+        assert_eq!(
+            rendered.matches(&format!("{PROBE_RADIUS}")).count(),
+            3,
+            "三个 radius_* 都应落到 f32 字段上"
+        );
     }
 }
