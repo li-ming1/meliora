@@ -16,11 +16,12 @@ use crate::{
     },
 };
 
-/// 读取 `interface.reduced_motion`——全仓动画降级的唯一入口。
+/// 读取 `interface.reduced_motion`——动画降级的统一入口。
 ///
-/// 所有动效（跟随滚动、歌词行强调、封面淡入、拖拽边缘滚动、toast 位移）
-/// 都经这里取值，不再各自铺开六行设置链；设置随改随存，读取本身只是实体
-/// 解引用，可以在 render 与帧回调里随手调用。
+/// 消灭的是重复：此前 15 处各自铺开同一条六行设置链（还有两种拼写）。已经
+/// 持有整份 `Settings` 的调用点（`scrollbar.rs`、`release_view.rs` 一次要读
+/// 多个字段）直接读字段即可，不必再折到这里——那会多一次全局查找。
+/// 设置随改随存，读取本身只是实体解引用，可以在 render 与帧回调里随手调用。
 pub fn reduced_motion_enabled(cx: &App) -> bool {
     cx.global::<SettingsGlobal>()
         .model

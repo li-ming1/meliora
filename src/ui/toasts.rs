@@ -9,7 +9,6 @@ use gpui::{
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    settings::SettingsGlobal,
     toasts::{Severity, Toast, ToastAction},
     ui::{
         components::{
@@ -153,13 +152,7 @@ impl ToastLayer {
             self.ticker_running = false;
             return false;
         }
-        if !cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .reduced_motion
-        {
+        if !reduced_motion_enabled(cx) {
             cx.notify();
         }
         true
