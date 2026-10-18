@@ -77,13 +77,24 @@ pub trait LibraryAccess {
 
 /// 慢过这个值的单次查询会带着方法名被记录。
 const UI_QUERY_SLOW_MICROS: u64 = 2_000;
-/// UI 线程阻塞累计每多四分之一秒打两行日志：总量还小时保持静默，总量失控时
-/// 打出一条不断增长的曲线。
-const UI_QUERY_REPORT_STEP_MICROS: u64 = 250_000;
 
+/// UI 线程查询的会话累计量，由 `[mem] periodic` 每 30s 读一次当分母。
+/// 曾经的"每累计 250ms 报一条曲线"在 29 小时日志语料里**一行都没产出**
+/// （累计从未跨过第一个台阶），却让人误以为"有打点就有数据"——改为随探针常报。
 static UI_QUERY_CALLS: AtomicU64 = AtomicU64::new(0);
 static UI_QUERY_TOTAL_MICROS: AtomicU64 = AtomicU64::new(0);
 static UI_QUERY_PEAK_MICROS: AtomicU64 = AtomicU64::new(0);
+
+/// 会话累计：UI 线程查询的调用次数、被停的总毫秒、单次峰值微秒。
+/// 与 `[mem] periodic` 一样只在真实进程里存在（探针本体是 `#[cfg(not(test))]`）。
+#[cfg(not(test))]
+pub(crate) fn ui_query_stats() -> (u64, u64, u64) {
+    (
+        UI_QUERY_CALLS.load(Ordering::Relaxed),
+        UI_QUERY_TOTAL_MICROS.load(Ordering::Relaxed) / 1000,
+        UI_QUERY_PEAK_MICROS.load(Ordering::Relaxed),
+    )
+}
 
 /// 跑一次 UI 线程上的数据库查询，并记录它把 UI 线程停了多久。
 fn blocking_query<T>(method: &'static str, future: impl std::future::Future<Output = T>) -> T {
@@ -91,23 +102,12 @@ fn blocking_query<T>(method: &'static str, future: impl std::future::Future<Outp
     let result = crate::RUNTIME.block_on(future);
     let micros = started.elapsed().as_micros() as u64;
 
-    let calls = UI_QUERY_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    let total = UI_QUERY_TOTAL_MICROS.fetch_add(micros, Ordering::Relaxed) + micros;
-    let peak = UI_QUERY_PEAK_MICROS
-        .fetch_max(micros, Ordering::Relaxed)
-        .max(micros);
+    UI_QUERY_CALLS.fetch_add(1, Ordering::Relaxed);
+    UI_QUERY_TOTAL_MICROS.fetch_add(micros, Ordering::Relaxed);
+    UI_QUERY_PEAK_MICROS.fetch_max(micros, Ordering::Relaxed);
 
     if micros >= UI_QUERY_SLOW_MICROS {
         tracing::warn!(method, micros, "[db] slow ui-thread query");
-    }
-
-    if total / UI_QUERY_REPORT_STEP_MICROS != (total - micros) / UI_QUERY_REPORT_STEP_MICROS {
-        tracing::info!(
-            calls,
-            total_ms = total / 1000,
-            peak_ms = peak / 1000,
-            "[db] ui-thread query total"
-        );
     }
 
     result
