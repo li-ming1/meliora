@@ -13,7 +13,6 @@ use smallvec::SmallVec;
 use crate::{
     library::types::Track,
     playback::queue::QueueItemData,
-    settings::SettingsGlobal,
     ui::{
         availability::{BATCH_ACTION_TICKET, available_paths, is_track_path_available},
         components::{
@@ -42,6 +41,7 @@ use crate::{
             HasLikedState, PlaybackInfo, is_song_liked, subscribe_liked_updates, toggle_album_like,
         },
         theme::Theme,
+        util::two_column_enabled,
     },
 };
 
@@ -323,12 +323,7 @@ impl Render for FileRowItem {
         let hover_bg = theme.queue_item_hover;
         let radius_sm = theme.radius_sm;
 
-        let two_column = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .two_column_library;
+        let two_column = two_column_enabled(cx);
 
         let hash_id = self.path_hash;
         let context_id = ElementId::named_usize("fctx", hash_id);

@@ -40,6 +40,18 @@ pub fn full_width_enabled(cx: &App) -> bool {
         .effective_full_width()
 }
 
+/// 读取 `interface.two_column_library`。与上面两个同族：四处调用点只需要这一个值，
+/// 却各自铺开同一条六行链；已经持有整份 `Settings` 的站点（`library.rs` 的
+/// 双栏渲染、`release_view.rs`、`artist_detail_view.rs` 一次读多个字段）不算，
+/// 折到这里反而多一次全局查找。
+pub fn two_column_enabled(cx: &App) -> bool {
+    cx.global::<SettingsGlobal>()
+        .model
+        .read(cx)
+        .interface
+        .two_column_library
+}
+
 /// 距可见窗口这么远之外的行仍保持缓存。在带内滚回去会复用已有的行实体，而不是在
 /// UI 线程上重跑它们的 DB/stat 构建管线；这条带必须比任何视口都宽，
 /// 这样可见的行永不会被修剪掉。

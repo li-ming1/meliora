@@ -14,6 +14,7 @@ use crate::settings::storage::DEFAULT_SIDEBAR_WIDTH;
 use crate::ui::constants::COLLAPSED_SIDEBAR_WIDTH;
 use crate::ui::scroll_follow::ease_out_cubic;
 use crate::ui::theme::LIGHT_THEME_ID;
+use crate::ui::util::two_column_enabled;
 
 #[cfg(feature = "kugou")]
 use crate::kugou::shared_client;
@@ -201,12 +202,7 @@ impl Render for Sidebar {
         let _render = crate::tally_render(crate::RenderedView::Sidebar);
         let theme = cx.global::<Theme>().clone();
         let current_view = self.nav_model.read(cx).current();
-        let two_column = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .two_column_library;
+        let two_column = two_column_enabled(cx);
 
         // 两栏模式下侧栏应反映*左*栏而不是右栏（详情栏）。按 Library 的同样方式来
         // 推导有效视图。

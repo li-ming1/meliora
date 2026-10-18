@@ -25,6 +25,7 @@ use crate::{
             update_playlist::UpdatePlaylist,
         },
         library_access::LibraryAccess,
+        util::two_column_enabled,
     },
 };
 
@@ -493,12 +494,7 @@ impl Library {
     fn sync_visible_views(&mut self, model: &Entity<NavigationHistory>, cx: &mut App) {
         let history = model.read(cx);
         let current_msg = history.current();
-        let two_column = cx
-            .global::<crate::settings::SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .two_column_library;
+        let two_column = two_column_enabled(cx);
 
         self.section = library_section_from_history(history);
 
