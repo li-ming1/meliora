@@ -52,49 +52,49 @@ pub enum Reshuffled {
 
 #[derive(Debug, Clone)]
 pub enum QueueNavigationResult {
-    /// The queue position changed.
+    /// 队列位置发生变化。
     Changed {
         index: usize,
         path: PathBuf,
         reshuffled: Reshuffled,
     },
-    /// The current track should repeat (RepeatOne mode).
+    /// 当前曲目应当重播（RepeatOne 模式）。
     Unchanged { path: PathBuf },
-    /// End of queue reached.
+    /// 已到达队列末尾。
     EndOfQueue,
 }
 
 #[derive(Debug, Clone)]
 pub enum DequeueResult {
-    /// An item was removed, queue position adjusted.
+    /// 移除了一个条目，队列位置已相应调整。
     Removed { new_position: usize },
-    /// The currently playing item was removed.
+    /// 移除了当前正在播放的条目。
     RemovedCurrent {
-        /// The path of the next track to play, if any.
+        /// 接下来要播的曲目路径（若有）。
         new_path: Option<PathBuf>,
     },
-    /// Nothing changed (index out of bounds).
+    /// 什么都没变（下标越界）。
     Unchanged,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DequeueManyResult {
-    /// Items were removed, queue position adjusted.
+    /// 移除了若干条目，队列位置已相应调整。
     Removed { new_position: usize },
-    /// The currently playing item was removed.
+    /// 移除了当前正在播放的条目。
     RemovedCurrent { new_path: Option<PathBuf> },
-    /// Nothing changed (indices empty or all out of bounds).
+    /// 什么都没变（下标集合为空，或全部越界）。
     Unchanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveResult {
     Moved,
-    /// Item was moved and current position changed.
+    /// 条目已移动，且当前位置发生变化。
     MovedCurrent {
         new_position: usize,
     },
-    /// Nothing changed (same position or invalid).
+    /// 什么都没变（位置相同或非法）。
     Unchanged,
 }
 
@@ -107,33 +107,32 @@ pub enum MoveItemsResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertResult {
-    /// Item(s) inserted, current position unchanged.
+    /// 条目已插入，当前位置不变。
     Inserted { first_index: usize },
-    /// Item(s) inserted and current position shifted.
+    /// 条目已插入，且当前位置被推移。
     InsertedMovedCurrent {
         first_index: usize,
         new_position: usize,
     },
-    /// Nothing changed (invalid position).
+    /// 什么都没变（位置非法）。
     Unchanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShuffleResult {
-    /// Shuffle was enabled.
+    /// 随机播放已开启。
     Shuffled,
-    /// Shuffle was disabled, with the new position in the unshuffled queue.
+    /// 随机播放已关闭，附带在未洗牌队列中的新位置。
     Unshuffled { new_position: usize },
 }
 
-/// Short-lived operation result; the size asymmetry is irrelevant because
-/// values are dropped immediately after the caller inspects them.
+/// 短生命周期的操作结果；大小不对称无关紧要，因为调用方查看完取值就立刻丢弃。
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ReplaceResult {
-    /// Queue replaced, contains the first item to play.
+    /// 队列已替换，含要播放的第一个条目。
     Replaced { first_item: Option<QueueItemData> },
-    /// Queue is empty after replacement.
+    /// 替换之后队列为空。
     Empty,
 }
 
@@ -143,53 +142,47 @@ pub enum JumpResult {
     OutOfBounds,
 }
 
-/// Manages the playback queue state.
+/// 播放队列状态的管理者。
 ///
-/// This component handles all queue operations including navigation, shuffling,
-/// repeat modes, and queue mutations. It does NOT handle side effects like
-/// opening tracks or emitting events - those are the responsibility of the
-/// PlaybackThread.
+/// 负责全部队列操作：导航、随机播放、循环模式与队列变更；不处理打开曲目、
+/// 发事件这类副作用——那些归 PlaybackThread。
 pub struct QueueManager {
     playback_settings: PlaybackSettings,
-    /// The current queue. Shared with the UI thread for display. The inner
-    /// `Arc` makes session snapshots and undo snapshots refcount grabs:
-    /// mutations take `Arc::make_mut` so a copy only happens when a snapshot
-    /// is actually still alive (copy-on-write).
+    /// 当前队列，与 UI 线程共享用于展示。内层 `Arc` 让会话快照与 undo 快照
+    /// 只是计数抓取：变更走 `Arc::make_mut`，因此只有快照确实还活着时才复制
+    /// （写时复制）。
     queue: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
-    /// If shuffled, this holds the original (unshuffled) queue order.
+    /// 随机播放开启时保存未洗牌的原序。
     original_queue: Arc<Vec<QueueItemData>>,
-    /// Whether shuffle mode is enabled.
+    /// 随机播放是否开启。
     shuffle: bool,
-    /// Index of the next track to play.
-    /// If queue_next == 1, we're on track 0.
-    /// If queue_next == queue.len(), we're on the last track.
+    /// 下一首要播曲目的下标：queue_next == 1 表示当前在第 0 项，
+    /// queue_next == queue.len() 表示当前在最后一项。
     queue_next: usize,
     repeat: RepeatState,
     storage_tx: tokio::sync::watch::Sender<PlaybackSessionData>,
     undo_stack: VecDeque<UndoAction>,
-    /// Queue content changed since the last session snapshot was sent.
+    /// 自上次发出会话快照后，队列内容有变化。
     session_dirty: bool,
-    /// Playback state (position/shuffle/repeat) changed since the last send
-    /// and is waiting for the debounced state-only flush. Parallel to
-    /// `session_dirty` (queue contents); shares the same
-    /// `last_session_send` window anchor. See `session.rs`.
+    /// 自上次发送后播放状态（position/shuffle/repeat）有变化，正等待防抖后的
+    /// 仅状态刷新。与 `session_dirty`（队列内容）平行，共用同一个
+    /// `last_session_send` 窗口锚点。见 `session.rs`。
     state_dirty: bool,
-    /// Instant of the last session snapshot send (debounce anchor) — the
-    /// anchor is shared by the full-snapshot path and the state-only path,
-    /// so a state send also occupies the window.
+    /// 上次发送会话快照的时刻（防抖锚点）——全量快照路径与仅状态路径共用该
+    /// 锚点，所以一次状态发送同样占用这个窗口。
     last_session_send: Option<Instant>,
 }
 
 impl QueueManager {
-    /// The queue index the cursor (`queue_next`) sits on, if it is on a real
-    /// slot (`None` when nothing is playing or the cursor is past the end).
+    /// 光标（`queue_next`）所在的队列下标，仅当它落在真实槽位上
+    /// （没在播放、或光标已越过末尾时为 `None`）。
     fn cursor_index(queue_len: usize, queue_next: usize) -> Option<usize> {
         queue_next
             .checked_sub(1)
             .filter(|current_idx| *current_idx < queue_len)
     }
 
-    /// The queue item the cursor sits on, if it is on a real slot.
+    /// 光标所在槽位的队列项，仅当它落在真实槽位上。
     fn cursor_item(queue: &[QueueItemData], queue_next: usize) -> Option<QueueItemData> {
         let current_idx = Self::cursor_index(queue.len(), queue_next)?;
         Some(queue[current_idx].clone())
@@ -207,8 +200,8 @@ impl QueueManager {
     }
 
     fn item_is_playable(item: &QueueItemData) -> bool {
-        // reuse the shared path_playable helper so remote HTTP(S) streams
-        // (kugou) are playable too, not just existing local files
+        // 复用共享的 path_playable 助手，让远程 HTTP(S) 流（酷狗）也可播，
+        // 而不只认已存在的本地文件
         super::path_playable(item.get_path())
     }
 
@@ -230,9 +223,8 @@ impl QueueManager {
             .find(|idx| Self::item_is_playable(&queue[*idx]))
     }
 
-    /// In repeat-one mode the track the cursor sits on replays instead of
-    /// advancing. Returns the cursor's slot index. `None` when not
-    /// repeat-one or the slot is gone/unplayable.
+    /// 单曲循环模式下光标所在曲目重播而不前进，返回光标槽位下标。非单曲循环、
+    /// 或槽位已消失/不可播时返回 `None`。
     fn repeat_one_target(
         repeat: RepeatState,
         queue: &[QueueItemData],
@@ -246,8 +238,7 @@ impl QueueManager {
         Self::item_is_playable(current).then_some(index)
     }
 
-    /// Whether a navigation step reshuffled the queue (a repeat-all wrap with
-    /// shuffle enabled).
+    /// 一次导航步进是否重排了队列（随机播放开启时的列表循环回绕）。
     fn reshuffle_state(shuffle: bool) -> Reshuffled {
         if shuffle {
             Reshuffled::Reshuffled
@@ -256,8 +247,8 @@ impl QueueManager {
         }
     }
 
-    /// Persist after a navigation: a reshuffling wrap changed queue contents
-    /// (full snapshot), a plain advance only moved the cursor.
+    /// 导航后的持久化：重排式回绕改动了队列内容（全量快照），普通前进只移动
+    /// 光标。
     fn persist_after_navigation(&mut self, result: &QueueNavigationResult) {
         if let QueueNavigationResult::Changed { reshuffled, .. } = result {
             if *reshuffled == Reshuffled::Reshuffled {
@@ -268,9 +259,8 @@ impl QueueManager {
         }
     }
 
-    /// Shuffle mode: append `item` to `original_queue`, returning the undo
-    /// range for the append (`(0, 0)` when not shuffling — `original_queue`
-    /// stays empty by definition then).
+    /// 随机播放模式：把 `item` 追加到 `original_queue`，返回这次追加的 undo
+    /// 区间（未洗牌时 `(0, 0)`——那种情况下 `original_queue` 按定义始终为空）。
     fn append_to_original_queue(&mut self, item: &QueueItemData) -> (usize, usize) {
         if self.shuffle {
             let start = self.original_queue.len();
@@ -281,8 +271,8 @@ impl QueueManager {
         }
     }
 
-    /// Shuffle mode: append `items` to `original_queue`, returning the undo
-    /// range for the append (`(0, 0)` when not shuffling).
+    /// 随机播放模式：把 `items` 追加到 `original_queue`，返回这次追加的 undo
+    /// 区间（未洗牌时 `(0, 0)`）。
     fn append_all_to_original_queue(&mut self, items: &[QueueItemData]) -> (usize, usize) {
         if self.shuffle {
             let start = self.original_queue.len();
@@ -293,8 +283,7 @@ impl QueueManager {
         }
     }
 
-    /// Resolve an insert's effect on the cursor: items inserted before the
-    /// current slot shift it right by `cursor_shift`.
+    /// 判定插入对光标的影响：插在当前槽位之前的项会把光标右移 `cursor_shift`。
     fn resolve_insert_result(&mut self, insert_pos: usize, cursor_shift: usize) -> InsertResult {
         if insert_pos < self.queue_next {
             self.queue_next += cursor_shift;
@@ -352,14 +341,13 @@ impl QueueManager {
         }
     }
 
-    /// Get the current queue position (0-indexed).
-    /// Returns None if no track is playing.
+    /// 当前队列位置（0 起始）；没在播放时返回 None。
     pub fn current_position(&self) -> Option<usize> {
         Self::cursor_index(self.len(), self.queue_next)
     }
 
-    /// Online-provider identity of the currently playing item, if it is an
-    /// HTTP stream (used to re-fetch a fresh URL when a persisted link 403s).
+    /// 当前播放条目的在线提供方身份（仅当它是 HTTP 流时），用于在持久化的
+    /// 链接 403 时重新取一个新 URL。
     #[cfg(feature = "online_sources")]
     pub fn current_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
         let position = self.current_position()?;
@@ -367,8 +355,8 @@ impl QueueManager {
         queue.get(position)?.online_identity().cloned()
     }
 
-    /// Persisted display metadata `(name, artist, duration, cover)` of the
-    /// currently playing item, for stream-registry re-registration.
+    /// 当前播放条目的持久化展示元数据 `(name, artist, duration, cover)`，
+    /// 供流登记表重新注册使用。
     #[cfg(feature = "online_sources")]
     pub fn current_display(&self) -> Option<PersistedDisplay> {
         let position = self.current_position()?;
@@ -376,7 +364,7 @@ impl QueueManager {
         queue.get(position)?.persisted_display()
     }
 
-    /// Path of the currently playing item, if any.
+    /// 当前播放条目的路径（若有）。
     #[cfg(feature = "online_sources")]
     pub fn current_path(&self) -> Option<PathBuf> {
         let position = self.current_position()?;
@@ -384,12 +372,10 @@ impl QueueManager {
         Some(queue.get(position)?.get_path().clone())
     }
 
-    /// Swaps the stored path of the currently playing item (used when its
-    /// expired stream URL is replaced by a freshly fetched one).
+    /// 交换当前播放条目所存储的路径（其过期的流 URL 被新取回的一个替换时使用）。
     #[cfg(feature = "online_sources")]
     pub fn replace_current_path(&self, path: PathBuf) -> bool {
-        // Resolve the position before taking the write lock: computing it
-        // reads the queue, and a read inside a held write lock self-deadlocks.
+        // 在取写锁之前先把位置算出来：算位置要读队列，而持写锁期间再读会自死锁。
         let Some(position) = self.current_position() else {
             return false;
         };
@@ -405,17 +391,13 @@ impl QueueManager {
         }
     }
 
-    /// Swaps the stored path of the item `peek_next_path` resolves to — the
-    /// write-back of a gapless prepare that recovered the next entry's
-    /// expired stream URL on the background thread. Only fires while that
-    /// slot still holds `expected`, the path the prepare was requested with:
-    /// between the request and its completion the resolved "next" can move
-    /// (a repeat-mode toggle re-aims `next` at the current slot), and
-    /// stamping the fresh URL onto a different entry would corrupt its path.
-    /// On any mismatch the fresh URL is silently dropped — the transition's
-    /// own synchronous refresh retry still recovers it. Like
-    /// [`Self::replace_current_path`], the swap itself does not mark the
-    /// session dirty; the refreshed URL rides along with the next snapshot.
+    /// 交换 `peek_next_path` 解析到的那条目所存储的路径——无缝预开在后台线程上
+    /// 取回下一条目过期流 URL 之后的写回。只有该槽位仍持有 `expected`（发起
+    /// 预开时用的路径）才生效：从请求到完成之间解析出的"下一首"可能移动
+    /// （切换循环模式会把 `next` 重新指向当前槽位），把新 URL 盖到别的条目上
+    /// 会写坏那个条目的路径。任何不匹配都静默丢弃新 URL——该次转换自身的同步
+    /// 刷新重试仍会把它取回。与 [`Self::replace_current_path`] 一样，交换本身
+    /// 不把会话标脏；刷新后的 URL 随下一次快照一起带走。
     pub fn replace_next_path(&self, expected: &Path, fresh: PathBuf) -> bool {
         let index = {
             let queue = self.queue.read_recovered();
@@ -436,22 +418,22 @@ impl QueueManager {
         }
     }
 
-    /// Get the current repeat state.
+    /// 当前循环状态。
     pub fn repeat_state(&self) -> RepeatState {
         self.repeat
     }
 
-    /// Get the queue length.
+    /// 队列长度。
     pub fn len(&self) -> usize {
         self.queue.read_recovered().len()
     }
 
-    /// Returns true when shuffle mode is enabled.
+    /// 随机播放开启时返回 true。
     pub fn is_shuffle_enabled(&self) -> bool {
         self.shuffle
     }
 
-    /// Returns true if every queued item belongs to the same known album.
+    /// 队列里每个条目都属于同一个已知专辑时返回 true。
     pub fn all_items_same_album(&self) -> bool {
         let queue = self.queue.read_recovered();
         let Some(first_album) = queue.first().and_then(QueueItemData::get_db_album_id) else {
@@ -463,37 +445,37 @@ impl QueueManager {
             .all(|item| item.get_db_album_id() == Some(first_album))
     }
 
-    /// Get the first playable item's path and index without cloning the item.
+    /// 首个可播条目的路径与下标，不 clone 条目本身。
     pub fn first_playable_path(&self) -> Option<(PathBuf, usize)> {
         let queue = self.queue.read_recovered();
         Self::first_playable_index_in(&queue).map(|index| (queue[index].get_path().clone(), index))
     }
 
-    /// Get the last playable item's path and index without cloning the item.
+    /// 最后一个可播条目的路径与下标，不 clone 条目本身。
     pub fn last_playable_path(&self) -> Option<(PathBuf, usize)> {
         let queue = self.queue.read_recovered();
         Self::last_playable_index(&queue).map(|index| (queue[index].get_path().clone(), index))
     }
 
-    /// Index of the first playable item, for callers that need only the slot.
+    /// 首个可播条目的下标，给只要槽位的调用方用。
     pub fn first_playable_index(&self) -> Option<usize> {
         let queue = self.queue.read_recovered();
         Self::first_playable_index_in(&queue)
     }
 
-    /// Set the queue position directly (used after opening a track).
+    /// 直接设置队列位置（打开曲目之后使用）。
     pub fn set_position(&mut self, index: usize) {
         self.queue_next = index + 1;
         self.persist_session_state();
     }
 
-    /// Set the repeat state.
+    /// 设置循环状态。
     pub fn set_repeat(&mut self, state: RepeatState) {
         self.repeat = Self::normalize_repeat_state(&self.playback_settings, state);
         self.persist_session_state();
     }
 
-    /// Update playback settings.
+    /// 更新播放设置。
     pub fn update_settings(&mut self, settings: PlaybackSettings) {
         self.playback_settings = settings;
 
@@ -503,25 +485,22 @@ impl QueueManager {
         }
     }
 
-    /// Advance to the next track in the queue.
+    /// 前进到队列里的下一首。
     ///
-    /// Returns information about what track to play next, or if playback should stop.
+    /// 返回接下来该播哪一首、或者应当停止播放的信息。
     ///
-    /// Navigation is three-phase: snapshot the queue under the read lock,
-    /// decide outside all locks, apply. The playability scans call
-    /// `path.exists()` — a stat that reaches ~100 ms on a stalled UNC/SMB
-    /// mount and must never run under the write lock the UI queue/lyrics
-    /// panels read every frame. The split is safe because the playback thread
-    /// is the queue's only mutator: between snapshot and apply the state
-    /// cannot drift, so indices decided on the snapshot stay valid against
-    /// the live queue.
+    /// 导航分三段：读锁下取队列快照 → 在所有锁之外判定 → 应用。可播性扫描会
+    /// 调 `path.exists()`——卡死的 UNC/SMB 挂载上这次 stat 可达 ~100 ms，
+    /// 绝不能跑在 UI 队列面板/歌词面板每帧读取的那把写锁里。拆分之所以安全：
+    /// 播放线程是队列唯一变更方，快照与应用之间状态不会漂移，所以在快照上定出的
+    /// 下标对活队列依然有效。
     pub fn next(&mut self, user_initiated: bool) -> QueueNavigationResult {
         let (queue, queue_next) = {
             let queue = self.queue.read_recovered();
             (Arc::clone(&queue), self.queue_next)
         };
 
-        // Decide, outside all locks.
+        // 在所有锁之外判定。
         if !user_initiated
             && let Some(index) = Self::repeat_one_target(self.repeat, &queue, queue_next)
         {
@@ -530,17 +509,14 @@ impl QueueManager {
             };
         }
 
-        // (landing index + result reshuffle flag, plus a reshuffled queue to
-        // write back in the apply phase)
+        // （落点下标 + 结果重排标志，外加一份待在应用阶段写回的重排后队列）
         let (new_queue, landing) = if let Some(index) = Self::next_playable_from(&queue, queue_next)
         {
             (None, Some((index, Reshuffled::NotReshuffled)))
         } else if self.repeat == RepeatState::Repeating {
-            // Repeat-all wrap. With shuffle on the whole queue is reshuffled
-            // first: shuffle a local copy here and write it back below (the
-            // `replace_queue` snapshot → work outside the lock → write-back
-            // pattern). Playability is order-independent, so the landing scan
-            // runs on that copy without re-statting under the write lock.
+            // 列表循环回绕。随机播放开启时先重排整个队列：这里对本地副本洗牌、
+            // 下面再写回（`replace_queue` 的 快照 → 锁外运算 → 写回 模式）。
+            // 可播性与顺序无关，所以落点扫描在那份副本上做，不必在写锁里重新 stat。
             let new_queue = if self.shuffle {
                 let mut reshuffled = (*queue).clone();
                 reshuffled.shuffle(&mut rng());
@@ -561,15 +537,13 @@ impl QueueManager {
                 .clone()
         });
 
-        // Apply, keeping the old in-lock ordering: queue contents first, then
-        // the undo history, then the cursor.
+        // 应用，保持旧的锁内顺序：先队列内容，再 undo 历史，最后光标。
         if let Some(new_queue) = new_queue {
             let mut queue = self.queue.write_recovered();
             *queue = new_queue;
             drop(queue);
-            // The wrap reshuffles the whole queue, so every recorded undo
-            // entry's indices refer to a stale ordering; applying them later
-            // would remove or re-insert the wrong items.
+            // 回绕把整个队列重排了，所以每条已记录 undo 项的下标都指向过期顺序；
+            // 之后照它们执行会删错项或错插项。
             self.undo_stack.clear();
         }
 
@@ -589,23 +563,17 @@ impl QueueManager {
         result
     }
 
-    /// The queue slot `peek_next_path` resolves to, decided on the given
-    /// queue snapshot: the repeat-one target's slot when repeat-one is
-    /// active, else the next playable item, else the repeat-all wrap's
-    /// landing slot (first playable) when shuffle is off. Kept in lockstep
-    /// with `next(false)`'s landing decision so the gapless prepare request,
-    /// its URL-refresh hook and the refreshed-path write-back all address
-    /// the same entry. `None` when the advance is not predictable (queue end
-    /// without repeat, repeat-wrap with shuffle reshuffles).
+    /// `peek_next_path` 解析到的队列槽位，判定基于给定的队列快照：单曲循环生效时
+    /// 取单曲循环目标的槽位，否则取下一个可播项，再否则（随机播放关闭时）取列表
+    /// 循环回绕的落点槽位（首个可播项）。与 `next(false)` 的落点判定保持同步，
+    /// 这样无缝预开请求、它的 URL 刷新钩子与刷新后路径的写回指向同一条目。
+    /// 前进不可预测时返回 `None`（无循环时到队列末尾；随机播放的回绕要重排）。
     fn peek_next_index(&self, queue: &[QueueItemData]) -> Option<usize> {
         Self::repeat_one_target(self.repeat, queue, self.queue_next)
             .or_else(|| Self::next_playable_from(queue, self.queue_next))
-            // Repeat-all wrap without shuffle: `next(false)` reshuffles
-            // nothing and lands on the first playable slot, so the advance is
-            // predictable and the gapless prepare must cover it too — the
-            // wrap used to fall into a cold open with a possibly-expired
-            // persisted URL, the only audible track gap left in online
-            // playback.
+            // 随机播放关闭的列表循环回绕：`next(false)` 不重排任何东西、落在首个
+            // 可播槽位，所以这次前进可预测，无缝预开也必须覆盖它——回绕以前会掉进
+            // 冷打开，用的持久化 URL 可能已过期，那是在线播放里唯一残留的可闻曲目间隙。
             .or_else(|| {
                 if self.repeat == RepeatState::Repeating && !self.shuffle {
                     Self::first_playable_index_in(queue)
@@ -615,18 +583,16 @@ impl QueueManager {
             })
     }
 
-    /// The path `next(false)` would open, without advancing any state (used
-    /// by gapless pre-open). Returns `None` when the advance is not
-    /// predictable (queue end, repeat-wrap with shuffle reshuffles).
+    /// `next(false)` 将要打开的路径，不改动任何状态（供无缝预开使用）。前进不可
+    /// 预测时返回 `None`（队列末尾、以及随机播放的回绕要重排）。
     pub fn peek_next_path(&self) -> Option<PathBuf> {
         let queue = self.queue.read_recovered();
         self.peek_next_index(&queue)
             .map(|index| queue[index].get_path().clone())
     }
 
-    /// Online-provider identity of the item `peek_next_path` would return,
-    /// if it carries one (lets the gapless prepare arm its on-error hook with
-    /// a URL refresh for the *next* entry, not the current one).
+    /// `peek_next_path` 会返回的那条目的在线提供方身份（若它带有）。这让无缝
+    /// 预开能给出错钩子装上下一条（而非当前那条）的 URL 刷新。
     #[cfg(feature = "online_sources")]
     pub fn peek_next_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
         let queue = self.queue.read_recovered();
@@ -634,9 +600,8 @@ impl QueueManager {
         queue.get(index)?.online_identity().cloned()
     }
 
-    /// Persisted display metadata `(name, artist, duration, cover)` of the
-    /// item `peek_next_path` would return, for stream-registry
-    /// re-registration during the prepare's URL refresh.
+    /// `peek_next_path` 会返回的那条目的持久化展示元数据
+    /// `(name, artist, duration, cover)`，供预开刷新 URL 时重新注册进流登记表。
     #[cfg(feature = "online_sources")]
     pub fn peek_next_display(&self) -> Option<PersistedDisplay> {
         let queue = self.queue.read_recovered();
@@ -644,10 +609,9 @@ impl QueueManager {
         queue.get(index)?.persisted_display()
     }
 
-    /// Go to the previous track in the queue.
+    /// 回到队列里的上一首。
     ///
-    /// Three-phase like `next()`: snapshot under the read lock, decide outside
-    /// all locks, apply.
+    /// 三段化同 `next()`：读锁下取快照，在所有锁之外判定，再应用。
     pub fn previous(&mut self) -> QueueNavigationResult {
         let (queue, queue_next) = {
             let queue = self.queue.read_recovered();
@@ -666,9 +630,8 @@ impl QueueManager {
             } else {
                 None
             };
-            // Same stale-undo concern as the wrap in `next()`: recorded
-            // indices refer to the pre-reshuffle ordering. Cleared together
-            // with the write-back in the apply phase.
+            // 与 `next()` 里回绕同样的 undo 过期问题：已记录的下标指向洗牌前的
+            // 顺序。在应用阶段随写回一起清空。
             let landing = Self::last_playable_index(new_queue.as_deref().unwrap_or(&queue))
                 .map(|index| (index, Self::reshuffle_state(self.shuffle)));
             (new_queue, landing)
@@ -705,7 +668,7 @@ impl QueueManager {
         result
     }
 
-    /// Jump to a specific index in the queue.
+    /// 跳转到队列里的指定下标。
     pub fn jump(&mut self, index: usize) -> JumpResult {
         let queue = self.queue.read_recovered();
 
@@ -720,8 +683,7 @@ impl QueueManager {
         }
     }
 
-    /// Jump to an index in the original (unshuffled) queue.
-    /// If not shuffled, behaves like regular jump.
+    /// 跳转到原序（未洗牌）队列里的某个下标。未洗牌时行为等同普通跳转。
     pub fn jump_unshuffled(&mut self, index: usize) -> JumpResult {
         if !self.shuffle {
             return self.jump(index);
@@ -741,9 +703,7 @@ impl QueueManager {
         }
     }
 
-    /// Add a single item to the end of the queue.
-    ///
-    /// Returns the index where the item was added.
+    /// 在队列末尾追加单个条目，返回条目被加入的下标。
     pub fn queue_item(&mut self, item: QueueItemData) -> usize {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
@@ -767,10 +727,8 @@ impl QueueManager {
         index
     }
 
-    /// Add multiple items to the end of the queue.
-    ///
-    /// If shuffle is enabled, the new items are shuffled before being added.
-    /// Returns the index of the first item added.
+    /// 在队列末尾追加多个条目。随机播放开启时新条目先洗牌再追加，
+    /// 返回首个加入条目的下标。
     pub fn queue_items(&mut self, items: Vec<QueueItemData>) -> usize {
         if items.is_empty() {
             return self.len();
@@ -805,7 +763,7 @@ impl QueueManager {
         first_index
     }
 
-    /// Insert a single item at a specific position.
+    /// 在指定位置插入单个条目。
     pub fn insert_item(&mut self, position: usize, item: QueueItemData) -> InsertResult {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
@@ -832,7 +790,7 @@ impl QueueManager {
         result
     }
 
-    /// Insert multiple items at a specific position.
+    /// 在指定位置插入多个条目。
     pub fn insert_items(&mut self, position: usize, items: Vec<QueueItemData>) -> InsertResult {
         if items.is_empty() {
             return InsertResult::Unchanged;
@@ -864,7 +822,7 @@ impl QueueManager {
         result
     }
 
-    /// Remove an item from the queue at the specified index.
+    /// 移除队列里指定下标的条目。
     pub fn dequeue(&mut self, index: usize) -> DequeueResult {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
@@ -896,11 +854,10 @@ impl QueueManager {
 
         let res = match current {
             Some(current) if index == current => {
-                // The next track shifts into the removed slot. Skip any unplayable
-                // items and keep the cursor on the track that will actually play:
-                // `current_position()` is what the thread reports via
-                // QueuePositionChanged, so it must match the opened path or the UI
-                // resolves the wrong (or no) queue item for the new track.
+                // 下一首会顶进被移除的槽位。跳过不可播项，把光标留在实际会播的那首
+                // 上：`current_position()` 就是播放线程经 QueuePositionChanged 上报的
+                // 值，必须与已打开的路径一致，否则 UI 会为新曲目解析出错误的（或没有）
+                // 队列条目。
                 match Self::next_playable_from(&post, current) {
                     Some(new_index) => {
                         self.queue_next = new_index + 1;
@@ -918,11 +875,9 @@ impl QueueManager {
                 }
             }
             other => DequeueResult::Removed {
-                // Nothing playing (queue_next == 0) or the removed index is
-                // after the current slot: report the resolved slot without
-                // fabricating a cursor. Mirrors `dequeue_many`'s `checked_sub`
-                // semantics (a632cef) — the single-item path must not claim a
-                // current track while stopped.
+                // 没在播放（queue_next == 0），或被移除的下标在当前槽位之后：只上报
+                // 解析出的槽位，不凭空造光标。与 `dequeue_many` 的 `checked_sub` 语义
+                // 一致（a632cef）——停止状态下单条路径不得声称有当前曲目。
                 new_position: other.unwrap_or(0),
             },
         };
@@ -1063,12 +1018,11 @@ impl QueueManager {
 
         let res = if removed_current {
             let current = current.expect("removed_current implies current is Some");
-            // Removing items before the current track shifts its slot left, so
-            // the cursor must follow (current - items_before_current) and then
-            // skip unplayable items. Leaving `queue_next` stale made
-            // `current_position()` report the removed slot (or None), so no
-            // QueuePositionChanged reached the UI and the info section kept
-            // the cleared metadata of the removed track ("Unknown Track").
+            // 移除当前曲目之前的项会把它所在的槽位左移，所以光标必须跟上
+            // （current - items_before_current），随后再跳过不可播项。留着过期的
+            // `queue_next` 会让 `current_position()` 报出那个已被移除的槽位（或
+            // None），于是 QueuePositionChanged 根本传不到 UI，信息区仍保留被移除
+            // 曲目被清空后的元数据（"Unknown Track"）。
             match Self::next_playable_from(&post, current - items_before_current) {
                 Some(new_index) => {
                     self.queue_next = new_index + 1;
@@ -1099,8 +1053,8 @@ impl QueueManager {
         res
     }
 
-    /// Move an item from one position to another. If it should be logged in the undo history, set
-    /// `user_initiated` to `true`.
+    /// 把一个条目从一个位置移到另一个位置。需要记入 undo 历史时把
+    /// `user_initiated` 置为 `true`。
     pub fn move_item(&mut self, from: usize, to: usize, user_initiated: bool) -> MoveResult {
         if from == to {
             return MoveResult::Unchanged;
@@ -1123,17 +1077,17 @@ impl QueueManager {
 
         let res = if let Some(current) = self.queue_next.checked_sub(1) {
             if from == current {
-                // Moved the current track
+                // 移动的是当前曲目
                 self.queue_next = to + 1;
                 MoveResult::MovedCurrent { new_position: to }
             } else if from < current && to >= current {
-                // Moved from before to after current
+                // 从当前之前移到当前之后
                 self.queue_next -= 1;
                 MoveResult::MovedCurrent {
                     new_position: self.queue_next - 1,
                 }
             } else if from > current && to <= current {
-                // Moved from after to before current
+                // 从当前之后移到当前之前
                 self.queue_next += 1;
                 MoveResult::MovedCurrent {
                     new_position: self.queue_next.saturating_sub(1),
@@ -1142,9 +1096,8 @@ impl QueueManager {
                 MoveResult::Moved
             }
         } else {
-            // Nothing is playing (queue_next == 0): moving items must not
-            // fabricate a current track. Mirrors the `move_items` batch path,
-            // which already used `checked_sub`.
+            // 没在播放（queue_next == 0）：移动条目不得凭空造出当前曲目。与已经用了
+            // `checked_sub` 的 `move_items` 批量路径保持一致。
             MoveResult::Moved
         };
 
@@ -1163,11 +1116,10 @@ impl QueueManager {
         res
     }
 
-    /// Move multiple items to a single destination.
+    /// 把多个条目移到同一个目标位置。
     ///
-    /// Items at `indices` (sorted ascending) are removed, then re-inserted contiguously
-    /// starting at `to`. The destination `to` refers to the final position after removal
-    /// (i.e. the index where the first moved item should end up).
+    /// `indices`（升序）处的条目先被移除，再从 `to` 起连续插回。目标 `to` 指的是
+    /// 移除之后的最终位置（即首个被移动条目应当落到的下标）。
     pub fn move_items(&mut self, mut indices: Vec<usize>, to: usize) -> MoveItemsResult {
         if indices.is_empty() {
             return MoveItemsResult::Unchanged;
@@ -1197,8 +1149,7 @@ impl QueueManager {
             return MoveItemsResult::Unchanged;
         }
 
-        // `to` is the insert position in the post-removal queue (the caller adjusts
-        // for additional removals beyond the primary source index)
+        // `to` 是移除后队列里的插入位置（调用方会为超出主源下标的额外移除做补偿）
         let insert_at = to.min(queue.len() - indices.len());
 
         // 单遍重建替代逐项 remove+insert（与 dequeue_many 同型）：旧实现对
@@ -1225,7 +1176,7 @@ impl QueueManager {
             *queue = kept;
         }
 
-        // Adjust current position
+        // 校准当前位置
         let res = if let Some(current) = previous_queue_next.checked_sub(1) {
             if let Ok(current_offset) = indices.binary_search(&current) {
                 let new_position = insert_at + current_offset;
@@ -1268,9 +1219,7 @@ impl QueueManager {
         res
     }
 
-    /// Replace the entire queue with new items.
-    ///
-    /// If shuffle is enabled, the items are shuffled (but original order is preserved).
+    /// 用新条目整体替换队列。随机播放开启时会洗牌（但原序仍被保留）。
     pub fn replace_queue(&mut self, items: Vec<QueueItemData>) -> ReplaceResult {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
@@ -1292,9 +1241,9 @@ impl QueueManager {
 
         let mut queue = self.queue.write_recovered();
 
-        // Snapshot by taking the live Arcs out instead of cloning: the write lock is held for the
-        // whole swap so readers never observe the empty intermediate state, and the undo stack
-        // gets sole ownership (so the next mutation's `make_mut` never deep-copies either).
+        // 快照靠把活的 Arc 取走而不是 clone：整个交换期间都持着写锁，读者不会观察到
+        // 中间的空队列状态，undo 栈拿到独占所有权（于是下次变更的 `make_mut`
+        // 也不会深拷贝）。
         let old_queue = take(&mut *queue);
         let old_original_queue = take(&mut self.original_queue);
 
@@ -1320,27 +1269,23 @@ impl QueueManager {
         }
     }
 
-    /// Clear the queue.
-    ///
-    /// If `keep_current` is true, the currently playing track will be preserved and the
-    /// queue will contain only that track.
+    /// 清空队列。`keep_current` 为 true 时保留当前播放的曲目，队列里只剩那一首。
     pub fn clear(&mut self, keep_current: bool) {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
         let mut queue = self.queue.write_recovered();
 
-        // Read the current item BEFORE the take-based snapshots below: `take`
-        // empties the Vec, so reading `queue.len()` afterwards always saw an
-        // empty queue and `clear(true)` silently dropped the playing track it
-        // was supposed to keep.
+        // 必须在下面那些 take 式快照之前读当前条目：`take` 会把 Vec 清空，之后再读
+        // `queue.len()` 永远看到空队列，`clear(true)` 就静默丢掉了本该保留的播放中
+        // 曲目。
         let current_item = if keep_current {
             Self::cursor_item(&queue, self.queue_next)
         } else {
             None
         };
 
-        // take-based snapshots, same rationale as replace_queue: no full-queue copy
+        // take 式快照，缘由与 replace_queue 相同：不做整队拷贝
         let queue_clone = take(&mut *queue);
         let old_original_queue = take(&mut self.original_queue);
 
@@ -1369,12 +1314,12 @@ impl QueueManager {
         });
     }
 
-    /// Whether shuffle mode is currently enabled.
+    /// 随机播放当前是否开启。
     pub fn shuffled(&self) -> bool {
         self.shuffle
     }
 
-    /// Toggle shuffle mode.
+    /// 切换随机播放模式。
     pub fn toggle_shuffle(&mut self) -> ShuffleResult {
         let previous_queue_next = self.queue_next;
         let result = {
@@ -1419,13 +1364,12 @@ impl QueueManager {
                     })
                     .unwrap_or(0);
 
-                // take the shuffled Vec as the undo snapshot instead of cloning it:
-                // its contents move into the Arc either way, this just skips the copy
+                // 把洗牌后的 Vec 直接 take 成 undo 快照而不 clone：内容无论如何都要
+                // 搬进 Arc，这里只是省掉那次拷贝。
                 let shuffled_queue = take(&mut *queue);
                 *queue = take(&mut self.original_queue);
-                // Only remap the cursor when there was a current track; with
-                // nothing playing (or a stale past-end cursor) keep queue_next
-                // so unshuffling never fabricates a current item.
+                // 只有原本存在当前曲目时才重指光标；没在播放（或光标是越过末尾的过期
+                // 值）就保持 queue_next 不变，取消洗牌绝不凭空造出当前条目。
                 self.queue_next = if had_current {
                     new_position + 1
                 } else {
@@ -1542,7 +1486,7 @@ mod tests {
     #[test]
     fn dequeue_many_when_nothing_playing_does_not_start_playback() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
-        // queue_next stays 0 (nothing playing).
+        // queue_next 保持 0（没在播放）。
         assert_eq!(manager.queue_next, 0);
 
         let res = manager.dequeue_many(vec![0, 1]);
@@ -1559,7 +1503,7 @@ mod tests {
     fn dequeue_when_nothing_playing_does_not_start_playback() {
         let dir = TestDir::new("meliora-queue-dequeue-nothing-playing");
         let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
-        // queue_next stays 0 (nothing playing).
+        // queue_next 保持 0（没在播放）。
         assert_eq!(manager.queue_next, 0);
 
         let res = manager.dequeue(0);
@@ -1576,11 +1520,11 @@ mod tests {
     #[test]
     fn dequeue_many_removes_current_item() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4)]);
-        manager.set_position(1); // current = index 1 (item 2)
+        manager.set_position(1); // 当前 = 下标 1（item 2）
 
         let res = manager.dequeue_many(vec![1, 3]);
 
-        // new_path depends on files existing on disk; just assert the variant.
+        // new_path 取决于文件是否真的存在于磁盘上；这里只断言变体。
         assert!(matches!(res, DequeueManyResult::RemovedCurrent { .. }));
         assert_eq!(manager.len(), 2);
     }
@@ -1588,7 +1532,7 @@ mod tests {
     #[test]
     fn dequeue_many_removes_items_before_current_shifts_position() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4), item(5)]);
-        manager.set_position(3); // current = index 3 (item 4)
+        manager.set_position(3); // 当前 = 下标 3（item 4）
 
         let res = manager.dequeue_many(vec![0, 1]);
 
@@ -1596,14 +1540,14 @@ mod tests {
             DequeueManyResult::Removed { new_position } => assert_eq!(new_position, 1),
             other => panic!("expected Removed, got {other:?}"),
         }
-        // current item (item 4) is now at index 1; queue_next points past it.
+        // 当前项（item 4）现在在下标 1；queue_next 指向它之后。
         assert_eq!(manager.queue_next, 2);
     }
 
     #[test]
     fn dequeue_many_removes_items_after_current_keeps_position() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4), item(5)]);
-        manager.set_position(1); // current = index 1 (item 2)
+        manager.set_position(1); // 当前 = 下标 1（item 2）
         let before_queue_next = manager.queue_next;
 
         let res = manager.dequeue_many(vec![3, 4]);
@@ -1655,7 +1599,7 @@ mod tests {
     #[test]
     fn move_items_current_item_uses_its_offset_within_the_moved_block() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4), item(5)]);
-        manager.set_position(3); // current = index 3 (item 4)
+        manager.set_position(3); // 当前 = 下标 3（item 4）
 
         let res = manager.move_items(vec![1, 3], 0);
 
@@ -1699,9 +1643,8 @@ mod tests {
         assert_eq!(queue_ids(&manager), vec![3, 4, 5, 1, 2]);
     }
 
-    /// Queue items whose paths exist on disk, so `item_is_playable` (a
-    /// `path.exists()` check for local files) accepts them and
-    /// `next_playable_from` can advance onto them.
+    /// 路径确实存在于磁盘上的队列项：`item_is_playable`（本地文件走
+    /// `path.exists()` 判定）因此认它们，`next_playable_from` 也能推进到它们上面。
     fn playable_items(dir: &TestDir, ids: &[i64]) -> Vec<QueueItemData> {
         ids.iter()
             .map(|&id| {
@@ -1718,23 +1661,21 @@ mod tests {
             .collect()
     }
 
-    /// Regression: removing the current track together with items before it
-    /// must move the cursor onto the track playback resumes on. A stale
-    /// `queue_next` made `current_position()` return None (or the removed
-    /// slot), so no QueuePositionChanged reached the UI and the info section
-    /// kept the removed track's cleared metadata ("Unknown Track") while the
-    /// audio already played the next item.
+    /// 回归：连同当前曲目之前的条目一起移除时，光标必须落到播放实际续播的那首上。
+    /// 过期的 `queue_next` 会让 `current_position()` 返回 None（或那个已被移除的
+    /// 槽位），于是 QueuePositionChanged 根本传不到 UI，音频已经在播下一项了，信息区
+    /// 却仍保留被移除曲目清空后的元数据（"Unknown Track"）。
     #[test]
     fn dequeue_many_removing_current_with_earlier_items_keeps_cursor_on_played_track() {
         let dir = TestDir::new("meliora-queue-dequeue-many-current");
         let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3, 4]));
-        manager.set_position(2); // current = index 2 (item 3)
+        manager.set_position(2); // 当前 = 下标 2（item 3）
 
-        let res = manager.dequeue_many(vec![0, 2]); // one before current + current
+        let res = manager.dequeue_many(vec![0, 2]); // 当前之前的一项 + 当前项
 
         match res {
             DequeueManyResult::RemovedCurrent { new_path } => {
-                // the track after the removed current shifted into its slot
+                // 被移除当前项之后那首顶进了它的槽位
                 let expected = {
                     let queue = manager.queue.read().expect("poisoned queue lock");
                     queue[1].get_path().clone()
@@ -1746,13 +1687,12 @@ mod tests {
         assert_eq!(manager.current_position(), Some(1));
     }
 
-    /// Removing the current track must report the position of the track that
-    /// was actually opened, so the UI resolves the right queue item.
+    /// 移除当前曲目时必须上报实际被打开那首的位置，UI 才能解析到正确的队列条目。
     #[test]
     fn dequeue_removing_current_reports_position_of_the_opened_track() {
         let dir = TestDir::new("meliora-queue-dequeue-current");
         let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
-        manager.set_position(1); // current = index 1 (item 2)
+        manager.set_position(1); // 当前 = 下标 1（item 2）
 
         let res = manager.dequeue(1);
 
@@ -1769,14 +1709,13 @@ mod tests {
         assert_eq!(manager.current_position(), Some(1));
     }
 
-    /// When the item that shifts into the removed slot is unplayable, the
-    /// advance skips it; the cursor must follow onto the played item instead
-    /// of parking on the unplayable slot.
+    /// 顶进被移除槽位的那一项不可播时，前进会跳过它；光标必须跟到真正被播放的那项
+    /// 上，而不是停在不可播的槽位里。
     #[test]
     fn dequeue_removing_current_skips_unplayable_items_and_follows_the_played_track() {
         let dir = TestDir::new("meliora-queue-dequeue-unplayable");
         let mut items = playable_items(&dir, &[1, 2, 3]);
-        // point the middle item at a file that does not exist
+        // 把中间那项指向一个并不存在的文件
         let missing = dir.join("meliora-dequeue-missing.flac");
         items[1] = serde_json::from_value(json!({
             "db_id": 2,
@@ -1786,13 +1725,13 @@ mod tests {
         .expect("valid queue item");
 
         let mut manager = manager_with_queue(items);
-        manager.set_position(0); // current = index 0 (item 1)
+        manager.set_position(0); // 当前 = 下标 0（item 1）
 
         let res = manager.dequeue(0);
 
         match res {
             DequeueResult::RemovedCurrent { new_path } => {
-                // item 2 is unplayable, so playback resumes on item 3 (index 1)
+                // item 2 不可播，所以播放从 item 3（下标 1）续上
                 let expected = {
                     let queue = manager.queue.read().expect("poisoned queue lock");
                     queue[1].get_path().clone()
@@ -1826,7 +1765,7 @@ mod tests {
         items.extend(playable_items(&dir, &[4]));
 
         let mut manager = manager_with_queue(items);
-        manager.set_position(0); // current = index 0 (item 1)
+        manager.set_position(0); // 当前 = 下标 0（item 1）
 
         let res = manager.next(true);
 
@@ -1840,13 +1779,12 @@ mod tests {
         assert_eq!(manager.current_position(), Some(3));
     }
 
-    /// Regression: the take-based snapshot refactor emptied the queue Vec
-    /// *before* `current_item` was read, so `clear(true)` always saw an empty
-    /// queue and silently dropped the playing track it was supposed to keep.
+    /// 回归：take 式快照重构在读取 `current_item` 之前就把队列 Vec 清空了，于是
+    /// `clear(true)` 永远看到空队列，静默丢掉本该保留的播放中曲目。
     #[test]
     fn clear_keep_current_preserves_the_playing_track() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4)]);
-        manager.set_position(2); // current = index 2 (item 3)
+        manager.set_position(2); // 当前 = 下标 2（item 3）
 
         manager.clear(true);
 
@@ -1854,8 +1792,8 @@ mod tests {
         assert_eq!(manager.queue_next, 1);
         assert_eq!(manager.current_position(), Some(0));
 
-        // shuffle mode: the kept item must also be registered in
-        // original_queue so a later unshuffle can still find it
+        // 随机播放模式：被保留的项也要登记进 original_queue，
+        // 这样之后取消洗牌时仍能找到它
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
         manager.set_position(1);
         manager.toggle_shuffle();
@@ -1871,66 +1809,62 @@ mod tests {
         assert_eq!(manager.original_queue.len(), 1);
     }
 
-    /// Regression: `move_item` derived the current slot with
-    /// `saturating_sub`, so moving items while nothing was playing fabricated
-    /// a current track (queue_next 0 -> to+1 / 1) and the thread reported a
-    /// bogus QueuePositionChanged. The `move_items` batch path already used
-    /// `checked_sub`; the single-item path must match.
+    /// 回归：`move_item` 用 `saturating_sub` 推导当前槽位，所以在没播放任何东西时移动
+    /// 条目会凭空造出当前曲目（queue_next 0 -> to+1 / 1），线程随之上报一个假的
+    /// QueuePositionChanged。`move_items` 批量路径已经用了 `checked_sub`，
+    /// 单条路径必须与它一致。
     #[test]
     fn move_item_when_nothing_playing_does_not_start_playback() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
         assert_eq!(manager.queue_next, 0);
 
-        // moving the first item used to take the `from == current` branch
+        // 移动第一项原先会走 `from == current` 分支
         let res = manager.move_item(0, 2, true);
         assert!(matches!(res, MoveResult::Moved));
         assert_eq!(manager.queue_next, 0);
         assert_eq!(queue_ids(&manager), vec![2, 3, 1]);
 
-        // moving any item to index 0 used to take the `to <= current` branch
+        // 把任意项移到下标 0 原先会走 `to <= current` 分支
         let res = manager.move_item(2, 0, true);
         assert!(matches!(res, MoveResult::Moved));
         assert_eq!(manager.queue_next, 0);
         assert_eq!(queue_ids(&manager), vec![1, 2, 3]);
 
-        // the single-index `move_items` delegation must behave the same
+        // 单下标的 `move_items` 委托也必须行为一致
         let res = manager.move_items(vec![1], 2);
         assert!(matches!(res, MoveItemsResult::Moved));
         assert_eq!(manager.queue_next, 0);
         assert_eq!(queue_ids(&manager), vec![1, 3, 2]);
     }
 
-    /// Regression: toggling shuffle off while nothing was playing fabricated a
-    /// current track (queue_next 0 -> 1): the manager then claimed item 0 was
-    /// playing and the session snapshot persisted a bogus queue_position.
+    /// 回归：没在播放时关闭随机播放会凭空造出当前曲目（queue_next 0 -> 1）：管理器
+    /// 于是声称 item 0 正在播放，会话快照还把假的 queue_position 持久化了下去。
     #[test]
     fn toggle_shuffle_off_when_nothing_playing_keeps_no_current() {
         let mut manager = manager_with_queue(vec![item(1), item(2), item(3)]);
         assert_eq!(manager.queue_next, 0);
 
-        manager.toggle_shuffle(); // on: nothing playing, whole queue shuffled
+        manager.toggle_shuffle(); // 开启：没在播放，整个队列被洗牌
         assert_eq!(manager.queue_next, 0);
         manager.undo_stack.clear();
 
-        manager.toggle_shuffle(); // off
+        manager.toggle_shuffle(); // 关闭
         assert_eq!(manager.queue_next, 0);
         assert_eq!(manager.current_position(), None);
     }
 
-    /// Regression: the repeat-all wrap reshuffles the whole (shuffled) queue,
-    /// which invalidates every recorded undo entry's indices; applying them
-    /// afterwards would remove or re-insert the wrong items. The wrap must
-    /// drop the stale history.
+    /// 回归：列表循环回绕会把整个（已洗牌的）队列重新洗牌，这让每条已记录 undo 项的
+    /// 下标都失效；之后照它们执行会删错项或错插项。回绕必须丢掉这份过期历史。
     #[test]
     fn repeat_wrap_reshuffle_drops_stale_undo_entries() {
         let dir = TestDir::new("meliora-queue-wrap-undo");
         let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3, 4]));
         manager.set_repeat(RepeatState::Repeating);
-        manager.set_position(3); // on the last track
+        manager.set_position(3); // 停在最后一首
         manager.toggle_shuffle();
-        manager.dequeue(0); // undo entry recorded in the pre-wrap ordering
+        manager.dequeue(0); // undo 项记录的是回绕前的顺序
 
-        // EOF on the last track with repeat-all + shuffle wraps and reshuffles
+        // 最后一首遇到末尾时，列表循环 + 随机播放会回绕并重新洗牌
         let res = manager.next(false);
         assert!(matches!(
             res,
@@ -1940,15 +1874,15 @@ mod tests {
             }
         ));
 
-        // the reshuffled ordering invalidated the recorded inverse
+        // 重洗后的顺序让已记录的逆操作失效
         assert!(matches!(manager.undo_last_action(), UndoResult::None));
-        // the cursor stays on a valid track after the wrap
+        // 回绕之后光标仍停在一个有效曲目上
         assert!(manager.current_position().is_some());
     }
 
-    /// The thread resolves the opened item's slot via `jump_unshuffled`
-    /// because a shuffle-on `queue_items` shuffles the appended batch, so the
-    /// opened item no longer sits at `first_index + relative_idx`.
+    /// 线程经 `jump_unshuffled` 解析被打开条目的槽位，因为随机播放开启时
+    /// `queue_items` 会把追加的那一批洗牌，被打开的项已不再坐在
+    /// `first_index + relative_idx` 上。
     #[test]
     fn jump_unshuffled_resolves_items_appended_by_a_shuffled_batch() {
         let dir = TestDir::new("meliora-queue-jump-unshuffled-batch");
@@ -1959,7 +1893,7 @@ mod tests {
 
         let first_index = manager.queue_items(playable_items(&dir, &[10, 11, 12]));
 
-        // item 10 is the first appended item in the user's (original) order
+        // item 10 是用户原序里首个被追加的项
         let res = manager.jump_unshuffled(first_index);
         match res {
             JumpResult::Jumped { .. } => {
@@ -1976,18 +1910,16 @@ mod tests {
         }
     }
 
-    /// The repeat-all wrap without shuffle lands on the first playable slot
-    /// (`next(false)`'s decision), so the gapless pre-open must see it too:
-    /// `peek_next_path` used to return None past the last item and the wrap
-    /// fell into a cold open — with a persisted online URL that cold open
-    /// pays fail-then-refresh (~375 ms of audible underruns, log-verified
-    /// 2026-10-06: index 19 → 0 advanced with no prepared stream).
+    /// 随机播放关闭的列表循环回绕落在首个可播槽位（`next(false)` 的判定），所以无缝
+    /// 预开也必须看到它：`peek_next_path` 以前在最后一项之后返回 None，于是回绕掉进
+    /// 冷打开——带着持久化的在线 URL 时那次冷打开要付 fail-then-refresh
+    /// （~375 ms 的可闻欠载，2026-10-06 日志核实：下标 19 → 0 前进时没有已预备的流）。
     #[test]
     fn peek_next_path_covers_repeat_all_wrap_without_shuffle() {
         let dir = TestDir::new("meliora-queue-wrap-peek");
         let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
         manager.set_repeat(RepeatState::Repeating);
-        manager.set_position(2); // on the last track
+        manager.set_position(2); // 停在最后一首
 
         let peeked = manager
             .peek_next_path()
@@ -1999,7 +1931,7 @@ mod tests {
                 .clone()
         );
 
-        // lockstep: the advance lands on the peeked slot
+        // 保持同步：前进正好落在被 peek 的那个槽位上
         assert!(matches!(
             manager.next(false),
             QueueNavigationResult::Changed { index: 0, .. }
@@ -2010,7 +1942,7 @@ mod tests {
     fn peek_next_path_stays_none_beyond_queue_end_without_repeat() {
         let dir = TestDir::new("meliora-queue-end-peek");
         let mut manager = manager_with_queue(playable_items(&dir, &[1, 2, 3]));
-        manager.set_position(2); // on the last track, repeat off
+        manager.set_position(2); // 停在最后一首，循环关闭
 
         assert!(manager.peek_next_path().is_none());
         assert!(matches!(
@@ -2027,7 +1959,7 @@ mod tests {
         manager.set_position(2);
         manager.toggle_shuffle();
 
-        // the reshuffled landing order is not predictable
+        // 重洗后的落点顺序不可预测
         assert!(manager.peek_next_path().is_none());
     }
 }

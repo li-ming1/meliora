@@ -8,43 +8,42 @@ use tracing::info;
 use super::*;
 
 #[derive(Debug, Clone)]
-/// Type storing the inverse of various queue mutations, for undoing queue changes.
+/// 存放各类队列变更之逆操作的类型，用于撤销队列改动。
 pub enum UndoAction {
-    /// The queue was replaced with a new set of items. Contains the old queue state.
-    /// Snapshots are `Arc`-shared: cloning into the undo stack must not deep-copy a
-    /// 100k-item queue 30 times over, and undo may still need to hand out a fresh
-    /// `Vec` if the snapshot is shared elsewhere.
+    /// 队列被一整批新条目替换，载荷是替换前的队列状态。快照以 `Arc` 共享：
+    /// 拷进撤销栈绝不能把 10 万条队列深拷贝 30 遍；若快照还被别处持有，
+    /// 撤销时仍可能需要交出一个新的 `Vec`。
     Replaced {
         old_queue: Arc<Vec<QueueItemData>>,
         old_original_queue: Arc<Vec<QueueItemData>>,
         previous_queue_next: usize,
         previous_shuffle: bool,
     },
-    /// The queue was shuffled (shuffle toggled on). The pre-shuffle queue is recoverable
-    /// by taking `original_queue` at undo time, so no payload is needed.
+    /// 队列被打乱（随机播放开启）。乱前队列在撤销时取 `original_queue` 即可恢复，
+    /// 因此无需额外载荷。
     Shuffled,
-    /// The queue was unshuffled (shuffle toggled off). Stores the pre-unshuffle (shuffled)
-    /// queue; the pre-unshuffle `original_queue` is recoverable from the queue at undo time.
+    /// 队列已取消打乱（随机播放关闭）。存的是取消前（打乱态）的队列；
+    /// 取消前的 `original_queue` 在撤销时可从队列本身恢复。
     Unshuffled {
         shuffled_queue: Arc<Vec<QueueItemData>>,
         previous_queue_next: usize,
     },
-    /// Items were removed from the queue. Contains a list of removed items and their indices.
+    /// 队列中有条目被移除，载荷是被移除条目及其索引的列表。
     Removed {
         queue_items: SmallVec<[(usize, QueueItemData); 1]>,
         original_queue_items: SmallVec<[(usize, QueueItemData); 1]>,
         previous_queue_next: usize,
         previous_shuffle: bool,
     },
-    /// Items were inserted into the queue. Inserts are always contiguous, so
-    /// the undo payload is a `(start, len)` range instead of an index list.
+    /// 有条目插入队列。插入总是连续的，因此撤销载荷是 `(start, len)` 区间，
+    /// 而不是索引列表。
     Inserted {
         queue_range: (usize, usize),
         original_queue_range: (usize, usize),
         previous_queue_next: usize,
         previous_shuffle: bool,
     },
-    /// Items were moved within the queue. Contains the original and new indices.
+    /// 队列内条目被移动，载荷是原索引与新索引。
     Moved {
         original: usize,
         new: usize,
@@ -61,15 +60,15 @@ pub enum UndoAction {
 
 #[derive(Debug, Clone)]
 pub enum UndoResult {
-    /// The last action was undone successfully. Contains the current index and path.
+    /// 最后一步已成功撤销，载荷是当前索引与路径。
     Ok {
         current_idx: usize,
         current_path: PathBuf,
         shuffle: bool,
     },
-    /// The last action was undone successfully, but no current track is selected.
+    /// 最后一步已成功撤销，但没有选中当前曲目。
     OkNoCurrent { shuffle: bool },
-    /// No action to undo.
+    /// 没有可撤销的动作。
     None,
 }
 
@@ -90,7 +89,7 @@ impl QueueManager {
         }
     }
 
-    /// Undo a removal: merge the removed `(index, item)` pairs back in one
+    /// 撤销删除：把被移除的 `(index, item)` 对按升序一趟归并回队列
     /// ascending pass（逐对 insert 是 k 次 O(n) memmove，k 大的多选删除在
     /// undo 时会退回 dequeue_many 修掉的那类冻结；归并重建只付一遍）.
     fn undo_reinsert_items(
@@ -120,7 +119,7 @@ impl QueueManager {
         *queue = restored;
     }
 
-    /// Undo an insertion: drain the recorded contiguous range in one move
+    /// 撤销插入：一次 move 排空记录的连续区间
     /// （逐索引 remove 是 O(k×n) memmove，范围 drain 只需一次）.
     fn undo_remove_items(queue: &mut Vec<QueueItemData>, (start, len): (usize, usize)) {
         queue.drain(start..start + len);
@@ -140,7 +139,7 @@ impl QueueManager {
             return;
         }
 
-        // 淘汰只从最旧端进行，保证剩余撤销历史连续（撤销按 LIFO 逐条回放，
+        // 逐出只从最旧端进行，保证剩余撤销历史连续（撤销按 LIFO 逐条回放，
         // 从中间挖洞会让后续 undo 跳过中间步骤的逆操作）。
         let is_snapshot = matches!(action, UndoAction::Replaced { .. });
         while self.undo_stack.len() >= UNDO_STACK_CAPACITY

@@ -31,7 +31,7 @@ use super::media_controller::MediaController;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineState {
-    /// No media loaded, engine is idle.
+    /// 未加载媒体，引擎空闲。
     Idle,
     Playing,
     Paused,
@@ -46,22 +46,19 @@ enum DrainState {
 
 const MAX_DRAIN_CYCLES: u32 = 1024;
 
-/// Number of allowable rebuild attempts before giving up and skipping to the next track.
+/// 允许的连续重建次数上限，超过就放弃并跳到下一曲。
 const MAX_REBUILD_ATTEMPTS: u32 = 8;
 
-/// First defer window before a device stream is recreated again after a failed
-/// consume. A device whose WriteTimeout recurs every cycle used to be recreated
-/// every cycle (observed 95 times in 77 s); the window doubles per consecutive
-/// failed cycle up to [`DEVICE_RECREATE_BACKOFF_MAX`]. A clean consume ends the
-/// episode only once it outlasts the current window - a brief recovery between
-/// recurrences must not reset `failures`, or the backoff can never escalate
-/// (observed: 8 recycles at ~0.7 s cadence, all `failures=0`). The consume
-/// attempt itself still runs every cycle - its timeout naturally paces the
-/// loop - only the recreate churn is deferred.
+/// 一次 consume 失败之后、设备流再次重建之前的首个推迟窗口。WriteTimeout 每个
+/// 周期都复现的设备过去会被每个周期重建一次（实测 77 s 内 95 次）；该窗口按连续
+/// 失败周期翻倍，上限 [`DEVICE_RECREATE_BACKOFF_MAX`]。一次干净的 consume 只有
+/// 持续超过当前窗口才算终结这一轮故障——复现之间的短暂恢复绝不能重置 `failures`，
+/// 否则退避永远升不上去（实测：~0.7 s 节奏连转 8 次，全部 `failures=0`）。consume
+/// 尝试本身仍每个周期执行——它的超时天然给循环定拍——被推迟的只是重建的空转。
 const DEVICE_RECREATE_BACKOFF_INITIAL: std::time::Duration = std::time::Duration::from_secs(2);
 const DEVICE_RECREATE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Overrides the default behavior of the audio pipeline if the advertised format was wrong.
+/// 当申报的格式有误时，覆盖音频管线的默认行为。
 #[derive(Debug, Clone, Default)]
 struct PipelineOverrides {
     source_spec: Option<ChannelSpec>,
@@ -71,16 +68,16 @@ struct PipelineOverrides {
 pub enum EngineCycleResult {
     Continue,
     Eof,
-    /// A fatal decode error occurred - should skip to next track.
+    /// 出现致命解码错误——应跳到下一曲。
     FatalError(String),
-    /// Nothing to do - not in playing state or no stream available.
+    /// 无事可做——不在播放态，或没有可用的流。
     NothingToDo,
 }
 
 #[derive(Debug)]
 pub enum EngineError {
     NoPipeline,
-    /// Failed to get media information.
+    /// 取媒体信息失败。
     MediaError(String),
     DecodeError(String),
     DeviceError(String),
@@ -106,95 +103,83 @@ pub struct AudioEngine {
     device: DeviceController,
     pipeline: Option<AudioPipeline>,
     resampler: Option<Resampler>,
-    /// Mixer between source-channel resampler output and device-channel input.
+    /// 源声道重采样输出与设备声道输入之间的混音器。
     mixer: Option<ChannelMixer>,
-    /// Parametric EQ, runs on the post-mix device-rate block.
+    /// 参数化均衡器，跑在混音后的设备采样率块上。
     eq: EqualizerProcessor,
-    /// Spectrum taps bracketing the EQ stage, gated by the analyzer's UI flag.
+    /// 夹在均衡级两端的频谱抽头，受分析器的 UI 开关门控。
     tap: SpectrumTap,
-    /// Event channel to the UI, used to report the device stream rate.
+    /// 通往 UI 的事件通道，用于上报设备流的采样率。
     events_tx: UnboundedSender<PlaybackEvent>,
-    /// Last rate reported to the UI, events only fire on change.
+    /// 最近一次上报给 UI 的采样率，只在变化时发事件。
     reported_sample_rate: u32,
     state: EngineState,
     drain: DrainState,
-    /// Consecutive rebuilds without a decode producing audio; see [`MAX_REBUILD_ATTEMPTS`].
+    /// 连续出现"重建后仍没有解码产出音频"的次数；见 [`MAX_REBUILD_ATTEMPTS`]。
     rebuild_attempts: u32,
-    /// Largest device-input capacity any track has needed so far. The pipeline is rebuilt per
-    /// track and its ring/staging/handoff buffers scale with the source rate; sizing them all to
-    /// this floor keeps the per-track allocation size constant so the heap reuses the same
-    /// blocks instead of climbing (the [mem] probe's per-track committed-growth curve).
+    /// 至今所有曲目需要的最大设备输入容量。管线按曲目重建，其环形缓冲/暂存/交接
+    /// 缓冲都随源采样率伸缩；把它们统一按这个下限取尺寸，可让每曲的分配大小恒定，
+    /// 于是堆复用同一批块而不再爬升（即 [mem] 探针的逐曲 committed 增长曲线）。
     pipeline_capacity_floor: usize,
-    /// `(next recreate allowed at, consecutive failed consume cycles)` pacing
-    /// device recreation; see [`DEVICE_RECREATE_BACKOFF_INITIAL`].
+    /// `(下次允许重建的时刻, 连续失败的 consume 周期数)`，为设备重建定拍；
+    /// 见 [`DEVICE_RECREATE_BACKOFF_INITIAL`]。
     device_recreate_defer: Option<(std::time::Instant, u32)>,
-    /// Pre-opened next track for gapless advance, filled by
-    /// [`AudioEngine::prepare_next`] on a background thread.
+    /// 为无缝衔接前进而预打开的下一曲，由 [`AudioEngine::prepare_next`]
+    /// 在后台线程填入。
     prepared: Option<PreparedMedia>,
-    /// Receiver of the in-flight background prepare, if any.
+    /// 已在途的后台预备的接收端（若有）。
     prepare_rx: Option<mpsc::Receiver<PrepareOutcome>>,
-    /// Path handed to the in-flight prepare thread (mirrors `prepare_rx`).
+    /// 交给已在途预备线程的路径（与 `prepare_rx` 同步）。
     prepare_request: Option<PathBuf>,
-    /// Path whose prepare was just invalidated by a queue mutation, with the
-    /// time it was dropped: `prepare_next` skips re-spawning for the same
-    /// path within [`PREPARE_COOLDOWN`], so a burst of queue edits in the
-    /// prepare window doesn't spawn a full open per edit.
+    /// 刚被队列变更使预备失效的路径，连同它被丢弃的时刻：`prepare_next` 在
+    /// [`PREPARE_COOLDOWN`] 内跳过对同一路径的重新 spawn，于是预备窗口内的一阵
+    /// 队列编辑不会每次编辑都 spawn 一整套打开。
     dropped_prepare: Option<(PathBuf, std::time::Instant)>,
-    /// Path whose background prepare failed last, with the time it failed:
-    /// `prepare_next` skips re-spawning for the same path within
-    /// [`PREPARE_FAILURE_COOLDOWN`]. Without this, a next track whose URL can
-    /// never open (e.g. an expired signed URL the refresh can't renew) is
-    /// re-requested once per playback cycle until it becomes current. Keyed
-    /// on the *requested* path: a failed refresh-retry reports the fresh URL
-    /// as the outcome's path, but the caller keeps requesting the queue's
-    /// stale URL until the write-back lands.
+    /// 上一次后台预备失败的路径，连同失败时刻：`prepare_next` 在
+    /// [`PREPARE_FAILURE_COOLDOWN`] 内跳过对同一路径的重新 spawn。没有它，一个
+    /// URL 永远打不开的下一曲（例如刷新也救不回来的过期签名 URL）会在它成为
+    /// 当前曲之前每个播放周期被重复请求一次。以*被请求的*路径为键：刷新重试失败
+    /// 时结果里的 path 是新 URL，而调用方会一直请求队列里那个过期 URL，直到
+    /// 回写落地。
     failed_prepare: Option<(PathBuf, std::time::Instant)>,
-    /// Cancellation flag for the in-flight prepare thread: set when the
-    /// prepare is invalidated (queue mutation, stop) so a dropped prepare
-    /// stops paying provider refresh calls and a second full open for an
-    /// outcome nobody will read.
+    /// 已在途预备线程的取消旗标：预备失效时（队列变更、停止）置位，让被丢弃的
+    /// 预备不再为一个没人会读的结果继续付提供者刷新调用与第二次完整打开。
     prepare_cancel: Option<Arc<AtomicBool>>,
 }
 
-/// How long after a queue-mutation invalidation a re-prepare of the same next
-/// track is deferred (see [`AudioEngine::dropped_prepare`]).
+/// 队列变更使预备失效后，同一首下一曲重新预备要推迟多久
+/// （见 [`AudioEngine::dropped_prepare`]）。
 const PREPARE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// How long after a failed background prepare a re-prepare of the same path is
-/// deferred. Long enough that a permanently unopenable next track costs one
-/// request per cooldown instead of one per playback cycle; short enough that a
-/// transient network failure still gets gapless coverage soon.
+/// 后台预备失败后，同一路径重新预备要推迟多久。要长到让永远打不开的下一曲每个
+/// 冷却只花一次请求、而非每个播放周期一次；也要短到让瞬时网络故障很快重新拿到
+/// 无缝衔接覆盖。
 const PREPARE_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Background prepare result sent back to the playback thread.
+/// 送回播放线程的后台预备结果。
 struct PrepareOutcome {
     path: PathBuf,
     result: Result<(Box<dyn MediaStream>, Option<u64>), String>,
 }
 
-/// Retry hook handed to a background prepare: when opening the next track's
-/// media fails (an expired signed URL), the hook re-fetches a fresh path from
-/// the provider. Built by the playback thread, which owns the queue and the
-/// quality settings; the engine stays provider-agnostic — the prepare thread
-/// sees only the closure, so the retry (a blocking provider call, bounded by
-/// the caller's own timeout) runs on that dedicated std thread where it cannot
-/// stall the playback loop. The same hook is cloned into the opened stream as
-/// its mid-stream refresh (see `MediaUrlRefresh`), so the shareable `Arc`/`Fn`
-/// form is load-bearing, not incidental.
+/// 交给后台预备的重试钩子：打开下一曲的媒体失败时（过期的签名 URL），钩子从
+/// 提供者重新取一个新路径。由播放线程构造——它拥有队列与音质设置；引擎保持对
+/// 提供者无感——预备线程只见闭包，于是重试（一次阻塞的提供者调用，受调用方自己
+/// 的超时约束）跑在那个专用 std 线程上，拖不住播放循环。同一个钩子会被克隆进
+/// 已打开的流作为其流中刷新（见 `MediaUrlRefresh`），所以可共享的 `Arc`/`Fn`
+/// 形态是必需项而非偶然。
 pub struct OnlineRefresh {
     pub retry: crate::media::http_source::MediaUrlRefresh,
 }
 
-/// A finished background prepare, reported by [`AudioEngine::poll_prepared`]
-/// so the playback thread can write a refresh-recovered path back to the
-/// queue entry the prepare was requested for.
+/// 一次已完成的后台预备，经 [`AudioEngine::poll_prepared`] 上报，让播放线程能把
+/// 靠刷新救回的路径回写到当初请求预备的那个队列条目。
 pub struct PrepareReport {
-    /// Path the prepare was requested with.
+    /// 请求预备时给出的路径。
     pub requested: PathBuf,
-    /// Final path of the prepared stream: differs from `requested` when the
-    /// on-open-error refresh produced a fresh URL.
+    /// 已预备流的最终路径：on-open-error 刷新产出新 URL 时与 `requested` 不同。
     pub path: PathBuf,
-    /// Whether a stream was opened (directly, or after the refresh retry).
+    /// 是否打开了流（直接打开，或经刷新重试之后）。
     pub succeeded: bool,
 }
 
@@ -206,7 +191,7 @@ impl AudioEngine {
             pipeline: None,
             resampler: None,
             mixer: None,
-            // re-synced to the real stream format on stream creation
+            // 建流时会重新同步到真实的流格式
             eq: EqualizerProcessor::new(48_000.0, 2),
             tap,
             events_tx,
@@ -225,9 +210,9 @@ impl AudioEngine {
         }
     }
 
-    /// Initialize the audio engine's providers and create the initial device stream.
+    /// 初始化音频引擎的各提供者并创建初始设备流。
     ///
-    /// This should be called once at startup.
+    /// 启动时调用一次。
     pub fn initialize(&mut self) -> Result<(), EngineError> {
         self.device.initialize_provider();
 
@@ -248,32 +233,29 @@ impl AudioEngine {
         self.state
     }
 
-    /// Whether a next-track stream is already prepared or being prepared.
-    /// Cheap check for the per-cycle `maybe_prepare_next` path: once the
-    /// next stream is in flight, the caller can skip the queue lock and the
-    /// `PathBuf` clone entirely. Queue mutations clear `prepared`/`prepare_rx`,
-    /// so a present value is never for a stale path.
+    /// 下一曲的流是否已预备或正在预备。为逐周期的 `maybe_prepare_next` 路径准备的
+    /// 廉价检查：下一流一旦在途，调用方就能整个跳过队列锁与 `PathBuf` 克隆。
+    /// 队列变更会清空 `prepared`/`prepare_rx`，所以有值就绝不会对应过期路径。
     pub fn is_next_prepared(&self) -> bool {
         self.prepare_rx.is_some() || self.prepared.is_some()
     }
 
-    /// Shared admission check for `prepare_rejected` and `prepare_next`:
-    /// already prepared/in flight, or inside a dropped/failed cooldown.
+    /// `prepare_rejected` 与 `prepare_next` 共用的准入检查：已预备/已在途，
+    /// 或处于丢弃/失败冷却之内。
     fn prepare_blocked(&self, path: &Path) -> bool {
         if self.prepare_rx.is_some() || self.prepared.as_ref().is_some_and(|p| p.path == path) {
             return true;
         }
-        // A prepare of this track was invalidated moments ago by a queue
-        // mutation: defer until the edits settle instead of re-opening the
-        // stream (connect+probe, or a wasted HTTP request) once per edit.
+        // 这曲的预备不久前刚被队列变更失效：推迟到编辑安定下来，而不是每次编辑
+        // 都重开一次流（连接+探测，或一次白费的 HTTP 请求）。
         if let Some((dropped, at)) = &self.dropped_prepare
             && dropped == path
             && at.elapsed() < PREPARE_COOLDOWN
         {
             return true;
         }
-        // The last prepare of this path failed (dead URL, unreadable file):
-        // back off instead of paying a full open attempt once per cycle.
+        // 该路径最近一次预备失败（URL 已死、文件读不了）：退避，而不是每个周期
+        // 都付一次完整的打开尝试。
         if let Some((failed, at)) = &self.failed_prepare
             && failed == path
             && at.elapsed() < PREPARE_FAILURE_COOLDOWN
@@ -283,49 +265,41 @@ impl AudioEngine {
         false
     }
 
-    /// Whether `prepare_next` would reject `path` right now. Lets the caller
-    /// skip building the refresh hook — a queue lock, a registry scan and a
-    /// closure allocation per decode cycle during the 30 s failure cooldown —
-    /// before paying for it.
+    /// `prepare_next` 此刻是否会拒绝 `path`。让调用方在付费之前先跳过构造刷新钩子
+    /// ——在 30 s 失败冷却期间，那意味着每个解码周期一次队列锁、一次注册表扫描
+    /// 和一次闭包分配。
     pub fn prepare_rejected(&self, path: &Path) -> bool {
         self.prepare_blocked(path)
     }
 
-    /// Pre-open `path`'s media stream on a background thread so the track
-    /// swap at end-of-track doesn't wait on connect+probe (online sources).
-    /// `on_open_error` arms the prepare with a one-shot URL-refresh retry:
-    /// when the open fails (an expired signed URL), the hook fetches a fresh
-    /// path and the open runs once more against it — all on the prepare
-    /// thread, so the recovery completes inside the prepare lead window
-    /// instead of blocking the transition itself. `None` (local files,
-    /// unidentifiable streams) keeps the previous behavior unchanged.
-    /// Ignored when that track is already prepared or being prepared.
+    /// 在后台线程预打开 `path` 的媒体流，让曲终时的换曲不必等待连接+探测（在线源）。
+    /// `on_open_error` 给预备装上一枚一次性的 URL 刷新重试：打开失败时（过期的签名
+    /// URL），钩子取一个新路径并对它再跑一次打开——全程在预备线程上，因此自救发生
+    /// 在预备提前窗口之内，而不是阻塞切换本身。`None`（本地文件、无法识别的流）
+    /// 保持原有行为不变。该曲目已预备或正在预备时本调用被忽略。
     pub fn prepare_next(&mut self, path: &Path, on_open_error: Option<OnlineRefresh>) {
         if self.prepare_blocked(path) {
             return;
         }
-        // A prepared stream for a different track is stale by definition.
+        // 为另一首曲目预备的流按定义已经过期。
         self.prepared = None;
 
         let (tx, rx) = mpsc::channel();
         self.prepare_rx = Some(rx);
         let path = path.to_path_buf();
         self.prepare_request = Some(path.clone());
-        // A prepare invalidated mid-flight (queue mutation, stop) must not
-        // keep spending provider refresh calls and a second full open for an
-        // outcome nobody will read; the first open cannot be interrupted, so
-        // the flag is checked at the two remaining decision points.
+        // 在途中失效的预备（队列变更、停止）绝不能为一个没人会读的结果继续付
+        // 提供者刷新调用与第二次完整打开；首次打开无法被打断，所以旗标只在剩下
+        // 的两个决策点检查。
         let cancel = Arc::new(AtomicBool::new(false));
         self.prepare_cancel = Some(Arc::clone(&cancel));
-        // The same hook doubles as the opened stream's mid-stream refresh.
+        // 同一个钩子兼作已打开流的流中刷新。
         let source_refresh = on_open_error.as_ref().map(|hook| Arc::clone(&hook.retry));
         let spawned = std::thread::Builder::new()
             .name("media-prepare".into())
             .spawn(move || {
-                // Expired signed URL: the first open fails, the hook
-                // re-fetches a fresh path, and the open is retried once
-                // against it. The outcome reports the final path so the
-                // caller can write it back to the queue.
+                // 过期的签名 URL：首次打开失败，钩子重新取一个新路径，并对它
+                // 重试打开一次。结果里上报最终路径，好让调用方把它回写给队列。
                 let (path, result) = match MediaController::open_stream(&path, source_refresh) {
                     Ok(stream) => (path, Ok(stream)),
                     Err(err) => {
@@ -354,15 +328,14 @@ impl AudioEngine {
                 let _ = tx.send(PrepareOutcome { path, result });
             });
         if spawned.is_err() {
-            // No prepare thread; the transition falls back to a normal open.
+            // 没有预备线程；切换时退回普通打开路径。
             self.prepare_rx = None;
             self.prepare_request = None;
         }
     }
 
-    /// Collect a finished background prepare. Call once per playback cycle;
-    /// returns a report for every completed prepare (success or failure) so
-    /// the caller can write a refresh-recovered path back to the queue.
+    /// 收取已完成的后台预备。每个播放周期调用一次；每个完成的预备（成功或失败）
+    /// 都返回一份报告，好让调用方把靠刷新救回的路径回写给队列。
     pub fn poll_prepared(&mut self) -> Option<PrepareReport> {
         let Some(rx) = &self.prepare_rx else {
             return None;
@@ -371,11 +344,9 @@ impl AudioEngine {
             Ok(outcome) => {
                 self.prepare_rx = None;
                 self.prepare_cancel = None;
-                // Key the failure backoff and the refresh write-back on the
-                // requested path: with a refresh retry the outcome's path is
-                // the *fresh* URL, while `prepare_next`'s guards (and the
-                // queue entry to repair) compare against what was — and will
-                // again be — requested.
+                // 失败退避与刷新回写都以被请求的路径为键：带刷新重试时结果里的
+                // path 是*新的* URL，而 `prepare_next` 的几道守卫（以及要修复的
+                // 队列条目）比对的是——并且还会是——被请求的那个路径。
                 let requested = self
                     .prepare_request
                     .take()
@@ -398,12 +369,12 @@ impl AudioEngine {
                         })
                     }
                     Err(e) => {
-                        // The transition re-runs the normal open path (with
-                        // its URL-refresh retry) and logs there.
+                        // 切换时会重跑普通打开路径（连同它的 URL 刷新重试），
+                        // 日志也在那里打。
                         warn!("pre-opening next track failed: {e}");
-                        // Back off this path: without the record, the next
-                        // cycle re-requests the same unopenable URL (a real
-                        // HTTP round-trip per cycle while it stays next).
+                        // 给这条路径记退避：不留记录，下一个周期就会再次请求
+                        // 同一个打不开的 URL（它还在 next 期间每个周期一次真实
+                        // HTTP 往返）。
                         self.failed_prepare = Some((requested.clone(), std::time::Instant::now()));
                         Some(PrepareReport {
                             requested,
@@ -423,17 +394,17 @@ impl AudioEngine {
         }
     }
 
-    /// Drop any pre-opened media; called when the queue changes (the next
-    /// track may no longer be the prepared one) or playback stops.
+    /// 丢弃所有预打开的媒体；在队列变化（下一曲可能已不是预备的那首）或播放
+    /// 停止时调用。
     pub fn drop_prepared(&mut self) {
-        // A prepare still in flight must stop spending provider refresh calls
-        // and a second full open for an outcome nobody will read.
+        // 仍在途的预备必须停止为一个没人会读的结果继续付提供者刷新调用与第二次
+        // 完整打开。
         if let Some(cancel) = &self.prepare_cancel {
             cancel.store(true, Ordering::Relaxed);
         }
         self.prepare_cancel = None;
-        // Remember what was invalidated so `prepare_next` can rate-limit
-        // re-spawns of the same path while queue edits are settling.
+        // 记住刚刚失效的是什么，好让 `prepare_next` 在队列编辑安定期间对同一路径
+        // 的重新 spawn 节流。
         let dropped = self
             .prepare_request
             .take()
@@ -445,13 +416,11 @@ impl AudioEngine {
         self.prepare_rx = None;
     }
 
-    /// Drop the pre-opened media only when the queue's next entry no longer
-    /// matches what was (being) prepared. Edits that leave the next track
-    /// untouched — metadata refreshes, reorders elsewhere, unrelated adds —
-    /// would otherwise kill a valid pre-open and re-pay a full open after the
-    /// [`PREPARE_COOLDOWN`] window. A `next` matching the *requested* path
-    /// keeps an in-flight prepare; one matching the *reported* path (a
-    /// refresh-recovered URL already written back) keeps a finished one.
+    /// 仅当队列的下一条条目不再与（正在）预备的内容匹配时才丢弃预打开的媒体。
+    /// 不改动下一曲的那些编辑——元数据刷新、别处重排、无关新增——否则会让一个
+    /// 有效的预打开作废，并在 [`PREPARE_COOLDOWN`] 窗口之后重付一次完整打开。
+    /// `next` 匹配*被请求的*路径时保留在途的预备；匹配*已上报的*路径（已回写的、
+    /// 靠刷新救回的 URL）时保留已完成的预备。
     pub fn drop_prepared_unless_next(&mut self, next: Option<&Path>) {
         let matches = |prepared_path: &Path| next == Some(prepared_path);
         let stale = match (&self.prepare_request, &self.prepared) {
@@ -496,18 +465,16 @@ impl AudioEngine {
             recreation_required = true;
         }
 
-        // Preserve the resampler for gapless reuse; rebuild the mixer per track layout.
+        // 保留重采样器以供无缝复用；混音器按每曲的声道布局重建。
         self.pipeline = None;
         self.mixer = None;
 
-        // Gapless fast path: the next track was pre-opened in the background
-        // (connect + probe + start already done off-thread).
+        // 无缝衔接快路径：下一曲已在后台预打开（连接 + 探测 + 启动都已在线下完成）。
         let duration_ms = match self.prepared.take() {
             Some(prepared) if prepared.path == path => self.media.attach_prepared(prepared)?,
             Some(stale) => {
-                // Only a queue mutation could have redirected the target; its
-                // QueueUpdated already dropped the prepared stream, so a stale
-                // matchless stream here is rare — just drop it.
+                // 只有队列变更能改写目标；它的 QueueUpdated 已经丢弃了预备的流，
+                // 所以这里出现陈旧且不匹配的流很罕见——直接丢掉即可。
                 drop(stale);
                 self.media.open(path, refresh.clone())?
             }
@@ -543,8 +510,7 @@ impl AudioEngine {
                 )));
             }
 
-            // Decode the first packet, and if the actual format does not match the advertised
-            // format attempt to rebuild the pipeline.
+            // 解码第一个数据包；若真实格式与申报格式不符，就尝试重建管线。
             let mut attempts = 0;
             loop {
                 match self.process_decode_resample() {
@@ -579,19 +545,17 @@ impl AudioEngine {
         Ok(duration_ms)
     }
 
-    /// Resume playback.
+    /// 恢复播放。
     ///
-    /// If paused, this will resume the device stream.
-    /// If idle with no media, this returns an error.
+    /// 处于暂停时，这会恢复设备流。
+    /// 空闲且没有媒体时返回错误。
     pub fn play(&mut self) -> Result<(), EngineError> {
         match self.state {
             EngineState::Playing => Ok(()),
             EngineState::Paused => {
-                // Resume by tearing down and rebuilding the stream rather than
-                // calling play() on a long-paused one: some backends (Windows
-                // WASAPI) silently stop producing audio after a pause until the
-                // stream is recreated. The seek path already rebuilds, which is
-                // why dragging the scrubber "woke up" silent playback.
+                // 恢复时走拆掉并重建流，而不是对一条久停的流直接调 play()：某些
+                // 后端（Windows WASAPI）在暂停后会静默停止产出音频，直到流被重建。
+                // 跳转定位路径本就会重建，这就是拖动进度条能把哑掉的播放"叫醒"的原因。
                 if self.device.has_stream() {
                     if let Err(err) = self.device.reset() {
                         warn!(
@@ -631,7 +595,7 @@ impl AudioEngine {
         }
     }
 
-    /// Pause playback.
+    /// 暂停播放。
     pub fn pause(&mut self) -> Result<(), EngineError> {
         if self.state != EngineState::Playing {
             return Ok(());
@@ -645,23 +609,22 @@ impl AudioEngine {
         Ok(())
     }
 
-    /// Advance deferred device work (currently: completing an async pause fade), once per main-loop
-    /// iteration.
+    /// 推进设备的延后工作（目前即完成异步暂停淡出），主循环每轮一次。
     pub fn poll(&mut self) {
         if let Err(e) = self.device.poll() {
             warn!("device poll failed: {:?}", e);
         }
     }
 
-    /// Whether deferred device work is pending and `poll` must run soon (currently: an async
-    /// pause fade). Drives the playback thread's idle wait.
+    /// 是否有延后的设备工作待处理、因而 `poll` 必须尽快运行（目前即异步暂停淡出）。
+    /// 驱动播放线程的空闲挂起。
     pub fn has_deferred_work(&self) -> bool {
         self.device.has_deferred_work()
     }
 
-    /// Stop playback and clear all state.
+    /// 停止播放并清空全部状态。
     pub fn stop(&mut self) {
-        // flush the resampler's tail to the device so the last track isn't truncated
+        // 把重采样器的尾巴冲刷到设备，避免最后一曲被截断
         if self.drain == DrainState::Drained && self.state == EngineState::Playing {
             self.flush_tail_to_device();
         }
@@ -671,11 +634,11 @@ impl AudioEngine {
         self.state = EngineState::Idle;
     }
 
-    /// Seek to the specified time in seconds.
+    /// 跳转到指定时间（单位：秒）。
     pub fn seek(&mut self, time: f64) -> Result<(), SeekError> {
         let result = self.media.seek(time);
         if result.is_ok() {
-            // a seek out of the EOF region resumes normal decoding
+            // 从 EOF 区域跳回来即恢复正常解码
             self.drain = DrainState::Inactive;
             self.rebuild_attempts = 0;
 
@@ -686,8 +649,8 @@ impl AudioEngine {
         result
     }
 
-    /// Drop everything buffered before a seek: the device's own queue, both pipeline ring buffers,
-    /// and the resampler/mixer/EQ state, so post-seek audio plays cleanly and immediately.
+    /// 跳转定位前把一切缓冲中的东西丢掉：设备自己的队列、管线的两条环形缓冲，
+    /// 以及重采样器/混音器/均衡器状态，好让跳转后的音频干净且立即播出。
     fn flush_for_seek(&mut self) {
         if self.device.has_stream() {
             if let Err(err) = self.device.reset() {
@@ -709,36 +672,36 @@ impl AudioEngine {
         }
     }
 
-    /// Set the playback volume (0.0 to 1.0).
+    /// 设置播放音量（0.0 到 1.0）。
     pub fn set_volume(&mut self, volume: f64) -> Result<(), EngineError> {
         self.device
             .set_volume(volume)
             .map_err(|e| EngineError::DeviceError(format!("Failed to set volume: {:?}", e)))
     }
 
-    /// Set the ReplayGain multiplier (linear).
+    /// 设置 ReplayGain 倍率（线性）。
     pub fn set_replaygain(&mut self, gain: f64) -> Result<(), EngineError> {
         self.device
             .set_replaygain(gain)
             .map_err(|e| EngineError::DeviceError(format!("Failed to set RG: {:?}", e)))
     }
 
-    /// Get the current playback position in milliseconds.
+    /// 取当前播放位置（单位：毫秒）。
     pub fn position_ms(&self) -> Option<u64> {
         self.media.position_ms().ok()
     }
 
-    /// Get the currently loaded track path, if any.
+    /// 取当前已加载曲目的路径（若有）。
     pub fn current_path(&self) -> Option<&Path> {
         self.media.current_path()
     }
 
-    /// Check for metadata updates and return them if available.
+    /// 检查元数据更新，有更新就返回。
     pub fn check_metadata_update(&mut self) -> Option<CompleteMetadata> {
         self.media.check_metadata_update()
     }
 
-    /// Sync the EQ to the current stream format. Called after every stream (re)creation.
+    /// 把均衡器同步到当前流格式。每次（重）建流之后都要调用。
     fn sync_eq_format(&mut self) {
         let Some(format) = self.device.current_format() else {
             return;
@@ -756,9 +719,8 @@ impl AudioEngine {
             .set_channel_count(format.channels.to_layout().count().max(1));
     }
 
-    /// Recreate the device stream with the current channel format and re-sync
-    /// the EQ to it. Returns the raw device error so each caller reports it
-    /// in its own wording.
+    /// 用当前声道格式重建设备流并把均衡器重新同步到它。返回原始设备错误，
+    /// 好让每个调用方按自己的措辞上报。
     fn recreate_stream(&mut self) -> Result<(), DeviceError> {
         let channels = self.device.current_format().map(|f| f.channels.clone());
         self.device.create_stream(channels).map(|_| ())?;
@@ -766,24 +728,24 @@ impl AudioEngine {
         Ok(())
     }
 
-    /// Update settings that affect playback.
+    /// 更新影响播放的设置。
     pub fn update_settings(&mut self, settings: &PlaybackSettings) {
         self.eq.set_config(&settings.equalizer);
     }
 
-    /// Apply new equalizer settings live.
+    /// 实时应用新的均衡器设置。
     pub fn set_equalizer(&mut self, settings: &EqualizerSettings) {
         self.eq.set_config(settings);
     }
 
-    /// Enable or disable loop-aware decoding on the media stream.
+    /// 开启或关闭媒体流上的循环感知解码。
     pub fn set_looping(&mut self, enabled: bool) {
         self.media.set_looping(enabled);
     }
 
-    /// Process one cycle of the audio pipeline.
+    /// 处理音频管线的一个周期。
     ///
-    /// Returns a result indicating whether to continue, handle EOF, or handle errors.
+    /// 返回的结果指示应当继续、处理 EOF，还是处理错误。
     pub fn process_cycle(&mut self) -> EngineCycleResult {
         if self.state != EngineState::Playing {
             return EngineCycleResult::NothingToDo;
@@ -812,7 +774,7 @@ impl AudioEngine {
             }
         }
 
-        // don't decode unless the device can accept it, otherwise we drop audio
+        // 设备能接收时才解码，否则我们会丢掉音频
         let frame_duration = self
             .media
             .frame_duration()
@@ -870,8 +832,8 @@ impl AudioEngine {
         self.consume_to_device()
     }
 
-    /// Send as much as the device can accept, then wait for it to drain. If this happens
-    /// too many times in a row (more than MAX_DRAIN_CYCLES) we just give up
+    /// 尽可能多地送往设备能接收的量，然后等待它排空。若这连续发生太多次
+    /// （超过 MAX_DRAIN_CYCLES）我们就直接放弃。
     fn drain_cycle(&mut self) -> EngineCycleResult {
         if let DrainState::Draining { cycles } = &mut self.drain {
             *cycles += 1;
@@ -915,7 +877,7 @@ impl AudioEngine {
         EngineCycleResult::Continue
     }
 
-    /// Consume samples from pipeline to device
+    /// 从管线取样本送往设备
     fn consume_to_device(&mut self) -> EngineCycleResult {
         let Some(pipeline) = &mut self.pipeline else {
             return EngineCycleResult::NothingToDo;
@@ -924,25 +886,21 @@ impl AudioEngine {
         let consume_result = self.device.consume_from(&mut pipeline.device_input);
 
         if let Err(err) = consume_result {
-            // Span constructed only on the error path: entering one every
-            // cycle allocates a `Span` (Arc) whenever TRACE logging is
-            // enabled, and this runs once per playback cycle (doctrine §8).
-            // The four diagnostics below keep their span parent.
+            // 只在错误路径上构造 Span：每个周期都进入一次的话，只要 TRACE 日志
+            // 开着就会每周期分配一个 `Span`（Arc），而这里每个播放周期都跑
+            // （性能准则 §8）。下面四条诊断都保住各自的 span 父级。
             let s = trace_span!("consume_from").entered();
-            // A device whose WriteTimeout recurs every cycle never converges
-            // through recreation; pace the recreate with a growing defer
-            // window instead of churning the stream every cycle. The consume
-            // attempt above still runs each cycle, so its timeout keeps the
-            // loop paced, and a clean consume sustained past the window
-            // clears the backoff.
+            // WriteTimeout 每个周期都复现的设备，靠重建永远收敛不了；用一个逐步
+            // 变大的推迟窗口给重建定拍，而不是每周期翻弄这条流。上面那次 consume
+            // 尝试仍每周期执行，所以它的超时继续给循环定拍，而持续到窗口之后的
+            // 一次干净 consume 会清掉退避。
             let now = std::time::Instant::now();
             if let Some((next_recreate, _)) = self.device_recreate_defer
                 && now < next_recreate
             {
-                // Inside the defer window: the episode is already logged and
-                // the recreate is deferred — logging the same WriteTimeout
-                // again would repeat it at the consume timeout's pace (~4 Hz,
-                // sometimes for minutes during a device outage, doctrine §29).
+                // 推迟窗口之内：这一轮故障已经记过日志、重建也已推迟——再把同一个
+                // WriteTimeout 记一遍，就会按 consume 超时的节奏重复（~4 Hz，
+                // 设备 outage 期间有时持续几分钟，性能准则 §29）。
                 return EngineCycleResult::NothingToDo;
             }
             warn!(parent: &s, ?err, "Failed to consume from pipeline: {err}");
@@ -981,14 +939,11 @@ impl AudioEngine {
                 ));
             }
         } else if let Some((next_recreate, _)) = self.device_recreate_defer {
-            // Clean consume. Don't forgive the failure history on the first
-            // healthy cycle: a driver that drains only briefly after each
-            // recreate would reset `failures` every time and the backoff
-            // could never escalate. End the episode only once the device has
-            // stayed healthy past the current defer window; while it hasn't,
-            // a renewed WriteTimeout lands inside the window and is paced by
-            // the deferred-recreate gate above instead of churning the
-            // stream.
+            // 干净的 consume。不要在第一个健康周期就宽恕失败历史：每次重建后只
+            // 短暂排空一下的驱动会把 `failures` 一次次清零，于是退避永远升不上去。
+            // 只有设备健康地越过当前推迟窗口，才算终结这一轮故障；在此之前，再次
+            // 出现的 WriteTimeout 会落在窗口之内，由上面那道推迟重建的门来定拍，
+            // 而不是翻弄这条流。
             if std::time::Instant::now() >= next_recreate {
                 self.device_recreate_defer = None;
             }
@@ -997,9 +952,8 @@ impl AudioEngine {
         EngineCycleResult::Continue
     }
 
-    /// Set up the audio pipeline for a new track. `overrides` substitutes parameters the media
-    /// stream advertised incorrectly (rebuild path). Otherwise, the pipeline is set up according
-    /// to the media stream's advertised format.
+    /// 为新曲目搭建音频管线。`overrides` 顶替媒体流申报错了的参数（重建路径）。
+    /// 否则就按媒体流申报的格式来搭建管线。
     fn setup_pipeline(
         &mut self,
         device_format: &FormatInfo,
@@ -1025,12 +979,10 @@ impl AudioEngine {
             .sample_rate()
             .unwrap_or(device_format.sample_rate);
 
-        // One worst-case decode packet must fit the decoder ring: streams
-        // with block sizes above the default (e.g. 24-bit/96 kHz FLAC with
-        // large blocks) otherwise lose audio on every packet, because the
-        // same-thread resampler cannot drain mid-write and the non-blocking
-        // packet write drops what does not fit. Ordinary streams keep the
-        // default size unchanged.
+        // 解码环形缓冲必须装得下一个最坏情况的解码包：块大小高于默认值的流
+        // （例如大块 24-bit/96 kHz FLAC）否则会每个包都丢音频，因为同线程的重采样器
+        // 无法在写入中途排空，而非阻塞的包写入会丢掉放不下的一部分。普通流保持
+        // 默认尺寸不变。
         let buffer_frames = self
             .media
             .frame_duration()
@@ -1046,8 +998,8 @@ impl AudioEngine {
             buffer_frames,
             self.pipeline_capacity_floor,
         );
-        // Raise the floor to what this track actually needs, so later tracks
-        // allocate at the largest size seen so far instead of a fresh size.
+        // 把下限抬到本曲实际需要的容量，之后的曲目就按迄今见过的最大尺寸分配，
+        // 而不是又换一个新尺寸。
         self.pipeline_capacity_floor = self.pipeline_capacity_floor.max(output_frame_bound(
             source_rate,
             device_format.sample_rate,
@@ -1085,8 +1037,8 @@ impl AudioEngine {
         self.rebuild_attempts = 0;
     }
 
-    /// Rebuild the pipeline mid-track after a format/rate/channel mismatch. Drops all buffered
-    /// audio, including the resampler.
+    /// 曲中遇到声道/采样率/声道数不匹配后重建管线。丢掉所有缓冲中的音频，
+    /// 连重采样器一起。
     fn rebuild_pipeline(&mut self, overrides: PipelineOverrides) -> Result<(), EngineError> {
         let device_format =
             self.device.current_format().cloned().ok_or_else(|| {
@@ -1119,7 +1071,7 @@ impl AudioEngine {
         }
     }
 
-    /// Process the decode and resample steps.
+    /// 处理解码与重采样这两步。
     fn process_decode_resample(&mut self) -> Result<DecodeStepResult, EngineError> {
         let p = self.pipeline.as_mut().ok_or(EngineError::NoPipeline)?;
 
@@ -1149,12 +1101,10 @@ impl AudioEngine {
                     }
                 } else {
                     let duration = self.media.frame_duration().unwrap_or(1024);
-                    // Deliberately NOT keyed on `duration`: the decoder chunk
-                    // size differs per file even at identical rate/channels,
-                    // and keying on it rebuilt the whole resampler (FFT plan +
-                    // channel buffers) on nearly every track change. The fixed
-                    // chunk size this resampler was built with stays valid; the
-                    // handoff buffers below are sized dynamically per track.
+                    // 刻意不以 `duration` 为键：即便采样率/声道数完全相同，解码器
+                    // 块大小也逐文件不同，以它为键几乎每次换曲都会重建整个重采样器
+                    // （FFT plan + 声道缓冲）。当初构建这个重采样器用的固定块大小
+                    // 一直有效；下面那些交接缓冲按每曲动态定尺寸。
                     let needs_new_resampler = match &self.resampler {
                         Some(resampler) => {
                             !resampler.matches_params(rate, p.target_rate, p.source_channel_count)
@@ -1193,8 +1143,8 @@ impl AudioEngine {
                                 return Ok(DecodeStepResult::FatalError(e));
                             }
                         };
-                        // a cycle can push several blocks through the resampler, so make sure the
-                        // handoff buffer can absorb the worst case without reallocating later
+                        // 一个周期可能推过重采样器好几个块，所以要确保交接缓冲能
+                        // 吸收最坏情况，免日后再重新分配
                         let blocks = p.decoder_buffer_frames.div_ceil(duration.max(1) as usize);
                         p.ensure_resampler_output_capacity(blocks * resampler.output_frames_max());
                         self.resampler = Some(resampler);
@@ -1205,9 +1155,8 @@ impl AudioEngine {
             }
         }
 
-        // Read up to a full decoder ring per cycle: a large packet was written
-        // whole and must drain whole, or the residue shrinks the free space the
-        // next packet write needs. Equals the old default for ordinary streams.
+        // 每个周期最多读满一整圈解码缓冲：大包是整体写入的，就必须整体排空，
+        // 否则残留会蚕食下一个包写入所需的空闲空间。对普通流而言这等于旧的默认值。
         Self::resample_and_route(
             p,
             self.resampler.as_mut(),
@@ -1219,9 +1168,8 @@ impl AudioEngine {
         Ok(DecodeStepResult::Continue)
     }
 
-    /// Push decoder-buffered frames through the resampler (or straight
-    /// through when no resampling is active) and hand the result to the
-    /// device stage.
+    /// 把解码缓冲里的帧推过重采样器（未启用重采样时原样直通），
+    /// 并把结果交给设备级。
     fn resample_and_route(
         p: &mut AudioPipeline,
         resampler: Option<&mut Resampler>,
@@ -1275,8 +1223,8 @@ impl AudioEngine {
             Ok(())
         };
 
-        // the device ring is sized for a worst-case cycle and drained on this same thread, so a
-        // failed write means an engine bug - make it loud instead of losing audio silently
+        // 设备环形缓冲按一个周期的最坏情况定尺寸、并在这同一线程上排空，所以写入
+        // 失败意味着引擎有 bug——要大张旗鼓地报，而不是静默丢音频
         if let Err(e) = result {
             error!("failed to hand resampler output to the device stage: {e:?}");
         }
@@ -1284,7 +1232,7 @@ impl AudioEngine {
         p.clear_resampler_output();
     }
 
-    /// Tap the planes around the EQ stage, pre and post rings always see the same frames.
+    /// 在均衡级两端抽频谱：前置与后置环形缓冲看到的永远是同一批帧。
     fn eq_with_tap(
         eq: &mut EqualizerProcessor,
         tap: &mut SpectrumTap,
@@ -1296,7 +1244,7 @@ impl AudioEngine {
         tap.push_post(planes, tapped, eq.audible());
     }
 
-    /// Flush the resampler and clear its output.
+    /// 冲刷旧重采样器并清空它的输出。
     fn flush_old_resampler(
         old: &mut Resampler,
         p: &mut AudioPipeline,
@@ -1330,8 +1278,7 @@ impl AudioEngine {
 
         Self::flush_old_resampler(resampler, p, &mut self.mixer, &mut self.eq, &mut self.tap);
 
-        // do it a few times to ensure all buffered frames are flushed (in case the entire buffer is
-        // not consumed in a single pass)
+        // 重复几轮以确保缓冲中的帧全部冲刷干净（单趟未必能消费完整块）
         for _ in 0..8 {
             if p.device_input.potentially_available() == 0 {
                 break;
@@ -1356,7 +1303,7 @@ impl AudioEngine {
         output.write_slices(&slices)
     }
 
-    /// Handle decode errors uniformly
+    /// 统一处理解码错误
     fn handle_decode_error(
         e: crate::media::errors::PlaybackReadError,
     ) -> Result<DecodeStepResult, EngineError> {
@@ -1398,7 +1345,7 @@ impl AudioEngine {
     }
 }
 
-/// Internal result type for the decode/resample step.
+/// 解码/重采样这一步的内部结果类型。
 enum DecodeStepResult {
     Continue,
     Eof,
@@ -1450,7 +1397,7 @@ mod tests {
         let in_peak = peak(std::slice::from_ref(&dry));
         let (mut tap, _consumer) = spectrum_tap();
         let mut out_peak = 0.0;
-        // the gain ramp needs a few blocks to converge
+        // 增益渐变得几个块才能收敛
         for block in 0..64 {
             let chunk: Vec<f64> = dry[block * 64..(block + 1) * 64].to_vec();
             p.resampler_output = vec![chunk.clone(), chunk];
