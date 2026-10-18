@@ -78,7 +78,7 @@ pub(super) async fn insert_album(
             album_cache.insert(cache_key, id);
             Ok(Some(id))
         }
-        // a force scan rebuilds an existing album from scratch, otherwise only a missing one is created
+        // 强制扫描会把已有专辑从头重建，否则只补建缺失的那一张
         Ok(_) | Err(sqlx::Error::RowNotFound) => {
             let (release_date, date_precision) = bind_release_date(metadata);
 

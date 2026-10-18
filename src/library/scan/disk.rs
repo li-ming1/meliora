@@ -14,8 +14,8 @@ pub(crate) type DiskGroups = (
     FxHashMap<Utf8PathBuf, usize>,
 );
 
-/// Group library paths by physical disk for slow-disk parallel I/O.
-/// Returns (groups, mounts longest-first, mount-to-channel). Unknown mounts use channel 0.
+/// 按物理磁盘给库路径分组，供慢盘并行 I/O 使用。
+/// 返回 (分组, 按长度降序的挂载点, 挂载点到通道)。未知挂载点用通道 0。
 pub(crate) fn group_paths_by_disk(paths: &[Utf8PathBuf]) -> DiskGroups {
     if paths.is_empty() {
         return (Vec::new(), Vec::new(), FxHashMap::default());
@@ -23,7 +23,7 @@ pub(crate) fn group_paths_by_disk(paths: &[Utf8PathBuf]) -> DiskGroups {
 
     let disks = Disks::new_with_refreshed_list();
 
-    // longest first so nested mounts match before their parents
+    // 长的排前面，这样嵌套挂载点先于其父挂载点匹配上
     let mut mounts: Vec<&Path> = disks.iter().map(|d| d.mount_point()).collect();
     mounts.sort_by_key(|mount| Reverse(mount.as_os_str().as_encoded_bytes().len()));
 
@@ -38,7 +38,7 @@ pub(crate) fn group_paths_by_disk(paths: &[Utf8PathBuf]) -> DiskGroups {
 
     let mount_points: Vec<Utf8PathBuf> = mount_to_physical.iter().map(|(m, _)| m.clone()).collect();
 
-    // assign channels in discovery order so they line up with the router
+    // 按发现顺序分配通道，这样它们与路由器对得上
     let mut groups: Vec<Vec<Utf8PathBuf>> = Vec::new();
     let mut physical_to_channel: FxHashMap<String, usize> = FxHashMap::default();
 
@@ -94,8 +94,8 @@ fn path_is_under_mount(path: &Path, mount: &Path) -> bool {
     path.starts_with(Path::new(&verbatim))
 }
 
-/// Physical drive behind a mount point, so partitions on one disk share a channel. macOS: BSD name,
-/// Linux: sysfs block device, Windows: IOCTL (else letter/UNC).
+/// 挂载点背后的物理磁盘，好让同一块盘上的分区共享一个通道。macOS：BSD 名，
+/// Linux：sysfs 块设备，Windows：IOCTL（否则用盘符/UNC）。
 fn physical_device_id(mount_point: &Path) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -111,7 +111,7 @@ fn physical_device_id(mount_point: &Path) -> Option<String> {
             .strip_prefix(b"/dev/")
             .and_then(|name| std::str::from_utf8(name).ok())?;
 
-        // "disk0s1" -> "disk0", "disk0s1s2" -> "disk0s1" (APFS volume on the same disk)
+        // "disk0s1" -> "disk0"，"disk0s1s2" -> "disk0s1"（同一块盘上的 APFS 卷）
         Some(
             bsd_name
                 .trim_end_matches(|c: char| c.is_ascii_digit())
@@ -168,14 +168,14 @@ fn linux_physical_device_id(device: &str) -> Option<String> {
     let sysfs_device = std::fs::canonicalize(Path::new("/sys/dev/block").join(device)).ok();
 
     let device_name = sysfs_device.and_then(|mut path| {
-        // use the parent disk's name so all of its partitions share a channel
+        // 用父磁盘的名字，这样它的所有分区共享一个通道
         if path.join("partition").exists() {
             path = path.parent()?.to_path_buf();
         }
         path.file_name()?.to_str().map(str::to_owned)
     });
 
-    // if the device cannot be resolved, use its full identifier instead of grouping by major alone
+    // 设备解析不出来时，用它的完整标识符，而不是只按主号分组
     Some(
         device_name
             .map(|name| format!("linux:{name}"))
@@ -183,7 +183,7 @@ fn linux_physical_device_id(device: &str) -> Option<String> {
     )
 }
 
-/// Physical drive number via IOCTL. None if the volume can't be opened or spans multiple disks.
+/// 经 IOCTL 取物理盘号。卷打不开或跨多块盘时为 None。
 #[cfg(target_os = "windows")]
 fn windows_physical_drive_id(letter: char) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
@@ -195,7 +195,7 @@ fn windows_physical_drive_id(letter: char) -> Option<String> {
     use windows::core::HSTRING;
 
     let volume = HSTRING::from(format!(r"\\.\{letter}:"));
-    // access 0 allows metadata IOCTLs without admin rights
+    // access 0 允许元数据 IOCTL 而无需管理员权限
     let handle = unsafe {
         CreateFileW(
             &volume,
@@ -228,7 +228,7 @@ fn windows_physical_drive_id(letter: char) -> Option<String> {
         let _ = CloseHandle(handle);
     }
 
-    // volumes that span multiple disks report DeviceNumber = 0xFFFFFFFF
+    // 跨多块盘的卷会报 DeviceNumber = 0xFFFFFFFF
     result.ok().filter(|_| number.DeviceNumber != u32::MAX)?;
     Some(format!("physicaldrive_{}", number.DeviceNumber))
 }
@@ -257,7 +257,7 @@ mod tests {
             !mount_to_channel.is_empty(),
             "expected non-empty mount_to_channel"
         );
-        // sysinfo may list mounts that have no paths assigned
+        // sysinfo 可能列出没有分配任何路径的挂载点
         assert!(mount_to_channel.len() <= mounts.len());
     }
 
@@ -287,7 +287,7 @@ mod tests {
 
         let (groups, _mounts, _mount_to_channel) = group_paths_by_disk(&[nonexistent]);
 
-        // nonexistent paths still get a group (fallback key "")
+        // 不存在的路径也照样得到一个分组（回退键 ""）
         assert_eq!(groups.len(), 1);
     }
 }

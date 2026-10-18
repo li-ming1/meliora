@@ -6,17 +6,17 @@ use tracing::warn;
 use super::{albums::bind_release_date, artists::encode_artist_list};
 use crate::{library::scan::fs_case::paths_equal, media::metadata::Metadata};
 
-/// Key into the per-scan album-path cache: `(album id, disc number)`.
+/// 每次扫描的专辑路径缓存的键：`(album id, disc 号)`。
 pub type AlbumPathCacheKey = (i64, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackWriteOutcome {
     Written,
-    /// Skipped - album already has a valid copy in another folder.
+    /// 跳过——专辑在另一个文件夹里已有一份有效副本。
     SkippedDuplicateFolder,
 }
 
-/// Whether the album's folder claim still has a track row behind it.
+/// 专辑的文件夹认领下面是否仍有曲目行支撑。
 async fn album_path_still_populated(
     conn: &mut SqliteConnection,
     album_id: i64,
@@ -30,7 +30,7 @@ async fn album_path_still_populated(
     .bind(disc_num)
     .fetch_all(&mut *conn)
     .await?;
-    // match the volume's case rules, not SQL byte equality
+    // 按卷的大小写规则匹配，而不是按 SQL 的字节相等
     Ok(folders
         .iter()
         .any(|(folder,)| paths_equal(Utf8Path::new(folder), claimed_folder)))
@@ -77,7 +77,7 @@ pub(super) async fn delete_lyrics(
     Ok(())
 }
 
-/// On folder mismatch, update the claim if the old folder is empty, otherwise reject as a duplicate copy.
+/// 文件夹不匹配时：旧文件夹已空则更新认领，否则按重复副本拒绝这一条。
 async fn handle_folder_mismatch(
     conn: &mut SqliteConnection,
     album_path_cache: &mut FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
@@ -95,16 +95,15 @@ async fn handle_folder_mismatch(
     }
 
     repair_album_path(conn, album_id, disc_num, parent).await?;
-    // otherwise the cache keeps serving the old path for the rest of the scan
+    // 否则缓存会在本次扫描剩余时间里一直供出旧路径
     album_path_cache.insert(album_path_key, parent.to_path_buf());
     Ok(true)
 }
 
-/// Insert one scanned track row, returning the new track id.
+/// 插入一条扫描到的曲目行，返回新的曲目 id。
 ///
-/// Resolves the album-folder claim first: a folder mismatch either repairs the
-/// claim (old folder has no tracks left) or rejects the track as a duplicate
-/// copy of the album, which yields `Ok(None)`.
+/// 先解析专辑-文件夹认领：文件夹不匹配要么修好这个认领（旧文件夹已无曲目），
+/// 要么把该曲目当作专辑的重复副本拒绝掉，后者给出 `Ok(None)`。
 pub(super) async fn insert_track(
     conn: &mut SqliteConnection,
     metadata: &Metadata,
@@ -114,8 +113,8 @@ pub(super) async fn insert_track(
     length: u64,
     album_path_cache: &mut FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
 ) -> anyhow::Result<Option<i64>> {
-    // A bare filename (no parent directory) degrades to an empty album path
-    // instead of aborting the whole scan.
+    // 光秃秃的文件名（没有父目录）退化成空专辑路径，
+    // 而不是让整次扫描中止。
     let parent = path.parent().unwrap_or_else(|| Utf8Path::new(""));
 
     if let Some(album_id) = album_id {

@@ -11,8 +11,7 @@ pub struct Artist {
     pub name: Option<DBString>,
 }
 
-/// A cheaply clonable string (`SharedString`) as read from and written to the
-/// library DB, directly usable as GPUI text.
+/// 从库数据库读写的那种可廉价克隆的字符串（`SharedString`），可直接当作 GPUI 文本用。
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct DBString(pub SharedString);
 
@@ -65,23 +64,23 @@ impl Type<Sqlite> for DBString {
     }
 }
 
-/// `Album::date_precision` value: only the year is known.
+/// `Album::date_precision` 取值：只知道年份。
 pub const DATE_PRECISION_YEAR: i32 = 0;
-/// `Album::date_precision` value: a full `YYYY-MM-DD` date.
+/// `Album::date_precision` 取值：完整的 `YYYY-MM-DD` 日期。
 pub const DATE_PRECISION_FULL_DATE: i32 = 1;
-/// `Album::date_precision` value: year and month (`YYYY-MM`).
+/// `Album::date_precision` 取值：年与月（`YYYY-MM`）。
 pub const DATE_PRECISION_YEAR_MONTH: i32 = 2;
 
 #[derive(sqlx::FromRow, Clone)]
 pub struct Album {
     pub id: i64,
     pub title: DBString,
-    /// Raw album artist tag, shown in place of the linked artists' names.
+    /// 原始专辑歌手 tag，用于替代所链接歌手的名字来显示。
     pub artist_display_override: Option<DBString>,
     #[sqlx(default)]
     pub release_date: Option<DBString>,
     #[sqlx(default)]
-    /// Date precision: 0 = year only, 1 = full date, 2 = year + month. None if no date info.
+    /// 日期精度：0 = 只有年份，1 = 完整日期，2 = 年 + 月。没有任何日期信息时为 None。
     pub date_precision: Option<i32>,
     #[sqlx(default)]
     pub label: Option<DBString>,
@@ -90,8 +89,8 @@ pub struct Album {
     #[sqlx(default)]
     pub isrc: Option<DBString>,
     #[sqlx(default)]
-    /// Whether this album uses vinyl-style track numbering (A1, A2, B1, B2, etc.)
-    /// When true, disc numbers should be displayed as "SIDE A", "SIDE B", etc.
+    /// 该专辑是否用黑胶风格的曲目编号（A1、A2、B1、B2 等）。
+    /// 为 true 时 disc 号应当显示成 "SIDE A"、"SIDE B" 这样的形式。
     pub vinyl_numbering: bool,
 }
 
@@ -133,8 +132,8 @@ pub struct Playlist {
 }
 
 impl Playlist {
-    /// The Liked Songs playlist is a singleton system playlist stored under
-    /// this fixed name; the UI renders it through the `LIKED_SONGS` translation.
+    /// 「喜欢的音乐」歌单是一份额外的系统歌单，存在这个固定名字下；
+    /// UI 通过 `LIKED_SONGS` 词条来渲染它。
     pub fn is_liked_songs(&self) -> bool {
         self.playlist_type == PlaylistType::System && self.name.0.as_str() == "Liked Songs"
     }

@@ -51,7 +51,7 @@ fn resolve_lyrics_absent_hint_skips_the_sidecar_probe() {
     let dir = TestDir::new("decode-lyrics-absent-test");
     let track = dir.utf8_join("track.flac");
     fs::write(&track, b"").unwrap();
-    // the sidecar exists on disk: embedded winning proves Absent skipped the read
+    // sidecar 文件确实在盘上：内嵌封面胜出就证明 Absent 确实跳过了读取
     fs::write(dir.join("track.lrc"), "[00:00.00] sidecar lyrics").unwrap();
 
     let result = resolve_lyrics(
@@ -106,9 +106,8 @@ fn owned_small_art_reuses_its_original_buffer() {
         .write_to(&mut encoded, image::ImageFormat::Png)
         .unwrap();
     let boxed = encoded.into_inner().into_boxed_slice();
-    // capture the pointer after boxing: `into_boxed_slice` shrinks spare
-    // capacity and may move the allocation, while the reuse branch below must
-    // hand back exactly this buffer
+    // 装进盒子之后再取指针：`into_boxed_slice` 会收缩多余容量并可能搬动这块
+    // 分配，而下面那条复用分支必须原样交还这个缓冲区
     let original_ptr = boxed.as_ptr();
 
     let (processed, _) = process_owned_album_art(RawArt::Owned(boxed)).unwrap();
@@ -196,7 +195,7 @@ fn read_metadata_for_truncated_file_is_corrupt() {
     register_test_media_providers();
     let dir = TestDir::new("decode-truncated-test");
     let track = dir.utf8_join("truncated.flac");
-    // a truncated stream is corrupt, not temporary
+    // 被截断的码流是损坏，不是临时状态
     let bytes = crate::test_support::audio_fixtures::fixture("fixture.flac");
     fs::write(&track, &bytes[..bytes.len() / 4]).unwrap();
 
@@ -218,7 +217,7 @@ fn read_metadata_for_unreadable_file_is_transient() {
     .unwrap();
     fs::set_permissions(&track, fs::Permissions::from_mode(0o000)).unwrap();
 
-    // skip if we can still open it (e.g. running as root)
+    // 如果我们仍然打得开它（例如以 root 身份运行）就跳过
     if std::fs::File::open(&track).is_ok() {
         return;
     }
@@ -227,18 +226,16 @@ fn read_metadata_for_unreadable_file_is_transient() {
     assert_eq!(err, ScanReadError::Transient);
 }
 
-/// Cover-art rescaling benchmarks, hand-run with:
+/// 封面缩放基准，手工运行方式：
 /// `cargo test --release --features kugou -- bench_album_art --ignored --nocapture`
 ///
-/// Evidence for the "which `FilterType`?" decision at `decode.rs::process_source_image`:
-/// production resizes the >1024px main image with `Lanczos3` and builds the 70x70
-/// thumbnail with `imageops::thumbnail` (integer area average, not a `FilterType`).
-/// Switch filter only if CatmullRom/Triangle beats Lanczos3 by >=30% (GPUI
-/// HARDCORE rule §1/§39: no measurement, no optimization).
+/// `decode.rs::process_source_image` 处「选哪个 `FilterType`？」这一决策的证据：
+/// 生产用 `Lanczos3` 缩放 >1024px 的主图，70x70 缩略图则用 `imageops::thumbnail`
+/// （整数面积平均，不是 `FilterType`）。只有 CatmullRom/Triangle 比 Lanczos3 快
+/// >=30% 才换滤镜（GPUI HARDCORE 教条 §1/§39：没有测量就没有优化）。
 ///
-/// Measured 2026-09-12, release build, median of 20 interleaved rounds after 2
-/// warmup rounds, deterministic xorshift noise input (identical every run).
-/// Two runs agreed within ~10%; second run quoted:
+/// 2026-09-12 实测，release 构建，2 轮预热后取 20 轮交错运行的中位数，输入为确定性
+/// xorshift 噪声（每次运行完全相同）。两次运行相符在 ~10% 以内；引用第二次：
 ///
 /// ```text
 /// source -> target         Lanczos3    CatmullRom   Triangle    thumbnail() (production thumb path)
@@ -251,26 +248,20 @@ fn read_metadata_for_unreadable_file_is_transient() {
 ///                          production keeps <=1024 images as-is anyway.
 /// ```
 ///
-/// Decision: keep Lanczos3. CatmullRom misses the >=30% bar at the only
-/// production site (3000->1024: -23.5%). Triangle clears it (-42.6%), but the
-/// switch is still rejected:
-/// 1. The resize runs once per >1024px cover in a background scan worker
-///    (never the UI/audio path), overlapped with DB work, and the result is
-///    cached in the DB. No profiling evidence marks cover resize as a scan
-///    bottleneck, so the ~65 ms/oversized-cover saving is not a proven
-///    end-to-end win (§1/§39).
-/// 2. Quality basis, from the image 0.25.10 sources: `resize` scales the
-///    kernel window by the downscale ratio and normalizes the weights
-///    (sample.rs:259-261 and 295-297), so at the 2.93x downscale Triangle
-///    averages a ~+/-2.9 px window with a tent kernel while Lanczos3 averages
-///    ~+/-8.8 px with a 3-lobe sinc. Lanczos3 therefore has the best stopband
-///    suppression - sharper detail and the least moire/aliasing leakage on
-///    fine text and dense patterns, which is exactly the content album covers
-///    carry. The main image is the most-seen artwork in the app; trading that
-///    for a background-only microbenchmark win fails the §39 test.
-/// 3. The 70x70 thumbnail path never uses `FilterType` resize: production
-///    uses `imageops::thumbnail` (true box area average), measured 7-14x
-///    faster than the fastest filter at those sizes - nothing to switch there.
+/// 结论：保留 Lanczos3。在唯一的生产位点上 CatmullRom 没达到 >=30% 这条线
+/// （3000->1024：-23.5%）。Triangle 达标（-42.6%），但换用它仍被否决：
+/// 1. 这次缩放每个 >1024px 的封面只在后台扫描工作线程里跑一次（绝不在 UI/音频路径），
+///    与数据库工作相互重叠，结果还会缓存进数据库。没有 profiling 证据把封面缩放标成
+///    扫描瓶颈，所以每个超大封面省下的 ~65 ms 并非已证明的端到端收益（§1/§39）。
+/// 2. 质量依据，取自 image 0.25.10 源码：`resize` 会按缩小倍率放大核窗口并对权重归一化
+///    （sample.rs:259-261 与 295-297），所以在 2.93x 缩小倍率下 Triangle 用帽形核对约
+///    +/-2.9 px 的窗口取平均，而 Lanczos3 用 3 叶 sinc 对约 +/-8.8 px 取平均。Lanczos3
+///    因此有最好的阻带抑制——细节更锐，细密文字与密集图案上的摩尔纹/走样泄漏最少，
+///    而那正是专辑封面携带的内容。主图是全应用看得最多的封面；为一次纯后台微基准的
+///    收益去换它，通不过 §39 的检验。
+/// 3. 70x70 缩略图那条路径根本不用 `FilterType` 缩放：生产用的是
+///    `imageops::thumbnail`（真正的方框面积平均），实测在这些尺寸下比最快的滤镜还快
+///    7-14 倍——那里没有可换项。
 mod bench {
     use super::*;
     use std::hint::black_box;
@@ -279,9 +270,8 @@ mod bench {
     const WARMUP_ROUNDS: usize = 2;
     const ROUNDS: usize = 20;
 
-    /// Deterministic xorshift64* noise so every run measures the same input.
-    /// Generated as RGBA per the audit spec, then converted to rgb8 exactly
-    /// like the production decode path (`decode().into_rgb8()`).
+    /// 确定性 xorshift64* 噪声，好让每次测量都跑在同一份输入上。按审计规格生成为
+    /// RGBA，再完全照生产解码路径的方式转成 rgb8（`decode().into_rgb8()`）。
     fn noise_image(size: u32) -> image::RgbImage {
         let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut img = image::RgbaImage::new(size, size);
@@ -316,12 +306,12 @@ mod bench {
 
         for (src_label, src) in &sources {
             for (tgt_label, tw, th) in targets {
-                // last sample slot is the production thumbnail() reference (70x70 only)
+                // 最后一个采样槽位是生产 thumbnail() 的参照（仅 70x70）
                 let with_thumb_ref = th == 70;
                 let mut samples: Vec<Vec<f64>> =
                     vec![Vec::new(); filters.len() + usize::from(with_thumb_ref)];
 
-                // interleave rounds so every variant sees the same machine state
+                // 轮次交错，好让每个变体看到的机器状态都相同
                 for round in 0..WARMUP_ROUNDS + ROUNDS {
                     for (fi, (_, filter)) in filters.iter().enumerate() {
                         let start = Instant::now();
@@ -357,9 +347,9 @@ mod bench {
                     let m = median_ms(std::mem::take(&mut samples[filters.len()]));
                     println!("  thumbnail() median {m:8.3} ms  (production thumbnail path)");
                 }
-                // image 0.25.10 short-circuits same-size resize to a plain
-                // copy (imageops/sample.rs:985), so that row measures a
-                // memcpy, not the filters.
+                // image 0.25.10 会把同尺寸缩放短路成一次朴素拷贝
+                // （imageops/sample.rs:985），所以那一行量的是 memcpy，
+                // 不是滤镜。
                 if src.width() == tw && src.height() == th {
                     println!(
                         "  note: same-size resize is short-circuited to a copy in image 0.25 - no filter work involved"

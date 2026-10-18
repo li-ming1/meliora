@@ -2,8 +2,8 @@ use rustc_hash::FxHashSet;
 
 use crate::library::scan::artist_match::token_key;
 
-/// Whether the album-artist sort tag mentions this name (direct or "Last, First").
-/// Names not mentioned are featured artists and must not get album_artist rows.
+/// 专辑歌手排序 tag 是否提到这个名字（直接出现或 "Last, First" 形式）。
+/// 没被提到的名字是客串歌手，绝不能拿到 album_artist 行。
 pub(super) fn sort_mentions_artist(sort: &str, name: &str) -> bool {
     let strip = |t: &str| {
         t.chars()
@@ -37,7 +37,7 @@ pub(super) fn decode_artist_list(value: Option<&str>) -> Vec<String> {
         return Vec::new();
     };
     serde_json::from_str(value).unwrap_or_else(|_| {
-        // accepts pre-migration databases if a migration was interrupted or manually skipped
+        // 迁移被打断或手工跳过过时，也能接受迁移前的数据库
         value
             .split(';')
             .map(str::trim)
@@ -47,12 +47,12 @@ pub(super) fn decode_artist_list(value: Option<&str>) -> Vec<String> {
     })
 }
 
-// it feels a little insane to make a table for this so we're just going to use json
+// 为这点东西单独建一张表实在有点荒唐，所以直接用 json
 pub(super) fn encode_artist_list(values: &[String]) -> Option<String> {
     (!values.is_empty()).then(|| serde_json::to_string(values).expect("artist list serializes"))
 }
 
-/// True when the display artist is a real credited artist, not a generic tag like "Various Artists".
+/// 显示歌手是真正的署名歌手（而非 "Various Artists" 这类泛用 tag）时为 true。
 pub(super) fn display_is_credited(rows: &[TrackArtistRow], display: &str) -> bool {
     let display_lower = display.to_lowercase();
     rows.iter().any(|row| {
@@ -73,7 +73,7 @@ pub(super) struct TrackArtistRow {
     pub(super) artist_names: Option<String>,
 }
 
-/// Album artist names and sorts taken from track tags. If none are claimed, link all credited names.
+/// 取自曲目 tag 的专辑歌手名字与排序值。若无人认领，就把所有署名名字都链接上。
 pub(super) fn derive_claimed_artists(
     rows: &[TrackArtistRow],
 ) -> (Vec<(String, Option<String>)>, Vec<String>) {
@@ -94,7 +94,8 @@ pub(super) fn derive_claimed_artists(
         }
 
         if parts.is_empty() {
-            // a single artist always keeps its sort for alias merging - with multiple artists only names in the sort are linked
+            // 单个歌手永远保留自己的排序值以便合并别名——多个歌手时只链接
+            // 出现在排序值里的名字
             let inherited = if artists.len() == 1 {
                 sort.map(str::to_string)
             } else {
@@ -110,7 +111,7 @@ pub(super) fn derive_claimed_artists(
                 push_album_artist_name(&mut names, name, inherited.clone());
             }
         } else {
-            // only names claimed by a sort part get linked, keyed by that part
+            // 只有被某个排序片段认领的名字才会被链接，并以该片段为键
             for name in &artists {
                 let Some(part) = parts.iter().find(|part| token_key(part) == token_key(name))
                 else {

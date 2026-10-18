@@ -7,7 +7,7 @@ use super::{
     repository::{FinalizationArtCache, get_or_create_artwork},
 };
 
-/// Set track art to the album winner - tracks that differ get their own rows.
+/// 把曲目封面设为专辑胜者——不同的曲目会得到自己的行。
 async fn assign_track_art(
     conn: &mut SqliteConnection,
     album_id: i64,
@@ -53,7 +53,7 @@ async fn assign_track_art(
     Ok(())
 }
 
-/// Pick album art - folder wins over embedded, embedded uses majority vote.
+/// 挑选专辑封面——文件夹封面压过内嵌封面，内嵌封面用多数派投票。
 async fn finalize_album(
     conn: &mut SqliteConnection,
     album_id: i64,
@@ -79,14 +79,14 @@ async fn finalize_album(
     let (winner_hash, source) = match folder {
         Some((hash, source)) => (hash, source),
         None if !is_force && incumbent_source > 0 && !examined.contains(&album_id) => {
-            // folder wasn't checked this scan - keep existing folder art, still fix track art
+            // 本次扫描没检查过该文件夹——保留现有文件夹封面，但仍然修正曲目封面
             if let (Some(hash), Some(id)) = (incumbent_hash, incumbent_id) {
                 assign_track_art(conn, album_id, hash, id, art_cache).await?;
             }
             return Ok(());
         }
         None => {
-            // fall back to majority embedded art across the album
+            // 回退到整张专辑的内嵌封面多数派
             let majority: Option<(i64,)> = sqlx::query_as(include_str!(
                 "../../../../queries/scan/get_majority_art_hash.sql"
             ))
@@ -95,7 +95,7 @@ async fn finalize_album(
             .await?;
 
             let Some((hash,)) = majority else {
-                // no art anywhere - clear the album and its tracks
+                // 哪里都没有封面——清掉该专辑及其曲目
                 sqlx::query(include_str!("../../../../queries/scan/clear_album_art.sql"))
                     .bind(album_id)
                     .execute(&mut *conn)
@@ -111,7 +111,7 @@ async fn finalize_album(
         }
     };
 
-    // hash unchanged - reuse the existing artwork row
+    // 哈希没变——复用已有的 artwork 行
     let winner_id = if incumbent_hash == Some(winner_hash) {
         incumbent_id
     } else {
@@ -133,7 +133,7 @@ async fn finalize_album(
     Ok(())
 }
 
-/// Finish art for touched albums and delete unused artwork rows.
+/// 为被触及的专辑收尾封面，并删除未被使用的 artwork 行。
 pub async fn finalize_scan_art(
     pool: &SqlitePool,
     is_force: bool,

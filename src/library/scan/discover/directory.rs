@@ -69,7 +69,7 @@ impl DirectoryReadPolicy {
             .min(self.semaphores.len() - 1)
     }
 
-    /// Acquire a permit on the channel serving `path` so its reads are throttled.
+    /// 在服务于 `path` 的那个通道上取一个许可，让它的读取受到节流。
     async fn permit_for(&self, path: &Utf8Path) -> OwnedSemaphorePermit {
         Arc::clone(&self.semaphores[self.channel_for(path)])
             .acquire_owned()
@@ -132,7 +132,7 @@ pub fn sidecar_lyrics_path(path: &Utf8Path) -> Option<Utf8PathBuf> {
     Some(parent.join(format!("{}.lrc", stem)))
 }
 
-/// Modified time of the audio file, or its .lrc sidecar if newer.
+/// 音频文件的修改时间；若其 .lrc sidecar 更新则取 sidecar 的。
 fn file_scan_timestamp_from_metadata(
     metadata: &Metadata,
     lyrics_timestamp: Option<SystemTime>,
@@ -144,7 +144,7 @@ fn file_scan_timestamp_from_metadata(
     };
 
     let presence_offset = if lyrics_timestamp.is_some() {
-        // +1 microsecond so creating a sidecar still triggers a rescan when mtimes match
+        // +1 微秒，这样 mtime 相同时新建一个 sidecar 仍能触发重扫
         Duration::from_micros(1)
     } else {
         Duration::ZERO
@@ -331,11 +331,11 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
     let entries = pending
         .into_iter()
         .map(|entry| {
-            // a symlink target may live outside this directory, so stat its
-            // sidecar directly instead of trusting this directory's listing
+            // 符号链接的目标可能就在本目录之外，所以直接 stat 它的 sidecar，
+            // 而不是信任本目录的列举
             let (lyrics_timestamp, sidecar_lyrics) = if entry.is_symlink {
                 let lyrics_timestamp = sidecar_modified(&entry.path);
-                // a failed stat isn't proof of absence - keep the decode probe
+                // stat 失败并不能证明文件不存在——保留解码那一趟的探测
                 let sidecar_lyrics = if lyrics_timestamp.is_some() {
                     SidecarLyrics::Present
                 } else {

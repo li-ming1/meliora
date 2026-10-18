@@ -50,11 +50,11 @@ pub(crate) struct WriteCaches {
     pub(crate) pending_tracks: FxHashSet<i64>,
     pub(crate) folder_art_candidates: FolderArtCandidates,
     pub(crate) art_ids: ArtIdCache,
-    /// Albums whose folders were checked for artwork this scan.
+    /// 本次扫描检查过文件夹封面的专辑。
     pub(crate) examined_albums: FxHashSet<i64>,
 }
 
-/// Resolve a candidate's artwork row id, staging a new row the first time its hash is seen.
+/// 解析候选项的 artwork 行 id；第一次见到其哈希时先把新行暂存起来。
 async fn stage_artwork(
     conn: &mut SqliteConnection,
     caches: &mut WriteCaches,
@@ -100,7 +100,7 @@ pub async fn update_metadata(
     )
     .await?;
 
-    // a retag can move the track to another album - the old album needs a rebuild too
+    // 重打 tag 可能把曲目挪到另一个专辑——旧专辑同样需要重建
     let previous_album: Option<(Option<i64>,)> = sqlx::query_as(include_str!(
         "../../../queries/scan/get_album_id_at_location.sql"
     ))
@@ -129,9 +129,9 @@ pub async fn update_metadata(
         delete_lyrics(conn, track_id).await?;
     }
 
-    // process images now - end-of-scan pick only needs the staged rows
+    // 现在就处理图片——扫描结束时的挑选只需要那些已暂存的行
     if let Some(album_id) = album_id
-        // a first-track read marks the folder checked even when no art was found
+        // 首曲目那次读取会把文件夹标成已检查，即使没找到任何封面
         && art.representative
     {
         caches.examined_albums.insert(album_id);
@@ -158,7 +158,7 @@ pub async fn update_metadata(
         }
     }
 
-    // album tracks use embedded art, tracks with no album use folder art if available
+    // 专辑内曲目用内嵌封面，没有专辑的曲目在可用时用文件夹封面
     let track_art = match album_id {
         Some(_) => embedded_id,
         None => folder_id.map(|(id, _)| id).or(embedded_id),
@@ -171,7 +171,7 @@ pub async fn update_metadata(
             .await?;
     }
 
-    // temporary pick when the album has no art yet (folder if present, else embedded)
+    // 专辑还没有封面时的临时挑选（有文件夹封面就用它，否则用内嵌）
     if let Some(album_id) = album_id
         && let Some((artwork_id, source)) = folder_id.or(embedded_id.map(|id| (id, 0)))
     {
@@ -183,7 +183,7 @@ pub async fn update_metadata(
             .await?;
     }
 
-    // album artists once per album per batch, tracks with no album get their own links
+    // 每批次里每个专辑只算一次专辑歌手，没有专辑的曲目各自建链接
     if let Some(album_id) = album_id {
         caches.pending_albums.insert(album_id);
     } else {

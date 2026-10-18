@@ -14,10 +14,10 @@ pub use processing::{ArtworkProcessor, FolderArtLoader};
 pub(crate) use repository::get_or_create_artwork;
 pub use repository::{ArtworkData, load_art_ids};
 
-/// Artwork row id by content hash. `None` means processing failed.
+/// 按内容哈希取 artwork 行 id。`None` 表示处理失败。
 pub type ArtIdCache = FxHashMap<u64, Option<i64>>;
 
-/// Best folder-art hash and source rank found for each album during this scan.
+/// 本次扫描中为每个专辑找到的最优文件夹封面哈希与来源排名。
 pub type FolderArtCandidates = FxHashMap<i64, (u64, i64)>;
 
 pub(crate) fn consider_folder_art(
@@ -39,7 +39,7 @@ pub(crate) fn consider_folder_art(
     }
 }
 
-/// Look for folder art without re-reading audio and mark every album whose folder was checked.
+/// 查找文件夹封面但不重读音频，并把文件夹已检查过的每个专辑都标记下来。
 pub async fn examine_folder_art(
     pool: &SqlitePool,
     observations: &FolderArtObservationMap,
@@ -53,7 +53,7 @@ pub async fn examine_folder_art(
         return Ok(());
     }
 
-    // only disc 1, 0, or unknown
+    // 只取 disc 为 1、0 或缺失的
     let claims: Vec<(i64, String, i64)> = sqlx::query_as(include_str!(
         "../../../queries/scan/list_album_path_claims.sql"
     ))
@@ -65,7 +65,7 @@ pub async fn examine_folder_art(
     for (album_id, path, artwork_source) in claims {
         claims_by_dir.entry(path).or_default().push(album_id);
         *claim_counts.entry(album_id).or_default() += 1;
-        // every album_path row of one album carries the album's own source
+        // 同一专辑的每一行 album_path 都携带该专辑自身的来源
         incumbent_sources.insert(album_id, artwork_source);
     }
 
@@ -75,13 +75,11 @@ pub async fn examine_folder_art(
             continue;
         };
 
-        // Tracks committed this scan already carried this directory's folder
-        // candidate, so albums settled in `candidates` would only recompute an
-        // identical hash here - skip the re-read (weak loader handles have
-        // expired by now, forcing a full file read + decode). Albums shared
-        // with another folder could still be outranked by that folder's art,
-        // so those always re-examine. `examined` still records the check for
-        // finalize's keep-existing branch.
+        // 本次扫描提交的曲目已经带上本目录的文件夹候选，因此已在 `candidates`
+        // 里定下的专辑在这里只会重算出同一个哈希——跳过这次重读（弱加载句柄此时
+        // 早已过期，会逼出一整次文件读取 + 解码）。与其他文件夹共享的专辑仍可能
+        // 被那个文件夹的封面压过，所以那些一律重新 examine。`examined` 仍会记下
+        // 这次检查，供 finalize 的「保留现有」分支使用。
         if album_ids.iter().all(|&album_id| {
             candidates.contains_key(&album_id) && claim_counts.get(&album_id) == Some(&1)
         }) {
@@ -104,15 +102,12 @@ pub async fn examine_folder_art(
         }
 
         for &album_id in album_ids {
-            // Being in `examined` sends the album through finalize (up to five
-            // statements per album, on every scan). Mark it only where this pass
-            // can change an answer: art found now, or a folder incumbent that
-            // may have vanished with its cover file. An embedded incumbent
-            // (source 0) in a cover-less directory can only re-vote the majority
-            // this scan already proved unchanged - and for legacy migrated rows
-            // (album art present, tracks without `art_hash`) that re-vote
-            // answers "no art" and clears the album, so skipping is the safer
-            // half of the same no-op.
+            // 一旦进入 `examined`，专辑就会被送进 finalize（每次扫描、每个专辑至多
+            // 五条语句）。所以只在本次确实可能改变答案的地方标记：此刻找到了封面，
+            // 或者文件夹在位者可能随其封面文件一起消失。没有封面文件目录里的内嵌
+            // 在位者（source 0）只能把本次扫描已证明未变的多数派重投一遍——而对
+            // 迁移来的历史行（专辑有封面、曲目没有 `art_hash`），那遍重投的答案是
+            // 「没有封面」并会清空专辑，因此跳过是同一个空操作里更安全的那一半。
             if art.is_none() && incumbent_sources.get(&album_id).copied().unwrap_or(0) == 0 {
                 continue;
             }

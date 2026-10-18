@@ -5,7 +5,7 @@ use tracing::warn;
 use super::ArtIdCache;
 use crate::library::scan::decode::ProcessedArt;
 
-/// Logs a failed DB read under `context` and maps it to `None`.
+/// 把一次失败的数据库读取按 `context` 记日志，并映射成 `None`。
 fn logged<T>(result: sqlx::Result<T>, context: &str) -> Option<T> {
     result.map_err(|e| warn!("{context}: {:?}", e)).ok()
 }
@@ -32,7 +32,7 @@ pub enum ArtworkData<'a> {
     Processed(&'a ProcessedArt),
 }
 
-/// Find or create an artwork row for `hash`, reusing hashless rows from older DBs when possible.
+/// 为 `hash` 找到或创建一行 artwork，可能时复用旧数据库里没有哈希的行。
 pub(crate) async fn get_or_create_artwork(
     conn: &mut SqliteConnection,
     hash: i64,
@@ -95,6 +95,6 @@ pub(crate) async fn get_or_create_artwork(
     .map(|(id,)| id)
 }
 
-/// Artwork row id (or `None` when it could not be created) per hash,
-/// memoized across the albums of one finalization pass.
+/// 每个哈希对应的 artwork 行 id（创建不出来时为 `None`），
+/// 在一趟 finalize 的多个专辑之间做记忆化。
 pub(super) type FinalizationArtCache = FxHashMap<i64, Option<i64>>;

@@ -1,5 +1,5 @@
-//! Case sensitivity checks and path folding for comparisons.
-//! Folded paths are for comparison only - never use them for I/O or storage.
+//! 大小写敏感性检查与用于比较的路径折叠。
+//! 折叠后的路径只用于比较——绝不用于 I/O 或存储。
 
 use crate::sync::RecoveredRwLock;
 use std::{
@@ -15,7 +15,7 @@ const OS_DEFAULT_CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos")
 static CASE_CACHE: LazyLock<RwLock<FxHashMap<Utf8PathBuf, bool>>> =
     LazyLock::new(|| RwLock::new(FxHashMap::default()));
 
-/// Whether the filesystem for `path` is case-insensitive. Probed once per volume, OS default if unknown.
+/// `path` 所在文件系统是否大小写不敏感。每个卷只探测一次，探测不出结果时取操作系统默认值。
 pub fn is_case_insensitive(path: &Utf8Path) -> bool {
     let Some(key) = volume_key(path) else {
         return OS_DEFAULT_CASE_INSENSITIVE;
@@ -28,13 +28,13 @@ pub fn is_case_insensitive(path: &Utf8Path) -> bool {
         return OS_DEFAULT_CASE_INSENSITIVE;
     };
 
-    // if the path and its parent are missing, don't probe some ancestor we never checked
+    // 路径与其父目录都不存在时，别去探测我们从未检查过的祖先目录
     if anchor != path && path.parent().is_none_or(|p| p != anchor) {
         return OS_DEFAULT_CASE_INSENSITIVE;
     }
 
     let Some(result) = probe_case_insensitive(&anchor) else {
-        return OS_DEFAULT_CASE_INSENSITIVE; // inconclusive - don't cache
+        return OS_DEFAULT_CASE_INSENSITIVE; // 结论不定——不写缓存
     };
     CASE_CACHE.write_recovered().insert(key, result);
     result
@@ -51,7 +51,7 @@ fn nearest_existing_dir(path: &Utf8Path) -> Option<Utf8PathBuf> {
     None
 }
 
-/// Windows volume key: drive letter or UNC share.
+/// Windows 卷键：盘符或 UNC 共享。
 #[cfg(windows)]
 fn volume_key(path: &Utf8Path) -> Option<Utf8PathBuf> {
     let stripped = strip_verbatim(path.as_str());
@@ -69,7 +69,7 @@ fn volume_key(path: &Utf8Path) -> Option<Utf8PathBuf> {
     Some(Utf8PathBuf::from(stripped.into_owned().to_lowercase()))
 }
 
-/// Unix volume key: device id of `path`'s filesystem. `None` if stat fails.
+/// Unix 卷键：`path` 所在文件系统的设备号。stat 失败时为 `None`。
 #[cfg(unix)]
 fn volume_key(path: &Utf8Path) -> Option<Utf8PathBuf> {
     use std::os::unix::fs::MetadataExt;
@@ -77,13 +77,13 @@ fn volume_key(path: &Utf8Path) -> Option<Utf8PathBuf> {
     Some(Utf8PathBuf::from(dev.to_string()))
 }
 
-/// Check whether `dir`'s filesystem is case-insensitive - look for a flipped-case entry, or create a temp file.
+/// 检查 `dir` 所在文件系统是否大小写不敏感——找一个大小写翻转的条目，或建一个临时文件。
 fn probe_case_insensitive(dir: &Utf8Path) -> Option<bool> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let swapped = swap_case(&name);
-            // no ASCII letters to flip - can't probe with this name
+            // 没有可翻转的 ASCII 字母——这个名字探测不了
             if swapped == name {
                 continue;
             }
@@ -109,7 +109,7 @@ fn temp_file_probe(dir: &Utf8Path) -> Option<bool> {
     result.ok()
 }
 
-/// Swap ASCII letter case only. Unicode case folds can change length and won't match the filesystem.
+/// 只翻转 ASCII 字母大小写。Unicode 大小写折叠会改变长度，与文件系统对不上。
 fn swap_case(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -120,7 +120,7 @@ fn swap_case(s: &str) -> String {
         .collect()
 }
 
-/// Strip the Windows \\?\ prefix so canonical and configured paths match. Comparison only.
+/// 剥掉 Windows 的 \\?\ 前缀，让规范化路径与配置路径对得上。仅用于比较。
 fn strip_verbatim(path: &str) -> Cow<'_, str> {
     if !cfg!(windows) {
         return Cow::Borrowed(path);
@@ -134,15 +134,14 @@ fn strip_verbatim(path: &str) -> Cow<'_, str> {
     }
 }
 
-/// Fold a record key for folded prefix matching: strip `\\?\` and lowercase
-/// unconditionally. [`fold_path`] is the case-sensitivity-aware variant.
+/// 为折叠前缀匹配而折叠记录 key：剥掉 `\\?\` 并无条件转小写。
+/// [`fold_path`] 才是感知大小写敏感性的变体。
 pub fn fold_key(path: &Utf8Path) -> String {
     strip_verbatim(path.as_str()).to_lowercase()
 }
 
-/// Prefix match for a key already folded by [`fold_key`] against an
-/// already-folded prefix - lets callers fold once and match against many
-/// prefixes.
+/// 已经由 [`fold_key`] 折叠过的 key 与同样折叠过的前缀做前缀匹配——调用方因此
+/// 可以折一次就与多个前缀比对。
 pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
     let mut key_chars = folded_key.chars();
     for expected in folded_prefix.chars() {
@@ -150,11 +149,11 @@ pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
             return false;
         }
     }
-    // prefix must end on a path component boundary
+    // 前缀必须恰好在路径分量边界处结束
     key_chars.next().is_none_or(|c| c == '/' || c == '\\')
 }
 
-/// Build a comparison key - strip \\?\ and fold case on case-insensitive volumes.
+/// 构造比较用的 key——剥 \\?\，并在大小写不敏感的卷上折叠大小写。
 pub fn fold_path(path: &Utf8Path) -> Utf8PathBuf {
     let normalized = strip_verbatim(path.as_str());
     if is_case_insensitive(path) {
@@ -164,13 +163,12 @@ pub fn fold_path(path: &Utf8Path) -> Utf8PathBuf {
     }
 }
 
-/// Path equality per [`fold_path`]: identical spellings match outright,
-/// otherwise the folded forms are compared.
+/// 按 [`fold_path`] 判定的路径相等：拼写完全相同直接算等，否则比较折叠后的形态。
 pub fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
     a == b || fold_path(a) == fold_path(b)
 }
 
-/// Whether two paths are the same file (same device and inode). False if either can't be stat'ed.
+/// 两条路径是否为同一个文件（设备号与 inode 相同）。任一条 stat 不到即为 false。
 pub fn same_file(a: &Utf8Path, b: &Utf8Path) -> bool {
     same_file::is_same_file(a.as_std_path(), b.as_std_path()).unwrap_or(false)
 }
@@ -293,7 +291,7 @@ mod tests {
 
     #[test]
     fn folded_starts_with_folds_final_sigma_like_fold_path() {
-        // str::to_lowercase maps word-final Σ to ς, char::to_lowercase does not
+        // str::to_lowercase 会把词尾的 Σ 映射成 ς，char::to_lowercase 不会
         let prefix = "/music/AΣ".to_lowercase();
         assert_eq!(prefix, "/music/aς");
         assert!(folded_starts_with(
@@ -316,26 +314,21 @@ mod tests {
 
 #[cfg(test)]
 mod bench {
-    //! Timing probe for audit finding F053: [`folded_starts_with`] walks two
-    //! per-char iterators, and `discover/targeted.rs::index_records_under`
-    //! calls it once per (record, target) pair after one `fold_key` per
-    //! record - a targeted rescan over a six-figure record map pays ~1e8
-    //! char-by-char comparisons plus one `to_lowercase` allocation per
-    //! record. This bench times the current implementation against a
-    //! byte-level equivalent in exactly that loop shape, and sizes the
-    //! per-record `fold_key` pass next to it.
+    //! 审计发现 F053 的耗时探针：[`folded_starts_with`] 走两个逐字符迭代器，而
+    //! `discover/targeted.rs::index_records_under` 在每条记录只做一次 `fold_key`
+    //! 之后，对每个 (记录, 目标) 组合都调它一次——在六位数的记录表上做定向重扫，
+    //! 要付约 1e8 次逐字符比较外加每条记录一次 `to_lowercase` 分配。本 bench 就在
+    //! 这个确切的循环形态下把当前实现与一个字节级等价实现对比计时，并顺带量出每条
+    //! 记录的 `fold_key` 那一遍的大小。
     //!
-    //! Why the byte variant is the same predicate (audit argument, verified
-    //! at runtime below over every pair the timed scans run): both inputs are
-    //! already folded by `fold_key` / `fold_path`, i.e. valid UTF-8 with the
-    //! match starting at a char boundary. UTF-8 encodes every char uniquely,
-    //! so equal byte prefixes imply equal char prefixes (and vice versa);
-    //! `/` and `\` are pure ASCII while UTF-8 multibyte sequences only
-    //! contain bytes >= 0x80, so testing the raw byte after the prefix is
-    //! exactly the "next char is a path separator" component check.
+    //! 为什么字节变体是同一个谓词（审计论证，下面在运行时对计时扫描要跑的每一对
+    //! 输入都做了校验）：两侧都已由 `fold_key` / `fold_path` 折叠过，即合法 UTF-8
+    //! 且匹配从字符边界开始。UTF-8 对每个字符的编码唯一，所以相等的字节前缀蕴含
+    //! 相等的字符前缀（反之亦然）；`/` 与 `\` 是纯 ASCII，而 UTF-8 多字节序列只含
+    //! >= 0x80 的字节，因此直接测前缀之后的那个原始字节，恰好就是「下一个字符是
+    //! 路径分隔符」的分量检查。
     //!
-    //! Excluded from the normal test run - timings are environment-dependent
-    //! and only meaningful as a human-read report:
+    //! 已从常规测试运行中排除——耗时依赖环境，只作为给人读的报告才有意义：
     //!
     //! ```text
     //! cargo test --release folded_prefix -- --ignored --nocapture
@@ -347,22 +340,20 @@ mod bench {
 
     use super::{fold_key, folded_starts_with};
 
-    /// simulated `scan_record` entries
+    /// 模拟的 `scan_record` 条目数
     const KEYS: usize = 100_000;
-    /// folded target prefixes matched against every record
+    /// 与每条记录都比一次的折叠目标前缀数
     const TARGETS: usize = 1_000;
-    /// ~10% of the targets match exactly one generated key
+    /// 约 10% 的目标恰好命中一条生成的 key
     const MATCHING_TARGETS: usize = 100;
-    /// every Nth record key carries CJK path segments (multibyte UTF-8)
+    /// 每隔 N 条记录的 key 带 CJK 路径段（多字节 UTF-8）
     const MULTIBYTE_STRIDE: usize = 20;
     const MEASURED_RUNS: usize = 3;
 
-    /// Byte-level equivalent of [`folded_starts_with`] for inputs that are
-    /// already folded (both sides are `to_lowercase` products, as every
-    /// caller produces them). The prefix test is a memcmp via
-    /// `[u8]::starts_with`; the component-boundary check tests the raw byte
-    /// after the prefix, which is exact because a byte equal to `/` or `\`
-    /// can never occur inside a UTF-8 multibyte sequence.
+    /// [`folded_starts_with`] 的字节级等价实现，用于已折叠的输入（两侧都是
+    /// `to_lowercase` 的产物，所有调用方都如此产出）。前缀测试是用
+    /// `[u8]::starts_with` 做的 memcmp；分量边界检查直接测前缀之后的那个原始字节，
+    /// 这是精确的，因为等于 `/` 或 `\` 的字节绝不可能出现在 UTF-8 多字节序列内部。
     fn folded_starts_with_byte(folded_key: &str, folded_prefix: &str) -> bool {
         let key = folded_key.as_bytes();
         if !key.starts_with(folded_prefix.as_bytes()) {
@@ -372,9 +363,9 @@ mod bench {
             .is_none_or(|&b| b == b'/' || b == b'\\')
     }
 
-    /// Windows-style recorded paths carrying the verbatim prefix the scanner
-    /// stores; every `MULTIBYTE_STRIDE`-th key uses CJK segments so multibyte
-    /// UTF-8 stays on both hit and miss paths (5% share).
+    /// Windows 风格的录制路径，带扫描器实际存下的 verbatim 前缀；每隔
+    /// `MULTIBYTE_STRIDE` 条用一次 CJK 段，让多字节 UTF-8 同时出现在命中与未命中
+    /// 两条路径上（占比 5%）。
     fn raw_key(i: usize) -> String {
         let track = i % 1_000;
         if i.is_multiple_of(MULTIBYTE_STRIDE) {
@@ -388,12 +379,10 @@ mod bench {
         fold_key(Utf8Path::new(&format!("{stem}{id:06}")))
     }
 
-    /// TARGETS folded prefixes: MATCHING_TARGETS matching exactly one
-    /// generated key (half ASCII, half CJK spellings), the rest misses in
-    /// three divergence shapes - a nonexistent artist id (diverges at the
-    /// first digit), its CJK twin, and an ASCII spelling for an id that only
-    /// exists as a CJK key (diverges right after the root). Shuffled
-    /// deterministically so first-hit positions vary like a set walk.
+    /// TARGETS 个折叠前缀：MATCHING_TARGETS 个恰好命中一条生成的 key（一半 ASCII、
+    /// 一半 CJK 拼写），其余为未命中，分成三种分歧形态——不存在的歌手 id（在第一个
+    /// 数字处分歧）、它的 CJK 孪生，以及只以 CJK key 存在的 id 的 ASCII 拼写（紧接
+    /// 根路径之后分歧）。用确定性洗牌打乱，让首次命中的位置像遍历集合那样变化。
     fn build_targets() -> Vec<String> {
         let mut targets = Vec::with_capacity(TARGETS);
         for k in 0..MATCHING_TARGETS / 2 {
@@ -419,9 +408,8 @@ mod bench {
         targets
     }
 
-    /// The exact loop shape of `index_records_under` (deterministic target
-    /// order here instead of `FxHashSet` walk order): per record, per target,
-    /// early-exit on the first hit.
+    /// `index_records_under` 的确切循环形态（这里用确定性的目标顺序代替
+    /// `FxHashSet` 的遍历顺序）：每条记录对每个目标比一次，首次命中即提前退出。
     fn scan_current(keys: &[String], targets: &[String]) -> usize {
         let mut hits = 0usize;
         'records: for key in black_box(keys) {
@@ -435,7 +423,7 @@ mod bench {
         hits
     }
 
-    /// Same loop with the byte-level predicate.
+    /// 同样的循环，换用字节级谓词。
     fn scan_byte_level(keys: &[String], targets: &[String]) -> usize {
         let mut hits = 0usize;
         'records: for key in black_box(keys) {
@@ -449,11 +437,10 @@ mod bench {
         hits
     }
 
-    /// Warm up once, run MEASURED_RUNS timed passes, print min/mean, and
-    /// return (min ms, mean ms, last result). Headline numbers use min - the
-    /// least noise-contaminated sample.
+    /// 先跑一次预热，再跑 MEASURED_RUNS 轮计时并打印 min/mean，返回
+    /// (最小 ms, 平均 ms, 最后一轮结果)。报告口径取 min——受噪声影响最小的样本。
     fn time_runs<T>(name: &str, mut f: impl FnMut() -> T) -> (f64, f64, T) {
-        f(); // warmup, untimed and unread
+        f(); // 预热：不计入耗时，结果也不读
         let mut samples = Vec::with_capacity(MEASURED_RUNS);
         let mut result = None;
         for _ in 0..MEASURED_RUNS {
@@ -475,10 +462,8 @@ mod bench {
         );
     }
 
-    /// Multibyte and boundary edge cases the dataset cannot reach: empty
-    /// inputs, a UTF-8 lead byte right after the prefix, precomposed vs
-    /// decomposed accents, and the final-sigma fold both sides get from
-    /// `to_lowercase`.
+    /// 数据集到不了的多字节与边界用例：空输入、前缀之后紧跟一个 UTF-8 首字节、
+    /// 预组合与分解形式的带音符字母，以及两侧都从 `to_lowercase` 得到的词尾 sigma 折叠。
     fn verify_edge_cases() {
         for (key, prefix) in [
             ("", ""),
@@ -504,13 +489,12 @@ mod bench {
         ] {
             assert_agree(key, prefix);
         }
-        // the raw byte after the prefix must not read as a separator when it
-        // is a UTF-8 lead byte (the audit's hinge case)
+        // 前缀之后的原始字节是 UTF-8 首字节时，不能被读成分隔符（审计的关键用例）
         assert!(!folded_starts_with("abc中/x", "abc"));
         assert!(!folded_starts_with_byte("abc中/x", "abc"));
         assert!(folded_starts_with("abc中/x", "abc中"));
         assert!(folded_starts_with_byte("abc中/x", "abc中"));
-        // final sigma: fold both sides exactly like fold_key does
+        // 词尾 sigma：两侧都严格按 fold_key 的方式折叠
         let sigma_key = "/music/ΑΣ/x".to_lowercase();
         let sigma_prefix = "/music/ΑΣ".to_lowercase();
         assert_eq!(sigma_prefix, "/music/ας");
@@ -529,8 +513,7 @@ mod bench {
             100 / MULTIBYTE_STRIDE
         );
 
-        // Equivalence first: targeted edge cases, then every (key, target)
-        // pair the timed scans below will run.
+        // 先验等价性：先定点边界用例，再覆盖下面计时扫描会跑的每一对 (key, target)。
         verify_edge_cases();
         let keys: Vec<String> = raw_keys
             .iter()
@@ -558,8 +541,8 @@ mod bench {
              avg folded key {avg_key_len}B, target {avg_target_len}B"
         );
 
-        // per-record fold pass exactly as index_records_under pays it: one
-        // fold_key (strip_verbatim + to_lowercase allocation) per record
+        // 每条记录的折叠那一遍，完全按 index_records_under 的实际付法：每条记录一次
+        // fold_key（strip_verbatim + to_lowercase 分配）
         let (fold_min, _fold_mean, _) =
             time_runs("fold_key pass (1 strip+lowercase alloc/record)", || {
                 raw_keys
@@ -567,8 +550,8 @@ mod bench {
                     .map(|raw| fold_key(Utf8Path::new(raw)))
                     .collect::<Vec<String>>()
             });
-        // allocation floor: to_lowercase alone, separating the strip/Utf8Path
-        // dispatch from the per-record String allocation
+        // 分配下限：只跑 to_lowercase，把 strip/Utf8Path 分派与每条记录的 String
+        // 分配分离开来
         let (lower_min, _lower_mean, _) = time_runs("to_lowercase only (allocation floor)", || {
             raw_keys
                 .iter()

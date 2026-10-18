@@ -9,14 +9,14 @@ use crate::library::scan::artist_match::ArtistMatcher;
 
 const UNKNOWN_ARTIST: &str = "Unknown Artist";
 
-/// Push every credited fallback name without a sort key.
+/// 把每个没有排序键的署名回退名字都推进去。
 fn push_fallback_names(names: &mut Vec<(String, Option<String>)>, fallback: Vec<String>) {
     for part in fallback {
         push_album_artist_name(names, &part, None);
     }
 }
 
-/// Resolve each claimed name to an artist id, keeping the first occurrence of each.
+/// 把每个被认领的名字解析成歌手 id，每个名字只保留首次出现。
 async fn desired_artist_ids(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -32,7 +32,7 @@ async fn desired_artist_ids(
     Ok(desired)
 }
 
-/// Add missing artist links and remove stale ones, evicting artists whose last link goes.
+/// 补上缺失的歌手链接并移除过期链接，同时逐出最后一根链接消失的歌手。
 async fn sync_artist_links(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -59,18 +59,18 @@ async fn sync_artist_links(
                 .bind(artist_id)
                 .execute(&mut *conn)
                 .await?;
-            // the cleanup trigger can delete the artist when its last link goes
+            // 最后一根链接消失时，清理触发器可以把这个歌手删掉
             evicted.push(*artist_id);
         }
     }
-    // One pass over the matcher for the whole victim set: a mass re-tag
-    // orphans every artist, and looping `evict` would sweep `by_key` once
-    // per victim (bench F028: 168x on 10k victims). End state identical.
+    // 对整个受害集只把 matcher 扫一遍：批量重打 tag 会孤立全部歌手，而循环调
+    // `evict` 会每个受害者扫一遍 `by_key`（bench F028：10k 受害者上 168 倍）。
+    // 终态完全相同。
     matcher.evict_many(&evicted);
     Ok(())
 }
 
-/// Rebuild album artist links from track tags, falling back to the display artist override.
+/// 从曲目 tag 重建专辑歌手链接，回退到显示歌手覆盖值。
 pub(crate) async fn recompute_album_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -144,7 +144,7 @@ pub(crate) async fn recompute_album_artists(
     Ok(())
 }
 
-/// Recompute pending album artists. Failures stay in `pending` to retry after commit.
+/// 重算待处理的专辑歌手。失败项留在 `pending` 里，提交后重试。
 pub async fn flush_album_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -166,7 +166,7 @@ pub async fn flush_album_artists(
     }
 }
 
-/// Rebuild artist links for a track with no album, using the same claim rules.
+/// 用同样的认领规则重建没有专辑的曲目的歌手链接。
 pub(crate) async fn recompute_track_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -217,7 +217,7 @@ pub(crate) async fn recompute_track_artists(
     Ok(())
 }
 
-/// Recompute pending track artists. Failures stay in `pending` to retry after commit.
+/// 重算待处理的曲目歌手。失败项留在 `pending` 里，提交后重试。
 pub async fn flush_track_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -239,7 +239,8 @@ pub async fn flush_track_artists(
     }
 }
 
-/// Delete artists no longer linked to anything. Run at scan end so the matcher can keep cached IDs during writes.
+/// 删除不再与任何东西相连的歌手。放在扫描结束时跑，这样 matcher 在写入期间可以
+/// 一直保留缓存的 id。
 pub async fn sweep_orphan_artists(pool: &SqlitePool) {
     if let Err(e) = sqlx::query(include_str!(
         "../../../../queries/scan/delete_orphan_artists.sql"

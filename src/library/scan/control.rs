@@ -22,9 +22,9 @@ pub enum ScanEvent {
 #[derive(Debug, Clone)]
 pub(super) enum ScanCommand {
     Scan,
-    /// Full rescan that ignores the scan record (schema bumps, SCAN_VERSION changes).
+    /// 忽略扫描记录的全量重扫（schema 变更、SCAN_VERSION 变化）。
     ForceScan,
-    /// Rescan paths; `respect_record` skips unchanged files and `recursive` walks descendants.
+    /// 重扫指定路径；`respect_record` 会跳过未变化的文件，`recursive` 会向下遍历子目录。
     RescanPaths {
         paths: Vec<Utf8PathBuf>,
         respect_record: bool,
@@ -54,7 +54,7 @@ pub(super) enum ScanMode {
 }
 
 impl ScanMode {
-    /// Force full scans rebuild albums from scratch. Targeted rescans must not wipe album art.
+    /// 强制全量扫描会把专辑从头重建。定向重扫不得清掉专辑封面。
     pub(super) fn force_albums(&self) -> bool {
         matches!(self, ScanMode::Full { is_force: true })
     }
@@ -70,8 +70,8 @@ impl ScanMode {
     }
 }
 
-/// Sends commands to the scanner. Commands are idempotent requests, so a full
-/// channel drops them (logged) instead of blocking the UI thread on send.
+/// 向扫描器发送命令。命令都是幂等请求，所以通道满时直接丢弃（记日志），
+/// 而不是在发送时阻塞 UI 线程。
 pub struct ScanInterface {
     cmd_tx: Sender<ScanCommand>,
 }
@@ -81,7 +81,7 @@ impl ScanInterface {
         ScanInterface { cmd_tx }
     }
 
-    /// Sends a command, logging instead of failing when the channel is full or closed.
+    /// 发送一条命令；通道满或已关闭时只记日志而不报错。
     fn try_send(&self, command: ScanCommand, label: &str) {
         if let Err(err) = self.cmd_tx.try_send(command) {
             error!("could not send {label}: {err}");
@@ -128,9 +128,8 @@ impl ScanInterface {
         );
     }
 
-    /// Starts the scan-event bridge. The mirrored UI entities (`scan_state`,
-    /// `playlist_tracker`) are passed in by the UI caller so this module keeps
-    /// no `crate::ui` import; the loop body itself is unchanged.
+    /// 启动扫描事件桥。镜像出去的 UI 实体（`scan_state`、`playlist_tracker`）由 UI
+    /// 调用方传入，因此本模块保持对 `crate::ui` 零 import；循环体本身没有变化。
     pub fn start_broadcast(
         &self,
         mut events_rx: UnboundedReceiver<ScanEvent>,
@@ -182,7 +181,7 @@ pub(super) fn queue_pending_rescan(
     match pending {
         Some(merged) => {
             merged.paths.extend(paths);
-            // if any queued rescan ignores the record, the whole batch does
+            // 队列里只要有一次重扫忽略记录，整批都忽略
             merged.respect_record &= respect_record;
             merged.recursive |= recursive;
         }

@@ -10,14 +10,12 @@ use tracing::{Instrument as _, debug_span, error, info, warn};
 
 use crate::library::Pool;
 
-// Playlist change notifications. These used to live in `ui::models` (audit:
-// `library::scan` and this module had to reverse-import the UI layer just to
-// emit them); they are playlist-domain state, so they live here now. The
-// tracker entity itself is still created by the UI layer (`build_models`) and
-// held by `Models.playlist_tracker`; callers pass it into `import_playlist`
-// (the same pattern as `scan::control::start_broadcast`), keeping this module
-// free of `crate::ui` imports. `ui::models` re-exports both types for the
-// existing `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` consumers.
+// 歌单变更通知。这些过去住在 `ui::models` 里（审计：`library::scan` 与本模块为了发出
+// 它们不得不反向 import UI 层）；它们属于歌单域状态，所以现在搬到这里。tracker 实体本身
+// 仍由 UI 层创建（`build_models`）并由 `Models.playlist_tracker` 持有；调用方把它传进
+// `import_playlist`（与 `scan::control::start_broadcast` 同一模式），从而本模块保持对
+// `crate::ui` 零 import。`ui::models` 会把这两个类型再导出，供既有的
+// `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` 使用方继续取用。
 pub struct PlaylistInfoTransfer;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -163,11 +161,9 @@ fn parse_m3u(file: File) -> impl futures::Stream<Item = anyhow::Result<M3UEntry>
     })
 }
 
-/// Imports tracks from a user-selected M3U file into `playlist_id`. The
-/// playlist tracker is passed in by the UI caller (read from the global
-/// `Models` in the adjacent statement before the call, the same execution
-/// point at which this function used to fetch it itself) so this module
-/// keeps no `crate::ui` import.
+/// 从用户选中的 M3U 文件把曲目导入 `playlist_id`。歌单 tracker 由 UI 调用方传入
+/// （在紧邻调用之前的那条语句里从全局 `Models` 读出，正是本函数过去自己去取它的同一个
+/// 执行点），因此本模块不引入任何 `crate::ui` 依赖。
 pub fn import_playlist(cx: &App, playlist_id: i64, playlist_tracker: Entity<PlaylistInfoTransfer>) {
     let path_future = cx.prompt_for_paths(PathPromptOptions {
         files: true,

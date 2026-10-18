@@ -629,7 +629,7 @@ async fn update_metadata_heals_stale_album_path_claim() {
     meta1.disc_current = Some(1);
     insert_metadata(&mut conn, &meta1, &path_a).await.unwrap();
 
-    // stale claim for disc 2 - the folder has no disc 2 rows
+    // disc 2 的过期认领——该文件夹里没有任何 disc 2 行
     let stale = dir.utf8_join("stale");
     let (album_id,): (i64,) = sqlx::query_as("SELECT id FROM album")
         .fetch_one(&mut *conn)
@@ -649,7 +649,7 @@ async fn update_metadata_heals_stale_album_path_claim() {
     let outcome = write(&mut conn, &meta2, &path_b1, &mut caches).await;
     assert!(matches!(outcome, TrackWriteOutcome::Written));
 
-    // a second disc 2 file in the same scan must see the updated claim via the cache
+    // 同一次扫描里的第二个 disc 2 文件必须经由缓存看到更新后的认领
     let mut meta3 = track_metadata("Album", "Artist", "Track 2", 2);
     meta3.disc_current = Some(2);
     let outcome = write(&mut conn, &meta3, &path_b2, &mut caches).await;
@@ -699,7 +699,7 @@ async fn update_metadata_populated_check_matches_case_variant_claim() {
     let meta = track_metadata("Album", "Artist", "Track 1", 1);
     insert_metadata(&mut conn, &meta, &path_a).await.unwrap();
 
-    // same folder on a case-insensitive volume, but a different path string
+    // 在大小写不敏感的卷上是同一个文件夹，但路径字符串不同
     let lower = dir.utf8_join("claimed");
     sqlx::query("UPDATE album_path SET path = $1")
         .bind(lower.as_str())
@@ -709,7 +709,7 @@ async fn update_metadata_populated_check_matches_case_variant_claim() {
 
     let path_b = track_path(&dir, "Other", "track1.flac");
 
-    // fresh caches so the claim is loaded from the DB
+    // 全新的缓存，好让认领从数据库读出来
     let outcome = write(&mut conn, &meta, &path_b, &mut WriteCaches::default()).await;
 
     assert_eq!(outcome, TrackWriteOutcome::SkippedDuplicateFolder);
@@ -878,7 +878,7 @@ async fn update_metadata_stores_year_only_track_release_date() {
     assert_track_release_date(&pool, "1995-01-01", Some(DATE_PRECISION_YEAR)).await;
 }
 
-/// Write alias then canonical name, and the reverse. Both orders should yield one artist.
+/// 先写别名再写规范名，以及反过来写。两种顺序都应当只得到一个歌手。
 async fn assert_alias_merge(prefix: &str, alias_first: bool) {
     let (dir, pool) = create_test_pool(prefix).await;
     let mut conn = pool.acquire().await.unwrap();
@@ -1133,7 +1133,7 @@ async fn recompute_recreates_artist_deleted_with_its_last_link() {
     let mut conn = pool.acquire().await.unwrap();
     let path = dir.utf8_join("track.flac");
 
-    // one shared matcher, so the second recompute already has Artist Y cached
+    // 共用同一个 matcher，所以第二次重算时 Artist Y 已经在缓存里
     let mut caches = WriteCaches::default();
     let mut matcher = ArtistMatcher::new();
 
@@ -1325,7 +1325,7 @@ async fn update_metadata_links_all_null_separated_tpe1_artists() {
     let (dir, pool) = create_test_pool("db-null-tpe1-test").await;
     let mut conn = pool.acquire().await.unwrap();
 
-    // lofty hands over the display and matching forms of a null-separated TPE1
+    // lofty 交出的是以 null 分隔的 TPE1 的显示形态与匹配形态
     let mut meta = track_metadata("Album", "Artist 1, Artist 2", "Track 1", 1);
     meta.album_artist = None;
     meta.artists = names(&["Artist 1", "Artist 2"]);
@@ -1354,7 +1354,7 @@ async fn update_metadata_single_tpe2_claims_one_of_multi_tpe1() {
     let (dir, pool) = create_test_pool("db-claim-test").await;
     let mut conn = pool.acquire().await.unwrap();
 
-    // TPE2 = "Artist A", TPE1 = A/B/C -> only A is linked
+    // TPE2 = "Artist A"，TPE1 = A/B/C -> 只链接 A
     let mut meta = track_metadata("Album", "Artist A, Artist B, Artist C", "Track 1", 1);
     meta.album_artist = Some("Artist A".to_string());
     meta.album_artist_keys = names(&["Artist A"]);
@@ -1371,7 +1371,7 @@ async fn update_metadata_connector_album_artist_counts_as_one_artist() {
     let (dir, pool) = create_test_pool("db-connector-test").await;
     let mut conn = pool.acquire().await.unwrap();
 
-    // TPE2 = "Artist A & Artist B" is one entity - album falls back to it as one artist
+    // TPE2 = "Artist A & Artist B" 是一个整体——专辑把它当单个歌手回退使用
     let mut meta = track_metadata("Album", "Artist A, Artist B", "Track 1", 1);
     meta.album_artist = Some("Artist A & Artist B".to_string());
     meta.album_artist_keys = names(&["Artist A & Artist B"]);
@@ -1397,7 +1397,7 @@ async fn update_metadata_keys_claimed_artists_by_album_artist_sort() {
         .await
         .unwrap();
 
-    // TSO2 = "Pritchard, Mark & Yorke, Thom" claims and keys both TPE1 names
+    // TSO2 = "Pritchard, Mark & Yorke, Thom" 认领并键住两个 TPE1 名字
     let mut meta = track_metadata("Album", "Mark Pritchard, Thom Yorke", "Track 1", 1);
     meta.album_artist = Some("Mark Pritchard and Thom Yorke".to_string());
     meta.album_artist_keys = names(&["Pritchard, Mark", "Yorke, Thom"]);
@@ -1436,7 +1436,7 @@ async fn update_metadata_mismatched_album_artist_falls_back_to_tpe2() {
     let (dir, pool) = create_test_pool("db-mismatch-test").await;
     let mut conn = pool.acquire().await.unwrap();
 
-    // TPE1 = "Artist A", TPE2 = "Artist B": A is unclaimed, album links B
+    // TPE1 = "Artist A"，TPE2 = "Artist B"：A 无人认领，专辑链接 B
     let mut meta = track_metadata("Album", "Artist A", "Track 1", 1);
     meta.album_artist = Some("Artist B".to_string());
     meta.album_artist_keys = names(&["Artist B"]);

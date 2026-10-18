@@ -83,7 +83,7 @@ impl NextScanContext<'_> {
             .take()
             .expect("scan record should always be present between scan iterations");
 
-        // a queued full scan wins over targeted rescans
+        // 排队的全量扫描优先于定向重扫
         let mut mode = if let Some(force) = pending_start.take() {
             ScanMode::Full { is_force: force }
         } else if let Some(PendingRescan {
@@ -123,7 +123,7 @@ impl NextScanContext<'_> {
                         respect_record,
                         recursive,
                     }) => {
-                        // watcher events before the first scan are covered by that scan
+                        // 首次扫描之前的监视器事件由那次扫描一并覆盖
                         if !*initial_scan_requested || paths.is_empty() {
                             continue;
                         }
@@ -144,7 +144,7 @@ impl NextScanContext<'_> {
                         if !scan_settings.watch_for_changes {
                             watcher.stop_probe();
                         }
-                        // watcher just became active - scan to catch changes missed while it was off
+                        // 监视器刚激活——扫一次，补上它关闭期间漏掉的变化
                         if rearmed {
                             break ScanMode::Full { is_force: false };
                         }
@@ -181,7 +181,7 @@ impl Scanner {
         let directory = paths::data_dir();
         let scan_record_path = directory.join("scan_record.hsr");
         let checkpoint_path = directory.join("scan_record_checkpoint.hsr");
-        // old JSON scan records are unsupported - delete if present
+        // 旧版 JSON 扫描记录已不再支持——存在就删掉
         if let Err(error) = tokio::fs::remove_file(directory.join("scan_record.json")).await
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -189,7 +189,7 @@ impl Scanner {
         }
         let mut scan_record = load_scan_record(&scan_record_path).await;
 
-        // merge a checkpoint left by a crashed scan, then delete it
+        // 合并崩溃扫描留下的检查点，然后把它删掉
         if try_exists(&checkpoint_path).await.unwrap_or(false) {
             let checkpoint = load_scan_record(&checkpoint_path).await;
             let base_dirs: FxHashSet<Utf8PathBuf> = scan_record
@@ -229,7 +229,7 @@ impl Scanner {
             pending_start: None,
             initial_scan_requested: false,
             pending_rescan: None,
-            // start the watcher on the first scan - that scan already covers earlier changes
+            // 在首次扫描时启动监视器——那次扫描已覆盖更早的变化
             watcher: WatcherState::default(),
         }
     }
@@ -258,7 +258,7 @@ impl Scanner {
             );
             let started_at = Instant::now();
 
-            // cleanup may delete rows - art finalization must still clean up orphans
+            // 清理可能删行——封面收尾仍须清掉孤儿行
             let preparation = ScanPreparationContext {
                 pool: &self.pool,
                 scan_settings: &mut self.scan_settings,
@@ -313,8 +313,8 @@ struct ScanPreparation {
     tracks_deleted: bool,
 }
 
-/// Check root availability on a blocking thread so dead network mounts don't
-/// stall the scanner loop or its Stop handling. Returns (available, missing).
+/// 在阻塞线程上检查根目录可用性，免得死掉的网络挂载拖住扫描循环或它的 Stop 处理。
+/// 返回 (available, missing)。
 async fn split_available_roots(paths: &[Utf8PathBuf]) -> (Vec<Utf8PathBuf>, Vec<Utf8PathBuf>) {
     let paths = paths.to_vec();
     spawn_blocking(move || paths.into_iter().partition(|path| path.exists()))
@@ -384,7 +384,7 @@ impl ActiveCommandContext<'_> {
     }
 }
 
-/// Reconcile the library and scan record before starting discovery.
+/// 开始发现之前，先对账库内容与扫描记录。
 impl ScanPreparationContext<'_> {
     async fn run(self, mode: &ScanMode, scan_record: &mut ScanRecord) -> ScanPreparation {
         let Self {
@@ -460,7 +460,7 @@ impl ScanPreparationContext<'_> {
                 }
             }
             ScanMode::Targeted { paths, .. } => {
-                // targeted rescans never prompt about missing library roots
+                // 定向重扫从不因为库根目录缺失而弹窗
                 let missing_roots = split_available_roots(&scan_settings.paths).await.1;
 
                 let records_before_cleanup = scan_record.records.len();

@@ -4,7 +4,7 @@ use sqlx::SqliteConnection;
 use super::recompute_album_artists;
 use crate::library::scan::artist_match::ArtistMatcher;
 
-/// Move a track row after a case-only rename. Merge playlists/lyrics if the new path already has a row.
+/// 纯大小写改名之后移动曲目行。若新路径已有行，则合并歌单与歌词。
 pub async fn relocate_track(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -48,8 +48,8 @@ pub async fn relocate_track(
     Ok(updated_playlists)
 }
 
-/// Merge the stale row at `old` into the row already at `new`: repoint playlists, drop the
-/// stale row and rebuild its album's artists. Returns the repointed playlist ids.
+/// 把 `old` 处的过期行并入 `new` 处已有的行：重指歌单、删掉过期行，并重建其专辑的
+/// 歌手链接。返回被重指的歌单 id。
 async fn merge_stale_track(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -94,7 +94,7 @@ async fn merge_stale_track(
         .execute(&mut *conn)
         .await?;
 
-    // the removed row may have been the only one crediting an artist
+    // 被删掉的那一行可能是某位歌手唯一的署名来源
     if let Some((album_id,)) = stale_album {
         recompute_album_artists(conn, matcher, album_id).await?;
     }

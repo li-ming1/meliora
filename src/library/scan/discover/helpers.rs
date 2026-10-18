@@ -103,7 +103,7 @@ pub fn run_discover(
     (count, path_rx, relocate_rx)
 }
 
-/// Tracks in one album share a folder. Use `insert_track_file_with_meta` for other dirs.
+/// 同一专辑的曲目共享一个文件夹。其他目录请用 `insert_track_file_with_meta`。
 pub async fn insert_track_file(
     pool: &SqlitePool,
     dir: &Utf8Path,

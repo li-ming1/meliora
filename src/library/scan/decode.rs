@@ -13,7 +13,7 @@ use crate::media::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtSource {
     Embedded,
-    /// Folder image next to the track. Lower ranks win.
+    /// 曲目旁边的文件夹图片。排名数值小的胜出。
     Folder(u8),
 }
 
@@ -26,12 +26,12 @@ impl ArtSource {
     }
 }
 
-// lower ranks win when more than one recognized folder image is present
+// 同时存在多张可识别的文件夹图片时，排名数值小的胜出
 const RANK_COVER: u8 = 1;
 const RANK_FOLDER: u8 = 2;
 const RANK_FRONT: u8 = 3;
 
-/// Image extensions recognized as folder art, matched case-insensitively.
+/// 被认作文件夹封面的图片扩展名，匹配时忽略大小写。
 const FOLDER_ART_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
 
 pub(crate) fn folder_art_rank(stem: &str) -> Option<u8> {
@@ -43,7 +43,7 @@ pub(crate) fn folder_art_rank(stem: &str) -> Option<u8> {
     }
 }
 
-/// Rank for a file whose extension and stem both identify it as folder art, or `None`.
+/// 扩展名与文件名片段都表明它是文件夹封面时给出排名，否则 `None`。
 pub(crate) fn is_folder_art_name(stem: &str, extension: &str) -> Option<u8> {
     if FOLDER_ART_EXTENSIONS
         .iter()
@@ -55,8 +55,8 @@ pub(crate) fn is_folder_art_name(stem: &str, extension: &str) -> Option<u8> {
     }
 }
 
-/// Skip hidden/system files (attribute bits from already-read metadata, no extra stat).
-/// Windows often leaves stale Folder.jpg files around.
+/// 跳过隐藏/系统文件（属性位取自已读取的元数据，不额外 stat）。
+/// Windows 上常会残留过期的 Folder.jpg。
 pub(crate) fn is_hidden_file(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
@@ -142,21 +142,21 @@ impl ScannedArt {
 pub struct FileArt {
     pub embedded: Option<ScannedArt>,
     pub folder: Option<ScannedArt>,
-    /// True when the folder was checked for art (first/representative tracks).
+    /// 该文件夹是否已检查过封面（首张/代表性曲目）。
     pub representative: bool,
 }
 
-/// One scanned file: `(metadata, track length in seconds, artwork found so far)`.
+/// 一个被扫描的文件：`(元数据, 曲目时长秒数, 目前发现的封面)`。
 pub type FileInformation = (Metadata, u64, FileArt);
 
-/// How a failed file read updates the scan record.
+/// 一次失败的文件读取该如何更新扫描记录。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanReadError {
-    /// File disappeared after discovery - drop from the record.
+    /// 文件在发现之后消失了——从记录里删掉。
     Missing,
-    /// Temporary error (e.g. file lock) - don't record, so the next scan retries.
+    /// 临时性错误（例如文件被锁）——不写入记录，好让下一次扫描重试。
     Transient,
-    /// Corrupt or unreadable stream - record until the file's mtime changes.
+    /// 损坏或读不了的码流——写入记录，直到该文件 mtime 变化。
     Corrupt,
 }
 
@@ -194,7 +194,7 @@ fn scan_path(path: &Utf8Path) -> Result<FileInformation, ScanReadError> {
         MediaProviderFeatures::PROVIDES_METADATA | MediaProviderFeatures::ALLOWS_INDEXING,
     )
     .map_err(|e| classify_open_error(&e))?
-    // unsupported format or missing provider - treat as corrupt so we don't retry every scan
+    // 不支持的格式或 provider 缺失——按损坏处理，免得每次扫描都重试
     .ok_or(ScanReadError::Corrupt)?;
     stream
         .start_playback()
@@ -206,7 +206,7 @@ fn scan_path(path: &Utf8Path) -> Result<FileInformation, ScanReadError> {
     stream.close();
 
     let duration_ms = duration_ms_or_else(duration_hint, || {
-        // providers without a metadata duration still need a decoder pass
+        // 元数据里没有时长的 provider 仍需跑一遍解码器
         let mut decoder =
             try_open_media(path.as_std_path(), MediaProviderFeatures::PROVIDES_DECODER)
                 .map_err(|e| classify_open_error(&e))?
@@ -234,7 +234,7 @@ fn resolve_lyrics(
     embedded_lyrics: Option<String>,
 ) -> Option<String> {
     let sidecar_lyrics = match sidecar_lyrics {
-        // the directory listing proved the sidecar absent - skip the probe
+        // 目录列举已证明 sidecar 不存在——跳过那次探测
         SidecarLyrics::Absent => None,
         SidecarLyrics::Unknown | SidecarLyrics::Present => sidecar_lyrics_path(path)
             .and_then(|lrc_path| std::fs::read_to_string(lrc_path).ok())
@@ -263,11 +263,11 @@ impl SourceImage {
     }
 }
 
-/// Full-size artwork larger than this square gets rescaled; smaller stays as-is.
+/// 超过这个边长的全尺寸封面会被重缩放，更小的原样保留。
 const MAX_ART_DIMENSION: u32 = 1024;
-/// Side length of the square BMP thumbnail generated alongside the full image.
+/// 与全尺寸图一并生成的方形 BMP 缩略图边长。
 const THUMBNAIL_SIZE: u32 = 70;
-/// JPEG quality for the rescaled full-size image (only used when it shrank).
+/// 重缩放后全尺寸图的 JPEG 质量（仅在图被缩小时用到）。
 const RESIZED_JPEG_QUALITY: u8 = 70;
 
 fn process_source_image(image: SourceImage) -> anyhow::Result<(ProcessedImage, Vec<u8>)> {
@@ -282,7 +282,7 @@ fn process_source_image(image: SourceImage) -> anyhow::Result<(ProcessedImage, V
     DynamicImage::ImageRgb8(thumb_rgb)
         .write_to(&mut Cursor::new(&mut thumb_buf), image::ImageFormat::Bmp)?;
 
-    // leave small images alone, scale larger ones to fit in 1024x1024
+    // 小图原样放过，大图缩到能装进 1024x1024
     let (w, h) = decoded.dimensions();
     let resized = if w <= MAX_ART_DIMENSION && h <= MAX_ART_DIMENSION {
         image.into_processed()
@@ -311,12 +311,12 @@ fn process_source_image(image: SourceImage) -> anyhow::Result<(ProcessedImage, V
     Ok((resized, thumb_buf))
 }
 
-/// Process artwork while reusing its original allocation when no resize is needed.
+/// 处理封面；不需要缩放时复用它的原始分配。
 pub fn process_owned_album_art(image: RawArt) -> anyhow::Result<(ProcessedImage, Vec<u8>)> {
     process_source_image(SourceImage::Owned(image))
 }
 
-/// Read metadata and embedded art, and mark tracks suitable for assigning folder art.
+/// 读取元数据与内嵌封面，并标出适合被指派文件夹封面的曲目。
 pub fn read_metadata_for_path(
     path: &Utf8Path,
     sidecar_lyrics: SidecarLyrics,

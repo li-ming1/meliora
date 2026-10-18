@@ -8,7 +8,7 @@ use crate::library::scan::{
     record::ScanRecord,
 };
 
-/// Canonicalize a path, walking up to an existing ancestor if it's missing.
+/// 规范化一个路径；路径不存在时向上走到某个确实存在的祖先。
 pub(crate) fn canonicalize_or_keep(path: &Utf8Path) -> Utf8PathBuf {
     if let Ok(canonical) = path.canonicalize_utf8() {
         return canonical;
@@ -68,7 +68,7 @@ pub(crate) fn missing_paths(
         }
 
         for path in paths {
-            // a stat is only needed for genuinely missing or stale-cased names
+            // 只有真正缺失或大小写已过期的名字才需要 stat
             let absent_from_listing = path.file_name().is_none_or(|name| !names.contains(name));
             if absent_from_listing && is_missing(&path) {
                 missing.insert(path);
@@ -130,19 +130,18 @@ pub(crate) async fn delete_tracks(
         }
 
         if let Err(error) = tx.commit().await {
-            // keep the record entries so the next scan can catch up
+            // 保留记录项，好让下一次扫描追平
             error!("Failed to commit cleanup transaction: {:?}", error);
             continue;
         }
 
-        // only report playlists of committed chunks - a rollback above also
-        // discards this chunk's deletions
+        // 只上报已提交分块的歌单——上面的回滚同样会丢弃这一块删除的内容
         updated_playlists.extend(chunk_playlists);
         for path in deleted {
             scan_record.records.remove(path);
         }
 
-        // a remaining album may have lost its only artist link
+        // 幸存下来的专辑可能刚刚失去它唯一的歌手链接
         if !affected_albums.is_empty() {
             let mut conn = match pool.acquire().await {
                 Ok(conn) => conn,
@@ -166,8 +165,8 @@ pub(crate) async fn delete_tracks(
     updated_playlists
 }
 
-/// Map a cleanup query result to `None` on a database error, logging it as
-/// "Database error while {step}".
+/// 清理查询遇到数据库错误时把结果映射成 `None`，并按
+/// "Database error while {step}" 记日志。
 fn cleanup_query<T>(step: &str, result: Result<T, sqlx::Error>) -> Option<T> {
     match result {
         Ok(value) => Some(value),
@@ -178,9 +177,8 @@ fn cleanup_query<T>(step: &str, result: Result<T, sqlx::Error>) -> Option<T> {
     }
 }
 
-/// Delete one stale track inside `tx`, collecting the playlists it was on and
-/// the album it belonged to. Returns `false` when a database error aborted the
-/// track's cleanup.
+/// 在 `tx` 内删除一条过期曲目，同时收集它所在的歌单与所属专辑。当数据库错误中断了
+/// 这条曲目的清理时返回 `false`。
 async fn cleanup_track(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     path: &Utf8Path,

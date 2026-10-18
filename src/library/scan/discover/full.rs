@@ -42,7 +42,7 @@ fn build_folded_index(records: &FxHashMap<Utf8PathBuf, SystemTime>) -> FoldedInd
     index
 }
 
-/// Walk library roots and send files that need scanning on `path_tx`.
+/// 遍历库根目录，把需要扫描的文件发往 `path_tx`。
 pub async fn discover(
     settings: ScanSettings,
     scan_record: Arc<Mutex<ScanRecord>>,
@@ -53,7 +53,7 @@ pub async fn discover(
     folder_art: FolderArtObservations,
 ) -> u64 {
     let mut visited: FxHashSet<Utf8PathBuf> = FxHashSet::default();
-    // canonicalize so case and \\?\ variants collapse in visited
+    // 做规范化，好让大小写与 \\?\ 变体在 visited 里收敛到一处
     let mut directories: VecDeque<Utf8PathBuf> = settings
         .paths
         .iter()
@@ -115,7 +115,7 @@ pub async fn discover(
                     let sr = scan_record.lock().await;
                     classify(&path, timestamp, &sr.records, &folded_index)
                 };
-                // drop other recorded paths for this same file
+                // 丢掉指向同一个文件的其他已记录路径
                 for (old, old_ts) in stale {
                     if same_file(&old, &path)
                         && relocate_tx.send((old, path.clone(), old_ts)).await.is_err()
@@ -165,7 +165,7 @@ pub async fn discover(
 
 const CLEANUP_PAGE_SIZE: i64 = 1000;
 
-/// True when `path` sits under a directory that is no longer configured.
+/// `path` 位于某个已不再配置的目录之下时为 true。
 fn in_removed_directory(path: &Utf8Path, removed_dirs: &[Utf8PathBuf]) -> bool {
     !removed_dirs.is_empty() && {
         let folded = fold_path(path);
@@ -173,7 +173,7 @@ fn in_removed_directory(path: &Utf8Path, removed_dirs: &[Utf8PathBuf]) -> bool {
     }
 }
 
-/// Remove missing or unconfigured tracks and return affected playlists.
+/// 移除缺失或已不再配置的曲目并返回受影响的歌单。
 pub async fn cleanup_stale_tracks(
     pool: &SqlitePool,
     scan_record: &mut ScanRecord,
@@ -190,7 +190,7 @@ pub async fn cleanup_stale_tracks(
     .await
 }
 
-// separate fn so tests can shrink the page size
+// 单独成函数，好让测试可以调小页大小
 async fn cleanup_stale_tracks_paged(
     pool: &SqlitePool,
     scan_record: &mut ScanRecord,
@@ -198,7 +198,7 @@ async fn cleanup_stale_tracks_paged(
     excluded_roots: &[Utf8PathBuf],
     page_size: i64,
 ) -> FxHashSet<i64> {
-    // folded prefixes match despite casing or \\?\ differences
+    // 折叠后的前缀不受大小写或 \\?\ 差异影响，仍能匹配
     let current_set: FxHashSet<Utf8PathBuf> = current_directories
         .iter()
         .map(|p| fold_path(&canonicalize_or_keep(p)))
@@ -212,9 +212,8 @@ async fn cleanup_stale_tracks_paged(
 
     let excluded = fold_excluded_roots(excluded_roots);
 
-    // record keys are tracked by borrowed reference instead of cloning the
-    // whole record into a scratch set; ghosts are collected owned below so the
-    // borrow ends before `delete_tracks` takes the record mutably
+    // 记录键用借用引用跟踪，而不是把整张记录表克隆进一个临时集合；幽灵项在下面
+    // 按拥有权收集，这样借用能在 `delete_tracks` 可变取用记录表之前结束
     let mut seen: FxHashSet<&Utf8PathBuf> = FxHashSet::default();
     let mut to_delete: Vec<Utf8PathBuf> = Vec::new();
 
@@ -257,8 +256,8 @@ async fn cleanup_stale_tracks_paged(
                 existence_candidates.push(path);
             }
         }
-        // exists-probes are blocking FS work: keep them off the scan worker,
-        // and keep this page's rows when the probe fails (the next scan retries)
+        // exists 探测是阻塞的文件系统工作：把它们挪出扫描工作线程，且探测失败时
+        // 保留本页的行（下一次扫描会重试）
         let missing = spawn_blocking(move || missing_paths(existence_candidates))
             .await
             .unwrap_or_default();
@@ -269,7 +268,7 @@ async fn cleanup_stale_tracks_paged(
         }
     }
 
-    // ghost record entries no DB location accounted for (usually tiny)
+    // 没有任何 DB 位置能对上的记录表幽灵项（通常极少）
     let ghosts: Vec<Utf8PathBuf> = scan_record
         .records
         .keys()
@@ -347,9 +346,8 @@ mod tests {
 
         assert_eq!(count, 1);
         assert_eq!(discovered.path, track);
-        // the scanner canonicalizes every root, so the folder art candidate is
-        // reported in the canonical (`\\?\`-prefixed on Windows) form, exactly
-        // like the track paths above
+        // 扫描器会对每个根做规范化，所以文件夹封面候选是以规范化形态
+        // （Windows 上带 `\\?\` 前缀）上报的，与上面的曲目路径完全一致
         assert_eq!(
             discovered.folder_art.unwrap().path,
             dir.utf8_join("cover.png").canonicalize_utf8().unwrap()
@@ -443,7 +441,7 @@ mod tests {
             return;
         }
         let on_disk = write_track(&dir, "Track.flac");
-        // record still has the old casing from before the rename
+        // 记录里仍是改名之前的旧大小写
         let stale = on_disk.parent().unwrap().join("TRACK.FLAC");
         let ts = file_scan_timestamp(&on_disk).unwrap();
 
@@ -495,7 +493,7 @@ mod tests {
             return;
         }
         let on_disk = write_track(&dir, "track.flac");
-        // old casing at an older timestamp - renamed and modified
+        // 更旧时间戳上的旧大小写——既改名又修改过
         let stale = on_disk.parent().unwrap().join("TRACK.FLAC");
 
         let mut record = ScanRecord::new_current();
@@ -504,7 +502,7 @@ mod tests {
         let (count, mut path_rx, mut relocate_rx) =
             run_discover(scan_settings(dir.utf8_path()), record);
 
-        // keep the old timestamp so an interrupted rescan still re-reads
+        // 保留旧时间戳，这样被打断的重扫仍会重读它
         assert_eq!(count, 1);
         assert_eq!(path_rx.blocking_recv().unwrap().path, on_disk);
         assert_eq!(
@@ -522,7 +520,7 @@ mod tests {
             return;
         }
         let on_disk = write_track(&dir, "track.flac");
-        // two spellings in the record, both point at the same file
+        // 记录里有两种拼写，都指向同一个文件
         let dupe = on_disk.parent().unwrap().join("TRACK.FLAC");
         let ts = file_scan_timestamp(&on_disk).unwrap();
 
@@ -543,7 +541,7 @@ mod tests {
         assert!(relocate_rx.blocking_recv().is_none());
     }
 
-    // trailing-dot dirs need the \\?\ prefix - folded paths are for comparison only
+    // 以点结尾的目录需要 \\?\ 前缀——折叠路径只用于比较
     #[test]
     fn discover_relocates_paths_that_require_the_verbatim_prefix() {
         if !cfg!(windows) {
@@ -561,11 +559,11 @@ mod tests {
         std::fs::write(&file_verbatim, b"").unwrap();
         let on_disk = Utf8PathBuf::from_path_buf(file_verbatim.canonicalize().unwrap()).unwrap();
 
-        // stripped spelling must not resolve or this test proves nothing
+        // 剥掉前缀的那种拼写必须解析不到，否则这个测试什么都证明不了
         let stripped = on_disk.as_str().strip_prefix(r"\\?\").unwrap();
         assert!(!matches!(Utf8Path::new(stripped).try_exists(), Ok(true)));
 
-        // record still has the old casing from before the rename
+        // 记录里仍是改名之前的旧大小写
         let stale = on_disk.parent().unwrap().join("TRACK.FLAC");
         let ts = file_scan_timestamp(&on_disk).unwrap();
 
@@ -581,12 +579,12 @@ mod tests {
         assert_eq!(old, stale);
         assert_eq!(new, on_disk);
         assert_eq!(relocated_ts, ts);
-        // relocated path keeps the \\?\ prefix so it still works for I/O
+        // 搬迁后的路径保留 \\?\ 前缀，因此仍然可以用于 I/O
         assert!(new.as_str().starts_with(r"\\?\"));
         assert!(matches!(new.try_exists(), Ok(true)));
         assert!(relocate_rx.blocking_recv().is_none());
 
-        // remove_dir_all on the plain path can't reach the trailing-dot dir
+        // 对普通路径调用 remove_dir_all 够不到那个以点结尾的目录
         std::fs::remove_file(&file_verbatim).unwrap();
         std::fs::remove_dir(&deep).unwrap();
     }
@@ -636,7 +634,7 @@ mod tests {
         if is_case_insensitive(&dir.utf8_path()) {
             return;
         }
-        // on a case-sensitive volume, different casing is a new file
+        // 在大小写敏感的卷上，大小写不同就是新文件
         let ts = SystemTime::now();
         let stale = dir.utf8_join("TRACK.FLAC");
         let records = FxHashMap::from_iter([(stale, ts)]);
@@ -655,7 +653,7 @@ mod tests {
             return;
         }
         let ts = SystemTime::now();
-        // lowercase key folds to itself but must still match after a case-only rename
+        // 小写键折叠到自身，但纯大小写改名之后仍必须匹配
         let stale = dir.utf8_join("track.flac");
         let path = dir.utf8_join("Track.flac");
         let records = FxHashMap::from_iter([(stale.clone(), ts)]);
@@ -740,7 +738,7 @@ mod tests {
         )
         .await;
 
-        // last scan had both roots configured, only dir_path remains
+        // 上次扫描时两个根都在配置里，如今只剩 dir_path
         let mut scan_record = record_of(&[&path_a, &path_b]);
         scan_record.directories = vec![dir_path.clone(), sub.clone()];
 
@@ -895,7 +893,7 @@ mod tests {
         std::fs::create_dir_all(&removed).unwrap();
         let path = insert_track_file(&pool, &removed, "track.flac", 1).await;
 
-        // `removed` was configured last scan but isn't anymore
+        // `removed` 上次扫描时还在配置里，现在不在了
         let mut scan_record = ScanRecord::new_current();
         scan_record.directories = vec![removed];
 
@@ -923,7 +921,7 @@ mod tests {
         let path = write_track(&dir, "track.flac");
         insert_track_row(&pool, &path, track_metadata("Album", "Artist", "Track", 1)).await;
 
-        // file is gone but the root is excluded
+        // 文件不见了，但其根目录已被排除
         std::fs::remove_file(dir.join("track.flac")).unwrap();
 
         let mut scan_record = ScanRecord::new_current();
@@ -940,14 +938,14 @@ mod tests {
             return;
         }
         let canonical = write_track(&dir, "Track.flac");
-        // DB and record still have the old casing from before the rename
+        // 数据库与记录里都还是改名之前的旧大小写
         let stale = canonical.parent().unwrap().join("TRACK.FLAC");
         insert_track_row(&pool, &stale, track_metadata("Album", "Artist", "Track", 1)).await;
 
         let mut scan_record = ScanRecord::new_current();
         scan_record.records.insert(stale.clone(), UNIX_EPOCH);
 
-        // on a case-insensitive volume the old spelling still resolves, so cleanup keeps the row
+        // 在大小写不敏感的卷上旧拼写仍能解析，因此清理会保留这一行
         let updated = cleanup_stale_tracks(&pool, &mut scan_record, &[], &[]).await;
         assert!(updated.is_empty());
         assert!(scan_record.records.contains_key(&stale));
@@ -992,7 +990,7 @@ mod tests {
             .unwrap();
         insert_track_row(&pool, &path, track_metadata("Album", "Artist", "Track", 1)).await;
 
-        // whole folder is gone and its configured root casing differs from the scan record
+        // 整个文件夹都没了，而其配置根的大小写与扫描记录里的不一致
         std::fs::remove_dir_all(dir.join("Removable")).unwrap();
         let root = dir.utf8_join("REMOVABLE");
 

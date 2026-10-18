@@ -84,7 +84,7 @@ impl ActiveScan {
         ));
         let (decode_fail_tx, decode_fail_rx) =
             channel::<(Utf8PathBuf, SystemTime, ScanReadError)>(meta_capacity);
-        // case-only renames found during discovery
+        // 发现阶段找到的纯大小写改名
         let (relocate_tx, relocate_rx) = channel::<Relocation>(64);
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -247,7 +247,7 @@ impl ActiveScan {
             discover_handle
         };
 
-        // drop senders so channels close when workers finish
+        // 丢掉发送端，这样工作线程退出时通道随之关闭
         drop(raw_meta_tx);
         drop(decode_fail_tx);
 
@@ -272,21 +272,20 @@ impl ActiveScan {
     }
 }
 
-/// Caps metadata readers so peak memory and disk contention stay bounded on many-core machines.
+/// 给元数据读取封顶，使多核机器上的峰值内存与磁盘争用保持有界。
 const MAX_METADATA_WORKERS: usize = 16;
 
-/// Core count assumed when `available_parallelism` is unavailable.
+/// `available_parallelism` 不可用时假定的核心数。
 const FALLBACK_PARALLELISM: usize = 4;
 
-/// Metadata channel capacity in slow-disk mode, independent of worker count.
+/// 慢盘模式下元数据通道的容量，与工作线程数无关。
 const SLOW_DISK_META_CAPACITY: usize = 64;
 
-/// Metadata channel capacity added per metadata worker in normal mode.
+/// 普通模式下每个元数据工作线程额外增加的元数据通道容量。
 const META_CAPACITY_PER_WORKER: usize = 8;
 
-/// Raw (undecoded) artwork items buffered per artwork-decode worker; both the
-/// raw channel capacity in [`ActiveScan::start`] and the in-flight cap in
-/// [`run_artwork_pipeline`] derive from this.
+/// 每个封面解码工作线程缓冲的原始（未解码）条目数；[`ActiveScan::start`] 里的原始
+/// 通道容量与 [`run_artwork_pipeline`] 里的已在途上限都由它推出来。
 const RAW_ITEMS_PER_WORKER: usize = 2;
 
 pub(super) fn normal_worker_count(parallelism: usize) -> usize {
@@ -369,10 +368,9 @@ pub(super) struct RawMetadataItem {
 
 pub(super) type MetadataItem = (Utf8PathBuf, SystemTime, FileInformation);
 
-// No cancel_flag by design: on cancel, `meta_rx.close()` in execution.rs makes
-// the `output.send` below fail, and the metadata tasks dropping their
-// `raw_meta_tx` clones close `input` — a flag check could only fire where
-// those two paths already end this loop (the metadata pipeline owns the flag).
+// 设计上不带 cancel_flag：取消时 execution.rs 里的 `meta_rx.close()` 会让下面的
+// `output.send` 失败，而元数据任务释放各自那份 `raw_meta_tx` 克隆又会关闭 `input`——
+// 旗标检查只可能在这两条路径已经终结本循环的地方触发（元数据流水线自己持有旗标）。
 pub(super) async fn run_artwork_pipeline(
     mut input: Receiver<RawMetadataItem>,
     output: Sender<MetadataItem>,

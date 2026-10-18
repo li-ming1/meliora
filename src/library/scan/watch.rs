@@ -21,19 +21,19 @@ use crate::{
     settings::scan::ScanSettings,
 };
 
-/// Filesystem activity coalesced into one debounced event batch.
+/// 合并成一批防抖事件的文件系统活动。
 const DEBOUNCE_WINDOW: Duration = Duration::from_secs(2);
-/// If one event batch touches more dirs than this, do a full scan instead.
+/// 单个事件批次触及的目录超过这个数就改为全量扫描。
 const STORM_TARGET_CAP: usize = 200;
-/// How often the watcher state refreshes, retrying roots that could not be watched.
+/// 监视器状态刷新的频率，同时重试当初监视不上的根目录。
 const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 pub(super) struct LibraryWatcher {
-    // kept so Drop stops the notify thread
+    // 保留它是为了 Drop 时能停掉 notify 线程
     _debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
     watched: FxHashSet<Utf8PathBuf>,
     unwatched: FxHashSet<Utf8PathBuf>,
-    /// Roots we've already warned about, so retries don't spam the log.
+    /// 已经告过警的根目录，这样重试不会刷屏日志。
     warned: FxHashSet<Utf8PathBuf>,
 }
 
@@ -98,7 +98,7 @@ impl LibraryWatcher {
         self.unwatched.iter().cloned().collect()
     }
 
-    /// After a probe: stop watching lost roots, try to watch recovered ones. True if anything new is watched.
+    /// 探测之后：停止监视已丢失的根，尝试重新监视恢复的根。有任何新根被监视则为 true。
     pub(super) fn apply_probe(
         &mut self,
         lost: Vec<Utf8PathBuf>,
@@ -138,7 +138,7 @@ impl LibraryWatcher {
     }
 }
 
-/// Check root availability on a blocking thread so dead network mounts don't stall the scanner.
+/// 在阻塞线程上检查根目录可用性，免得死掉的网络挂载把扫描器卡住。
 pub(super) fn probe_roots(
     watched: &[Utf8PathBuf],
     unwatched: &[Utf8PathBuf],
@@ -175,7 +175,7 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
     let events = match result {
         Ok(events) => events,
         Err(errors) => {
-            // error batches may have lost events - full scan to catch up
+            // 错误批次可能已经丢了事件——用全量扫描补回来
             for e in &errors {
                 warn!("Library watcher error: {:?}", e);
             }
@@ -184,7 +184,7 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
         }
     };
 
-    // ignore plain access events, but keep close-write - some backends use it instead of modify
+    // 忽略纯访问事件，但保留 close-write——某些后端用它代替 modify
     let events: Vec<DebouncedEvent> = events
         .into_iter()
         .filter(|e| {
@@ -223,7 +223,7 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
         ScanCommand::RescanPaths {
             paths: targets.into_iter().collect(),
             respect_record: !force_rescan,
-            // a moved-in folder doesn't emit events for its contents - recurse to find them
+            // 移入的文件夹不会为其内容发事件——要递归进去找
             recursive: true,
         }
     };
@@ -233,9 +233,8 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
     }
 }
 
-/// Map event paths to rescan targets: media/art/lyrics use the parent folder, directories use
-/// themselves. The flag reports whether any path was album art, which forces a rescan that
-/// ignores the scan record.
+/// 把事件路径映射成重扫目标：媒体/封面/歌词用父文件夹，目录用自身。那个旗标报告
+/// 是否有路径属于专辑封面，它会让随后的重扫忽略扫描记录。
 fn affected_targets(paths: &[PathBuf]) -> (FxHashSet<Utf8PathBuf>, bool) {
     let mut targets = FxHashSet::default();
     let mut force_rescan = false;
@@ -294,7 +293,7 @@ fn is_album_art(path: &Path) -> bool {
         .is_some()
 }
 
-/// Holds watcher state that persists between scans.
+/// 持有跨扫描之间存续的监视器状态。
 #[derive(Default)]
 pub(super) struct WatcherState {
     watcher: Option<LibraryWatcher>,
@@ -303,17 +302,17 @@ pub(super) struct WatcherState {
     retry: Option<tokio::time::Interval>,
 }
 
-/// Background root check. Holds the watcher so slow mounts don't stall the scanner.
+/// 后台根目录检查。持有监视器，好让慢挂载不会拖住扫描器。
 type WatchProbe = tokio::task::JoinHandle<(LibraryWatcher, bool)>;
 
 impl WatcherState {
-    /// Rebuild the watcher after settings change. Returns true if watching activates.
+    /// 设置变更后重建监视器。返回 true 表示监视已激活。
     pub(super) async fn rearm(
         &mut self,
         settings: &ScanSettings,
         cmd_tx: &WeakSender<ScanCommand>,
     ) -> bool {
-        // a probe is holding the watcher - wait for it to finish
+        // 有一次探测正持有监视器——等它结束
         if self.probe.is_some() {
             return false;
         }
@@ -356,7 +355,7 @@ impl WatcherState {
         }));
     }
 
-    /// `Some(true)` if a finished probe brought a root back.
+    /// 若一次已完成的探测带回了某个根，则为 `Some(true)`。
     async fn poll_probe(&mut self) -> Option<bool> {
         if !self.probe.as_ref().is_some_and(|probe| probe.is_finished()) {
             return None;
@@ -366,7 +365,7 @@ impl WatcherState {
                 self.watcher = Some(watcher);
                 Some(recovered)
             }
-            // probe panicked and took the watcher with it
+            // 探测 panic 并把监视器一起带了下去
             Err(e) => {
                 error!("Watcher probe failed: {:?}", e);
                 self.watcher = None;
@@ -375,7 +374,7 @@ impl WatcherState {
         }
     }
 
-    /// Apply settings changes and probe roots in the background. Returns (recovered, watching).
+    /// 应用设置变更并在后台探测根目录。返回 (recovered, watching)。
     pub(super) async fn refresh(
         &mut self,
         settings: &ScanSettings,
@@ -407,9 +406,8 @@ impl WatcherState {
         }
     }
 
-    /// Detach an in-flight probe: the spawned task is not cancelled, its
-    /// watcher keeps sending events until the probe finishes naturally, and a
-    /// rearm within that window may double-listen the same roots until then.
+    /// 摘下一个已在途的探测：派生出去的任务不会被取消，它的监视器会一直发事件
+    /// 直到探测自然结束，而这期间重新装配可能让同一批根被监听两次。
     pub(super) fn stop_probe(&mut self) {
         self.probe = None;
     }
@@ -453,9 +451,8 @@ mod tests {
 
             let (targets, force_rescan) = affected_targets(std::slice::from_ref(&file));
             let mut expected = FxHashSet::default();
-            // `affected_targets` maps events to the plain parent directory (no
-            // canonicalization), so compare against the non-verbatim spelling
-            // of the same directory on Windows
+            // `affected_targets` 把事件映射到普通的父目录（不做规范化），所以在
+            // Windows 上要拿同一目录的非 verbatim 拼写来比对
             expected.insert(strip_verbatim_prefix(
                 dir.utf8_path().canonicalize_utf8().unwrap(),
             ));
@@ -508,7 +505,7 @@ mod tests {
             Instant::now(),
         );
 
-        // open/close without write doesn't change content - no rescan
+        // 只开/关而没有写入并不改变内容——不重扫
         handle_for_test(Ok(vec![event]), &tx);
         assert!(rx.try_recv().is_err());
     }

@@ -35,7 +35,7 @@ pub(super) use cleanup::{
 pub(super) use directory::file_scan_timestamp;
 pub(super) use directory::{PendingDirectoryRead, schedule_directory_read};
 
-/// Case-only rename that retains the old timestamp so modified content still rescans.
+/// 纯大小写改名，且保留旧时间戳，这样被修改过的内容仍会被重扫。
 pub(crate) type Relocation = (Utf8PathBuf, Utf8PathBuf, SystemTime);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,16 +44,16 @@ pub(crate) struct FolderArtCandidate {
     pub(crate) rank: u8,
 }
 
-/// Directory-listing knowledge about a track's `.lrc` sidecar, carried along so
-/// the decode pass can skip probing for a file the listing already proved absent.
+/// 关于某曲目 `.lrc` sidecar 的目录列举知识，随事件一起携带，好让解码那一趟跳过
+/// 对列举已证明不存在的文件做探测。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SidecarLyrics {
-    /// Nothing backs this path with directory-level lrc knowledge (targeted
-    /// scans, direct file targets) - the decode pass keeps its probe.
+    /// 没有目录级的 lrc 知识支撑这个路径（定向扫描、直接传入的文件目标）——
+    /// 解码那一趟保留自己的探测。
     Unknown,
-    /// The listing (or a direct stat for symlinks) found the sidecar.
+    /// 列举（或对符号链接的直接 stat）找到了这个 sidecar。
     Present,
-    /// The listing proves no sidecar exists next to the track.
+    /// 列举证明曲目旁边没有 sidecar。
     Absent,
 }
 
@@ -81,9 +81,8 @@ impl FolderArtObservations {
         self.inner.lock_recovered().clone()
     }
 
-    /// The last observation for `directory`. The outer `None` means the
-    /// directory hasn't been observed yet; the inner one that it was observed
-    /// but holds no folder art candidate.
+    /// `directory` 的上一次观测。外层 `None` 表示该目录还没被观测过；内层 `None`
+    /// 表示已观测过但没有文件夹封面候选。
     pub(crate) fn get(&self, directory: &Utf8Path) -> Option<Option<FolderArtCandidate>> {
         self.inner.lock_recovered().get(directory).cloned()
     }
@@ -94,7 +93,7 @@ pub(super) type FoldedIndex = FxHashMap<Utf8PathBuf, Vec<(Utf8PathBuf, SystemTim
 pub(super) enum DiscoverAction {
     Skip,
     Scan(SystemTime),
-    /// Possible case-only rename - confirm with `same_file` after releasing the record lock.
+    /// 可能是纯大小写改名——放开记录锁之后用 `same_file` 确认。
     Relocate {
         candidates: Vec<(Utf8PathBuf, SystemTime)>,
         ts: SystemTime,
@@ -119,7 +118,7 @@ pub(super) fn classify(
 
     let mut candidates = other_recorded_spellings(folded_index, path);
     if !candidates.is_empty() {
-        // prefer same-timestamp candidates - relocating one of those skips a metadata re-read
+        // 优先时间戳相同的候选——搬迁这类候选可以跳过一次元数据重读
         candidates.sort_by_key(|(_, old_timestamp)| *old_timestamp != timestamp);
         return (
             DiscoverAction::Relocate {
@@ -133,7 +132,7 @@ pub(super) fn classify(
     (DiscoverAction::Scan(timestamp), Vec::new())
 }
 
-/// Apply a case-only rename. Returns a timestamp if metadata still needs reading.
+/// 应用一次纯大小写改名。若元数据仍需读取则返回时间戳。
 pub(super) async fn apply_relocation(
     path: &Utf8Path,
     timestamp: SystemTime,

@@ -16,19 +16,18 @@ use crate::library::scan::{
 };
 use crate::sync::RecoveredMutex;
 
-/// A folder-art load in flight, shared by every requester of the same path.
+/// 一次已在途的文件夹封面加载，由同一路径的所有请求方共享。
 type FolderArtFuture = Shared<BoxFuture<'static, Option<Arc<Vec<u8>>>>>;
 
-/// Caps concurrent image decodes - each in-flight item holds a full-size JPEG and a thumbnail, so
-/// we limit the number of concurrent decodes to avoid excessive memory usage.
+/// 给并发图片解码封顶——每个已在途的条目都持有一张全尺寸 JPEG 和一张缩略图，
+/// 所以限制并发解码数以免内存占用过高。
 const MAX_DECODE_WORKERS: usize = 4;
 
-/// Loader state for one folder-art path.
+/// 单个文件夹封面路径的加载器状态。
 enum FolderArtLoadState {
-    /// The load is running; requesters join it via the shared future.
+    /// 加载正在进行；请求方通过共享 future 加入。
     Loading(FolderArtFuture),
-    /// The load finished; bytes live only while some `Arc` still holds them,
-    /// and an expired weak handle simply triggers a fresh load.
+    /// 加载已结束；字节只在还持有 `Arc` 期间存活，弱句柄过期就重新发起一次加载。
     Ready(Weak<Vec<u8>>),
 }
 
@@ -73,10 +72,9 @@ impl FolderArtLoader {
         let bytes = match future.await {
             Some(bytes) => bytes,
             None => {
-                // Read failure: drop the dead entry so the next request starts
-                // a fresh load instead of forever joining a shared future that
-                // already resolved to None (same retry semantics as an expired
-                // Ready handle above).
+                // 读取失败：丢掉这条死条目，让下一个请求重新发起一次加载，
+                // 而不是永远 join 到一个已经解析成 None 的共享 future
+                // （重试语义与上面那条弱句柄 Ready 的分支相同）。
                 self.states.lock_recovered().remove(&path);
                 return None;
             }
@@ -101,18 +99,18 @@ impl FolderArtLoader {
     }
 }
 
-/// Decode state for one artwork hash.
+/// 单个封面哈希的解码状态。
 enum ArtworkState {
-    /// The artwork row already exists in the database; no buffers are kept.
+    /// artwork 行已存在于数据库；不保留任何缓冲区。
     Existing,
-    /// A decode is in flight; requesters join it via the shared future.
+    /// 解码正在进行；请求方通过共享 future 加入。
     Processing(ArtworkFuture),
 }
 
-/// An artwork decode in flight, shared by every requester of the same hash.
+/// 一次已在途的封面解码，由同一哈希的所有请求方共享。
 type ArtworkFuture = Shared<BoxFuture<'static, Option<Arc<ProcessedArt>>>>;
 
-/// Converts each new artwork hash once on Tokio's bounded blocking pool.
+/// 每个新的封面哈希只在 Tokio 的有界阻塞池上转换一次。
 #[derive(Clone)]
 pub struct ArtworkProcessor {
     states: Arc<Mutex<FxHashMap<u64, ArtworkState>>>,
@@ -128,7 +126,7 @@ impl ArtworkProcessor {
                 .map(|hash| (hash, ArtworkState::Existing))
                 .collect(),
         ));
-        // Half the cores decode artwork, clamped so peak memory stays bounded.
+        // 一半核心用于解码封面，并做钳位以保证峰值内存有界。
         let concurrency = std::thread::available_parallelism()
             .map(|count| (count.get() / 2).clamp(1, MAX_DECODE_WORKERS))
             .unwrap_or(1);
@@ -204,7 +202,7 @@ impl ArtworkProcessor {
         }
     }
 
-    /// Drop processed buffers after their hash has been resolved by the database writer.
+    /// 哈希已被数据库写入者解析完毕后，丢掉处理好的缓冲区。
     pub fn mark_resolved(&self, art: &FileArt, ids: &ArtIdCache) {
         let mut states = self.states.lock_recovered();
         for candidate in [&art.embedded, &art.folder].into_iter().flatten() {

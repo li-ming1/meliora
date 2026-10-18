@@ -10,9 +10,8 @@ use tracing::debug;
 
 use super::types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track};
 
-/// Migration versions whose recorded checksum can mismatch purely because an
-/// old Windows database wrote them with different line endings; the open path
-/// rewrites those checksums and retries instead of failing.
+/// 迁移版本中记录的校验和可能只因旧版 Windows 数据库以不同行尾写入才对不上的那些；
+/// 打开路径会重写这些校验和并重试，而不是直接失败。
 fn windows_line_ending_recovery_versions() -> &'static [i64] {
     &[
         20240730163128,
@@ -73,8 +72,8 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
         .await;
 
     if let Err(e) = migrations {
-        // old Windows databases can hit line-ending caused hash mismatches on these versions,
-        // rewrite their checksums and retry, any other migration failure is fatal
+        // 旧版 Windows 数据库在这些版本上会因行尾差异撞上哈希不匹配，
+        // 重写它们的校验和并重试；其它任何迁移失败都是致命的
         let recoverable = match &e {
             sqlx::migrate::MigrateError::VersionMismatch(v) => {
                 cfg!(target_os = "windows") && windows_line_ending_recovery_versions().contains(v)
@@ -433,7 +432,7 @@ pub async fn get_track_by_path(pool: &SqlitePool, path: &Path) -> sqlx::Result<O
     Ok(track)
 }
 
-/// Lists all albums for searching. Returns (id, title, artist display override, artist names).
+/// 列出全部专辑用于搜索。返回 (id, title, artist display override, artist names)。
 #[allow(clippy::type_complexity)]
 pub async fn list_albums_search(
     pool: &SqlitePool,
@@ -445,7 +444,7 @@ pub async fn list_albums_search(
         .await
 }
 
-/// Lists all tracks for searching. Returns (id, title, artist_names, album_id).
+/// 列出全部曲目用于搜索。返回 (id, title, artist_names, album_id)。
 pub async fn list_tracks_search(
     pool: &SqlitePool,
 ) -> sqlx::Result<Vec<(i64, String, String, Option<i64>)>> {
@@ -456,7 +455,7 @@ pub async fn list_tracks_search(
         .await
 }
 
-/// Lists all artists for searching. Returns (id, name).
+/// 列出全部歌手用于搜索。返回 (id, name)。
 pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artists_search.sql");
 
@@ -465,9 +464,8 @@ pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, St
         .await
 }
 
-/// Every (album id, track location) pair, used to compute album availability
-/// (any track still on disk) in a single query instead of one full
-/// `list_tracks_in_album` fetch per album.
+/// 全部 (album id, track location) 配对：用一条查询就算出专辑可用性（还有曲目留在
+/// 盘上），取代每个专辑一次完整的 `list_tracks_in_album` 取数。
 pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_album_availability.sql");
 
@@ -476,17 +474,15 @@ pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64
         .await
 }
 
-/// Every `(track_id, artist_id)` credit pair, used to compute artist
-/// availability (any credited track still on disk) in one query instead of
-/// one full `list_all_tracks_by_artist` fetch per artist row. Yields integer
-/// pairs against the track table's own ids — the caller joins them with the
-/// base `(location, id, album_id)` rows in Rust, so no credit re-transfers
-/// its location string over SQL.
+/// 全部 `(track_id, artist_id)` 署名配对：用一条查询就算出歌手可用性（署名的曲目还有
+/// 留在盘上的），取代每行歌手一次完整的 `list_all_tracks_by_artist` 取数。产出的是相对
+/// track 表自身 id 的整数配对——调用方在 Rust 里把它们与基础的
+/// `(location, id, album_id)` 行做 join，因此没有哪条署名需要在 SQL 上重新搬运自己的
+/// location 字符串。
 ///
-/// The query must mirror `find_all_tracks_by_artist`: an artist is credited
-/// through BOTH `album_artist` (album-level) and `track_artist` (track-level).
-/// Querying only one of the two greys out every artist credited the other way,
-/// which is how most libraries credit theirs.
+/// 这条查询必须与 `find_all_tracks_by_artist` 对齐：歌手同时通过 `album_artist`
+/// （专辑级）与 `track_artist`（曲目级）两处署名。只查其中一处，就会把另一处署名的
+/// 所有歌手置灰，而大多数库正是那样署名的。
 pub async fn list_track_artist_credits(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, i64)>> {
     let query = include_str!("../../queries/library/find_track_artist_credits.sql");
 
@@ -728,8 +724,8 @@ pub async fn reorder_playlist(
         return Ok(());
     };
 
-    // The two UPDATEs in the move script must apply together or not at all:
-    // committing only the shift leaves every playlist after it off by one.
+    // move 脚本里的两条 UPDATE 必须同时生效或全不生效：只提交位移那一条，
+    // 会让其后的每个歌单都错一位。
     let mut tx = pool.begin().await?;
 
     sqlx::query(move_query)
@@ -749,7 +745,7 @@ pub async fn move_playlist_item(
     item_id: i64,
     new_position: i64,
 ) -> sqlx::Result<()> {
-    // retrieve the current item's position
+    // 取当前项的位置
     let original_item = get_playlist_item(pool, item_id).await?;
 
     let move_query = if original_item.position < new_position {
@@ -760,7 +756,7 @@ pub async fn move_playlist_item(
         return Ok(());
     };
 
-    // the shift + reposition statements must apply together or not at all
+    // 位移 + 重排这两条语句必须同时生效或全不生效
     let mut tx = pool.begin().await?;
 
     sqlx::query(move_query)
@@ -780,7 +776,7 @@ pub async fn remove_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Resu
     let query = include_str!("../../queries/playlist/remove_track.sql");
     let item = get_playlist_item(pool, item_id).await?;
 
-    // the position compaction and the delete must apply together or not at all
+    // 位置压缩与删除必须同时生效或全不生效
     let mut tx = pool.begin().await?;
 
     sqlx::query(query)
@@ -830,13 +826,13 @@ pub async fn playlist_ids_for_track(
     Ok(ids.into_iter().collect())
 }
 
-/// IN-clause chunk size for the playlist batch queries: stays under SQLite's
-/// bind-variable cap (999 on legacy builds, 32766 modern) so no selection size
-/// can fail the whole batch with "too many SQL variables".
+/// 歌单批量查询里 IN 子句的分块大小：始终留在 SQLite 绑定变量上限之下
+/// （旧版构建 999，现代 32766），因此任何选择规模都不会让整批以
+/// "too many SQL variables" 失败。
 const PLAYLIST_IN_CHUNK: usize = 900;
 
-/// `?,?,?` — the bind-slot list for an IN clause of `n` parameters.
-/// Shared with `library/types/table.rs`'s chunked row prefetch.
+/// `?,?,?`——IN 子句 `n` 个参数的绑定槽列表。
+/// 与 `library/types/table.rs` 的分块行预取共用。
 pub(crate) fn in_placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
@@ -850,9 +846,8 @@ pub async fn playlist_contains_all_tracks(
         return Ok(true);
     }
 
-    // chunked so the parameter count never hits SQLite's variable cap; each
-    // chunk counting its own full size is equivalent to one COUNT over the
-    // whole batch (the chunks are disjoint)
+    // 分块是为了参数个数永远碰不到 SQLite 的变量上限；每块按自己的完整大小计数，
+    // 等价于对整批做一次 COUNT（各块互不相交）
     for chunk in track_ids.chunks(PLAYLIST_IN_CHUNK) {
         let sql = format!(
             "SELECT COUNT(DISTINCT track_id) FROM playlist_item \
@@ -879,12 +874,10 @@ pub async fn add_tracks_to_playlist_if_missing(
     playlist_id: i64,
     track_ids: &[i64],
 ) -> sqlx::Result<()> {
-    // one whole-playlist SELECT replaces the per-track check-then-insert pair
-    // (3000 round trips to like a 1000-track album); the unique
-    // (playlist_id, track_id) index stays as the final guard, and each insert
-    // runs the same add_track.sql position query so position semantics are
-    // unchanged. the whole batch shares a single transaction instead of one
-    // autocommit round trip per track (same shape as import_playlist)
+    // 一次整歌单 SELECT 取代逐曲目的「先查再插」那一对（对上千家曲的专辑就是 3000 次
+    // 往返）；唯一 (playlist_id, track_id) 索引仍作最后防线，且每次插入都跑同一条
+    // add_track.sql 位置查询，位置语义因此不变。整批共用单个事务，而不是每曲目一次
+    // autocommit 往返（形态与 import_playlist 相同）
     let query = include_str!("../../queries/playlist/playlist_track_ids.sql");
     let existing: HashSet<i64> = sqlx::query_scalar(query)
         .bind(playlist_id)
@@ -919,14 +912,11 @@ pub async fn remove_tracks_from_playlist(
         return Ok(());
     }
 
-    // one DELETE for the whole batch replaces the per-track
-    // lookup-select-delete-renumber chain (remove_track.sql rewrites every
-    // later row per removal: 100 removals from a 3000-item playlist used to
-    // cost ~100 O(n) updates plus 200 lookups). the unique
-    // (playlist_id, track_id) index serves the delete; positions are
-    // re-compacted once in the same transaction. the DELETE is chunked so the
-    // parameter count never hits SQLite's variable cap; the chunks share the
-    // transaction, so the batch stays all-or-nothing.
+    // 整批一条 DELETE 取代逐曲目的「查-选-删-重排」链条（remove_track.sql 每删一条
+    // 都要重写其后所有行：从 3000 项歌单删 100 条过去要付约 100 次 O(n) 更新加 200 次
+    // 查询）。删除由唯一 (playlist_id, track_id) 索引承接；位置在同一事务里一次性
+    // 重新压缩。DELETE 做了分块以使参数个数碰不到 SQLite 的变量上限；各块共用该事务，
+    // 整批仍是全成或全废。
     let renumber_query = include_str!("../../queries/playlist/renumber_playlist_positions.sql");
 
     let mut tx = pool.begin().await?;
@@ -954,7 +944,7 @@ pub async fn remove_tracks_from_playlist(
     Ok(())
 }
 
-/// Lists all (id, name) artist pairs linked to an album.
+/// 列出与某专辑相连的全部 (id, name) 歌手配对。
 pub async fn artist_ids_for_album(
     pool: &SqlitePool,
     album_id: i64,
@@ -967,7 +957,7 @@ pub async fn artist_ids_for_album(
         .await
 }
 
-/// Lists all (id, name) artist pairs linked to a track, through its album or standalone links.
+/// 列出与某曲目相连的全部 (id, name) 歌手配对（经由其专辑或独立链接）。
 pub async fn artist_ids_for_track(
     pool: &SqlitePool,
     track_id: i64,
@@ -1364,7 +1354,7 @@ mod tests {
             .unwrap();
         }
 
-        // remove #2 and #5 in one batch; the rest must compact to 1..4 in order
+        // 一次性批量删除 #2 与 #5；其余必须按序压缩成 1..4
         remove_tracks_from_playlist(&pool, playlist_id, &[2, 5])
             .await
             .unwrap();

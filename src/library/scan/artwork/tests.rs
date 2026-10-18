@@ -17,7 +17,7 @@ use crate::library::scan::{
 use crate::media::metadata::Metadata;
 use crate::test_support::{TestDir, count_rows, create_test_pool, seed_library, track_metadata};
 
-/// Small valid PNG. Different colors give different bytes.
+/// 合法的小 PNG。颜色不同则字节不同。
 fn png(r: u8, g: u8, b: u8) -> Vec<u8> {
     let img = image::RgbImage::from_pixel(16, 16, image::Rgb([r, g, b]));
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -134,7 +134,7 @@ async fn artwork_processor_skips_preexisting_hashes() {
     assert!(existing.processed.is_none());
 }
 
-/// Writes track `track_no` of the fixture album ("Album"/"Artist") as `t{track_no}.flac`.
+/// 把夹具专辑（"Album"/"Artist"）的第 `track_no` 首曲目写成 `t{track_no}.flac`。
 async fn write_album_track(dir: &TestDir, pool: &SqlitePool, track_no: u64, art: &FileArt) {
     write_track_cached(
         dir,
@@ -196,7 +196,7 @@ async fn finalize_with(
         .unwrap();
 }
 
-/// Runs the end-of-scan pick for the albums written through `caches` without persisting art.
+/// 对经 `caches` 写入的那些专辑跑一次扫描结束时的挑选，但不把封面落盘。
 async fn finalize_from_caches(pool: &SqlitePool, is_force: bool, caches: &mut WriteCaches) {
     let touched: FxHashSet<i64> = caches.albums.values().copied().collect();
     finalize_scan_art(
@@ -211,7 +211,7 @@ async fn finalize_from_caches(pool: &SqlitePool, is_force: bool, caches: &mut Wr
     .unwrap();
 }
 
-/// Runs one folder-art examine pass, returning what was staged.
+/// 跑一趟文件夹封面 examine，返回被暂存的内容。
 async fn examine_observations(
     pool: &SqlitePool,
     observations: &FolderArtObservationMap,
@@ -270,7 +270,7 @@ async fn update_metadata_processes_embedded_art_immediately() {
 
     write_album_track(&dir, &pool, 1, &embedded_art(a.clone())).await;
 
-    // track already points at the art row before finalization
+    // finalize 之前 track 就已经指向该封面行
     let (art_hash, track_art): (i64, Option<i64>) =
         sqlx::query_as("SELECT art_hash, artwork_id FROM track")
             .fetch_one(&pool)
@@ -289,11 +289,11 @@ async fn album_gets_provisional_art_at_write_time() {
 
     write_album_track(&dir, &pool, 1, &embedded_art(a.clone())).await;
 
-    // album already points at the first track's art before finalization
+    // finalize 之前专辑就已指向第一首曲目的封面
     let a_id = artwork_id_for_hash(&pool, &a).await.unwrap();
     assert_album_art(&pool, Some(a_id), 0).await;
 
-    // a later track's art must not replace that pick mid-scan
+    // 扫描途中后面曲目的封面不得顶掉已经选定的那张
     write_album_track(&dir, &pool, 2, &embedded_art(b.clone())).await;
     assert_album_art(&pool, Some(a_id), 0).await;
 
@@ -337,7 +337,7 @@ async fn folder_art_wins_and_differing_tracks_get_own_rows() {
 
     assert_album_art(&pool, Some(cover_id), 1).await;
 
-    // tracks whose embedded art differs from the folder winner keep their own rows
+    // 内嵌封面与文件夹胜者不同的曲目保留自己的行
     assert_eq!(
         track_art(&pool).await,
         vec![
@@ -412,7 +412,7 @@ async fn partial_rescan_keeps_folder_incumbent_until_force_scan() {
     let cover_id = artwork_id_for_hash(&pool, &cover).await.unwrap();
     let a_id = artwork_id_for_hash(&pool, &a).await.unwrap();
 
-    // targeted rescan of a non-first track stages no folder art - existing folder art stays
+    // 对非首曲目的定向重扫不会暂存文件夹封面——已有的文件夹封面保持不变
     write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
     finalize(&pool, false).await;
     assert_album_art(&pool, Some(cover_id), 1).await;
@@ -427,7 +427,7 @@ async fn partial_rescan_keeps_folder_incumbent_until_force_scan() {
         ]
     );
 
-    // force scan re-read with no folder art - embedded majority replaces existing folder art
+    // 强制重扫且没有文件夹封面——内嵌多数派顶替已有的文件夹封面
     write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
     finalize(&pool, true).await;
     assert_album_art(&pool, Some(a_id), 0).await;
@@ -455,7 +455,7 @@ async fn rescan_without_art_clears_artwork() {
         finalize_from_caches(&pool, false, &mut caches).await;
         assert_eq!(count_rows(&pool, "artwork").await, 1);
 
-        // files lost their embedded art and were rescanned - no folder candidate remains
+        // 文件失去了内嵌封面并被重扫——已无文件夹候选
         let no_art = FileArt::default();
         write_album_cached(&dir, &pool, &[&no_art, &no_art], is_force, &mut caches).await;
         finalize_from_caches(&pool, is_force, &mut caches).await;
@@ -484,7 +484,7 @@ async fn orphan_artwork_is_swept_after_track_deletion() {
         .execute(&pool)
         .await
         .unwrap();
-    // album was deleted - unused artwork cleanup removes the art
+    // 专辑已被删除——未使用封面清理会把这张封面一并删掉
     finalize(&pool, false).await;
     assert_eq!(count_rows(&pool, "artwork").await, 0);
 }
@@ -527,8 +527,8 @@ async fn write_track_cached(
 }
 
 async fn examine_and_finalize(dir: &TestDir, pool: &SqlitePool) {
-    // read_scan_directory decodes track metadata through the media provider
-    // table, which only exists once the providers are registered.
+    // read_scan_directory 会经由 media provider 表解码曲目元数据，
+    // 而那张表只在 provider 注册之后才存在。
     crate::test_support::register_test_media_providers();
     let directory = dir.utf8_path();
     let read_directory = directory.clone();
@@ -575,13 +575,13 @@ async fn examine_folder_art_picks_up_cover_added_without_track_changes() {
     let a_id = artwork_id_for_hash(&pool, &a).await.unwrap();
     assert_album_art(&pool, Some(a_id), 0).await;
 
-    // a new cover is staged without re-reading audio
+    // 新封面被暂存，且没有重读音频
     std::fs::write(dir.join("cover.jpg"), &cover).unwrap();
     examine_and_finalize(&dir, &pool).await;
 
     let cover_id = artwork_id_for_hash(&pool, &cover).await.unwrap();
     assert_album_art(&pool, Some(cover_id), 1).await;
-    // tracks' embedded art differs from the folder winner - they keep their own row
+    // 各曲目的内嵌封面与文件夹胜者不同——它们保留自己的行
     assert_eq!(
         track_art(&pool).await,
         vec![(Some(1), Some(a_id)), (Some(2), Some(a_id))]
@@ -603,7 +603,7 @@ async fn examine_folder_art_dethrones_incumbent_after_cover_deleted() {
     let cover_id = artwork_id_for_hash(&pool, &cover).await.unwrap();
     assert_album_art(&pool, Some(cover_id), 1).await;
 
-    // after cover deletion, embedded majority replaces folder art without a force scan
+    // 封面被删之后，内嵌多数派无需强制扫描就顶替文件夹封面
     std::fs::remove_file(dir.join("cover.jpg")).unwrap();
     examine_and_finalize(&dir, &pool).await;
 
@@ -629,19 +629,17 @@ async fn examine_folder_art_with_unchanged_cover_keeps_incumbent_stable() {
 
     let before = (album_row(&pool).await, track_art(&pool).await);
 
-    // same cover restaged - winner unchanged, no rows move
+    // 同一张封面重新暂存——胜者不变，没有任何行被移动
     examine_and_finalize(&dir, &pool).await;
 
     assert_eq!(before, (album_row(&pool).await, track_art(&pool).await));
     assert_eq!(count_rows(&pool, "artwork").await, 2);
 }
 
-/// A scan that finds no cover file in a directory whose albums already carry
-/// embedded art must not mark them examined: finalize could only re-vote the
-/// same majority, and that re-vote costs up to five statements per album on
-/// every scan. The folder-incumbent case is the opposite - there a missing
-/// cover is the news (see
-/// `examine_folder_art_dethrones_incumbent_after_cover_deleted`).
+/// 一次扫描在其目录已带内嵌封面的专辑里找不到封面文件时，绝不能把它们标成 examined：
+/// finalize 只能把同一个多数派重新投一遍，而这遍重投在每次扫描上都要为每个专辑付至多
+/// 五条语句。文件夹在位者那一例恰好相反——那里「封面不见了」才是新信息（见
+/// `examine_folder_art_dethrones_incumbent_after_cover_deleted`）。
 #[tokio::test]
 async fn examine_without_cover_and_embedded_incumbent_marks_no_albums() {
     let (dir, pool) = create_test_pool("artwork-examine-embedded-noop-test").await;
@@ -673,8 +671,8 @@ async fn folder_art_loader_retries_after_read_failure() {
         rank: 1,
     };
 
-    // the file does not exist yet: the load fails and the dead entry must be
-    // dropped, not left as a Loading row that forever joins a None future
+    // 文件还不存在：加载会失败，这条死条目必须被丢掉，
+    // 不能留成一个永远 join 到 None future 的 Loading 行
     assert!(loader.load(candidate.clone()).await.is_none());
 
     std::fs::write(&path, red()).unwrap();
@@ -685,9 +683,8 @@ async fn folder_art_loader_retries_after_read_failure() {
     assert_eq!(loaded.hash, xxh3_64(&red()));
 }
 
-/// Everything the finalization pass can possibly write, in one value: album art
-/// pointer and source, track art pointer, artwork table size. Two equal
-/// fingerprints mean the pass between them moved no row at all.
+/// finalize 那一趟可能写下的全部内容，收进一个值：专辑封面指针与来源、曲目封面指针、
+/// artwork 表规模。两次指纹相同就意味着其间那一趟一行都没动。
 async fn art_fingerprint(pool: &SqlitePool) -> (i64, i64, i64, i64, i64, i64) {
     sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM album WHERE artwork_id IS NULL), \
@@ -702,40 +699,33 @@ async fn art_fingerprint(pool: &SqlitePool) -> (i64, i64, i64, i64, i64, i64) {
     .unwrap()
 }
 
-/// Scale cost of the artwork pass that **every** scan completion runs,
-/// including the scans that changed nothing.
+/// **每次**扫描完成都要跑的那趟封面工作的规模成本，包括什么都没改的扫描。
 ///
-/// Shape taken from production: `execution.rs::finish_completed` calls
-/// `finalize_artwork` unconditionally, and `examine_folder_art` marks every
-/// album whose directory holds a cover image as `examined`. Being in `examined`
-/// is exactly what disables finalize's keep-existing early-out, so each album
-/// gets its majority hash re-voted, its album art re-published and its track art
-/// re-assigned - 3 SELECT + 2 UPDATE per album - even when the scan wrote
-/// nothing.
+/// 形态取自生产：`execution.rs::finish_completed` 无条件调 `finalize_artwork`，
+/// 而 `examine_folder_art` 会把目录里放着封面图的每个专辑标成 `examined`。正是在
+/// `examined` 里这件事关掉了 finalize 的「保留现有」提前返回，于是每个专辑都要把多数派
+/// 哈希重新投一遍、专辑封面重新发布、曲目封面重新指派——每个专辑 3 SELECT + 2 UPDATE——
+/// 哪怕这次扫描一行都没写。
 ///
-/// Both storms call the production `finalize_scan_art`, so the control group is
-/// the old code itself, and each is asserted to move zero rows - that assertion
-/// is the point: a pass that cannot change the answer is recomputation.
-/// - `folder`: every album directory holds a cover, so examine stages one
-///   candidate per album and still marks it examined - 4 statements per album
-///   (state SELECT, guarded album UPDATE, guarded track UPDATE, outliers SELECT)
-/// - `embedded`: no cover files anywhere, embedded art already converged
-///   (`artwork_source = 0`), examine still marks every album examined - 5
-///   statements per album, the majority re-vote on top
-/// - `gated`: nothing examined, nothing touched - the `albums.is_empty()` early
-///   return, i.e. the ceiling for a pass that skips what it cannot change
+/// 两股风暴都调生产的 `finalize_scan_art`，所以对照组就是旧代码本身，且每一组都被断言
+/// 零行移动——这条断言正是重点：一趟不可能改变答案的工作就是重算。
+/// - `folder`：每个专辑目录都放着一张封面，因此 examine 为每个专辑暂存一个候选，
+///   并仍然把它标成 examined——每个专辑 4 条语句（状态 SELECT、带守卫的专辑 UPDATE、
+///   带守卫的曲目 UPDATE、离群项 SELECT）
+/// - `embedded`：任何地方都没有封面文件，内嵌封面已经收敛（`artwork_source = 0`），
+///   examine 仍把每个专辑标成 examined——每个专辑 5 条语句，多出的正是那次多数派重投
+/// - `gated`：没有任何 examined、没有任何改动——即 `albums.is_empty()` 的提前返回，
+///   也就是一趟「跳过自己改不动的东西」的工作所能达到的上限
 ///
-/// A third shape tried here - `examined` full and **no** candidates - is not a
-/// steady state: it means "every cover file vanished", and finalize correctly
-/// dethrones the folder incumbent for the embedded majority (see
-/// `examine_folder_art_dethrones_incumbent_after_cover_deleted`). It moves rows,
-/// so it is excluded rather than measured as waste.
+/// 这里试过第三种形态——`examined` 全满且**没有**候选——它不是稳态：意思相当于「所有封面
+/// 文件都消失了」，而 finalize 会正确地把文件夹在位者换成品内嵌多数派（见
+/// `examine_folder_art_dethrones_incumbent_after_cover_deleted`）。它会移动行，所以是
+/// 排除掉，而不是当作浪费来测量。
 ///
-/// Not measured here: `examine_folder_art` also `fs::read`s every folder-art
-/// file on each scan (the loader's weak cache does not outlive a scan), which
-/// needs real images to quantify - unproven.
+/// 本处未测量：`examine_folder_art` 每次扫描还会对所有文件夹封面文件做一次 `fs::read`
+/// （加载器的弱缓存活不过一次扫描），这部分要用真实图片才能量化——未经证实。
 ///
-/// Seeds 4k albums / 60k tracks, so it stays out of the default test run:
+/// 播种 4k 专辑 / 60k 曲目，因此不参与默认测试运行：
 /// `cargo test --release --features kugou artwork_finalize -- --ignored --nocapture`
 #[tokio::test]
 #[ignore = "scale bench: seeds 4k albums / 60k tracks"]
@@ -747,10 +737,9 @@ async fn report_zero_change_artwork_finalize_storm() {
     let (_dir, pool) = create_test_pool("artwork-storm-scale").await;
     seed_library(&pool, ALBUMS, PER_ALBUM, 1_000).await;
 
-    // One artwork row per album (artwork id == album id) published as folder
-    // art, plus one album_path claim: the state a fully populated library
-    // presents to a scan that changes nothing. All set-based, so seeding does
-    // not leak into the measurement.
+    // 每个专辑一行 artwork（artwork id == album id）并发布为文件夹封面，另加一条
+    // album_path 认领：这是一座填满内容的库面对一次「什么都没改」的扫描时所呈现的状态。
+    // 全部用集合式写入，因此播种不会漏进被测的那段。
     let mut tx = pool.begin().await.unwrap();
     sqlx::query(
         "INSERT INTO artwork (id, hash, image, thumb) \
@@ -795,8 +784,8 @@ async fn report_zero_change_artwork_finalize_storm() {
 
     let examined: FxHashSet<i64> = albums.iter().copied().collect();
     let none: FxHashSet<i64> = FxHashSet::default();
-    // What examine_folder_art stages for a library whose every album directory
-    // holds a cover: one candidate per album, hash == the incumbent's.
+    // examine_folder_art 对「每个专辑目录都放着一张封面」的库会暂存什么：每个专辑
+    // 一个候选，哈希与在位者相同。
     let folder_candidates: FolderArtCandidates = albums
         .iter()
         .map(|&id| (id, ((5_000_000 + id) as u64, 1_i64)))
@@ -806,8 +795,7 @@ async fn report_zero_change_artwork_finalize_storm() {
     let mut embedded = Vec::new();
     let mut gated = Vec::new();
 
-    // `finalize_scan_art` clears the candidate map it is handed, so every rep
-    // starts from a fresh copy.
+    // `finalize_scan_art` 会清空交给它的候选表，所以每一轮都得从全新的副本开始。
     for rep in 0..REPS {
         let stamp = art_fingerprint(&pool).await;
         let mut candidates = folder_candidates.clone();
@@ -836,8 +824,8 @@ async fn report_zero_change_artwork_finalize_storm() {
         gated.push(started.elapsed());
     }
 
-    // The no-cover-file shape - what this machine's library actually is (the
-    // census found zero cover files, every artwork row came from embedded art).
+    // 「没有封面文件」那种形态——本机库的真实情况（普查发现封面文件为零，
+    // 每一行 artwork 都来自内嵌封面）。
     sqlx::query("UPDATE album SET artwork_source = 0")
         .execute(&pool)
         .await
@@ -863,7 +851,7 @@ async fn report_zero_change_artwork_finalize_storm() {
         );
     }
 
-    // Everything else a scan completion pays per run, mutations or not, isolated.
+    // 扫描完成每次运行都要付的其余开销，无论有无变更，单独隔离出来。
     let mut claims = Vec::new();
     let mut claims_plain = Vec::new();
     let mut art_ids = Vec::new();
@@ -871,9 +859,8 @@ async fn report_zero_change_artwork_finalize_storm() {
     let mut orphan_artists = Vec::new();
     let mut orphan = Vec::new();
     for _ in 0..REPS {
-        // Shipped shape (it joins album for `artwork_source`, which is what lets
-        // examine skip marking) against the shape it replaced, so the join's
-        // price is on the record.
+        // 已发布形态（它 join album 取 `artwork_source`，正是这一点让 examine
+        // 可以跳过标记）与它所替代的形态对比，好把那次 join 的代价记录在案。
         let started = std::time::Instant::now();
         let rows: Vec<(i64, String, i64)> = sqlx::query_as(include_str!(
             "../../../../queries/scan/list_album_path_claims.sql"
@@ -903,8 +890,8 @@ async fn report_zero_change_artwork_finalize_storm() {
         assert_eq!(ids.len(), ALBUMS);
         art_ids.push(started.elapsed());
 
-        // The cleanup liveness sweep walks every track row in pages (the page
-        // size is discover::full::CLEANUP_PAGE_SIZE, private to that module).
+        // 清理用的存活扫描会分页走完每一条曲目行（页大小是
+        // discover::full::CLEANUP_PAGE_SIZE，对该模块私有）。
         let started = std::time::Instant::now();
         let mut last = 0i64;
         let mut seen = 0usize;

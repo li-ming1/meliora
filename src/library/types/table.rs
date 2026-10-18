@@ -72,21 +72,18 @@ fn format_album_release_date(
     format_album_release_date_with(release_date, format, length)
 }
 
-/// Upper bound of a row prefetch cache (simple FIFO, no LRU dependency): two
-/// full ±256-row prefetch windows plus slack.
+/// 单行预取缓存的容量上界（简单 FIFO，不引 LRU 依赖）：两个完整的 ±256 行预取
+/// 窗口再留些余量。
 const ROW_CACHE_CAPACITY: usize = 1024;
 
-/// Row prefetch cache shared by every table type: past the keep-around band
-/// each newly built row resolves itself through `TableData::get_row`, which is
-/// one UI-thread `RUNTIME.block_on` DB hit per row (`cx.get_track_by_id` and
-/// friends). The table component batch-prefetches the visible window ± 256
-/// rows on the async runtime into the type's cache whenever the window moves;
-/// `get_row` reads it first and only falls back to the blocking path on a
-/// miss.
+/// 所有表格类型共用的行预取缓存：超出 keep-around 区带之后，每个新构建的行都靠
+/// `TableData::get_row` 自我解析，而那是每行一次 UI 线程 `RUNTIME.block_on` 打库
+/// （`cx.get_track_by_id` 一类）。表格组件在窗口移动时于异步运行时上批量预取
+/// 可见窗口 ± 256 行进该类型的缓存；`get_row` 先读缓存，只有未命中才回落到阻塞路径。
 ///
-/// `generation` invalidates in-flight prefetch tasks: `clear_row_cache` runs
-/// on every table reload (sort change, scan completion) and bumps it, so a
-/// task started before the reload can never write pre-rescan rows back.
+/// `generation` 用来让已在途的预取任务失效：`clear_row_cache` 在每次表格重载
+/// （排序变更、扫描完成）时都会跑并递增它，因此重载之前启动的任务永远无法把扫描前的
+/// 旧行写回。
 struct RowCache<Id, Row> {
     generation: u64,
     order: VecDeque<Id>,
@@ -103,7 +100,7 @@ impl<Id: Eq + std::hash::Hash, Row> RowCache<Id, Row> {
     }
 }
 
-/// Cached row lookup; a short `Mutex` critical section, per doctrine §18.
+/// 命中缓存的行查询；`Mutex` 临界区极短，符合教条 §18。
 fn cached_row<Id: Eq + std::hash::Hash, Row>(
     cache: &Mutex<RowCache<Id, Row>>,
     id: Id,
@@ -111,8 +108,8 @@ fn cached_row<Id: Eq + std::hash::Hash, Row>(
     cache.lock_recovered().rows.get(&id).cloned()
 }
 
-/// FIFO-bounded insert; returns false when the cache was cleared mid-prefetch
-/// (stale generation), which tells the prefetch task to stop early.
+/// FIFO 有界插入；缓存若在预取途中被清空（代际过期）返回 false，
+/// 据此告诉预取任务提前停止。
 fn insert_cached_row<Id: Eq + std::hash::Hash + Clone, Row>(
     cache: &Mutex<RowCache<Id, Row>>,
     id: Id,
@@ -138,7 +135,7 @@ fn insert_cached_row<Id: Eq + std::hash::Hash + Clone, Row>(
     true
 }
 
-/// Drops a row cache's contents and invalidates in-flight prefetch tasks.
+/// 清空行缓存内容并让已在途的预取任务失效。
 fn clear_row_cache<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) {
     let mut cache = cache.lock_recovered();
     cache.rows.clear();
@@ -146,8 +143,7 @@ fn clear_row_cache<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) {
     cache.generation = cache.generation.wrapping_add(1);
 }
 
-/// Generation snapshot read once before a prefetch loop, so inserts can
-/// detect a mid-flight clear.
+/// 代际快照，在预取循环开始前读一次，好让每次插入能察觉途中的清空。
 fn row_cache_generation<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) -> u64 {
     cache.lock_recovered().generation
 }
@@ -289,8 +285,8 @@ async fn prefetch_rows_chunked<Row: PrefetchRow + Send + Unpin>(
     }
 }
 
-/// Default per-column widths (logical pixels) in display order, shared by the
-/// `default_columns` impls below.
+/// 按显示顺序给出的各列默认宽度（逻辑像素），供下面的 `default_columns`
+/// 实现共用。
 fn default_column_widths<C>(
     widths: impl IntoIterator<Item = (C, f32)>,
 ) -> IndexMap<C, f32, FxBuildHasher>
@@ -369,8 +365,8 @@ impl TableData<AlbumColumn> for Album {
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
-        // prefetch cache first: a hit avoids the UI-thread `block_on` below
-        // (one per newly built row after scrolling past the keep-around band)
+        // 先查预取缓存：命中就绕开下面那次 UI 线程 `block_on`
+        // （滚出 keep-around 区带后，每个新建行都要付一次）
         if let Some(album) = cached_row(album_row_cache(), id.0 as i64) {
             return Ok(Some(album));
         }
@@ -440,7 +436,7 @@ impl TableData<AlbumColumn> for Album {
             (AlbumColumn::Artist, 200.0),
             (AlbumColumn::Date, 125.0),
             (AlbumColumn::Label, 150.0),
-            // length is weird because the image column is 47.0
+            // 这个宽度看着奇怪，是因为图片列占 47.0
             (AlbumColumn::CatalogNumber, 178.0),
         ])
     }
@@ -476,8 +472,7 @@ impl TableData<AlbumColumn> for Album {
         _grid_context: GridContext,
         _is_available: bool,
     ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
-        // the row enters the builder as a refcount; the deep clone happens
-        // only when the menu actually opens
+        // 行以引用计数的形式进入 builder；深度克隆只在菜单真正打开时才发生
         Some(album_menu_for_table_shared(
             row.clone(),
             context,
@@ -533,9 +528,8 @@ impl TableData<AlbumColumn> for Album {
     }
 
     fn is_available(&self, cx: &mut App) -> bool {
-        // cached availability snapshot (reloaded at startup and on scan
-        // completion): the per-row `block_on` query plus a stat per track
-        // stalled row construction on every scroll
+        // 缓存的可用性快照（启动与扫描完成时各自重载一次）：先前每行一次
+        // `block_on` 查询加每曲目一次 stat，会让每次滚动的行构建都卡住
         cx.global::<Models>()
             .available_albums
             .read(cx)
@@ -611,8 +605,8 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
-        // prefetch cache first: a hit avoids the UI-thread `block_on` below
-        // (one per newly built row after scrolling past the keep-around band)
+        // 先查预取缓存：命中就绕开下面那次 UI 线程 `block_on`
+        // （滚出 keep-around 区带后，每个新建行都要付一次）
         if let Some(track) = cached_row(track_row_cache(), id.0) {
             return Ok(Some(track));
         }
@@ -623,8 +617,7 @@ impl TableData<TrackColumn> for Track {
     fn get_column(&self, cx: &mut App, column: TrackColumn) -> Option<SharedString> {
         match column {
             TrackColumn::TrackNumber => {
-                // cached album metadata: rebuilding a row used to issue one
-                // `get_album_by_id` block_on per rendered column
+                // 缓存的专辑元数据：重建一行过去会为每个渲染列发一次 `get_album_by_id` block_on
                 let vinyl_numbering = self
                     .album_id
                     .and_then(|id| cached_album(cx, id))
@@ -668,7 +661,7 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn get_image_path(&self) -> Option<SharedString> {
-        // every track has its own artwork association (shared with the album when identical)
+        // 每首曲目都有自己的封面关联（与专辑相同时即共享同一张）
         Some(format!("!db://track/{}/thumb", self.id).into())
     }
 
@@ -716,20 +709,17 @@ impl TableData<TrackColumn> for Track {
     }
 
     fn is_available(&self, cx: &mut App) -> bool {
-        // HTTP(S) streams have no file on disk and the availability snapshot
-        // only knows local paths: online tracks must short-circuit to
-        // available exactly like is_track_path_available does
+        // HTTP(S) 流没有磁盘文件，而可用性快照只认本地路径：在线曲目必须直接
+        // 短路为可用，与 is_track_path_available 的做法完全一致
         if is_online_path(&self.location) {
             return true;
         }
 
-        // cached availability snapshot (reloaded at startup and on scan
-        // completion, same pass as the album/artist sets): the per-row
-        // `path.exists()` stat stalled row construction on every scroll.
-        // Until the first reload lands, though, fall back to the exact
-        // pre-snapshot behavior — `None` must not read as "unavailable",
-        // because rows built in that startup window capture the verdict
-        // once and stay greyed-out/unclickable until a full table reload.
+        // 缓存的可用性快照（启动与扫描完成时重载，与专辑/歌手集合同一趟）：先前
+        // 每行一次 `path.exists()` stat 会让每次滚动的行构建都卡住。不过在首次
+        // 重载落地之前，仍要回落到加快照之前的确切行为——`None` 绝不能被读成
+        // 「不可用」，因为在那个启动窗口里构建的行只捕获一次判定，此后一直是
+        // 置灰且点不动，直到整表重载。
         match cx.global::<Models>().available_tracks.read(cx).as_ref() {
             Some(set) => set.contains(&self.id),
             None => self.location.exists(),
@@ -744,9 +734,8 @@ impl TableData<TrackColumn> for Track {
         _grid_context: GridContext,
         is_available: bool,
     ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
-        // `is_available` is resolved once at row construction and captured by
-        // the builder: the menu tree itself is only built when the menu opens,
-        // so re-statting the file per repaint is both unnecessary and wrong.
+        // `is_available` 在行构建时解析一次并被 builder 捕获：菜单树本身只在打开
+        // 时才构建，因此每次重绘都重新 stat 文件既没必要也是错的。
         Some(track_menu_for_table_shared(
             Arc::new(self.clone()),
             is_available,
@@ -764,8 +753,7 @@ impl TableData<TrackColumn> for Track {
         _grid_context: GridContext,
         is_available: bool,
     ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
-        // the row enters the builder as a refcount; the deep clone happens
-        // only when the menu actually opens
+        // 行以引用计数的形式进入 builder；深度克隆只在菜单真正打开时才发生
         Some(track_menu_for_table_shared(
             row.clone(),
             is_available,
@@ -862,8 +850,8 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
     }
 
     fn get_row(cx: &mut gpui::App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>> {
-        // prefetch cache first: a hit avoids the UI-thread `block_on` below
-        // (one per newly built row after scrolling past the keep-around band)
+        // 先查预取缓存：命中就绕开下面那次 UI 线程 `block_on`
+        // （滚出 keep-around 区带后，每个新建行都要付一次）
         if let Some(artist) = cached_row(artist_row_cache(), id) {
             return Ok(Some(artist));
         }
@@ -924,9 +912,8 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
     }
 
     fn is_available(&self, cx: &mut App) -> bool {
-        // cached availability snapshot (reloaded at startup and on scan
-        // completion): the per-row `list_all_tracks_by_artist` query plus a
-        // stat per track stalled row construction on every scroll
+        // 缓存的可用性快照（启动与扫描完成时各自重载一次）：先前每行一次
+        // `list_all_tracks_by_artist` 查询加每曲目一次 stat，会让每次滚动的行构建都卡住
         cx.global::<Models>()
             .available_artists
             .read(cx)
@@ -976,11 +963,9 @@ mod tests {
     }
 }
 
-/// Timing probes for the table read paths — the §37 regression-protection
-/// layer for library loading, sorting and the row-prefetch used while
-/// scrolling. Companion probes: `row_build_bench` (per-row queries),
-/// `test_support::scale_probe` (100k hot reads, incl. the search-index
-/// queries), `session_storage`'s large-session bench.
+/// 表格读取路径的耗时探针——库加载、排序以及滚动时行预取的 §37 回归防护层。
+/// 配套探针：`row_build_bench`（逐行查询）、`test_support::scale_probe`
+/// （100k 次热读取，含搜索索引查询）、`session_storage` 的大会话 bench。
 ///
 /// ```text
 /// cargo test --release table::bench -- --ignored --nocapture
@@ -997,10 +982,10 @@ mod bench {
     const TRACKS_PER_ALBUM: usize = 50;
     const ARTISTS: usize = ALBUMS;
 
-    /// Full-table loads cost 10s of ms at this scale, so they get a handful
-    /// of runs instead of the shared 400-iteration micro-query helper.
+    /// 这个规模下整表加载要几十 ms，因此只跑寥寥几轮，而不用共享的 400 次
+    /// 微查询助手。
     fn summarize_table(name: &str, runs: usize, mut f: impl FnMut()) {
-        f(); // warmup: first run populates the page cache
+        f(); // 预热：首轮会把页缓存填满
         let mut samples = Vec::with_capacity(runs);
         for _ in 0..runs {
             let start = std::time::Instant::now();
@@ -1015,8 +1000,8 @@ mod bench {
     #[test]
     #[ignore = "timing report, run with --ignored --nocapture"]
     fn report_table_read_costs() {
-        // Startup DB half: pool creation + migrations (the [startup] log's
-        // `database pool ready elapsed_ms` measures the same thing in situ).
+        // 启动期数据库那一半：建池 + 迁移（[startup] 日志里的
+        // `database pool ready elapsed_ms` 在现场量的是同一件事）。
         let pool_start = std::time::Instant::now();
         let (_dir, pool) = crate::RUNTIME.block_on(async {
             let (dir, pool) = create_test_pool("table-bench").await;
@@ -1030,10 +1015,9 @@ mod bench {
         let total_tracks = ALBUMS * TRACKS_PER_ALBUM;
         println!("library: {ALBUMS} albums, {total_tracks} tracks, {ARTISTS} artists");
 
-        // ---- library loading + sorting: every table sort method ----
-        // The default (`None` → ArtistAsc) is the accepted-debt full-table
-        // JOIN + COALESCE sort documented in find_tracks_artist_asc.sql;
-        // these numbers are its regression baseline.
+        // ---- 库加载 + 排序：全部表格排序方式 ----
+        // 默认排序（`None` → ArtistAsc）就是 find_tracks_artist_asc.sql 里记录的那笔
+        // 已接受技术债——整表 JOIN + COALESCE 排序；这些数字是它的回归基线。
         let sorts: Vec<(&str, TrackSortMethod)> = vec![
             (
                 "list_tracks ArtistAsc (default)",
@@ -1056,10 +1040,9 @@ mod bench {
             });
         }
 
-        // ---- scrolling prefetch: chunked IN queries over cold ids ----
-        // The prefetch filters already-cached ids, so each shot gets a fresh
-        // slice of cold ids and a cleared cache (setup, not measured); the
-        // best of 3 stands for the per-chunk cost.
+        // ---- 滚动预取：对冷 id 的分块 IN 查询 ----
+        // 预取会滤掉已在缓存里的 id，所以每次发射都拿一段全新的冷 id 并先清空缓存
+        // （属准备工作，不计入耗时）；3 次中的最好值代表每块的成本。
         let all_ids: Vec<i64> = (0..total_tracks as i64).collect();
         for chunk_count in [1usize, 10] {
             let mut best_ms = f64::INFINITY;

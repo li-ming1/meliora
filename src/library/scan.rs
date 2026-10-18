@@ -24,8 +24,8 @@ use crate::{
 
 pub use control::{MissingFolderDecision, ScanEvent, ScanInterface};
 
-/// Capacity of the scanner command queue; sends beyond it are dropped (logged
-/// by the sender) instead of blocking the UI thread.
+/// 扫描器命令队列的容量：超出容量的发送会被丢弃（由发送端记日志），
+/// 而不是阻塞 UI 线程。
 const COMMAND_CHANNEL_CAPACITY: usize = 10;
 
 #[cfg(test)]
@@ -38,10 +38,9 @@ pub fn start_scanner(
     let (cmd_tx, command_rx) = channel(COMMAND_CHANNEL_CAPACITY);
     let (event_tx, events_rx) = unbounded_channel();
 
-    // The scanner is the only writer to the library database, and its handle
-    // used to be dropped: a panic anywhere in it left the UI stuck on
-    // "scanning" with no hint of what happened. Watch the task so the failure
-    // is at least logged and surfaced.
+    // 扫描器是库数据库的唯一写入者，而它的 handle 过去是被丢弃的：它内部任何一处
+    // panic 都会让 UI 卡在「正在扫描」上，且完全不提示发生了什么。盯着这个任务，
+    // 至少让失败被记录并暴露出来。
     let handle = crate::RUNTIME.spawn(scanner::run_scanner(
         pool,
         settings,

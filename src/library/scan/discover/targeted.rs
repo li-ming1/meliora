@@ -28,16 +28,16 @@ use crate::library::scan::{
     record::ScanRecord,
 };
 
-/// Recorded tracks in the target folder itself (`folder` or `location` match).
+/// 目标文件夹本身（`folder` 或 `location` 相等）里已记录的曲目。
 const RECONCILE_FOLDER_OR_LOCATION_SQL: &str =
     include_str!("../../../../queries/scan/list_tracks_in_folder_or_location.sql");
-/// Recorded tracks anywhere under the target's path prefix.
+/// 目标路径前缀之下任意位置已记录的曲目。
 const RECONCILE_UNDER_PREFIX_SQL: &str =
     include_str!("../../../../queries/scan/list_tracks_under_prefix.sql");
 
 struct RescanState {
     scan_record: Arc<Mutex<ScanRecord>>,
-    /// Recorded paths under the target folders, indexed before the walk starts.
+    /// 在遍历开始前建好的索引：目标文件夹之下已记录的路径。
     folded_index: FoldedIndex,
 }
 
@@ -59,14 +59,14 @@ impl RescanState {
     }
 }
 
-/// Index recorded paths under folded targets, filtering prefixes first to avoid Unix stats.
+/// 为折叠后的目标索引已记录的路径，先按前缀过滤，以避免 Unix 上的 stat。
 fn index_records_under(
     records: &FxHashMap<Utf8PathBuf, SystemTime>,
     folded_targets: &FxHashSet<Utf8PathBuf>,
 ) -> FoldedIndex {
     let mut index = FoldedIndex::default();
     'records: for (key, ts) in records {
-        // fold the key once instead of once per target
+        // 每个键只折叠一次，而不是每个目标折一次
         let folded_key = fold_key(key);
         for target in folded_targets {
             if folded_starts_with(&folded_key, target.as_str()) {
@@ -81,7 +81,7 @@ fn index_records_under(
     index
 }
 
-/// Discover under the given paths. Skip unchanged files, send case-only renames on `relocate_tx`.
+/// 在给定路径之下跑 discovery。跳过未变化的文件，把纯大小写改名发往 `relocate_tx`。
 #[allow(clippy::too_many_arguments)]
 pub async fn rescan_discover(
     paths: Vec<Utf8PathBuf>,
@@ -272,8 +272,7 @@ async fn emit_rescan_path(
             path: path.to_path_buf(),
             timestamp,
             folder_art,
-            // targeted scans have no directory-level lrc listing - keep the
-            // decode-side probe
+            // 定向扫描没有目录级的 lrc 列举——保留解码侧的那次探测
             sidecar_lyrics: SidecarLyrics::Unknown,
         })
         .await
@@ -285,8 +284,8 @@ async fn emit_rescan_path(
     Some(timestamp)
 }
 
-/// Folder art for a directly passed file's parent: reuse the walk's recorded
-/// observation, or read the directory now when it was never visited.
+/// 直接传入的文件的父目录的文件夹封面：复用遍历期间记录下的观测，若该目录从未被
+/// 访问过就现在读一次。
 async fn folder_art_for_parent(
     parent: &Utf8Path,
     read_policy: &DirectoryReadPolicy,
@@ -308,9 +307,8 @@ async fn folder_art_for_parent(
     }
 }
 
-/// Run one reconciliation lookup for `target`, returning its recorded location
-/// strings, or `None` after logging the failure. `lookup` completes the log
-/// message (e.g. `"query"` / `"prefix query"`).
+/// 为 `target` 跑一次对账查询，返回它已记录的位置字符串；失败时记日志并返回 `None`。
+/// `lookup` 用来补全日志消息（例如 `"query"` / `"prefix query"`）。
 async fn fetch_reconciliation_locations(
     pool: &SqlitePool,
     query: &'static str,
@@ -333,14 +331,14 @@ async fn fetch_reconciliation_locations(
     }
 }
 
-/// Delete missing tracks and record entries under the targets. Excluded roots are left alone.
+/// 删除目标之下缺失的曲目与记录项。被排除的根目录不去动它们。
 pub async fn reconcile_rescan_paths(
     pool: &SqlitePool,
     scan_record: &mut ScanRecord,
     paths: &[Utf8PathBuf],
     excluded_roots: &[Utf8PathBuf],
 ) -> FxHashSet<i64> {
-    // folded prefixes match despite casing or \\?\ differences
+    // 折叠后的前缀不受大小写或 \\?\ 差异影响，仍能匹配
     let excluded = fold_excluded_roots(excluded_roots);
 
     let targets: FxHashSet<Utf8PathBuf> = paths.iter().map(|p| canonicalize_or_keep(p)).collect();
@@ -369,13 +367,13 @@ pub async fn reconcile_rescan_paths(
         candidates.extend(
             rows.into_iter()
                 .map(Utf8PathBuf::from)
-                // nothing to exclude - skip fold (a stat per row on Unix)
+                // 无可排除项——跳过折叠（Unix 上那是每行一次 stat）
                 .filter(|location| !is_under_excluded(location, &excluded)),
         );
     }
 
-    // exists-probes are blocking FS work: keep them off the scan worker, and
-    // keep the rows when the probe fails (the next scan retries)
+    // exists 探测是阻塞的文件系统工作：把它们挪出扫描工作线程，且探测失败时保留这些行
+    // （下一次扫描会重试）
     let missing = spawn_blocking(move || missing_paths(candidates))
         .await
         .unwrap_or_default();
@@ -471,7 +469,7 @@ mod tests {
         assert_eq!(count, 0);
         assert!(path_rx.blocking_recv().is_none());
 
-        // stale entry means the file changed - send it again
+        // 陈旧条目意味着文件已变化——再发一次
         record
             .blocking_lock()
             .records
@@ -489,7 +487,7 @@ mod tests {
         let path = write_track(&dir, "track.flac");
         let ts = file_scan_timestamp(&path).unwrap();
 
-        // recorded under an older casing of the same path - case-only rename
+        // 记录在同一路径的旧大小写之下——纯大小写改名
         let old = dir.utf8_join("TRACK.FLAC");
         let record = shared_record_with(&old, ts);
 
@@ -497,13 +495,13 @@ mod tests {
             run_rescan(vec![path.clone()], Some(record), true);
 
         if !is_case_insensitive(&dir.utf8_path()) {
-            // on a case-sensitive volume these are different files - treat as new
+            // 在大小写敏感的卷上它们是两个不同的文件——按新文件处理
             assert_eq!(count, 1);
             assert_eq!(path_rx.blocking_recv().unwrap().path, path);
             return;
         }
 
-        // timestamp unchanged by the rename - relocate but don't re-read
+        // 改名没有改变时间戳——只搬迁，不重读
         assert_eq!(count, 0);
         assert!(path_rx.blocking_recv().is_none());
         assert_eq!(relocate_rx.blocking_recv(), Some((old, path, ts)));
@@ -528,7 +526,7 @@ mod tests {
             return;
         }
 
-        // renamed and modified - relocate with the old timestamp, then re-read
+        // 既改名又修改过——带着旧时间戳搬迁，然后再重读
         assert_eq!(count, 1);
         assert_eq!(path_rx.blocking_recv().unwrap().path, path);
         assert_eq!(relocate_rx.blocking_recv(), Some((old, path, UNIX_EPOCH)));
@@ -563,7 +561,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let mut scan_record = record_of(&[&path]);
 
-        // rescan of just the file (matches on location)
+        // 只重扫这一个文件（按 location 匹配）
         let updated =
             reconcile_rescan_paths(&pool, &mut scan_record, std::slice::from_ref(&path), &[]).await;
         assert!(updated.is_empty());
@@ -609,7 +607,7 @@ mod tests {
         )
         .await;
 
-        // whole tree is gone - match has to cover nested paths, not just direct children
+        // 整棵树都没了——匹配必须覆盖嵌套路径，而不只是直接子项
         std::fs::remove_dir_all(&artist_dir).unwrap();
         let mut scan_record = record_of(&[&path1, &path2]);
 
@@ -621,12 +619,10 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_removes_deleted_windows_style_tree() {
-        // Windows locations use backslashes. Production stores canonicalized
-        // (`\\?\`-prefixed) paths because the scanner canonicalizes every
-        // root, while a caller may pass the plain spelling:
-        // canonicalize_or_keep walks up to the existing `C:\` ancestor and
-        // rejoins the tail under its verbatim prefix, so the two forms must
-        // still match in the folder and prefix queries.
+        // Windows 的位置用反斜杠。生产存的是规范化过的路径（带 `\\?\` 前缀），
+        // 因为扫描器会对每个根做规范化，而调用方可能传的是普通拼写：
+        // canonicalize_or_keep 会向上找到确实存在的 `C:\` 祖先，并在其 verbatim
+        // 前缀下重新拼回尾部，所以这两种形态在文件夹查询与前缀查询里仍必须匹配。
         let (_dir, pool) = create_test_pool("reconcile-test").await;
         let _stored_root = Utf8PathBuf::from(r"\\?\C:\Music\artist");
         let path1 = Utf8PathBuf::from(r"\\?\C:\Music\artist\track1.flac");

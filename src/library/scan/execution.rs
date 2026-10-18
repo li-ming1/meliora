@@ -42,32 +42,27 @@ use crate::{
 
 const BATCH_SIZE: usize = 50;
 
-/// Intermediate checkpoints serialize the whole record map, which costs
-/// O(library size) per write (~0.3 s at 100k records, measured in
-/// record.rs::tests::bench_checkpoint_serialization; the lock-held postcard
-/// pass is only ~10 ms of that - zlib dominates). Writing one per 50-file
-/// batch would let that dominate fast scans, so spawned checkpoint writes are
-/// gated on this clock interval. The first checkpoint of a scan still goes out
-/// immediately, cancellation writes one unconditionally in finish_cancelled,
-/// and completion writes the full record in finish_completed - a crash loses
-/// at most this much scan progress.
+/// 中途检查点要把整张记录表序列化一遍，代价是每次写入 O(库规模)（10 万条记录实测
+/// ~0.3 s，见 record.rs::tests::bench_checkpoint_serialization；其中持锁的 postcard
+/// 那一趟只占 ~10 ms，大头是 zlib）。若每个 50 文件的批次都写一次，快速扫描就会被它
+/// 主导，所以派生出去的检查点写入受这个时钟间隔闸门约束。一次扫描的首个检查点仍立即
+/// 写出，finish_cancelled 无条件写一个，finish_completed 写完整记录——崩溃最多丢失
+/// 这么长的扫描进度。
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Recoverable failures tallied over a single scan.
+/// 单次扫描内累计的可恢复失败。
 ///
-/// Every count here was previously an `expect`/`panic` that killed the scanner
-/// task mid-flight. Since `start_scanner` drops its `JoinHandle`, that surfaced
-/// to the user as a scan frozen on "scanning" forever with nothing in the UI.
-/// A degraded scan now runs to completion (state returns to idle/watching) and
-/// reports what was lost once, at the end.
+/// 这里每一项过去都是一个 `expect`/`panic`，会在半途把扫描任务打死。由于
+/// `start_scanner` 丢弃了自己的 `JoinHandle`，用户看到的是扫描永远停在「正在扫描」
+/// 而 UI 毫无动静。现在降级扫描仍会跑到完成（状态回到 idle/watching），并在结束时
+/// 一次性报告丢了什么。
 #[derive(Default)]
 struct ScanFailures {
-    /// `BEGIN`/`COMMIT` refused: whole batches were dropped, and those tracks
-    /// stay unindexed until a later scan picks them up.
+    /// `BEGIN`/`COMMIT` 被拒：整批被丢弃，那些曲目要等后续扫描才会被索引。
     transaction: u64,
-    /// A discovery worker panicked (`JoinError`) instead of returning a count.
+    /// 某个 discovery 工作线程 panic（`JoinError`）而没有返回计数。
     worker_panic: u64,
-    /// Individual files dropped because no transaction could be opened.
+    /// 因为开不出事务而被丢弃的单个文件数。
     file: u64,
 }
 
@@ -76,10 +71,9 @@ impl ScanFailures {
         self.transaction == 0 && self.worker_panic == 0 && self.file == 0
     }
 
-    /// One toast per scan, most informative category first: a worker panic
-    /// means the scan is incomplete, a file count says how much was lost, and
-    /// the transaction count is only the fall-back when nothing was dropped
-    /// (a bare `COMMIT` failure). The full breakdown stays in the log.
+    /// 每次扫描只弹一条 toast，信息量最大的类别优先：工作线程 panic 意味着扫描不完整，
+    /// 文件计数说明丢了多少，事务计数只在什么都没丢下时（光一次 `COMMIT` 失败）兜底。
+    /// 完整拆分留在日志里。
     fn report(&self) {
         if self.is_empty() {
             return;
@@ -91,8 +85,8 @@ impl ScanFailures {
             self.worker_panic, self.file, self.transaction
         );
 
-        // NOTE: the placeholder is deliberately not called `count` - `tr!`
-        // reserves that name for plural selection and types it as `isize`.
+        // 注意：占位符刻意不叫 `count`——`tr!` 把这个名字留给单复数选择，
+        // 并把它标成 `isize` 类型。
         if self.worker_panic > 0 {
             emit_toast(Toast::error(tr!(
                 "SCAN_FAILED_WORKER",
@@ -115,12 +109,11 @@ impl ScanFailures {
     }
 }
 
-/// Open a transaction if the previous commit closed it. Leaves `tx` as `None`
-/// when the database refuses, and counts the miss: callers then skip the write
-/// instead of panicking.
+/// 上一次提交把事务关掉时才重新开启。数据库拒绝时 `tx` 保持 `None` 并计入这次缺失：
+/// 调用方于是跳过写入而不是 panic。
 ///
-/// Takes the fields separately rather than `&mut self` so callers can hold the
-/// resulting transaction alongside other fields of the scan.
+/// 这里逐个字段接收而不是取 `&mut self`，这样调用方可以把拿到的事务与扫描的其它字段
+/// 同时持有。
 async fn ensure_tx(
     tx: &mut Option<Transaction<'static, Sqlite>>,
     pool: &SqlitePool,
@@ -178,20 +171,19 @@ pub(super) struct ScanExecution<'a> {
     pending_relocations: Vec<Relocation>,
     scan_checkpoint: Arc<Mutex<FxHashMap<Utf8PathBuf, SystemTime>>>,
     checkpoint_handle: Option<JoinHandle<()>>,
-    /// Last time a ScanProgress event was emitted; progress is throttled so a
-    /// 100k-file scan doesn't flood the header with notify-per-5-files.
+    /// 上一次发出 ScanProgress 事件的时机；进度做了节流，免得 10 万文件的扫描
+    /// 用每 5 个文件一次 notify 淹没头部。
     last_progress_report: Cell<Option<Instant>>,
-    /// Last time a checkpoint write was spawned; clock-gated by
-    /// CHECKPOINT_INTERVAL because each write serializes the whole record map.
+    /// 上一次派生检查点写入的时机；因为每次写入都要序列化整张记录表，
+    /// 所以由 CHECKPOINT_INTERVAL 做时钟闸门。
     last_checkpoint_write: Cell<Option<Instant>>,
 }
 
 impl<'a> ScanExecution<'a> {
     pub(super) async fn new(active: ActiveScan, context: ScanExecutionContext<'a>) -> Self {
         let mut failures = ScanFailures::default();
-        // A scan that cannot even open a transaction still has to run to
-        // completion so the watcher is refreshed and the UI leaves the
-        // "scanning" state; every write is skipped and counted instead.
+        // 连事务都开不出的扫描也必须跑到完成，这样监视器会刷新、UI 会离开
+        // 「正在扫描」状态；每次写入改为跳过并计数。
         let tx = match context.pool.begin().await {
             Ok(tx) => Some(tx),
             Err(error) => {
@@ -260,7 +252,7 @@ impl<'a> ScanExecution<'a> {
                             self.active.cancel_flag.store(true, Ordering::Relaxed);
                             self.active.meta_rx.close();
                             self.active.decode_fail_rx.close();
-                            // unblock discovery if it's stuck on a full relocate channel
+                            // 若 discovery 卡在已满的 relocate 通道上，这里要让它继续
                             self.active.relocate_rx.close();
                             break;
                         }
@@ -284,8 +276,8 @@ impl<'a> ScanExecution<'a> {
                     match result {
                         Ok(total) => self.discovered_total = total,
                         Err(error) => {
-                            // A panicking discovery worker must not take the
-                            // whole scan down; finish with whatever was found.
+                            // panic 的 discovery 工作线程不能把整次扫描带下去；
+                            // 用已经 discovery 到的内容收尾。
                             error!("discover task panicked: {:?}", error);
                             self.failures.worker_panic += 1;
                         }
@@ -347,8 +339,7 @@ impl<'a> ScanExecution<'a> {
                     self.processed += 1;
                     match result {
                         Some(Ok(outcome)) => {
-                            // record skipped files so later scans don't re-read them until mtime
-                            // changes
+                            // 记下被跳过的文件，后续扫描在 mtime 变化之前不必重读它们
                             self.pending_commit.push((path, timestamp));
                             self.items_in_tx += 1;
                             self.mutations += 1;
@@ -408,10 +399,8 @@ impl<'a> ScanExecution<'a> {
         }
     }
 
-    /// Whether this scan still has uncommitted work: unflushed write caches,
-    /// items in the open transaction, or relocations waiting on the record.
-    /// The same condition guards the final commit on both the completed and
-    /// the cancelled path.
+    /// 本次扫描是否仍有未提交的工作：未冲刷的写入缓存、已开事务里的条目，或还等着写进
+    /// 记录表的搬迁项。完成路径与取消路径的最终提交都由同一个条件把门。
     fn has_pending_writes(&self) -> bool {
         !self.active.caches.pending_albums.is_empty()
             || !self.active.caches.pending_tracks.is_empty()
@@ -500,8 +489,8 @@ impl<'a> ScanExecution<'a> {
         if !self.processed.is_multiple_of(5) {
             return;
         }
-        // The header repaints per event; 250 ms is well past what a progress
-        // bar needs, so shed the rest at the source instead of per-notify.
+        // 头部每个事件重绘一次；250 ms 远超进度条的需要，所以其余事件在源头丢掉，
+        // 而不是逐次 notify。
         const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
         let now = Instant::now();
         if let Some(last) = self.last_progress_report.get()
@@ -563,8 +552,8 @@ impl<'a> ScanExecution<'a> {
 
     async fn drain_relocations(&mut self) {
         while let Ok((old, new, timestamp)) = self.active.relocate_rx.try_recv() {
-            // `relocate` opens the transaction itself and counts the miss if it
-            // cannot, so a failed BEGIN here no longer kills the scan.
+            // `relocate` 自己开事务，开不出就计入缺失，因此这里的 BEGIN 失败
+            // 不再会杀掉扫描。
             self.relocate(old, new, timestamp).await;
         }
     }
@@ -636,7 +625,7 @@ impl<'a> ScanExecution<'a> {
         let scan_record = self.take_scan_record().await;
         write_scan_record(&scan_record, self.context.scan_record_path).await;
 
-        // full scan record is written - checkpoint can go
+        // 完整扫描记录已写出——检查点可以放行
         if let Err(error) = tokio::fs::remove_file(self.context.checkpoint_path).await
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -699,8 +688,8 @@ impl<'a> ScanExecution<'a> {
             Arc::new(Mutex::new(ScanRecord::new_current())),
         )) {
             Ok(mutex) => mutex.into_inner(),
-            // A worker we failed to join still holds a clone. Copy the record
-            // rather than killing an otherwise finished scan over bookkeeping.
+            // join 失败的工作线程仍持有一份克隆。宁可复制扫描记录，
+            // 也别因为记账问题毁掉一次本已完成的扫描。
             Err(shared) => shared.lock().await.clone(),
         }
     }
@@ -811,14 +800,13 @@ struct PendingCommitState<'a> {
 
 struct CommitOptions {
     update_checkpoint: bool,
-    /// When true, a successful commit merges the batch into the shared scan
-    /// record, draining both pending lists.
+    /// 为 true 时，提交成功会把这一批并入共享扫描记录，并同时排空两个待处理列表。
     update_record: bool,
     run_retry: bool,
     label: &'static str,
 }
 
-/// Flush pending artists, commit, and update records. Clear uncommitted caches on failure.
+/// 冲刷待处理歌手、提交并更新记录。失败时清掉未提交的缓存。
 async fn commit_batch<'tx, 'state>(
     pool: &SqlitePool,
     tx: &mut Option<sqlx::Transaction<'tx, sqlx::Sqlite>>,
@@ -827,8 +815,8 @@ async fn commit_batch<'tx, 'state>(
     state: PendingCommitState<'state>,
     options: CommitOptions,
 ) {
-    // With no transaction (an earlier BEGIN failed) there is nothing to flush
-    // into: drop the batch and let the next scan retry these files.
+    // 没有事务（早先的 BEGIN 失败）就没有可冲刷的目标：丢弃这一批，让这些文件
+    // 交给下一次扫描重试。
     let Some(mut tx) = tx.take() else {
         error!("No scan transaction available to commit {}", options.label);
         clear_failed_batch(
