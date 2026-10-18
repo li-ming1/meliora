@@ -3,8 +3,10 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+    FromRow, SqlitePool,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+    },
 };
 use tracing::debug;
 
@@ -243,37 +245,61 @@ pub async fn list_tracks(
         .await
 }
 
+/// 单参数查询的共用收尾：结果全进程共享、从不原地改写，所以直接包成 `Arc`
+/// （同一份结果只存一次，而不是每个调用点各拷一份 vector）。`T` 由调用点的
+/// 返回类型推出；`query` 仍由各站点 `include_str!` 传入，SQL 留在看得见的位置。
+async fn fetch_shared_vec<T>(
+    pool: &SqlitePool,
+    query: &'static str,
+    id: i64,
+) -> sqlx::Result<Arc<Vec<T>>>
+where
+    T: for<'r> FromRow<'r, SqliteRow> + Send + Unpin,
+{
+    Ok(Arc::new(
+        sqlx::query_as::<_, T>(query)
+            .bind(id)
+            .fetch_all(pool)
+            .await?,
+    ))
+}
+
+/// 同上，主键单行版。
+async fn fetch_shared_one<T>(
+    pool: &SqlitePool,
+    query: &'static str,
+    id: i64,
+) -> sqlx::Result<Arc<T>>
+where
+    T: for<'r> FromRow<'r, SqliteRow> + Send + Unpin,
+{
+    Ok(Arc::new(
+        sqlx::query_as::<_, T>(query)
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    ))
+}
+
 pub async fn list_tracks_in_album(
     pool: &SqlitePool,
     album_id: i64,
 ) -> sqlx::Result<Arc<Vec<Track>>> {
     let query = include_str!("../../queries/library/find_tracks_in_album.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as::<_, Track>(query)
-            .bind(album_id)
-            .fetch_all(pool)
-            .await?,
-    ))
+    fetch_shared_vec(pool, query, album_id).await
 }
 
 pub async fn get_album_by_id(pool: &SqlitePool, album_id: i64) -> sqlx::Result<Arc<Album>> {
     let query = include_str!("../../queries/library/find_album_metadata_by_id.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as(query).bind(album_id).fetch_one(pool).await?,
-    ))
+    fetch_shared_one(pool, query, album_id).await
 }
 
 pub async fn get_artist_by_id(pool: &SqlitePool, artist_id: i64) -> sqlx::Result<Arc<Artist>> {
     let query = include_str!("../../queries/library/find_artist_by_id.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as(query)
-            .bind(artist_id)
-            .fetch_one(pool)
-            .await?,
-    ))
+    fetch_shared_one(pool, query, artist_id).await
 }
 
 pub async fn list_artists(
@@ -322,12 +348,7 @@ pub async fn get_artist_with_counts(
 ) -> sqlx::Result<Arc<ArtistWithCounts>> {
     let query = include_str!("../../queries/library/find_artist_with_counts_by_id.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as(query)
-            .bind(artist_id)
-            .fetch_one(pool)
-            .await?,
-    ))
+    fetch_shared_one(pool, query, artist_id).await
 }
 
 pub async fn list_liked_tracks_by_artist(
@@ -356,12 +377,7 @@ pub async fn list_liked_tracks_by_artist(
         }
     };
 
-    Ok(Arc::new(
-        sqlx::query_as::<_, Track>(query)
-            .bind(artist_id)
-            .fetch_all(pool)
-            .await?,
-    ))
+    fetch_shared_vec(pool, query, artist_id).await
 }
 
 pub async fn list_all_tracks_by_artist(
@@ -370,12 +386,7 @@ pub async fn list_all_tracks_by_artist(
 ) -> sqlx::Result<Arc<Vec<Track>>> {
     let query = include_str!("../../queries/library/find_all_tracks_by_artist.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as::<_, Track>(query)
-            .bind(artist_id)
-            .fetch_all(pool)
-            .await?,
-    ))
+    fetch_shared_vec(pool, query, artist_id).await
 }
 
 pub async fn list_standalone_tracks_by_artist(
@@ -404,20 +415,13 @@ pub async fn list_standalone_tracks_by_artist(
         }
     };
 
-    Ok(Arc::new(
-        sqlx::query_as::<_, Track>(query)
-            .bind(artist_id)
-            .fetch_all(pool)
-            .await?,
-    ))
+    fetch_shared_vec(pool, query, artist_id).await
 }
 
 pub async fn get_track_by_id(pool: &SqlitePool, track_id: i64) -> sqlx::Result<Arc<Track>> {
     let query = include_str!("../../queries/library/find_track_by_id.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as(query).bind(track_id).fetch_one(pool).await?,
-    ))
+    fetch_shared_one(pool, query, track_id).await
 }
 
 pub async fn get_track_by_path(pool: &SqlitePool, path: &Path) -> sqlx::Result<Option<Arc<Track>>> {
@@ -615,12 +619,7 @@ pub async fn list_all_playlists(pool: &SqlitePool) -> sqlx::Result<Arc<Vec<Playl
 pub async fn get_playlist(pool: &SqlitePool, playlist_id: i64) -> sqlx::Result<Arc<Playlist>> {
     let query = include_str!("../../queries/playlist/get_playlist.sql");
 
-    Ok(Arc::new(
-        sqlx::query_as(query)
-            .bind(playlist_id)
-            .fetch_one(pool)
-            .await?,
-    ))
+    fetch_shared_one(pool, query, playlist_id).await
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -647,12 +646,7 @@ pub async fn list_playlist_tracks(
     // 真要治 2 万行那一档，得让索引同时覆盖 track_id 与 position
     // ——`(playlist_id, track_id, position)` 是迁移成本，本机歌单规模远未触发。
     // 契约测试 `list_playlist_tracks_returns_position_ascending` 与形态无关，保留。
-    Ok(Arc::new(
-        sqlx::query_as(query)
-            .bind(playlist_id)
-            .fetch_all(pool)
-            .await?,
-    ))
+    fetch_shared_vec(pool, query, playlist_id).await
 }
 
 pub async fn list_playlist_tracks_sorted(
@@ -696,12 +690,7 @@ pub async fn list_playlist_tracks_sorted(
         }
     };
 
-    Ok(Arc::new(
-        sqlx::query_as(query)
-            .bind(playlist_id)
-            .fetch_all(pool)
-            .await?,
-    ))
+    fetch_shared_vec(pool, query, playlist_id).await
 }
 
 pub async fn reorder_playlist(
