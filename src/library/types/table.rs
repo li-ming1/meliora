@@ -285,6 +285,23 @@ async fn prefetch_rows_chunked<Row: PrefetchRow + Send + Unpin>(
     }
 }
 
+/// 三个行缓存实现共用的 `prefetch_rows` 尾巴：空 id 集合直接不 spawn（返回
+/// `None`），否则把分块预取装箱成 `'static` future。id 映射仍留在各站点，
+/// 因为三种 Identifier 的换算方式不同。
+/// `Sync`：装箱成 `BoxFuture`（Send 约束）时，捕获的 `&'static Mutex<RowCache<…>>`
+/// 必须可跨线程共享。具体行类型在三个站点上都满足，泛型化后必须显式写出。
+fn prefetch_ids<Row: PrefetchRow + Send + Sync + Unpin>(
+    cache: &'static Mutex<RowCache<i64, Row>>,
+    pool: sqlx::SqlitePool,
+    ids: Vec<i64>,
+) -> Option<BoxFuture<'static, ()>> {
+    if ids.is_empty() {
+        return None;
+    }
+
+    Some(Box::pin(prefetch_rows_chunked(cache, pool, ids)))
+}
+
 /// 按显示顺序给出的各列默认宽度（逻辑像素），供下面的 `default_columns`
 /// 实现共用。
 fn default_column_widths<C>(
@@ -378,16 +395,11 @@ impl TableData<AlbumColumn> for Album {
         pool: sqlx::SqlitePool,
         ids: &[Self::Identifier],
     ) -> Option<BoxFuture<'static, ()>> {
-        let ids: Vec<i64> = ids.iter().map(|id| id.0 as i64).collect();
-        if ids.is_empty() {
-            return None;
-        }
-
-        Some(Box::pin(prefetch_rows_chunked(
+        prefetch_ids(
             album_row_cache(),
             pool,
-            ids,
-        )))
+            ids.iter().map(|id| id.0 as i64).collect(),
+        )
     }
 
     fn clear_row_cache() {
@@ -767,16 +779,7 @@ impl TableData<TrackColumn> for Track {
         pool: sqlx::SqlitePool,
         ids: &[Self::Identifier],
     ) -> Option<BoxFuture<'static, ()>> {
-        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
-        if ids.is_empty() {
-            return None;
-        }
-
-        Some(Box::pin(prefetch_rows_chunked(
-            track_row_cache(),
-            pool,
-            ids,
-        )))
+        prefetch_ids(track_row_cache(), pool, ids.iter().map(|id| id.0).collect())
     }
 
     fn clear_row_cache() {
@@ -863,16 +866,7 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
         pool: sqlx::SqlitePool,
         ids: &[Self::Identifier],
     ) -> Option<BoxFuture<'static, ()>> {
-        let ids: Vec<i64> = ids.to_vec();
-        if ids.is_empty() {
-            return None;
-        }
-
-        Some(Box::pin(prefetch_rows_chunked(
-            artist_row_cache(),
-            pool,
-            ids,
-        )))
+        prefetch_ids(artist_row_cache(), pool, ids.to_vec())
     }
 
     fn clear_row_cache() {
