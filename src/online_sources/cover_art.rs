@@ -15,6 +15,7 @@
 //! backdrop is mush" report of 2026-09-29 — the ladder plus the winner log
 //! line make the resolution the backdrop actually gets observable.
 
+use crate::sync::RecoveredMutex;
 use std::{
     collections::HashSet,
     sync::{LazyLock, Mutex},
@@ -42,17 +43,11 @@ static VARIANT_MISSES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 fn variant_missed(url: &str) -> bool {
-    VARIANT_MISSES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(url)
+    VARIANT_MISSES.lock_recovered().contains(url)
 }
 
 fn note_variant_miss(url: &str) {
-    VARIANT_MISSES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(url.to_string());
+    VARIANT_MISSES.lock_recovered().insert(url.to_string());
 }
 
 /// The display-variant URLs for `url`, largest first, ending with the

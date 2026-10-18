@@ -2,15 +2,11 @@
 //! 文本，其措辞是既有的日志排查口径，不要随手改写。
 //!
 //! 除凭据文件外，client 逐字共享的小件也收编在此：`UserProfile`、
-//! `recovered_lock`（毒化锁恢复）、`gateway_http_builder`（网关超时）与
-//! `credential_present`。各自协议逻辑（签名/cookie 合成）不在此层，
-//! 也绝不合并。
+//! `gateway_http_builder`（网关超时）与 `credential_present`。各自协议
+//! 逻辑（签名/cookie 合成）不在此层，也绝不合并。毒化锁恢复统一在
+//! `crate::sync`。
 
-use std::{
-    path::Path,
-    sync::{Mutex, MutexGuard},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use zed_reqwest::{Client, ClientBuilder};
 
@@ -72,13 +68,6 @@ pub fn save<T: serde::Serialize + ?Sized>(value: &T, path: &Path, provider: &str
 pub struct UserProfile {
     pub nickname: String,
     pub avatar_url: String,
-}
-
-/// Locks `mutex`, recovering the inner value if the lock was poisoned by a
-/// panicked thread rather than panicking the caller. The app installs a panic
-/// hook, so a poisoned session lock must not take down playback or the UI.
-pub fn recovered_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Builder for the online gateway's shared HTTP client: every request is

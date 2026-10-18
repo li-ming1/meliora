@@ -7,6 +7,7 @@ use lrc::{LrcLine, LrcWord, parse_lrc};
 #[cfg(feature = "kugou")]
 use crate::ui::kugou::{OnlineLyric, fetch_online_lyric};
 
+use crate::sync::RecoveredRwLock;
 use crate::ui::design::ICON_MD;
 use crate::{
     library::scan::ScanEvent,
@@ -575,12 +576,7 @@ impl Lyrics {
         let item = {
             let queue = queue.read(cx);
             let position = queue.position;
-            queue
-                .data
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(position)
-                .cloned()
+            queue.data.read_recovered().get(position).cloned()
         };
         let mut cover_key = None;
         if let Some(item) = &item {

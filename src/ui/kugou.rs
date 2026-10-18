@@ -22,6 +22,7 @@ use cntp_i18n::tr;
 use gpui::{App, SharedString};
 use serde_json::Value;
 
+use crate::sync::RecoveredRwLock;
 use crate::{
     kugou,
     playback::queue::{DataSource, OnlineIdentity, QueueItemData, QueueItemUIData},
@@ -560,22 +561,18 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
                 .read(cx)
                 .data
                 .clone();
-            let existing = queue_data
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .position(|item| {
-                    crate::media::is_http_path(item.get_path())
-                        && mixsongid_in_url(&item.get_path().to_string_lossy())
-                            .is_some_and(|id| id == track.mix_song_id)
-                });
+            let existing = queue_data.read_recovered().iter().position(|item| {
+                crate::media::is_http_path(item.get_path())
+                    && mixsongid_in_url(&item.get_path().to_string_lossy())
+                        .is_some_and(|id| id == track.mix_song_id)
+            });
 
             if let Some(index) = existing {
                 // Re-check under the write lock (the queue may have changed
                 // since the read above): only refresh when the entry at this
                 // index is still the same track, or an interleaved mutation
                 // could land this URL on a different song.
-                let mut guard = queue_data.write().unwrap_or_else(|e| e.into_inner());
+                let mut guard = queue_data.write_recovered();
                 let entries = Arc::make_mut(&mut guard);
                 let same_track = entries.get(index).is_some_and(|item| {
                     crate::media::is_http_path(item.get_path())
@@ -676,10 +673,7 @@ pub fn like_track(cx: &mut App, track: &KugouTrackInfo) {
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
                 if error_code == 0 && status == 1 {
-                    liked_set()
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(track.hash.clone());
+                    liked_set().write_recovered().insert(track.hash.clone());
                     emit_toast(Toast::success(tr!(
                         "KUGOU_LIKE_ADDED",
                         "Added to your KuGou liked songs"
@@ -778,11 +772,7 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
         // RwLock guard temporary would live for the whole match — across the
         // `None` arm's network `.await` — starving like-state writers for the
         // entire fetch (clippy::await_holding_lock).
-        let cached = liked_fileids()
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&hash)
-            .copied();
+        let cached = liked_fileids().read_recovered().get(&hash).copied();
         let fileid = match cached {
             Some(fid) => Some(fid),
             None => fetch_liked_entries().await.and_then(|entries| {
@@ -813,14 +803,8 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
 
         cx.update(|_cx| match request {
             Ok(Ok(_)) => {
-                liked_set()
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&hash);
-                liked_fileids()
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&hash);
+                liked_set().write_recovered().remove(&hash);
+                liked_fileids().write_recovered().remove(&hash);
                 emit_toast(Toast::success(tr!(
                     "KUGOU_LIKE_REMOVED",
                     "Removed from your KuGou liked songs"

@@ -19,6 +19,7 @@ use rustc_hash::FxHashMap;
 use tokio::sync::mpsc::Sender;
 
 use crate::library::scan::fs_case::{fold_path, same_file};
+use crate::sync::RecoveredMutex;
 
 #[cfg(test)]
 pub(crate) use directory::read_scan_directory;
@@ -73,25 +74,18 @@ pub(crate) struct FolderArtObservations {
 
 impl FolderArtObservations {
     pub(crate) fn record(&self, directory: Utf8PathBuf, candidate: Option<FolderArtCandidate>) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(directory, candidate);
+        self.inner.lock_recovered().insert(directory, candidate);
     }
 
     pub(crate) fn snapshot(&self) -> FolderArtObservationMap {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.inner.lock_recovered().clone()
     }
 
     /// The last observation for `directory`. The outer `None` means the
     /// directory hasn't been observed yet; the inner one that it was observed
     /// but holds no folder art candidate.
     pub(crate) fn get(&self, directory: &Utf8Path) -> Option<Option<FolderArtCandidate>> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(directory)
-            .cloned()
+        self.inner.lock_recovered().get(directory).cloned()
     }
 }
 

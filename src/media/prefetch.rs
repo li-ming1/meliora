@@ -12,8 +12,9 @@
 //! makes the range source re-request from its current position), turning
 //! a silently dead TCP connection into a fresh ranged request.
 
+use crate::sync::{RecoveredCondvar, RecoveredMutex};
 use std::io::{self, Read, Seek, SeekFrom};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -91,12 +92,6 @@ struct Shared<S> {
     signal: Condvar,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// Fills the buffer ahead of the decoder. Owns the source; exits at the
 /// next checkpoint after [`PrefetchSource::drop`] signals shutdown.
 ///
@@ -114,7 +109,7 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
         // mark. my_epoch tags this fill pass so results from before a
         // newer seek are discarded.
         let (my_epoch, seek_target) = {
-            let mut st = lock(&shared.state);
+            let mut st = shared.state.lock_recovered();
             loop {
                 if st.shutdown {
                     return;
@@ -125,25 +120,22 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                 if st.buf.len() - st.read_pos < HIGH_WATER_BYTES && !st.eof {
                     break (st.epoch, None);
                 }
-                st = shared
-                    .signal
-                    .wait(st)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                st = shared.signal.wait_recovered(st);
             }
         };
         if let Some(target) = seek_target {
-            let mut source = lock(&shared.source);
+            let mut source = shared.source.lock_recovered();
             let _ = source.seek(SeekFrom::Start(target));
         }
 
         let mut chunk = [0u8; FILL_CHUNK];
         let read = {
-            let mut source = lock(&shared.source);
+            let mut source = shared.source.lock_recovered();
             source.read(&mut chunk)
         };
         match read {
             Ok(0) => {
-                let mut st = lock(&shared.state);
+                let mut st = shared.state.lock_recovered();
                 if st.epoch == my_epoch {
                     st.eof = true;
                     shared.signal.notify_all();
@@ -151,7 +143,7 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
             }
             Ok(n) => {
                 consecutive_errors = 0;
-                let mut st = lock(&shared.state);
+                let mut st = shared.state.lock_recovered();
                 if st.epoch == my_epoch {
                     st.buf.extend_from_slice(&chunk[..n]);
                     shared.signal.notify_all();
@@ -159,7 +151,7 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
             }
             Err(e) => {
                 let dead = {
-                    let mut source = lock(&shared.source);
+                    let mut source = shared.source.lock_recovered();
                     let dead = source.url_dead();
                     // Zero-delta seek: drops the dead connection and makes the
                     // next read re-request from the current position.
@@ -167,7 +159,7 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                     dead
                 };
                 if dead {
-                    let mut st = lock(&shared.state);
+                    let mut st = shared.state.lock_recovered();
                     if st.epoch == my_epoch {
                         st.fatal = Some(format!(
                             "remote URL rejected and could not be refreshed: {e}"
@@ -236,7 +228,7 @@ impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
             .is_err()
         {
             tracing::warn!("media prefetch thread spawn failed; reading remote stream unbuffered");
-            lock(&shared.state).shutdown = true;
+            shared.state.lock_recovered().shutdown = true;
         }
         Self {
             shared,
@@ -254,7 +246,7 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
             return Ok(0);
         }
         let deadline = Instant::now() + self.stall_budget;
-        let mut st = lock(&self.shared.state);
+        let mut st = self.shared.state.lock_recovered();
         loop {
             let available = st.buf.len() - st.read_pos;
             if available > 0 {
@@ -299,7 +291,7 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
                 // buffer, so read the source directly — unbuffered, blocking
                 // for the source's own read timeout.
                 drop(st);
-                let n = lock(&self.shared.source).read(buf)?;
+                let n = self.shared.source.lock_recovered().read(buf)?;
                 self.pos += n as u64;
                 return Ok(n);
             }
@@ -313,8 +305,7 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
             st = self
                 .shared
                 .signal
-                .wait_timeout(st, deadline - now)
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .wait_timeout_recovered(st, deadline - now)
                 .0;
         }
     }
@@ -336,10 +327,13 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
         // No filler thread (spawn failed): apply the seek to the source
         // directly instead of queueing it for a filler that does not exist.
         {
-            let st = lock(&self.shared.state);
+            let st = self.shared.state.lock_recovered();
             if st.shutdown {
                 drop(st);
-                lock(&self.shared.source).seek(SeekFrom::Start(target))?;
+                self.shared
+                    .source
+                    .lock_recovered()
+                    .seek(SeekFrom::Start(target))?;
                 self.pos = target;
                 return Ok(target);
             }
@@ -347,7 +341,7 @@ impl<S: Read + Seek + Send> Seek for PrefetchSource<S> {
         // Lazy re-anchor, mirroring the range source's own seek: the filler
         // applies the target before its next read, so no in-flight read can
         // leave the stream positioned past the target.
-        let mut st = lock(&self.shared.state);
+        let mut st = self.shared.state.lock_recovered();
         st.epoch += 1;
         st.pending_seek = Some(target);
         st.clear_stream();
@@ -369,7 +363,7 @@ impl<S: Read + Seek + Send> MediaSource for PrefetchSource<S> {
 
 impl<S> Drop for PrefetchSource<S> {
     fn drop(&mut self) {
-        lock(&self.shared.state).shutdown = true;
+        self.shared.state.lock_recovered().shutdown = true;
         self.shared.signal.notify_all();
         // The filler exits at its next checkpoint. Detached on purpose:
         // joining could block the playback thread for one inner read

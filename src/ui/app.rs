@@ -16,6 +16,7 @@ use gpui_platform::current_platform;
 use prelude::FluentBuilder;
 use tracing::{debug, error, info};
 
+use crate::sync::{RecoveredMutex, RecoveredRwLock};
 use crate::{
     controllers::{init_pbc_task, register_pbc_event_handlers},
     library::{
@@ -672,10 +673,7 @@ pub fn run() -> anyhow::Result<()> {
         .detach();
 
         if !language.is_empty() {
-            I18N_MANAGER
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .locale = Locale::new_from_locale_identifier(language);
+            I18N_MANAGER.write_recovered().locale = Locale::new_from_locale_identifier(language);
         }
 
         let (scan_interface, scan_events) = start_scanner(pool.clone(), scanning_settings);
@@ -787,7 +785,7 @@ pub fn run() -> anyhow::Result<()> {
                 // runs through RUNTIME's context on the background thread.
                 let pending_rows = {
                     let stats = cx.global::<crate::stats::StatsHandle>();
-                    let mut recorder = stats.0.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut recorder = stats.0.lock_recovered();
                     recorder.on_state(crate::playback::thread::PlaybackState::Stopped);
                     recorder.take_pending()
                 };
@@ -862,8 +860,7 @@ fn refresh_restored_online_urls(
     use crate::playback::queue::OnlineIdentity;
 
     let mut stale: Vec<(usize, OnlineIdentity)> = queue
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .read_recovered()
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
@@ -897,7 +894,7 @@ fn refresh_restored_online_urls(
     // 单次拿锁完成全部位置匹配：闭包里逐元素重锁在长队列下是 O(n) 次
     // 获取，且两次持有之间纯同步、无 await，合并安全。
     if let Some(current) = current_track_path.as_ref() {
-        let q = queue.read().unwrap_or_else(|e| e.into_inner());
+        let q = queue.read_recovered();
         if let Some(pos) = stale
             .iter()
             .position(|(idx, _)| q.get(*idx).is_some_and(|item| item.get_path() == current))
@@ -910,8 +907,7 @@ fn refresh_restored_online_urls(
     cx.spawn(async move |cx| {
         for (idx, identity) in stale {
             let display = queue
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .read_recovered()
                 .get(idx)
                 .and_then(|item| item.persisted_display())
                 .unwrap_or((None, None, None, None));

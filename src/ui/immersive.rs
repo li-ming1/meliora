@@ -65,6 +65,7 @@ use gpui::{
 };
 use tracing::warn;
 
+use crate::sync::RecoveredRwLock;
 use crate::{
     playback::{interface::PlaybackInterface, thread::PlaybackState},
     settings::SettingsGlobal,
@@ -482,12 +483,7 @@ impl ImmersiveView {
         let (position, item) = {
             let queue = self.queue.read(cx);
             let position = queue.position;
-            let item = queue
-                .data
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(position)
-                .cloned();
+            let item = queue.data.read_recovered().get(position).cloned();
             (position, item)
         };
         let track_path = self
@@ -629,8 +625,7 @@ impl ImmersiveView {
             let queue = self.queue.read(cx);
             queue
                 .data
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .read_recovered()
                 .get(queue.position + 1)
                 .cloned()?
         };

@@ -9,6 +9,7 @@ use std::{
 
 use cntp_i18n::tr;
 
+use crate::sync::RecoveredRwLock;
 use crate::{
     kugou::KugouClient,
     media::{
@@ -211,11 +212,7 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
     // 去重检查是同步临界区，不跨 await 持锁（对齐 kugou.rs 的
     // PENDING_FETCHES 模式）。
     let key = track.hash.clone();
-    if !pending_downloads()
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key.clone())
-    {
+    if !pending_downloads().write_recovered().insert(key.clone()) {
         tracing::info!(hash = %track.hash, "kugou download already in flight; ignoring click");
         return;
     }
@@ -248,10 +245,7 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
             Err(err) => Err(err.to_string()),
         };
         // 无论成败都移除进行中标记（防失败后永远无法重下），再发提示。
-        pending_downloads()
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&key);
+        pending_downloads().write_recovered().remove(&key);
 
         cx.update(|_cx| match result {
             Ok(path) => emit_toast(Toast::success(tr!(

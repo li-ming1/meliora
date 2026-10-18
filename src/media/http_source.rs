@@ -34,6 +34,7 @@ use zed_reqwest::{
 };
 
 use crate::media::{symphonia::SymphoniaProvider, traits::MediaStream};
+use crate::sync::RecoveredMutex;
 
 /// Shared client for media streaming. Connection pooling keeps sequential
 /// reads cheap; no overall request timeout is set because an open-ended range
@@ -323,9 +324,7 @@ static INFLIGHT_COVERS: LazyLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
 /// 表条目（含任务被 abort 的路径：守卫随 future 丢弃而执行，堵住
 /// "managed_image 中止取回 → 条目永久残留"的无界增长缺口）。
 fn inflight_cover_gate(url: &str) -> (Arc<AsyncMutex<()>>, Option<InflightCoverGuard>) {
-    let mut inflight = INFLIGHT_COVERS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut inflight = INFLIGHT_COVERS.lock_recovered();
     match inflight.entry(url.to_string()) {
         Entry::Occupied(entry) => (entry.get().clone(), None),
         Entry::Vacant(entry) => {
@@ -359,9 +358,7 @@ impl Drop for InflightCoverGuard {
 /// 自己这一代闸门时才移除（避免误删后来者新建的）；等待方拿到闸门后
 /// 也会走到这里，保证条目最终一定被清掉。
 fn release_inflight_cover_gate(url: &str, gate: &Arc<AsyncMutex<()>>) {
-    let mut inflight = INFLIGHT_COVERS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut inflight = INFLIGHT_COVERS.lock_recovered();
     if inflight
         .get(url)
         .is_some_and(|current| Arc::ptr_eq(current, gate))
@@ -659,7 +656,7 @@ impl Read for HttpRangeSource {
                 let Some(body) = self.body.as_ref() else {
                     return Ok(0);
                 };
-                let mut body = body.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut body = body.lock_recovered();
                 crate::RUNTIME
                     .block_on(async { tokio::time::timeout(FILL_IO_TIMEOUT, body.chunk()).await })
             };

@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::hash::Hash;
 use tracing::error;
 
+use crate::sync::{RecoveredMutex, RecoveredRwLock};
 use crate::ui::components::modal::{ModalActive, modal};
 use crate::ui::components::palette::{FinderItemLeft, Palette, PaletteItem};
 
@@ -96,7 +97,7 @@ impl CommandAction {
         match self {
             Self::Value(action) => Some(f(cx, &**action)),
             Self::Named { name, cached } => {
-                let mut slot = cached.lock().unwrap_or_else(|e| e.into_inner());
+                let mut slot = cached.lock_recovered();
                 let mut guard = slot.take();
                 if guard.is_none() {
                     // A failed build leaves the slot empty, so the next call
@@ -287,10 +288,12 @@ fn load_builtin_commands(cx: &mut App) -> Vec<CommandSpec> {
                 .build_action(&e.action, None)
                 .unwrap_or_else(|err| panic!("unknown action {}: {err}", e.action));
 
-            let name = I18N_MANAGER
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .lookup(&e.name_key, &[], env!("CARGO_PKG_NAME"), None);
+            let name = I18N_MANAGER.read_recovered().lookup(
+                &e.name_key,
+                &[],
+                env!("CARGO_PKG_NAME"),
+                None,
+            );
 
             // The id and action name key `items` for the process lifetime and
             // `build_action` wants `&'static str`, so leak the one-shot,

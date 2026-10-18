@@ -3,6 +3,7 @@
 //! 的私有字段与关联函数。内部方法放宽为 `pub(super)`（宿主子树可见），
 //! `flush_pending_session` 维持 `pub`（thread.rs 主循环经原路径调用）。
 
+use crate::sync::RecoveredRwLock;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -121,7 +122,7 @@ impl QueueManager {
     /// The full snapshot always covers the playback state, so both dirty
     /// flags clear here and no pending state-only update can survive it.
     pub(super) fn send_session_with_queue(&mut self) {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         let queue_snapshot = Arc::clone(&queue);
         let queue_position = Self::cursor_index(queue.len(), self.queue_next);
         drop(queue);

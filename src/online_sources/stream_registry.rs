@@ -6,6 +6,7 @@
 //! 基线是各注册表自己的状态——共享同一实例会让去重跳写与失败回滚
 //! 覆盖/误伤另一份注册表的写入。
 
+use crate::sync::RecoveredMutex;
 use std::{path::PathBuf, sync::Mutex};
 
 /// 注册表条目上限：LRU 语义，最新条目在头部。各在线源共用同一口径。
@@ -41,7 +42,7 @@ impl StreamMapPersistence {
     /// records it as the new baseline), or `None` when it is unchanged and the
     /// write task can be skipped. The mutex is only ever held for a memcmp.
     pub fn persist_if_changed(&self, json: Vec<u8>) -> Option<Vec<u8>> {
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = self.last.lock_recovered();
         if last.as_deref() == Some(json.as_slice()) {
             return None;
         }
@@ -72,7 +73,7 @@ impl StreamMapPersistence {
                 // retries instead of silently leaving the old file in place.
                 // Only when the baseline is still our own bytes: a newer
                 // writer may have updated it meanwhile.
-                let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = self.last.lock_recovered();
                 if last.as_deref() == Some(json.as_slice()) {
                     last.take();
                 }

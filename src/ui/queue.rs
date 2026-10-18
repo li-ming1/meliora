@@ -1,3 +1,4 @@
+use crate::sync::RecoveredRwLock;
 use crate::ui::design::ICON_SM;
 use crate::{
     playback::{interface::PlaybackInterface, queue::QueueItemData},
@@ -610,7 +611,7 @@ impl Render for QueueItem {
                         // occupy those positions.
                         let remove_snapshot: Vec<(usize, Option<i64>, PathBuf)> = {
                             let queue = cx.global::<Models>().queue.read(cx);
-                            let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
+                            let queue_data = queue.data.read_recovered();
                             remove_indices
                                 .iter()
                                 .filter_map(|&i| {
@@ -715,7 +716,7 @@ impl Render for QueueItem {
                         // the captured `idx`.
                         let remove_snapshot = {
                             let queue = cx.global::<Models>().queue.read(cx);
-                            let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
+                            let queue_data = queue.data.read_recovered();
                             queue_data
                                 .get(idx)
                                 .map(|item| (item.get_db_id(), item.get_path().clone()))
@@ -861,7 +862,7 @@ fn reduced_motion_enabled(cx: &App) -> bool {
 /// check has to happen here, on the UI side.
 fn queue_slot_matches(cx: &App, index: usize, track_id: Option<i64>, path: &PathBuf) -> bool {
     let queue = cx.global::<Models>().queue.read(cx);
-    let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
+    let queue_data = queue.data.read_recovered();
     queue_data
         .get(index)
         .is_some_and(|item| item.get_db_id() == track_id && item.get_path() == path)
@@ -1015,7 +1016,7 @@ impl Queue {
     /// (resolved total plus the indices whose duration is still pending).
     fn rescan_views_and_summary(&mut self, cx: &mut Context<Self>) {
         let data = cx.global::<Models>().queue.read(cx).data.clone();
-        let queue = data.read().unwrap_or_else(|e| e.into_inner());
+        let queue = data.read_recovered();
 
         // uids are always available (no per-item entity needed), so unlike
         // the legacy entity-id keys the collection never skips rows.
@@ -1061,7 +1062,7 @@ impl Render for Queue {
 
         let queue_len = {
             let queue = cx.global::<Models>().queue.clone().read(cx);
-            queue.data.read().unwrap_or_else(|e| e.into_inner()).len()
+            queue.data.read_recovered().len()
         };
         // Resolve only the items whose duration is still pending: reading
         // them here keeps the reactive dependency on their metadata entities,
@@ -1069,7 +1070,7 @@ impl Render for Queue {
         // re-scanning the whole queue every frame.
         if !self.pending_durations.is_empty() {
             let data = cx.global::<Models>().queue.read(cx).data.clone();
-            let queue = data.read().unwrap_or_else(|e| e.into_inner());
+            let queue = data.read_recovered();
             let mut i = 0;
             while i < self.pending_durations.len() {
                 let idx = self.pending_durations[i];
@@ -1365,8 +1366,7 @@ impl Render for Queue {
                                 .clone()
                                 .read(cx)
                                 .data
-                                .read()
-                                .unwrap_or_else(|e| e.into_inner());
+                                .read_recovered();
 
                             if range.end <= queue.len() {
                                 // each row's view key is its item's uid: stable
@@ -1429,8 +1429,7 @@ impl Render for Queue {
                                                     .clone()
                                                     .read(cx)
                                                     .data
-                                                    .read()
-                                                    .unwrap_or_else(|e| e.into_inner())
+                                                    .read_recovered()
                                                     .get(idx)
                                                     .cloned();
                                                 // the queue shrank between the row-key pass
@@ -1591,7 +1590,7 @@ impl Queue {
     fn compute_follow_target(&self, cx: &App) -> FollowTarget {
         let queue = cx.global::<Models>().queue.read(cx);
         let position = queue.position;
-        let queue_len = queue.data.read().unwrap_or_else(|e| e.into_inner()).len();
+        let queue_len = queue.data.read_recovered().len();
 
         if queue_len == 0 || position >= queue_len {
             return FollowTarget::NoScrollNeeded;

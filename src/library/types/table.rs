@@ -12,6 +12,7 @@ use super::{
     Album, ArtistWithCounts, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR,
     DATE_PRECISION_YEAR_MONTH, DBString, Track,
 };
+use crate::sync::{RecoveredMutex, RecoveredRwLock};
 use crate::{
     library::db::{self, AlbumSortMethod, ArtistSortMethod, TrackSortMethod},
     ui::{
@@ -59,10 +60,7 @@ fn format_album_release_date_with(
     let format_var = (None, format);
     let length_var = (Some("length"), length);
     let variables = [&format_var, &length_var];
-    let locale = &I18N_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .locale;
+    let locale = &I18N_MANAGER.read_recovered().locale;
     Some(Date.transform(locale, &release_date, &variables).into())
 }
 
@@ -110,12 +108,7 @@ fn cached_row<Id: Eq + std::hash::Hash, Row>(
     cache: &Mutex<RowCache<Id, Row>>,
     id: Id,
 ) -> Option<Arc<Row>> {
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .rows
-        .get(&id)
-        .cloned()
+    cache.lock_recovered().rows.get(&id).cloned()
 }
 
 /// FIFO-bounded insert; returns false when the cache was cleared mid-prefetch
@@ -126,7 +119,7 @@ fn insert_cached_row<Id: Eq + std::hash::Hash + Clone, Row>(
     row: Arc<Row>,
     generation: u64,
 ) -> bool {
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = cache.lock_recovered();
     if cache.generation != generation {
         return false;
     }
@@ -147,7 +140,7 @@ fn insert_cached_row<Id: Eq + std::hash::Hash + Clone, Row>(
 
 /// Drops a row cache's contents and invalidates in-flight prefetch tasks.
 fn clear_row_cache<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) {
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = cache.lock_recovered();
     cache.rows.clear();
     cache.order.clear();
     cache.generation = cache.generation.wrapping_add(1);
@@ -156,7 +149,7 @@ fn clear_row_cache<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) {
 /// Generation snapshot read once before a prefetch loop, so inserts can
 /// detect a mid-flight clear.
 fn row_cache_generation<Id, Row>(cache: &Mutex<RowCache<Id, Row>>) -> u64 {
-    cache.lock().unwrap_or_else(|e| e.into_inner()).generation
+    cache.lock_recovered().generation
 }
 
 fn track_row_cache() -> &'static Mutex<RowCache<i64, Track>> {
@@ -252,7 +245,7 @@ async fn prefetch_rows_chunked<Row: PrefetchRow + Send + Unpin>(
     // O(n) 次锁获取（快速滚动时 n 达数百）。std Mutex 不可重入，guard 内
     // 不能调用 cached_row / row_cache_generation，判定就地内联。
     let generation = {
-        let cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.lock_recovered();
         pending.retain(|id| !cache.rows.contains_key(id));
         cache.generation
     };

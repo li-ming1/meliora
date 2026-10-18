@@ -1,6 +1,7 @@
 //! Case sensitivity checks and path folding for comparisons.
 //! Folded paths are for comparison only - never use them for I/O or storage.
 
+use crate::sync::RecoveredRwLock;
 use std::{
     borrow::Cow,
     sync::{LazyLock, RwLock},
@@ -19,11 +20,7 @@ pub fn is_case_insensitive(path: &Utf8Path) -> bool {
     let Some(key) = volume_key(path) else {
         return OS_DEFAULT_CASE_INSENSITIVE;
     };
-    if let Some(result) = CASE_CACHE
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&key)
-    {
+    if let Some(result) = CASE_CACHE.read_recovered().get(&key) {
         return *result;
     }
 
@@ -39,10 +36,7 @@ pub fn is_case_insensitive(path: &Utf8Path) -> bool {
     let Some(result) = probe_case_insensitive(&anchor) else {
         return OS_DEFAULT_CASE_INSENSITIVE; // inconclusive - don't cache
     };
-    CASE_CACHE
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, result);
+    CASE_CACHE.write_recovered().insert(key, result);
     result
 }
 

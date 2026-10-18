@@ -23,9 +23,9 @@ use crate::ui::{
 
 /// uniform_list strides rows by one fixed height measured from the first
 /// row, so track rows are pinned to their natural height: 8px vertical
-/// padding × 2 + title line (text_sm) + 1px gap + subtitle line (text_xs)
-/// + 1px bottom border. Both discovery views render the same row layout,
-/// so they share this value.
+/// padding twice, a text_sm title line, a 1px gap, a text_xs subtitle line
+/// and a 1px bottom border. Both discovery views render the same row
+/// layout, so they share this value.
 pub(crate) const ONLINE_TRACK_ROW_HEIGHT: f32 = 60.0;
 
 /// How long the like/unlike watcher waits for the shared helper to confirm

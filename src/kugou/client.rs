@@ -4,7 +4,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -15,6 +15,7 @@ use zed_reqwest::{Client, Method, header::HeaderMap, header::HeaderName, header:
 
 use super::{crypto, sign};
 use crate::session_io;
+use crate::sync::RecoveredMutex;
 use crate::toasts::{Toast, emit_toast};
 
 /// Payload error_code that empirically accompanies requests made with an
@@ -33,7 +34,7 @@ fn login_expired_toast_state() -> &'static Mutex<Option<Instant>> {
 
 fn notify_login_expired() {
     let last = login_expired_toast_state();
-    let mut guard = last.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = last.lock_recovered();
     if let Some(at) = *guard
         && at.elapsed() < LOGIN_EXPIRED_TOAST_THROTTLE
     {
@@ -48,9 +49,7 @@ fn notify_login_expired() {
 }
 
 fn reset_login_expired_toast() {
-    *login_expired_toast_state()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
+    *login_expired_toast_state().lock_recovered() = None;
 }
 
 pub const GATEWAY: &str = "https://gateway.kugou.com";
@@ -280,11 +279,10 @@ impl KugouClient {
         }
     }
 
-    /// Locks the session; poisoned-lock recovery lives in
-    /// [`session_io::recovered_lock`] (a poisoned session lock must not take
-    /// down playback or the UI).
-    fn session_guard(&self) -> std::sync::MutexGuard<'_, KugouSession> {
-        session_io::recovered_lock(&self.session)
+    /// 会话锁。毒化恢复策略统一在 [`crate::sync`]：一个已经 panic 的线程不
+    /// 该把播放或 UI 一起带走。
+    fn session_guard(&self) -> MutexGuard<'_, KugouSession> {
+        self.session.lock_recovered()
     }
 
     /// Narrow credential read for request-building callers (see

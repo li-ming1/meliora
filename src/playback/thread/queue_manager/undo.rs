@@ -2,6 +2,7 @@
 //! （undo_last_action）。自 queue_manager.rs 原样搬出；经 `use super::*`
 //! 白盒访问宿主的私有常量与 QueueManager 私有字段/关联函数。
 
+use crate::sync::RecoveredRwLock;
 use tracing::info;
 
 use super::*;
@@ -169,7 +170,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 *queue = old_queue;
                 self.original_queue = old_original_queue;
                 self.queue_next = previous_queue_next;
@@ -183,7 +184,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 let queue = Arc::make_mut(&mut queue);
                 Self::undo_reinsert_items(queue, queue_items);
 
@@ -201,7 +202,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 let queue = Arc::make_mut(&mut queue);
                 Self::undo_remove_items(queue, queue_range);
 
@@ -219,7 +220,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 let queue = Arc::make_mut(&mut queue);
 
                 let item = queue.remove(new);
@@ -236,7 +237,7 @@ impl QueueManager {
                 previous_queue_next,
                 previous_shuffle,
             }) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 let queue = Arc::make_mut(&mut queue);
 
                 // 单遍重建替代逐项 remove+insert（与 dequeue_many/move_items
@@ -275,7 +276,7 @@ impl QueueManager {
                 Self::undo_result_from_state(queue, self.queue_next, self.shuffle)
             }
             Some(UndoAction::Shuffled) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 *queue = take(&mut self.original_queue);
                 self.shuffle = false;
 
@@ -285,7 +286,7 @@ impl QueueManager {
                 shuffled_queue,
                 previous_queue_next,
             }) => {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 self.original_queue = std::mem::replace(&mut *queue, shuffled_queue);
                 self.queue_next = previous_queue_next;
                 self.shuffle = true;

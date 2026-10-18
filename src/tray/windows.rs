@@ -10,6 +10,7 @@
 //! explorer 崩溃重启后托盘图标会消失：注册 `TaskbarCreated` 消息，
 //! 收到时重新 NIM_ADD。
 
+use crate::sync::RecoveredMutex;
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicUsize, Ordering},
@@ -83,7 +84,7 @@ impl WindowsTray {
     pub(super) fn set_tooltip(&self, text: &str) {
         // 先记下文本再走 IPC：失败无所谓（explorer 重启中），
         // TaskbarCreated 重注册会用这个缓存补上。
-        *LAST_TOOLTIP.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
+        *LAST_TOOLTIP.lock_recovered() = Some(text.to_owned());
         unsafe {
             notify(
                 self.hwnd,
@@ -335,8 +336,7 @@ unsafe extern "system" fn tray_wndproc(
             m if Some(m) == TASKBAR_CREATED_MSG.get().copied() => {
                 let icon = load_icon();
                 let tip = LAST_TOOLTIP
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .lock_recovered()
                     .clone()
                     .unwrap_or_else(super::app_name_label);
                 notify(

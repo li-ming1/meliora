@@ -1,3 +1,4 @@
+use crate::sync::RecoveredMutex;
 use crate::{
     devices::{
         errors::{
@@ -499,11 +500,7 @@ where
             // error callback shares this mutex and must never be kept waiting
             // behind file IO. Recover from a poisoned lock so a panic in some
             // other lock user can never make the message unrecoverable.
-            let message = self
-                .device_error_message
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let message = self.device_error_message.lock_recovered().take();
             if let Some(msg) = message {
                 warn!("cpal stream error: {}", msg.text());
             }

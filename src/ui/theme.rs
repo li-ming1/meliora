@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::settings::SettingsGlobal;
+use crate::sync::RecoveredRwLock;
 use gpui::{App, AppContext, AsyncApp, Entity, EventEmitter, Global, Rgba, rgb, rgba};
 use notify::{Event, RecursiveMode, Watcher};
 use serde::{
@@ -1163,9 +1164,7 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
     cx.observe(&settings_model, move |_, cx| {
         let selected_theme = settings_model_for_observer.read(cx).interface.theme.clone();
         let should_update = {
-            let mut current_theme = selected_theme_state_for_settings
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut current_theme = selected_theme_state_for_settings.write_recovered();
             if *current_theme == selected_theme {
                 false
             } else {
@@ -1233,10 +1232,8 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
                                         });
                                     }
 
-                                    let selected_theme = selected_theme_state
-                                        .read()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .clone();
+                                    let selected_theme =
+                                        selected_theme_state.read_recovered().clone();
                                     if !event_affects_selected_theme(
                                         selected_theme.as_deref(),
                                         &affected,

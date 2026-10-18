@@ -15,6 +15,7 @@ use gpui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::error;
 
+use crate::sync::RecoveredMutex;
 use crate::{
     library::{
         db::{self, PlaylistTrackRow, PlaylistTrackSortMethod},
@@ -84,19 +85,14 @@ type PrefetchedRowsHandle = Arc<Mutex<PrefetchedRows>>;
 
 /// Cached row lookup; a short `Mutex` critical section.
 fn prefetched_track(cache: &PrefetchedRowsHandle, track_id: i64) -> Option<Arc<Track>> {
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .rows
-        .get(&track_id)
-        .cloned()
+    cache.lock_recovered().rows.get(&track_id).cloned()
 }
 
 /// FIFO-bounded insert; returns false when the cache generation changed
 /// mid-prefetch (a reload cleared it), which tells the prefetch task to stop
 /// writing stale rows.
 fn insert_prefetched(cache: &PrefetchedRowsHandle, track: Arc<Track>, generation: u64) -> bool {
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = cache.lock_recovered();
     if cache.generation != generation {
         return false;
     }
@@ -120,7 +116,7 @@ fn insert_prefetched(cache: &PrefetchedRowsHandle, track: Arc<Track>, generation
 /// current generation and inserting with it can never race the cache being
 /// cleared.
 fn insert_prefetched_current(cache: &PrefetchedRowsHandle, track: Arc<Track>) {
-    let generation = cache.lock().unwrap_or_else(|e| e.into_inner()).generation;
+    let generation = cache.lock_recovered().generation;
     insert_prefetched(cache, track, generation);
 }
 
@@ -128,7 +124,7 @@ fn insert_prefetched_current(cache: &PrefetchedRowsHandle, track: Arc<Track>) {
 /// every reload: the track list (and with it every track_id) can change
 /// underneath the cached rows.
 fn clear_prefetched_rows(cache: &PrefetchedRowsHandle) {
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = cache.lock_recovered();
     cache.rows.clear();
     cache.order.clear();
     cache.generation = cache.generation.wrapping_add(1);
@@ -149,10 +145,7 @@ fn schedule_row_prefetch(
     center: usize,
     cx: &App,
 ) {
-    let generation = rows_cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .generation;
+    let generation = rows_cache.lock_recovered().generation;
     let (scheduled_generation, scheduled_center) = state.get();
     if scheduled_generation == generation
         && scheduled_center.abs_diff(center) <= ROW_PREFETCH_PAD / 2

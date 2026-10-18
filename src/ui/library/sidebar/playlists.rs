@@ -8,6 +8,7 @@ use gpui::{
 };
 use tracing::error;
 
+use crate::sync::RecoveredRwLock;
 use crate::{
     library::{
         db::{self},
@@ -487,7 +488,7 @@ impl Render for PlaylistList {
                                 return;
                             };
                             let queue = cx.global::<Models>().queue.read(cx);
-                            let queue_data = queue.data.read().unwrap_or_else(|e| e.into_inner());
+                            let queue_data = queue.data.read_recovered();
                             let all_indices = drag_data.all_indices();
                             all_indices
                                 .into_iter()

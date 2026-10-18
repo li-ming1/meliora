@@ -11,6 +11,7 @@ use std::time::Duration;
 use gpui::{App, AsyncApp, Entity};
 
 use crate::library::Pool;
+use crate::sync::RecoveredMutex;
 use crate::{
     playback::{events::PlaybackEvent, interface::PlaybackInterface, thread::PlaybackState},
     power::PowerManager,
@@ -212,7 +213,7 @@ fn record_and_flush<T>(
     pool: sqlx::SqlitePool,
     record: impl FnOnce(&mut T) -> Vec<crate::stats::ListenRow>,
 ) {
-    let rows = record(&mut stats.lock().unwrap_or_else(|e| e.into_inner()));
+    let rows = record(&mut stats.lock_recovered());
     crate::stats::flush_rows_async(pool, rows);
 }
 

@@ -1,3 +1,4 @@
+use crate::sync::RecoveredMutex;
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -160,9 +161,7 @@ type ThumbCacheGuard = std::sync::MutexGuard<'static, ShrunkThumbCache>;
 /// 锁定缓存；中毒时直接恢复守卫数据——它只是纯内存缓存，无值得传播
 /// panic 的不变量。
 fn lock_thumb_cache() -> ThumbCacheGuard {
-    shrunk_thumbs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    shrunk_thumbs().lock_recovered()
 }
 
 /// 读缓存；命中时把键提升为最近使用（LRU 续命）。临界区无 await（本函数

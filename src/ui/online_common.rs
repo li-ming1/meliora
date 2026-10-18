@@ -17,6 +17,7 @@ use gpui::{
 use serde_json::Value;
 use smallvec::SmallVec;
 
+use crate::sync::{RecoveredMutex, RecoveredRwLock};
 use crate::ui::components::{button::button, scrollbar::floating_scrollbar};
 
 /// Intent of an online-track activation: start playing now, or append.
@@ -56,7 +57,7 @@ pub(crate) fn pending_fetches() -> &'static RwLock<PlayFetchDedup> {
 /// Poison-recovering write lock for the fetch dedup table: a panicking
 /// holder must not wedge every later click behind a poisoned lock.
 pub(crate) fn write_pending_fetches() -> RwLockWriteGuard<'static, PlayFetchDedup> {
-    pending_fetches().write().unwrap_or_else(|e| e.into_inner())
+    pending_fetches().write_recovered()
 }
 
 /// Decision core of the play-URL fetch dedup: `true` when the fetch may
@@ -176,18 +177,14 @@ pub(crate) struct CachedRoot<T> {
 
 /// Fresh entry out of a root-list cache, `None` on miss or TTL expiry.
 pub(crate) fn cached_root<T: Clone>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) -> Option<T> {
-    let guard = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = cache.lock_recovered();
     let cached = guard.as_ref()?;
     (cached.at.elapsed() < ROOTS_CACHE_TTL).then(|| cached.value.clone())
 }
 
 /// Store a successful load into a root-list cache, replacing any stale entry.
 pub(crate) fn store_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>, value: T) {
-    let mut guard = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache.lock_recovered();
     *guard = Some(CachedRoot {
         at: Instant::now(),
         value,
@@ -198,9 +195,7 @@ pub(crate) fn store_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>, valu
 /// (user playlists), so an in-session account switch can never be served the
 /// previous account's data however fresh the entry is.
 pub(crate) fn clear_root<T>(cache: &LazyLock<Mutex<Option<CachedRoot<T>>>>) {
-    *cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *cache.lock_recovered() = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,12 +222,16 @@ pub(crate) fn load_more_pill<V: 'static>(
     )
 }
 
+/// [`LoadMoreSpec`] 的点击回调：与 gpui 的 `cx.listener` 同型，收进别名
+/// 是为了让结构体字段读起来是"意图"而不是一长串类型。
+pub(crate) type LoadMoreHandler<V> = Box<dyn Fn(&mut V, &mut Context<V>)>;
+
 /// Optional Load More pill spec for [`online_list_container`]: `None`
 /// renders no pill at all.
 pub(crate) struct LoadMoreSpec<V> {
     pub id: &'static str,
     pub label: AnyElement,
-    pub on_click: Box<dyn Fn(&mut V, &mut Context<V>)>,
+    pub on_click: LoadMoreHandler<V>,
 }
 
 /// The virtualized track-list container shared by the KuGou discovery
@@ -298,12 +297,12 @@ pub(crate) fn online_list_container<V: 'static, T>(
                     uniform_list(list_id, count, move |range, _, cx| {
                         let start = range.start;
                         let view = list_entity.read(cx);
-                        items(&view)[range]
+                        items(view)[range]
                             .iter()
                             .enumerate()
                             .map(|(i, track)| {
                                 div().h(px(row_height)).child(render_row(
-                                    &view,
+                                    view,
                                     start + i,
                                     track,
                                     &list_entity,

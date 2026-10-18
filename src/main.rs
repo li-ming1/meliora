@@ -31,6 +31,7 @@ mod power;
 mod session_io;
 mod settings;
 mod stats;
+mod sync;
 #[cfg(test)]
 mod test_support;
 mod toasts;
@@ -675,6 +676,7 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     // 登记过、本窗口内零帧的标签：显式 frames=0，按标签排序保持日志可读顺序。
     // 只在"静默集合变化"时记：主窗常驻托盘/设置窗关闭后集合稳定，逐窗口重放
     // 会变成每分钟数行、每天约 1MB 的纯噪声；而进入静默的那一次仍会留下证据。
+    use crate::sync::RecoveredMutex;
     static LAST_SILENT: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
     if let Some(labels) = labels.as_ref() {
         let mut silent: Vec<&'static str> = labels
@@ -683,7 +685,7 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
             .map(|(label, _)| *label)
             .collect();
         silent.sort_unstable();
-        let mut last = LAST_SILENT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = LAST_SILENT.lock_recovered();
         if silent != *last {
             for label in &silent {
                 tracing::info!(win = %label, frames = 0, "[frame] periodic");

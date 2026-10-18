@@ -1,3 +1,4 @@
+use crate::sync::RecoveredRwLock;
 #[cfg(feature = "kugou")]
 use crate::ui::kugou::{
     KugouTrackInfo, like_track as kugou_like_track, online_track_is_liked,
@@ -207,12 +208,7 @@ impl InfoSection {
 
         let queue = cx.global::<Models>().queue.read(cx);
         let position = queue.position;
-        let item = queue
-            .data
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(position)
-            .cloned();
+        let item = queue.data.read_recovered().get(position).cloned();
 
         let Some(item) = item else { return };
 

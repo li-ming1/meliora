@@ -10,6 +10,7 @@ use rand::{rng, seq::SliceRandom};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
+use crate::sync::RecoveredRwLock;
 use crate::{
     playback::{events::RepeatState, queue::QueueItemData, session_storage::PlaybackSessionData},
     settings::playback::PlaybackSettings,
@@ -322,7 +323,7 @@ impl QueueManager {
             ..
         } = session;
         let (queue_len, original_queue) = {
-            let queue = queue.read().unwrap_or_else(|e| e.into_inner());
+            let queue = queue.read_recovered();
             let queue_len = queue.len();
             let original_queue = if shuffle && session_original_queue.len() == queue_len {
                 session_original_queue
@@ -362,7 +363,7 @@ impl QueueManager {
     #[cfg(feature = "online_sources")]
     pub fn current_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
         let position = self.current_position()?;
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         queue.get(position)?.online_identity().cloned()
     }
 
@@ -371,7 +372,7 @@ impl QueueManager {
     #[cfg(feature = "online_sources")]
     pub fn current_display(&self) -> Option<PersistedDisplay> {
         let position = self.current_position()?;
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         queue.get(position)?.persisted_display()
     }
 
@@ -379,7 +380,7 @@ impl QueueManager {
     #[cfg(feature = "online_sources")]
     pub fn current_path(&self) -> Option<PathBuf> {
         let position = self.current_position()?;
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         Some(queue.get(position)?.get_path().clone())
     }
 
@@ -417,7 +418,7 @@ impl QueueManager {
     /// session dirty; the refreshed URL rides along with the next snapshot.
     pub fn replace_next_path(&self, expected: &Path, fresh: PathBuf) -> bool {
         let index = {
-            let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+            let queue = self.queue.read_recovered();
             match self.peek_next_index(&queue) {
                 Some(index) if queue[index].get_path().as_path() == expected => index,
                 _ => return false,
@@ -442,7 +443,7 @@ impl QueueManager {
 
     /// Get the queue length.
     pub fn len(&self) -> usize {
-        self.queue.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.queue.read_recovered().len()
     }
 
     /// Returns true when shuffle mode is enabled.
@@ -452,7 +453,7 @@ impl QueueManager {
 
     /// Returns true if every queued item belongs to the same known album.
     pub fn all_items_same_album(&self) -> bool {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         let Some(first_album) = queue.first().and_then(QueueItemData::get_db_album_id) else {
             return false;
         };
@@ -464,19 +465,19 @@ impl QueueManager {
 
     /// Get the first playable item's path and index without cloning the item.
     pub fn first_playable_path(&self) -> Option<(PathBuf, usize)> {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         Self::first_playable_index_in(&queue).map(|index| (queue[index].get_path().clone(), index))
     }
 
     /// Get the last playable item's path and index without cloning the item.
     pub fn last_playable_path(&self) -> Option<(PathBuf, usize)> {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         Self::last_playable_index(&queue).map(|index| (queue[index].get_path().clone(), index))
     }
 
     /// Index of the first playable item, for callers that need only the slot.
     pub fn first_playable_index(&self) -> Option<usize> {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         Self::first_playable_index_in(&queue)
     }
 
@@ -516,7 +517,7 @@ impl QueueManager {
     /// the live queue.
     pub fn next(&mut self, user_initiated: bool) -> QueueNavigationResult {
         let (queue, queue_next) = {
-            let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+            let queue = self.queue.read_recovered();
             (Arc::clone(&queue), self.queue_next)
         };
 
@@ -563,7 +564,7 @@ impl QueueManager {
         // Apply, keeping the old in-lock ordering: queue contents first, then
         // the undo history, then the cursor.
         if let Some(new_queue) = new_queue {
-            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+            let mut queue = self.queue.write_recovered();
             *queue = new_queue;
             drop(queue);
             // The wrap reshuffles the whole queue, so every recorded undo
@@ -618,7 +619,7 @@ impl QueueManager {
     /// by gapless pre-open). Returns `None` when the advance is not
     /// predictable (queue end, repeat-wrap with shuffle reshuffles).
     pub fn peek_next_path(&self) -> Option<PathBuf> {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         self.peek_next_index(&queue)
             .map(|index| queue[index].get_path().clone())
     }
@@ -628,7 +629,7 @@ impl QueueManager {
     /// a URL refresh for the *next* entry, not the current one).
     #[cfg(feature = "online_sources")]
     pub fn peek_next_online_identity(&self) -> Option<super::super::queue::OnlineIdentity> {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         let index = self.peek_next_index(&queue)?;
         queue.get(index)?.online_identity().cloned()
     }
@@ -638,7 +639,7 @@ impl QueueManager {
     /// re-registration during the prepare's URL refresh.
     #[cfg(feature = "online_sources")]
     pub fn peek_next_display(&self) -> Option<PersistedDisplay> {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         let index = self.peek_next_index(&queue)?;
         queue.get(index)?.persisted_display()
     }
@@ -649,7 +650,7 @@ impl QueueManager {
     /// all locks, apply.
     pub fn previous(&mut self) -> QueueNavigationResult {
         let (queue, queue_next) = {
-            let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+            let queue = self.queue.read_recovered();
             (Arc::clone(&queue), self.queue_next)
         };
 
@@ -682,7 +683,7 @@ impl QueueManager {
         });
 
         if let Some(new_queue) = new_queue {
-            let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+            let mut queue = self.queue.write_recovered();
             *queue = new_queue;
             drop(queue);
             self.undo_stack.clear();
@@ -706,7 +707,7 @@ impl QueueManager {
 
     /// Jump to a specific index in the queue.
     pub fn jump(&mut self, index: usize) -> JumpResult {
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
 
         if index < queue.len() && Self::item_is_playable(&queue[index]) {
             let path = queue[index].get_path().clone();
@@ -730,7 +731,7 @@ impl QueueManager {
             return JumpResult::OutOfBounds;
         };
 
-        let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+        let queue = self.queue.read_recovered();
         let pos = queue.iter().position(|item| item == &original_item);
         drop(queue);
 
@@ -748,7 +749,7 @@ impl QueueManager {
         let previous_shuffle = self.shuffle;
         let original_queue_range = self.append_to_original_queue(&item);
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
         Arc::make_mut(&mut queue).push(item);
 
         let index = queue.len() - 1;
@@ -779,7 +780,7 @@ impl QueueManager {
         let previous_shuffle = self.shuffle;
         let original_queue_range = self.append_all_to_original_queue(&items);
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
         let first_index = queue.len();
         let items_len = items.len();
 
@@ -810,7 +811,7 @@ impl QueueManager {
         let previous_shuffle = self.shuffle;
         let original_queue_range = self.append_to_original_queue(&item);
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         let insert_pos = position.min(queue.len());
         Arc::make_mut(&mut queue).insert(insert_pos, item);
@@ -841,7 +842,7 @@ impl QueueManager {
         let previous_shuffle = self.shuffle;
         let original_queue_range = self.append_all_to_original_queue(&items);
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         let insert_pos = position.min(queue.len());
         let items_len = items.len();
@@ -873,7 +874,7 @@ impl QueueManager {
         // UI 队列面板/歌词面板每帧读取。drop 写锁后 `post` 就是准确的移除后
         // 状态：播放线程是队列唯一 mutator，两段之间不存在状态漂移（见
         // `next()` 的三段化说明）。
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         if index >= queue.len() {
             return DequeueResult::Unchanged;
@@ -1016,7 +1017,7 @@ impl QueueManager {
         // 同步 stat，必须放在写锁外（同 `dequeue`，见 `next()` 的三段化）。
         // drop 写锁后 `post` 就是准确的移除后状态——播放线程是队列唯一
         // mutator，两段之间不存在状态漂移。
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         indices.retain(|idx| *idx < queue.len());
         indices.sort_unstable();
@@ -1108,7 +1109,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         if from >= queue.len() || to >= queue.len() {
             return MoveResult::Unchanged;
@@ -1185,7 +1186,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         indices.retain(|idx| *idx < queue.len());
         indices.sort_unstable();
@@ -1289,7 +1290,7 @@ impl QueueManager {
         let first_item =
             Self::first_playable_index_in(&new_queue).map(|idx| new_queue[idx].clone());
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         // Snapshot by taking the live Arcs out instead of cloning: the write lock is held for the
         // whole swap so readers never observe the empty intermediate state, and the undo stack
@@ -1327,7 +1328,7 @@ impl QueueManager {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
 
-        let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queue.write_recovered();
 
         // Read the current item BEFORE the take-based snapshots below: `take`
         // empties the Vec, so reading `queue.len()` afterwards always saw an
@@ -1386,7 +1387,7 @@ impl QueueManager {
                 // `Arc::clone` 捕获的内容一致；洗牌只动 [start..]，光标
                 // 槽位不变，queue_next 无需重指（与旧实现一致）。
                 let snapshot = {
-                    let queue = self.queue.read().unwrap_or_else(|e| e.into_inner());
+                    let queue = self.queue.read_recovered();
                     Arc::clone(&queue)
                 };
                 let mut queue_vec = (*snapshot).clone();
@@ -1396,7 +1397,7 @@ impl QueueManager {
                 }
 
                 self.original_queue = snapshot;
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
                 *queue = Arc::new(queue_vec);
                 drop(queue);
 
@@ -1404,7 +1405,7 @@ impl QueueManager {
 
                 ShuffleResult::Shuffled
             } else {
-                let mut queue = self.queue.write().unwrap_or_else(|e| e.into_inner());
+                let mut queue = self.queue.write_recovered();
 
                 let current_item = Self::cursor_item(&queue, self.queue_next);
 

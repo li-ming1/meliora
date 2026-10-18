@@ -318,6 +318,7 @@ mod tests {
     /// - `missing_in_live_dir`：目录在、文件不在 ⇒ 每条补一次 stat，**预期与逐个 stat 打平**；
     /// - `missing_in_gone_dir`：整个专辑目录被删 ⇒ 一次 `read_dir` 失败即答复全部子项，**零 stat**；
     /// - `mixed`：三者混合。
+    ///
     /// 每轮都新建 `PathExistence`（目录缓存同样冷启动），并**按轮次奇偶交换两种探针的先后**
     /// ——谁先跑谁吃到 OS 目录项缓存的便宜，固定顺序会把差值算进结论。
     /// 每种形状都 `assert_eq!(hits_stat, hits_enum)`，把"同答复"当断言而不是靠肉眼比对。

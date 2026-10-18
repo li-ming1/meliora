@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use super::stream_registry::{STREAM_MAP_CAP, StreamMapPersistence};
 use crate::kugou;
+use crate::sync::RecoveredRwLock;
 
 /// One online track as shown in search results and playlists.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,7 +125,7 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     // 锁内只改表：这张表 UI 线程与播放线程都在读，写守卫跨过任何慢操作都会
     // 拖住换歌。快照与序列化都不在这里做（见下）。
     {
-        let mut guard = stream_map().write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = stream_map().write_recovered();
         // 0 means the endpoint omitted the id. Treating it as a real key would
         // evict every other id-less track, so unknown-id entries only de-dup
         // by URL and are never matched by id (see online_track_matching_path).
@@ -144,10 +145,7 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     // 落盘无所谓——注册表是缓存，陈旧只多一次 URL 刷新（与原
     // "racing writers" 语义一致）。
     crate::RUNTIME.spawn(async move {
-        let snapshot = stream_map()
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let snapshot = stream_map().read_recovered().clone();
         STREAM_MAP_PERSISTENCE.persist_snapshot(stream_map_path(), &snapshot, "kugou");
     });
 }
@@ -160,7 +158,7 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();
     let path_mix = mixsongid_in_url(&path_str);
-    let guard = stream_map().read().unwrap_or_else(|e| e.into_inner());
+    let guard = stream_map().read_recovered();
     guard
         .iter()
         .find(|entry| {
@@ -341,10 +339,7 @@ pub(crate) fn liked_fileids() -> &'static RwLock<HashMap<String, i64>> {
 
 /// True when the cache holds `hash` as liked.
 pub fn liked_set_contains(hash: &str) -> bool {
-    liked_set()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(hash)
+    liked_set().read_recovered().contains(hash)
 }
 
 /// Serializes the initial liked-list load so concurrent `online_track_is_liked`
@@ -375,8 +370,8 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
         hashes.insert(hash.clone());
         fileids.insert(hash, fileid);
     }
-    *liked_set().write().unwrap_or_else(|e| e.into_inner()) = hashes;
-    *liked_fileids().write().unwrap_or_else(|e| e.into_inner()) = fileids;
+    *liked_set().write_recovered() = hashes;
+    *liked_fileids().write_recovered() = fileids;
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 

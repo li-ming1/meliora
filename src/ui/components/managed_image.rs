@@ -19,6 +19,7 @@ use smallvec::smallvec;
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
+use crate::sync::RecoveredMutex;
 use crate::{
     media::{lookup_table::try_open_media, traits::MediaProviderFeatures},
     ui::app::Pool,
@@ -266,18 +267,13 @@ fn lock_render_cache() -> MutexGuard<'static, RenderCache> {
                 bytes: 0,
             })
         })
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .lock_recovered()
 }
 
 /// Locks `RENDER_CACHE` without initializing it: `None` until the first
 /// [`lock_render_cache`] call has created it.
 fn try_lock_render_cache() -> Option<MutexGuard<'static, RenderCache>> {
-    RENDER_CACHE.get().map(|cache| {
-        cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    })
+    RENDER_CACHE.get().map(|cache| cache.lock_recovered())
 }
 
 /// Estimated RGBA footprint in bytes of a decoded cover.
@@ -410,8 +406,7 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
     let due = reclaim_delay_for(&image);
     PENDING_TILE_DROPS
         .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .lock_recovered()
         .push(PendingTileDrop {
             key,
             image,
@@ -452,12 +447,7 @@ static TILE_DROP_STATS: TileDropStats = TileDropStats {
 pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
     let pending = PENDING_TILE_DROPS
         .get()
-        .map(|queue| {
-            queue
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .len() as u64
-        })
+        .map(|queue| queue.lock_recovered().len() as u64)
         .unwrap_or(0);
     let s = &TILE_DROP_STATS;
     let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
@@ -485,9 +475,7 @@ pub(crate) fn funnel_pending_detail() -> (u64, u64, u64) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return (0, 0, TILE_DROP_STATS.pushed_large.load(Ordering::Relaxed));
     };
-    let queue = queue
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let queue = queue.lock_recovered();
     let mut bytes = 0u64;
     let mut large = 0u64;
     for entry in queue.iter() {
@@ -633,9 +621,7 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     };
     let now = Instant::now();
     let (ready, young) = {
-        let mut queue = queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut queue = queue.lock_recovered();
         partition_ready(queue.drain(..).collect(), now)
     };
 
@@ -667,10 +653,7 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     // Re-queue the not-yet-due entries only after the reclaim decision, so a
     // young entry's Arc never dilutes the strong_count test of a ready one.
     if !young.is_empty() {
-        queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(young);
+        queue.lock_recovered().extend(young);
     }
 }
 
@@ -1040,8 +1023,7 @@ fn lock_backdrop_cache() -> MutexGuard<'static, RenderCache> {
                 bytes: 0,
             })
         })
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .lock_recovered()
 }
 
 fn backdrop_cache_lookup(key: &RenderCacheKey) -> Option<Arc<RenderImage>> {
@@ -1110,9 +1092,7 @@ pub(crate) fn large_drops_pending() -> usize {
     PENDING_TILE_DROPS
         .get()
         .map(|queue| {
-            let queue = queue
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let queue = queue.lock_recovered();
             let mut seen: Vec<ImageId> = Vec::new();
             queue
                 .iter()

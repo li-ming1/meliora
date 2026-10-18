@@ -8,6 +8,7 @@ use camino::Utf8PathBuf;
 use cntp_i18n::{I18nString, tr};
 use gpui::{AnyElement, App, AppContext, Entity, IntoElement, Pixels, Point, SharedString, Window};
 
+use crate::sync::RecoveredRwLock;
 use crate::{
     library::{
         db::{self},
@@ -314,8 +315,7 @@ fn current_queue_length(cx: &App) -> usize {
         .queue
         .read(cx)
         .data
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .read_recovered()
         .len()
 }
 
