@@ -84,13 +84,29 @@ async fn resolve_local_meta(pool: &SqlitePool, track_key: &str) -> Option<TrackM
     })
 }
 
-pub async fn daily_sums(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, i64)>> {
-    let sql = include_str!("../../queries/stats/daily_sums.sql");
+/// `(文本键, 秒数)` 二元聚合行的共用读取：按日 / 按艺人 / 按专辑三个查询只在
+/// SQL 与文本列的键名上不同，`total` 是三者共同的列契约。
+async fn pair_totals(
+    pool: &SqlitePool,
+    since: i64,
+    sql: &'static str,
+    key: &str,
+) -> sqlx::Result<Vec<(String, i64)>> {
     let rows = sqlx::query(sql).bind(since).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(|r| (r.get::<String, _>("day"), r.get::<i64, _>("total")))
+        .map(|r| (r.get::<String, _>(key), r.get::<i64, _>("total")))
         .collect())
+}
+
+pub async fn daily_sums(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, i64)>> {
+    pair_totals(
+        pool,
+        since,
+        include_str!("../../queries/stats/daily_sums.sql"),
+        "day",
+    )
+    .await
 }
 
 pub async fn hour_histogram(pool: &SqlitePool, since: i64) -> sqlx::Result<[i64; 24]> {
@@ -124,22 +140,24 @@ pub async fn top_tracks(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(Stri
 
 /// `(artist, seconds)`，按秒数从高到低。
 pub async fn top_artists(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, i64)>> {
-    let sql = include_str!("../../queries/stats/top_artists.sql");
-    let rows = sqlx::query(sql).bind(since).fetch_all(pool).await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| (r.get::<String, _>("artist"), r.get::<i64, _>("total")))
-        .collect())
+    pair_totals(
+        pool,
+        since,
+        include_str!("../../queries/stats/top_artists.sql"),
+        "artist",
+    )
+    .await
 }
 
 /// `(album, seconds)`，按秒数从高到低。
 pub async fn top_albums(pool: &SqlitePool, since: i64) -> sqlx::Result<Vec<(String, i64)>> {
-    let sql = include_str!("../../queries/stats/top_albums.sql");
-    let rows = sqlx::query(sql).bind(since).fetch_all(pool).await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| (r.get::<String, _>("album"), r.get::<i64, _>("total")))
-        .collect())
+    pair_totals(
+        pool,
+        since,
+        include_str!("../../queries/stats/top_albums.sql"),
+        "album",
+    )
+    .await
 }
 
 #[cfg(test)]

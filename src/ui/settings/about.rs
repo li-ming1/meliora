@@ -1,7 +1,7 @@
 use cntp_i18n::tr;
 use gpui::{
-    Action, App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString,
-    Styled, Window, div, px,
+    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
+    Window, div, px,
 };
 
 use crate::ui::{
@@ -13,6 +13,8 @@ use crate::ui::{
     global_actions::{About, Issues},
     troubleshooting::{CopyTroubleshootingInfo, OpenLog},
 };
+
+use super::action_row;
 
 #[cfg(feature = "online")]
 use crate::{
@@ -50,30 +52,6 @@ impl AboutSettings {
     fn construct(cx: &mut App) -> Entity<Self> {
         cx.new(|_| Self {})
     }
-}
-
-/// 一行设置：带标题的标签 + 说明副文本，加一个整宽的次级按钮，点击时分发 `action`
-/// （延迟执行，好让它跑在点击处理之外）。
-fn action_row<A: Action + Clone>(
-    cx: &Context<AboutSettings>,
-    label_id: &'static str,
-    title: impl Into<SharedString>,
-    subtext: impl Into<SharedString>,
-    button_id: &'static str,
-    button_label: impl Into<SharedString>,
-    action: A,
-) -> Label {
-    label(label_id, title).subtext(subtext).w_full().child(
-        button()
-            .style(ButtonStyle::Regular)
-            .intent(ButtonIntent::Secondary)
-            .child(Into::<SharedString>::into(button_label))
-            .id(button_id)
-            .on_click(cx.listener(move |_, _, _, cx| {
-                let action = action.clone();
-                cx.defer(move |cx| cx.dispatch_action(&action));
-            })),
-    )
 }
 
 #[cfg(feature = "online")]

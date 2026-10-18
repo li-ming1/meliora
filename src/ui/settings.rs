@@ -15,17 +15,19 @@ mod stats;
 
 use cntp_i18n::tr;
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowHandle, WindowKind,
-    WindowOptions, div, prelude::FluentBuilder, px,
+    Action, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
+    WindowHandle, WindowKind, WindowOptions, div, prelude::FluentBuilder, px,
 };
 
 use crate::{
     settings::{Settings, SettingsGlobal, save_settings, storage::DEFAULT_SIDEBAR_WIDTH},
     ui::{
         components::{
+            button::{ButtonIntent, ButtonStyle, button},
             icons::{ADJUSTMENTS, ALERT_CIRCLE, BOOKS, PLAY, RANKING, WORLD},
+            label::{Label, label},
             scrollbar::{ScrollableHandle, floating_scrollbar},
             sidebar::{sidebar, sidebar_item},
             window_chrome::window_chrome,
@@ -417,4 +419,29 @@ pub(crate) fn update_playback_settings(
         save_settings(cx, settings);
         cx.notify();
     });
+}
+
+/// 设置页共用的一行动作：标题 + 副文本，加一个整宽的次级按钮，点击时分发 `action`
+/// （延迟执行，好让它跑在点击处理之外）。泛型过视图类型，因此 about 与 library
+/// 两页共用同一份——此前 about 页私有一份，library 页又手写了三遍同形展开。
+pub(crate) fn action_row<V: 'static, A: Action + Clone>(
+    cx: &Context<V>,
+    label_id: &'static str,
+    title: impl Into<SharedString>,
+    subtext: impl Into<SharedString>,
+    button_id: &'static str,
+    button_label: impl Into<SharedString>,
+    action: A,
+) -> Label {
+    label(label_id, title).subtext(subtext).w_full().child(
+        button()
+            .style(ButtonStyle::Regular)
+            .intent(ButtonIntent::Secondary)
+            .child(Into::<SharedString>::into(button_label))
+            .id(button_id)
+            .on_click(cx.listener(move |_, _, _, cx| {
+                let action = action.clone();
+                cx.defer(move |cx| cx.dispatch_action(&action));
+            })),
+    )
 }

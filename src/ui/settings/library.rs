@@ -27,6 +27,8 @@ use crate::{
     },
 };
 
+use super::action_row;
+
 /// 追加新的扫描路径，同时忽略重复项。
 fn merge_scan_paths(
     paths: &mut Vec<Utf8PathBuf>,
@@ -208,60 +210,42 @@ impl Render for LibrarySettings {
             .flex_col()
             .gap(px(12.0))
             .child(section_header(tr!("LIBRARY")))
-            .child(
-                label("library-shuffle-all", tr!("LIBRARY_SHUFFLE_ALL", "Shuffle All"))
-                    .subtext(tr!(
-                        "LIBRARY_SHUFFLE_ALL_SUBTEXT",
-                        "Play every track in the library in a shuffled order."
-                    ))
-                    .w_full()
-                    .child(
-                        button()
-                            .style(ButtonStyle::Regular)
-                            .intent(ButtonIntent::Secondary)
-                            .child(tr!("LIBRARY_SHUFFLE_ALL"))
-                            .id("library-shuffle-all-button")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.defer(move |cx| cx.dispatch_action(&ShuffleAll));
-                            })),
-                    ),
-            )
-            .child(
-                label("library-rescan", tr!("LIBRARY_FORCE_RESCAN", "Rescan Entire Library"))
-                    .subtext(tr!(
-                        "LIBRARY_FORCE_RESCAN_SUBTEXT",
-                        "Force a full rescan of the library to detect any changes."
-                    ))
-                    .w_full()
-                    .child(
-                        button()
-                            .style(ButtonStyle::Regular)
-                            .intent(ButtonIntent::Secondary)
-                            .child(tr!("LIBRARY_FORCE_RESCAN"))
-                            .id("library-rescan-button")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.defer(move |cx| cx.dispatch_action(&ForceScan));
-                            })),
-                    ),
-            )
-            .child(
-                label("library-import-playlist", tr!("ACTION_IMPORT_PLAYLIST"))
-                    .subtext(tr!(
-                        "LIBRARY_IMPORT_PLAYLIST_SUBTEXT",
-                        "Import an M3U playlist file into the library."
-                    ))
-                    .w_full()
-                    .child(
-                        button()
-                            .style(ButtonStyle::Regular)
-                            .intent(ButtonIntent::Secondary)
-                            .child(tr!("ACTION_IMPORT_PLAYLIST"))
-                            .id("library-import-playlist-button")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.defer(move |cx| cx.dispatch_action(&Import));
-                            })),
-                    ),
-            )
+            .child(action_row(
+                cx,
+                "library-shuffle-all",
+                tr!("LIBRARY_SHUFFLE_ALL", "Shuffle All"),
+                tr!(
+                    "LIBRARY_SHUFFLE_ALL_SUBTEXT",
+                    "Play every track in the library in a shuffled order."
+                ),
+                "library-shuffle-all-button",
+                tr!("LIBRARY_SHUFFLE_ALL"),
+                ShuffleAll,
+            ))
+            .child(action_row(
+                cx,
+                "library-rescan",
+                tr!("LIBRARY_FORCE_RESCAN", "Rescan Entire Library"),
+                tr!(
+                    "LIBRARY_FORCE_RESCAN_SUBTEXT",
+                    "Force a full rescan of the library to detect any changes."
+                ),
+                "library-rescan-button",
+                tr!("LIBRARY_FORCE_RESCAN"),
+                ForceScan,
+            ))
+            .child(action_row(
+                cx,
+                "library-import-playlist",
+                tr!("ACTION_IMPORT_PLAYLIST"),
+                tr!(
+                    "LIBRARY_IMPORT_PLAYLIST_SUBTEXT",
+                    "Import an M3U playlist file into the library."
+                ),
+                "library-import-playlist-button",
+                tr!("ACTION_IMPORT_PLAYLIST"),
+                Import,
+            ))
             .child(
                 section_header(tr!(
                     "SCANNING",
