@@ -34,10 +34,8 @@ mod backdrop_pipeline;
 
 use self::backdrop_pipeline::{backdrop_sharp_fill, enhance_render_image};
 
-/// Cover file names accepted for a track's sibling art lookup: three stems ×
-/// three extensions, matched case-insensitively within a single directory
-/// level. Plain `read_dir` + name compare replaces the former `globwalk`
-/// glob — same candidates, same readdir order, no glob compiled per lookup.
+/// 曲目同目录封面文件名白名单：3 个词干 × 3 个扩展名，只查一层目录、名字大小写不敏感。
+/// 取代原 `globwalk` 通配——候选相同、readdir 顺序相同，且每次查找不再编译 glob。
 const ART_FILE_NAMES: [&str; 9] = [
     "folder.jpg",
     "folder.jpeg",
@@ -65,35 +63,25 @@ fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
         .map(|entry| Arc::from(entry.path()))
 }
 
-/// Caps concurrent cover decodes across all `ManagedImage` elements: each
-/// in-flight decode transiently holds a full-size RGBA buffer (a 3000px cover
-/// is ~36MB), and one fast grid scroll can miss the render cache for dozens
-/// of tiles at once. Mirrors the scanner's artwork decode cap; the render
-/// cache bounds what is *retained*, this bounds what is *in flight*.
+/// 限制全部 `ManagedImage` 元素的并发封面解码数：每条已在途解码瞬态持有一份全尺寸 RGBA
+/// 缓冲（3000px 封面 ~36MB），而一次快速网格滚动可同时让数十个瓦片未命中渲染缓存。
+/// 与扫描器的封面解码上限同构——渲染缓存约束的是*驻留量*，本信号量约束的是*已在途量*。
 static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
 
-/// Serializes the immersive-backdrop heavy pipeline end to end (full-size
-/// decode → crop band → resample → sharpen). One pipeline transiently peaks
-/// at ~105 MB of heap — a 4096² RGBA source alone is 67 MB, its crop band
-/// another ~38 MB — and `arm_backdrop` (current track) plus
-/// `prefetch_next_track_art` (next track) launch one per track change. They
-/// used to overlap freely: `DECODE_PERMITS` only gates the decode step, the
-/// sharpen pass ran outside any cap, and fast switching left superseded tasks
-/// finishing in the background. Two or three concurrent pipelines stacked
-/// ~250 MB of transient on top of the heavy-mode plateau and drove private
-/// commit past the hard cap for two consecutive samples (2026-10-02 restart:
-/// 180 s ramp 341→521 MB while switching tracks in immersive). A capacity-1
-/// gate turns the stack into a FIFO queue: the current track's arm enqueues
-/// first and swaps in ~1 s, the prefetch runs behind it, and the peak is
-/// exactly one pipeline. Cache-hit retrieves bypass entirely — their lookup
-/// happens before the acquire, so prefetched/back-visited backdrops stay
-/// instant even while a fresh pipeline is queued.
+/// 端到端串行化沉浸页背景重管线（全尺寸解码 → 裁剪带 → 重采样 → 锐化）。单条管线瞬态峰值
+/// ~105 MB 堆——仅 4096² RGBA 源就占 67 MB，其裁剪带再占 ~38 MB——而 `arm_backdrop`
+/// （当前曲）与 `prefetch_next_track_art`（下一曲）每次切歌各启动一条。它们原本自由重叠：
+/// `DECODE_PERMITS` 只闸解码步，锐化段在任何上限之外裸跑，快切时被取代的任务还在后台跑完。
+/// 两三条并发管线在重度模式平台期之上叠出 ~250 MB 瞬态，把 private commit 连续两个采样
+/// 推过硬阀门（2026-10-02 重启：沉浸模式切歌期间 180 s 爬坡 341→521 MB）。容量 1 的阀门
+/// 把叠加变成 FIFO 队列：当前曲的 arm 最先入队、约 1 s 内换图，预取排在它后面，峰值恰好
+/// 是一条管线。缓存命中的 retrieve 完全绕过——其查找发生在 acquire 之前，所以即使有新管线
+/// 排队，预取/回跳的背景仍然即时。
 static BACKDROP_PIPELINE_GATE: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 
-/// Swaps R and B channels in place so `image` crate buffers match GPUI's
-/// expected BGRA ordering.
+/// 原地交换 R 与 B 通道，使 `image` crate 的缓冲匹配 GPUI 期望的 BGRA 顺序。
 pub(crate) fn rgb_to_bgr(image: &mut image::RgbaImage) {
     image.pixels_mut().for_each(|v| {
         let ch = v.channels_mut();
@@ -106,25 +94,21 @@ fn decode_rgba_to_render_image(mut image: image::RgbaImage) -> anyhow::Result<Ar
     Ok(Arc::new(RenderImage::new(smallvec![Frame::new(image)])))
 }
 
-/// Longest side of the BMP thumbnail the scanner stores in the `thumb`
-/// column (70×70, see scan decode). Decodes bounded at or below this can use
-/// that cheap pre-scaled source; anything larger decodes the full art.
+/// 扫描器写入 `thumb` 列的 BMP 缩略图最长边（70×70，见 scan decode）。解码尺寸不超过此值
+/// 的可以复用这份廉价预缩放源，更大的只能解码完整封面。
 const STORED_THUMB_PX: u32 = 72;
 
-/// Decode `data`, downscaling to a square of at most `bound` pixels before
-/// converting to RGBA. Scaling at decode time keeps the transient RGBA buffer
-/// (and anything that retains it) bounded by what the UI actually paints.
+/// 解码 `data`，在转 RGBA 前先缩到最长边不超过 `bound` 的方形。在解码阶段缩放可让瞬态 RGBA
+/// 缓冲（以及任何持有它的东西）被 UI 实际绘制尺寸约束住。
 fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<RenderImage>> {
     let image = image::load_from_memory(data)?;
     decode_rgba_to_render_image(dynamic_to_rgba_scaled(image, bound))
 }
 
-/// Acquires a [`DECODE_PERMITS`] slot and decodes `data` into a
-/// `bound`-capped `RenderImage` on the blocking pool. Shared by every
-/// byte-buffer decode path (`HttpCover` / `HttpCoverLarge` / DB art) so the
-/// in-flight cap and the blocking-pool handoff stay in one place. The
-/// path-based `TrackFile` branch of `retrieve_uncached` acquires the same
-/// semaphore directly and must keep doing so.
+/// 取得一个 [`DECODE_PERMITS`] 名额，在阻塞线程池上把 `data` 解码成 `bound` 封顶的
+/// `RenderImage`。所有字节缓冲解码路径（`HttpCover` / `HttpCoverLarge` / DB 封面）共用，
+/// 好让已在途上限与阻塞池交接只存在一处。`retrieve_uncached` 里基于路径的 `TrackFile`
+/// 分支直接获取同一个信号量，并且必须继续这样做。
 async fn decode_bounded_with_permit(
     data: impl AsRef<[u8]> + Send + 'static,
     bound: u32,
@@ -138,14 +122,11 @@ async fn decode_bounded_with_permit(
         .await?
 }
 
-/// Converts a decoded image to RGBA, preferring steal-or-expand over
-/// `to_rgba8`'s full-size copy: PNG-decoded images hand their buffer over
-/// untouched, Rgb8 (JPEG) expands in place with a backwards fill, and only
-/// exotic color types pay `to_rgba8`. Thumbnailing (bound > 0) runs first on
-/// the DynamicImage so the conversion never sees full-size data — the
-/// TrackFile path used to convert at full size and thumbnail after, holding
-/// Rgb8+Rgba8 of a ~2500px cover simultaneously (dhat: 23.6MB transient,
-/// 2026-09-16).
+/// 把已解码图像转成 RGBA，优先 steal-or-expand 而非 `to_rgba8` 的全尺寸拷贝：PNG 解码结果
+/// 原样交出缓冲，Rgb8（JPEG）原地反向填充扩展，只有冷门色彩类型才付 `to_rgba8`。缩略图化
+/// （bound > 0）先在 DynamicImage 上做，因此转换永远见不到全尺寸数据——TrackFile 路径原本
+/// 先全尺寸转换再缩略，会同时持有一张 ~2500px 封面的 Rgb8+Rgba8（dhat: 23.6MB 瞬态，
+/// 2026-09-16）。
 fn dynamic_to_rgba_scaled(image: image::DynamicImage, bound: u32) -> image::RgbaImage {
     let image = if bound > 0 {
         image.thumbnail(bound, bound)
@@ -165,20 +146,16 @@ fn dynamic_to_rgba_scaled(image: image::DynamicImage, bound: u32) -> image::Rgba
     }
 }
 
-/// Expands an Rgb8 buffer to Rgba8 in place: grow by one byte per pixel, then
-/// fill backwards (pixel i reads src `3i..3i+3` and writes dst `4i..4i+4`;
-/// larger-i writes only ever touch bytes ≥ `4i+4`, above every remaining
-/// source byte). Avoids allocating a second full-size buffer, halving the
-/// decode transient for JPEG covers.
+/// 把 Rgb8 缓冲原地扩展为 Rgba8：每像素先加长一字节，再从后往前填充（像素 i 读源
+/// `3i..3i+3`、写目标 `4i..4i+4`；更大的 i 只会碰到 ≥ `4i+4` 的字节，位于所有剩余源字节
+/// 之上）。省掉第二份全尺寸缓冲，把 JPEG 封面的解码瞬态减半。
 fn expand_rgb8_to_rgba8_in_place(buf: &mut Vec<u8>, w: u32, h: u32) {
     let pixels = (w as usize) * (h as usize);
     debug_assert_eq!(buf.len(), pixels * 3);
     buf.resize(pixels * 4, 255);
-    // The backwards fill is clobber-free only for i ≥ 3: write `4i+k` hits
-    // read `3i+j` whenever `i + k == j`, possible while `i + 2 ≤ 2`. Park the
-    // first three pixels and write them from the saved copy afterwards. Alpha
-    // is written explicitly for every pixel — most alpha bytes sit inside the
-    // original Rgb8 region, not the 255-filled tail.
+    // 反向填充只在 i ≥ 3 时才无覆盖：当 `i + k == j` 时写 `4i+k` 会命中读 `3i+j`，
+    // 而这在 `i + 2 ≤ 2` 时可能发生。先把前三个像素存起来，之后用副本写回。每个像素的
+    // alpha 都显式写入——多数 alpha 字节落在原始 Rgb8 区域内，不在填 255 的尾部。
     let head = pixels.min(3);
     let mut saved = [0u8; 9];
     saved[..head * 3].copy_from_slice(&buf[..head * 3]);
@@ -204,43 +181,34 @@ pub enum ManagedImageKey {
     Album(i64),
     Track(i64),
     TrackFile(PathBuf),
-    /// Online album art fetched over HTTP (KuGou track cover URL).
+    /// 经 HTTP 拉取的在线专辑封面（酷狗曲目封面 URL）。
     #[cfg(feature = "online_sources")]
     HttpCover(SharedString),
-    /// Same art, but the fetch tries the provider's large-display variant of
-    /// the URL first (KuGou `stdmusic/480`) with
-    /// a fallback to the original thumbnail — for the immersive backdrop and
-    /// label, where a 256px thumbnail stretched across the window reads as
-    /// mush. See `online_sources::cover_art`.
+    /// 同一张封面，但拉取时先试音源的大图显示档（酷狗 `stdmusic/480`），失败再退回原缩略图
+    /// ——给沉浸页背景与标签用：256px 缩略图拉伸到整窗会糊成一团。见
+    /// `online_sources::cover_art`。
     #[cfg(feature = "online_sources")]
     HttpCoverLarge(SharedString),
 }
 
-/// Upper bound on decoded `RenderImage`s kept alive across elements.
+/// 跨元素保活的已解码 `RenderImage` 数量上界。
 ///
-/// Scrolling an online list re-creates `ManagedImage` rows; without this cache
-/// each one re-decodes the same URL into a fresh `RenderImage` and re-uploads
-/// a new atlas texture. Capping the retained set keeps that churn from adding
-/// up, and re-painting a recently seen cover reuses the exact same
-/// `RenderImage`/atlas slot instead. Evictions queue their atlas tiles for
-/// reclamation, and evicted covers re-decode from the disk cache on return.
+/// 滚动在线列表会不断重建 `ManagedImage` 行；没有这层缓存时，每行都把同一个 URL 重新解码成
+/// 新的 `RenderImage` 并重新上传一张新图集纹理。给驻留集合设上限可以让这种 churn 不至于
+/// 累加，而重绘最近见过的封面会复用完全相同的 `RenderImage`/图集槽位。逐出会把瓦片排进回收
+/// 队列，被逐出的封面回来时从磁盘缓存重新解码。
 ///
-/// The cap is the *live tile* budget, and each live tile measures a flat
-/// ~2.3 MB of driver-side commit regardless of its pixel size (2026-09-19
-/// soak: 192 px and 256 px tiles cost the same, the [mem] probe's
-/// `non_heap_mb` tracks the cache one-to-one). 128 entries ratcheted the
-/// driver commit; 64 still held ~150 MB above the idle floor; 32 keeps the
-/// recent-cover reuse window (≈ 6 grid rows) at half that.
+/// 这个上界是*活动瓦片*预算，而每张活动瓦片不论像素尺寸都固定占用 ~2.3 MB 驱动侧提交
+/// （2026-09-19 浸泡：192 px 与 256 px 瓦片成本相同，[mem] 探针的 `non_heap_mb` 与该缓存
+/// 一一对应）。128 条会把驱动提交持续抬高；64 条仍比空闲基线高 ~150 MB；32 条把最近封面
+/// 复用窗口（≈ 6 行网格）保住，成本只有它的一半。
 const RENDER_CACHE_MAX: usize = 32;
 
-/// Bounded set of decoded covers shared by all `ManagedImage` elements.
-/// Keyed by (source, thumb size) since 72px table rows and 256px grid tiles
-/// are different decodes. Cached tiles are reclaimed exactly once through
-/// `queue_tile_drop` + `drain_pending_tile_drops`; element `on_release`
-/// pushes its held references into the same funnel, where the drain only
-/// reclaims what nothing outside the batch can still paint — double-freeing
-/// a tile trips an etagere assertion (2026-09-12 crash) and never freeing
-/// one leaks it once a surviving element re-paints it after eviction.
+/// 所有 `ManagedImage` 元素共享的有界已解码封面集合。按 (源, thumb 尺寸) 为键，因为 72px
+/// 表格行与 256px 网格瓦片是不同的解码。缓存瓦片只经 `queue_tile_drop` +
+/// `drain_pending_tile_drops` 回收恰好一次；元素 `on_release` 把自己持有的引用推进同一个
+/// 回收漏斗，而排空只回收批次外无人能再绘制的内容——重复释放一个瓦片会触发 etagere 断言
+/// （2026-09-12 崩溃），而从不释放则会在某个存活元素于逐出后重绘它时泄漏一次。
 static RENDER_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -252,12 +220,12 @@ struct RenderCacheKey {
 struct RenderCache {
     cache: FxHashMap<RenderCacheKey, (Arc<RenderImage>, u64)>,
     usage: VecDeque<RenderCacheKey>,
-    /// Approximate live pixel bytes, tracked so the [mem] probe can report the
-    /// exact footprint of this cache instead of hand-waving at peak numbers.
+    /// 近似活动像素字节数，跟踪它是为了让 [mem] 探针报告这个缓存的准确占用，
+    /// 而不是对峰值数字打哈哈。
     bytes: u64,
 }
 
-/// Locks `RENDER_CACHE`, initializing it on first use.
+/// 锁住 `RENDER_CACHE`，首次使用时初始化。
 fn lock_render_cache() -> MutexGuard<'static, RenderCache> {
     RENDER_CACHE
         .get_or_init(|| {
@@ -270,20 +238,18 @@ fn lock_render_cache() -> MutexGuard<'static, RenderCache> {
         .lock_recovered()
 }
 
-/// Locks `RENDER_CACHE` without initializing it: `None` until the first
-/// [`lock_render_cache`] call has created it.
+/// 不初始化地锁住 `RENDER_CACHE`：第一次 [`lock_render_cache`] 创建它之前返回 `None`。
 fn try_lock_render_cache() -> Option<MutexGuard<'static, RenderCache>> {
     RENDER_CACHE.get().map(|cache| cache.lock_recovered())
 }
 
-/// Estimated RGBA footprint in bytes of a decoded cover.
+/// 已解码封面的 RGBA 占用估算字节数。
 pub(crate) fn image_bytes(image: &RenderImage) -> u64 {
     let size = image.size(0);
     (size.width.0 as u64) * (size.height.0 as u64) * 4
 }
 
-/// Live foot print of the decoded-cover LRU, in MiB. Reported by the [mem]
-/// periodic probe.
+/// 已解码封面 LRU 的活动占用（MiB）。由 [mem] 周期探针上报。
 pub fn render_cache_mb() -> u64 {
     let Some(cache) = try_lock_render_cache() else {
         return 0;
@@ -291,9 +257,8 @@ pub fn render_cache_mb() -> u64 {
     cache.bytes / (1024 * 1024)
 }
 
-/// Entry count of the decoded-cover LRU. Reported next to `render_cache_mb`
-/// so the [mem] probe can tell a growing entry set (per-track cache churn)
-/// from a growing per-entry size.
+/// 已解码封面 LRU 的条目数。与 `render_cache_mb` 并列上报，让 [mem] 探针能区分条目集增长
+/// （逐曲目缓存 churn）与单条目尺寸增长。
 pub fn render_cache_entries() -> usize {
     let Some(cache) = try_lock_render_cache() else {
         return 0;
@@ -301,21 +266,15 @@ pub fn render_cache_entries() -> usize {
     cache.cache.len()
 }
 
-/// LRU budget the pressure shed and the immersive activation trim shrink the
-/// render cache to: half the steady 32-entry window. Keeps the current
-/// track's covers (almost certainly the LRU tail) and the last couple of
-/// grid rows; everything else re-decodes from the disk cache on demand.
+/// 压力 shed 与沉浸页激活收缩都把渲染缓存缩到这个 LRU 预算：稳态 32 条的一半。保住当前
+/// 曲目的封面（几乎必然在 LRU 尾部）和最近几行网格；其余按需从磁盘缓存重解码。
 pub(crate) const RENDER_CACHE_PRESSURE_KEEP: usize = 12;
 
-/// Shrinks the decoded-cover LRU to at most `keep` entries, evicting from the
-/// oldest end into the reclaim funnel's normal age gates (60s covers / 3s
-/// large images) — the gates are never shortened; that would gamble with the
-/// 2026-09-08 dangling-scene crash class, so evicted tiles' driver commit
-/// comes back on minute scale. Two callers: the [mem] probe's pressure shed
-/// when private commit crosses the soft cap (exactly the sustained regime the
-/// hard valve measures), and immersive activation — the backdrop pipeline is
-/// about to pay a ~105 MB transient, so the general-purpose cover tiles yield
-/// first. Kept entries are the LRU tail (most recently used).
+/// 把已解码封面 LRU 收缩到最多 `keep` 条，从最旧端逐出进回收漏斗的正常年龄门（封面 60s /
+/// 大图 3s）——年龄门从不缩短；那是在赌 2026-09-08 悬空场景崩溃类，所以被逐出瓦片的驱动
+/// 提交要按分钟级才归还。两个调用方：[mem] 探针在 private commit 越过软顶时的压力 shed
+/// （正是硬阀门度量的那个持续区间），以及沉浸页激活——背景管线马上要付出 ~105 MB 瞬态，
+/// 通用封面瓦片先让位。保留的是 LRU 尾部（最近使用）。
 pub(crate) fn render_cache_shrink(keep: usize) {
     let mut cache = lock_render_cache();
     while cache.usage.len() > keep {
@@ -329,66 +288,47 @@ pub(crate) fn render_cache_shrink(keep: usize) {
     }
 }
 
-/// Resident bytes of the immersive-backdrop LRU, in MiB, plus entry count.
-/// Reported by the [mem] periodic probe: immersive-active sits at ~3 sets,
-/// after leaving the immersive view it must fall back to 1 (the
-/// `backdrop_cache_shrink` release discipline) — this field is how the next
-/// cross-surface residency audit verifies that directly instead of by
-/// inference.
+/// 沉浸页背景 LRU 的驻留字节（MiB）外加条目数。由 [mem] 周期探针上报：沉浸态激活时应停在
+/// ~3 套，退出沉浸页后必须回落到 1（`backdrop_cache_shrink` 的归还纪律）——下一次跨表面
+/// 驻留审计就靠这个字段直接验证，而不是靠推断。
 pub fn backdrop_cache_stats() -> (usize, u64) {
     let cache = lock_backdrop_cache();
     (cache.cache.len(), cache.bytes / (1024 * 1024))
 }
 
-/// Covers whose atlas tiles still need dropping, tagged with their cache key.
-/// This queue is the SINGLE reclaim funnel: cache evictions/replacements and
-/// element `on_release` both push here, and `drain_pending_tile_drops` (event
-/// loop only, never mid-frame) is its only drain — the one reclaim outside
-/// it is the retrieve continuation's `strong_count == 1` fallback when the
-/// element vanished before the image landed (see `request_layout`).
-/// Eviction runs on the RUNTIME where no `App` exists, which is why the drop
-/// itself has to be deferred. Without any of this, an evicted cover's atlas
-/// page stays pinned forever once its owning elements have unmounted.
+/// 图集瓦片仍待释放的封面，带其缓存键。这条队列是唯一回收漏斗：缓存逐出/替换与元素
+/// `on_release` 都推到这里，`drain_pending_tile_drops`（只在事件循环、绝不跨帧）是唯一排空
+/// 点——漏斗之外唯一的一次回收是 retrieve 续体里图像落地前元素已消失时的 `strong_count == 1`
+/// 兜底（见 `request_layout`）。逐出运行在没有 `App` 的 RUNTIME 上，这正是释放本身必须延后
+/// 的原因。没有这套机制，一旦拥有它的元素卸载，被逐出封面的图集页就永远钉住。
 static PENDING_TILE_DROPS: OnceLock<Mutex<Vec<PendingTileDrop>>> = OnceLock::new();
 
 struct PendingTileDrop {
     key: RenderCacheKey,
     image: Arc<RenderImage>,
-    /// Earliest drain that may reclaim this image. Reclaiming is only safe
-    /// once nothing can still paint the image — including the *replayed*
-    /// paint ops of a cache-skipped view, which hold no Arc at all. A view
-    /// skipped at eviction time replays its last scene until it re-renders,
-    /// so a fresh eviction must age out before its tiles may be freed
-    /// (2026-09-16 funnel audit; see `RECLAIM_DELAY`).
+    /// 允许 `drain_pending_tile_drops` 回收这张图像的最早排空时点。只有在无人能再绘制它时
+    /// 回收才安全——包括被跳过重绘的视图所*回放*的绘制原语，它们完全不持 Arc。逐出时被跳过
+    /// 的视图会一直回放其最后一个场景直到重渲染，所以新逐出的图像必须先老化到点才能释放
+    /// 瓦片（2026-09-16 漏斗审计；见 `RECLAIM_DELAY`）。
     due: Instant,
 }
 
-/// Minimum age of a queued image before `drain_pending_tile_drops` may free
-/// its atlas tiles. Bounds the "skipped-view replay" hazard: a view that gpui
-/// skipped (no re-render) replays the sprites of its last paint without
-/// holding the image, so freeing the image's page while that view is still
-/// skipped would dangle the replayed sprite (`texture()` unwrap, 2026-09-08
-/// crash class). 60s covers every realistic static-view lifetime while
-/// keeping reclaim latency irrelevant for memory (pages are transient, and
-/// the probe curve showed the floor is dominated by allocator/GPU residency,
-/// not reclaim latency).
+/// 排队图像在 `drain_pending_tile_drops` 释放其图集瓦片前的最小年龄。它约束的是"跳过重绘的
+/// 视图回放"风险：被 gpui 跳过（未重渲染）的视图会在不持有图像的情况下回放上次绘制的精灵，
+/// 所以在该视图仍被跳过时释放它的页会让回放精灵悬空（`texture()` unwrap，2026-09-08 崩溃
+/// 类）。60s 覆盖一切现实的静态视图生命周期，同时让回收延迟对内存无关紧要（页是瞬态的，
+/// 探针曲线显示基线由分配器/GPU 驻留主导，不是回收延迟）。
 const RECLAIM_DELAY: Duration = Duration::from_secs(60);
-/// Large (≥[`LARGE_IMAGE_BYTES`], immersive-backdrop-class) images age out
-/// on a much shorter gate. Their only painter is the immersive backdrop
-/// element (audited 2026-09-29: every other `ManagedImage` decode is ≤512px
-/// ≤1MB), and every removal of that element — promote, deactivate, crossfade
-/// end — coincides with an `ImmersiveView` re-render (`cx.notify()` in the
-/// same state change), after which no recorded scene can replay its sprites.
-/// The short gate only has to cover the crossfade window (400ms) plus frame
-/// timing, and it MUST stay above `BACKDROP_FADE`: the crossfade keeps the
-/// old element mounted while it fades. The uniform 60s gate turned a burst
-/// of song switches into "the background stops following the song" — the
-/// pending large sets blocked new backdrop decodes for up to a minute
-/// (`backdrop_decode_allowed`), which is exactly the 2026-09-29 complaint.
+/// 大图（≥[`LARGE_IMAGE_BYTES`]，沉浸页背景级）用短得多的年龄门老化。唯一绘制方是沉浸页
+/// 背景元素（2026-09-29 审计：其余每个 `ManagedImage` 解码都 ≤512px ≤1MB），而该元素每次
+/// 移除——晋升、退出、crossfade 结束——都与一次 `ImmersiveView` 重渲染同时发生（同一次状态
+/// 变更里的 `cx.notify()`），此后没有任何已录制场景还能回放它的精灵。短门只需盖住 crossfade
+/// 窗口（400ms）加帧时序，并且必须始终大于 `BACKDROP_FADE`：crossfade 期间旧元素仍在淡出、
+/// 始终挂载。统一的 60s 门会把一连串切歌变成"背景不跟着换歌走"——积压的大图集会让新背景
+/// 解码最多等一分钟（`backdrop_decode_allowed`），正是 2026-09-29 的投诉。
 const RECLAIM_DELAY_LARGE: Duration = Duration::from_secs(3);
 
-/// Reclaim age for one queued image: large backdrop-class images use the
-/// short gate, everything else the conservative 60s one.
+/// 单张排队图像的回收年龄：背景级大图走短门，其余走保守的 60s 门。
 fn reclaim_delay_for(image: &RenderImage) -> Duration {
     if image_bytes(image) >= LARGE_IMAGE_BYTES {
         RECLAIM_DELAY_LARGE
@@ -414,15 +354,13 @@ fn queue_tile_drop(key: RenderCacheKey, image: Arc<RenderImage>) {
         });
 }
 
-/// Cumulative reclaim-funnel counters for the `[mem]` periodic probe, so the
-/// log curve shows why resident memory sits where it does: how much tile
-/// traffic went through the funnel and what each drain decided.
+/// 回收漏斗累计计数器，供 `[mem]` 周期探针上报，让日志曲线说明驻留内存为何停在那个位置：
+/// 有多少瓦片流量经过漏斗、每次排空各自做了什么判定。
 pub(crate) struct TileDropStats {
     pushed: AtomicU64,
-    /// Cumulative pushes of large-class (backdrop-重量级) payloads: the
-    /// 2026-10-06 burst (funnel_pending=146, private 717MB) was invisible to
-    /// size reasoning because only a total count existed — this splits the
-    /// flood into large vs small so the next burst names its composition.
+    /// 大图级（背景重量级）载荷的累计入队数：2026-10-06 的突发（funnel_pending=146，
+    /// private 717MB）之所以无法按尺寸推理，是因为当时只有总数——本字段把洪流分成大/小两类，
+    /// 下次突发就能自己报出构成。
     pushed_large: AtomicU64,
     reclaimed: AtomicU64,
     kept_by_cache: AtomicU64,
@@ -437,12 +375,10 @@ static TILE_DROP_STATS: TileDropStats = TileDropStats {
     kept_by_holders: AtomicU64::new(0),
 };
 
-/// Snapshot for the `[mem]` probe: (pending, pushed, reclaimed,
-/// kept_by_cache, kept_by_holders, leaked_tiles). The last slot is a constant
-/// 0 — `panic = "abort"` makes a panicked `drop_image` fatal, so there is
-/// nothing left to count; the slot survives only because `src/main.rs` reads
-/// this tuple positionally.
-// Only the non-test probe consumes this; test builds would flag it dead.
+/// `[mem]` 探针的快照：(pending, pushed, reclaimed, kept_by_cache, kept_by_holders,
+/// leaked_tiles)。最后一槽恒为 0——`panic = "abort"` 会让 panic 的 `drop_image` 直接致命，
+/// 所以没有可统计的余量；这一槽保留只是因为 `src/main.rs` 按位置读取这个元组。
+// 只有非测试探针消费这个函数；测试构建会把它报成死代码。
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
     let pending = PENDING_TILE_DROPS
@@ -461,15 +397,11 @@ pub(crate) fn tile_drop_stats() -> (u64, u64, u64, u64, u64, u64) {
     )
 }
 
-/// Queued-funnel payload weight for the `[mem]` probe: `(queued bytes in
-/// MiB, queued large-class count, cumulative large-class pushes)`. The
-/// 2026-10-06 burst session (funnel_pending=146, private 717MB) left the
-/// backlog's pixel weight unknown — only a count existed — so the peak's
-/// composition (live caches vs queued payloads) had to be guessed. Summed
-/// under the queue mutex at probe time instead of increment/decrement
-/// bookkeeping: O(pending) at 30s cadence, no drift paths through
-/// push/drain.
-// Only the non-test probe consumes this; test builds would flag it dead.
+/// `[mem]` 探针用的回收漏斗积压重量：`(积压字节 MiB, 积压大图片数, 累计大图入队数)`。
+/// 2026-10-06 突发会话（funnel_pending=146，private 717MB）只留下计数、不知道积压的像素
+/// 重量，于是峰值构成（活动缓存 vs 排队载荷）只能靠猜。这里改为在探针时刻于队列锁内求和，
+/// 而不是 push/drain 的加减记账：30s 节奏下 O(pending)，且没有漂移路径。
+// 只有非测试探针消费这个函数；测试构建会把它报成死代码。
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn funnel_pending_detail() -> (u64, u64, u64) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
@@ -492,17 +424,14 @@ pub(crate) fn funnel_pending_detail() -> (u64, u64, u64) {
     )
 }
 
-/// Process-wide memory-pressure flag (0 = nominal, 1 = private commit past
-/// the soft cap), set and hysteresis-cleared by the `[mem]` probe. Under
-/// pressure the immersive view skips its next-track prefetch (saves a whole
-/// heavy pipeline plus a backdrop cache slot; switching still decodes on
-/// demand), and the probe sheds both image caches once. Relaxed is enough —
-/// this is an advisory signal, missing one sample window has no correctness
-/// consequence.
+/// 进程级内存压力旗标（0 = 正常，1 = private commit 越过软顶），由 `[mem]` 探针置位并按
+/// 滞回清除。压力下沉浸页会跳过下一曲预取（省一整条重管线加一个背景缓存槽位；切歌仍按需
+/// 解码），探针则做一次双缓存 shed。Relaxed 足够——这是建议性信号，漏看一个采样窗口没有
+/// 正确性后果。
 static MEMORY_PRESSURE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-// Only the non-test probe sets the flag (test builds drop the probe), same
-// as `tile_drop_stats` above; the read side lives in the immersive view.
+// 只有非测试探针会置位（测试构建不带探针），与上面的 `tile_drop_stats` 同理；
+// 读取侧在沉浸页视图里。
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn set_memory_pressure(on: bool) {
     MEMORY_PRESSURE.store(u8::from(on), std::sync::atomic::Ordering::Relaxed);
@@ -512,7 +441,7 @@ pub(crate) fn memory_pressure() -> bool {
     MEMORY_PRESSURE.load(std::sync::atomic::Ordering::Relaxed) != 0
 }
 
-/// 把不属于 RENDER_CACHE 的图（如 `MelioraImageCache` 的驱逐/释放、登录二
+/// 把不属于 RENDER_CACHE 的图（如 `MelioraImageCache` 的逐出/释放、登录二
 /// 维码）也推进同一回收漏斗。哨兵键永远不会命中缓存（thumb = u32::MAX 且
 /// 路径为空），drain 的"缓存仍持有"判定对其恒为 false。
 pub(crate) fn queue_orphan_tile_drop(image: Arc<RenderImage>) {
@@ -525,8 +454,8 @@ pub(crate) fn queue_orphan_tile_drop(image: Arc<RenderImage>) {
     );
 }
 
-/// Whether the cache still owns `image` under `key` (same allocation). Used
-/// by the drain to leave tiles alone that a live cache entry still serves.
+/// 渲染缓存是否仍在 `key` 下持有 `image`（同一份分配）。排空用它来放过那些仍有活动缓存
+/// 条目在服务中的瓦片。
 fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
     let Some(cache) = try_lock_render_cache() else {
         return false;
@@ -537,48 +466,38 @@ fn render_cache_holds(key: &RenderCacheKey, image: &Arc<RenderImage>) -> bool {
         .is_some_and(|(current, _)| Arc::ptr_eq(current, image))
 }
 
-/// Outcome of planning one drain batch. `reclaim` is the set of images whose
-/// atlas tiles may be dropped exactly once; the counters exist so tests can
-/// assert why an image was kept alive.
+/// 单个排空批次规划的结论。`reclaim` 是图集瓦片可以恰好释放一次的图像集合；计数器存在的
+/// 目的是让测试能断言某张图为何被保活。
 #[derive(Default)]
 pub(crate) struct ReclaimPlan {
     pub reclaim: Vec<Arc<RenderImage>>,
-    /// Images the render cache still serves under a pushed key: live tiles,
-    /// never reclaimed here (the cache pushes them itself on eviction).
+    /// 渲染缓存仍在某个推入的键下服务这张图：活动瓦片，这里绝不回收（缓存会在逐出时自己推）。
     pub kept_by_cache: usize,
-    /// Images with at least one strong reference outside this batch (a live
-    /// element state, a continuation-local clone, ...): they may paint again,
-    /// so their tiles must stay.
+    /// 批次之外至少还有一个强引用的图（活动元素状态、续体局部克隆……）：它们可能再次绘制，
+    /// 所以瓦片必须留着。
     pub kept_by_holders: usize,
 }
 
-/// Pure core of [`drain_pending_tile_drops`]: groups the batch by image
-/// identity and decides which images' tiles can be reclaimed.
+/// [`drain_pending_tile_drops`] 的纯核心：按图像身份归组并决定哪些图的瓦片可以回收。
 ///
-/// Invariant the decision rests on: grouping consumes every Arc the batch
-/// carried and keeps exactly ONE inspection Arc per unique image, so after
-/// grouping `Arc::strong_count == 1 + (every holder outside the batch)`.
-/// Reclaim is therefore correct iff `strong_count == 1` and the cache does
-/// not serve the image: nobody outside this function can ever paint it again,
-/// so its tile is dropped exactly once.
+/// 决策所依据的不变量：归组会消耗批次携带的每一份 Arc，并为每张唯一图像恰好保留 ONE 个
+/// 检视 Arc，因此归组后 `Arc::strong_count == 1 + (批次外的每个持有者)`。所以回收正确的
+/// 充要条件是 `strong_count == 1` 且缓存不再服务该图：本函数之外无人能再次绘制它，
+/// 于是它的瓦片被恰好释放一次。
 ///
-/// (The previous arithmetic `strong_count - batch_copies` was wrong twice
-/// over: with 2+ pushes of the same image and no external holders it
-/// underflowed usize in release and skipped the reclaim forever — a permanent
-/// atlas-tile leak on the common evict+unmount path — and with 2 pushes plus
-/// one live holder it computed 0 and freed a tile an element still painted.)
+/// （旧的算术 `strong_count - batch_copies` 两处都错：同一张图被推 2 次以上且无外部持有者时
+/// 在 release 下 usize 下溢，于是永远跳过回收——常见"逐出+卸载"路径上的永久图集瓦片泄漏；
+/// 而推 2 次再加一个活动持有者时算出 0，会释放元素仍在绘制的瓦片。）
 ///
-/// `cache_holds` reports whether the render cache still owns `image` under
-/// `key` (same allocation). Consulted for every key the image was pushed
-/// with, not just the first, so a multi-key push cannot slip past it.
+/// `cache_holds` 报告渲染缓存是否仍在 `key` 下持有 `image`（同一份分配）。对该图被推入的
+/// 每个键都查询，不只是第一个，所以多键推入无法绕过它。
 fn plan_tile_reclaims(
     batch: Vec<(RenderCacheKey, Arc<RenderImage>)>,
     mut cache_holds: impl FnMut(&RenderCacheKey, &Arc<RenderImage>) -> bool,
 ) -> ReclaimPlan {
-    // Insertion-ordered dedup: one inspection Arc per unique image. Duplicate
-    // pushes (same image queued by several unmounting elements and by the
-    // cache) collapse here; their extra Arcs are dropped by this loop, which
-    // is exactly what makes the `strong_count == 1` test below valid.
+    // 按插入顺序去重：每张唯一图像只留一个检视 Arc。重复推入（同一张图被数个卸载中的元素
+    // 以及缓存各推一份）在这里收敛；多出的 Arc 由本循环丢弃，这正是下面
+    // `strong_count == 1` 判据成立的前提。
     let mut order: Vec<ImageId> = Vec::new();
     let mut group: FxHashMap<ImageId, (RenderCacheKey, Arc<RenderImage>, bool)> =
         FxHashMap::default();
@@ -608,13 +527,10 @@ fn plan_tile_reclaims(
     plan
 }
 
-/// Reclaims atlas tiles queued by cache evictions. Runs on the UI thread,
-/// exclusively from the playback event loop — never from the paint pass.
-/// Removing atlas pages mid-paint frees a texture page whose sprites may
-/// already be recorded in the same frame, and `DirectXAtlas::texture()`
-/// panics on the dangling slot (crash seen on cover-heavy pages, 2026-09-08).
-/// The event loop only iterates while events arrive, so its loop uses a
-/// timeout to keep draining when playback is idle.
+/// 回收缓存逐出入队的图集瓦片。只在 UI 线程、只由播放事件循环执行——绝不从绘制阶段调用。
+/// 在绘制中途移除图集页会释放同一帧里可能已录制进精灵的纹理页，而 `DirectXAtlas::texture()`
+/// 对悬空槽位 panic（封面密集页面上实测到的崩溃，2026-09-08）。事件循环只在有事件时迭代，
+/// 所以其循环用超时来在播放空闲时继续排空。
 pub fn drain_pending_tile_drops(cx: &mut App) {
     let Some(queue) = PENDING_TILE_DROPS.get() else {
         return;
@@ -650,19 +566,17 @@ pub fn drain_pending_tile_drops(cx: &mut App) {
     // 都会执行，一张刚入队的图（回收年龄门未到）若在这里被丢弃，它的
     // 最后一份 Arc 就地消失，瓦片永远无人回收——pushed 持续增长而其余
     // 计数恒为零的 [mem] 曲线（2026-09-26 两个会话）正是这条路径。
-    // Re-queue the not-yet-due entries only after the reclaim decision, so a
-    // young entry's Arc never dilutes the strong_count test of a ready one.
+    // 回队的时机必须在回收判定之后：年轻条目若提前入队，它的 Arc 会稀释就绪条目的
+    // strong_count 判据。
     if !young.is_empty() {
         queue.lock_recovered().extend(young);
     }
 }
 
-/// Splits the queue into entries whose tiles may be reclaimed now and entries
-/// that must age further. Ready entries leave the queue (releasing their Arc
-/// so the drain's `strong_count == 1` test stays valid); young entries are
-/// pushed back by the caller with their ORIGINAL due instant — resetting it
-/// would either leak the tile forever (delay grows unboundedly) or free it
-/// while a skipped view still replays it (the 2026-09-08 crash class).
+/// 把队列分成"现在可回收瓦片"与"还要继续老化"两部分。就绪条目离开队列（释放其 Arc，
+/// 从而保持排空处 `strong_count == 1` 判据有效）；年轻条目由调用方带着原始 due 时刻放回
+/// 队列——重置它要么让瓦片永久泄漏（延迟无界增长），要么在跳过视图仍在回放时释放它
+/// （2026-09-08 崩溃类）。
 fn partition_ready(
     entries: Vec<PendingTileDrop>,
     now: Instant,
@@ -682,8 +596,7 @@ fn render_cache_lookup(key: &ManagedImageKey, thumb: u32) -> Option<Arc<RenderIm
         .cache
         .get(&cache_key)
         .map(|(image, _)| image.clone())?;
-    // Refresh recency without allocating: reinserting the key would push a
-    // duplicate, so rotate the existing position to the back instead.
+    // 不分配地刷新新旧度：重新插入键会推入重复项，所以改为把现有位置轮转到尾部。
     if let Some(pos) = cache.usage.iter().position(|k| *k == cache_key) {
         cache.usage.remove(pos);
         cache.usage.push_back(cache_key);
@@ -697,11 +610,9 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
 
     let mut cache = lock_render_cache();
 
-    // Replace an existing entry (possibly decoded by a concurrent element) or
-    // evict the least-recently-used slot once the budget is full. Both paths
-    // queue the dropped image for atlas-tile reclamation — this is the ONLY
-    // reclamation path for cached tiles (single owner), so each image's tile
-    // is dropped exactly once.
+    // 替换已有条目（可能是并发元素解码出来的），或预算满后逐出最久未用槽位。两条路径都把
+    // 被丢弃的图像排进图集瓦片回收——这是缓存瓦片的唯一回收路径（单一持有者），所以每张图
+    // 的瓦片恰好被释放一次。
     if let Some((old_image, old_bytes)) = cache.cache.insert(cache_key.clone(), (image, new_bytes))
     {
         cache.bytes = cache.bytes.saturating_sub(old_bytes) + new_bytes;
@@ -720,17 +631,12 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
 }
 
 impl ManagedImageKey {
-    /// Fetches and decodes the artwork, memoized per [`ImageCacheMode`] so a
-    /// cover that scrolls back into view reuses the same `RenderImage` instead
-    /// of paying for a fresh decode + atlas upload per element instance.
-    /// Backdrop mode additionally renders the sharp cover-band pass (see
-    /// `backdrop_sharp_fill`; the fixed-size fallback still uses
-    /// [`enhance_render_image`]) BEFORE the cache insert, so the cached image
-    /// is display-ready and the element paints the exact Arc the cache
-    /// holds — one decode, one enhancement, one set of pixels per artwork.
-    /// `ImageCacheMode::None` serves decode-and-drop callers: one-shot images
-    /// that are never painted (the accent extractor) or whose tile lifetime
-    /// is bounded by their element instead.
+    /// 拉取并解码封面，按 [`ImageCacheMode`] 记忆化，因此滚回视野的封面复用同一个
+    /// `RenderImage`，而不是每个元素实例都付一次新解码 + 图集上传。Backdrop 模式还会在
+    /// 插入缓存之前完成锐利裁剪带渲染（见 `backdrop_sharp_fill`；定长兜底仍用
+    /// [`enhance_render_image`]），于是缓存里的图永远"拿来即绘"，元素绘制的是缓存持有的
+    /// 那个确切 Arc——每张封面一次解码、一次增强、一套像素。`ImageCacheMode::None`
+    /// 服务解码即弃的调用方：从不绘制的一次性图像（取色器），或瓦片寿命由元素自身约束的。
     pub(crate) async fn retrieve(
         &self,
         pool: SqlitePool,
@@ -862,13 +768,13 @@ impl ManagedImageKey {
     async fn retrieve_uncached(
         &self,
         pool: SqlitePool,
-        // Square thumbnail bound in pixels; `0` keeps full size.
+        // 方形缩略图上限（像素）；`0` 表示保持全尺寸。
         thumb_size: u32,
     ) -> anyhow::Result<Option<Arc<RenderImage>>> {
         match self {
             ManagedImageKey::TrackFile(path) => {
-                // Online tracks carry an HTTP URL, not a local path; treat them as having
-                // no artwork instead of opening the URL as a file (os error 123 on Windows).
+                // 在线曲目带的是 HTTP URL 而非本地路径，要当作没有封面处理，
+                // 不能把 URL 当文件打开（Windows 上 os error 123）。
                 if !path.is_file() {
                     return Ok(None);
                 }
@@ -887,12 +793,9 @@ impl ManagedImageKey {
                         else {
                             return Ok(None);
                         };
-                        // The embedded artwork is captured during the probe,
-                        // so reading it does not need the playback decoder.
-                        // start_playback() built a full codec registry plus a
-                        // decoder instance per track just to fetch
-                        // `last_image`, churning the heap on every track
-                        // change for nothing.
+                        // 内嵌封面在探测阶段就已经捕获，读它不需要播放解码器。
+                        // start_playback() 会为了取 `last_image` 给每首歌建一整套编解码
+                        // 注册表加一个解码器实例，每次切歌白折腾一遍堆。
 
                         let decoded = if let Ok(Some(data)) = stream.read_image() {
                             Some(image::load_from_memory(&data)?)
@@ -905,9 +808,8 @@ impl ManagedImageKey {
                         let Some(dyn_image) = decoded else {
                             return Ok(None);
                         };
-                        // Thumbnail (never upscales) runs on the DynamicImage
-                        // BEFORE conversion, so neither the thumbnail nor the
-                        // RGBA expansion ever sees full-size buffers.
+                        // 缩略图（从不放大）在转换之前跑在 DynamicImage 上，
+                        // 于是缩略与 RGBA 扩展都永远见不到全尺寸缓冲。
                         Ok(Some(decode_rgba_to_render_image(dynamic_to_rgba_scaled(
                             dyn_image, thumb_size,
                         ))?))
@@ -935,11 +837,9 @@ impl ManagedImageKey {
             }
             ManagedImageKey::Album(id) | ManagedImageKey::Track(id) => {
                 let thumb = thumb_size > 0;
-                // The `thumb` column holds the scanner's 70×70 BMP, sized for
-                // 72px list rows. A larger bound (256px grid tiles, now
-                // playing art) must decode the full art and scale down here —
-                // `image::thumbnail` never upscales, so a 70px source painted
-                // into a 192px+ tile renders visibly mushy.
+                // `thumb` 列存的是扫描器的 70×70 BMP，为 72px 列表行准备。更大的上限
+                // （256px 网格瓦片、正在播放封面）必须解码完整封面再在这里缩小——
+                // `image::thumbnail` 从不放大，把 70px 源画进 192px+ 瓦片会明显发糊。
                 let stored_thumb_fits = thumb_size <= STORED_THUMB_PX;
                 let query = match (self, thumb) {
                     (ManagedImageKey::Album(_), true) if stored_thumb_fits => {
@@ -1148,10 +1048,8 @@ struct ManagedImageState {
     cache_key: RenderCacheKey,
 }
 
-/// Everything the state holds, moved out for the reclaim funnel. The bridge
-/// can still be shared with an aborted-but-not-yet-dropped retrieve task;
-/// in that case read the ready image through the shared handle instead of
-/// dropping the only remaining reference outside the funnel.
+/// 状态持有一切内容，为回收漏斗整体搬出。bridge 仍可能与一个已中止但尚未丢弃的 retrieve
+/// 任务共享；那种情况下要通过共享句柄读取已就绪的图像，而不是把漏斗之外最后一份引用丢掉。
 fn take_held_images(state: &mut ManagedImageState) -> impl Iterator<Item = Arc<RenderImage>> {
     let bridged = state
         .bridge
@@ -1163,8 +1061,7 @@ fn take_held_images(state: &mut ManagedImageState) -> impl Iterator<Item = Arc<R
     state.image.take().into_iter().chain(bridged)
 }
 
-/// Starts the retrieve task and its completion continuation for `key`, and
-/// records the cache key the result will belong to.
+/// 为 `key` 启动 retrieve 任务及其完成续体，并记录结果所属的缓存键。
 fn request_image(
     state: &mut ManagedImageState,
     key: ManagedImageKey,
@@ -1208,10 +1105,8 @@ fn request_image(
                 // 增强在 retrieve 内部完成（Backdrop 模式先增强后
                 // 入缓存），元素绘制的 Arc 与缓存持有的是同一份。
                 let updated = this.update(cx, |this: &mut ManagedImageState, cx| {
-                    // Same element slot was re-keyed while this retrieve was
-                    // in flight (index-keyed lists). The result belongs to
-                    // the previous key: hand it to the funnel instead of
-                    // painting it over the new image.
+                    // 这条 retrieve 在途时同一元素槽位被换了键（索引键列表）。结果属于
+                    // 上一个键：交给回收漏斗，而不是盖在新图上绘制。
                     if this.cache_key != result_key {
                         queue_tile_drop(result_key.clone(), image.clone());
                         return;
@@ -1258,8 +1153,7 @@ fn request_image(
     };
 }
 
-/// Re-key a reused element state: cancel the old retrieve, return every
-/// image it held to the funnel, and start over under the new key.
+/// 重新键化被复用的元素状态：取消旧的 retrieve，把它持有的所有图像交还漏斗，再按新键重来。
 fn restart_image(
     state: &mut ManagedImageState,
     key: ManagedImageKey,
@@ -1294,17 +1188,14 @@ pub struct ManagedImage {
     id: ElementId,
     style: StyleRefinement,
     object_fit: ObjectFit,
-    /// Square thumbnail bound in pixels; `0` keeps the source at full size.
-    /// Decodes cheaply so grid/list art never holds a full-resolution RGBA
-    /// buffer just to paint a small tile (was: GB-scale working set).
+    /// 方形缩略图上限（像素）；`0` 表示源保持全尺寸。解码代价低，因此网格/列表封面绝不会
+    /// 只为了画一个小瓦片而持有全分辨率 RGBA 缓冲（此前：GB 级工作集）。
     thumb_size: u32,
-    /// Decode-cache destination (see [`ImageCacheMode`]). Images painted
-    /// exactly once — the now-playing bar's per-track cover — must opt out:
-    /// each track's unique URL would otherwise add a fresh cache entry and
-    /// atlas tile whose reclamation waits on the render-cache LRU, the measured
-    /// per-track commit ratchet of the 2026-09-14 soak. The immersive backdrop
-    /// uses [`ImageCacheMode::Backdrop`] (dedicated small LRU + in-retrieve
-    /// enhancement) so song revisits and immersive re-entries paint instantly.
+    /// 解码缓存去向（见 [`ImageCacheMode`]）。只绘制一次的图像必须退出缓存——正在播放栏的
+    /// 逐曲封面就是如此：每首歌唯一的 URL 否则都会新增一个缓存条目和图集瓦片，其回收要等
+    /// 渲染缓存 LRU，即 2026-09-14 浸泡实测到的"逐曲目提交阶梯"。沉浸页背景用
+    /// [`ImageCacheMode::Backdrop`]（专用小容量 LRU + retrieve 内增强），因此切回同一首歌、
+    /// 重进沉浸页都能即时绘制。
     cache: ImageCacheMode,
 }
 
@@ -1314,21 +1205,20 @@ impl ManagedImage {
         self
     }
 
-    /// Downscale to a 72×72 square (small list/playback-bar art).
+    /// 缩到 72×72 方形（小列表/播放栏封面）。
     pub fn thumb(mut self) -> Self {
         self.thumb_size = 72;
         self
     }
 
-    /// Downscale to a square of at most `size` pixels (grid tiles).
+    /// 缩到最长边不超过 `size` 像素的方形（网格瓦片）。
     pub fn thumb_max(mut self, size: u32) -> Self {
         self.thumb_size = size;
         self
     }
 
-    /// Skips `RENDER_CACHE` for this image: decoded once for this element
-    /// instance, its atlas tile is reclaimed through the funnel as soon as
-    /// the element unmounts instead of pinning the page until LRU eviction.
+    /// 本图像跳过 `RENDER_CACHE`：只为这个元素实例解码一次，其图集瓦片在元素卸载时立即经
+    /// 回收漏斗归还，而不是钉住整个页面直到 LRU 逐出。
     pub fn uncached(mut self) -> Self {
         self.cache = ImageCacheMode::None;
         self
@@ -1422,9 +1312,8 @@ impl Element for ManagedImage {
             state
         });
 
-        // Keyed state is addressed by element position, so an index-keyed
-        // list (online rows, queue) can hand the same slot a different cover.
-        // Re-key in place instead of painting the stale image forever.
+        // keyed state 按元素位置寻址，所以索引键列表（在线行、队列）会把同一个槽位交给
+        // 另一张封面。就地换键，而不是永远绘制那张过期图像。
         let desired = RenderCacheKey {
             key,
             thumb: thumb_size,
@@ -1532,8 +1421,7 @@ mod tests {
 
     #[test]
     fn median_removes_salt_noise_and_keeps_flat_areas() {
-        // 3×3: a bright outlier pixel amid dark ones — block-step-like noise
-        // the median must erase.
+        // 3×3：暗像素包围的一个亮离群点——正是中值必须抹掉的块阶类噪声。
         let mut image = RgbaImage::from_fn(3, 3, |x, y| {
             if x == 1 && y == 1 {
                 image::Rgba([200u8, 200, 200, 255])
@@ -1545,7 +1433,7 @@ mod tests {
         let after = *image.get_pixel(1, 1);
         assert_eq!(after[0], 40, "outlier should be medianed away: {after:?}");
 
-        // A flat region stays byte-identical.
+        // 平坦区域必须逐字节保持不变。
         let mut flat = RgbaImage::from_fn(3, 3, |_, _| image::Rgba([128u8, 128, 128, 255]));
         denoise_rgba(&mut flat);
         assert_eq!(*flat.get_pixel(1, 1), image::Rgba([128u8, 128, 128, 255]));
@@ -1553,8 +1441,7 @@ mod tests {
 
     #[test]
     fn median_keeps_true_edges_in_place() {
-        // A hard two-level edge (like a building silhouette against sky) must
-        // survive: pixels away from the boundary keep their original values.
+        // 硬性两级边缘（像建筑剪影对着天空）必须存活：离边界远的像素保持原值。
         let mut image = RgbaImage::from_fn(5, 5, |x, _| {
             if x < 2 {
                 image::Rgba([30u8, 30, 30, 255])
@@ -1569,11 +1456,9 @@ mod tests {
 
     #[test]
     fn enhance_render_image_passes_display_size_sources_through() {
-        // A real-2048 source paints at ~1:1 — its detail IS the maximum
-        // available sharpness. Any filtering (including the block-edge
-        // median) would melt genuine 1-2px detail and read blurrier than the
-        // unenhanced vinyl label, so it must come back as the SAME image,
-        // zero-copy.
+        // 真 2048 源以 ~1:1 绘制——它的细节就是可获得的最大锐度。任何滤波（含块边中值）
+        // 都会融化真实的 1-2px 细节，看起来比未增强的圆盘标签更糊，所以它必须原样返回同一张图，
+        // 零拷贝。
         let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
             2048,
             2,
@@ -1588,13 +1473,12 @@ mod tests {
 
     #[test]
     fn sharpen_rgba_boosts_edge_contrast() {
-        // A soft vertical step with cover-art-scale contrast (180 levels):
-        // sharpening must increase the steepest adjacent-pixel difference
-        // across the edge without touching alpha.
+        // 对比度为封面真实量级（180 级）的软垂直阶跃：锐化必须增大跨越边缘的最陡相邻像素差，
+        // 且不碰 alpha。
         let mut image = RgbaImage::from_fn(24, 8, |x, _| {
             image::Rgba([if x < 12 { 40 } else { 220 }, 7, 9, 255])
         });
-        // Soften the edge to mimic a Lanczos-upscaled transition.
+        // 把边缘抹软，模拟 Lanczos 放大后的过渡。
         let softened = image::imageops::blur(&image, 1.5);
         image.copy_from(&softened, 0, 0).unwrap();
         let max_diff = |img: &RgbaImage| {
@@ -1615,15 +1499,14 @@ mod tests {
             after > before,
             "edge contrast must rise: {before} → {after}"
         );
-        // Alpha stays 255 everywhere.
+        // alpha 处处保持 255。
         assert!(image.pixels().all(|p| p.0[3] == 255));
     }
 
     #[test]
     fn enhance_render_image_upscales_small_sources() {
-        // A 480px online thumbnail stretched across the window reads mushy;
-        // the enhancement pass must resample it to the display-size target
-        // before upload so the GPU scales ~1:1.
+        // 480px 在线缩略图拉伸到整窗会发糊；增强段必须在上传前把它重采样到显示尺寸目标，
+        // 让 GPU 以 ~1:1 缩放。
         let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
             480,
             360,
@@ -1641,9 +1524,8 @@ mod tests {
 
     #[test]
     fn backdrop_sharp_fill_hits_exact_target() {
-        // The element draws the cached image with ObjectFit::Cover at 1:1 GPU
-        // sampling — the output must be EXACTLY the window device-pixel
-        // target, for both a full-size source and a ladder-fallback thumbnail.
+        // 元素用 ObjectFit::Cover 以 1:1 GPU 采样绘制缓存图——输出必须恰好是窗口设备像素
+        // 目标尺寸，无论源是全尺寸还是阶梯回退缩略图。
         for source in [2048u32, 256] {
             let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
                 source,
@@ -1662,10 +1544,9 @@ mod tests {
 
     #[test]
     fn backdrop_sharp_fill_preserves_high_contrast_edges() {
-        // Thin 8px white "text strokes" on black — the class of content the
-        // user wants as sharp in the backdrop as on the disc label. The sharp
-        // pipeline (denoise → Lanczos → thresholded unsharp) must keep the
-        // stroke edges at high contrast: no blur stage may melt them away.
+        // 黑底上细 8px 白色"文字笔画"——用户要求背景与圆盘标签一样清晰的正是这类内容。
+        // 清晰管线（去噪 → Lanczos → 阈值 unsharp）必须让笔画边缘保持高对比：任何模糊段
+        // 都不许把它们化掉。
         let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
             1024,
             1024,
@@ -1704,9 +1585,8 @@ mod tests {
         }
     }
 
-    /// Stand-in for `RENDER_CACHE`: maps cache keys to the Arc it serves.
-    /// Holding clones here mirrors the real cache, whose entry also counts
-    /// towards `Arc::strong_count`.
+    /// `RENDER_CACHE` 的替身：把缓存键映射到它服务的 Arc。这里持有克隆是在模拟真实缓存——
+    /// 它的条目同样计入 `Arc::strong_count`。
     #[derive(Default)]
     struct FakeCache(FxHashMap<RenderCacheKey, Arc<RenderImage>>);
 
@@ -1737,15 +1617,14 @@ mod tests {
         assert_eq!((plan.kept_by_cache, plan.kept_by_holders), (0, 0));
     }
 
-    /// Regression: two pushes of one image with no external holders used to
-    /// evaluate `strong_count - batch_copies` = 1 - 2, underflowing usize in
-    /// release and skipping the reclaim forever (permanent atlas-tile leak on
-    /// the common evict+unmount path).
+    /// 回归用例：同一张图被推两次且无外部持有者时，旧实现算 `strong_count - batch_copies`
+    /// = 1 - 2，在 release 下 usize 下溢，于是永远跳过回收（常见"逐出+卸载"路径上的永久
+    /// 图集瓦片泄漏）。
     #[test]
     fn same_batch_shared_release_reclaims_exactly_once() {
         let img = test_image();
-        let a = img.clone(); // element A's reference, pushed by its on_release
-        let b = img.clone(); // element B's reference, pushed by its on_release
+        let a = img.clone(); // 元素 A 的引用，由其 on_release 推入
+        let b = img.clone(); // 元素 B 的引用，由其 on_release 推入
         drop(img);
         let plan = run_plan(
             vec![(key(1, 256), a), (key(1, 256), b)],
@@ -1758,14 +1637,14 @@ mod tests {
     #[test]
     fn shared_release_across_batches_waits_for_last_holder() {
         let img = test_image();
-        let holder_b = img.clone(); // element B still mounted
+        let holder_b = img.clone(); // 元素 B 仍挂载
 
-        // Drain 1: only A pushed; B can still paint the image.
+        // 排空 1：只推了 A；B 仍能绘制这张图。
         let p1 = run_plan(vec![(key(1, 256), img)], &FakeCache::default());
         assert!(p1.reclaim.is_empty());
         assert_eq!(p1.kept_by_holders, 1);
 
-        // Drain 2: B unmounted and pushed its reference; nobody else holds it.
+        // 排空 2：B 已卸载并推入自己的引用；再无人持有它。
         let p2 = run_plan(vec![(key(1, 256), holder_b)], &FakeCache::default());
         assert_eq!(p2.reclaim.len(), 1);
     }
@@ -1778,13 +1657,12 @@ mod tests {
         let element_ref = img.clone();
         drop(img);
 
-        // Element unmounts and pushes while the cache still serves the image.
+        // 缓存仍在服务这张图时元素卸载并推入它。
         let p = run_plan(vec![(key(1, 256), element_ref)], &cache);
         assert!(p.reclaim.is_empty());
         assert_eq!(p.kept_by_cache, 1);
 
-        // A duplicate push (second element) stays skipped while cached: the
-        // cache pushes the tile itself when it eventually evicts.
+        // 重复推入（第二个元素）在缓存持有期间仍被跳过：缓存会在真正逐出时自己推这个瓦片。
         let cached = cache.get(&key(1, 256)).unwrap().clone();
         let e1 = cached.clone();
         let e2 = cached.clone();
@@ -1794,10 +1672,8 @@ mod tests {
         assert_eq!(p.kept_by_cache, 1);
     }
 
-    /// The drain must age entries out by their ORIGINAL due instant: resetting
-    /// the due on re-queue would either leak the tile forever (due pushed
-    /// forward on every drain) or free it while a skipped view still replays
-    /// it (due pulled back — the 2026-09-08 crash class).
+    /// 排空必须按条目的原始 due 时刻来老化：回队时重置 due 要么让瓦片永久泄漏（每次排空都把
+    /// due 往后推），要么在跳过视图仍在回放时释放它（due 被往前拉——2026-09-08 崩溃类）。
     #[test]
     fn partition_ready_keeps_original_due_for_young_entries() {
         let now = Instant::now();
@@ -1819,8 +1695,8 @@ mod tests {
         assert_eq!(young_out[0].due, young_due);
     }
 
-    /// The in-place Rgb8→Rgba8 expansion must match `to_rgba8` exactly,
-    /// including the overlap-prone first pixels (i < 3) and the last row.
+    /// 原地 Rgb8→Rgba8 扩展必须与 `to_rgba8` 逐字节一致，包括最容易重叠的前几个像素
+    /// （i < 3）与最后一行。
     #[test]
     fn rgb8_expansion_matches_to_rgba8() {
         for (w, h) in [(1, 1), (2, 2), (3, 2), (7, 5), (64, 33)] {
@@ -1837,25 +1713,23 @@ mod tests {
         }
     }
 
-    /// PNG covers arrive as Rgba8 and must be stolen (no second buffer), and
-    /// bounded conversion must thumbnail before expanding.
+    /// PNG 封面以 Rgba8 到达且必须被 steal（不留第二份缓冲），并且有界转换必须先缩略再扩展。
     #[test]
     fn dynamic_conversion_steals_rgba_and_scales() {
         let src =
             image::RgbaImage::from_fn(64, 64, |x, y| image::Rgba([x as u8, y as u8, 42, 255]));
 
-        // bound = 0: the exact buffer is handed over, no clone.
+        // bound = 0：交出原缓冲本身，不克隆。
         let full = dynamic_to_rgba_scaled(image::DynamicImage::ImageRgba8(src.clone()), 0);
         assert_eq!(*full, *src);
 
-        // bound = 16: downscaled, still correct dimensions.
+        // bound = 16：已缩小，尺寸依然正确。
         let scaled = dynamic_to_rgba_scaled(image::DynamicImage::ImageRgba8(src), 16);
         assert!(scaled.width() <= 16 && scaled.height() <= 16);
     }
 
-    /// Cache replaces an entry while an element still paints the old image:
-    /// the old tile must be reclaimed exactly once, only after the element is
-    /// gone, and the replacement must never be reclaimed while cache-held.
+    /// 缓存替换条目时元素仍在绘制旧图：旧瓦片必须恰好回收一次、只在元素消失之后，而替换进来
+    /// 的新图在缓存持有期间绝不能被回收。
     #[test]
     fn replacement_race_reclaims_old_image_only() {
         let mut cache = FakeCache::default();
@@ -1865,29 +1739,26 @@ mod tests {
         let element_ref = old.clone();
         drop(old);
 
-        // Cache swap: old evicted (queued), fresh decode takes the slot.
+        // 缓存换图：旧图被逐出（入队），新解码占据该槽位。
         let evicted = cache.remove(&key(1, 256)).unwrap();
         assert!(Arc::ptr_eq(&evicted, &element_ref));
         let new = test_image();
         cache.insert(key(1, 256), new.clone());
 
-        // Drain 1: element still holds the old image → skip.
+        // 排空 1：元素仍持有旧图 → 跳过。
         let p1 = run_plan(vec![(key(1, 256), evicted)], &cache);
         assert!(p1.reclaim.is_empty());
         assert_eq!(p1.kept_by_holders, 1);
 
-        // Drain 2: element released and pushed → old reclaimed once, new one
-        // untouched.
+        // 排空 2：元素释放并推入 → 旧图回收一次，新图未被触碰。
         let p2 = run_plan(vec![(key(1, 256), element_ref)], &cache);
         assert_eq!(p2.reclaim.len(), 1);
         assert_eq!(p2.reclaim[0].id, old_id);
         assert!(cache.holds(&key(1, 256), &new));
     }
 
-    /// The resurrection property: a reclaim decision is made only when zero
-    /// strong references exist outside the batch, so no element can ever paint
-    /// the image again after its tile is freed — the tile is dropped exactly
-    /// once, for every combination of holder counts and duplicate pushes.
+    /// 复活性质：回收判定只在批次之外零强引用时做出，所以瓦片释放后任何元素都不可能再绘制它
+    /// ——在持有者数与重复推入的所有组合下，瓦片都被恰好释放一次。
     #[test]
     fn no_reclaim_while_any_external_holder_alive() {
         for holders in 0..=3usize {
@@ -1916,8 +1787,7 @@ mod tests {
         }
     }
 
-    /// thumb=0 art never enters the render cache, so its tiles are judged
-    /// purely by the remaining strong count.
+    /// thumb=0 的封面从不进入渲染缓存，所以它的瓦片完全由剩余强引用数判定。
     #[test]
     fn thumb_zero_uncached_image_reclaims() {
         let img = test_image();
@@ -1926,10 +1796,9 @@ mod tests {
         assert_eq!(plan.kept_by_cache, 0);
     }
 
-    /// Adversarial: one image pushed under two different keys in the same
-    /// batch while the cache still serves it under one of them. The hold
-    /// check must OR across every pushed key, not just the first — this
-    /// locks the "consulted for every key" claim of `plan_tile_reclaims`.
+    /// 对抗用例：同一批次里一张图以两个不同键被推入，而缓存仍在其中一个键下服务它。持有判定
+    /// 必须对每个推入的键做 OR，而不只看第一个——这锁住 `plan_tile_reclaims` 的
+    /// "每个键都查询"承诺。
     #[test]
     fn multi_key_push_cache_hold_on_any_key_keeps_image() {
         let mut cache = FakeCache::default();
@@ -1953,9 +1822,8 @@ mod tests {
         assert_eq!(plan.kept_by_cache, 1);
     }
 
-    /// The full same-batch triple-push sequence: the cache's eviction push
-    /// plus two shared elements' `on_release` pushes of one image. Grouping
-    /// must collapse all three Arcs and reclaim exactly once.
+    /// 完整同批三推序列：缓存的逐出推入 + 两个共享元素对同一张图的 `on_release` 推入。
+    /// 归组必须把三份 Arc 全部收敛并恰好回收一次。
     #[test]
     fn cache_evict_and_two_element_releases_in_one_batch_reclaim_once() {
         let mut cache = FakeCache::default();
@@ -1965,7 +1833,7 @@ mod tests {
         let b = img.clone();
         drop(img);
 
-        // The cache evicts (remove + queue) while both elements release.
+        // 缓存逐出（remove + 入队）时两个元素同时卸载。
         let evicted = cache.remove(&key(9, 256)).unwrap();
         let plan = run_plan(
             vec![(key(9, 256), evicted), (key(9, 256), a), (key(9, 256), b)],
@@ -1987,9 +1855,8 @@ mod tests {
         assert_eq!(plan.reclaim.len(), 1);
     }
 
-    /// Locks the global invariant across a simulated session: every image's
-    /// tile is reclaimed at most once, and every fully-released image is
-    /// eventually reclaimed.
+    /// 在一次模拟会话上锁死全局不变量：每张图的瓦片至多回收一次，且每张被完全释放的图
+    /// 最终都会被回收。
     #[test]
     fn every_tile_is_reclaimed_at_most_once_across_drains() {
         let mut cache = FakeCache::default();
@@ -1998,12 +1865,12 @@ mod tests {
         let i1 = test_image();
         let i2 = test_image();
         cache.insert(key(10, 256), i1.clone());
-        let h1 = i1.clone(); // element painting the cached cover
-        let h2 = i2.clone(); // element painting full-size (thumb=0) art
+        let h1 = i1.clone(); // 正在绘制缓存封面的元素
+        let h2 = i2.clone(); // 正在绘制全尺寸（thumb=0）封面的元素
         drop(i1);
         drop(i2);
 
-        // Round 1: cache evicts i1 (queued) while h1 is alive; h2 unmounts.
+        // 轮次 1：缓存逐出 i1（入队）而 h1 仍存活；h2 卸载。
         let evicted = cache.remove(&key(10, 256)).unwrap();
         let p1 = run_plan(vec![(key(10, 256), evicted), (key(11, 0), h2)], &cache);
         assert_eq!(p1.reclaim.len(), 1, "i2 reclaimed, i1 kept for h1");
@@ -2012,7 +1879,7 @@ mod tests {
         }
         drop(p1);
 
-        // Round 2: h1 unmounts and pushes → i1 reclaimed exactly once.
+        // 轮次 2：h1 卸载并推入 → i1 恰好回收一次。
         let p2 = run_plan(vec![(key(10, 256), h1)], &cache);
         assert_eq!(p2.reclaim.len(), 1);
         for img in &p2.reclaim {
@@ -2023,11 +1890,8 @@ mod tests {
         assert_eq!(dropped.len(), 2, "every released image reclaimed once");
     }
 
-    /// Backdrop-class (≥4MB) images age out on the short gate so a burst of
-    /// song switches cannot freeze the background for 60s; covers keep the
-    /// conservative 60s gate. The short gate must stay above the immersive
-    /// crossfade window, which keeps the old element (and its tiles) painting
-    /// while it fades out.
+    /// 背景级（≥4MB）图像走短年龄门老化，因此一连串切歌不会把背景冻结 60s；封面保留保守的
+    /// 60s 门。短门必须始终高于沉浸页 crossfade 窗口——淡出期间旧元素（及其瓦片）仍在绘制。
     #[test]
     fn large_backdrop_images_use_the_short_reclaim_gate() {
         assert_eq!(reclaim_delay_for(&test_image()), RECLAIM_DELAY);
@@ -2041,15 +1905,13 @@ mod tests {
         assert!(RECLAIM_DELAY_LARGE > Duration::from_millis(400));
     }
 
-    /// Crop geometry pinning: denoise/resample happen AFTER the centered
-    /// cover-crop, so content outside the crop band must never bleed into the
-    /// output — the band is still the geometric cover crop.
+    /// 裁剪几何钉桩：去噪/重采样发生在居中 cover 裁剪之后，所以裁剪带之外的内容绝不能渗进
+    /// 输出——这条带仍是几何意义上的 cover 裁剪。
     #[test]
     fn backdrop_sharp_fill_matches_target_and_center() {
-        // 2048x2048 source: top fifth red, everything else flat green. The
-        // centered cover-crop for a 1920x1028 target starts at source row
-        // (2048 - 1097) / 2 = 475, below the red band (Lanczos ringing
-        // reaches ~12 source rows), so every output pixel must be green.
+        // 2048x2048 源：顶部五分之一为红，其余平坦绿。1920x1028 目标的居中 cover 裁剪从
+        // 源第 (2048 - 1097) / 2 = 475 行开始，低于红带（Lanczos 振铃约达 12 个源行），
+        // 所以每个输出像素都必须是绿。
         let src = RgbaImage::from_fn(2048, 2048, |_, y| {
             if y < 400 {
                 image::Rgba([255, 0, 0, 255])
@@ -2072,14 +1934,12 @@ mod tests {
             "cover crop must exclude the top red band; flat green survives denoise+resize"
         );
 
-        // Degenerate targets return Err (the caller falls back to the
-        // returned original).
+        // 退化目标返回 Err（调用方回退到被原样还回的源图）。
         assert!(backdrop_sharp_fill(source.clone(), 0, 100).is_err());
         assert!(backdrop_sharp_fill(source, 100, 0).is_err());
     }
 
-    /// Small sources (ladder fallback) must still render to the exact target
-    /// (GPU then samples 1:1 instead of magnifying a tiny texture).
+    /// 小尺寸源（阶梯回退）也必须渲染到精确目标尺寸（这样 GPU 以 1:1 取样，而不是放大小纹理）。
     #[test]
     fn backdrop_sharp_fill_upscales_small_sources() {
         let source = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
@@ -2094,12 +1954,9 @@ mod tests {
     }
 }
 
-/// Timing probes for the image pipeline (§37 regression protection):
-/// the cover decode paths (what every list/grid tile pays) and the
-/// immersive backdrop pipeline (the hundreds-of-ms synchronous CPU the
-/// 2026-09-29 "切换不丝滑"复盘 was about). Companion probe: the allocation
-/// guards in `playback` tests cover the audio side; `[mem]`/`[frame]` cover
-/// the residency/frame side.
+/// 图像管线耗时探针（§37 回归防护）：封面解码路径（每个列表/网格瓦片都要付的）与沉浸页背景
+/// 管线（2026-09-29 "切换不丝滑"复盘说的那数百 ms 级同步 CPU）。配套探针：`playback` 测试里的
+/// 分配守卫覆盖音频侧，`[mem]`/`[frame]` 覆盖驻留/帧侧。
 ///
 /// ```text
 /// cargo test --release managed_image::bench -- --ignored --nocapture
@@ -2112,11 +1969,9 @@ mod bench {
     use smallvec::smallvec;
     use std::sync::Arc;
 
-    /// A photo-like synthetic cover: smooth gradients plus per-8px block
-    /// steps, so JPEG compression and the denoise/resample passes see
-    /// realistic structure (flat color would flatter every number). JPEG has
-    /// no alpha, so the buffer is encoded as Rgb8 — exactly what a real
-    /// cover file decodes back from.
+    /// 类照片的合成封面：平滑渐变 + 每 8px 的块阶，这样 JPEG 压缩与去噪/重采样段看到的都是
+    /// 真实结构（纯色会让每个数字都好看）。JPEG 无 alpha，所以缓冲按 Rgb8 编码——正是真实
+    /// 封面文件解码回来的形态。
     fn synthetic_jpeg(size: u32) -> Vec<u8> {
         let image = RgbaImage::from_fn(size, size, |x, y| {
             image::Rgba([
@@ -2165,19 +2020,18 @@ mod bench {
                 jpeg.len() / 1024
             );
 
-            // Display-cover path: decode bounded at the tile size (what every
-            // list/grid row pays on a cache miss).
+            // 显示封面路径：按瓦片尺寸封顶解码（每个列表/网格行未命中缓存时要付的）。
             bench_summarize_n("decode scaled @512", 5, 50, || {
                 let _ = decode_to_render_image_scaled(&jpeg, 512).unwrap();
             });
-            // Full decode: the backdrop source path (no bound).
+            // 完整解码：背景源路径（不设上限）。
             bench_summarize_n(&format!("decode full @{source_px}"), 1, 5, || {
                 let _ = decode_to_render_image_scaled(&jpeg, 0).unwrap();
             });
         }
 
-        // Immersive backdrop pipeline: full-size source → cover crop →
-        // denoise → resample → unsharp, to a 1920x1080 device-pixel target.
+        // 沉浸页背景管线：全尺寸源 → cover 裁剪 → 去噪 → 重采样 → unsharp，
+        // 目标是 1920x1080 设备像素。
         // 4096 与上面同一理由：在线封面的背景档实测全部解析到 4096。
         for source_px in [4096u32, 2048, 1280] {
             let source = synthetic_source(source_px);
@@ -2191,10 +2045,8 @@ mod bench {
             );
         }
 
-        // Fixed-size fallback path (target unknown, first frame): the enhance
-        // pass only does real work on small sources — a 2048 source passes
-        // through untouched, so the probe uses the 480px ladder-fallback size
-        // it exists for.
+        // 定长兜底路径（目标尺寸未知的首帧）：增强段只在源很小时做实事——2048 源原样直通，
+        // 所以探针用它真正服务的那个 480px 阶梯回退尺寸。
         let source = synthetic_source(480);
         bench_summarize_n("enhance_render_image 480 (fallback)", 2, 10, || {
             let _ = enhance_render_image(&source).unwrap();

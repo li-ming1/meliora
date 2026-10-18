@@ -17,12 +17,11 @@ use crate::ui::{
 
 type OnClickHandler = dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static;
 
-/// Windows extended-length path prefix (`\\?\`), stripped from detail items
-/// so it never shows up as noise in the dialog.
+/// Windows 扩展长度路径前缀（`\\?\`），从详情条目里剥掉，免得它在对话框里成噪声。
 const WINDOWS_EXTENDED_PATH_PREFIX: &str = "\\\\?\\";
 
-/// Visual severity for the dialog's icon badge. Drives the default icon choice and the tint of
-/// the icon circle. Extend with `Info`/`Success` once the theme grows matching palettes.
+/// 对话框图标徽章的视觉严重级别。决定默认图标选择与图标圆圈的着色。等主题长出配套调色板后再
+/// 扩展 `Info`/`Success`。
 #[derive(Clone, Copy, Default)]
 pub enum Severity {
     #[default]
@@ -53,7 +52,7 @@ impl Severity {
     }
 }
 
-/// One button in an [`ActionDialog`]'s stacked action list.
+/// [`ActionDialog`] 竖排动作列表中的一个按钮。
 pub struct ActionDialogAction {
     id: &'static str,
     icon: &'static str,
@@ -87,8 +86,7 @@ impl ActionDialogAction {
     }
 }
 
-/// Content block that appears between the body text and the action buttons. Typically used for
-/// file paths, but works for any short list of labels.
+/// 出现在正文与动作按钮之间的内容块。通常用来列文件路径，但任何短标签列表都适用。
 pub struct ActionDialogDetails {
     item_icon: Option<&'static str>,
     items: Vec<SharedString>,
@@ -112,7 +110,7 @@ impl ActionDialogDetails {
     }
 }
 
-/// Pre-built checkbox-style footer ("Don't ask again" + optional hint).
+/// 预置的复选框式页脚（"不再询问" + 可选提示）。
 #[derive(IntoElement)]
 pub struct CheckboxFooter {
     id: &'static str,
@@ -182,8 +180,7 @@ impl RenderOnce for CheckboxFooter {
     }
 }
 
-/// A modal confirmation dialog: severity-tinted icon, title, body, optional
-/// detail list, stacked action buttons and an optional footer.
+/// 一个模态确认对话框：按严重级别着色的图标、标题、正文、可选详情列表、竖排动作按钮与可选页脚。
 #[derive(IntoElement)]
 pub struct ActionDialog {
     severity: Severity,
@@ -221,8 +218,7 @@ impl ActionDialog {
         I: IntoIterator<Item = S>,
         S: Into<SharedString>,
     {
-        // Strip the Windows extended-length prefix so overly long paths
-        // still read cleanly.
+        // 剥掉 Windows 扩展长度前缀，让过长的路径也能读得干净。
         let items = paths.into_iter().map(|p| {
             let s: SharedString = p.into();
             match s.strip_prefix(WINDOWS_EXTENDED_PATH_PREFIX) {

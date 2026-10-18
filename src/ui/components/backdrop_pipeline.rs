@@ -10,23 +10,17 @@ use gpui::RenderImage;
 use image::Frame;
 use smallvec::smallvec;
 
-/// Long side of the resampled backdrop — matches a 1920-wide fullscreen.
-/// Sources at or above this pass through untouched: they paint at ~1:1 or a
-/// downscale, where their detail IS the maximum available sharpness, and any
-/// filtering (including the median meant for JPEG blocks) only melts real
-/// 1-2px detail — the measured reason a real-2048 backdrop read blurrier
-/// than the vinyl label, which never runs enhance. Anything below is
-/// median-denoised, Lanczos-resampled up to this size and sharpened, so the
-/// GPU never magnifies the texture.
+/// 重采样后背景的最长边——对齐 1920 宽全屏。已达到或超过此尺寸的源原样直通：它们以 ~1:1
+/// 或缩采样绘制，其细节本身就是可获得的最大锐度，任何滤波（包括为 JPEG 块准备的中值）只会
+/// 融化真实的 1-2px 细节——这正是实测到的"真 2048 背景比圆盘标签更糊"的缘由，圆盘从不跑
+/// enhance。低于此值的都先中值去噪、Lanczos 放大到该尺寸再锐化，于是 GPU 永远不放大纹理。
 pub(super) const ENHANCE_TARGET_PX: u32 = 1920;
-/// Unsharp-mask amount applied after the upscale (see [`sharpen_rgba`]).
+/// 放大之后应用的 unsharp-mask 强度（见 [`sharpen_rgba`]）。
 const ENHANCE_SHARPEN_AMOUNT: f32 = 0.6;
-/// Unsharp-mask blur sigma in output pixels: with 7.5× Lanczos magnification
-/// edge transitions span several pixels, so the halo radius must scale with
-/// the magnification, not stay at 1px.
+/// 以输出像素计的 unsharp-mask 模糊 sigma：7.5× Lanczos 放大下边缘过渡跨越若干像素，
+/// 所以光晕半径必须随倍数走，不能停在 1px。
 const ENHANCE_SHARPEN_SIGMA: f32 = 1.5;
-/// Channel differences below this (0-255) pass through unsharpened, so
-/// Lanczos ringing and sensor noise are not boosted into halos.
+/// 通道差低于此值（0-255）不做 unsharp，因此 Lanczos 振铃与传感器噪声不会被推成光晕。
 const ENHANCE_SHARPEN_THRESHOLD: f32 = 3.0;
 
 /// 沉浸页背景目标尺寸渲染（2026-09-29 第四版·清晰裁剪带）：解码全尺寸
@@ -130,14 +124,11 @@ pub(super) fn backdrop_sharp_fill(
     Ok(Arc::new(RenderImage::new(smallvec![Frame::new(out)])))
 }
 
-/// Fixed-size backdrop enhancement — the [`ImageCacheMode::Backdrop(None)`]
-/// fallback used when the window's device-pixel target is unknown (the exact
-/// target path is [`backdrop_sharp_fill`]). Returns a fresh `RenderImage`:
-/// sources already at or above [`ENHANCE_TARGET_PX`] pass through untouched;
-/// smaller sources get 3×3 median denoise (melts JPEG block steps — after a
-/// 7.5× upscale each block would smear across 60px), a Lanczos resample to
-/// display size, and a thresholded unsharp pass to restore edge acutance.
-/// RGB channels only, alpha untouched.
+/// 定长背景增强——窗口设备像素目标未知时使用的 [`ImageCacheMode::Backdrop(None)`] 兜底
+/// （精确目标路径是 [`backdrop_sharp_fill`]）。返回新的 `RenderImage`：已达到或超过
+/// [`ENHANCE_TARGET_PX`] 的源原样直通；更小的源依次做 3×3 中值去噪（化掉 JPEG 块阶——7.5×
+/// 放大后每个块会涂抹到 60px）、Lanczos 重采样到显示尺寸、再一次阈值 unsharp 补回边缘锐度。
+/// 只动 RGB 通道，alpha 不碰。
 pub(super) fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
     let bytes = image.as_bytes(0)?;
     let size = image.size(0);
@@ -164,17 +155,15 @@ pub(super) fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<Rende
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
 }
 
-/// In-place thresholded unsharp mask over RGB: `out = src + amount·(src −
-/// blur(src))` where the difference exceeds the threshold. Runs AFTER the
-/// median (which melts JPEG block edges) and the Lanczos upscale, so it
-/// boosts genuine edges only — the un-ordered unsharp this replaces once
-/// amplified block steps into the "黑框框" grid. Alpha untouched.
+/// 对 RGB 原地做阈值 unsharp-mask：差值超过阈值时 `out = src + amount·(src − blur(src))`。
+/// 运行在中值（化掉 JPEG 块边）与 Lanczos 放大之后，所以只提升真实边缘——它替换掉的无序
+/// unsharp 曾把块阶直接放大成"黑框框"网格。alpha 不碰。
 pub(super) fn sharpen_rgba(image: &mut image::RgbaImage) {
     sharpen_rgba_with(image, ENHANCE_SHARPEN_AMOUNT, ENHANCE_SHARPEN_SIGMA);
 }
 
-/// Parameterized core of [`sharpen_rgba`]: `amount` scales the unsharp
-/// response, `sigma` sets the halo radius in output pixels.
+/// [`sharpen_rgba`] 的参数化内核：`amount` 缩放 unsharp 响应，`sigma` 设定以输出像素计的
+/// 光晕半径。
 ///
 /// 模糊基保持 `imageops::blur`。曾把它和下面中值的 `sort_unstable` 一起换成
 /// `fast_blur`（Kovesi 三重盒式，u8 域）+ `select_nth_unstable`：前者确实把
@@ -201,11 +190,9 @@ fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
     }
 }
 
-/// In-place 3×3 median filter over RGB: each output channel is the median of
-/// its 3×3 neighborhood (edges clamped to the nearest pixel). A median melts
-/// JPEG's 8×8 block steps and other flat-region noise while keeping genuine
-/// edges intact — the unsharp pass this replaces did the opposite (it
-/// amplified exactly those block edges into the "黑框框" grid).
+/// 对 RGB 原地做 3×3 中值滤波：每个输出通道取其 3×3 邻域的中值（边缘钳位到最近像素）。
+/// 中值会化掉 JPEG 的 8×8 块阶与平坦区噪声，同时保持真实边缘完整——它替换掉的 unsharp 段
+/// 做的正相反（把那些块边直接放大成"黑框框"网格）。
 ///
 /// 行缓冲滑窗实现，不做整图 clone：三条缓冲里永远是采样那一刻的原始字节
 /// （next 行只从写指针之后的未写行装载，prev/cur 靠 swap 轮转），输出与

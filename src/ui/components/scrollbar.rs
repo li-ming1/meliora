@@ -17,9 +17,9 @@ use gpui::{
 use crate::settings::SettingsGlobal;
 use crate::ui::theme::Theme;
 
-/// Lower bound on the drawn thumb length.
+/// 绘制出来的滑块长度下限。
 const MIN_THUMB_LENGTH: Pixels = px(20.0);
-/// Tolerance around the thumb accepted as a grab on mousedown.
+/// 按下时算作"抓住滑块"的滑块容差范围。
 const THUMB_GRAB_EXPANSION: Pixels = px(4.0);
 
 #[derive(Clone)]
@@ -28,8 +28,7 @@ pub enum ScrollableHandle {
     UniformList {
         handle: UniformListScrollHandle,
     },
-    /// A variable-height virtualized `gpui::list`; offsets follow the same
-    /// negative-y scrollbar convention as `Regular`.
+    /// 变高虚拟化 `gpui::list`；offset 遵循与 `Regular` 相同的负 y 滚动条约定。
     List {
         state: ListState,
     },
@@ -44,7 +43,7 @@ impl ScrollableHandle {
         }
     }
 
-    /// negative offset
+    /// 负向 offset
     pub fn offset(&self) -> gpui::Point<Pixels> {
         match self {
             ScrollableHandle::Regular(h) => h.offset(),
@@ -53,7 +52,7 @@ impl ScrollableHandle {
         }
     }
 
-    /// max offset, this is positive
+    /// 最大 offset，这里是正值
     pub fn max_offset(&self) -> gpui::Point<Pixels> {
         match self {
             ScrollableHandle::Regular(h) => h.max_offset(),
@@ -64,7 +63,7 @@ impl ScrollableHandle {
         }
     }
 
-    /// scroll offset is NEGATIVE (0 = top, -max = bottom).
+    /// 滚动 offset 是负值（0 = 顶部，-max = 底部）。
     pub fn set_offset(&self, offset: gpui::Point<Pixels>) {
         match self {
             ScrollableHandle::Regular(h) => h.set_offset(offset),
@@ -103,8 +102,7 @@ impl ScrollableHandle {
         }
     }
 
-    /// Returns true if the scrollbar should be visible given current content/viewport sizes.
-    /// This checks if content height exceeds viewport height.
+    /// 按当前内容/视口尺寸判断滚动条是否应当可见（检查内容高度是否超出视口高度）。
     pub fn should_draw_vertical_scrollbar(&self) -> bool {
         let viewport_height: f32 = self.bounds().size.height.into();
         let total_content_height = self.total_content_height();
@@ -112,8 +110,7 @@ impl ScrollableHandle {
         viewport_height > 0.0 && total_content_height > viewport_height && max_offset > px(0.0)
     }
 
-    /// Returns true if the scrollbar should be visible given current content/viewport sizes.
-    /// This checks if content width exceeds viewport width.
+    /// 按当前内容/视口尺寸判断滚动条是否应当可见（检查内容宽度是否超出视口宽度）。
     pub fn should_draw_horizontal_scrollbar(&self) -> bool {
         let viewport_width: f32 = self.bounds().size.width.into();
         let total_content_width = self.total_content_width();
@@ -148,19 +145,16 @@ struct ScrollbarState {
     last_scroll_offset: Pixels,
     last_interaction_time: Option<Instant>,
     is_hovered: bool,
-    /// Bumped on every interaction; a scheduled hide wake whose generation
-    /// no longer matches no-ops instead of refreshing.
+    /// 每次交互都自增；代号已不匹配的隐藏唤醒直接空转，不再刷新。
     hide_wake_generation: u64,
-    /// Wake target of the currently scheduled hide wake, so repeated paints
-    /// of the same wait window reuse it instead of respawning every frame.
+    /// 当前已排定的隐藏唤醒的唤醒目标，因此同一等待窗口反复绘制时复用它，
+    /// 而不是每帧重生一个任务。
     hide_wake_scheduled_for: Option<Instant>,
 }
 
 impl ScrollbarState {
-    /// When the next hide wake should fire: the scrollbar sits fully opaque
-    /// in its wait window (not hovered, not dragged, not always visible, with
-    /// a past interaction) and no wake for this window is scheduled yet.
-    /// Returns the wake target and the time left until it.
+    /// 下一次隐藏唤醒应在何时触发：滚动条正处于等待窗口内且完全不透明（未悬停、未拖动、
+    /// 非始终可见、有过交互），并且这个窗口尚未排定唤醒。返回唤醒目标与剩余等待时长。
     fn pending_hide_wake(
         &self,
         opacity: f32,
@@ -194,7 +188,7 @@ pub struct Scrollbar {
     scroll_handle: Option<ScrollableHandle>,
     on_interaction: Option<InteractionHandler>,
     slim: bool,
-    // assigned as variable in case we want this to be different later
+    // 写成变量是为以后可能让两者不同
     hide_delay: Duration,
     fade_duration: Duration,
     axis: ScrollbarAxis,
@@ -313,7 +307,7 @@ impl Element for Scrollbar {
 
         let axis = self.axis;
 
-        // current offset is negative
+        // 当前 offset 是负值
         let raw_offset = match axis {
             ScrollbarAxis::Vertical => handle.offset().y,
             ScrollbarAxis::Horizontal => handle.offset().x,
@@ -326,7 +320,7 @@ impl Element for Scrollbar {
 
         let max_offset = handle_max_offset.max(px(0.0));
 
-        // dont show if there's nothing to scroll
+        // 没东西可滚时不显示
         let should_draw = match axis {
             ScrollbarAxis::Vertical => handle.should_draw_vertical_scrollbar(),
             ScrollbarAxis::Horizontal => handle.should_draw_horizontal_scrollbar(),
@@ -335,7 +329,7 @@ impl Element for Scrollbar {
             return;
         }
 
-        // pad inner
+        // 内缩留白
         let mut padding = Edges::default();
         padding.refine(&self.style.padding);
         let pixel_edges = padding
@@ -343,7 +337,7 @@ impl Element for Scrollbar {
             .map(|v| px(0.0) - *v);
         let inner_bounds = bounds.extend(pixel_edges);
 
-        // calculate thumb position
+        // 计算滑块位置
         let viewport_size: f32 = match axis {
             ScrollbarAxis::Vertical => handle.bounds().size.height.into(),
             ScrollbarAxis::Horizontal => handle.bounds().size.width.into(),
@@ -398,7 +392,7 @@ impl Element for Scrollbar {
             },
         };
 
-        // Handle mouse interactions and visibility state;
+        // 处理鼠标交互与可见性状态；
         let on_interaction = self.on_interaction.clone();
 
         let hitbox_for_events = hitbox;
@@ -411,8 +405,8 @@ impl Element for Scrollbar {
         let slim_scrollbars = settings.interface.slim_scrollbars;
         let slim = self.slim && slim_scrollbars;
 
-        // Shared reborrow: the element-state closure below spawns the hide
-        // wake through `Window::spawn`, which needs an `&App`.
+        // 共享再借用：下面的元素状态闭包要通过 `Window::spawn` 排定隐藏唤醒，
+        // 而它需要的是 `&App`。
         let cx: &App = cx;
 
         window.with_optional_element_state(
@@ -460,7 +454,7 @@ impl Element for Scrollbar {
                     state.is_hovered = is_hovered;
 
                     if is_hovered || state.dragging || scroll_changed {
-                        // Any new interaction invalidates a pending hide wake.
+                        // 任何新交互都会让已排定的隐藏唤醒失效。
                         state.hide_wake_generation += 1;
                         state.last_interaction_time = Some(now);
                     }
@@ -474,7 +468,7 @@ impl Element for Scrollbar {
                 let currently_hovered = state_read.is_hovered;
                 drop(state_read);
 
-                // handle opacity and fades
+                // 处理不透明度与淡入淡出
                 let opacity = if is_dragging || currently_hovered || always_visible {
                     1.0
                 } else if let Some(interaction_time) = last_interaction {
@@ -491,18 +485,15 @@ impl Element for Scrollbar {
                     0.0
                 };
 
-                // setup fade animation refresh
+                // 设置淡入淡出的刷新
                 let needs_fade_refresh = opacity > 0.0 && opacity < 1.0;
                 if needs_fade_refresh {
                     window.request_animation_frame();
                 }
 
-                // The hide wait before the fade stays frame-silent (every
-                // pixel identical): instead of polling at full refresh rate,
-                // one generation-guarded task sleeps out the remaining delay
-                // and refreshes once to hand over to the fade above. New
-                // interactions bump the generation, so a wake scheduled for
-                // an older wait window becomes a no-op.
+                // 淡出之前的隐藏等待期保持帧静默（每个像素都一样）：不再按满刷新率轮询，
+                // 而是一个受代号守卫的任务睡完剩余延时，然后刷新一次交接给上面的淡出段。
+                // 新交互会自增代号，因此为更早的等待窗口排定的唤醒变成空转。
                 let pending_wake = scrollbar_state.borrow().pending_hide_wake(
                     opacity,
                     always_visible,
@@ -524,8 +515,7 @@ impl Element for Scrollbar {
                             if wake_state.borrow().hide_wake_generation != wake_generation {
                                 return;
                             }
-                            // The window may be gone by now; that just fails the
-                            // update, which is the harmless case.
+                            // 此时窗口可能已经没了；那只会让 update 失败，属无害情形。
                             let _ = window_cx.update(|window, _| window.refresh());
                         })
                         .detach();
@@ -612,7 +602,7 @@ impl Element for Scrollbar {
 
                     window.set_cursor_style(CursorStyle::Arrow, hitbox_for_events);
 
-                    // background
+                    // 背景
                     window.paint_quad(quad(
                         visual_track_bounds,
                         corners,
@@ -622,7 +612,7 @@ impl Element for Scrollbar {
                         BorderStyle::Solid,
                     ));
 
-                    // foreground
+                    // 前景
                     window.paint_quad(quad(
                         visual_thumb_bounds,
                         corners,
@@ -633,7 +623,7 @@ impl Element for Scrollbar {
                     ));
                 }
 
-                // show if hovered and last interaction time is recent
+                // 悬停且最近有过交互时显示
                 window.on_mouse_event(move |_ev: &MouseMoveEvent, phase, window, _cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
@@ -643,16 +633,13 @@ impl Element for Scrollbar {
                     let mut state = state_for_hover.borrow_mut();
 
                     if is_now_hovered {
-                        // keep the fade-away deferred while the pointer stays
-                        // on the scrollbar, but only repaint on the transition:
-                        // refreshing here runs on every mouse move while
-                        // hovered (pointer report rate), repainting the whole
-                        // window with nothing visually changed
+                        // 指针留在滚动条上期间继续保持淡出推迟，但只在状态跃迁时重绘：
+                        // 在这里刷新会按指针上报频率在每次 mouse move 时执行，
+                        // 重绘整个窗口却没有任何视觉变化
                         state.last_interaction_time = Some(Instant::now());
                         if !state.is_hovered {
                             state.is_hovered = true;
-                            // Entering hover invalidates a pending hide wake;
-                            // leaving re-arms one at the refreshed paint.
+                            // 进入悬停会让已排定的隐藏唤醒失效；离开时在刷新后的绘制里重新武装一个。
                             state.hide_wake_generation += 1;
                             window.refresh();
                         }
@@ -663,7 +650,7 @@ impl Element for Scrollbar {
                     }
                 });
 
-                // show if scrolled
+                // 滚动时显示
                 window.on_mouse_event(move |ev: &ScrollWheelEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
@@ -671,9 +658,7 @@ impl Element for Scrollbar {
 
                     if hitbox_scroll.is_hovered(window) {
                         let delta = ev.delta.pixel_delta(window.line_height());
-                        // Horizontal axis prefers a real x delta and falls
-                        // back to y (e.g. a plain vertical wheel above a
-                        // horizontal scrollbar).
+                        // 水平轴优先取真实的 x 位移，否则退回 y（例如水平滚动条上方的普通垂直滚轮）。
                         let axis_delta = match axis {
                             ScrollbarAxis::Vertical => delta.y,
                             ScrollbarAxis::Horizontal if delta.x != px(0.0) => delta.x,
@@ -710,16 +695,15 @@ impl Element for Scrollbar {
                             window.refresh();
                         }
 
-                        // Same guard for the consumer: at an endpoint the
-                        // lyrics handler used to register an interaction and
-                        // notify on every wheel tick with zero movement.
+                        // 消费方同样加这道闸：到达端点时，歌词处理器原本会在每个滚轮 tick
+                        // 上零位移也登记一次交互并 notify。
                         if moved && let Some(handler) = on_interaction_scroll.as_ref() {
                             handler(window, cx);
                         }
                     }
                 });
 
-                // handle dragging
+                // 处理拖动
                 window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble || !hitbox_down.is_hovered(window) {
                         return;
@@ -806,7 +790,7 @@ impl Element for Scrollbar {
                     }
                 });
 
-                // handle dragging
+                // 处理拖动
                 window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, _cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
@@ -862,7 +846,7 @@ impl Element for Scrollbar {
                     }
                 });
 
-                // stop
+                // 结束拖动
                 window.on_mouse_event(move |_ev: &MouseUpEvent, phase, window, _cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
@@ -984,8 +968,8 @@ impl RenderOnce for FloatingScrollbar {
     }
 }
 
-/// A generic floating scrollbar. You should use this instead of styling your own scrollbar.
-/// In order for this to work, the parent must be relatively positioned.
+/// 通用浮动滚动条。应当用它，而不是自己样式化一个滚动条。
+/// 要让它生效，父容器必须是相对定位的。
 pub fn floating_scrollbar(
     id: impl Into<ElementId>,
     handle: impl Into<ScrollableHandle>,
@@ -1110,7 +1094,7 @@ mod tests {
 
     #[test]
     fn a_lapsed_window_degenerates_to_an_immediate_wake() {
-        // elapsed == hide_delay still renders opacity 1.0 (zero fade progress)
+        // elapsed 恰好等于 hide_delay 时仍渲染不透明度 1.0（淡出进度为零）
         let now = Instant::now();
         let interaction = now - HIDE_DELAY;
 

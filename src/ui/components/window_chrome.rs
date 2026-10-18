@@ -4,9 +4,8 @@ use gpui::{prelude::FluentBuilder, *};
 
 use crate::ui::{constants::APP_SHADOW_SIZE, theme::Theme};
 
-/// Zone in which the cursor announces a resize affordance. Deliberately wider
-/// than the resize trigger (`APP_SHADOW_SIZE`, passed to `on_mouse_down`
-/// below) so the pointer signals the edge before a drag engages.
+/// 光标提示"可以调整尺寸"的区域。刻意比触发调整的宽度（`APP_SHADOW_SIZE`，
+/// 传给下面的 `on_mouse_down`）更宽，好让指针在拖动真正开始之前就先提示到边缘。
 const RESIZE_CURSOR_ZONE: Pixels = px(30.0);
 
 /// 窗口根文本统一走等宽数字（tnum）。FontFeatures 本体就是 Arc 包装，全窗口
@@ -160,8 +159,8 @@ pub fn window_chrome(content: impl IntoElement) -> WindowChrome {
     WindowChrome::new(content)
 }
 
-/// Rounds the corners that face an untiled edge; a tiled edge stays square so
-/// the window sits flush against the screen border.
+/// 只把朝向未贴边屏幕边缘的那几个角圆起来；贴边（tiled）的一侧保持方角，
+/// 让窗口紧贴屏幕边框。
 fn round_untiled_corners<D>(div: D, tiling: Tiling, rounding: Pixels) -> D
 where
     D: Styled + FluentBuilder,
@@ -178,9 +177,8 @@ where
     })
 }
 
-/// Hit-tests a window border for a resize handle. Corner zones are
-/// `edge_zone * 2` wide so both adjacent edges stay grabbable where they
-/// meet; a tiled edge is never resizable. Corners are matched before edges.
+/// 对窗口边框做调整把手的命中测试。角落区域宽为 `edge_zone * 2`，这样两条相邻边在交汇处
+/// 都还能抓住；贴边的边永远不可调整。角落先于边匹配。
 fn resize_edge(
     pos: Point<Pixels>,
     edge_zone: Pixels,

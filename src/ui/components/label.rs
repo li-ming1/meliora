@@ -66,8 +66,8 @@ impl RenderOnce for Label {
                     .w_full()
                     .flex_shrink(1.0)
                     .flex_col()
-                    // Title over subtext: the hairline gap separates the two
-                    // levels of information without loosening the row itself.
+                    // 标题在副文本之上：这条发丝间距隔开
+                    // 两级信息，同时不把整行放松。
                     .gap(SPACE_HAIRLINE)
                     .my_auto()
                     .child(div().overflow_hidden().child(self.text))

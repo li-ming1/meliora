@@ -1,5 +1,5 @@
-//! Callout: a themed highlighted note box with an optional icon, title and
-//! trailing children (e.g. an action button).
+//! Callout：主题化的高亮提示框，可选图标、标题与
+//! 尾部子元素（例如一个动作按钮）。
 
 use gpui::{
     AnyElement, App, Div, FontWeight, IntoElement, ParentElement, RenderOnce, SharedString,

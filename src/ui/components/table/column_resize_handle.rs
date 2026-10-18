@@ -41,10 +41,9 @@ where
         persist: Rc<dyn Fn(&mut App)>,
     ) -> Self {
         Self {
-            // Composite (name, index) id: zero per-frame allocation. The
-            // handle is built once per resizable column on every table frame
-            // (see `Table::render`'s header loop), so a `format!` id here was
-            // a per-frame string allocation per column.
+            // 复合 (名称, 索引) id：零每帧分配。本把手在每一帧表格渲染时按每个可 resize 列
+            // 各建一次（见 `Table::render` 的表头循环），所以这里用 `format!` 做 id
+            // 会按列贡献一次每帧字符串分配。
             id: ElementId::named_usize("column-resize-handle", column_index),
             column_index,
             columns,
@@ -151,7 +150,7 @@ where
                     .flatten()
                     .unwrap_or_else(|| Rc::new(RefCell::new(ResizeState::default())));
 
-                // start drag on mouse down
+                // 按下即开始拖动
                 let state_down = state.clone();
                 let columns_down = columns_entity.clone();
                 let persist_down = persist.clone();
@@ -171,9 +170,9 @@ where
                     cx.stop_propagation();
 
                     if ev.click_count == 2 {
-                        // reset to default on dbl click
+                        // 双击复位为默认宽度
                         columns_down.update(cx, |columns, cx| {
-                            // should be cheap
+                            // 应当很廉价
                             let mut new_columns = (**columns).clone();
                             if let Some((_, width)) = new_columns.get_index_mut(column_index) {
                                 *width = default_width;
@@ -200,7 +199,7 @@ where
                     state.last_width = current_width;
                 });
 
-                // change width on drag
+                // 拖动时改宽度
                 let state_move = state.clone();
                 let columns_move = columns_entity.clone();
                 cx.on_mouse_event(move |ev: &MouseMoveEvent, phase, _window, cx| {
@@ -227,7 +226,7 @@ where
                     state_move.borrow_mut().last_width = new_width;
 
                     columns_move.update(cx, |columns, cx| {
-                        // should be cheap
+                        // 应当很廉价
                         let mut new_columns = (**columns).clone();
                         if let Some((_, width)) = new_columns.get_index_mut(column_index) {
                             *width = new_width;
@@ -236,11 +235,11 @@ where
                         cx.notify();
                     });
 
-                    // the notify above already schedules the frame; a global
-                    // refresh here would bypass every view cache per mouse move
+                    // 上面的 notify 已经排定了这一帧；这里再来一次全局刷新会按鼠标移动频率
+                    // 绕过所有视图缓存
                 });
 
-                // mouse up, end the drag
+                // 松开鼠标，结束拖动
                 let state_up = state.clone();
                 let persist_up = persist.clone();
                 cx.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {

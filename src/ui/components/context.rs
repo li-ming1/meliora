@@ -9,15 +9,12 @@ actions!(context, [CloseContextMenu]);
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
-/// Shared context-menu builder contract: the builder runs on every render
-/// while the menu is open (including hover-driven repaints), so its body may
-/// only read caches and snapshots — never issue blocking queries or system
-/// calls.
+/// 共享的右键菜单构建器契约：构建器在菜单打开期间的每次渲染都会运行（包括 hover 驱动的重绘），
+/// 所以其函数体只能读缓存与快照——绝不发起阻塞查询或系统调用。
 pub type ContextMenuBuilder = MenuBuilder;
 
-/// Notify the optional close handler, then hide the menu by clearing the
-/// stored open position. Shared by all three dismissal paths: clicking the
-/// menu, clicking outside it, and the `CloseContextMenu` action.
+/// 先通知可选的关闭处理器，再通过清空已保存的打开位置来隐藏菜单。三条收起路径共用：点击菜单、
+/// 点击菜单外、以及 `CloseContextMenu` action。
 fn dismiss_menu(
     on_close: &Option<CloseHandler>,
     state: &Entity<Option<Point<Pixels>>>,
@@ -33,10 +30,8 @@ fn dismiss_menu(
     });
 }
 
-/// A right-click context menu attached to `div`. The menu body is rebuilt on
-/// every render while open (see [`ContextMenuBuilder`]) and shown as an
-/// anchored overlay until dismissed by clicking the menu, clicking outside
-/// it, or the `CloseContextMenu` action.
+/// 挂在 `div` 上的右键菜单。菜单体在打开期间的每次渲染都重建（见 [`ContextMenuBuilder`]），
+/// 以锚定 overlay 显示，直到点击菜单、点击菜单外或 `CloseContextMenu` action 把它收起。
 #[derive(IntoElement)]
 pub struct ContextMenu {
     pub(self) id: ElementId,
@@ -98,9 +93,8 @@ impl RenderOnce for ContextMenu {
         let on_esc_close = self.on_close.clone();
         let focus_open = focus_handle.clone();
 
-        // Build the (possibly lazy) menu before borrowing the theme: the
-        // builder needs `&mut cx`, and the styling below only reads Copy
-        // colors off the borrow.
+        // 在借用 theme 之前构建（可能惰性的）菜单：构建器需要 `&mut cx`，而下面的样式只是从
+        // 这个借用上读取 Copy 的颜色值。
         let menu = match self.menu_fn {
             Some(build) if position.is_some() => Some(div().child(build(window, cx))),
             Some(_) => None,

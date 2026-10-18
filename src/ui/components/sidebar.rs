@@ -10,8 +10,8 @@ use crate::{
     ui::{components::icons::icon, design::ICON_MD, theme::Theme},
 };
 
-/// A `T` that optionally carries interactive state: the plain variant until
-/// something (e.g. `Sidebar::id`) needs a stateful element, `Stateful` after.
+/// 可选携带交互状态的 `T`：在需要元素状态的东西（例如 `Sidebar::id`）出现之前是普通变体，
+/// 之后是 `Stateful`。
 pub enum MaybeStateful<T> {
     Stateful(Stateful<T>),
     NotStateful(T),
@@ -152,9 +152,9 @@ impl Sidebar {
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.div = MaybeStateful::Stateful(match self.div {
             MaybeStateful::NotStateful(div) => div.id(id),
-            // gpui's own `.id()` is last-writer-wins (it assigns the element
-            // id), so re-id-ing an already stateful sidebar replaces the id
-            // instead of silently dropping it.
+            // gpui 自己的 `.id()` 是后写覆盖（它直接赋值元素 id），所以对已有状态的
+            // sidebar 再次设 id 会替换掉原 id，
+            // 而不是把它静默丢掉。
             MaybeStateful::Stateful(mut div) => {
                 div.interactivity().element_id = Some(id.into());
                 div
@@ -268,12 +268,12 @@ impl RenderOnce for SidebarItem {
             .bg(theme.background_primary)
             .text_sm()
             .border_1()
-            // you may ask: what is even the point of setting the border color to this?
-            // well, for some as of yet unknown reason, leaving this unset OR leaving this set
-            // to transparent_black() results in the hover effects not applying properly.
-            // why? i don't know, it makes no god damn sense
+            // 你可能会问：把边框颜色设成这样到底有什么意义？
+            // 嗯，出于某个至今未知的原因，不设这一条、或者把它设成 transparent_black()，
+            // 都会让 hover 效果不能正常生效。
+            // 为什么？我也不知道，这实在完全没道理
             //
-            // load bearing color
+            // 承重的颜色。
             .border_color(theme.background_primary)
             .when(self.active, |div| {
                 div.bg(theme.nav_button_pressed)
@@ -292,7 +292,7 @@ impl RenderOnce for SidebarItem {
                 this.bg(theme.nav_button_active)
                     .border_color(theme.nav_button_active_border)
             })
-            // Placeholder reserves the same box the icon would occupy.
+            // 占位块预留出图标本来会占的方格。
             .when_none(&self.icon, |this| {
                 this.child(div().size(ICON_MD).flex_shrink_0().min_w(ICON_MD))
             })

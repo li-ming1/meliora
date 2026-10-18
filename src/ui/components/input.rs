@@ -1,4 +1,4 @@
-// adapted from https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
+// 改写自 https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 
 use std::{
     ops::Range,
@@ -17,11 +17,9 @@ use unicode_segmentation::*;
 
 use crate::ui::{global_actions::PlayPause, theme::Theme};
 
-/// `TextElement::paint` runs per frame per line and the `error!` writer
-/// flushes synchronously, so a failing paint would otherwise hit the log
-/// 60-120x per second. Paint failures are persistent (font/atlas backend
-/// state), so only the first one logs; once painting recovers the input
-/// simply renders again, which needs no log line.
+/// `TextElement::paint` 每帧每行都会跑一次，而 `error!` 写入是同步刷盘，于是一次失败的绘制
+/// 否则会以 60-120 次/秒打到日志上。绘制失败是持续性的（字体/图集后端状态），所以只记录第一次；
+/// 绘制恢复后输入框照常渲染，那不需要日志行。
 static PAINT_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 actions!(
@@ -116,8 +114,7 @@ enum SelectionDragMode {
     All,
 }
 
-/// An action forwarded to the optional enriched-input handler passed to
-/// [`TextInput::new`].
+/// 转发给传给 [`TextInput::new`] 的可选增强输入处理器的 action。
 #[derive(Copy, Clone)]
 pub enum EnrichedInputAction {
     Next,
@@ -145,8 +142,8 @@ pub struct TextInput {
     enriched_input_handler: Option<EnrichedInputHandler>,
 }
 
-// The change event carries a SharedString: cloning it is an Arc refcount bump,
-// so per-keystroke emits allocate nothing (vs. a fresh String per keypress).
+// 变更事件携带的是 SharedString：克隆它只是一次 Arc 引用计数自增，所以逐按键的事件发射零分配
+// （对比每次按键新建一个 String）。
 impl EventEmitter<SharedString> for TextInput {}
 
 impl TextInput {
@@ -198,7 +195,7 @@ impl TextInput {
         self.select_all_text(cx);
     }
 
-    /// Selects the entire content.
+    /// 全选内容。
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx);
@@ -264,8 +261,7 @@ impl TextInput {
         self.delete_to(self.content.len(), window, cx);
     }
 
-    /// Delete the current selection; when the selection is empty, first move
-    /// the cursor to `target` so exactly that span is deleted.
+    /// 删除当前选区；选区为空时先把光标移到 `target`，以便恰好删掉那一段。
     fn delete_to(&mut self, target: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.select_to(target, cx);
@@ -482,8 +478,7 @@ impl TextInput {
         self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
     }
 
-    /// Resolve the range an edit applies to: the given UTF-16 range if
-    /// present, else the IME marked range, else the current selection.
+    /// 解析一次编辑要作用的区间：给定则用该 UTF-16 区间，否则用 IME 标记区间，再否则用当前选区。
     fn resolve_edit_range(&self, range_utf16: Option<&Range<usize>>) -> Range<usize> {
         range_utf16
             .map(|range| self.range_from_utf16(range))
@@ -510,7 +505,7 @@ impl TextInput {
         word_range_for_offset(&self.content, offset)
     }
 
-    /// Clears the content, selection, IME, drag and layout state.
+    /// 清空内容、选区、IME、拖拽与布局状态。
     pub fn reset(&mut self) {
         self.content = "".into();
         self.selected_range = 0..0;
@@ -524,14 +519,13 @@ impl TextInput {
         self.word_drag_anchor_range = 0..0;
     }
 
-    /// The global "space" keybinding fires `PlayPause` (keybinds.json); in a
-    /// focused input it must type a literal space instead of toggling playback.
+    /// 全局 "space" 键绑定会触发 `PlayPause`（keybinds.json）；在获得焦点的输入框里它必须
+    /// 输入一个真空格字符，而不是切换播放。
     fn space(&mut self, _: &PlayPause, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_text_in_range(None, " ", window, cx)
     }
 
-    /// Forward `action` to the enriched-input handler passed to
-    /// [`TextInput::new`], if one was installed.
+    /// 把 `action` 转发给传给 [`TextInput::new`] 的增强输入处理器（若装了的话）。
     fn dispatch_enriched_action(
         &mut self,
         action: EnrichedInputAction,
@@ -555,15 +549,12 @@ impl TextInput {
         self.dispatch_enriched_action(EnrichedInputAction::Accept, window, cx);
     }
 
-    /// Replaces the content and moves the cursor to the end of the new text.
+    /// 替换内容并把光标移到新文本末尾。
     pub fn set_value(&mut self, cx: &mut Context<Self>, value: SharedString) {
         self.content = value;
-        // The old marked range refers to the previous text: leaving it set
-        // makes prepaint subtract a larger end from the new content length
-        // (underflow) and can keep an IME composition alive over new text.
-        // `move_to` cannot be used for the cursor move because its
-        // unchanged-range guard would skip the repaint when the cursor was
-        // already at the end.
+        // 旧的标记区间指的是上一版文本：留着它会让 prepaint 用新内容长度去减一个更大的 end
+        // （下溢），还可能让 IME 组合态跨到新文本上存活。光标移动不能改用 `move_to`，
+        // 因为它的"区间未变"守卫会在光标本来已在末尾时跳过重绘。
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
@@ -573,10 +564,9 @@ impl TextInput {
     }
 }
 
-/// Maps the IME's selection (UTF-16 offsets **within `new_text`**) into the
-/// document: convert against the replacement string, then rebase at the edit
-/// start. Using the edit range's end for the selection end overran the
-/// inserted text and could leave `selected_range.end` past `content.len()`.
+/// 把 IME 的选区（**`new_text` 内部**的 UTF-16 偏移）映射进文档：先按替换串换算，再在编辑起点
+/// 重设基准。用编辑区间的 end 当作选区 end 会越过插入文本，并可能让 `selected_range.end`
+/// 超出 `content.len()`。
 fn rebase_selection(
     range: Range<usize>,
     new_text: &str,
@@ -595,7 +585,7 @@ fn rebase_selection(
     }
 }
 
-/// UTF-16 code-unit offset -> byte offset in `text` (clamped to its end).
+/// UTF-16 代码单元偏移 -> `text` 中的字节偏移（钳位到其末尾）。
 fn byte_offset_from_utf16(text: &str, offset: usize) -> usize {
     let mut utf8_offset = 0;
     let mut utf16_count = 0;
@@ -738,11 +728,9 @@ struct PrepaintState {
     selection: Option<PaintQuad>,
 }
 
-/// Cached `shape_line` output for [`TextElement`], keyed on everything the
-/// shaping and its decoration runs consume: an unchanged input then skips
-/// re-shaping (and the per-frame run vector) on every frame it re-renders.
-/// The key must stay complete or a stale line (wrong glyphs, underline or
-/// color) gets painted.
+/// [`TextElement`] 的 `shape_line` 结果缓存，键覆盖排版及其装饰段消费的一切：未变的输入因此
+/// 在每次重渲染时都跳过重排（以及每帧的 run 向量）。键必须保持完整，否则会画出过期的一行
+/// （字形、下划线或颜色不对）。
 struct ShapedLineCache {
     display_text: SharedString,
     font: Font,
@@ -1056,15 +1044,15 @@ mod tests {
 
     #[test]
     fn ime_selection_rebases_within_replacement_text() {
-        // Replace a 3-byte marked range with "pin", caret at its end.
+        // 用 "pin" 替换一段 3 字节的标记区间，光标落在其末尾。
         assert_eq!(rebase_selection(2..5, "pin", Some(&(3..3))), 5..5);
-        // The selection is UTF-16 within new_text; multi-byte chars convert
+        // 选区是 new_text 内的 UTF-16，多字节字符需要换算
         // to their byte width ("你" = 3 bytes, one UTF-16 unit).
         assert_eq!(rebase_selection(0..0, "你a", Some(&(1..1))), 3..3);
         assert_eq!(rebase_selection(4..7, "你a", Some(&(0..2))), 4..8);
-        // No IME selection: caret lands after the inserted text.
+        // 没有 IME 选区：光标落在插入文本之后。
         assert_eq!(rebase_selection(4..7, "ab", None), 6..6);
-        // The old edit-range end must never leak into the new end.
+        // 旧的编辑区间 end 绝不能漏进新的 end。
         assert_eq!(rebase_selection(0..6, "pin", Some(&(3..3))), 3..3);
     }
 
@@ -1125,7 +1113,7 @@ mod tests {
 
     #[test]
     fn word_range_only_punctuation() {
-        // Each "!" is a separate segment per UAX#29 word boundaries
+        // 按 UAX#29 词边界，每个 "!" 都是独立的一段
         assert_eq!(word_range_for_offset("!!!", 1), 1..2);
     }
 

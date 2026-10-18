@@ -29,8 +29,8 @@ where
     secondary_text: Option<SharedString>,
     on_select: Option<OnSelectHandler<T, C>>,
     is_available: bool,
-    /// Prebuilt once; `on_drag` takes the payload by value every frame, so
-    /// render clones this instead of re-running `get_drag_data`.
+    /// 预先构建一次；`on_drag` 每帧按值取走载荷，所以 render 里克隆这份而不是重跑
+    /// `get_drag_data`。
     drag_data: Option<TableDragData>,
 }
 
@@ -78,8 +78,8 @@ where
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::GridItem);
         let is_available = self.is_available;
-        // shared-row variant: the menu builder holds an `Arc` refcount and
-        // deep-clones the row only when the menu opens, not every frame
+        // 共享行变体：菜单构建器只持有一份 `Arc` 引用计数，只在菜单打开时才深拷贝整行，
+        // 不是每帧
         let context_menu = T::get_context_menu_shared(
             &self.row,
             window,
@@ -159,8 +159,7 @@ where
                 )
             });
 
-        // grid tiles stretch the context element and the overlay wrapper to
-        // the full cell
+        // 网格瓦片把 context 元素与 overlay 包装一起拉伸到整个单元格
         wrap_with_context_menu(self.id.clone(), content, context_menu, true)
     }
 }

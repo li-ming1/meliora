@@ -20,7 +20,7 @@ pub enum SizeMode {
 }
 
 const HANDLE_SIZE: Pixels = px(6.0);
-/// Builder defaults: usable bounds for a docked panel.
+/// 构建器默认值：停靠面板的可用边界。
 const DEFAULT_MIN_SIZE: Pixels = px(150.0);
 const DEFAULT_MAX_SIZE: Pixels = px(500.0);
 const DEFAULT_START_SIZE: Pixels = px(225.0);
@@ -117,8 +117,7 @@ impl Default for ResizeState {
             is_dragging: false,
             start_position: Pixels::default(),
             start_size: Pixels::default(),
-            // 1.0 avoids a zero divisor in percent-mode math before the first
-            // paint records the real container size.
+            // 1.0 是为了在首次绘制记录到真实容器尺寸之前，避免百分比模式算术里出现零除数。
             container_size: px(1.0),
         }
     }
@@ -227,7 +226,7 @@ impl Element for Resizable {
         let edge = self.edge;
         let size_mode = self.size_mode;
 
-        // Precompute container_size for percent mode from actual rendered bounds and current fraction.
+        // 用真实渲染边界与当前比例预先算出百分比模式所需的 container_size。
         let container_size_for_paint = if size_mode == SizeMode::Percent {
             let frac = f32::from(*self.size.read(cx));
             let elem_size = if self.is_horizontal() {
@@ -314,8 +313,7 @@ impl Element for Resizable {
                         return;
                     }
 
-                    // Left/top edges invert the pointer delta: there the panel
-                    // grows as the pointer moves outward.
+                    // 左/上边缘要反转指针位移：在那里指针向外移动时面板是增大的。
                     let delta = axis_position(edge, ev.position) - drag_state.start_position;
                     let signed_delta = match edge {
                         ResizeEdge::Right => delta,
@@ -332,9 +330,8 @@ impl Element for Resizable {
 
                     drop(drag_state);
 
-                    // Only update+notify on a real change: an unmoved pointer
-                    // or a clamp-swallowed delta would otherwise pay an entity
-                    // notification and a full repaint per mouse move.
+                    // 只在真的变化时 update+notify：指针没动、或位移被钳位吞掉时，否则每次鼠标
+                    // 移动都要付一次 entity 通知与整窗重绘。
                     if clamped_size == *size_entity_move.read(cx) {
                         return;
                     }
@@ -344,8 +341,8 @@ impl Element for Resizable {
                         cx.notify();
                     });
 
-                    // the notify above already schedules the frame; a global
-                    // refresh here would bypass every view cache per mouse move
+                    // 上面的 notify 已经排定了这一帧；这里再来一次全局刷新会按鼠标移动频率
+                    // 绕过所有视图缓存
                 });
 
                 let state_up = state.clone();
@@ -373,9 +370,8 @@ fn axis_position(edge: ResizeEdge, position: Point<Pixels>) -> Pixels {
     }
 }
 
-/// Strip along `edge` of `bounds` with the given thickness, hugging the
-/// corresponding edge. Serves both the grab-handle hitbox and the painted
-/// divider line.
+/// 沿 `bounds` 的 `edge` 剥出一条给定厚度、贴合对应边缘的条带。同时用于抓取把手的命中区与
+/// 绘制出来的分隔线。
 fn edge_strip_bounds(
     bounds: Bounds<Pixels>,
     edge: ResizeEdge,

@@ -17,18 +17,15 @@ use crate::ui::components::{
 };
 use crate::ui::theme::Theme;
 
-/// An item-list update split into a stable segment (shared as one `Arc`,
-/// rebuilt only when it actually changes — e.g. the library search index)
-/// and a volatile tail (replaced wholesale on every update — e.g. online
-/// search results). Emitters with a large stable set refresh the tail without
-/// touching the stable items; the finder still receives one flat
-/// stable-then-volatile list (see `Finder::set_items`).
+/// 拆成两段的条目列表更新：稳定段（作为一份 `Arc` 共享，只在真正变化时重建——例如库检索索引）
+/// 与易变尾段（每次更新整体替换——例如在线搜索结果）。稳定集很大的发射方可只刷新尾段而不碰
+/// 稳定条目；finder 收到的仍是一份"稳定在前、易变在后"的平铺列表（见 `Finder::set_items`）。
 pub struct SplitItems<T> {
     pub stable: Arc<Vec<Arc<T>>>,
     pub volatile: Vec<Arc<T>>,
 }
 
-// Manual impl: cloning only bumps the `Arc`s, no `T: Clone` bound.
+// 手写 impl：克隆只自增 `Arc` 计数，不需要 `T: Clone` 约束。
 impl<T> Clone for SplitItems<T> {
     fn clone(&self) -> Self {
         SplitItems {
@@ -39,7 +36,7 @@ impl<T> Clone for SplitItems<T> {
 }
 
 impl<T> SplitItems<T> {
-    /// Flatten into the single stable-then-volatile list the finder consumes.
+    /// 摊平成 finder 消费的那一份"稳定在前、易变在后"的列表。
     fn to_flat(&self) -> Vec<Arc<T>> {
         self.stable
             .iter()
@@ -91,10 +88,9 @@ where
 
             let input = TextInput::new(cx, handle.clone(), None, None, Some(Box::new(handler)));
 
-            // Connect input changes to finder
+            // 把输入变更接到 finder
             cx.subscribe(&input, move |this: &mut Self, _, ev: &SharedString, cx| {
-                // also surface the query to outside subscribers (used by the
-                // kugou search integration to fetch online results)
+                // 同时把查询透出给外部订阅者（酷狗搜索集成用它去拉在线结果）
                 cx.emit(ev.clone());
 
                 if let Some(finder) = &this.finder {
@@ -105,8 +101,7 @@ where
             })
             .detach();
 
-            // Forward item list updates to finder. Flat lists (every other
-            // palette) are stored as an all-stable split.
+            // 把条目列表更新转发给 finder。平铺列表（其它所有 palette）存成"全部稳定"的拆分。
             cx.subscribe(
                 &cx.entity(),
                 move |this: &mut Self, _, items: &Vec<Arc<T>>, cx| {
@@ -124,10 +119,9 @@ where
             )
             .detach();
 
-            // Forward split item updates to finder: the finder consumes one
-            // flat stable-then-volatile list, so the stable segment is
-            // materialized here — its per-item clone happens only at this
-            // boundary, volatile-only updates never re-clone it upstream.
+            // 把拆分后的条目更新转发给 finder：finder 消费一份平铺的"稳定在前、易变在后"列表，
+            // 所以稳定段在这里落地——它的逐项克隆只发生在这个边界上，仅易变段变化时上游不会
+            // 重新克隆它。
             cx.subscribe(
                 &cx.entity(),
                 move |this: &mut Self, _, items: &SplitItems<T>, cx| {
@@ -247,8 +241,8 @@ where
                     .flex()
                     .w_full()
                     .h_full()
-                    // FIXME: weird layout issue, this is a hack
-                    // eventually this should be removed
+                    // FIXME: 古怪的布局问题，这里是个 hack；
+                    // 最终这段应当被移除
                     .pb(px(40.0))
                     .when_some(self.finder.clone(), |this, finder| this.child(finder)),
             )

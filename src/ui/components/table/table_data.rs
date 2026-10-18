@@ -24,10 +24,8 @@ pub enum TableDragData {
     Album(AlbumDragData),
 }
 
-/// Attaches the drag payload's source and drag-over highlight handlers to a
-/// row container (table row or grid item; stateful, i.e. carrying an `.id`).
-/// Both renderers wire identical handlers, so the logic lives here next to
-/// [`TableDragData`].
+/// 给行容器（表格行或网格项；有状态的，即带 `.id`）接上拖拽载荷来源与 drag-over 高亮
+/// 处理器。两个渲染器接的处理器完全相同，所以逻辑就放在 [`TableDragData`] 旁边。
 pub fn with_drag_handlers<E>(container: E, drag_data: Option<TableDragData>) -> E
 where
     E: InteractiveElement + StatefulInteractiveElement,
@@ -57,14 +55,11 @@ where
     }
 }
 
-/// Wires the shared row-selection interaction onto a stateful row/grid
-/// container (previously the verbatim-duplicated block of both
-/// `GridItem::render` and `TableItem::render`): click-to-select gated on a
-/// handler being present AND row availability, the pointer/hover/active
-/// affordances, the dimmed style for unavailable rows, and middle-click
-/// dispatch to [`TableData::handle_middle_mouse`]. `row` is `None` for
-/// renderers that may be constructed without a resolved row (`TableItem`);
-/// `GridItem` passes `Some`.
+/// 把共享的行选择交互装到有状态的行/网格容器上（此前是 `GridItem::render` 与
+/// `TableItem::render` 里逐字重复的那一段）：点击选择以"处理器存在"AND"行可用"为门，
+/// 指针/悬停/按下三态样式，不可用行的淡化样式，以及中键派发到
+/// [`TableData::handle_middle_mouse`]。可能未解析出行就构造的渲染器（`TableItem`）传
+/// `row = None`；`GridItem` 传 `Some`。
 pub fn apply_row_selection<T, C>(
     container: Stateful<Div>,
     on_select: Option<OnSelectHandler<T, C>>,
@@ -107,10 +102,9 @@ where
         })
 }
 
-/// Hosts a built context-menu tree in the standard elevated-background
-/// container. Every `menu_on_open` wrapper in the app renders its menu
-/// inside this same host div (table rows, grid items, track rows, file
-/// rows), so the paint is identical everywhere.
+/// 在标准elevated-background容器里承载已构建好的右键菜单树。全应用的 `menu_on_open`
+/// 包装都把菜单渲染进这同一个宿主 div（表格行、网格项、曲目行、文件行），因此各处绘制
+/// 完全一致。
 pub fn elevated_menu_element(cx: &App, menu: impl IntoElement) -> AnyElement {
     div()
         .bg(cx.global::<Theme>().elevated_background)
@@ -118,17 +112,14 @@ pub fn elevated_menu_element(cx: &App, menu: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-/// Wraps a fully-built row/grid content element in the shared context-menu
-/// scaffolding (previously the near-verbatim tail of both `GridItem::render`
-/// and `TableItem::render`): `context(id).with(content)` whose menu tree is
-/// built only when the menu actually opens (the
-/// [`TableData::get_context_menu`] contract), plus the optional overlay
-/// rendered as a sibling of the context element so it is not nested inside
-/// the menu's `deferred` popup. With no menu, the content is returned as-is.
+/// 把已构建好的行/网格内容元素包进共享的右键菜单脚手架（此前是 `GridItem::render` 与
+/// `TableItem::render` 尾部近乎逐字重复的部分）：`context(id).with(content)`，其菜单树
+/// 只在菜单真正打开时才构建（[`TableData::get_context_menu`] 的契约），外加一个可选 overlay
+/// 作为 context 元素的兄弟节点渲染，以免嵌进菜单的 `deferred` 弹窗里。没有菜单时原样返回
+/// 内容。
 ///
-/// `fill_container` picks the two call-site variants: grid items stretch the
-/// context element to the whole tile and wrap the overlay in a `size_full`
-/// div; table rows keep their own width and wrap in `w_full`.
+/// `fill_container` 区分两个调用点变体：网格项把 context 元素拉伸到整个瓦片、overlay 包在
+/// `size_full` div 里；表格行保持自身宽度、overlay 包在 `w_full` 里。
 pub fn wrap_with_context_menu(
     id: impl Into<ElementId>,
     content: impl IntoElement,
@@ -147,7 +138,7 @@ pub fn wrap_with_context_menu(
     };
     let ctx = ctx
         .with(content)
-        // menu tree is built only when the menu opens
+        // 菜单树只在菜单打开时构建
         .menu_on_open(move |window, cx| {
             let menu = menu_builder(window, cx);
             elevated_menu_element(cx, menu)
@@ -169,53 +160,46 @@ pub fn wrap_with_context_menu(
     }
 }
 
-/// Drag payload for column header reordering.
+/// 列头拖拽重排用的拖拽载荷。
 #[derive(Clone, Debug)]
 pub struct ColumnReorderDrag {
     pub source_index: usize,
 }
 
-// table layout constants
+// 表格布局常量
 pub const TABLE_MAX_WIDTH: f32 = 1000.0;
 pub const TABLE_IMAGE_COLUMN_WIDTH: f32 = 47.0;
 pub const TABLE_HEADER_HEIGHT: f32 = 36.0;
 
-/// Columns compress proportionally when the pane narrows, but never below
-/// this; past the combined floor the table scrolls horizontally instead.
+/// 面板变窄时列按比例压缩，但绝不低于此值；越过各列下限之和后表格改为水平滚动。
 pub const MIN_COLUMN_WIDTH: f32 = 48.0;
 
-/// Width used for a column that has neither a saved width nor an entry in
-/// the table's default column map.
+/// 既没有保存宽度、也不在表格默认列映射里的列所使用的宽度。
 pub const DEFAULT_COLUMN_WIDTH: f32 = 100.0;
 
-/// Translucent highlight painted on a row/grid cell while a compatible drag
-/// hovers over it (see [`with_drag_handlers`]).
+/// 兼容的拖拽悬停在行/网格单元上时绘制的半透明高亮（见 [`with_drag_handlers`]）。
 pub const DRAG_OVER_HIGHLIGHT: u32 = 0x88888822;
 
-// column resize constants
+// 列宽调整常量
 pub const COLUMN_MIN_WIDTH: f32 = 50.0;
 pub const COLUMN_RESIZE_HANDLE_WIDTH: f32 = 6.0;
 pub const TABLE_HEADER_GROUP: &str = "table-header-group";
 
 pub trait Column: Clone + Copy + Debug + Hash + PartialEq + Eq + Send {
-    /// Retrieves the friendly name text of the column.
+    /// 取列的友好显示名称文本。
     fn get_column_name(&self) -> SharedString;
 
-    /// Returns whether this column can be resized by the user.
-    /// Defaults to true.
+    /// 该列是否允许用户调整宽度。默认为 true。
     fn is_resizable(&self) -> bool {
         true
     }
 
-    /// Returns whether this column can be hidden by the user.
-    /// Return `false` for essential columns like "Title".
-    /// Defaults to true.
+    /// 该列是否允许用户隐藏。像"Title"这样的必需列要返回 `false`。默认为 true。
     fn is_hideable(&self) -> bool {
         true
     }
 
-    /// Returns all possible column variants for this type.
-    /// Required for building the column visibility menu.
+    /// 返回该类型所有可能的列变体。构建列可见性菜单时必需。
     fn all_columns() -> &'static [Self];
 }
 
@@ -228,17 +212,16 @@ where
     pub ascending: bool,
 }
 
-/// Context in which a grid item is being displayed.
+/// 网格项当前所处的展示上下文。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridContext {
-    /// Inside a Table component
+    /// 在 Table 组件内部
     Table,
-    /// Standalone / outside table
+    /// 独立使用 / 表格之外
     Standalone,
 }
 
-/// The TableData trait defines the interface for retrieving, sorting, and listing data for a table.
-/// Implementing this trait allows a table to display data in a structured manner.
+/// TableData trait 定义表格数据获取、排序与列举的接口。实现它即可让表格以结构化方式展示数据。
 pub trait TableData<C>: Sized
 where
     C: Column,
@@ -246,35 +229,27 @@ where
     type Identifier: Clone + Debug + Send + 'static;
     type ContextMenuContext: Clone;
 
-    /// Retrieves the name of the table.
+    /// 取表格名称。
     fn get_table_name() -> SharedString;
 
-    /// Retrieves the rows of the table. The rows are returned as a vector of identifiers, which
-    /// can be used to retrieve the full row data. The sort parameter can be used to specify the
-    /// sorting order of the rows.
+    /// 取表格的行。返回值是标识符向量，可用它取回完整行数据；sort 参数用于指定行的排序方向。
     ///
-    /// This runs off the UI thread: implementations must go through the async
-    /// `db` helpers (which the caller drives on the Tokio runtime) rather than
-    /// the synchronous `LibraryAccess` wrappers — their `block_on` parked the
-    /// UI thread on a full-library query every time a view opened, the sort
-    /// changed, or a scan completed (doctrine §2.3 / §14).
+    /// 这个调用运行在 UI 线程之外：实现必须走异步 `db` 辅助函数（由调用方在 Tokio runtime 上
+    /// 驱动），而不是同步的 `LibraryAccess` 包装——后者的 `block_on` 会在每次打开视图、改排序
+    /// 或扫描完成时把 UI 线程停在一个全库查询上（准则 §2.3 / §14）。
     fn get_rows(
         pool: sqlx::SqlitePool,
         sort: Option<TableSort<C>>,
     ) -> BoxFuture<'static, anyhow::Result<Vec<Self::Identifier>>>;
 
-    /// Retrieves a specific row of the table. The row is returned as an Arc to the table data,
-    /// which can be used to retrieve the row data as SharedStrings. The id parameter is used to
-    /// identify the row to retrieve.
+    /// 取表格的某一特定行。返回指向表格数据的 Arc，可用它把列取成 SharedString。id 参数用于
+    /// 定位要取回的行。
     fn get_row(cx: &mut App, id: Self::Identifier) -> anyhow::Result<Option<Arc<Self>>>;
 
-    /// Internal extension: batch-prefetch full rows for the given identifiers
-    /// into an implementation-internal cache, so per-row `get_row` calls (one
-    /// UI-thread `block_on` DB hit per newly built row past the keep-around
-    /// band) hit the cache while scrolling instead. The table component calls
-    /// this when the visible window moves and spawns the returned future on
-    /// the async runtime — never await it on the UI thread. Returns `None`
-    /// when the type has no prefetch support (default).
+    /// 内部扩展：为给定标识符批量预取完整行到实现内部缓存，这样逐行 `get_row`（超出保留带之后
+    /// 每个新建行一次 UI 线程 `block_on` DB 访问）在滚动时命中缓存而不是现查。表格组件在可视窗口
+    /// 移动时调用它，并把返回的 future 派到异步 runtime 上——绝不在 UI 线程 await。类型不支持
+    /// 预取时（默认）返回 `None`。
     fn prefetch_rows(
         _pool: sqlx::SqlitePool,
         _ids: &[Self::Identifier],
@@ -282,62 +257,52 @@ where
         None
     }
 
-    /// Internal extension: drops the row-prefetch cache. The table calls this
-    /// on every reload (sort change, scan completion) so cached rows can never
-    /// outlive a rescan; implementations must also invalidate in-flight
-    /// prefetch futures (generation guard).
+    /// 内部扩展：丢弃行预取缓存。表格在每次重载（改排序、扫描完成）时调用，因此缓存行绝不可能
+    /// 比一次重扫描活得更久；实现还必须让已在途的预取 future 失效（代际守卫）。
     fn clear_row_cache() {}
 
-    /// Retrieves a column from the row.
+    /// 取行上某一列的值。
     fn get_column(&self, cx: &mut App, column: C) -> Option<SharedString>;
 
-    /// Returns true if the rows may contain images. This is used during the layout phase to
-    /// determine if placeholder covers and the header section should be displayed.
+    /// 返回行是否可能含图像。布局阶段用它决定是否显示占位封面与表头区块。
     fn has_images() -> bool;
 
-    /// Retrieves the associated image for the row.
+    /// 取行对应的图像路径。
     fn get_image_path(&self) -> Option<SharedString>;
 
-    /// Retrieves the full-quality key for the row, for use with `managed_image`.
+    /// 取行的全质量封面键，供 `managed_image` 使用。
     fn get_full_image_key(&self) -> Option<ManagedImageKey>;
 
-    /// Retrieves the default column widths for the table.
+    /// 取表格的默认列宽映射。
     fn default_columns() -> IndexMap<C, f32, FxBuildHasher>;
 
-    /// Returns a boolean indicating whether or not a given column should be displayed using a
-    /// monospaced font.
+    /// 返回给定列是否应使用等宽字体绘制。
     ///
-    /// This should be true for columns that contain mostly numbers, like a date or time.
+    /// 主要由数字构成的列（日期、时长）应为 true。
     fn column_monospace(column: C) -> bool;
 
-    /// Retrieves a unique element id for the row. This is different from the row id, as it is
-    /// used to identify the row in GPUI.
+    /// 取行的唯一元素 id。它与行 id 不同，用于在 GPUI 里标识这一行。
     fn get_element_id(&self) -> impl Into<ElementId>;
 
-    /// Retrieves the table ID for the row.
+    /// 取行的表格 ID。
     fn get_table_id(&self) -> Self::Identifier;
 
-    /// Returns whether the row is currently available for interaction.
+    /// 返回该行当前是否可交互。
     fn is_available(&self, _cx: &mut App) -> bool {
         true
     }
 
-    /// Returns drag data for this row, if dragging is supported. If None is returned, dragging is
-    /// not supported. Default implementation returns None.
+    /// 返回该行的拖拽数据（若支持拖拽）。返回 None 表示不支持拖拽。默认实现返回 None。
     fn get_drag_data(&self) -> Option<TableDragData> {
         None
     }
 
-    /// Returns a builder for this row's context menu, plus an optional
-    /// overlay (e.g. a modal) rendered outside the context popup so it is not
-    /// nested inside `deferred`.
+    /// 返回该行右键菜单的构建器，外加一个可选 overlay（例如模态框），它渲染在 context 弹窗
+    /// 之外，以免嵌进 `deferred`。
     ///
-    /// The builder runs on every render while the menu is open, so its body
-    /// may only read caches and snapshots — never issue blocking queries or
-    /// system calls. `is_available` is the availability the row view already
-    /// resolved once at construction; impls must capture it instead of
-    /// re-running `is_available` (which would stat the filesystem or hit the
-    /// database).
+    /// 构建器在菜单打开期间的每次渲染都会运行，所以其函数体只能读缓存与快照——绝不发起阻塞查询
+    /// 或系统调用。`is_available` 是行视图在构造时已经解析过一次的可用性；实现必须捕获它，
+    /// 而不是重新调用 `is_available`（那会 stat 文件系统或打数据库）。
     fn get_context_menu(
         &self,
         _window: &mut Window,
@@ -349,10 +314,9 @@ where
         None
     }
 
-    /// Internal extension: same contract as [`TableData::get_context_menu`],
-    /// but hands the row's shared `Arc` handle to the implementation so the
-    /// returned builder can hold a refcount instead of deep-cloning the whole
-    /// row on every frame. Default delegates to `get_context_menu`.
+    /// 内部扩展：契约与 [`TableData::get_context_menu`] 相同，但把行的共享 `Arc` 句柄交给实现，
+    /// 让返回的构建器只需持有一份引用计数，而不是每帧深拷贝整行。默认委托给
+    /// `get_context_menu`。
     fn get_context_menu_shared(
         row: &Arc<Self>,
         window: &mut Window,
@@ -364,24 +328,22 @@ where
         row.get_context_menu(window, cx, context, grid_context, is_available)
     }
 
-    /// Optional middle mouse button handler for this row.
+    /// 该行的可选中键（鼠标中键）处理器。
     fn handle_middle_mouse(&self, _window: &mut Window, _cx: &mut App, _grid_context: GridContext) {
     }
 
-    /// Returns true if the table supports rendering as a grid view.
+    /// 返回该表是否支持以网格视图渲染。
     fn supports_grid_view() -> bool {
         false
     }
 
-    /// Retrieves the content for the grid item relative to the table data.
-    /// Returns a tuple of (Primary string, Optional Secondary string).
+    /// 相对表格数据取网格项内容。返回 `(主文本, 可选次文本)` 二元组。
     fn get_grid_content(&self, _cx: &mut App) -> Option<(SharedString, Option<SharedString>)> {
         None
     }
 
-    /// Retrieves the content for the grid item in a given context.
-    /// Returns a tuple of (Primary string, Optional Secondary string).
-    /// By default, delegates to `get_grid_content`.
+    /// 在给定上下文下取网格项内容。返回 `(主文本, 可选次文本)` 二元组。
+    /// 默认委托给 `get_grid_content`。
     fn get_grid_content_for(
         &self,
         cx: &mut App,

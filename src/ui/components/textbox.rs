@@ -10,7 +10,7 @@ use crate::ui::{
     theme::Theme,
 };
 
-/// A themed single-line text input wrapping [`TextInput`].
+/// 包裹 [`TextInput`] 的主题化单行文本输入框。
 pub struct Textbox {
     input: Entity<TextInput>,
     handle: FocusHandle,
@@ -18,8 +18,7 @@ pub struct Textbox {
 }
 
 impl Textbox {
-    /// Creates a textbox that calls `on_submit` when the user accepts the
-    /// input (Enter), without handing over the text.
+    /// 创建一个在用户接受输入（回车）时调用 `on_submit` 的文本框，不把文本交出去。
     pub fn new_with_submit(
         cx: &mut App,
         style: StyleRefinement,
@@ -45,8 +44,7 @@ impl Textbox {
         })
     }
 
-    /// Creates a textbox that calls `on_submit` with the current input
-    /// content when the user accepts the input (Enter).
+    /// 创建一个在用户接受输入（回车）时以当前输入内容调用 `on_submit` 的文本框。
     pub fn new_with_value_submit(
         cx: &mut App,
         style: StyleRefinement,
@@ -87,22 +85,22 @@ impl Textbox {
         })
     }
 
-    /// Returns the focus handle of the input.
+    /// 取输入框的焦点句柄。
     pub fn focus_handle(&self) -> FocusHandle {
         self.handle.clone()
     }
 
-    /// Clears the input's content and selection state.
+    /// 清空输入框的内容与选区状态。
     pub fn reset(&self, cx: &mut App) {
         self.input.update(cx, |input, _| input.reset());
     }
 
-    /// Returns the current text content.
+    /// 取当前文本内容。
     pub fn value(&self, cx: &App) -> SharedString {
         self.input.read(cx).content.clone()
     }
 
-    /// Replaces the content with `value` and moves the cursor to the end.
+    /// 用 `value` 替换内容并把光标移到末尾。
     pub fn set_value(&self, cx: &mut App, value: SharedString) {
         self.input.update(cx, |input, cx| {
             input.set_value(cx, value);
@@ -110,7 +108,7 @@ impl Textbox {
         });
     }
 
-    /// Selects the entire content.
+    /// 全选内容。
     pub fn select_all(&self, cx: &mut App) {
         self.input.update(cx, |input, cx| input.select_all_text(cx));
     }

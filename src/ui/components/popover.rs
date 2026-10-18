@@ -13,8 +13,8 @@ pub type OnDismissHandler = dyn Fn(&mut Window, &mut App);
 actions!(popover, [ClosePopover]);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-/// Placement relative to the parent bounds; for example, `RightTop` sits to the
-/// right of the parent and aligns to its top edge.
+/// 相对父边界的摆放位置；例如 `RightTop` 位于父元素的
+/// 右侧并对齐其上边缘。
 pub enum PopoverPosition {
     RightTop,
     TopRight,

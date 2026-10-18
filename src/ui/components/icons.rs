@@ -1,6 +1,6 @@
-// Paths to icons from Tabler Icons, for use with icon()
-// See assets/icons/LICENSE
-// The filter-* icons are original works, see assets/icons/LICENSE-meliora-icons
+// 来自 Tabler Icons 的图标路径名，供 icon() 使用
+// 许可见 assets/icons/LICENSE
+// filter-* 系列图标是本项目原创，见 assets/icons/LICENSE-meliora-icons
 
 use gpui::{IntoElement, RenderOnce, SharedString, StyleRefinement, Styled, Svg, svg};
 use palette::IntoColor;
@@ -23,7 +23,7 @@ impl RenderOnce for Icon {
     fn render(mut self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         let theme = cx.global::<Theme>();
 
-        // Default to the theme text color when the caller set none.
+        // 调用方没设置颜色时，默认用主题的文本色。
         self.svg
             .style()
             .text

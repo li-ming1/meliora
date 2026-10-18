@@ -87,7 +87,7 @@ impl RenderOnce for LabeledSlider {
         let max_text = (formatter)(high);
         let current_text = (formatter)(clamped);
 
-        // Maps a 0..1 track position back onto the [low, high] value range.
+        // 把 0..1 的轨道位置映射回 [low, high] 的值区间。
         let denormalize = move |t: f32| (low + (high - low) * t).clamp(low, high);
 
         let on_change = self.on_change.clone();

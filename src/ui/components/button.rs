@@ -2,9 +2,8 @@ use gpui::*;
 
 use crate::ui::theme::Theme;
 
-/// Extension trait for [`Styled`] elements: multiplies the alpha channel of
-/// an existing background fill (`background_opacity(0.5)` halves it).
-/// Elements without a background fill are left untouched.
+/// [`Styled`] 元素的扩展 trait：对已有背景填充的 alpha 通道做乘法
+/// （`background_opacity(0.5)` 把它减半）。没有背景填充的元素保持不变。
 pub trait AdditionalStyleUtil {
     fn background_opacity(self, opacity: f32) -> Self;
 }
@@ -41,8 +40,7 @@ pub enum ButtonIntent {
     Danger,
 }
 
-/// Visual treatment: `Regular` draws a bordered, elevated surface;
-/// `Minimal` is transparent until hovered or pressed.
+/// 视觉处理：`Regular` 画带边框的浮起表面；`Minimal` 在 hover 或按下之前完全透明。
 #[derive(Clone, Copy)]
 pub enum ButtonStyle {
     Regular,
@@ -178,9 +176,8 @@ impl ButtonIntent {
     }
 }
 
-/// A non-interactive button: carries styling and children only. Call
-/// [`Button::id`] to obtain an [`InteractiveButton`], which can hold click,
-/// mouse-down and tooltip handlers.
+/// 一个非交互按钮：只承载样式与子元素。调用 [`Button::id`] 得到 [`InteractiveButton`]，
+/// 后者可挂点击、鼠标按下与 tooltip 处理器。
 #[derive(IntoElement)]
 pub struct Button {
     pub(self) div: Div,
@@ -245,8 +242,7 @@ impl RenderOnce for Button {
     }
 }
 
-/// The stateful variant produced by [`Button::id`]: an element with an ID
-/// that supports pointer handlers and tooltips.
+/// [`Button::id`] 产出的有状态变体：带 ID、支持指针处理器与 tooltip 的元素。
 #[derive(IntoElement)]
 pub struct InteractiveButton {
     pub(self) div: Stateful<Div>,

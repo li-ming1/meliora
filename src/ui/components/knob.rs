@@ -18,28 +18,27 @@ type ValueParser = dyn Fn(&str) -> Option<f32>;
 const WIDTH: f32 = 56.0;
 const LABEL_HEIGHT: f32 = 16.0;
 const DIAMETER: f32 = 40.0;
-/// Vertical gap between the label, the knob body and the readout row.
+/// 标签、旋钮本体与读数行之间的垂直间距。
 const LABEL_GAP: f32 = 2.0;
 const ARC_RADIUS: f32 = 17.5;
 const READOUT_HEIGHT: f32 = 28.0;
 const READOUT_OFFSET: f32 = LABEL_HEIGHT + LABEL_GAP + DIAMETER + LABEL_GAP;
 const HEIGHT: f32 = READOUT_OFFSET + READOUT_HEIGHT;
 const DRAG_PIXELS: f32 = 200.0;
-/// Fine-adjustment scale applied to drag/scroll displacement while shift is held.
+/// 按住 shift 时施加到拖动/滚动位移上的微调倍率。
 const SHIFT_SCALE: f32 = 0.1;
 const SCROLL_STEP: f32 = 0.01;
-/// How often a drag pushes new values downstream: mouse moves arrive at
-/// 125-1000 Hz and every push re-runs the band edit chain (EQ DSP channel,
-/// compensation grid, curve resampling, view repaints).
+/// 拖动向下游推送新值的频率：鼠标移动以 125-1000 Hz 到达，而每次推送都会重跑整条频段编辑链
+/// （EQ DSP 通道、补偿网格、曲线重采样、视图重绘）。
 const DRAG_PUSH_INTERVAL: Duration = Duration::from_millis(33);
-/// Stroke width of the track and value arcs, and of the position tick.
+/// 轨道弧、数值弧与位置刻线的线宽。
 const ARC_STROKE_WIDTH: f32 = 2.5;
 const TICK_STROKE_WIDTH: f32 = 2.0;
-/// Font size of the label and readout captions.
+/// 标签与读数说明的字号。
 const CAPTION_SIZE: f32 = 12.0;
 const ERROR_FLASH: Duration = Duration::from_millis(600);
 
-// Arc runs clockwise from 7 o'clock to 5 o'clock, straight up is zero
+// 弧从 7 点位置顺时针走到 5 点位置，正上方为零位
 const ARC_START: f32 = -3.0 * std::f32::consts::FRAC_PI_4;
 const ARC_SWEEP: f32 = 3.0 * std::f32::consts::FRAC_PI_2;
 
@@ -50,7 +49,7 @@ fn arc_point(center: Point<Pixels>, radius: f32, angle: f32) -> Point<Pixels> {
     )
 }
 
-// Trace a circular arc as <= 90 degree cubic segments, angles in radians clockwise from 12 o'clock
+// 把圆弧描成若干 ≤90 度的三次贝塞尔段，角度以弧度计、从 12 点位置顺时针
 pub(crate) fn arc_path(
     builder: &mut PathBuilder,
     center: Point<Pixels>,
@@ -86,7 +85,7 @@ pub(crate) fn arc_path(
     }
 }
 
-/// Builds and strokes one path; a path that fails to tessellate is dropped.
+/// 构建并描出一条路径；无法细分（tessellate）的路径直接丢弃。
 fn paint_stroked_path(
     window: &mut Window,
     color: Rgba,
@@ -100,16 +99,12 @@ fn paint_stroked_path(
     }
 }
 
-/// Caption paints run per frame per knob (the EQ screen shows three, label
-/// and readout each) and the `error!` writer flushes synchronously, so a
-/// failing paint would otherwise hit the log at frame rate. Paint failures
-/// are persistent (font/atlas backend state), so only the first one logs;
-/// once painting recovers the knob simply renders again, which needs no log
-/// line.
+/// 说明文本的绘制每帧每个旋钮都会跑一次（EQ 界面显示三个，标签与读数各一份），而 `error!`
+/// 写入是同步刷盘，于是一次失败的绘制会按帧率打到日志上。绘制失败是持续性的（字体/图集后端
+/// 状态），所以只记录第一次；绘制恢复后旋钮照常渲染，那不需要日志行。
 static PAINT_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// Paints a pre-shaped caption horizontally centered within `bounds`, at the
-/// given top edge, logging under `what` on failure.
+/// 把预先排版好的说明文本在 `bounds` 内水平居中、按给定上边缘绘制，失败时以 `what` 记录。
 fn paint_centered_caption(
     caption: ShapedLine,
     bounds: Bounds<Pixels>,
@@ -126,13 +121,12 @@ fn paint_centered_caption(
     }
 }
 
-/// Drag/scroll displacement scale: full sensitivity, or [`SHIFT_SCALE`] while
-/// shift is held for fine adjustment.
+/// 拖动/滚动位移倍率：满灵敏度，或按住 shift 微调时用 [`SHIFT_SCALE`]。
 fn drag_scale(fine: bool) -> f32 {
     if fine { SHIFT_SCALE } else { 1.0 }
 }
 
-/// Maps a vertical drag displacement onto the 0..1 knob position.
+/// 把垂直拖动位移映射到 0..1 的旋钮位置。
 fn drag_position(start_position: f32, start_y: Pixels, current_y: Pixels, scale: f32) -> f32 {
     let dy: f32 = (start_y - current_y).into();
     (start_position + dy / DRAG_PIXELS * scale).clamp(0.0, 1.0)
@@ -153,10 +147,8 @@ fn shape_caption(window: &mut Window, text: SharedString, color: Hsla, font: Fon
         .shape_line(text, px(CAPTION_SIZE), &[run], None)
 }
 
-/// One cached shaped caption (label or readout): the key fields cover
-/// everything the shaping consumes, so an unchanged caption is never
-/// re-shaped across frames. Stored on [`KnobState`], which persists across
-/// frames only for id'd knobs.
+/// 一份缓存的已排版说明文本（标签或读数）：键字段覆盖排版消费的一切，所以未变的说明跨帧绝不
+/// 重排。存于 [`KnobState`]，而它只对带 id 的旋钮跨帧保活。
 struct CaptionCache {
     text: SharedString,
     color: Hsla,
@@ -166,10 +158,8 @@ struct CaptionCache {
     line: ShapedLine,
 }
 
-/// Returns the cached caption for `slot` while its key still matches,
-/// otherwise reshapes via [`shape_caption`] and refills the slot: prepaint
-/// runs every frame but only real text/style changes need re-shaping (a
-/// drag changes the readout text and misses on purpose).
+/// 键仍然匹配时返回 `slot` 里缓存的说明文本，否则用 [`shape_caption`] 重新排版并回填该槽位：
+/// prepaint 每帧都跑，但只有真正的文本/样式变化才需要重排（拖动会改变读数文本并故意未命中）。
 fn cached_caption(
     slot: &mut Option<CaptionCache>,
     text: SharedString,
@@ -298,7 +288,7 @@ impl IntoElement for Knob {
 #[derive(Default)]
 struct KnobState {
     drag: Option<(Pixels, f32, bool)>,
-    /// The last value a drag pushed downstream, for the push coalescing.
+    /// 上一次拖动向下游推送的值，供推送合并使用。
     drag_emitted: Option<(Instant, f32)>,
     textbox: Option<Entity<Textbox>>,
     parse_error: Option<Instant>,
@@ -306,9 +296,8 @@ struct KnobState {
     scroll_position: Option<f32>,
     label_caption: Option<CaptionCache>,
     readout_caption: Option<CaptionCache>,
-    /// Last `(value, formatted)` pair: the formatter is a pure function of
-    /// the value, so prepaint can skip its per-frame SharedString allocation
-    /// while the knob stands still. `readout_caption` only avoids re-shaping.
+    /// 最近一次 `(值, 格式化文本)`：格式化函数是值的纯函数，所以旋钮静止时 prepaint 可以跳过
+    /// 每帧的 SharedString 分配。`readout_caption` 只是避免重排。
     readout_text: Option<(f32, SharedString)>,
 }
 
@@ -363,7 +352,7 @@ impl Element for Knob {
             (state.clone(), if has_id { Some(state) } else { None })
         });
 
-        // cancel typed entry once the editor loses focus
+        // 编辑器失去焦点时取消输入态
         let mut textbox = state.borrow().textbox.clone();
         let stale = textbox
             .as_ref()
@@ -571,7 +560,7 @@ impl Element for Knob {
                         return;
                     }
 
-                    // leave clicks into the open editor to the textbox
+                    // 落在打开的编辑器里的点击交给 textbox
                     if state.borrow().textbox.is_some() && edit_bounds.contains(&ev.position) {
                         return;
                     }
@@ -619,7 +608,7 @@ impl Element for Knob {
                         }
                         MouseButton::Left => {
                             let mut state = state.borrow_mut();
-                            // starting a drag dismisses the type-in editor
+                            // 开始拖动时收起手输编辑器
                             if state.textbox.take().is_some() {
                                 state.parse_error = None;
                                 if let Some(focus) = &restore_focus {
@@ -650,8 +639,8 @@ impl Element for Knob {
                         return;
                     };
                     let shift = ev.modifiers.shift;
-                    // shift toggled mid-drag, rebase so the value holds and the new scale applies
-                    // only to displacement from here on
+                    // 拖动途中切换了 shift：重设基准，让当前值保持不动，新倍率
+                    // 只作用于此后产生的位移
                     let (start_y, start_position) = if shift != start_shift {
                         let current = drag_position(
                             start_position,
@@ -666,8 +655,8 @@ impl Element for Knob {
                     };
                     let position =
                         drag_position(start_position, start_y, ev.position.y, drag_scale(shift));
-                    // coalesce the push to ~30 Hz and skip repeat values: each
-                    // push re-runs the band edit chain and repaints the views
+                    // 把推送合并到 ~30 Hz 并跳过重复值：每次推送都会重跑频段编辑链
+                    // 并重绘视图
                     let now = Instant::now();
                     let (due, unchanged) = {
                         let state = state.borrow();
@@ -692,9 +681,9 @@ impl Element for Knob {
                     if phase != DispatchPhase::Bubble {
                         return;
                     }
-                    // the drag ends, flush the tail: a final move inside the
-                    // push interval was merged away, so emit the release
-                    // position unless it already matches the last pushed value
+                    // 拖动结束，把尾部补一次：推送间隔内的最后一次移动被合并掉了，
+                    // 所以要发出松开时的位置，
+                    // 除非它已经等于上次推送的值
                     let flush = {
                         let mut state = state.borrow_mut();
                         let Some((start_y, start_position, start_shift)) = state.drag else {
@@ -737,13 +726,13 @@ impl Element for Knob {
                     } else {
                         ev.delta.pixel_delta(px(SCROLL_STEP)).y.into()
                     };
-                    // accumulate on the last emitted value, the paint-time one is stale
+                    // 在最后一次已发出的值上累加；绘制期那份已经过期
                     let mut state = state.borrow_mut();
                     let base = state.scroll_position.unwrap_or(position);
                     let position = (base + delta).clamp(0.0, 1.0);
-                    // At an endpoint every wheel tick clamps to the same
-                    // value; pushing it re-runs the band edit chain and
-                    // repaints for an unchanged knob.
+                    // 处在端点时每个滚轮 tick 都钳位到同一个值：
+                    // 推送它会让旋钮毫无变化，却重跑频段编辑链
+                    // 并重绘一遍。
                     if position == base {
                         return;
                     }
@@ -757,7 +746,7 @@ impl Element for Knob {
                 let state = state.clone();
                 let restore_focus = restore_focus.clone();
                 window.on_key_event(move |ev: &KeyDownEvent, phase, window, cx| {
-                    // capture phase, an open editor cancels before the graph clears selection
+                    // capture 阶段：打开的编辑器要先于图形清除选点之前处理
                     if phase != DispatchPhase::Capture || ev.keystroke.key != "escape" {
                         return;
                     }

@@ -21,12 +21,11 @@ use crate::ui::{
 };
 
 const MAX_VISIBLE_PER_CATEGORY: usize = 5;
-/// Upper bound on matcher hits collected per query refresh (`get_matches`).
+/// 每次查询刷新（`get_matches`）收集到的匹配命中数上限。
 const MAX_MATCHES: usize = 100;
 
-/// Pointer-equality check for item lists: same `Arc`s in the same order means
-/// the same items, avoiding deep `PartialEq` walks (per-item String compares)
-/// on every 25ms matcher poll.
+/// 条目列表的指针相等判定：同样的 `Arc` 同样的顺序就是同样的条目，从而避免每 25ms 一次
+/// matcher 轮询上做深 `PartialEq` 遍历（逐项 String 比较）。
 fn same_items<T>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| Arc::ptr_eq(a, b))
 }
@@ -38,11 +37,9 @@ pub trait PaletteItem {
     fn is_enabled(&self, _cx: &App) -> bool {
         true
     }
-    /// Whether this item belongs to a set that is replaced wholesale on every
-    /// query change (e.g. online search results). Volatile items are kept out
-    /// of the nucleo index — injecting them would rebuild the whole index on
-    /// every refresh — and are instead matched against the live query when
-    /// matches are collected (`Finder::get_matches`).
+    /// 本条目是否属于"每次查询变化都整体替换"的集合（例如在线搜索结果）。易变条目不进 nucleo
+    /// 索引——注入它们会让整个索引在每次刷新时重建——而是在收集命中时
+    /// （`Finder::get_matches`）直接与当前查询比对。
     fn is_volatile(&self) -> bool {
         false
     }
@@ -50,17 +47,14 @@ pub trait PaletteItem {
         None
     }
     fn on_middle_click(&self, _cx: &mut App) {}
-    /// Context-menu builder: called on every render of the row, whether or not
-    /// the menu ever opens; the returned builder only runs when the menu
-    /// actually opens. Both may only read caches and snapshots — never issue
-    /// blocking queries or system calls.
+    /// 右键菜单构建器：这一行每次渲染都会被调用，无论菜单是否真的打开；返回的构建器只在菜单
+    /// 真正打开时运行。两者都只能读缓存与快照——绝不发起阻塞查询或系统调用。
     fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<ContextMenuBuilder> {
         None
     }
-    /// Provides a view to be rendered next to the context menu, used for the Add to Playlist
-    /// item in the track context menu. Called only when the context menu opens
-    /// (from `FinderItem::render`'s `menu_on_open` builder), so its entities are
-    /// never created for rows whose context menu was never used.
+    /// 提供一个渲染在右键菜单旁边的视图，用于曲目右键菜单里的"加入歌单"项。只在右键菜单打开时
+    /// 调用（`FinderItem::render` 的 `menu_on_open` 构建器里），所以从未用过右键菜单的行
+    /// 永远不会创建这些 entity。
     fn context_menu_overlay(&self, _window: &mut Window, _cx: &mut App) -> Option<AnyView> {
         None
     }
@@ -104,20 +98,17 @@ where
     views_model: ViewsModel<T, MatcherFunc, OnAccept>,
     render_counter: Entity<usize>,
     last_match: Vec<Arc<T>>,
-    /// Stable items currently injected into the matcher, used to reconcile
-    /// updates: an append-only change pushes only the new tail instead of
-    /// rebuilding the whole matcher (see `set_items`).
+    /// 当前注入 matcher 的稳定条目，用于对账更新：纯追加的变化只推入新的尾部，而不重建整个
+    /// matcher（见 `set_items`）。
     injected: Vec<Arc<T>>,
-    /// Volatile items (`PaletteItem::is_volatile`, e.g. online search
-    /// results) paired with their search text: kept out of the matcher index
-    /// and matched against the live query in `get_matches`, so a results
-    /// refresh never restarts the index.
+    /// 易变条目（`PaletteItem::is_volatile`，例如在线搜索结果）连同其搜索文本：不进 matcher
+    /// 索引，而是在 `get_matches` 里与当前查询比对，因此刷新结果永远不会重启索引。
     dynamic_items: Vec<(Arc<T>, Utf32String)>,
-    /// Scoring matcher for `dynamic_items`, kept around because
-    /// `Matcher::new` eagerly allocates a large slab.
+    /// 针对 `dynamic_items` 的打分 matcher，之所以留着是因为 `Matcher::new` 会急切地分配一大块
+    /// slab。
     dynamic_matcher: Matcher,
-    // Arc-wrapped so the per-frame render clone is a refcount bump; rebuilt
-    // only by `rebuild_display_list` / `recompute_extra_items`.
+    // 用 Arc 包好，让每帧的 render 克隆只是一次引用计数自增；只在
+    // `rebuild_display_list` / `recompute_extra_items` 里重建。
     display_list: Arc<Vec<DisplayEntry<T>>>,
     extra_providers: Vec<ExtraItemProvider>,
     // `ExtraItem` 回调非 `Send`（主线程专用），容器相应走 `Rc`。
@@ -144,10 +135,10 @@ where
         cx.new(|cx| {
             let config = Config::DEFAULT;
 
-            // make notification channel
+            // 建立通知通道
             let (sender, mut receiver) = channel(10);
             let notify = Arc::new(move || {
-                // if it's full it doesn't really matter, it'll already update
+                // 通道满了也无所谓，反正本来就要更新
                 _ = sender.try_send(());
             });
 
@@ -158,9 +149,8 @@ where
             let matcher = Nucleo::new(config, notify, None, 1);
             let injector = matcher.injector();
 
-            // Stable items are injected into the matcher index; volatile ones
-            // (e.g. online search results) are matched against the live query
-            // instead — see `set_items`.
+            // 稳定条目注入 matcher 索引；易变的（例如在线搜索结果）改为与当前查询比对
+            // ——见 `set_items`。
             let mut injected = Vec::with_capacity(items.len());
             let mut dynamic_items = Vec::new();
             for item in &items {
@@ -179,15 +169,14 @@ where
             let weak_self = cx.weak_entity();
             cx.spawn(async move |_, cx| {
                 loop {
-                    // Exit as soon as the palette entity is gone; previously this
-                    // check sat inside `needs_update`, so a closed palette kept
-                    // its poll loop spinning forever.
+                    // palette entity 一没就退出；这个检查原本在 `needs_update` 里面，
+                    // 于是已关闭的 palette 会把轮询循环永远转下去。
                     let Some(entity) = weak_self.upgrade() else {
                         return;
                     };
 
-                    // get all the update notifications
-                    // incase we got multiple
+                    // 把所有更新通知取空
+                    // 万一一次收到多条
                     let mut needs_update = false;
                     while receiver.try_recv().is_ok() {
                         needs_update = true;
@@ -213,13 +202,13 @@ where
             })
             .detach();
 
-            // update when the query updates
+            // 查询更新时刷新
             cx.subscribe(&cx.entity(), |this, _, ev: &SharedString, cx| {
                 this.set_query(ev.to_string(), cx);
             })
             .detach();
 
-            // handle keyboard navigation
+            // 处理键盘导航
             let on_accept_clone = on_accept.clone();
             cx.subscribe(
                 &cx.entity(),
@@ -257,7 +246,7 @@ where
             )
             .detach();
 
-            // handle item list updates
+            // 处理条目列表更新
             let get_item_display_for_updates = get_item_display.clone();
             cx.subscribe(&cx.entity(), move |this, _, items: &Vec<Arc<T>>, cx| {
                 this.set_items(items, &get_item_display_for_updates, cx);
@@ -401,8 +390,7 @@ where
         (0..self.total_items()).find(|idx| self.index_is_enabled(*idx, cx))
     }
 
-    /// Move the selection to `target` when there is one, then keep the list
-    /// scrolled to the (possibly unchanged) selection.
+    /// 有 `target` 时把选择移过去，然后让列表保持在（可能没变的）选中项上。
     fn move_selection(&mut self, target: Option<usize>, cx: &mut Context<Self>) {
         if let Some(idx) = target {
             self.current_selection.update(cx, |sel, cx| {
@@ -434,15 +422,15 @@ where
 
         self.query = query;
 
-        // recompute dynamic extra items based on query
+        // 依据查询重算动态附加条目
         self.recompute_extra_items();
 
-        // get some matches ready immediately
+        // 先立刻备好一批匹配
         self.tick(20);
 
         let matches = self.get_matches();
 
-        // if there are extras or the items are different regenerate the list state
+        // 有附加项、或条目变了，就重新生成列表状态
         if !same_items(&matches, &self.last_match) || !self.extra_items.is_empty() {
             self.rebuild_display_list(&matches, cx);
             self.last_match = matches;
@@ -462,14 +450,11 @@ where
         self.matcher.tick(iterations as u64);
     }
 
-    /// Reconcile the matcher with a new item list. Stable items are injected
-    /// into nucleo, which stays append-only across updates: only a change
-    /// inside the stable set (local index reload, library rescan) triggers a
-    /// full `restart` + re-inject. Volatile items (e.g. online search results,
-    /// replaced wholesale on every query change) never enter the index — they
-    /// are stored here with their search text and scored against the live
-    /// query in `get_matches`, so refreshing them costs O(volatile count)
-    /// instead of an index rebuild.
+    /// 用新的条目列表对账 matcher。稳定条目注入 nucleo，索引跨更新保持纯追加：只有稳定集
+    /// 内部发生变化（本地索引重载、库重扫描）才触发完整 `restart` + 重新注入。易变条目
+    /// （例如在线搜索结果，每次查询变化都整体替换）永不进索引——它们连同搜索文本存在这里，
+    /// 在 `get_matches` 里与当前查询打分，于是刷新它们的成本是 O(易变条目数)，
+    /// 而不是一次索引重建。
     fn set_items(&mut self, items: &[Arc<T>], get_item_display: &MatcherFunc, cx: &mut App) {
         self.dynamic_items.clear();
         self.dynamic_items.extend(
@@ -479,8 +464,7 @@ where
                 .map(|item| (item.clone(), (get_item_display)(item, cx))),
         );
 
-        // How much of the currently injected prefix the new stable items
-        // reproduce (same `Arc`s, same relative order, volatile items skipped).
+        // 新稳定条目能复现当前已注入前缀的多少（同样的 `Arc`、同样的相对顺序，跳过易变条目）。
         let mut common = 0usize;
         let mut append_only = true;
         for item in items {
@@ -502,10 +486,8 @@ where
         }
 
         let injector = self.matcher.injector();
-        // `restart` empties the matcher's item store, so a non-append-only
-        // change must re-inject EVERY stable item — pushing only the changed
-        // tail would drop the unchanged prefix (e.g. the whole local index)
-        // from matching for the rest of the panel session.
+        // `restart` 会清空 matcher 的条目存储，所以非纯追加的变化必须重新注入每一个稳定条目
+        // ——只推变化的尾部会把未变的前缀（例如整个本地索引）从后续本次会话的匹配中丢掉。
         for (stable_idx, item) in items.iter().filter(|item| !item.is_volatile()).enumerate() {
             if append_only && stable_idx < common {
                 continue;
@@ -536,13 +518,10 @@ where
             return matches;
         }
 
-        // Volatile items never entered the matcher index, so they are scored
-        // against the live query here. Their count is a page of results per
-        // provider, keeping this microsecond-scale even while the index
-        // itself is still re-matching in the background.
-        // `set_query` keeps the index pattern in sync with `self.query`
-        // (reparse is the same atom pipeline as `Pattern::parse`), so reuse
-        // it instead of re-parsing the query on every poll tick.
+        // 易变条目从未进入 matcher 索引，所以在这里与当前查询打分。它们的数量是"每个音源一页
+        // 结果"，因此即使索引本身还在后台重新匹配，这里也保持微秒级。
+        // `set_query` 让索引的 pattern 与 `self.query` 保持同步（reparse 走的是与
+        // `Pattern::parse` 相同的原子管线），所以直接复用它，而不是每个轮询 tick 重解析一次查询。
         let pattern = self.matcher.pattern.column_pattern(0);
         let mut dynamic: Vec<(u32, Arc<T>)> = Vec::with_capacity(self.dynamic_items.len());
         for (item, text) in &self.dynamic_items {
@@ -550,7 +529,7 @@ where
                 dynamic.push((score, item.clone()));
             }
         }
-        // Stable sort: equal scores keep the provider's own result order.
+        // 稳定排序：分数相同时保持音源自带的结果顺序。
         dynamic.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         matches.extend(dynamic.into_iter().map(|(_, item)| item));
 
@@ -882,9 +861,8 @@ where
     weak_parent: WeakEntity<Finder<T, MatcherFunc, OnAccept>>,
     item_data: Option<Arc<T>>,
     on_accept_override: OnAcceptOverride,
-    /// Context-menu overlay view (e.g. AddToPlaylist). Built lazily the first
-    /// time the context menu opens and kept on the item so the modal survives
-    /// the menu closing.
+    /// 右键菜单的 overlay 视图（例如 AddToPlaylist）。第一次打开右键菜单时惰性构建并存在条目上，
+    /// 好让模态框在菜单关闭后仍然存活。
     context_overlay: Option<AnyView>,
 }
 
@@ -901,10 +879,8 @@ where
     MatcherFunc: Fn(&Arc<T>, &mut App) -> Utf32String + 'static,
     OnAccept: Fn(&Arc<T>, &mut App) + 'static,
 {
-    /// Shared selection observer for both constructors: a row's render output
-    /// depends only on "selected", so only a flip of that predicate needs a
-    /// repaint; arrow-key moves fan out to every row and N-2 of them would
-    /// otherwise re-render for no visual change.
+    /// 两个构造器共享的选择观察者：一行的渲染输出只取决于 "selected"，所以只有这个谓词翻转时
+    /// 才需要重绘；方向键移动会广播给每一行，若不这样就有 N-2 行为毫无视觉变化的东西重渲染。
     fn observe_selection_flip(cx: &mut Context<Self>, current_selection: &Entity<usize>) {
         cx.observe(
             current_selection,
@@ -1105,11 +1081,9 @@ where
             let weak_item = cx.weak_entity();
             context((self.id.clone(), "context_menu"))
                 .with(item)
-                // menu tree is built only when the menu opens; the overlay
-                // (e.g. AddToPlaylist) is built here too, on open, so it resolves
-                // to the same keyed state the menu's "Add to playlist" item
-                // writes to. It is kept on the item so the modal survives the
-                // menu closing (and nothing is created for untouched rows).
+                // 菜单树只在菜单打开时构建；overlay（例如 AddToPlaylist）也在这里、在打开时构建，
+                // 于是它解析到与菜单里"加入歌单"项写入的同一个 keyed state。它存在条目上，
+                // 好让模态框在菜单关闭后仍然存活（而没用过的行什么都不创建）。
                 .menu_on_open(move |window, cx| {
                     let menu = menu_builder(window, cx);
                     let overlay = item_data

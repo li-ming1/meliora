@@ -75,7 +75,7 @@ impl RenderOnce for PlaybackControls {
         let is_current = self.current_track_in_listing;
         let is_playing = self.is_playing;
         let show_add_to_queue = self.show_add_to_queue;
-        // The main button pauses only while the listing's current track plays.
+        // 主按钮只在当前列表正在播放的那首曲目上才执行暂停。
         let show_pause = is_current && is_playing;
 
         div()

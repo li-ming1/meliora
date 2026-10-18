@@ -8,13 +8,13 @@ use crate::ui::{
     theme::Theme,
 };
 
-/// Height of the titlebar and of each window button (the buttons fill it).
+/// 标题栏以及每个窗口按钮的高度（按钮填满它）。
 const TITLEBAR_HEIGHT: Pixels = px(37.0);
 
-/// Width of a titlebar window button (close / minimize / maximize).
+/// 标题栏窗口按钮（关闭 / 最小化 / 最大化）的宽度。
 const WINDOW_BUTTON_WIDTH: Pixels = px(36.0);
 
-/// Spacer clearing the macOS traffic lights at the titlebar's left edge.
+/// 标题栏左缘为 macOS 红绿灯按钮留出的空位。
 const MACOS_TRAFFIC_LIGHT_SPACER: Pixels = px(72.0);
 
 #[derive(IntoElement)]

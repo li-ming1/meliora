@@ -71,10 +71,10 @@ impl RenderOnce for Checkbox {
     }
 }
 
-/// Checkbox display element.
+/// 复选框显示元素。
 ///
-/// This checkbox element **does not support click handlers.** This is because the click handler
-/// should be attached to a label, which should always be used when using a checkbox.
+/// 这个复选框元素**不支持点击处理器**。原因是点击处理器应当挂在标签（label）上，而使用复选框
+/// 时总是应当配一个标签。
 pub fn checkbox(id: impl Into<ElementId>, checked: bool) -> Checkbox {
     Checkbox::new(id, checked)
 }

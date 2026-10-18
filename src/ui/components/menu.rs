@@ -23,10 +23,10 @@ fn icon_container() -> Div {
         .justify_center()
 }
 
-/// Shared base for all menu item variants.
+/// 所有菜单项变体共用的基础。
 ///
-/// Deliberately not a component: never render it directly — always go through
-/// a concrete menu item type such as [`MenuItem`] or [`CheckMenuItem`].
+/// 有意不做成组件：绝不要直接渲染它——一律通过具体菜单项类型，例如 [`MenuItem`] 或
+/// [`CheckMenuItem`]。
 struct BaseMenuItem {
     id: ElementId,
     name: SharedString,
@@ -101,13 +101,10 @@ impl BaseMenuItem {
                 this.child(div().ml(px(12.0)).child(el))
             })
             .when_some(self.tooltip, |this, text| {
-                // Transition-gated repaint (scrollbar.rs pattern): entering does
-                // not need one - the tooltip machinery refreshes the window when
-                // the tooltip actually shows, and the built-in hover styles
-                // repaint on the flip themselves. Leaving still refreshes,
-                // because the pointer can exit the window without another
-                // MouseMove and this repaint is what lets the tooltip's
-                // prepaint check hide it.
+                // 由过渡闸控的重绘（scrollbar.rs 的模式）：进入时不需要一次——tooltip 机制在
+                // tooltip 真正显示时会刷新窗口，而内建 hover 样式自己在翻转时重绘。离开时仍要
+                // 刷新，因为指针可能在没有任何另一次 MouseMove 的情况下离开窗口，而正是这次重绘
+                // 让 tooltip 的 prepaint 检查能把它隐藏掉。
                 this.tooltip(build_tooltip(text))
                     .on_hover(|hovered, window, _| {
                         if !*hovered {
@@ -246,7 +243,7 @@ impl RenderOnce for CheckMenuItem {
     }
 }
 
-/// A horizontal separator line for visually grouping menu items.
+/// 用于在视觉上分组菜单项的一条水平分隔线。
 #[derive(IntoElement)]
 pub struct MenuSeparator;
 
@@ -264,7 +261,7 @@ impl RenderOnce for MenuSeparator {
     }
 }
 
-/// Creates a standard menu item with an optional icon.
+/// 创建一个标准菜单项，图标可选。
 pub fn menu_item(
     id: impl Into<ElementId>,
     icon: Option<impl Into<SharedString>>,
@@ -274,7 +271,7 @@ pub fn menu_item(
     MenuItem::new(id, icon, text, func)
 }
 
-/// Creates a checkable menu item.
+/// 创建一个可勾选菜单项。
 pub fn menu_check_item(
     id: impl Into<ElementId>,
     checked: bool,
@@ -284,12 +281,12 @@ pub fn menu_check_item(
     CheckMenuItem::new(id, checked, text, func)
 }
 
-/// Creates a menu separator.
+/// 创建一个菜单分隔项。
 pub fn menu_separator() -> MenuSeparator {
     MenuSeparator
 }
 
-/// A container for menu items.
+/// 菜单项的容器。
 #[derive(IntoElement)]
 pub struct Menu {
     items: Vec<AnyElement>,
@@ -297,7 +294,7 @@ pub struct Menu {
 }
 
 impl Menu {
-    /// Adds an item to the menu.
+    /// 往菜单里追加一项。
     pub fn item(mut self, item: impl IntoElement) -> Self {
         self.items.push(item.into_any_element());
         self
@@ -322,7 +319,7 @@ impl RenderOnce for Menu {
     }
 }
 
-/// Creates a new empty menu container.
+/// 创建一个空的菜单容器。
 pub fn menu() -> Menu {
     Menu {
         items: vec![],

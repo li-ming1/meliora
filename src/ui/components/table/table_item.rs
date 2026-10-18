@@ -13,9 +13,8 @@ use super::{
 };
 use crate::ui::theme::Theme;
 
-/// Fixed height of every row cell; matches the table header height. Also the
-/// outer height the shell passes when caching this row view (the cache path
-/// never measures content).
+/// 每个行单元格的固定高度；与表头高度一致。也是外壳在缓存本行视图时传进来的外部高度
+/// （缓存路径从不测量内容）。
 pub(crate) const ROW_HEIGHT: f32 = 36.0;
 
 #[derive(Clone)]
@@ -32,8 +31,8 @@ where
     id: Option<ElementId>,
     image_path: Option<SharedString>,
     is_available: bool,
-    /// Prebuilt once; `on_drag` takes the payload by value every frame, so
-    /// render clones this instead of re-running `get_drag_data`.
+    /// 预先构建一次；`on_drag` 每帧按值取走载荷，所以 render 里克隆这份而不是重跑
+    /// `get_drag_data`。
     drag_data: Option<TableDragData>,
 }
 
@@ -98,8 +97,7 @@ where
         })
     }
 
-    /// Snapshots the visible columns' cell values for `row`, in column order.
-    /// Re-run whenever the column set changes (see the observer in `new`).
+    /// 按列顺序快照 `row` 在可见列上的单元格值。列集变化时重算（见 `new` 里的观察者）。
     fn snapshot_cells(
         row: &Arc<T>,
         columns: &IndexMap<C, f32, FxBuildHasher>,
@@ -122,8 +120,8 @@ where
         let row_data = self.row.clone();
         let is_available = self.is_available;
         let context_menu = self.row.as_ref().and_then(|row| {
-            // shared-row variant: the menu builder holds an `Arc` refcount and
-            // deep-clones the row only when the menu opens, not every frame
+            // 共享行变体：菜单构建器只持有一份 `Arc` 引用计数，只在菜单打开时才深拷贝整行，
+            // 不是每帧
             T::get_context_menu_shared(
                 row,
                 window,
@@ -184,14 +182,14 @@ where
 
         if let Some(data) = self.data.as_ref() {
             for (i, column_data) in data.iter().enumerate() {
-                // columns can shrink between the data snapshot and this
-                // render; skip the stale column instead of panicking the frame
+                // 列可能在数据快照与本次渲染之间变少；跳过过期列，
+                // 而不是让这一帧 panic
                 let Some((column, width)) = self.columns.get_index(i) else {
                     continue;
                 };
                 row = row.child(
                     div()
-                        // fluid column, matching the header's grow weights
+                        // 流动列，与表头的 grow 权重一致
                         .flex_grow(width.max(1.0))
                         .flex_basis(px(0.0))
                         .min_w(px(MIN_COLUMN_WIDTH))
@@ -212,8 +210,7 @@ where
             }
         }
 
-        // table rows keep their own width: the context element carries no
-        // sizing and the overlay wrapper is w_full
+        // 表格行保持自身宽度：context 元素不带尺寸，overlay 包装是 w_full
         wrap_with_context_menu(
             self.id.clone().unwrap_or("bad-context".into()),
             row,

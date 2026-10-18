@@ -13,10 +13,9 @@ const DEFAULT_OVERSCAN_ROWS: usize = 1;
 
 type RenderItemCallback = Rc<dyn Fn(usize, &mut Window, &mut App) -> AnyElement>;
 
-/// Column layout for a viewport `width` pixels wide: fit as many
-/// `min_item_width` columns (plus gaps) as possible, then stretch them to
-/// fill the leftover space. A free function because the measured-layout
-/// callback in `request_layout` cannot reach `&self`.
+/// 视口 `width` 像素宽时的列布局：先放下尽可能多的 `min_item_width` 列（含间距），再把它们
+/// 拉伸以填满剩余空间。之所以是自由函数，是因为 `request_layout` 里测量布局的回调取不到
+/// `&self`。
 fn grid_metrics(
     viewport_width: Pixels,
     item_count: usize,
@@ -46,8 +45,7 @@ fn grid_metrics(
     }
 }
 
-/// Lays out one grid item as a layout root at `origin` and records it in
-/// `frame_state` so `paint` can draw it.
+/// 在 `origin` 处把一个网格项作为布局根排好，并记录进 `frame_state` 供 `paint` 绘制。
 fn paint_grid_item(
     render_item: &RenderItemCallback,
     frame_state: &mut UniformGridFrameState,
@@ -145,8 +143,7 @@ impl UniformGrid {
         self
     }
 
-    /// When enabled, the grid sizes itself to fit all its content instead of filling its parent
-    /// and scrolling internally.
+    /// 启用时网格按内容自适应尺寸，而不是填满父容器并内部滚动。
     pub fn auto_height(mut self) -> Self {
         self.auto_height = true;
         self.interactivity.base_style.overflow.y = None;
@@ -340,9 +337,8 @@ impl Element for UniformGrid {
                     return hitbox;
                 }
 
-                // Keep the offset inside [content_height - viewport, 0] so
-                // the last row is reachable but nothing scrolls past either
-                // end.
+                // 把 offset 保持在 [content_height - viewport, 0] 内，这样最后一行可达，
+                // 而两端都不会滚过头。
                 let min_vertical_scroll_offset = bounds.size.height - content_size.height;
                 scroll_offset.y = scroll_offset.y.max(min_vertical_scroll_offset).min(px(0.0));
 

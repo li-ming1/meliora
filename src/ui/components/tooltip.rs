@@ -4,10 +4,10 @@ use gpui::*;
 
 use crate::ui::theme::Theme;
 
-/// Maximum width of a plain text tooltip before it wraps.
+/// 纯文本 tooltip 换行前的最大宽度。
 const TOOLTIP_MAX_WIDTH: f32 = 260.0;
 
-/// Shared styling for all tooltip containers.
+/// 所有 tooltip 容器共用的样式。
 pub fn tooltip_container(theme: &Theme) -> Div {
     div()
         .text_sm()
@@ -23,7 +23,7 @@ pub fn tooltip_container(theme: &Theme) -> Div {
         .pb(px(5.0))
 }
 
-/// A plain text tooltip view; built by [`build_tooltip`].
+/// 纯文本 tooltip 视图；由 [`build_tooltip`] 构建。
 pub struct TooltipContent {
     text: SharedString,
 }
@@ -37,8 +37,8 @@ impl Render for TooltipContent {
     }
 }
 
-/// Returns a closure suitable for passing to GPUI's `.tooltip()` method.
-/// The tooltip is automatically shown on hover and positioned at the cursor.
+/// 返回一个适合传给 GPUI `.tooltip()` 方法的闭包。
+/// tooltip 会在 hover 时自动显示并定位到光标处。
 pub fn build_tooltip(
     text: impl Into<SharedString>,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
@@ -48,8 +48,8 @@ pub fn build_tooltip(
 
 type ComplexTooltipBuildFn = Rc<dyn Fn(&mut Window, &mut App) -> Div + 'static>;
 
-/// A tooltip view whose children are produced by a caller-supplied builder
-/// each time it renders; built by [`build_complex_tooltip`].
+/// 子内容由调用方提供的构建器在每次渲染时生成的 tooltip 视图；由
+/// [`build_complex_tooltip`] 构建。
 pub struct ComplexTooltipContent {
     build_children: ComplexTooltipBuildFn,
 }
@@ -61,9 +61,8 @@ impl Render for ComplexTooltipContent {
     }
 }
 
-/// Returns a closure suitable for passing to GPUI's `.tooltip()` method.
-/// Unlike [`build_tooltip`], the children are produced by `children` each
-/// time the tooltip renders, allowing rich multi-element content.
+/// 返回一个适合传给 GPUI `.tooltip()` 方法的闭包。与 [`build_tooltip`] 不同，子内容由
+/// `children` 在每次 tooltip 渲染时生成，因此可以承载多元素富内容。
 pub fn build_complex_tooltip(
     children: impl Fn(&mut Window, &mut App) -> Div + 'static,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {

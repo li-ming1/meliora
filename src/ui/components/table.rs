@@ -49,19 +49,15 @@ where
     T: TableData<C>,
 = Rc<dyn Fn(&mut App, &T::Identifier) + 'static>;
 
-/// Prefetch band: when the visible-row center moves more than half this many
-/// rows, the table batch-prefetches full rows for center ± `ROW_PREFETCH_PAD`
-/// on the async runtime into the `TableData` row cache, so newly built rows
-/// hit the cache instead of one UI-thread `block_on` DB hit per row.
+/// 预取带宽：可视行中心移动超过这条宽的一半时，表格在异步 runtime 上批量预取
+/// center ± `ROW_PREFETCH_PAD` 的完整行进 `TableData` 行缓存，于是新建的行命中缓存，
+/// 而不是每行一次 UI 线程 `block_on` DB 访问。
 const ROW_PREFETCH_PAD: usize = 256;
 
-/// Schedules a background row prefetch when the visible center has moved half
-/// a prefetch band since the last one. `state` tracks (rows generation,
-/// center) so a stationary table costs one `Cell` read per frame; on schedule
-/// the full rows for `center ± ROW_PREFETCH_PAD` are fetched on the async
-/// runtime into the `TableData` row cache (cleared on every reload), turning
-/// the per-row `get_row` UI-thread `block_on` into a cache hit for rows past
-/// the keep-around band.
+/// 可视中心自上次预取移动了半个预取带宽时排定一次后台行预取。`state` 记录
+/// (行世代, 中心)，所以静止的表格每帧只花一次 `Cell` 读取；一旦排定，就在异步 runtime 上
+/// 把 `center ± ROW_PREFETCH_PAD` 的完整行取进 `TableData` 行缓存（每次重载都会清空），
+/// 于是超出保留带的行不再逐行 `get_row` 卡 UI 线程 `block_on`，而是命中缓存。
 fn schedule_row_prefetch<T, C>(
     state: &Rc<Cell<(u64, usize)>>,
     generation: u64,
@@ -88,7 +84,7 @@ fn schedule_row_prefetch<T, C>(
 
     let pool = cx.global::<Pool>().0.clone();
     if let Some(prefetch) = T::prefetch_rows(pool, &items[start..end]) {
-        // dropping the JoinHandle detaches the task
+        // 丢弃 JoinHandle 即让任务脱离
         #[allow(clippy::let_underscore_future)]
         let _ = crate::RUNTIME.spawn(prefetch);
     }
@@ -115,7 +111,7 @@ where
     /// 列宽拖拽结束（MouseUp / 双击复位）后由句柄回调的持久化入口：
     /// 拖拽期间宽度 notify 以指针上报率到达，不能每次都写设置
     persist_on_resize_end: Rc<dyn Fn(&mut App)>,
-    // preserves hidden column widths, even if not shown
+    // 隐藏列也要保住其宽度，即使不显示
     hidden_column_widths: Entity<FxHashMap<C, f32>>,
     views: Entity<RowMap<T, C>>,
     render_counter: Entity<usize>,
@@ -126,17 +122,15 @@ where
     grid_scroll_handle: UniformListScrollHandle,
 
     items: Option<Arc<Vec<T::Identifier>>>,
-    /// Bumped on every reload so a slow load that finishes after a newer one
-    /// cannot overwrite the newer rows.
+    /// 每次重载自增，这样在新的一批之后才完成的慢加载不会覆盖更新的行。
     rows_generation: u64,
-    /// Last scheduled row prefetch: (rows generation, visible center). See
-    /// `schedule_row_prefetch`.
+    /// 上一次排定的行预取：(行世代, 可视中心)。见 `schedule_row_prefetch`。
     prefetch_state: Rc<Cell<(u64, usize)>>,
     sort_method: Entity<Option<TableSort<C>>>,
     on_select: Option<OnSelectHandler<T, C>>,
     list_vertical_scroll_handle: UniformListScrollHandle,
     list_horizontal_scroll_handle: ScrollHandle,
-    /// Precomputed once instead of `format!`-ing the element id every frame.
+    /// 预先算好一次，而不是每帧用 `format!` 生成元素 id。
     horizontal_scroll_id: SharedString,
 }
 
@@ -156,20 +150,16 @@ where
     T: TableData<C> + 'static,
     C: Column + 'static,
 {
-    /// Reloads the row identifiers on a background task, so opening a view,
-    /// changing the sort or completing a scan never runs the (full-library)
-    /// query on the UI thread. The table keeps showing its previous rows until
-    /// the new ones land, then rebuilds the row views. A generation guard drops
-    /// a result a newer reload has already superseded, and the load time is
-    /// logged so the cost stays measurable.
+    /// 在后台任务上重载行标识符，因此打开视图、改排序或扫描完成都不会在 UI 线程上跑这个
+    /// （全库）查询。新行落地前表格继续显示旧行，落地后重建行视图。代际守卫会丢弃已被更新的
+    /// 重载取代的结果，并记录加载耗时让成本保持可测。
     fn reload_rows(&mut self, cx: &mut Context<Self>) {
         let pool = cx.global::<Pool>().0.clone();
         let sort = *self.sort_method.read(cx);
         self.rows_generation = self.rows_generation.wrapping_add(1);
         let generation = self.rows_generation;
 
-        // prefetched rows must never outlive a rescan; the generation bump
-        // inside also invalidates in-flight prefetch tasks
+        // 预取过的行绝不能比一次重扫描活得更久；内部的世代自增同时让已在途的预取任务失效
         T::clear_row_cache();
 
         cx.spawn(async move |this, cx| {
@@ -180,7 +170,7 @@ where
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
             let _ = this.update(cx, |this, cx| {
-                // A newer reload landed first: this result is stale.
+                // 更新的重载先落地了：这个结果已过期。
                 if this.rows_generation != generation {
                     return;
                 }
@@ -374,8 +364,7 @@ where
         self.grid_render_counter = cx.new(|_| 0);
     }
 
-    /// Writes the current column set/widths and view mode into the shared
-    /// table-settings model, keyed by table name.
+    /// 把当前列集/列宽与视图模式写进共享的表格设置模型，以表格名为键。
     fn persist_settings(&self, cx: &mut Context<Self>) {
         let settings = self.get_settings(cx);
         let table_settings_model = cx.global::<Models>().table_settings.clone();
@@ -384,8 +373,7 @@ where
         });
     }
 
-    /// Copy-on-write update of the visible column map: clones the shared map,
-    /// lets `apply` mutate the copy, then publishes it and notifies.
+    /// 可见列映射的写时复制更新：克隆共享映射，让 `apply` 改这份副本，然后发布并 notify。
     fn update_columns(
         &self,
         cx: &mut App,
@@ -425,7 +413,7 @@ where
     }
 
     pub fn show_column(&mut self, column: C, cx: &mut App) {
-        // use the previous col widths if available
+        // 有上次的列宽就用它
         let default_columns = T::default_columns();
         let width = self
             .hidden_column_widths
@@ -435,7 +423,7 @@ where
             .or_else(|| default_columns.get(&column).copied())
             .unwrap_or(DEFAULT_COLUMN_WIDTH);
 
-        // insert based on default column positions
+        // 按默认列位置插入
         let default_order: Vec<C> = default_columns.keys().copied().collect();
         let target_idx = default_order.iter().position(|c| *c == column).unwrap_or(0);
 
@@ -468,7 +456,7 @@ where
 
         let legacy_order: Vec<String>;
 
-        // load column order or derive from hidden_columns (legacy format)
+        // 读取列顺序，或从 hidden_columns 推导（旧格式）
         let column_order: &[String] = if !settings.column_order.is_empty() {
             &settings.column_order
         } else if !settings.hidden_columns.is_empty() {
@@ -515,7 +503,7 @@ where
             if col.is_hideable() {
                 hidden_widths.insert(col, width);
             } else {
-                // Non-hideable columns always shown; append after ordered ones.
+                // 不可隐藏的列始终显示；追加在已排序列之后。
                 visible_columns.insert(col, width);
             }
         }
@@ -625,9 +613,8 @@ where
                 div()
                     .overflow_hidden()
                     .flex()
-                    // fluid column: the saved width is a grow weight, so the
-                    // table fills the pane exactly at any width (compresses
-                    // when narrow, spreads when wide)
+                    // 流动列：保存的宽度是 grow 权重，所以表格在任意宽度下都恰好铺满面板
+                    // （窄时压缩、宽时伸展）
                     .flex_grow(base_width.max(1.0))
                     .flex_basis(px(0.0))
                     .min_w(px(MIN_COLUMN_WIDTH))
@@ -704,10 +691,10 @@ where
             }
         }
 
-        // The column menu is built only when the header menu actually opens:
-        // building it here on every render allocates and drops a full menu
-        // tree per frame (column drags repaint at pointer rate) for a menu
-        // that is usually never opened.
+        // 列菜单只在表头菜单真正打开时才构建：在这里每次渲染都构建的话，
+        // 会每帧分配并丢弃一整棵菜单树（拖列宽按指针上报率重绘），
+        // 而这棵菜单通常根本不会
+        // 被打开。
         let table = cx.entity();
         let header_with_context =
             context("table-header-context")
@@ -767,24 +754,24 @@ where
                         .flex()
                         .flex_col()
                         .flex_grow(1.0)
-                        // a scroll container must be allowed to shrink below its
-                        // content: without this the canvas's column-sum min-width
-                        // pins the viewport to the un-shrunk table width and the
-                        // resizable panel covers the overflowing part
+                        // 滚动容器必须允许缩到内容尺寸以下：没有这一条时，
+                        // canvas 的列宽之和 min-width 会把视口钉在未收缩的表宽上，
+                        // 于是溢出部分被
+                        // 可调节面板盖住。
                         .min_w(px(0.0))
                         .min_h(px(0.0));
 
-                    // GPUI otherwise maps a vertical wheel delta onto this viewport's only
-                    // scrollable axis (X). Keep Y scrolling on the inner uniform list.
+                    // 否则 GPUI 会把垂直滚轮位移映射到这个视口唯一的可滚轴（X）。
+                    // Y 轴滚动留给内层 uniform list。
                     horizontal_viewport.style().restrict_scroll_to_axis = Some(true);
 
                     let list_canvas = div()
                         .image_cache(meliora_cache((T::get_table_name(), 0_usize), 200))
                         .relative()
-                        // no min-width here: columns are flex items and compress
-                        // proportionally when the pane narrows; a min-width equal to the
-                        // column sum pinned the canvas to the un-shrunk width so the
-                        // resizable panel covered the overflow
+                        // 这里不设 min-width：列是 flex item，面板变窄时按比例压缩；
+                        // 而等于列宽之和的 min-width 会把 canvas 钉在未收缩宽度上，
+                        // 于是可调节面板
+                        // 盖住了溢出部分。
                         .w_full()
                         .h_full()
                         .flex()
@@ -811,9 +798,9 @@ where
                                                 if !is_templ_render {
                                                     let center = (range.start + range.end) / 2;
 
-                                                    // keep the row prefetch one band ahead
-                                                    // of the visible window so new rows hit
-                                                    // the row cache
+                                                    // 让行预取始终领先可视窗口一个带宽，
+                                                    // 使新建的行命中行缓存，
+                                                    // 而不是每行现查一次库。
                                                     schedule_row_prefetch::<T, C>(
                                                         &prefetch_state,
                                                         rows_generation,
@@ -874,9 +861,8 @@ where
                                         .track_scroll(&list_vertical_scroll_handle)
                                         .w_full()
                                         .h_full();
-                                        // GPUI otherwise maps a horizontal gesture onto this
-                                        // list's only scrollable axis (Y). Keep X scrolling on
-                                        // the outer viewport.
+                                        // 否则 GPUI 会把水平手势映射到这个列表唯一的可滚轴（Y）。
+                                        // X 轴滚动留给外层 viewport。
                                         list.style().restrict_scroll_to_axis = Some(true);
                                         list
                                     }),
@@ -929,8 +915,8 @@ where
                                             );
                                         }
 
-                                        // keep the row prefetch one band ahead of the
-                                        // visible window so new rows hit the row cache
+                                        // 让行预取始终领先可视窗口一个带宽，使新建的行命中行缓存
+                                        // （见 `schedule_row_prefetch`）。
                                         schedule_row_prefetch::<T, C>(
                                             &grid_prefetch_state,
                                             rows_generation,
@@ -939,12 +925,12 @@ where
                                             cx,
                                         );
 
-                                        // Fallible equivalent of `create_or_retrieve_view`: a row can
-                                        // vanish between get_rows and this frame (a rescan deleted it,
-                                        // or its query failed), and the old `.expect` here panicked the
-                                        // whole app off a stale items snapshot. The lookup result is
-                                        // bound before matching so the entity's read guard is gone
-                                        // before the `update` below re-borrows it.
+                                        // `create_or_retrieve_view` 的可失败等价物：一行可能在
+                                        // get_rows 与这一帧之间消失（重扫描删了它，或它的查询失败），
+                                        // 而这里旧的 `.expect` 会基于一份过期 items 快照把整个应用 panic
+                                        // 掉。查找结果先绑定到局部变量再匹配，好让 entity 的读取
+                                        // 在下面那次 `update` 重新借用之前就已释放。
+                                        // 守卫在下面那次 `update` 重新借用之前就已释放。
                                         let mut view = grid_views_model.read(cx).get(&idx).cloned();
                                         if view.is_none() {
                                             view = grid_item::GridItem::new(
@@ -961,11 +947,9 @@ where
                                             }
                                         }
 
-                                        // A vanished row renders as a blank cell for this frame; the
-                                        // reload already in flight replaces the stale snapshot. No
-                                        // per-item image_cache here either: GridItem draws its artwork
-                                        // through managed_image, which never touches the gpui image
-                                        // cache the wrapper would feed.
+                                        // 消失的行这一帧渲染成空白格；已在途的重载会替换掉过期快照。
+                                        // 这里同样不给每项挂 image_cache：GridItem 经 managed_image
+                                        // 绘制封面，而它从不碰外层包装会喂给的那个 gpui 图像缓存。
                                         // 与列表行同一契约：GridItem 无自持动态状态，
                                         // 缓存后一次封面/菜单 update 只重渲它自己，
                                         // 而不是整个可见网格。

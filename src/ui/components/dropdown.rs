@@ -29,8 +29,8 @@ actions!(
     ]
 );
 
-/// A themed select-like dropdown: a button that opens an anchored,
-/// keyboard-navigable option list and reports the choice via `on_change`.
+/// 主题化的类 select 下拉框：一个按钮，打开可键盘导航的锚定选项列表，并通过 `on_change`
+/// 上报选择结果。
 #[derive(IntoElement)]
 pub struct Dropdown<T: Clone + PartialEq + 'static> {
     id: ElementId,
@@ -63,9 +63,7 @@ impl<T: Clone + PartialEq + 'static> Styled for Dropdown<T> {
     }
 }
 
-/// Keyboard navigation of the highlighted option: one step forward or
-/// backward with wrap-around; `None` (nothing highlighted yet) enters at the
-/// respective end of the list.
+/// 高亮选项的键盘导航：前后一步并环绕；`None`（尚未高亮任何东西）时从列表对应的一端进入。
 fn cycled_highlight(current: Option<usize>, option_count: usize, forward: bool) -> Option<usize> {
     let last = option_count.saturating_sub(1);
     match (current, forward) {
@@ -87,9 +85,8 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Dropdown<T> {
 
         let theme = cx.global::<Theme>();
 
-        // Share the options behind an Rc: the open-popup path clones it into
-        // several closures every frame, which would otherwise deep-clone the
-        // whole SmallVec each time.
+        // 用 Rc 共享选项：打开弹窗的路径每帧会把它克隆进好几个闭包，否则每次都要深拷贝整个
+        // SmallVec。
         let options = Rc::new(self.options);
 
         let display_text = if let Some(option) = &self.selected {

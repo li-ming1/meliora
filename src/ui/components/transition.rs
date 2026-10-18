@@ -6,26 +6,24 @@ use palette::Mix;
 use crate::ui::scroll_follow::ease_out_cubic;
 use crate::ui::util::reduced_motion_enabled;
 
-/// Duration of hover/active background transitions.
+/// hover/active 背景过渡的时长。
 const HOVER_DURATION: Duration = Duration::from_millis(120);
 
-/// Deltas below this count as "already at the target": starting a transition
-/// for them would schedule frames for no visible change.
+/// 低于这个增量算"已经到达目标"：为它们启动过渡会毫无可见变化却排定帧。
 const SETTLE_EPSILON: f32 = 0.001;
 
 #[derive(Clone, Copy, Default)]
 struct HoverState {
-    /// Current interpolated value, 0 = base, 1 = hover.
+    /// 当前插值结果，0 = 基色，1 = hover。
     value: f32,
-    /// Target value we are animating toward.
+    /// 正在动画奔赴的目标值。
     target: f32,
-    /// Active transition: the start instant and the value it began from.
+    /// 进行中的过渡：起始时刻与它开始时所在的值。
     animating: Option<(Instant, f32)>,
 }
 
-/// An interactive element that fades its background between `base` and `hover`
-/// as the pointer enters and leaves. Driven by element keyed state plus a
-/// self-scheduling frame loop, so no per-view animation plumbing is required.
+/// 一个交互元素，随指针进出在 `base` 与 `hover` 之间淡入淡出其背景。由元素 keyed state 加
+/// 自我排定的帧循环驱动，因此视图侧不需要任何动画管线。
 #[derive(IntoElement)]
 pub struct HoverTransition {
     id: ElementId,
@@ -63,7 +61,7 @@ impl RenderOnce for HoverTransition {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = window.use_keyed_state(self.id.clone(), cx, |_, _| HoverState::default());
 
-        // Advance any in-flight transition; keep scheduling frames until it settles.
+        // 推进任何在飞的过渡；直到它稳定下来之前继续排帧。
         state.update(cx, |s, _| {
             if let Some((start, from)) = s.animating {
                 let progress =
@@ -84,12 +82,11 @@ impl RenderOnce for HoverTransition {
         self.div
             .bg(background)
             .on_hover(move |hovered, _window, cx| {
-                // `Entity::update` + `Context::notify` is safe outside rendering;
-                // `window.request_animation_frame()` is not (empty current_view).
-                // Decorative motion self-checks the motion preference (same
-                // discipline as drag_drop.rs / immersive.rs; gpui's
-                // request_animation_frame docs require it and this app never
-                // arms App::set_reduce_motion).
+                // `Entity::update` + `Context::notify` 在渲染之外是安全的；
+                // `window.request_animation_frame()` 不是（current_view 为空）。
+                // 装饰性动画自行检查动效偏好（与 drag_drop.rs / immersive.rs 同一纪律；
+                // gpui 的 request_animation_frame 文档有此要求，而本应用从不设置
+                // 从不设置 App::set_reduce_motion）。
                 let reduced_motion = reduced_motion_enabled(cx);
                 state.update(cx, |s, cx| {
                     let target = if *hovered { 1.0 } else { 0.0 };
@@ -97,9 +94,8 @@ impl RenderOnce for HoverTransition {
                         return;
                     }
                     if reduced_motion {
-                        // Hard cut: land exactly on the target and drop any
-                        // in-flight animation so the state converges in one
-                        // step — no frame requests, no half-way value.
+                        // 硬切：精确落到目标值并丢弃任何在飞的动画，让状态一步收敛——
+                        // 不排帧请求，也不留半程值。
                         s.value = target;
                         s.target = target;
                         s.animating = None;
@@ -113,7 +109,7 @@ impl RenderOnce for HoverTransition {
     }
 }
 
-/// Extension for turning any interactive div into a hover-fading transition.
+/// 把任意交互 div 变成 hover 淡入过渡的扩展。
 pub trait TransitionExt {
     fn into_transition(self, base: Rgba, hover: Rgba) -> HoverTransition;
 }

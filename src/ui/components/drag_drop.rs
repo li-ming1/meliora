@@ -31,23 +31,20 @@ impl DragData {
     }
 }
 
-/// Drag data for individual tracks that can be dropped onto the queue or playlists.
-/// Also supports reordering when source_list_id and source_index are provided.
+/// 单曲目的拖拽数据，可投放到队列或歌单。提供了 source_list_id 与 source_index 时还
+/// 支持列表内重排。
 #[derive(Clone, Debug)]
 pub struct TrackDragData {
     pub track_id: Option<i64>,
     pub album_id: Option<i64>,
     pub path: PathBuf,
     pub display_name: SharedString,
-    /// Source list ID, if dragged from a reorderable list (e.g. a playlist or the queue).
+    /// 来源列表 ID，仅当从可重排列表（如歌单或队列）拖出时提供。
     pub source_list_id: Option<ElementId>,
     pub source_index: Option<usize>,
-    /// Additional selected indices when dragging multiple items from a list.
-    /// Shared `Arc<[usize]>` (not `Vec`): the payload is re-stamped from a
-    /// cached base on every render frame while a drag is live, so this member
-    /// must clone by refcount instead of re-allocating the index list. The
-    /// `all_indices()` / drop paths only ever read it through slice access,
-    /// so the container type is invisible to them.
+    /// 从列表拖出多个条目时附带的其余选中索引。共享 `Arc<[usize]>`（不是 `Vec`）：拖拽进行期间
+    /// 每帧都会从缓存的基准载荷重新盖章，所以这个成员必须按引用计数克隆，而不是重新分配索引列表。
+    /// `all_indices()` / 投放路径只通过切片访问读取它，因此它们感知不到容器类型。
     pub additional_indices: Arc<[usize]>,
 }
 
@@ -92,7 +89,7 @@ impl TrackDragData {
         self
     }
 
-    /// All indices being dragged (source_index + additional_indices), sorted and deduped.
+    /// 本次拖拽涉及的全部索引（source_index + additional_indices），已排序并去重。
     pub fn all_indices(&self) -> Vec<usize> {
         let mut all = self.source_index.into_iter().collect::<Vec<_>>();
         all.extend_from_slice(&self.additional_indices);
@@ -152,13 +149,12 @@ impl Default for EdgeScrollConfig {
 #[derive(Clone, Debug, Default)]
 pub struct DragDropState {
     pub dragging_indices: Vec<usize>,
-    /// Current drop target: (index, position)
+    /// 当前投放目标：(index, position)
     pub drop_target: Option<(usize, DropPosition)>,
     pub is_dragging: bool,
     pub drag_mouse_y: Option<Pixels>,
-    /// Item count of the list being dragged over. Edge scrolling changes the
-    /// visible slot under a stationary pointer, so the animation-frame
-    /// continuation needs it to recompute the drop target.
+    /// 被拖越的列表条目数。边缘滚动会让静止指针下的可视槽位变化，所以动画帧续体需要它来
+    /// 重算投放目标。
     pub item_count: usize,
 }
 
@@ -190,13 +186,11 @@ impl DragDropState {
 pub struct DragDropListManager {
     pub state: DragDropState,
     pub config: DragDropListConfig,
-    /// Stored bounds for edge scroll calculations during animation frames
+    /// 为动画帧期间的边缘滚动计算而保存的边界
     pub container_bounds: Option<Bounds<Pixels>>,
-    /// Set while an edge-scroll frame callback is pending. `DragMoveEvent`
-    /// fires for every mouse move in the window during a drag, so scheduling
-    /// the scroll loop per event without this guard accumulates concurrent
-    /// self-perpetuating chains: scroll speed and `window.refresh()` calls
-    /// grow with the mouse report rate. See `request_edge_scroll`.
+    /// 有边缘滚动帧回调待执行时置位。拖拽期间 `DragMoveEvent` 会在窗口内每次鼠标移动都触发，
+    /// 所以逐事件排定滚动循环而不加这道守卫，会累积出多条自我延续的链：滚动速度与
+    /// `window.refresh()` 调用次数都随鼠标上报频率增长。见 `request_edge_scroll`。
     edge_scroll_armed: Cell<bool>,
 }
 
@@ -211,13 +205,13 @@ impl DragDropListManager {
     }
 }
 
-/// Visual state for a single item in a drag-drop list.
+/// 拖放列表里单个条目的视觉状态。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DragDropItemState {
     pub is_being_dragged: bool,
-    /// Whether the drop indicator should show at the top (before this item)
+    /// 投放指示线是否显示在顶部（即本条目之前）
     pub is_drop_target_before: bool,
-    /// Whether the drop indicator should show at the bottom (after this item)
+    /// 投放指示线是否显示在底部（即本条目之后）
     pub is_drop_target_after: bool,
 }
 
@@ -249,7 +243,7 @@ impl DragDropItemState {
     }
 }
 
-/// A visual indicator showing where a dragged item will be dropped.
+/// 显示拖拽条目将投放到何处的视觉指示器。
 #[derive(Clone, IntoElement)]
 pub struct DropIndicator {
     show_before: bool,
@@ -267,9 +261,8 @@ impl DropIndicator {
     }
 }
 
-/// A 2px horizontal line pinned to one horizontal edge of the item: the top
-/// edge when `bottom` is false (drop goes before this item), the bottom edge
-/// when it is true (drop goes after).
+/// 钉在条目某条水平边上的一条 2px 横线：`bottom` 为 false 时是上边（投放到本条目之前），
+/// 为 true 时是下边（投放到本条目之后）。
 fn edge_line(bottom: bool, color: Hsla) -> Div {
     let mut line = div()
         .absolute()
@@ -302,7 +295,7 @@ impl RenderOnce for DropIndicator {
     }
 }
 
-/// A drag preview element that shows a simplified version of the dragged item.
+/// 拖拽预览元素，展示被拖条目的简化版本。
 pub struct DragPreview {
     pub label: SharedString,
 }
@@ -378,8 +371,7 @@ pub fn calculate_move_target(
     }
 }
 
-/// Calculate which item index the mouse is over and the drop position. If the mouse is not over
-/// any valid item, returns None.
+/// 计算鼠标落在哪个条目索引以及投放位置。鼠标不在任何有效条目上时返回 None。
 fn calculate_drop_target(
     mouse_pos: Point<Pixels>,
     container_bounds: Bounds<Pixels>,
@@ -432,14 +424,14 @@ fn get_edge_scroll_direction(
     }
 }
 
-/// Performs edge scrolling if needed, returns true if scrolling occurred.
+/// 需要时执行边缘滚动，返回是否发生了滚动。
 fn perform_edge_scroll(
     scroll_handle: &ScrollableHandle,
     direction: EdgeScrollDirection,
     config: &EdgeScrollConfig,
 ) -> bool {
     match direction {
-        // remember GPUI scroll offsets are negative
+        // 记住 GPUI 的滚动 offset 是负值
         EdgeScrollDirection::Up => {
             let current_offset = scroll_handle.offset();
             let new_y = (current_offset.y + config.scroll_speed).min(px(0.0));
@@ -465,21 +457,16 @@ fn perform_edge_scroll(
     }
 }
 
-/// Shared tail of the drag-move handlers: edge scroll, drop-target
-/// computation and one coalesced manager update. Returns whether scrolling
-/// occurred; callers then schedule the edge-scroll loop via
-/// [`request_edge_scroll`].
+/// 拖拽移动处理器的共享尾部：边缘滚动、投放目标计算与一次合并的 manager 更新。返回是否发生了
+/// 滚动；调用方随后经 [`request_edge_scroll`] 排定边缘滚动循环。
 ///
-/// Everything here is gated on the pointer actually being inside the
-/// container: `DragMoveEvent` fires for every mouse move in the window while
-/// a drag is active, not only over this element, so otherwise edge scroll
-/// runs (and chains get scheduled) while the pointer is anywhere else on the
-/// same row, and a stale in-zone mouse_y keeps a scheduled chain scrolling
-/// after the pointer left.
+/// 这里的一切都要求指针真的落在容器内：拖拽进行中 `DragMoveEvent` 会在窗口内每次鼠标移动都
+/// 触发，而不只在这个元素上方。否则指针在同一行的别处也会跑边缘滚动（并排定链），而滞留在
+/// 区域内的一次旧 mouse_y 会让已排定的链在指针离开之后继续滚动。
 ///
 /// `dragging_indices` 传 `None` 表示沿用 state 现值：同一拖拽会话内 payload
 /// 恒定，indices 首次设置后不变，无需按鼠标报告率每次重建。
-#[allow(clippy::too_many_arguments)] // internal helper threading drag-state through one pass
+#[allow(clippy::too_many_arguments)] // 内部辅助函数：一遍穿过拖拽状态把这些参数串起来
 fn update_drag_move_state<V: 'static>(
     manager: &Entity<DragDropListManager>,
     scroll_handle: &ScrollableHandle,
@@ -529,7 +516,7 @@ fn update_drag_move_state<V: 'static>(
         if contains {
             m.state.set_mouse_y(mouse_pos.y);
         } else {
-            // stop any pending edge-scroll chain from a stale in-zone mouse_y
+            // 停掉因滞留在区域内的旧 mouse_y 而排定的边缘滚动链
             m.state.drag_mouse_y = None;
         }
         m.container_bounds = Some(container_bounds);
@@ -543,10 +530,9 @@ fn update_drag_move_state<V: 'static>(
     scrolled
 }
 
-/// Handle a drag move event for a drag-drop list.
+/// 处理拖放列表的 drag move 事件。
 ///
-/// Returns `true` if scrolling occurred. If scrolling occurred, the caller should schedule the
-/// edge-scroll loop via [`request_edge_scroll`].
+/// 返回是否发生了滚动；若发生，调用方应经 [`request_edge_scroll`] 排定边缘滚动循环。
 pub fn handle_drag_move<V: 'static>(
     manager: Entity<DragDropListManager>,
     scroll_handle: ScrollableHandle,
@@ -583,12 +569,10 @@ pub fn handle_drag_move<V: 'static>(
     )
 }
 
-/// Handle a drag move event for TrackDragData in a list.
+/// 处理列表中 TrackDragData 的 drag move 事件。
 ///
-/// Works for both internal reordering (when source_list_id matches) and external
-/// drops (when the drag originated from another list or component).
-/// Returns `true` if scrolling occurred. If scrolling occurred, the caller should
-/// schedule the edge-scroll loop via [`request_edge_scroll`].
+/// 列表内部重排（source_list_id 匹配）与外部投放（拖拽来自其它列表或组件）都适用。
+/// 返回是否发生了滚动；若发生，调用方应经 [`request_edge_scroll`] 排定边缘滚动循环。
 pub fn handle_track_drag_move<V: 'static>(
     manager: Entity<DragDropListManager>,
     scroll_handle: ScrollableHandle,
@@ -657,10 +641,10 @@ pub fn handle_drop<V: 'static, F>(
     manager.update(cx, |m, _| m.state.end_drag());
 }
 
-/// Handle a drop of TrackDragData for reordering within a list.
+/// 处理 TrackDragData 在列表内部的重排投放。
 ///
-/// Only processes the drop if it originated from the same list (source_list_id matches).
-/// Calls on_reorder with (source_index, target_index) if a valid reorder should occur.
+/// 只处理源自同一列表的投放（source_list_id 匹配）。应当发生有效重排时，以
+/// (source_index, target_index) 调用 on_reorder。
 pub fn handle_track_drop<V: 'static, F>(
     manager: Entity<DragDropListManager>,
     drag_data: &TrackDragData,
@@ -671,7 +655,7 @@ pub fn handle_track_drop<V: 'static, F>(
 {
     let config_list_id = manager.read(cx).config.list_id.clone();
 
-    // Only handle if this drag originated from our list
+    // 只处理源自本列表的拖拽
     let is_internal = drag_data
         .source_list_id
         .as_ref()
@@ -701,10 +685,10 @@ pub fn handle_track_drop<V: 'static, F>(
     manager.update(cx, |m, _| m.state.end_drag());
 }
 
-/// Handle a drop of TrackDragData with potential multi-selection indices.
+/// 处理可能带多选索引的 TrackDragData 投放。
 ///
-/// Like `handle_track_drop`, but calls `on_multi_reorder` with the full
-/// `TrackDragData` so the caller can dispatch single vs. multi-item moves.
+/// 与 `handle_track_drop` 类似，但把完整的 `TrackDragData` 交给 `on_multi_reorder`，
+/// 由调用方分派单条目还是多条目移动。
 pub fn handle_track_drop_multi<V: 'static, F>(
     manager: Entity<DragDropListManager>,
     drag_data: &TrackDragData,
@@ -726,8 +710,7 @@ pub fn handle_track_drop_multi<V: 'static, F>(
         return;
     }
 
-    // A payload without a source index can never be reordered: defaulting it
-    // to 0 (the old fallback) would move the wrong rows.
+    // 没有 source index 的载荷永远不可重排：把它默认为 0（旧的兜底）会移动错误的行。
     let Some(source_index) = drag_data.source_index else {
         manager.update(cx, |m, _| m.state.end_drag());
         return;
@@ -747,10 +730,9 @@ pub fn handle_track_drop_multi<V: 'static, F>(
     manager.update(cx, |m, _| m.state.end_drag());
 }
 
-/// Updates drag-drop state for an external drag (e.g. AlbumDragData).
+/// 更新外部拖拽（例如 AlbumDragData）的拖放状态。
 ///
-/// Computes drop target, performs edge scrolling, and returns `true` if scrolling occurred.
-/// Does not populate `dragging_indices`.
+/// 计算投放目标、执行边缘滚动，并在发生滚动时返回 `true`。不会填充 `dragging_indices`。
 pub fn handle_external_drag_move<V: 'static>(
     manager: Entity<DragDropListManager>,
     scroll_handle: ScrollableHandle,
@@ -790,14 +772,12 @@ pub fn check_drag_cancelled<V: 'static>(
     }
 }
 
-/// Schedule the self-perpetuating edge-scroll loop (see [`schedule_edge_scroll`]).
+/// 排定自我延续的边缘滚动循环（见 [`schedule_edge_scroll`]）。
 ///
-/// Callers must route through this guard instead of scheduling
-/// `schedule_edge_scroll` directly: `DragMoveEvent` fires for every mouse move
-/// in the window while a drag is active, so per-event scheduling accumulates
-/// concurrent frame chains — each scrolling once per frame and calling
-/// `window.refresh()`, multiplying scroll speed and repaint cost with the
-/// mouse report rate. At most one chain is ever pending per manager here.
+/// 调用方必须经这道守卫，而不是直接排 `schedule_edge_scroll`：拖拽进行中 `DragMoveEvent`
+/// 会在窗口内每次鼠标移动都触发，逐事件排定会累积出多条并发的帧链——每条每帧滚动一次并调用
+/// `window.refresh()`，滚动速度与重绘成本都随鼠标上报频率成倍增长。这里每个 manager 至多
+/// 有一条链待执行。
 pub fn request_edge_scroll(
     manager: Entity<DragDropListManager>,
     scroll_handle: ScrollableHandle,
@@ -811,7 +791,7 @@ pub fn request_edge_scroll(
 
     let weak_manager = manager.downgrade();
     window.on_next_frame(move |window, cx| {
-        // The list (and its manager) may have been dropped mid-drag.
+        // 列表（连同其 manager）可能在拖拽途中被丢弃。
         let Some(manager) = weak_manager.upgrade() else {
             return;
         };
@@ -820,10 +800,8 @@ pub fn request_edge_scroll(
     });
 }
 
-/// Drive edge scrolling for as long as the pointer stays in the edge zone:
-/// scroll once, re-arm via [`request_edge_scroll`], and stop when
-/// `continue_edge_scroll` says stop. Shared by the queue and playlist drag
-/// handlers.
+/// 只要指针留在边缘区内就持续驱动边缘滚动：滚动一次、经 [`request_edge_scroll`] 重新武装、
+/// 直到 `continue_edge_scroll` 说停。队列与歌单的拖拽处理器共用。
 pub fn schedule_edge_scroll(
     manager: Entity<DragDropListManager>,
     scroll_handle: ScrollableHandle,
@@ -845,12 +823,10 @@ pub fn schedule_edge_scroll(
     }
 }
 
-/// Continue edge scrolling during an animation frame.
+/// 在动画帧期间继续边缘滚动。
 ///
-/// Returns `true` if scrolling should continue (caller should schedule another frame).
-/// Scrolling moves the rows under a stationary pointer without a DragMoveEvent,
-/// so the drop target must be recomputed here or the indicator (and the drop)
-/// stays on the pre-scroll row.
+/// 返回是否应继续滚动（调用方应再排一帧）。滚动会在没有 DragMoveEvent 的情况下把行移到静止
+/// 指针之下，所以必须在这里重算投放目标，否则指示线（以及投放结果）会停在滚动前的那一行。
 fn continue_edge_scroll(
     manager: &mut DragDropListManager,
     scroll_handle: &ScrollableHandle,
