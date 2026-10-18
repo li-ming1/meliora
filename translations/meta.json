@@ -7,49 +7,49 @@
   },
   "ABOUT_COPYRIGHT": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:157",
+    "definedIn": "src/ui/about.rs:159",
     "plural": false,
     "description": null
   },
   "ABOUT_LICENSE_AFTER_LINK": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:177",
+    "definedIn": "src/ui/about.rs:179",
     "plural": false,
     "description": null
   },
   "ABOUT_LICENSE_BEFORE_LINK": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:165",
+    "definedIn": "src/ui/about.rs:167",
     "plural": false,
     "description": null
   },
   "ABOUT_LICENSE_LINK": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:173",
+    "definedIn": "src/ui/about.rs:175",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_BUG": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:146",
+    "definedIn": "src/ui/about.rs:148",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_CODE": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:153",
+    "definedIn": "src/ui/about.rs:155",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_MIDDLE": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:148",
+    "definedIn": "src/ui/about.rs:150",
     "plural": false,
     "description": null
   },
   "ABOUT_LINKS_START": {
     "context": "about.rs",
-    "definedIn": "src/ui/about.rs:134",
+    "definedIn": "src/ui/about.rs:136",
     "plural": false,
     "description": "Because the UI framework we use doesn't support inline elements, we have to use a separate string for each part of this text. Use a zero-width space (U+200B) if a part isn't needed."
   },
@@ -511,13 +511,13 @@
   },
   "EQ_CLIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:517",
+    "definedIn": "src/ui/equalizer/view.rs:519",
     "plural": false,
     "description": null
   },
   "EQ_CLIP_TOOLTIP": {
     "context": "view.rs",
-    "definedIn": "src/ui/equalizer/view.rs:508",
+    "definedIn": "src/ui/equalizer/view.rs:510",
     "plural": false,
     "description": null
   },
