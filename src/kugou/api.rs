@@ -42,11 +42,7 @@ impl KugouClient {
             .pointer("/data/qrcode")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| KugouError::Api {
-                status: -1,
-                msg: "qrcode key missing from response".into(),
-                error_code: None,
-            })
+            .ok_or_else(|| KugouError::local("qrcode key missing from response"))
     }
 
     /// 二维码登录第 2 步：轮询该 key，直到移动端 App 确认。
@@ -139,13 +135,11 @@ impl KugouClient {
         .to_string();
         let envelope_len = envelope.len();
         let pk = crypto::rsa_raw_encrypt(&envelope)
-            .ok_or_else(|| KugouError::Api {
-                status: -1,
-                msg: format!(
+            .ok_or_else(|| {
+                KugouError::local(format!(
                     "user_detail envelope is {envelope_len} bytes, exceeds the \
                      128-byte RSA block (server token format changed?)"
-                ),
-                error_code: None,
+                ))
             })?
             .to_uppercase();
         let spec = KugouRequest::new(GATEWAY, "/v3/get_my_info")
@@ -177,9 +171,7 @@ impl KugouClient {
         page: i64,
         pagesize: i64,
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.credentials();
-        let userid = session.userid.unwrap_or(0);
-        let token = session.token.clone().unwrap_or_default();
+        let (userid, token) = self.userid_token();
         let spec = KugouRequest::new(GATEWAY, "/v7/get_all_list")
             .post()
             .router("cloudlist.service.kugou.com")
@@ -207,9 +199,7 @@ impl KugouClient {
         page: i64,
         pagesize: i64,
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.credentials();
-        let userid = session.userid.unwrap_or(0);
-        let token = session.token.clone().unwrap_or_default();
+        let (userid, token) = self.userid_token();
         let spec = KugouRequest::new(GATEWAY, "/v4/get_list_all_file")
             .post()
             .router("cloudlist.service.kugou.com")
@@ -237,9 +227,7 @@ impl KugouClient {
         listid: i64,
         songs: &[(String, String, i64, i64)],
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.credentials();
-        let userid = session.userid.unwrap_or(0);
-        let token = session.token.clone().unwrap_or_default();
+        let (userid, token) = self.userid_token();
         let clienttime = unix_now_secs();
 
         let data: Vec<Value> = songs
@@ -285,9 +273,7 @@ impl KugouClient {
         listid: i64,
         fileids: &[i64],
     ) -> Result<KugouResponse, KugouError> {
-        let session = self.credentials();
-        let userid = session.userid.unwrap_or(0);
-        let token = session.token.clone().unwrap_or_default();
+        let (userid, token) = self.userid_token();
 
         let data: Vec<Value> = fileids
             .iter()
@@ -314,9 +300,7 @@ impl KugouClient {
     /// 返回载荷由 `request` 校验，调用方通常按名字从随后的 `user_playlists` 调用里解析出
     /// 新的数字 `listid`。
     pub async fn create_playlist(&self, name: &str) -> Result<KugouResponse, KugouError> {
-        let session = self.credentials();
-        let userid = session.userid.unwrap_or(0);
-        let token = session.token.clone().unwrap_or_default();
+        let (userid, token) = self.userid_token();
         let clienttime = unix_now_secs();
 
         let spec = KugouRequest::new(GATEWAY, "/cloudlist.service/v5/add_list")
@@ -429,11 +413,9 @@ impl KugouClient {
             Some(content) => {
                 use base64::Engine;
                 use base64::engine::general_purpose::STANDARD;
-                let bytes = STANDARD.decode(content).map_err(|_| KugouError::Api {
-                    status: -1,
-                    msg: "lyric content is not valid base64".into(),
-                    error_code: None,
-                })?;
+                let bytes = STANDARD
+                    .decode(content)
+                    .map_err(|_| KugouError::local("lyric content is not valid base64"))?;
                 Ok(String::from_utf8_lossy(&bytes).into_owned())
             }
             None => Ok(String::new()),

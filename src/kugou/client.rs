@@ -83,6 +83,19 @@ pub enum KugouError {
     },
 }
 
+impl KugouError {
+    /// 本地判定出来的失败（响应缺字段、信封装不进 RSA 分块、载荷不是 JSON…）：
+    /// `status` 取 `-1` 这个"没有 HTTP 状态"哨兵，`error_code: None` 让它不参与
+    /// 重登判定。此前四个站点逐字重复这两行默认值。
+    pub fn local(msg: impl Into<String>) -> Self {
+        Self::Api {
+            status: -1,
+            msg: msg.into(),
+            error_code: None,
+        }
+    }
+}
+
 /// 持久的设备 + 登录状态，与其他应用数据并存为 `kugou_session.json`。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KugouSession {
@@ -286,6 +299,17 @@ impl KugouClient {
             token: session.token.clone(),
             userid: session.userid,
         }
+    }
+
+    /// 歌单类接口只要这两样：`userid` 缺省 0、`token` 缺省空串（五个接口逐字
+    /// 重复过这段取值）。走 `credentials()` 会顺手克隆 guid/dev/dfid 三个用不到
+    /// 的字符串。
+    pub fn userid_token(&self) -> (i64, String) {
+        let session = self.session_guard();
+        (
+            session.userid.unwrap_or(0),
+            session.token.clone().unwrap_or_default(),
+        )
     }
 
     pub fn logged_in(&self) -> bool {
@@ -509,11 +533,10 @@ impl KugouClient {
                     bytes = bytes.len(),
                     "kugou response is not JSON/JSONP"
                 );
-                return Err(KugouError::Api {
-                    status: -1,
-                    msg: format!("response is not JSON/JSONP ({} bytes)", bytes.len()),
-                    error_code: None,
-                });
+                return Err(KugouError::local(format!(
+                    "response is not JSON/JSONP ({} bytes)",
+                    bytes.len()
+                )));
             }
         };
         if let Err(err) = check_payload_status(&body) {
