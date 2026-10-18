@@ -22,8 +22,10 @@ const DENORMAL_THRESHOLD: f64 = 1e-30;
 /// 搜索合成响应峰值时所用的对数间隔采样点数。
 const COMP_GRID_POINTS: usize = 512;
 
+/// 有限值夹进区间，非有限值（NaN/±inf，只会来自损坏的设置文件）回落。设置层的
+/// `EqualizerSettings::sanitize` 用的就是这一条——它原先有一份逐字相同的副本。
 #[inline]
-fn sanitize(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
+pub(crate) fn clamp_finite(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
     if value.is_finite() {
         value.clamp(min, max)
     } else {
@@ -39,7 +41,7 @@ fn frequency_ceiling(sample_rate: f64) -> f64 {
 
 /// 夹到 cookbook 公式保持稳定且准确的区间内。
 pub fn clamp_frequency(frequency: f64, sample_rate: f64) -> f64 {
-    sanitize(
+    clamp_finite(
         frequency,
         MIN_FREQUENCY,
         frequency_ceiling(sample_rate),
@@ -76,8 +78,8 @@ impl Biquad {
     /// 单个频段的 RBJ cookbook 系数。
     pub fn new(kind: EqBandKind, sample_rate: f64, frequency: f64, gain_db: f64, q: f64) -> Self {
         let frequency = clamp_frequency(frequency, sample_rate);
-        let q = sanitize(q, MIN_Q, MAX_Q, 1.0);
-        let gain_db = sanitize(gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0);
+        let q = clamp_finite(q, MIN_Q, MAX_Q, 1.0);
+        let gain_db = clamp_finite(gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0);
 
         let omega0 = omega(frequency, sample_rate);
         let (sin, cos) = omega0.sin_cos();
@@ -211,9 +213,9 @@ struct SmoothedParams {
 impl SmoothedParams {
     fn from_band(band: &EqBandSettings) -> Self {
         Self {
-            frequency: sanitize(band.frequency, MIN_FREQUENCY, MAX_FREQUENCY, MIN_FREQUENCY),
-            gain_db: sanitize(band.gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0),
-            q: sanitize(band.q, MIN_Q, MAX_Q, 1.0),
+            frequency: clamp_finite(band.frequency, MIN_FREQUENCY, MAX_FREQUENCY, MIN_FREQUENCY),
+            gain_db: clamp_finite(band.gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0),
+            q: clamp_finite(band.q, MIN_Q, MAX_Q, 1.0),
         }
     }
 

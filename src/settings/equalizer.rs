@@ -1,6 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::playback::dsp::equalizer::{MAX_FREQUENCY, MAX_GAIN_DB, MAX_Q, MIN_FREQUENCY, MIN_Q};
+use crate::playback::dsp::equalizer::{
+    MAX_FREQUENCY, MAX_GAIN_DB, MAX_Q, MIN_FREQUENCY, MIN_Q, clamp_finite,
+};
 
 /// 均衡器频段的最大数量。
 pub const MAX_EQ_BANDS: usize = 16;
@@ -71,9 +73,10 @@ pub struct EqualizerSettings {
 impl EqualizerSettings {
     pub fn sanitize(&mut self) {
         for band in &mut self.bands {
-            band.frequency = clamp_or(band.frequency, MIN_FREQUENCY, MAX_FREQUENCY, MIN_FREQUENCY);
-            band.gain_db = clamp_or(band.gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0);
-            band.q = clamp_or(band.q, MIN_Q, MAX_Q, 1.0);
+            band.frequency =
+                clamp_finite(band.frequency, MIN_FREQUENCY, MAX_FREQUENCY, MIN_FREQUENCY);
+            band.gain_db = clamp_finite(band.gain_db, -MAX_GAIN_DB, MAX_GAIN_DB, 0.0);
+            band.q = clamp_finite(band.q, MIN_Q, MAX_Q, 1.0);
         }
     }
 }
@@ -96,14 +99,6 @@ impl<'de> Deserialize<'de> for EqualizerSettings {
         // 手工编辑过的文件可能带着越界值
         settings.sanitize();
         Ok(settings)
-    }
-}
-
-fn clamp_or(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(min, max)
-    } else {
-        fallback
     }
 }
 
