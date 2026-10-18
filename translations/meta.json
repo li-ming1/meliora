@@ -1861,37 +1861,37 @@
   },
   "SCAN_PROGRESS_DISCOVERING": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:261",
+    "definedIn": "src/ui/header.rs:262",
     "plural": false,
     "description": null
   },
   "SCAN_PROGRESS_SCANNING": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:269",
+    "definedIn": "src/ui/header.rs:270",
     "plural": false,
     "description": null
   },
   "SCAN_WATCHING_TOOLTIP_BODY": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:229",
+    "definedIn": "src/ui/header.rs:230",
     "plural": false,
     "description": null
   },
   "SCAN_WATCHING_TOOLTIP_DISABLE_HINT": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:239",
+    "definedIn": "src/ui/header.rs:240",
     "plural": false,
     "description": null
   },
   "SCAN_WATCHING_TOOLTIP_HEADER": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:226",
+    "definedIn": "src/ui/header.rs:227",
     "plural": false,
     "description": null
   },
   "SEARCH_PLACEHOLDER": {
     "context": "header.rs",
-    "definedIn": "src/ui/header.rs:315",
+    "definedIn": "src/ui/header.rs:316",
     "plural": false,
     "description": null
   },
