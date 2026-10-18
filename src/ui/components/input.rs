@@ -1050,8 +1050,8 @@ mod tests {
     fn ime_selection_rebases_within_replacement_text() {
         // 用 "pin" 替换一段 3 字节的标记区间，光标落在其末尾。
         assert_eq!(rebase_selection(2..5, "pin", Some(&(3..3))), 5..5);
-        // 选区是 new_text 内的 UTF-16，多字节字符需要换算
-        // to their byte width ("你" = 3 bytes, one UTF-16 unit).
+        // 选区是 new_text 内的 UTF-16 码元偏移，多字节字符要换算成字节宽度
+        // （"你" = 3 字节，但只占一个 UTF-16 码元）。
         assert_eq!(rebase_selection(0..0, "你a", Some(&(1..1))), 3..3);
         assert_eq!(rebase_selection(4..7, "你a", Some(&(0..2))), 4..8);
         // 没有 IME 选区：光标落在插入文本之后。

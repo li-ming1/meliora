@@ -229,7 +229,7 @@ pub(crate) struct LoadMoreSpec<V> {
 /// 图片缓存的键）、`container_pb`（0 = 无）、`container_relative`、标题、条目
 /// 切片与行构建器。行构建器收到的是 `&App`（行是在 uniform_list 闭包里构建的，
 /// 那里不存在 `Context`），所以逐行的监听器必须经由传入的实体到达视图。
-#[allow(clippy::too_many_arguments)] // builder-style container API; every parameter is a real per-view delta
+#[allow(clippy::too_many_arguments)] // builder 式容器 API；每个参数都是两个视图之间的真实差异
 pub(crate) fn online_list_container<V: 'static, T>(
     cx: &mut Context<V>,
     container_id: &'static str,

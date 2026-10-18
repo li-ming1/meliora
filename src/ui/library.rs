@@ -872,7 +872,7 @@ impl Render for Library {
                         }
                     }
                     ViewSwitchMessage::Artist(_) => Some(ViewSwitchMessage::Artists),
-                    _ => None, // Already at top level
+                    _ => None, // 已在顶层
                 };
 
                 if let Some(dest) = parent {

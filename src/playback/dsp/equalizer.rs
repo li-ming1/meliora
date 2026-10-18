@@ -432,7 +432,7 @@ pub struct EqualizerProcessor {
     comp: CompGain,
     smoothing_coeff: f64,
     crossfade: Option<Crossfade>,
-    scratch: Vec<Vec<f64>>, // [channel][SUB_BLOCK_FRAMES] crossfade buffer
+    scratch: Vec<Vec<f64>>, // [通道][SUB_BLOCK_FRAMES] 的交叉淡化暂存缓冲
     /// 最后一次生效的配置：完全相同的重复推送直接短路为空操作。
     last_config: Option<EqualizerSettings>,
     /// 支撑 `compensation_target` 的分频段网格响应，与 `bands` 对齐：只重算响应输入
@@ -1623,7 +1623,7 @@ mod tests {
         let bands = [
             band(EqBandKind::Bell, 100.0, 6.0, 1.2),
             band(EqBandKind::HighPass, 500.0, 0.0, 4.0),
-            band(EqBandKind::Bell, 25_000.0, 8.0, 2.0), // clamps to 0.45 × FS
+            band(EqBandKind::Bell, 25_000.0, 8.0, 2.0), // 会被夹到 0.45 × 采样率
             disabled,
             band(EqBandKind::Notch, 9_000.0, -6.0, 8.0),
         ];

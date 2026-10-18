@@ -151,10 +151,10 @@ fn active_log_path_in(log_dir: &Path) -> PathBuf {
 }
 
 fn filter_value() -> String {
-    ["MELIORA_LOG", "RUST_LOG"] // prefer Meliora-specific variable
-        .iter() // find the first one that's set at all
-        .find_map(|key| std::env::var(key).ok()) // even if it's empty
-        .filter(|value| !value.is_empty()) // NOW we can check is_empty and use default
+    ["MELIORA_LOG", "RUST_LOG"] // 优先用应用自己的变量
+        .iter() // 取第一个"存在"的
+        .find_map(|key| std::env::var(key).ok()) // 哪怕它是空串
+        .filter(|value| !value.is_empty()) // 到这一步才判空，空值回落到默认过滤器
         .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_owned())
 }
 

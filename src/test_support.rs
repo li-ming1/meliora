@@ -866,8 +866,8 @@ mod benches {
         for (label, depth) in cases {
             let cycle = lru.depth_cycle(depth);
             let mut samples = Vec::new();
-            let mut op = 0usize; // cumulative across batches: the cycle must
-            // 与 LRU 的轮转状态保持一致
+            // 跨批次累计的下标：它必须与 LRU 的轮转状态保持一致
+            let mut op = 0usize;
             for batch in 0..WARMUP_BATCHES + BATCHES {
                 let start = Instant::now();
                 for _ in 0..OPS_PER_BATCH {

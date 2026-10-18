@@ -629,7 +629,7 @@ mod tests {
     fn undo_move_items_many_segments_restores_every_item_in_order() {
         let original: Vec<_> = (1..=8).map(item).collect();
         let mut manager = manager_with_queue(original.clone());
-        manager.set_position(5); // current = index 5 (item 6)
+        manager.set_position(5); // 当前 = 下标 5（第 6 项）
 
         let res = manager.move_items(vec![0, 3, 7], 2);
 

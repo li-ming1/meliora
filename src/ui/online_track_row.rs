@@ -68,7 +68,7 @@ impl<T: OnlineTrackDisplay> OnlineTrackDisplay for std::sync::Arc<T> {
 
 /// 在线歌单与发现页（榜单 / 每日推荐）共用的在线曲目行。回调携带逐视图的
 /// 语义；视觉骨架完全一致。
-#[allow(clippy::too_many_arguments)] // builder-style row API, mirrors the gpui element builders it feeds
+#[allow(clippy::too_many_arguments)] // builder 式行 API；与它喂给的 gpui 元素构建器同形
 pub(crate) fn track_row<T: OnlineTrackDisplay, F1, F2, F3>(
     theme: &Theme,
     track: &T,

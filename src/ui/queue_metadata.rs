@@ -222,7 +222,7 @@ fn spawn_library_load(
     });
     cx.spawn(async move |cx| {
         let Ok((track, album)) = task.await else {
-            return; // the load task panicked: the placeholder stays
+            return; // 加载任务 panic：占位项留在原位
         };
         entity.update(cx, |m, cx| {
             let (Some(track), Some(album)) = (track, album) else {
