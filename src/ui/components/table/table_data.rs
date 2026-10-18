@@ -168,6 +168,11 @@ pub struct ColumnReorderDrag {
 
 // 表格布局常量
 pub const TABLE_MAX_WIDTH: f32 = 1000.0;
+/// 版式规则：非全宽模式下把表格宽度钉在 `TABLE_MAX_WIDTH`。此前六个库视图各自
+/// 内联同一条闭包（还分裂成 `|this|` 与 `|this: Div|` 两种拼写），规则从此只此一处。
+pub fn capped_table_width<D: gpui::Styled>(this: D) -> D {
+    this.max_w(gpui::px(TABLE_MAX_WIDTH))
+}
 pub const TABLE_IMAGE_COLUMN_WIDTH: f32 = 47.0;
 pub const TABLE_HEADER_HEIGHT: f32 = 36.0;
 

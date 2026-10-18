@@ -23,7 +23,7 @@ use crate::{
             playback_controls::playback_controls,
             popover::{PopoverPosition, popover},
             scrollbar::{ScrollableHandle, floating_scrollbar},
-            table::table_data::TABLE_MAX_WIDTH,
+            table::table_data::capped_table_width,
             tooltip::build_tooltip,
         },
         library::{
@@ -773,7 +773,7 @@ impl Render for ReleaseView {
             .max_h_full()
             .relative()
             .overflow_hidden()
-            .when(!full_width, |this| this.max_w(px(TABLE_MAX_WIDTH)))
+            .when(!full_width, capped_table_width)
             .child(
                 div()
                     .id("release-view")

@@ -3,7 +3,7 @@ use gpui::{prelude::FluentBuilder, *};
 use crate::ui::{
     components::table::{
         OnSelectHandler, Table,
-        table_data::{Column, TABLE_MAX_WIDTH, TableData},
+        table_data::{Column, TableData, capped_table_width},
     },
     library::table_view_header::TableViewHeader,
     models::Models,
@@ -89,7 +89,7 @@ where
             .flex_col()
             .w_full()
             .h_full()
-            .when(!full_width, |this: Div| this.max_w(px(TABLE_MAX_WIDTH)))
+            .when(!full_width, capped_table_width)
             .child(self.header.clone())
             .child(self.table.clone())
     }

@@ -6,7 +6,7 @@ use crate::{
     library::types::{Track, table::TrackColumn},
     playback::{interface::PlaybackInterface, queue::QueueItemData},
     ui::{
-        components::table::{Table, table_data::TABLE_MAX_WIDTH},
+        components::table::{Table, table_data::capped_table_width},
         library::{
             context_menus::{TrackContextMenuContext, play_from_track},
             table_shell::TableShell,
@@ -110,7 +110,7 @@ impl Render for TrackView {
             .flex_col()
             .w_full()
             .h_full()
-            .when(!full_width, |this: Div| this.max_w(px(TABLE_MAX_WIDTH)))
+            .when(!full_width, capped_table_width)
             .child(
                 div()
                     .pb(px(0.0))

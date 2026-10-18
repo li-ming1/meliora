@@ -39,7 +39,7 @@ use crate::{
             icons::{PLAYLIST, SORT_ASCENDING, SORT_DESCENDING, STAR, icon},
             playback_controls::playback_controls,
             scrollbar::{ScrollableHandle, floating_scrollbar},
-            table::table_data::TABLE_MAX_WIDTH,
+            table::table_data::capped_table_width,
             tooltip::build_tooltip,
         },
         library::collection_summary::format_collection_summary,
@@ -747,7 +747,7 @@ impl Render for PlaylistView {
             .flex_col()
             .flex_shrink(1.0)
             .overflow_x_hidden()
-            .when(!full_width, |this| this.max_w(px(TABLE_MAX_WIDTH)))
+            .when(!full_width, capped_table_width)
             .h_full()
             .child(
                 div()

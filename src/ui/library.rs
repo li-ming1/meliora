@@ -18,7 +18,7 @@ use crate::{
         command_palette::{CommandCategory, CommandManager, CommandSpec},
         components::{
             resizable::{ResizeEdge, resizable},
-            table::table_data::TABLE_MAX_WIDTH,
+            table::table_data::capped_table_width,
         },
         library::{
             playlist_view::{Import, PlaylistView},
@@ -756,7 +756,7 @@ impl Render for Library {
         let single_column = |view: &LibraryView| {
             div()
                 .w_full()
-                .when(!full_width, |this: Div| this.max_w(px(TABLE_MAX_WIDTH)))
+                .when(!full_width, capped_table_width)
                 .h_full()
                 .flex()
                 .flex_col()

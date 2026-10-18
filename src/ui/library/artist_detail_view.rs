@@ -22,7 +22,7 @@ use crate::{
             scrollbar::floating_scrollbar,
             table::{
                 grid_item::GridItem,
-                table_data::{GridContext, TABLE_MAX_WIDTH},
+                table_data::{GridContext, capped_table_width},
             },
             tooltip::build_tooltip,
             uniform_grid::uniform_grid,
@@ -712,7 +712,7 @@ impl Render for ArtistDetailView {
             .max_h_full()
             .relative()
             .overflow_hidden()
-            .when(!full_width, |this| this.max_w(px(TABLE_MAX_WIDTH)))
+            .when(!full_width, capped_table_width)
             .child(
                 div()
                     .flex()
