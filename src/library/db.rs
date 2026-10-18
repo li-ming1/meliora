@@ -198,9 +198,7 @@ pub async fn list_albums(
         }
     };
 
-    sqlx::query_as::<_, (u32, String)>(query)
-        .fetch_all(pool)
-        .await
+    fetch_rows(pool, query).await
 }
 
 pub async fn list_tracks(
@@ -240,9 +238,7 @@ pub async fn list_tracks(
         }
     };
 
-    sqlx::query_as::<_, (i64, Option<i64>, String)>(query)
-        .fetch_all(pool)
-        .await
+    fetch_rows(pool, query).await
 }
 
 /// 单参数查询的共用收尾：结果全进程共享、从不原地改写，所以直接包成 `Arc`
@@ -279,6 +275,28 @@ where
             .fetch_one(pool)
             .await?,
     ))
+}
+
+/// 无绑定参数的整表查询收尾（列表 / 搜索 / 可用性一类）：结果按所有权交回调用点，
+/// 不需要 `Arc` 包装。`T` 由调用点的返回类型推出——此前七个站点都在签名与
+/// `query_as::<_, T>` 里把同一个元组类型写两遍。
+async fn fetch_rows<T>(pool: &SqlitePool, query: &'static str) -> sqlx::Result<Vec<T>>
+where
+    T: for<'r> FromRow<'r, SqliteRow> + Send + Unpin,
+{
+    sqlx::query_as::<_, T>(query).fetch_all(pool).await
+}
+
+/// 同上，带一个绑定 id 的版本（`fetch_shared_vec` 的不包 `Arc` 姊妹）。
+async fn fetch_bound_rows<T>(
+    pool: &SqlitePool,
+    query: &'static str,
+    id: i64,
+) -> sqlx::Result<Vec<T>>
+where
+    T: for<'r> FromRow<'r, SqliteRow> + Send + Unpin,
+{
+    sqlx::query_as::<_, T>(query).bind(id).fetch_all(pool).await
 }
 
 pub async fn list_tracks_in_album(
@@ -336,10 +354,7 @@ pub async fn list_albums_by_artist(
 ) -> sqlx::Result<Vec<(u32, String)>> {
     let query = include_str!("../../queries/library/find_albums_by_artist.sql");
 
-    sqlx::query_as::<_, (u32, String)>(query)
-        .bind(artist_id)
-        .fetch_all(pool)
-        .await
+    fetch_bound_rows(pool, query, artist_id).await
 }
 
 pub async fn get_artist_with_counts(
@@ -443,9 +458,7 @@ pub async fn list_albums_search(
 ) -> sqlx::Result<Vec<(i64, String, Option<String>, String)>> {
     let query = include_str!("../../queries/library/find_albums_search.sql");
 
-    sqlx::query_as::<_, (i64, String, Option<String>, String)>(query)
-        .fetch_all(pool)
-        .await
+    fetch_rows(pool, query).await
 }
 
 /// 列出全部曲目用于搜索。返回 (id, title, artist_names, album_id)。
@@ -454,18 +467,14 @@ pub async fn list_tracks_search(
 ) -> sqlx::Result<Vec<(i64, String, String, Option<i64>)>> {
     let query = include_str!("../../queries/library/find_tracks_search.sql");
 
-    sqlx::query_as::<_, (i64, String, String, Option<i64>)>(query)
-        .fetch_all(pool)
-        .await
+    fetch_rows(pool, query).await
 }
 
 /// 列出全部歌手用于搜索。返回 (id, name)。
 pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artists_search.sql");
 
-    sqlx::query_as::<_, (i64, String)>(query)
-        .fetch_all(pool)
-        .await
+    fetch_rows(pool, query).await
 }
 
 /// 全部 (album id, track location) 配对：用一条查询就算出专辑可用性（还有曲目留在
@@ -473,9 +482,7 @@ pub async fn list_artists_search(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, St
 pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_album_availability.sql");
 
-    sqlx::query_as::<_, (i64, String)>(query)
-        .fetch_all(pool)
-        .await
+    fetch_rows(pool, query).await
 }
 
 /// 全部 `(track_id, artist_id)` 署名配对：用一条查询就算出歌手可用性（署名的曲目还有
@@ -490,7 +497,7 @@ pub async fn list_album_availability(pool: &SqlitePool) -> sqlx::Result<Vec<(i64
 pub async fn list_track_artist_credits(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, i64)>> {
     let query = include_str!("../../queries/library/find_track_artist_credits.sql");
 
-    sqlx::query_as::<_, (i64, i64)>(query).fetch_all(pool).await
+    fetch_rows(pool, query).await
 }
 
 pub async fn add_playlist_item(
@@ -940,10 +947,7 @@ pub async fn artist_ids_for_album(
 ) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artist_ids_for_album.sql");
 
-    sqlx::query_as::<_, (i64, String)>(query)
-        .bind(album_id)
-        .fetch_all(pool)
-        .await
+    fetch_bound_rows(pool, query, album_id).await
 }
 
 /// 列出与某曲目相连的全部 (id, name) 歌手配对（经由其专辑或独立链接）。
@@ -953,10 +957,7 @@ pub async fn artist_ids_for_track(
 ) -> sqlx::Result<Vec<(i64, String)>> {
     let query = include_str!("../../queries/library/find_artist_ids_for_track.sql");
 
-    sqlx::query_as::<_, (i64, String)>(query)
-        .bind(track_id)
-        .fetch_all(pool)
-        .await
+    fetch_bound_rows(pool, query, track_id).await
 }
 
 pub async fn list_all_tracks(pool: &SqlitePool) -> sqlx::Result<Vec<(String, i64, i64)>> {
