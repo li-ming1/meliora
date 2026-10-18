@@ -264,356 +264,161 @@ impl<'de> Deserialize<'de> for Theme {
             where
                 A: MapAccess<'de>,
             {
+                // 主题字段清一色是「JSON 键 == 结构体字段名 == Rgba」这一形态。逐条
+                // 手写 match 分支就是维护 129 份复制粘贴，而漏掉一条不会报错：未知键
+                // 被最后一支当噪音吃掉，该颜色静默停在默认值。宏把键名与字段名成对列
+                // 在唯一一处，新增主题色只加一行。
+                // theme/map/key 由调用点传入：宏体内的自由标识符按定义点解析，
+                // `key` 声明在 while 的子作用域里，不传进来就找不到。
+                macro_rules! color_arms {
+                    ($theme:ident, $map:ident, $key:expr; $($name:literal => $field:ident),* $(,)?) => {
+                        match $key {
+                            $($name => $theme.$field = $map.next_value::<ColorHex>()?.0,)*
+                            "radius_sm" => $theme.radius_sm = $map.next_value::<f32>()?,
+                            "radius_md" => $theme.radius_md = $map.next_value::<f32>()?,
+                            "radius_lg" => $theme.radius_lg = $map.next_value::<f32>()?,
+                            _ => {
+                                $map.next_value::<IgnoredAny>()?;
+                            }
+                        }
+                    };
+                }
+
                 let mut theme = Theme::default();
                 while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "background_primary" => {
-                            theme.background_primary = map.next_value::<ColorHex>()?.0
-                        }
-                        "background_secondary" => {
-                            theme.background_secondary = map.next_value::<ColorHex>()?.0
-                        }
-                        "background_tertiary" => {
-                            theme.background_tertiary = map.next_value::<ColorHex>()?.0
-                        }
-                        "border_color" => theme.border_color = map.next_value::<ColorHex>()?.0,
-                        "album_art_background" => {
-                            theme.album_art_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "text" => theme.text = map.next_value::<ColorHex>()?.0,
-                        "text_secondary" => theme.text_secondary = map.next_value::<ColorHex>()?.0,
-                        "text_disabled" => theme.text_disabled = map.next_value::<ColorHex>()?.0,
-                        "text_link" => theme.text_link = map.next_value::<ColorHex>()?.0,
-                        "nav_button_hover" => {
-                            theme.nav_button_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "nav_button_hover_border" => {
-                            theme.nav_button_hover_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "nav_button_active" => {
-                            theme.nav_button_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "nav_button_active_border" => {
-                            theme.nav_button_active_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "nav_button_pressed" => {
-                            theme.nav_button_pressed = map.next_value::<ColorHex>()?.0
-                        }
-                        "nav_button_pressed_border" => {
-                            theme.nav_button_pressed_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "playback_button" => {
-                            theme.playback_button = map.next_value::<ColorHex>()?.0
-                        }
-                        "playback_button_hover" => {
-                            theme.playback_button_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "playback_button_active" => {
-                            theme.playback_button_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "playback_button_border" => {
-                            theme.playback_button_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "playback_button_toggled" => {
-                            theme.playback_button_toggled = map.next_value::<ColorHex>()?.0
-                        }
-                        "playback_button_repeat_one" => {
-                            theme.playback_button_repeat_one = map.next_value::<ColorHex>()?.0
-                        }
-                        "stop_after_current_indicator" => {
-                            theme.stop_after_current_indicator = map.next_value::<ColorHex>()?.0
-                        }
-                        "window_button" => theme.window_button = map.next_value::<ColorHex>()?.0,
-                        "window_button_hover" => {
-                            theme.window_button_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "window_button_active" => {
-                            theme.window_button_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "close_button" => theme.close_button = map.next_value::<ColorHex>()?.0,
-                        "close_button_hover" => {
-                            theme.close_button_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "close_button_active" => {
-                            theme.close_button_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "queue_item" => theme.queue_item = map.next_value::<ColorHex>()?.0,
-                        "queue_item_hover" => {
-                            theme.queue_item_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "queue_item_active" => {
-                            theme.queue_item_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "queue_item_current" => {
-                            theme.queue_item_current = map.next_value::<ColorHex>()?.0
-                        }
-                        "queue_item_selected" => {
-                            theme.queue_item_selected = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_primary" => theme.button_primary = map.next_value::<ColorHex>()?.0,
-                        "button_primary_border" => {
-                            theme.button_primary_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_primary_hover" => {
-                            theme.button_primary_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_primary_border_hover" => {
-                            theme.button_primary_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_primary_active" => {
-                            theme.button_primary_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_primary_border_active" => {
-                            theme.button_primary_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_primary_text" => {
-                            theme.button_primary_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary" => {
-                            theme.button_secondary = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary_border" => {
-                            theme.button_secondary_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary_hover" => {
-                            theme.button_secondary_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary_border_hover" => {
-                            theme.button_secondary_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary_active" => {
-                            theme.button_secondary_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary_border_active" => {
-                            theme.button_secondary_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_secondary_text" => {
-                            theme.button_secondary_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_warning" => theme.button_warning = map.next_value::<ColorHex>()?.0,
-                        "button_warning_border" => {
-                            theme.button_warning_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_warning_hover" => {
-                            theme.button_warning_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_warning_border_hover" => {
-                            theme.button_warning_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_warning_active" => {
-                            theme.button_warning_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_warning_border_active" => {
-                            theme.button_warning_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_warning_text" => {
-                            theme.button_warning_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_danger" => theme.button_danger = map.next_value::<ColorHex>()?.0,
-                        "button_danger_border" => {
-                            theme.button_danger_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_danger_hover" => {
-                            theme.button_danger_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_danger_border_hover" => {
-                            theme.button_danger_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_danger_active" => {
-                            theme.button_danger_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_danger_border_active" => {
-                            theme.button_danger_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "button_danger_text" => {
-                            theme.button_danger_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "slider_foreground" => {
-                            theme.slider_foreground = map.next_value::<ColorHex>()?.0
-                        }
-                        "slider_background" => {
-                            theme.slider_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "eq_grid_line" => theme.eq_grid_line = map.next_value::<ColorHex>()?.0,
-                        "eq_grid_line_zero" => {
-                            theme.eq_grid_line_zero = map.next_value::<ColorHex>()?.0
-                        }
-                        "eq_curve" => theme.eq_curve = map.next_value::<ColorHex>()?.0,
-                        "eq_curve_fill" => theme.eq_curve_fill = map.next_value::<ColorHex>()?.0,
-                        "eq_band_curve" => theme.eq_band_curve = map.next_value::<ColorHex>()?.0,
-                        "eq_dot" => theme.eq_dot = map.next_value::<ColorHex>()?.0,
-                        "eq_dot_selected" => {
-                            theme.eq_dot_selected = map.next_value::<ColorHex>()?.0
-                        }
-                        "eq_dot_disabled" => {
-                            theme.eq_dot_disabled = map.next_value::<ColorHex>()?.0
-                        }
-                        "eq_spectrum_pre" => {
-                            theme.eq_spectrum_pre = map.next_value::<ColorHex>()?.0
-                        }
-                        "eq_spectrum_post" => {
-                            theme.eq_spectrum_post = map.next_value::<ColorHex>()?.0
-                        }
-                        "eq_spectrum_edge" => {
-                            theme.eq_spectrum_edge = map.next_value::<ColorHex>()?.0
-                        }
-                        "elevated_background" => {
-                            theme.elevated_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "elevated_border_color" => {
-                            theme.elevated_border_color = map.next_value::<ColorHex>()?.0
-                        }
-                        "menu_item" => theme.menu_item = map.next_value::<ColorHex>()?.0,
-                        "menu_item_hover" => {
-                            theme.menu_item_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "menu_item_border_hover" => {
-                            theme.menu_item_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "menu_item_active" => {
-                            theme.menu_item_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "menu_item_border_active" => {
-                            theme.menu_item_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "modal_overlay_bg" => {
-                            theme.modal_overlay_bg = map.next_value::<ColorHex>()?.0
-                        }
-                        "text_input_selection" => {
-                            theme.text_input_selection = map.next_value::<ColorHex>()?.0
-                        }
-                        "caret_color" => theme.caret_color = map.next_value::<ColorHex>()?.0,
-                        "text_highlight_background" => {
-                            theme.text_highlight_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "palette_item_hover" => {
-                            theme.palette_item_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "palette_item_border_hover" => {
-                            theme.palette_item_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "palette_item_active" => {
-                            theme.palette_item_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "palette_item_border_active" => {
-                            theme.palette_item_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "scrollbar_background" => {
-                            theme.scrollbar_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "scrollbar_foreground" => {
-                            theme.scrollbar_foreground = map.next_value::<ColorHex>()?.0
-                        }
-                        "textbox_background" => {
-                            theme.textbox_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "textbox_border" => theme.textbox_border = map.next_value::<ColorHex>()?.0,
-                        "checkbox_background" => {
-                            theme.checkbox_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_background_hover" => {
-                            theme.checkbox_background_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_background_active" => {
-                            theme.checkbox_background_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_border" => {
-                            theme.checkbox_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_border_hover" => {
-                            theme.checkbox_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_border_active" => {
-                            theme.checkbox_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked" => {
-                            theme.checkbox_checked = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked_bg" => {
-                            theme.checkbox_checked_bg = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked_bg_hover" => {
-                            theme.checkbox_checked_bg_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked_bg_active" => {
-                            theme.checkbox_checked_bg_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked_border" => {
-                            theme.checkbox_checked_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked_border_hover" => {
-                            theme.checkbox_checked_border_hover = map.next_value::<ColorHex>()?.0
-                        }
-                        "checkbox_checked_border_active" => {
-                            theme.checkbox_checked_border_active = map.next_value::<ColorHex>()?.0
-                        }
-                        "callout_background" => {
-                            theme.callout_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "callout_border" => theme.callout_border = map.next_value::<ColorHex>()?.0,
-                        "callout_text" => theme.callout_text = map.next_value::<ColorHex>()?.0,
-                        "liked_song" => theme.liked_song = map.next_value::<ColorHex>()?.0,
-                        "status_success" => theme.status_success = map.next_value::<ColorHex>()?.0,
-                        "status_error" => theme.status_error = map.next_value::<ColorHex>()?.0,
-                        "status_disabled" => {
-                            theme.status_disabled = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_info_background" => {
-                            theme.toast_info_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_info_border" => {
-                            theme.toast_info_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_info_text" => {
-                            theme.toast_info_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_info_track" => {
-                            theme.toast_info_track = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_warning_background" => {
-                            theme.toast_warning_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_warning_border" => {
-                            theme.toast_warning_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_warning_text" => {
-                            theme.toast_warning_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_warning_track" => {
-                            theme.toast_warning_track = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_success_background" => {
-                            theme.toast_success_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_success_border" => {
-                            theme.toast_success_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_success_text" => {
-                            theme.toast_success_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_success_track" => {
-                            theme.toast_success_track = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_error_background" => {
-                            theme.toast_error_background = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_error_border" => {
-                            theme.toast_error_border = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_error_text" => {
-                            theme.toast_error_text = map.next_value::<ColorHex>()?.0
-                        }
-                        "toast_error_track" => {
-                            theme.toast_error_track = map.next_value::<ColorHex>()?.0
-                        }
-                        "radius_sm" => theme.radius_sm = map.next_value::<f32>()?,
-                        "radius_md" => theme.radius_md = map.next_value::<f32>()?,
-                        "radius_lg" => theme.radius_lg = map.next_value::<f32>()?,
-                        _ => {
-                            map.next_value::<IgnoredAny>()?;
-                        }
-                    }
+                    color_arms!(theme, map, key.as_str();
+                        "background_primary" => background_primary,
+                        "background_secondary" => background_secondary,
+                        "background_tertiary" => background_tertiary,
+                        "border_color" => border_color,
+                        "album_art_background" => album_art_background,
+                        "text" => text,
+                        "text_secondary" => text_secondary,
+                        "text_disabled" => text_disabled,
+                        "text_link" => text_link,
+                        "nav_button_hover" => nav_button_hover,
+                        "nav_button_hover_border" => nav_button_hover_border,
+                        "nav_button_active" => nav_button_active,
+                        "nav_button_active_border" => nav_button_active_border,
+                        "nav_button_pressed" => nav_button_pressed,
+                        "nav_button_pressed_border" => nav_button_pressed_border,
+                        "playback_button" => playback_button,
+                        "playback_button_hover" => playback_button_hover,
+                        "playback_button_active" => playback_button_active,
+                        "playback_button_border" => playback_button_border,
+                        "playback_button_toggled" => playback_button_toggled,
+                        "playback_button_repeat_one" => playback_button_repeat_one,
+                        "stop_after_current_indicator" => stop_after_current_indicator,
+                        "window_button" => window_button,
+                        "window_button_hover" => window_button_hover,
+                        "window_button_active" => window_button_active,
+                        "close_button" => close_button,
+                        "close_button_hover" => close_button_hover,
+                        "close_button_active" => close_button_active,
+                        "queue_item" => queue_item,
+                        "queue_item_hover" => queue_item_hover,
+                        "queue_item_active" => queue_item_active,
+                        "queue_item_current" => queue_item_current,
+                        "queue_item_selected" => queue_item_selected,
+                        "button_primary" => button_primary,
+                        "button_primary_border" => button_primary_border,
+                        "button_primary_hover" => button_primary_hover,
+                        "button_primary_border_hover" => button_primary_border_hover,
+                        "button_primary_active" => button_primary_active,
+                        "button_primary_border_active" => button_primary_border_active,
+                        "button_primary_text" => button_primary_text,
+                        "button_secondary" => button_secondary,
+                        "button_secondary_border" => button_secondary_border,
+                        "button_secondary_hover" => button_secondary_hover,
+                        "button_secondary_border_hover" => button_secondary_border_hover,
+                        "button_secondary_active" => button_secondary_active,
+                        "button_secondary_border_active" => button_secondary_border_active,
+                        "button_secondary_text" => button_secondary_text,
+                        "button_warning" => button_warning,
+                        "button_warning_border" => button_warning_border,
+                        "button_warning_hover" => button_warning_hover,
+                        "button_warning_border_hover" => button_warning_border_hover,
+                        "button_warning_active" => button_warning_active,
+                        "button_warning_border_active" => button_warning_border_active,
+                        "button_warning_text" => button_warning_text,
+                        "button_danger" => button_danger,
+                        "button_danger_border" => button_danger_border,
+                        "button_danger_hover" => button_danger_hover,
+                        "button_danger_border_hover" => button_danger_border_hover,
+                        "button_danger_active" => button_danger_active,
+                        "button_danger_border_active" => button_danger_border_active,
+                        "button_danger_text" => button_danger_text,
+                        "slider_foreground" => slider_foreground,
+                        "slider_background" => slider_background,
+                        "eq_grid_line" => eq_grid_line,
+                        "eq_grid_line_zero" => eq_grid_line_zero,
+                        "eq_curve" => eq_curve,
+                        "eq_curve_fill" => eq_curve_fill,
+                        "eq_band_curve" => eq_band_curve,
+                        "eq_dot" => eq_dot,
+                        "eq_dot_selected" => eq_dot_selected,
+                        "eq_dot_disabled" => eq_dot_disabled,
+                        "eq_spectrum_pre" => eq_spectrum_pre,
+                        "eq_spectrum_post" => eq_spectrum_post,
+                        "eq_spectrum_edge" => eq_spectrum_edge,
+                        "elevated_background" => elevated_background,
+                        "elevated_border_color" => elevated_border_color,
+                        "menu_item" => menu_item,
+                        "menu_item_hover" => menu_item_hover,
+                        "menu_item_border_hover" => menu_item_border_hover,
+                        "menu_item_active" => menu_item_active,
+                        "menu_item_border_active" => menu_item_border_active,
+                        "modal_overlay_bg" => modal_overlay_bg,
+                        "text_input_selection" => text_input_selection,
+                        "caret_color" => caret_color,
+                        "text_highlight_background" => text_highlight_background,
+                        "palette_item_hover" => palette_item_hover,
+                        "palette_item_border_hover" => palette_item_border_hover,
+                        "palette_item_active" => palette_item_active,
+                        "palette_item_border_active" => palette_item_border_active,
+                        "scrollbar_background" => scrollbar_background,
+                        "scrollbar_foreground" => scrollbar_foreground,
+                        "textbox_background" => textbox_background,
+                        "textbox_border" => textbox_border,
+                        "checkbox_background" => checkbox_background,
+                        "checkbox_background_hover" => checkbox_background_hover,
+                        "checkbox_background_active" => checkbox_background_active,
+                        "checkbox_border" => checkbox_border,
+                        "checkbox_border_hover" => checkbox_border_hover,
+                        "checkbox_border_active" => checkbox_border_active,
+                        "checkbox_checked" => checkbox_checked,
+                        "checkbox_checked_bg" => checkbox_checked_bg,
+                        "checkbox_checked_bg_hover" => checkbox_checked_bg_hover,
+                        "checkbox_checked_bg_active" => checkbox_checked_bg_active,
+                        "checkbox_checked_border" => checkbox_checked_border,
+                        "checkbox_checked_border_hover" => checkbox_checked_border_hover,
+                        "checkbox_checked_border_active" => checkbox_checked_border_active,
+                        "callout_background" => callout_background,
+                        "callout_border" => callout_border,
+                        "callout_text" => callout_text,
+                        "liked_song" => liked_song,
+                        "status_success" => status_success,
+                        "status_error" => status_error,
+                        "status_disabled" => status_disabled,
+                        "toast_info_background" => toast_info_background,
+                        "toast_info_border" => toast_info_border,
+                        "toast_info_text" => toast_info_text,
+                        "toast_info_track" => toast_info_track,
+                        "toast_warning_background" => toast_warning_background,
+                        "toast_warning_border" => toast_warning_border,
+                        "toast_warning_text" => toast_warning_text,
+                        "toast_warning_track" => toast_warning_track,
+                        "toast_success_background" => toast_success_background,
+                        "toast_success_border" => toast_success_border,
+                        "toast_success_text" => toast_success_text,
+                        "toast_success_track" => toast_success_track,
+                        "toast_error_background" => toast_error_background,
+                        "toast_error_border" => toast_error_border,
+                        "toast_error_text" => toast_error_text,
+                        "toast_error_track" => toast_error_track,
+                    );
                 }
+
                 Ok(theme)
             }
         }
@@ -1268,5 +1073,73 @@ pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
         cx.set_global(tw);
     } else if let Err(e) = watcher {
         warn!("failed to watch theme directory: {:?}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 主题反序列化的完整性契约：`Theme` 的每个字段都要在键清单里出现恰好一次，
+    /// 且形态固定为「键名 == 字段名」。少一条不会有任何运行时迹象——未知键被宏的
+    /// 忽略支吃掉，那个颜色就永远停在默认值——所以拿本文件源码里
+    /// `macro_rules! color_arms` 到 `deserialize_map` 之间那段当数据核对。
+    #[test]
+    fn every_theme_field_has_exactly_one_deserialization_key() {
+        let source = include_str!("theme.rs");
+        let mapping = source
+            .split("macro_rules! color_arms")
+            .nth(1)
+            .and_then(|tail| tail.split("deserializer.deserialize_map").next())
+            .expect("键清单段落");
+
+        let mut keys: Vec<&str> = Vec::new();
+        for line in mapping.lines() {
+            let Some(rest) = line.trim().strip_prefix('"') else {
+                continue;
+            };
+            let Some((key, rest)) = rest.split_once('"') else {
+                continue;
+            };
+            let Some(arm) = rest.trim().strip_prefix("=>") else {
+                continue;
+            };
+            let field = arm
+                .split('=')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .trim_end_matches(',')
+                .rsplit('.')
+                .next()
+                .unwrap_or_default();
+            assert_eq!(key, field, "键名必须与字段名同名，分支：{line}");
+            keys.push(key);
+        }
+
+        let struct_body = source
+            .split("pub struct Theme {")
+            .nth(1)
+            .and_then(|tail| tail.split("\n}").next())
+            .expect("Theme 结构体");
+        let mut fields: Vec<&str> = Vec::new();
+        for line in struct_body.lines() {
+            let Some(rest) = line.trim().strip_prefix("pub ") else {
+                continue;
+            };
+            let Some((name, ty)) = rest.split_once(':') else {
+                continue;
+            };
+            if matches!(ty.trim().trim_end_matches(','), "Rgba" | "f32") {
+                fields.push(name.trim());
+            }
+        }
+
+        assert!(
+            fields.len() > 100,
+            "字段扫描明显不对，只找到 {}",
+            fields.len()
+        );
+        keys.sort_unstable();
+        fields.sort_unstable();
+        assert_eq!(fields, keys, "Theme 字段与反序列化键必须一一对应");
     }
 }
