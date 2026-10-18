@@ -49,7 +49,7 @@ use crate::{
         library_access::LibraryAccess,
         models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaylistEvent},
         theme::Theme,
-        util::{create_or_retrieve_view, prune_views},
+        util::{create_or_retrieve_view, prune_views, reduced_motion_enabled},
     },
 };
 
@@ -955,12 +955,7 @@ impl Render for PlaylistView {
                                     let scroll_handle: ScrollableHandle =
                                         this.scroll_handle.clone().into();
 
-                                    let reduced_motion = cx
-                                        .global::<crate::settings::SettingsGlobal>()
-                                        .model
-                                        .read(cx)
-                                        .interface
-                                        .reduced_motion;
+                                    let reduced_motion = reduced_motion_enabled(cx);
                                     let scrolled = handle_track_drag_move(
                                         this.drag_drop_manager.clone(),
                                         scroll_handle,
@@ -1009,12 +1004,7 @@ impl Render for PlaylistView {
                                     let mouse_pos = event.event.position;
                                     let container_bounds = event.bounds;
 
-                                    let reduced_motion = cx
-                                        .global::<crate::settings::SettingsGlobal>()
-                                        .model
-                                        .read(cx)
-                                        .interface
-                                        .reduced_motion;
+                                    let reduced_motion = reduced_motion_enabled(cx);
                                     let scrolled = handle_external_drag_move(
                                         this.drag_drop_manager.clone(),
                                         scroll_handle,

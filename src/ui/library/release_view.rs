@@ -41,6 +41,7 @@ use crate::{
         },
         scroll_follow::SmoothScrollFollow,
         theme::Theme,
+        util::reduced_motion_enabled,
     },
 };
 
@@ -679,12 +680,7 @@ impl ReleaseView {
         self.scroll_frame_scheduled = true;
         cx.on_next_frame(window, |this, window, cx| {
             this.scroll_frame_scheduled = false;
-            let reduced_motion = cx
-                .global::<crate::settings::SettingsGlobal>()
-                .model
-                .read(cx)
-                .interface
-                .reduced_motion;
+            let reduced_motion = reduced_motion_enabled(cx);
             this.advance_scroll_animation(window, cx, reduced_motion);
         });
     }
@@ -706,27 +702,17 @@ impl ReleaseView {
                 }
                 FollowTarget::Target(target_scroll_top) => {
                     let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
-                    if reduced_motion {
-                        self.scroll_follow
-                            .jump_to(&scroll_handle, target_scroll_top);
-                    } else {
-                        self.scroll_follow
-                            .animate_to(&scroll_handle, target_scroll_top);
-                    }
+                    self.scroll_follow
+                        .follow_to(&scroll_handle, target_scroll_top, reduced_motion);
                     self.pending_scroll = None;
                 }
             }
         }
 
         let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
-        if reduced_motion {
-            if self.scroll_follow.snap(&scroll_handle) {
-                cx.notify();
-            }
-            return;
-        }
-
-        let changed = self.scroll_follow.advance(&scroll_handle);
+        let changed = self
+            .scroll_follow
+            .advance_or_snap(&scroll_handle, reduced_motion);
 
         if self.scroll_follow.is_active() {
             self.schedule_scroll_frame(window, cx);

@@ -4,6 +4,7 @@ use gpui::*;
 use palette::Mix;
 
 use crate::ui::scroll_follow::ease_out_cubic;
+use crate::ui::util::reduced_motion_enabled;
 
 /// Duration of hover/active background transitions.
 const HOVER_DURATION: Duration = Duration::from_millis(120);
@@ -89,12 +90,7 @@ impl RenderOnce for HoverTransition {
                 // discipline as drag_drop.rs / immersive.rs; gpui's
                 // request_animation_frame docs require it and this app never
                 // arms App::set_reduce_motion).
-                let reduced_motion = cx
-                    .global::<crate::settings::SettingsGlobal>()
-                    .model
-                    .read(cx)
-                    .interface
-                    .reduced_motion;
+                let reduced_motion = reduced_motion_enabled(cx);
                 state.update(cx, |s, cx| {
                     let target = if *hovered { 1.0 } else { 0.0 };
                     if (s.value - target).abs() <= SETTLE_EPSILON {

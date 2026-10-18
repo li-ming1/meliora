@@ -43,7 +43,7 @@ use super::{
     },
     scroll_follow::SmoothScrollFollow,
     theme::Theme,
-    util::{VIEW_KEEP_AROUND, create_or_retrieve_view},
+    util::{VIEW_KEEP_AROUND, create_or_retrieve_view, reduced_motion_enabled},
 };
 
 /// The list identifier for queue drag-drop operations
@@ -841,15 +841,6 @@ fn emit_stale_remove_toast() {
     )));
 }
 
-/// The `interface.reduced_motion` setting, read through the settings entity.
-fn reduced_motion_enabled(cx: &App) -> bool {
-    cx.global::<SettingsGlobal>()
-        .model
-        .read(cx)
-        .interface
-        .reduced_motion
-}
-
 /// True if the live queue still holds the content captured for `index` when
 /// the context menu was opened (same track id and path).
 ///
@@ -1554,27 +1545,17 @@ impl Queue {
                 }
                 FollowTarget::Target(target_scroll_top) => {
                     let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
-                    if reduced_motion {
-                        self.scroll_follow
-                            .jump_to(&scroll_handle, target_scroll_top);
-                    } else {
-                        self.scroll_follow
-                            .animate_to(&scroll_handle, target_scroll_top);
-                    }
+                    self.scroll_follow
+                        .follow_to(&scroll_handle, target_scroll_top, reduced_motion);
                     self.follow_current_pending = false;
                 }
             }
         }
 
         let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
-        if reduced_motion {
-            if self.scroll_follow.snap(&scroll_handle) {
-                cx.notify();
-            }
-            return;
-        }
-
-        let changed = self.scroll_follow.advance(&scroll_handle);
+        let changed = self
+            .scroll_follow
+            .advance_or_snap(&scroll_handle, reduced_motion);
 
         if !changed {
             return;

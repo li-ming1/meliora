@@ -1,32 +1,30 @@
-//! One-shot scroll animation for list panels: eases a scroll handle from its
-//! current offset to a target offset over a fixed duration.
+//! 列表面板的一次性滚动动画：在固定时长内把滚动句柄从当前偏移缓动到目标偏移。
 
 use gpui::{Pixels, px};
 use std::time::{Duration, Instant};
 
 use crate::ui::components::scrollbar::ScrollableHandle;
 
-/// Movement below this many px is invisible; don't tween for it.
+/// 低于这个像素数的位移肉眼不可见，不为它起动画。
 const MIN_ANIMATION_DELTA_PX: f32 = 0.1;
 
-/// An in-flight animation, easing from `start_scroll_top` to
-/// `target_scroll_top` over the follower's duration.
+/// 一段在飞动画：在跟随器时长内从 `start_scroll_top` 缓动到 `target_scroll_top`。
 struct ScrollAnimation {
     start_scroll_top: Pixels,
     target_scroll_top: Pixels,
     started_at: Instant,
 }
 
-/// Animates a scroll handle toward a target offset over a fixed duration.
+/// 在固定时长内把滚动句柄缓动到目标偏移。
 pub struct SmoothScrollFollow {
-    /// Total animation time from start to target.
+    /// 从起点到目标的总动画时长。
     duration: Duration,
-    /// Set while an animation is in flight; `None` when idle.
+    /// 有动画在飞时置位；空闲为 `None`。
     animation: Option<ScrollAnimation>,
 }
 
 impl SmoothScrollFollow {
-    /// Creates an idle follower whose animations run over `duration`.
+    /// 造一个空闲跟随器，动画时长为 `duration`。
     pub fn new(duration: Duration) -> Self {
         Self {
             duration,
@@ -34,12 +32,12 @@ impl SmoothScrollFollow {
         }
     }
 
-    /// Drops any in-flight animation.
+    /// 丢弃在飞动画。
     pub fn cancel(&mut self) {
         self.animation = None;
     }
 
-    /// Cancels any animation and jumps straight to `target_scroll_top`.
+    /// 取消动画并直接跳到 `target_scroll_top`。
     pub fn jump_to(&mut self, scroll_handle: &ScrollableHandle, target_scroll_top: Pixels) {
         self.cancel();
 
@@ -50,8 +48,7 @@ impl SmoothScrollFollow {
         });
     }
 
-    /// Settles an in-flight animation by jumping to its target. Returns true
-    /// when an animation was settled (the caller should repaint).
+    /// 把在飞动画结算到其目标。返回 true 表示确实结算了一段（调用方应重绘）。
     pub fn snap(&mut self, scroll_handle: &ScrollableHandle) -> bool {
         let Some(animation) = self.animation.as_ref() else {
             return false;
@@ -66,14 +63,13 @@ impl SmoothScrollFollow {
         true
     }
 
-    /// True while an animation is in flight.
+    /// 是否有动画在飞。
     pub fn is_active(&self) -> bool {
         self.animation.is_some()
     }
 
-    /// Starts animating from the current offset toward `target_scroll_top`.
-    /// A target within the visibility threshold of the current offset clears
-    /// the animation instead of starting a no-op tween.
+    /// 从当前偏移起向 `target_scroll_top` 开始缓动。目标落在可见阈值内时
+    /// 清空动画，而不是起一段空转。
     pub fn animate_to(&mut self, scroll_handle: &ScrollableHandle, target_scroll_top: Pixels) {
         let current_scroll_top = -scroll_handle.offset().y;
 
@@ -89,6 +85,38 @@ impl SmoothScrollFollow {
         });
     }
 
+    /// 布防一个跟随目标：`reduced_motion` 下直接跳到位，否则起一段缓动。
+    /// 队列 / 歌词 / 专辑详情三个视图的跟随决策共用这一条分支。
+    pub fn follow_to(
+        &mut self,
+        scroll_handle: &ScrollableHandle,
+        target_scroll_top: Pixels,
+        reduced_motion: bool,
+    ) {
+        if reduced_motion {
+            self.jump_to(scroll_handle, target_scroll_top);
+        } else {
+            self.animate_to(scroll_handle, target_scroll_top);
+        }
+    }
+
+    /// 推进一帧：`reduced_motion` 下把在飞动画结算到目标，否则按曲线推进。
+    /// 返回 true 表示偏移发生变化（调用方应重绘）。结算后跟随器转为空闲，
+    /// 因此调用方无需为降级路径单独判断是否还要排下一帧。
+    pub fn advance_or_snap(
+        &mut self,
+        scroll_handle: &ScrollableHandle,
+        reduced_motion: bool,
+    ) -> bool {
+        if reduced_motion {
+            return self.snap(scroll_handle);
+        }
+
+        self.advance(scroll_handle)
+    }
+
+    /// 把在飞动画推进一帧，按缓动曲线写入偏移。返回 true 表示偏移变了
+    /// （调用方应重绘）；动画到达目标后自动转为空闲。
     pub fn advance(&mut self, scroll_handle: &ScrollableHandle) -> bool {
         let Some(animation) = self.animation.as_ref() else {
             return false;

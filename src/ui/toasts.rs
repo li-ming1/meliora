@@ -17,6 +17,7 @@ use crate::{
             icons::{ALERT_CIRCLE, CHECK, CROSS, icon},
         },
         theme::Theme,
+        util::reduced_motion_enabled,
     },
 };
 
@@ -197,12 +198,7 @@ impl Render for ToastLayer {
         }
 
         let viewport = window.viewport_size();
-        let reduced_motion = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .reduced_motion;
+        let reduced_motion = reduced_motion_enabled(cx);
         // Read once for the whole layer: render_toast runs per toast per
         // frame (the progress animation re-renders every frame), and cloning
         // the whole Theme there just to read one radius is pure waste.

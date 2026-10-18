@@ -9,11 +9,25 @@ use tracing::debug;
 
 use crate::{
     playback::{interface::PlaybackInterface, thread::PlaybackState},
+    settings::SettingsGlobal,
     ui::{
         components::icons::{VOLUME, VOLUME_OFF},
         models::PlaybackInfo,
     },
 };
+
+/// 读取 `interface.reduced_motion`——全仓动画降级的唯一入口。
+///
+/// 所有动效（跟随滚动、歌词行强调、封面淡入、拖拽边缘滚动、toast 位移）
+/// 都经这里取值，不再各自铺开六行设置链；设置随改随存，读取本身只是实体
+/// 解引用，可以在 render 与帧回调里随手调用。
+pub fn reduced_motion_enabled(cx: &App) -> bool {
+    cx.global::<SettingsGlobal>()
+        .model
+        .read(cx)
+        .interface
+        .reduced_motion
+}
 
 /// Rows this far outside the visible window stay cached. Scrolling back
 /// within the band reuses the existing row entities instead of re-running

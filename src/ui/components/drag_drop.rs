@@ -8,6 +8,7 @@ use gpui::{
 use palette::IntoColor;
 
 use super::scrollbar::ScrollableHandle;
+use crate::ui::util::reduced_motion_enabled;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DropPosition {
@@ -829,12 +830,7 @@ pub fn schedule_edge_scroll(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let reduced_motion = cx
-        .global::<crate::settings::SettingsGlobal>()
-        .model
-        .read(cx)
-        .interface
-        .reduced_motion;
+    let reduced_motion = reduced_motion_enabled(cx);
     if reduced_motion {
         return;
     }

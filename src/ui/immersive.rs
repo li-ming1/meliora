@@ -68,7 +68,6 @@ use tracing::warn;
 use crate::sync::RecoveredRwLock;
 use crate::{
     playback::{interface::PlaybackInterface, thread::PlaybackState},
-    settings::SettingsGlobal,
     ui::{
         app::Pool,
         components::{
@@ -87,7 +86,8 @@ use crate::{
         scroll_follow::ease_out_cubic,
         theme::Theme,
         util::{
-            CachedTimeText, extract_accent, format_duration, seek_to_fraction, volume_toggle_target,
+            CachedTimeText, extract_accent, format_duration, reduced_motion_enabled,
+            seek_to_fraction, volume_toggle_target,
         },
     },
 };
@@ -796,12 +796,7 @@ impl ImmersiveView {
                     if this.image_key.as_ref() != Some(&key) {
                         return;
                     }
-                    let reduced_motion = cx
-                        .global::<SettingsGlobal>()
-                        .model
-                        .read(cx)
-                        .interface
-                        .reduced_motion;
+                    let reduced_motion = reduced_motion_enabled(cx);
                     // 新图进入空闲槽（槽位翻转），旧图原地留作淡出层——
                     // 元素 id 与祖先路径全程不变，keyed state 不重建、不
                     // 重解码。被覆盖的槽若有残留（上一次过渡被打断的图），
@@ -934,12 +929,7 @@ impl ImmersiveView {
     }
 
     fn advance_animations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let reduced_motion = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .reduced_motion;
+        let reduced_motion = reduced_motion_enabled(cx);
         if let Some((from, target, started_at)) = self.line_anim {
             if reduced_motion {
                 self.visual_line = target;
@@ -1076,12 +1066,7 @@ impl Render for ImmersiveView {
         // Keyboard focus for the Esc binding (AboutDialog pattern; idempotent).
         self.focus_handle.focus(window, cx);
 
-        let reduced_motion = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .reduced_motion;
+        let reduced_motion = reduced_motion_enabled(cx);
         if self.needs_animation_frame() {
             if reduced_motion {
                 self.advance_animations(window, cx);

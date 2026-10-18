@@ -12,7 +12,6 @@ use crate::ui::design::ICON_MD;
 use crate::{
     library::scan::ScanEvent,
     playback::{interface::PlaybackInterface, thread::PlaybackState},
-    settings::SettingsGlobal,
     ui::{
         components::{
             icons::{MICROPHONE, icon},
@@ -22,7 +21,7 @@ use crate::{
         models::{CurrentTrack, Models, PlaybackInfo},
         scroll_follow::{SmoothScrollFollow, ease_out_cubic},
         theme::Theme,
-        util::extract_accent,
+        util::{extract_accent, reduced_motion_enabled},
     },
 };
 // 取色的在线分支（resolve_accent）读旁表 cover_url；offline 构建无该分支。
@@ -237,12 +236,7 @@ impl Lyrics {
                         if let Some(prev) = this.last_active_line {
                             this.list_state.remeasure_items(prev..prev + 1);
                         }
-                        let reduced_motion = cx
-                            .global::<SettingsGlobal>()
-                            .model
-                            .read(cx)
-                            .interface
-                            .reduced_motion;
+                        let reduced_motion = reduced_motion_enabled(cx);
                         this.start_line_emphasis_animation(new_line, reduced_motion);
                         this.last_active_line = new_line;
                         this.follow_pending = new_line.is_some();
@@ -474,12 +468,7 @@ impl Lyrics {
             let active = index.checked_sub(1);
             self.last_active_line = active;
             self.follow_pending = active.is_some();
-            let reduced_motion = cx
-                .global::<SettingsGlobal>()
-                .model
-                .read(cx)
-                .interface
-                .reduced_motion;
+            let reduced_motion = reduced_motion_enabled(cx);
             self.start_line_emphasis_animation(active, reduced_motion);
         }
         cx.notify();
@@ -793,12 +782,7 @@ impl Render for Lyrics {
         let theme = cx.global::<Theme>();
         let queue = cx.global::<Models>().queue_width.read(cx).as_f32();
         let playback_state = *self.playback_state.read(cx);
-        let reduced_motion = cx
-            .global::<SettingsGlobal>()
-            .model
-            .read(cx)
-            .interface
-            .reduced_motion;
+        let reduced_motion = reduced_motion_enabled(cx);
 
         let muted = theme.text_secondary;
         let normal = theme.text;
@@ -1080,12 +1064,7 @@ impl Lyrics {
         self.follow_frame_scheduled = true;
         cx.on_next_frame(window, |this, window, cx| {
             this.follow_frame_scheduled = false;
-            let reduced_motion = cx
-                .global::<SettingsGlobal>()
-                .model
-                .read(cx)
-                .interface
-                .reduced_motion;
+            let reduced_motion = reduced_motion_enabled(cx);
             this.advance_animations(window, cx, reduced_motion);
         });
     }
@@ -1133,24 +1112,16 @@ impl Lyrics {
                 }
                 FollowTarget::Target(target_scroll_top) => {
                     let scroll_handle: ScrollableHandle = self.list_state.clone().into();
-                    if reduced_motion {
-                        self.scroll_follow
-                            .jump_to(&scroll_handle, target_scroll_top);
-                    } else {
-                        self.scroll_follow
-                            .animate_to(&scroll_handle, target_scroll_top);
-                    }
+                    self.scroll_follow
+                        .follow_to(&scroll_handle, target_scroll_top, reduced_motion);
                     self.follow_pending = false;
                 }
             }
         }
 
         let scroll_handle: ScrollableHandle = self.list_state.clone().into();
-        if reduced_motion {
-            return self.scroll_follow.snap(&scroll_handle);
-        }
-
-        self.scroll_follow.advance(&scroll_handle)
+        self.scroll_follow
+            .advance_or_snap(&scroll_handle, reduced_motion)
     }
 
     fn compute_follow_target(&self) -> FollowTarget {

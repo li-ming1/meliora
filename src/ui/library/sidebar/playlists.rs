@@ -39,6 +39,7 @@ use crate::{
         library_access::LibraryAccess,
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
+        util::reduced_motion_enabled,
     },
 };
 
@@ -314,12 +315,7 @@ impl Render for PlaylistList {
                             (manager.state.is_dragging, manager.state.drop_target)
                         };
                         let scroll_handle: ScrollableHandle = this.scroll_handle.clone().into();
-                        let reduced_motion = cx
-                            .global::<SettingsGlobal>()
-                            .model
-                            .read(cx)
-                            .interface
-                            .reduced_motion;
+                        let reduced_motion = reduced_motion_enabled(cx);
 
                         let scrolled = handle_drag_move(
                             this.drag_drop_manager.clone(),
