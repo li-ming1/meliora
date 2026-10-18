@@ -213,6 +213,134 @@ fn normalized_file_name(path: &Utf8Path, case_insensitive: bool) -> Option<Strin
     })
 }
 
+/// 列举出来的一条目录项 → `PendingDirectoryEntry`。原先七条"记录并跳过"的分支
+/// 摊在主循环里，占了 161 行函数体的 68 行；收成 `Option` 后循环只写一次
+/// `else { continue }`。每条 `error!` 的文案与判据逐字保留，失败即放弃这一条
+/// 的语义不变。
+fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<PendingDirectoryEntry> {
+    let entry = match result {
+        Ok(entry) => entry,
+        Err(error) => {
+            error!("Failed to read directory entry: {:?}", error);
+            return None;
+        }
+    };
+    let raw_std_path = entry.path();
+    let raw_path = match Utf8PathBuf::try_from(raw_std_path.clone()) {
+        Ok(path) => path,
+        Err(error) => {
+            error!(
+                "Failed to convert path {:?} to UTF-8: {:?}",
+                raw_std_path, error
+            );
+            return None;
+        }
+    };
+    let file_type = match entry.file_type() {
+        Ok(file_type) => file_type,
+        Err(error) => {
+            error!(
+                "Failed to inspect directory entry {:?}: {:?}",
+                raw_path, error
+            );
+            return None;
+        }
+    };
+    let is_symlink = file_type.is_symlink();
+    let (path, metadata) = if is_symlink {
+        let canonical = match raw_std_path.canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                error!("Failed to canonicalize path {:?}: {:?}", raw_path, error);
+                return None;
+            }
+        };
+        let path = match Utf8PathBuf::try_from(canonical) {
+            Ok(path) => path,
+            Err(error) => {
+                error!(
+                    "Failed to convert path {:?} to UTF-8: {:?}",
+                    raw_path, error
+                );
+                return None;
+            }
+        };
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                error!("Failed to inspect path {:?}: {:?}", path, error);
+                return None;
+            }
+        };
+        (path, metadata)
+    } else {
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                error!(
+                    "Failed to inspect directory entry {:?}: {:?}",
+                    raw_path, error
+                );
+                return None;
+            }
+        };
+        (raw_path.clone(), metadata)
+    };
+
+    Some(PendingDirectoryEntry {
+        raw_path,
+        path,
+        metadata,
+        is_symlink,
+    })
+}
+
+/// 把一条已解析的目录项落成快照条目（sidecar 歌词存在性 + 扫描时间戳）。从
+/// `read_scan_directory` 的物化映射里原样搬来，三分支的判据不变：符号链接的
+/// 目标可能在本目录之外，所以直接 stat 它的 sidecar 而不是信任本目录的列举；
+/// stat 失败并不能证明文件不存在，保留解码那一趟的探测；绝大多数目录没有
+/// `.lrc`，空表短路省去每文件三次堆分配。
+fn materialize_scan_entry(
+    entry: PendingDirectoryEntry,
+    lyrics_timestamps: &FxHashMap<String, SystemTime>,
+    case_insensitive: bool,
+) -> ScanDirectoryEntry {
+    let (lyrics_timestamp, sidecar_lyrics) = if entry.is_symlink {
+        let lyrics_timestamp = sidecar_modified(&entry.path);
+        let sidecar_lyrics = if lyrics_timestamp.is_some() {
+            SidecarLyrics::Present
+        } else {
+            SidecarLyrics::Unknown
+        };
+        (lyrics_timestamp, sidecar_lyrics)
+    } else if lyrics_timestamps.is_empty() {
+        (None, SidecarLyrics::Absent)
+    } else {
+        let lyrics_timestamp = sidecar_lyrics_path(&entry.raw_path)
+            .and_then(|path| normalized_file_name(&path, case_insensitive))
+            .and_then(|name| lyrics_timestamps.get(&name).copied());
+        let sidecar_lyrics = if lyrics_timestamp.is_some() {
+            SidecarLyrics::Present
+        } else {
+            SidecarLyrics::Absent
+        };
+        (lyrics_timestamp, sidecar_lyrics)
+    };
+
+    let scan_timestamp = entry
+        .metadata
+        .is_file()
+        .then(|| supported_scan_timestamp(&entry.path, &entry.metadata, lyrics_timestamp))
+        .flatten();
+
+    ScanDirectoryEntry {
+        path: entry.path,
+        metadata: entry.metadata,
+        scan_timestamp,
+        sidecar_lyrics,
+    }
+}
+
 pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirectorySnapshot> {
     let case_insensitive = is_case_insensitive(dir);
     let mut pending = Vec::new();
@@ -220,96 +348,32 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
     let mut folder_art: Option<FolderArtCandidate> = None;
 
     for result in std::fs::read_dir(dir)? {
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(error) => {
-                error!("Failed to read directory entry: {:?}", error);
-                continue;
-            }
-        };
-        let raw_std_path = entry.path();
-        let raw_path = match Utf8PathBuf::try_from(raw_std_path.clone()) {
-            Ok(path) => path,
-            Err(error) => {
-                error!(
-                    "Failed to convert path {:?} to UTF-8: {:?}",
-                    raw_std_path, error
-                );
-                continue;
-            }
-        };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => {
-                error!(
-                    "Failed to inspect directory entry {:?}: {:?}",
-                    raw_path, error
-                );
-                continue;
-            }
-        };
-        let is_symlink = file_type.is_symlink();
-        let (path, metadata) = if is_symlink {
-            let canonical = match raw_std_path.canonicalize() {
-                Ok(path) => path,
-                Err(error) => {
-                    error!("Failed to canonicalize path {:?}: {:?}", raw_path, error);
-                    continue;
-                }
-            };
-            let path = match Utf8PathBuf::try_from(canonical) {
-                Ok(path) => path,
-                Err(error) => {
-                    error!(
-                        "Failed to convert path {:?} to UTF-8: {:?}",
-                        raw_path, error
-                    );
-                    continue;
-                }
-            };
-            let metadata = match std::fs::metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    error!("Failed to inspect path {:?}: {:?}", path, error);
-                    continue;
-                }
-            };
-            (path, metadata)
-        } else {
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    error!(
-                        "Failed to inspect directory entry {:?}: {:?}",
-                        raw_path, error
-                    );
-                    continue;
-                }
-            };
-            (raw_path.clone(), metadata)
+        let Some(entry) = resolve_scan_entry(result) else {
+            continue;
         };
 
-        let is_lyrics = raw_path.extension().is_some_and(|extension| {
+        let is_lyrics = entry.raw_path.extension().is_some_and(|extension| {
             extension == "lrc" || (case_insensitive && extension.eq_ignore_ascii_case("lrc"))
         });
-        if metadata.is_file()
+        if entry.metadata.is_file()
             && is_lyrics
-            && let Some(name) = normalized_file_name(&raw_path, case_insensitive)
-            && let Ok(modified) = metadata.modified()
+            && let Some(name) = normalized_file_name(&entry.raw_path, case_insensitive)
+            && let Ok(modified) = entry.metadata.modified()
         {
             lyrics_timestamps.insert(name, modified);
         }
 
-        let art_rank = raw_path
+        let art_rank = entry
+            .raw_path
             .extension()
-            .zip(raw_path.file_stem())
+            .zip(entry.raw_path.file_stem())
             .and_then(|(extension, stem)| is_folder_art_name(stem, extension));
-        if metadata.is_file()
+        if entry.metadata.is_file()
             && let Some(rank) = art_rank
-            && !is_hidden_file(&metadata)
+            && !is_hidden_file(&entry.metadata)
         {
             let candidate = FolderArtCandidate {
-                path: raw_path.clone(),
+                path: entry.raw_path.clone(),
                 rank,
             };
             if folder_art
@@ -320,54 +384,12 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
             }
         }
 
-        pending.push(PendingDirectoryEntry {
-            raw_path,
-            path,
-            metadata,
-            is_symlink,
-        });
+        pending.push(entry);
     }
 
     let entries = pending
         .into_iter()
-        .map(|entry| {
-            // 符号链接的目标可能就在本目录之外，所以直接 stat 它的 sidecar，
-            // 而不是信任本目录的列举
-            let (lyrics_timestamp, sidecar_lyrics) = if entry.is_symlink {
-                let lyrics_timestamp = sidecar_modified(&entry.path);
-                // stat 失败并不能证明文件不存在——保留解码那一趟的探测
-                let sidecar_lyrics = if lyrics_timestamp.is_some() {
-                    SidecarLyrics::Present
-                } else {
-                    SidecarLyrics::Unknown
-                };
-                (lyrics_timestamp, sidecar_lyrics)
-            } else if lyrics_timestamps.is_empty() {
-                // 绝大多数目录没有 .lrc：空表短路，省去每文件三次堆分配
-                (None, SidecarLyrics::Absent)
-            } else {
-                let lyrics_timestamp = sidecar_lyrics_path(&entry.raw_path)
-                    .and_then(|path| normalized_file_name(&path, case_insensitive))
-                    .and_then(|name| lyrics_timestamps.get(&name).copied());
-                let sidecar_lyrics = if lyrics_timestamp.is_some() {
-                    SidecarLyrics::Present
-                } else {
-                    SidecarLyrics::Absent
-                };
-                (lyrics_timestamp, sidecar_lyrics)
-            };
-            let scan_timestamp = entry
-                .metadata
-                .is_file()
-                .then(|| supported_scan_timestamp(&entry.path, &entry.metadata, lyrics_timestamp))
-                .flatten();
-            ScanDirectoryEntry {
-                path: entry.path,
-                metadata: entry.metadata,
-                scan_timestamp,
-                sidecar_lyrics,
-            }
-        })
+        .map(|entry| materialize_scan_entry(entry, &lyrics_timestamps, case_insensitive))
         .collect();
     Ok(ScanDirectorySnapshot {
         entries,
