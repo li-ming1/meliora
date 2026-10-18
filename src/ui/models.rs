@@ -242,13 +242,12 @@ pub fn build_models(
     let switcher_for_startup = switcher_model.clone();
     let artist_picker_model = cx.new(|_| None);
 
-    let sidebar_width: Entity<Pixels> =
-        cx.new(|_| stored_dimension(storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH));
+    let sidebar_width =
+        stored_dimension_entity(cx, storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH);
     // 实际渲染出的侧栏宽度，由侧栏视图朝 `sidebar_width` 补间或在收起时压到 0。
-    let animated_sidebar_width: Entity<Pixels> =
-        cx.new(|_| stored_dimension(storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH));
-    let queue_width: Entity<Pixels> =
-        cx.new(|_| stored_dimension(storage_data.queue_width(), DEFAULT_QUEUE_WIDTH));
+    let animated_sidebar_width =
+        stored_dimension_entity(cx, storage_data.sidebar_width(), DEFAULT_SIDEBAR_WIDTH);
+    let queue_width = stored_dimension_entity(cx, storage_data.queue_width(), DEFAULT_QUEUE_WIDTH);
     let show_queue: Entity<bool> = cx.new(|_| storage_data.show_queue);
     let show_lyrics: Entity<bool> = cx.new(|_| storage_data.show_lyrics);
     let split_widths: std::collections::HashMap<String, Entity<Pixels>> = {
@@ -266,20 +265,18 @@ pub fn build_models(
     let liked_tracks_sort_method = cx.new(|_| storage_data.liked_tracks_sort_method);
     let playlist_sort_methods = cx.new(|_| storage_data.playlist_sort_methods.clone());
     let sidebar_collapsed: Entity<bool> = cx.new(|_| storage_data.sidebar_collapsed);
-    let lyrics_height: Entity<Pixels> =
-        cx.new(|_| stored_dimension(storage_data.lyrics_fraction(), DEFAULT_LYRICS_FRACTION));
-    let controls_left_width: Entity<Pixels> = cx.new(|_| {
-        stored_dimension(
-            storage_data.controls_left_width(),
-            DEFAULT_CONTROLS_LEFT_WIDTH,
-        )
-    });
-    let controls_right_width: Entity<Pixels> = cx.new(|_| {
-        stored_dimension(
-            storage_data.controls_right_width(),
-            DEFAULT_CONTROLS_RIGHT_WIDTH,
-        )
-    });
+    let lyrics_height =
+        stored_dimension_entity(cx, storage_data.lyrics_fraction(), DEFAULT_LYRICS_FRACTION);
+    let controls_left_width = stored_dimension_entity(
+        cx,
+        storage_data.controls_left_width(),
+        DEFAULT_CONTROLS_LEFT_WIDTH,
+    );
+    let controls_right_width = stored_dimension_entity(
+        cx,
+        storage_data.controls_right_width(),
+        DEFAULT_CONTROLS_RIGHT_WIDTH,
+    );
 
     let window_information = cx.new(|_| None);
     let immersive: Entity<bool> = cx.new(|_| false);
@@ -316,40 +313,9 @@ pub fn build_models(
         immersive,
     });
 
-    // 启动视图 = 「我收藏」：解析它的歌单 id 需要 list_all_playlists 聚合，
-    // 而那过去会让启动阻塞在 UI 线程上。现在在运行时上解析、落地后导航；
-    // 若届时用户已经导航到别处，就保持当前视图不动。
+    // 启动视图 = 「我收藏」：解析为什么要离开 UI 线程，见助手自己的文档。
     if matches!(startup_setting, StartupLibraryView::LikedSongs) {
-        let switcher_model = switcher_for_startup;
-        let pool = cx.global::<Pool>().0.clone();
-        cx.spawn(async move |cx| {
-            let playlists = crate::RUNTIME
-                .spawn(async move { db::list_all_playlists(&pool).await })
-                .await
-                .ok()
-                .and_then(|result| result.ok());
-
-            let Some(liked_id) = playlists.and_then(|playlists| {
-                playlists
-                    .iter()
-                    .find(|playlist| playlist.is_liked_songs())
-                    .map(|playlist| playlist.id)
-            }) else {
-                warn!(
-                    "Liked Songs startup view selected but playlist could not be resolved, defaulting to Albums"
-                );
-                return;
-            };
-
-            cx.update(|cx| {
-                if switcher_model.read(cx).current() == ViewSwitchMessage::Albums {
-                    switcher_model.update(cx, |_, cx| {
-                        cx.emit(ViewSwitchMessage::Playlist(liked_id));
-                    });
-                }
-            });
-        })
-        .detach();
+        resolve_liked_songs_startup_view(cx, switcher_for_startup);
     }
 
     // 启动时填充一次收藏 id 集合（Models 已在上面注册），此后每当收藏歌单
@@ -414,6 +380,48 @@ pub fn build_models(
         prev_volume,
         sample_rate,
     });
+}
+
+/// `storage_data` 里的一个尺寸存成 gpui 实体（缺失/非法回落到编译期默认值）。
+/// `build_models` 里六处这样的声明只差字段名与默认常量，各自还要把
+/// `Entity<Pixels>` 写一遍；返回类型由本函数给出，站点不再标注。
+fn stored_dimension_entity(cx: &mut App, stored: Pixels, fallback: Pixels) -> Entity<Pixels> {
+    cx.new(|_| stored_dimension(stored, fallback))
+}
+
+/// 把「我收藏」这个启动视图解析成它的歌单 id 并发出导航。`list_all_playlists`
+/// 聚合过去会在启动时阻塞 UI 线程，所以在运行时上算；落地时若用户已经导航到
+/// 别处（当前仍等于 Albums 才动），就保持现状。
+fn resolve_liked_songs_startup_view(cx: &mut App, switcher_model: Entity<NavigationHistory>) {
+    let pool = cx.global::<Pool>().0.clone();
+    cx.spawn(async move |cx| {
+        let playlists = crate::RUNTIME
+            .spawn(async move { db::list_all_playlists(&pool).await })
+            .await
+            .ok()
+            .and_then(|result| result.ok());
+
+        let Some(liked_id) = playlists.and_then(|playlists| {
+            playlists
+                .iter()
+                .find(|playlist| playlist.is_liked_songs())
+                .map(|playlist| playlist.id)
+        }) else {
+            warn!(
+                "Liked Songs startup view selected but playlist could not be resolved, defaulting to Albums"
+            );
+            return;
+        };
+
+        cx.update(|cx| {
+            if switcher_model.read(cx).current() == ViewSwitchMessage::Albums {
+                switcher_model.update(cx, |_, cx| {
+                    cx.emit(ViewSwitchMessage::Playlist(liked_id));
+                });
+            }
+        });
+    })
+    .detach();
 }
 
 pub(crate) const LIKED_SONGS_PLAYLIST_ID: i64 = 1;
