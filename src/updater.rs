@@ -441,31 +441,21 @@ async fn download_and_swap(
 ) -> Result<(), String> {
     // 失败即关闭：校验和清单是这条流程唯一的完整性锚点（没有代码签名、没有钉死
     // 的哈希）。清单或其条目缺失，就意味着我们无法区分损坏的下载与被篡改的下载，
-    // 因此拒绝自动安装并把用户指向 release 页面。
-    let expected_hash = match &checksums_url {
-        Some(url) => {
-            let manifest = http_get_text(url).await?;
-            let asset_name = binary_url.rsplit('/').next().unwrap_or_default();
-            match lookup_checksum(&manifest, asset_name) {
-                Some(hash) => Some(hash),
-                None => {
-                    return Err(format!(
-                        "updater: checksums.txt has no entry for {asset_name}; \
-                         refusing to install an unverified binary — download it \
-                         manually from the release page instead"
-                    ));
-                }
-            }
-        }
-        None => {
-            return Err(
-                "updater: release has no checksums.txt; refusing to install an \
-                 unverified binary — download it manually from the release page \
-                 instead"
-                    .to_string(),
-            );
-        }
-    };
+    // 因此拒绝自动安装并把用户指向 release 页面——两条早退都发生在下载之前，
+    // 校验用的哈希因此不可能被跳过。
+    let checksums = checksums_url.as_ref().ok_or_else(|| {
+        "updater: release has no checksums.txt; refusing to install an unverified binary — \
+         download it manually from the release page instead"
+            .to_string()
+    })?;
+    let manifest = http_get_text(checksums).await?;
+    let asset_name = binary_url.rsplit('/').next().unwrap_or_default();
+    let expected = lookup_checksum(&manifest, asset_name).ok_or_else(|| {
+        format!(
+            "updater: checksums.txt has no entry for {asset_name}; refusing to install an \
+             unverified binary — download it manually from the release page instead"
+        )
+    })?;
 
     let response = UPDATE_CLIENT
         .get(&binary_url)
@@ -521,9 +511,6 @@ async fn download_and_swap(
     drop(file);
     let _ = progress.send((received, total));
 
-    // 失败即关闭的保证：这里 expected_hash 恒为 Some（上面的清单检查否则就拒绝），
-    // 所以校验绝不可能被跳过。
-    let expected = expected_hash.expect("fail-closed checksum presence");
     let actual = hasher
         .finalize()
         .iter()
