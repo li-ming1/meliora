@@ -245,6 +245,22 @@ impl EqualizerView {
         self.push_config(cx);
     }
 
+    /// `mutate` 的单频段切片：索引越界即静默跳过——事件里带的索引可能在编辑到达
+    /// 之前就已经过期（频段被删或清空）。四处"取 `get_mut` 再写字段"的手抄展开
+    /// 此前各自重复这条守卫。
+    fn mutate_band(
+        &mut self,
+        cx: &mut Context<Self>,
+        index: usize,
+        update: impl FnOnce(&mut EqBandSettings),
+    ) {
+        self.mutate(cx, |config| {
+            if let Some(band) = config.bands.get_mut(index) {
+                update(band);
+            }
+        });
+    }
+
     /// 把工作副本推给 DSP 与设置模型，只对落盘做防抖。
     fn push_config(&mut self, cx: &mut Context<Self>) {
         if cx.has_global::<PlaybackInterface>() {
@@ -310,11 +326,9 @@ impl EqualizerView {
         };
         window.prevent_default();
         cx.stop_propagation();
-        self.mutate(cx, |config| {
-            if let Some(band) = config.bands.get_mut(index) {
-                band.frequency = frequency;
-                band.gain_db = gain_db;
-            }
+        self.mutate_band(cx, index, |band| {
+            band.frequency = frequency;
+            band.gain_db = gain_db;
         });
     }
 }
@@ -383,12 +397,10 @@ impl Render for EqualizerView {
                 let view = view.clone();
                 move |index, frequency, gain_db, cx| {
                     view.update(cx, |this, cx| {
-                        this.mutate(cx, |config| {
-                            if let Some(band) = config.bands.get_mut(index) {
-                                band.frequency = frequency;
-                                if band.kind.has_gain() {
-                                    band.gain_db = gain_db;
-                                }
+                        this.mutate_band(cx, index, |band| {
+                            band.frequency = frequency;
+                            if band.kind.has_gain() {
+                                band.gain_db = gain_db;
                             }
                         });
                     });
@@ -414,11 +426,7 @@ impl Render for EqualizerView {
                 let view = view.clone();
                 move |index, cx| {
                     view.update(cx, |this, cx| {
-                        this.mutate(cx, |config| {
-                            if let Some(band) = config.bands.get_mut(index) {
-                                band.enabled = !band.enabled;
-                            }
-                        });
+                        this.mutate_band(cx, index, |band| band.enabled = !band.enabled);
                     });
                 }
             })
@@ -426,11 +434,7 @@ impl Render for EqualizerView {
                 let view = view.clone();
                 move |index, q, cx| {
                     view.update(cx, |this, cx| {
-                        this.mutate(cx, |config| {
-                            if let Some(band) = config.bands.get_mut(index) {
-                                band.q = q;
-                            }
-                        });
+                        this.mutate_band(cx, index, |band| band.q = q);
                     });
                 }
             })
