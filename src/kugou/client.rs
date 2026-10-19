@@ -195,6 +195,15 @@ impl KugouRequest {
         self
     }
 
+    /// 带登录态的端点共用的凭据对：query 里的 `userid` 与 `token`。五个歌单类
+    /// 端点逐字重复过这两行，且都因为 `.param` 要 `impl ToString` 而各自
+    /// `token.clone()` 一次——收在这里之后借用即可，克隆随之消失。
+    /// 参数存在 `BTreeMap` 里，插入顺序不影响最终 URL。
+    pub fn auth(self, userid: i64, token: &str) -> Self {
+        self.param("userid", userid)
+            .param("token", token.to_string())
+    }
+
     pub fn json(mut self, body: Value) -> Self {
         self.json_body = Some(body);
         self

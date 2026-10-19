@@ -176,8 +176,7 @@ impl KugouClient {
             .post()
             .router("cloudlist.service.kugou.com")
             .param("plat", 1)
-            .param("userid", userid)
-            .param("token", token.clone())
+            .auth(userid, &token)
             .json(serde_json::json!({
                 "userid": userid,
                 "token": token,
@@ -204,8 +203,7 @@ impl KugouClient {
             .post()
             .router("cloudlist.service.kugou.com")
             .param("plat", 1)
-            .param("userid", userid)
-            .param("token", token.clone())
+            .auth(userid, &token)
             .json(serde_json::json!({
                 "listid": listid,
                 "userid": userid,
@@ -251,8 +249,7 @@ impl KugouClient {
             .post()
             .param("last_time", clienttime)
             .param("last_area", "gztx")
-            .param("userid", userid)
-            .param("token", token.clone())
+            .auth(userid, &token)
             .json(serde_json::json!({
                 "userid": userid,
                 "token": token,
@@ -283,8 +280,7 @@ impl KugouClient {
         let spec = KugouRequest::new(GATEWAY, "/v4/delete_songs")
             .post()
             .router("cloudlist.service.kugou.com")
-            .param("userid", userid)
-            .param("token", token.clone())
+            .auth(userid, &token)
             .json(serde_json::json!({
                 "userid": userid,
                 "token": token,
@@ -308,8 +304,7 @@ impl KugouClient {
             .router("cloudlist.service.kugou.com")
             .param("last_time", clienttime)
             .param("last_area", "gztx")
-            .param("userid", userid)
-            .param("token", token.clone())
+            .auth(userid, &token)
             .json(serde_json::json!({
                 "userid": userid,
                 "token": token,
