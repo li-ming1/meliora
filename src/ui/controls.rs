@@ -796,7 +796,7 @@ impl Render for SecondaryControls {
     }
 }
 
-// --- 音量 tooltip（由 ui/components/volume_tooltip.rs 并入）---
+// --- 音量 tooltip（原先住在 ui/components/volume_tooltip.rs，已并入本文件）---
 
 pub struct VolumeTooltip {
     volume: Entity<f64>,

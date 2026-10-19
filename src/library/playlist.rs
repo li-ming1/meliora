@@ -26,9 +26,10 @@ pub enum PlaylistEvent {
 
 impl EventEmitter<PlaylistEvent> for PlaylistInfoTransfer {}
 
-/// 广播"某个歌单变了"，让所有展示它的地方回读。十一个站点写的都是同一条
-/// `update + emit`（都不在渲染路径上：菜单回调、拖放、spawn 完成处），而这条
-/// 广播的唯一出口本来就该是 `PlaylistInfoTransfer` 这一个实体。
+/// 广播"某个歌单变了"，让所有展示它的地方回读。十四个站点写的都是同一条
+/// `update + emit`（都不在渲染路径上：菜单回调、拖放、spawn 完成处、点赞/取消
+/// 点赞的四处收尾），而这条广播的唯一出口本来就该是 `PlaylistInfoTransfer`
+/// 这一个实体。
 /// 泛型过 `AppContext`：那些站点里多数在 `cx.spawn` 的异步块内，手里的 `cx`
 /// 是 `AsyncApp` 而不是 `App`。
 pub fn announce_playlist_update(

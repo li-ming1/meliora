@@ -478,8 +478,8 @@ impl Lyrics {
         hit
     }
 
-    /// 把加载好的歌词插入有界 FIFO 缓存，超过 [`LYRIC_CACHE_CAP`] 时逐出最旧
-    /// 的条目。
+    /// 把加载好的歌词插入有界 LRU 缓存：命中会先把键挪到顺序表尾部（见
+    /// `cached_lyrics`），超过 [`LYRIC_CACHE_CAP`] 时逐出最久未用的条目。
     fn cache_lyrics(&mut self, path: PathBuf, loaded: (Option<String>, Option<Arc<Vec<LrcLine>>>)) {
         // 在线"无歌词"不再裸跳过而是带 TTL 负缓存（见 LYRIC_NEGATIVE_TTL）；
         // 本地路径的空结果仍按正结果缓存——sidecar/DB 本来就没有，重访
