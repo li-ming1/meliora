@@ -180,6 +180,7 @@ pub struct Queue {
 // PlaylistInfoTransfer / PlaylistEvent 已搬到 library 层（它们是歌单域的状态；
 // library/scan 不再为了发出它们而反向 import ui::models）；这里再导出，供现有的
 // `ui::models::{PlaylistEvent, PlaylistInfoTransfer}` 使用者继续用。
+use crate::library::playlist::announce_playlist_update;
 pub use crate::library::playlist::{PlaylistEvent, PlaylistInfoTransfer};
 
 fn resolve_startup_view(startup_view: StartupLibraryView) -> ViewSwitchMessage {
@@ -475,9 +476,7 @@ pub(crate) async fn like_track<E: HasLikedState + 'static>(
         cx.notify();
     });
 
-    playlist_tracker.update(cx, |_, cx| {
-        cx.emit(PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID));
-    });
+    announce_playlist_update(&playlist_tracker, cx, LIKED_SONGS_PLAYLIST_ID);
 }
 
 /// 把 `track_id` 从「我收藏」歌单里移除。歌单条目行由曲目 id 解析
@@ -495,31 +494,17 @@ pub(crate) async fn unlike_track<E: HasLikedState + 'static>(
         db::remove_tracks_from_playlist(&pool, LIKED_SONGS_PLAYLIST_ID, &track_ids).await
     });
 
-    match task.await {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            tracing::error!("could not unlike song: {err:?}");
-            entity.update(cx, |this, cx| {
-                this.set_liked(Some(track_id));
-                cx.notify();
-            });
-            return;
-        }
-        Err(err) => {
-            tracing::error!("unlike task panicked: {err:?}");
-            // 取消收藏其实没执行（事务随 panic 一起回滚），但调用方已经清掉了
-            // 显示状态——把它恢复，让该行仍显示为已收藏，与 DB 一致。
-            entity.update(cx, |this, cx| {
-                this.set_liked(Some(track_id));
-                cx.notify();
-            });
-            return;
-        }
+    if !like_task_succeeded(task.await, "could not unlike song", "unlike task panicked") {
+        // 失败即回滚：查询报错或任务 panic 时事务都没落下，收藏仍在；而调用方
+        // 已经把显示状态清掉了，这里恢复成已收藏，让该行与 DB 一致。
+        entity.update(cx, |this, cx| {
+            this.set_liked(Some(track_id));
+            cx.notify();
+        });
+        return;
     }
 
-    playlist_tracker.update(cx, |_, cx| {
-        cx.emit(PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID));
-    });
+    announce_playlist_update(&playlist_tracker, cx, LIKED_SONGS_PLAYLIST_ID);
 }
 
 pub(crate) fn toggle_like<E: HasLikedState + 'static>(
@@ -584,9 +569,7 @@ pub(crate) fn toggle_like_by_id(track_id: i64, is_liked: Option<i64>, cx: &mut A
             return;
         }
 
-        playlist_tracker.update(cx, |_, cx| {
-            cx.emit(PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID));
-        });
+        announce_playlist_update(&playlist_tracker, cx, LIKED_SONGS_PLAYLIST_ID);
     })
     .detach();
 }
@@ -617,9 +600,7 @@ pub(crate) fn toggle_album_like(track_ids: Vec<i64>, all_liked: bool, cx: &mut A
             return;
         }
 
-        playlist_tracker.update(cx, |_, cx| {
-            cx.emit(PlaylistEvent::PlaylistUpdated(LIKED_SONGS_PLAYLIST_ID));
-        });
+        announce_playlist_update(&playlist_tracker, cx, LIKED_SONGS_PLAYLIST_ID);
     })
     .detach();
 }

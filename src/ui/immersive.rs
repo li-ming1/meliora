@@ -668,6 +668,13 @@ impl ImmersiveView {
     /// 收队列未放行（>3 套在队）时按 [`BACKDROP_RETRY`] 退避重试，是
     /// "同时驻留大图套数"硬上界的执行点；大图 3s 短年龄门让积压在数秒
     /// 内排空，普通切歌节奏下阀门不再成为"背景不跟歌"的来源。
+    /// 这张背景图是否仍是本页正在显示的那张：必须是激活态且键与当前一致。
+    /// `arm_backdrop` 的每一跳（重试退避后、解码完成后）都问这同一句，此前
+    /// 三处逐字重复整条表达式。
+    fn is_showing(&self, key: &ManagedImageKey) -> bool {
+        self.active && self.image_key.as_ref() == Some(key)
+    }
+
     fn arm_backdrop(&mut self, cx: &mut Context<Self>) {
         // 设备像素目标尺寸由沉浸页 render 提供（activate 早于首个
         // render，先挂起，render 里补布防）。
@@ -700,9 +707,7 @@ impl ImmersiveView {
                 if !cached && !backdrop_decode_allowed() {
                     cx.background_executor().timer(BACKDROP_RETRY).await;
                     let still = this
-                        .update(cx, |this, _| {
-                            this.active && this.image_key.as_ref() == Some(&key)
-                        })
+                        .update(cx, |this, _| this.is_showing(&key))
                         .unwrap_or(false);
                     if !still {
                         return;
@@ -742,9 +747,7 @@ impl ImmersiveView {
                     }
                     cx.background_executor().timer(BACKDROP_RETRY).await;
                     let still = this
-                        .update(cx, |this, _| {
-                            this.active && this.image_key.as_ref() == Some(&key)
-                        })
+                        .update(cx, |this, _| this.is_showing(&key))
                         .unwrap_or(false);
                     if !still {
                         return;
@@ -754,9 +757,7 @@ impl ImmersiveView {
                 // 解码完成：曲目已又变则放弃晋升（成果留在背景缓存里，
                 // 回跳零成本）。
                 let promote = this
-                    .update(cx, |this, _| {
-                        this.active && this.image_key.as_ref() == Some(&key)
-                    })
+                    .update(cx, |this, _| this.is_showing(&key))
                     .unwrap_or(false);
                 if !promote {
                     return;
