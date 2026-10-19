@@ -480,7 +480,7 @@ mod bench {
         println!(
             "bench_artist_evict: 10k×10k 总 {a_min:.0} ms（修复前：逐条 evict）vs {b_min:.0} ms\
              （修复后：evict_many 单遍批量）vs {f_min:.0} ms（逆向索引下限），加速比 {:.0}；\
-             50 条增量驱逐 {:.0} µs",
+             50 条增量逐出 {:.0} µs",
             a_min / b_min,
             s_min * 1_000.0,
         );

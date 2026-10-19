@@ -692,7 +692,7 @@ impl ManagedImageKey {
             return Ok(None);
         };
         // 增强只属于背景两条路径：RenderCache（封面/标签）与 None（取色）
-        // 保持解码原样——否则 512px 标签会被放大成 1920² 条目污染
+        // 保持解码原样——否则 512px 标签会被放大成 1920² 条目挤占
         // RENDER_CACHE，256px 取色图也白付一次全尺寸增强。
         let image = match (cache, backdrop_target) {
             (ImageCacheMode::Backdrop(Some((w, h))), _) if w > 0 && h > 0 => {
