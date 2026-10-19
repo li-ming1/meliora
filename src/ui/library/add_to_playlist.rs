@@ -25,7 +25,7 @@ use crate::{
             palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
         },
         library_access::LibraryAccess,
-        models::Models,
+        models::{Models, PlaylistInfoTransfer},
     },
 };
 
@@ -155,7 +155,60 @@ pub struct AddToPlaylist {
     track_list: SharedTrackList,
 }
 
+/// accept 两条分支共用的收尾：等 DB 写任务，成功就广播歌单更新。单曲目（加入或
+/// 移出，取决于是否已在歌单里）与批量加入只差任务本体和两句日志措辞，这一层
+/// 包装此前抄了两遍。
+fn spawn_write_and_announce<T: 'static>(
+    cx: &mut App,
+    playlist_tracker: Entity<PlaylistInfoTransfer>,
+    playlist_id: i64,
+    task: tokio::task::JoinHandle<Result<T, sqlx::Error>>,
+    failure_log: &'static str,
+    panic_log: &'static str,
+) {
+    cx.spawn(async move |cx| {
+        if await_playlist_task(task, failure_log, panic_log)
+            .await
+            .is_some()
+        {
+            announce_playlist_update(&playlist_tracker, cx, playlist_id);
+        }
+    })
+    .detach();
+}
+
 impl AddToPlaylist {
+    /// 打开对话框时重建调色板列表：一次 `list_all_playlists` 加一次集合查询取回
+    /// "这些曲目已经躺在哪些歌单里"（替代逐歌单的 `playlist_has_track`
+    /// `block_on`）。查询失败时保留调色板当前的列表，而不是让观察者 panic。
+    fn rebuild_playlist_list(&mut self, track_list: &SharedTrackList, cx: &mut Context<Self>) {
+        let current = read_track_list(track_list);
+        self.palette.update(cx, |palette, cx| {
+            let Ok(playlists) = cx.list_all_playlists() else {
+                error!("Failed to load playlists for the add-to-playlist dialog");
+                return;
+            };
+            let existing = track_playlist_ids(&current, cx);
+            let new_playlists = playlists
+                .iter()
+                .cloned()
+                .map(|playlist| {
+                    let has_track = existing
+                        .as_ref()
+                        .is_some_and(|ids| ids.contains(&playlist.id));
+                    (current.clone(), playlist, has_track)
+                })
+                .map(Arc::new)
+                .collect::<Vec<_>>();
+
+            cx.emit(new_playlists);
+
+            palette.reset(cx);
+        });
+
+        cx.notify();
+    }
+
     pub fn new(cx: &mut App, show: Entity<bool>, track_ids: Vec<i64>) -> Entity<Self> {
         cx.new(|cx| {
             let track_list: SharedTrackList = Rc::new(RefCell::new(TrackList::from_ids(track_ids)));
@@ -168,33 +221,7 @@ impl AddToPlaylist {
                     return;
                 }
 
-                let current = read_track_list(&track_list_for_observe);
-                this.palette.update(cx, |palette, cx| {
-                    // 查询失败时保留调色板当前的列表，而不是让观察者 panic
-                    let Ok(playlists) = cx.list_all_playlists() else {
-                        error!("Failed to load playlists for the add-to-playlist dialog");
-                        return;
-                    };
-                    // 一次集合查询取代逐歌单的 playlist_has_track block_on
-                    let existing = track_playlist_ids(&current, cx);
-                    let new_playlists = playlists
-                        .iter()
-                        .cloned()
-                        .map(|playlist| {
-                            let has_track = existing
-                                .as_ref()
-                                .is_some_and(|ids| ids.contains(&playlist.id));
-                            (current.clone(), playlist, has_track)
-                        })
-                        .map(Arc::new)
-                        .collect::<Vec<_>>();
-
-                    cx.emit(new_playlists);
-
-                    palette.reset(cx);
-                });
-
-                cx.notify();
+                this.rebuild_playlist_list(&track_list_for_observe, cx);
             })
             .detach();
 
@@ -218,49 +245,36 @@ impl AddToPlaylist {
                 if track_ids.len() == 1 {
                     let track_id = track_ids[0];
                     let has_track = cx.playlist_has_track(playlist_id, track_id).ok().flatten();
-
-                    cx.spawn(async move |cx| {
-                        let task = if let Some(id) = has_track {
-                            crate::RUNTIME
-                                .spawn(async move { db::remove_playlist_item(&pool, id).await })
-                        } else {
-                            crate::RUNTIME.spawn(async move {
-                                db::add_playlist_item(&pool, playlist_id, track_id)
-                                    .await
-                                    .map(|_| ())
-                            })
-                        };
-
-                        if await_playlist_task(
-                            task,
-                            "could not remove/add track from playlist",
-                            "remove/add from playlist task panicked",
-                        )
-                        .await
-                        .is_some()
-                        {
-                            announce_playlist_update(&playlist_tracker, cx, playlist_id);
-                        }
-                    })
-                    .detach();
+                    let task = if let Some(id) = has_track {
+                        crate::RUNTIME
+                            .spawn(async move { db::remove_playlist_item(&pool, id).await })
+                    } else {
+                        crate::RUNTIME.spawn(async move {
+                            db::add_playlist_item(&pool, playlist_id, track_id)
+                                .await
+                                .map(|_| ())
+                        })
+                    };
+                    spawn_write_and_announce(
+                        cx,
+                        playlist_tracker,
+                        playlist_id,
+                        task,
+                        "could not remove/add track from playlist",
+                        "remove/add from playlist task panicked",
+                    );
                 } else {
-                    cx.spawn(async move |cx| {
-                        let task = crate::RUNTIME.spawn(async move {
-                            db::add_playlist_items(&pool, playlist_id, &track_ids, None).await
-                        });
-
-                        if await_playlist_task(
-                            task,
-                            "could not add tracks to playlist",
-                            "add tracks to playlist task panicked",
-                        )
-                        .await
-                        .is_some()
-                        {
-                            announce_playlist_update(&playlist_tracker, cx, playlist_id);
-                        }
-                    })
-                    .detach();
+                    let task = crate::RUNTIME.spawn(async move {
+                        db::add_playlist_items(&pool, playlist_id, &track_ids, None).await
+                    });
+                    spawn_write_and_announce(
+                        cx,
+                        playlist_tracker,
+                        playlist_id,
+                        task,
+                        "could not add tracks to playlist",
+                        "add tracks to playlist task panicked",
+                    );
                 }
 
                 show_clone.write(cx, false);
