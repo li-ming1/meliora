@@ -246,3 +246,53 @@ opt-level = 3
 lto = "thin"
 panic = "abort"
 strip = "symbols"
+
+# 非实时依赖按包降到 "s" 换 .text 体积（2026-10-19 实测）。
+# 收益：exe 35,309,568 → 34,969,600（−339,968 B，−0.96%），.text 24,773,928 →
+# 24,355,816（−418,112 B，−1.69%），.rdata 基本不动（−110 B）。
+# 边界（不得越）：实时与帧路径保持在 3 —— `symphonia*`（解码）、`image`（缩略图
+# 与背景管线）、`rubato`（重采样）、`rustfft`/`palette`（EQ 分析、取色）、
+# `gpui*`（每帧）、`sqlx*`/`tokio`（UI 线程查询与运行时）。本组里 `lofty` 是唯一
+# 出现在扫描热循环的包，它只在大库首扫时略慢（本机 66 曲不可测），不在播放路径。
+# 归因教训：这组之前我按 rlib 归档里 COFF 成员的字节数排序，`windows` 136MB、
+# `icu_experimental_data` 61MB，据此预期能省下几 MB —— 实际只省 340KB。归档字节
+# 数不是 .text 的可用代理（大部分被链接器剥掉或在依赖方单态化），要精确归因得用
+# 链接器 /MAP（一次改 rustflags 的全量重建），别再用归档尺寸下结论。
+[profile.release.package.windows]
+opt-level = "s"
+[profile.release.package.windows-core]
+opt-level = "s"
+[profile.release.package.windows-targets]
+opt-level = "s"
+[profile.release.package.icu]
+opt-level = "s"
+[profile.release.package.icu_experimental]
+opt-level = "s"
+[profile.release.package.icu_experimental_data]
+opt-level = "s"
+[profile.release.package.icu_datetime]
+opt-level = "s"
+[profile.release.package.icu_datetime_data]
+opt-level = "s"
+[profile.release.package.icu_segmenter]
+opt-level = "s"
+[profile.release.package.icu_segmenter_data]
+opt-level = "s"
+[profile.release.package.cntp_i18n_core]
+opt-level = "s"
+[profile.release.package.cntp_localesupport]
+opt-level = "s"
+[profile.release.package.lofty]
+opt-level = "s"
+[profile.release.package.dateparser]
+opt-level = "s"
+[profile.release.package.qrcode]
+opt-level = "s"
+[profile.release.package.sysinfo]
+opt-level = "s"
+[profile.release.package.chrono]
+opt-level = "s"
+[profile.release.package.regex-syntax]
+opt-level = "s"
+[profile.release.package.regex-automata]
+opt-level = "s"
