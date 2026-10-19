@@ -6,6 +6,9 @@
 
 use cntp_i18n::{I18N_MANAGER, tr_load};
 use gpui::set_trace_enabled;
+// 只有 [frame] 探针（下面整段 #[cfg(not(test))]）用到它；import 同处门控，否则
+// --tests 配置下就是一条未使用告警。
+#[cfg(not(test))]
 use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock, RwLock};
 
@@ -397,19 +400,45 @@ pub(crate) fn spawn_replacement() -> bool {
 
 /// [frame] 探针的窗口标签注册表：gpui 的 `FrameTiming` 只带 `WindowId`，
 /// 按窗口归因（主窗口 / 桌面歌词悬浮窗的帧节奏差一个数量级，混在一行里
-/// 无法判读）需要应用在开窗时登记人类可读标签。反向映射（标签→当前
-/// WindowId）：每标签一条，窗口反复开关只覆盖、不累积，已销毁窗口的
-/// 旧 id 自然失配，无需反注册。探针跑在 tokio worker 上，30s 一次只读，
-/// 注册是开窗级写——RwLock 而非 gpui Global（注册点在窗口创建路径上，
-/// 拿不到 App 上下文）。
-static FRAME_WINDOW_IDS: OnceLock<RwLock<HashMap<&'static str, gpui::WindowId>>> = OnceLock::new();
+/// 无法判读）需要应用在开窗时登记人类可读标签。
+///
+/// 表形是**有界的 id→标签历史**，不是「标签→最新 id」：`WindowId` 是 slotmap
+/// key（gpui `window.rs` 里 `slotmap::new_key_type!` 生成），`as_u64()` 高 32 位
+/// 是世代、低 32 位是槽位，同一槽位重开后世代递增。只记最新 id 的话，窗口一旦
+/// 重开，上一个世代的计时行就匹配不到标签、退化成匿名 `win-<数字>`——实测语料
+/// 里 `win-4294967298`（槽位 2 / 世代 1）与 `win-12884901890`（槽位 2 / 世代 3）
+/// 正是同一槽位的两个世代。历史表让每个世代各自归位，而匿名行还剩多少本身也就
+/// 是「有窗口应用侧从未登记过」的直接证据。
+///
+/// 探针跑在 tokio worker 上，30s 一次只读；注册是开窗级写，量小且有界——
+/// RwLock 而非 gpui Global（注册点在窗口创建路径上，拿不到 App 上下文）。
+static FRAME_WINDOW_LABELS: OnceLock<RwLock<Vec<(gpui::WindowId, &'static str)>>> = OnceLock::new();
 
-/// 开窗后登记该窗口在 `[frame]` 日志里的 `win=` 标签（同标签重开覆盖）。
+/// 历史表容量：正常会话只有三个窗（主窗 / 桌面歌词 / 设置），反复开关才推进
+/// 世代。16 条封死增长，超出时丢最旧的世代（那种窗早已不再画帧）。
+const FRAME_WINDOW_LABEL_HISTORY: usize = 16;
+
+/// 开窗后登记该窗口在 `[frame]` 日志里的 `win=` 标签（同 id 重复登记覆盖，
+/// 同标签的不同世代并存）。
 pub fn register_frame_window_label(handle: gpui::AnyWindowHandle, label: &'static str) {
-    let map = FRAME_WINDOW_IDS.get_or_init(Default::default);
-    if let Ok(mut map) = map.write() {
-        map.insert(label, handle.window_id());
+    let history = FRAME_WINDOW_LABELS.get_or_init(Default::default);
+    if let Ok(mut history) = history.write() {
+        let window_id = handle.window_id();
+        history.retain(|(registered, _)| *registered != window_id);
+        history.push((window_id, label));
+        if history.len() > FRAME_WINDOW_LABEL_HISTORY {
+            history.remove(0);
+        }
     }
+}
+
+/// 匿名窗口的自描述形式 `win-slot<槽位>@v<世代>`：把 slotmap key 的两半拆开写，
+/// 下一份语料就能判读它是我们某个窗的旧世代、还是应用侧无从登记的 gpui 自建窗
+/// ——只给 `as_u64()` 的话这两种情况长得一模一样。
+#[cfg(not(test))]
+fn anonymous_window_tag(window_id: gpui::WindowId) -> String {
+    let raw = window_id.as_u64();
+    format!("win-slot{}@v{}", raw & u32::MAX as u64, raw >> 32)
 }
 
 /// `[frame]` 渲染归属探针。gpui 侧只能看到窗口级 draw 聚合，`invalidations_max`
@@ -563,19 +592,22 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     let mut windows: Vec<(gpui::WindowId, Vec<&gpui::profiler::FrameTiming>)> =
         by_window.into_iter().collect();
     windows.sort_by_key(|(id, _)| id.as_u64());
-    let labels = FRAME_WINDOW_IDS.get_or_init(Default::default);
-    let labels = labels.read().ok();
+    let history = FRAME_WINDOW_LABELS.get_or_init(Default::default);
+    let history = history.read().ok();
     for (window_id, frames) in windows {
-        let win = labels
+        // 从最新往旧找：同 id 只会有一条（注册时先 retain 再 push），这里取的是
+        // 「这个世代的 id 当初登记的标签」。
+        let win = history
             .as_ref()
-            .and_then(|labels| {
-                labels
+            .and_then(|history| {
+                history
                     .iter()
-                    .find(|(_, id)| **id == window_id)
-                    .map(|(label, _)| *label)
+                    .rev()
+                    .find(|(registered, _)| *registered == window_id)
+                    .map(|(_, label)| *label)
             })
             .map_or_else(
-                || format!("win-{}", window_id.as_u64()),
+                || anonymous_window_tag(window_id),
                 |label| label.to_string(),
             );
         let mut draws_us: Vec<u64> = frames
@@ -647,11 +679,21 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     // 会变成每分钟数行、每天约 1MB 的纯噪声；而进入静默的那一次仍会留下证据。
     use crate::sync::RecoveredMutex;
     static LAST_SILENT: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
-    if let Some(labels) = labels.as_ref() {
-        let mut silent: Vec<&'static str> = labels
-            .iter()
-            .filter(|(_, id)| !drawn.contains(id))
-            .map(|(label, _)| *label)
+    if let Some(history) = history.as_ref() {
+        // 每个标签只看它**最新**登记的那个世代：旧世代早已不再画帧，把旧世代也
+        // 算进"静默"会让同一标签重复输出 frames=0，把"这个窗现在没画"读成
+        // "有好几个这样的窗"。
+        let mut latest_by_label: Vec<(&'static str, gpui::WindowId)> = Vec::new();
+        for &(window_id, label) in history.iter() {
+            match latest_by_label.iter_mut().find(|entry| entry.0 == label) {
+                Some(entry) => entry.1 = window_id,
+                None => latest_by_label.push((label, window_id)),
+            }
+        }
+        let mut silent: Vec<&'static str> = latest_by_label
+            .into_iter()
+            .filter(|(_, window_id)| !drawn.contains(window_id))
+            .map(|(label, _)| label)
             .collect();
         silent.sort_unstable();
         let mut last = LAST_SILENT.lock_recovered();
