@@ -247,52 +247,70 @@ lto = "thin"
 panic = "abort"
 strip = "symbols"
 
-# 非实时依赖按包降到 "s" 换 .text 体积（2026-10-19 实测）。
-# 收益：exe 35,309,568 → 34,969,600（−339,968 B，−0.96%），.text 24,773,928 →
-# 24,355,816（−418,112 B，−1.69%），.rdata 基本不动（−110 B）。
-# 边界（不得越）：实时与帧路径保持在 3 —— `symphonia*`（解码）、`image`（缩略图
-# 与背景管线）、`rubato`（重采样）、`rustfft`/`palette`（EQ 分析、取色）、
-# `gpui*`（每帧）、`sqlx*`/`tokio`（UI 线程查询与运行时）。本组里 `lofty` 是唯一
-# 出现在扫描热循环的包，它只在大库首扫时略慢（本机 66 曲不可测），不在播放路径。
-# 归因教训：这组之前我按 rlib 归档里 COFF 成员的字节数排序，`windows` 136MB、
-# `icu_experimental_data` 61MB，据此预期能省下几 MB —— 实际只省 340KB。归档字节
-# 数不是 .text 的可用代理（大部分被链接器剥掉或在依赖方单态化），要精确归因得用
-# 链接器 /MAP（一次改 rustflags 的全量重建），别再用归档尺寸下结论。
-[profile.release.package.windows]
+# 体积策略：依赖默认降到 "s"，只有实测在实时/帧/查询/搜索路径上的包点名回 3。
+#
+# 为什么这样切：`.text` 占 exe 的 67%（24,773,928 / 35,309,568），嵌入资源只占
+# 8.6%，所以体积只能从机器码拿。上一版按包点名 20 个"明显非实时"的包降档，实测
+# 只有 −339,968 B（−0.96%）——归档里的 object 字节数不是 .text 的可用代理（多数
+# 被链接器剥掉或在依赖方单态化），真正的量在长尾里。全部依赖降 "s" 的上界实测：
+# exe 32,124,416（−3,185,152 B，−9.02%），.text 21,742,744（−12.23%）。
+#
+# 下面这组回 3 的包就是"上界不能白拿"的那部分：本文件的既有结论（decode/resample/
+# image 路径在 "s" 下实测更慢）与 AGENTS.md 的实时性优先级。包名一律取自
+# `cargo tree -e normal`——profile 的包名写错是**静默不生效**，而 cargo 只支持
+# "*" 这一种通配（没有 serde-* 前缀 glob），所以只能逐包具名。
+[profile.release.package."*"]
 opt-level = "s"
-[profile.release.package.windows-core]
-opt-level = "s"
-[profile.release.package.windows-targets]
-opt-level = "s"
-[profile.release.package.icu]
-opt-level = "s"
-[profile.release.package.icu_experimental]
-opt-level = "s"
-[profile.release.package.icu_experimental_data]
-opt-level = "s"
-[profile.release.package.icu_datetime]
-opt-level = "s"
-[profile.release.package.icu_datetime_data]
-opt-level = "s"
-[profile.release.package.icu_segmenter]
-opt-level = "s"
-[profile.release.package.icu_segmenter_data]
-opt-level = "s"
-[profile.release.package.cntp_i18n_core]
-opt-level = "s"
-[profile.release.package.cntp_localesupport]
-opt-level = "s"
-[profile.release.package.lofty]
-opt-level = "s"
-[profile.release.package.dateparser]
-opt-level = "s"
-[profile.release.package.qrcode]
-opt-level = "s"
-[profile.release.package.sysinfo]
-opt-level = "s"
-[profile.release.package.chrono]
-opt-level = "s"
-[profile.release.package.regex-syntax]
-opt-level = "s"
-[profile.release.package.regex-automata]
-opt-level = "s"
+
+# 音频解码（symphonia 的实现分散在 core/common/各 codec/各 format/两个适配器里，
+# 只钉 `symphonia` 一个名字等于没钉）
+[profile.release.package]
+symphonia = { opt-level = 3 }
+symphonia-core = { opt-level = 3 }
+symphonia-common = { opt-level = 3 }
+symphonia-bundle-flac = { opt-level = 3 }
+symphonia-bundle-mp3 = { opt-level = 3 }
+symphonia-codec-adpcm = { opt-level = 3 }
+symphonia-codec-alac = { opt-level = 3 }
+symphonia-codec-pcm = { opt-level = 3 }
+symphonia-codec-vorbis = { opt-level = 3 }
+symphonia-format-isomp4 = { opt-level = 3 }
+symphonia-format-ogg = { opt-level = 3 }
+symphonia-format-riff = { opt-level = 3 }
+symphonia-metadata = { opt-level = 3 }
+symphonia-adapter-fdk-aac = { opt-level = 3 }
+symphonia-adapter-libopus = { opt-level = 3 }
+# 封面解码与缩放（缩略图、背景管线、取色的输入）
+image = { opt-level = 3 }
+image-webp = { opt-level = 3 }
+palette = { opt-level = 3 }
+palette_math = { opt-level = 3 }
+# 重采样与 FFT（音频线程与均衡器分析）
+rubato = { opt-level = 3 }
+realfft = { opt-level = 3 }
+rustfft = { opt-level = 3 }
+# 每帧渲染与无障碍
+gpui = { opt-level = 3 }
+gpui-unofficial = { opt-level = 3 }
+gpui_platform = { opt-level = 3 }
+gpui_windows = { opt-level = 3 }
+gpui_shared_string = { opt-level = 3 }
+gpui_collections = { opt-level = 3 }
+gpui_refineable = { opt-level = 3 }
+gpui_sum_tree = { opt-level = 3 }
+gpui_scheduler = { opt-level = 3 }
+gpui_ce_util = { opt-level = 3 }
+accesskit = { opt-level = 3 }
+accesskit_consumer = { opt-level = 3 }
+accesskit_windows = { opt-level = 3 }
+# 运行时、查询与搜索（[db] 探针里会出现在 UI 线程上的那段，以及按键即算的匹配器）
+tokio = { opt-level = 3 }
+tokio-stream = { opt-level = 3 }
+sqlx = { opt-level = 3 }
+sqlx-core = { opt-level = 3 }
+sqlx-sqlite = { opt-level = 3 }
+nucleo = { opt-level = 3 }
+nucleo-matcher = { opt-level = 3 }
+# 扫描检查点的 zlib 压缩（历史实测过它的工作量）
+flate2 = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
