@@ -2305,7 +2305,7 @@
   },
   "TRAY_HIDE": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:373",
+    "definedIn": "src/tray/windows.rs:531",
     "plural": false,
     "description": null
   },
@@ -2341,7 +2341,7 @@
   },
   "TRAY_SHOW": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:375",
+    "definedIn": "src/tray/windows.rs:533",
     "plural": false,
     "description": null
   },

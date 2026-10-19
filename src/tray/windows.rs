@@ -7,8 +7,10 @@
 //! **不需要给 gpui 打任何补丁**。它同时充当第二次启动的激活消息靶点
 //! （`FindWindowW` 按类名定位，隐藏窗口也可查找）。
 //!
-//! explorer 崩溃重启后托盘图标会消失：注册 `TaskbarCreated` 消息，
-//! 收到时重新 NIM_ADD。
+//! 图标丢失的自愈**不**依赖 `TaskbarCreated`：message-only 窗口收不到广播
+//! 消息（MSDN「Window Features → Message-Only Windows」原文
+//! *does not receive broadcast messages*），explorer 重启发的那条广播到不了
+//! 本进程。检测改为自己发现，见 `ShellRecovery`。
 
 use crate::sync::RecoveredMutex;
 use std::sync::{
@@ -16,6 +18,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     mpsc::Sender,
 };
+use std::time::{Duration, Instant};
 
 use windows::{
     Win32::{
@@ -51,13 +54,92 @@ static TRAY_TX: OnceLock<Sender<TrayCommand>> = OnceLock::new();
 /// 主窗口 HWND（供菜单标签判断显隐）。显隐/轮询命令经 gpui 路径刷新。
 static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
 
-/// explorer 重启后发来的 `TaskbarCreated` 注册消息 id。
+/// explorer 重启时广播的 `TaskbarCreated` 消息 id。message-only 窗口收不到广播，
+/// 登记它只是窗口类型若变更时的保险。
 static TASKBAR_CREATED_MSG: OnceLock<u32> = OnceLock::new();
 
-/// 最近一次 tooltip 文本。explorer 重启时 UI 侧不会再有 notify，重注册若
-/// 只会回落应用名，tooltip 就会一直错到下一次切歌；这里让 NIM_ADD 带上
-/// 重启前的内容。
+/// 最近一次 tooltip 文本。壳侧图标丢失期间 UI 侧不会再有成功的 notify，而
+/// 重注册的 `NIM_ADD` 与心跳探针都要发文本——若回落应用名，tooltip 就会一直
+/// 错到下一次切歌；这里让两者都带上最新内容。
 static LAST_TOOLTIP: Mutex<Option<String>> = Mutex::new(None);
+
+/// 图标丢失后的自愈状态。**不**依赖 `TaskbarCreated`：message-only 窗口收不到
+/// 广播消息（模块文档引了 MSDN 原文），`tray_wndproc` 里保留的那个分支只是
+/// 「窗口类型若改成顶层隐藏窗」时的保险。
+///
+/// 实测事故（2026-10-19 从轮转日志取证）：一次 `NIM_MODIFY` 在跨进程 IPC 里阻塞
+/// 7.06s 后返回 FALSE / `E_FAIL`，此后 107 次刷新全在 0.3ms 内被拒（注册已不在
+/// 壳的表里），从 3474s 一路到 20110s（4.6h）直到进程结束，图标再无出现。形态与
+/// explorer／通知区重建一致，但日志里没有那条重启事件本身——所以自愈不能指望
+/// 知道原因，只能认「这次 IPC 没被接受」。
+#[derive(Debug)]
+struct ShellRecovery {
+    /// `Some` = 注册已丢，值为下一次 `NIM_ADD` 的时刻；`None` = 注册在位。
+    retry_at: Option<Instant>,
+    attempts: u32,
+    /// 上一次心跳探针的时刻；`None` = 尚未探过（首次服务即探一次）。
+    last_probe: Option<Instant>,
+}
+
+impl ShellRecovery {
+    const INIT: Self = Self {
+        retry_at: None,
+        attempts: 0,
+        last_probe: None,
+    };
+
+    /// 回到空闲：不再重注册，但心跳探针继续盯着（下一次 `NIM_MODIFY` 被拒会
+    /// 重新挂起）。`now` 记为最近一次探针时刻——刚发过一次成功的 IPC。
+    fn idle_at(now: Instant) -> Self {
+        Self {
+            last_probe: Some(now),
+            ..Self::INIT
+        }
+    }
+}
+
+static RECOVERY: Mutex<ShellRecovery> = Mutex::new(ShellRecovery::INIT);
+
+/// 心跳探针间隔：丢失后最迟 30s 发现，覆盖「丢失后一直没人切歌」的情形。
+/// 一次 `NIM_MODIFY` 的开销与每次切歌的刷新同量级，30s 一档可忽略。
+const SHELL_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+/// 首次重注册延迟。**不是实测值**——我们没量过壳多久才开始接受 `NIM_ADD`，这一
+/// 档只是「别在同一瞬间连环重发」的下限。实测的是那次事故里「一次都不重试」的
+/// 代价（4.6h 无图标），所以这里的纪律是：一定要重试，但退避有界（见
+/// `REREGISTER_MAX_ATTEMPTS`）。
+const REREGISTER_FIRST_DELAY: Duration = Duration::from_millis(200);
+const REREGISTER_BACKOFF_MAX: Duration = Duration::from_secs(10);
+/// 放弃本轮自愈的尝试次数。200ms 起步、倍增、10s 封顶，60 次累计实测 562s
+/// （约 9.4 分钟）——必须明显长于 explorer 重启的实际耗时，否则自愈会在壳回来
+/// 之前就停手。放弃是安全的：心跳探针仍在跑，下一次 `NIM_MODIFY` 被拒会重新挂起。
+const REREGISTER_MAX_ATTEMPTS: u32 = 60;
+
+/// 第 `attempts` 次失败后再等待多久重试。纯函数，便于单测。
+fn reregister_delay(attempts: u32) -> Duration {
+    (REREGISTER_FIRST_DELAY * (1u32 << attempts.min(6))).min(REREGISTER_BACKOFF_MAX)
+}
+
+fn tooltip_cache_text() -> String {
+    LAST_TOOLTIP
+        .lock_recovered()
+        .clone()
+        .unwrap_or_else(super::app_name_label)
+}
+
+fn recovery_pending() -> bool {
+    RECOVERY.lock_recovered().retry_at.is_some()
+}
+
+/// 把图标标记为「已丢、待重注册」。幂等：已在挂起中就不动退避时刻，否则每次
+/// 刷新都会把首次延迟往后推。
+fn arm_reregister() {
+    let mut state = RECOVERY.lock_recovered();
+    if state.retry_at.is_none() {
+        state.attempts = 0;
+        state.retry_at = Some(Instant::now() + REREGISTER_FIRST_DELAY);
+        tracing::warn!("tray shell: icon registration lost, re-registering");
+    }
+}
 
 const TRAY_CLASS: windows::core::PCWSTR = w!("MelioraTrayHost");
 const TRAY_ID: u32 = 1;
@@ -81,20 +163,84 @@ pub(super) struct WindowsTray {
 }
 
 impl WindowsTray {
-    pub(super) fn set_tooltip(&self, text: &str) {
-        // 先记下文本再走 IPC：失败无所谓（explorer 重启中），
-        // TaskbarCreated 重注册会用这个缓存补上。
-        *LAST_TOOLTIP.lock_recovered() = Some(text.to_owned());
+    /// 与 ADD 同一套完整 flags（参考实现的 GetData() 模式）：只发 NIF_TIP 时
+    /// 部分 shell 版本不会更新 infotip。
+    fn modify(&self, text: &str) -> bool {
         unsafe {
             notify(
+                "modify",
                 self.hwnd,
                 NIM_MODIFY,
-                // 与 ADD 同一套完整 flags（参考实现的 GetData() 模式）：
-                // 只发 NIF_TIP 时部分 shell 版本不会更新 infotip。
                 NIF_ICON | NIF_MESSAGE | NIF_TIP,
                 Some(text),
                 self.icon,
-            );
+            )
+        }
+    }
+
+    pub(super) fn set_tooltip(&self, text: &str) {
+        // 先记文本再走 IPC：挂起期间这次 MODIFY 必然被拒，缓存下来由重注册的
+        // `NIM_ADD` 代发（也免掉被拒日志刷屏）。
+        *LAST_TOOLTIP.lock_recovered() = Some(text.to_owned());
+        if recovery_pending() {
+            return;
+        }
+        if !self.modify(text) {
+            arm_reregister();
+        }
+    }
+
+    /// 壳侧自愈，由 gpui drain 任务每 100ms 调一次。与 `set_tooltip` 同为主
+    /// 线程，`RECOVERY` 只是跨调用点的状态盒，没有竞争。
+    ///
+    /// 两条职责：挂起中按退避阶梯重发 `NIM_ADD`；注册在位时每
+    /// `SHELL_PROBE_INTERVAL` 发一次内容不变的 `NIM_MODIFY` 作心跳探针——它唯一
+    /// 的用途是拿回「壳还认不认这个注册」这个答复。
+    pub(super) fn service_shell_recovery(&self) {
+        let now = Instant::now();
+        let mut state = RECOVERY.lock_recovered();
+        if let Some(at) = state.retry_at {
+            if now < at {
+                return;
+            }
+            state.attempts += 1;
+            let attempts = state.attempts;
+            // 图标句柄也重取：旧 explorer 的共享句柄不再可信。
+            let added = unsafe {
+                notify(
+                    "add",
+                    self.hwnd,
+                    NIM_ADD,
+                    NIF_ICON | NIF_MESSAGE | NIF_TIP,
+                    Some(&tooltip_cache_text()),
+                    load_icon(),
+                )
+            };
+            if added {
+                tracing::warn!(attempts, "tray shell: icon re-registered");
+                *state = ShellRecovery::idle_at(now);
+            } else if attempts >= REREGISTER_MAX_ATTEMPTS {
+                tracing::error!(
+                    attempts,
+                    "tray shell: re-registration gave up, heartbeat keeps watching"
+                );
+                *state = ShellRecovery::idle_at(now);
+            } else {
+                state.retry_at = Some(now + reregister_delay(attempts));
+            }
+            return;
+        }
+        if state
+            .last_probe
+            .is_some_and(|at| now - at < SHELL_PROBE_INTERVAL)
+        {
+            return;
+        }
+        state.last_probe = Some(now);
+        // 探针失败要 arm_reregister，必须先放锁——std Mutex 不可重入。
+        drop(state);
+        if !self.modify(&tooltip_cache_text()) {
+            arm_reregister();
         }
     }
 }
@@ -102,7 +248,14 @@ impl WindowsTray {
 impl Drop for WindowsTray {
     fn drop(&mut self) {
         unsafe {
-            notify(self.hwnd, NIM_DELETE, NOTIFY_ICON_DATA_FLAGS(0), None, None);
+            notify(
+                "delete",
+                self.hwnd,
+                NIM_DELETE,
+                NOTIFY_ICON_DATA_FLAGS(0),
+                None,
+                None,
+            );
             let _ = DestroyWindow(self.hwnd);
         }
     }
@@ -139,12 +292,18 @@ pub(super) fn init(tx: Sender<TrayCommand>) -> Option<WindowsTray> {
         )
     }
     .ok()?;
+    // 0 = 注册失败。必须挡掉：`tray_wndproc` 用「消息号 == 存储值」匹配，而
+    // `open_menu` 会自发 `WM_NULL`(=0)，两者一旦相等每次右键菜单收尾都会误触发
+    // 一次重注册。
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
-    let _ = TASKBAR_CREATED_MSG.set(taskbar_created);
+    if taskbar_created != 0 {
+        let _ = TASKBAR_CREATED_MSG.set(taskbar_created);
+    }
 
     let icon = unsafe { load_icon() };
     let added = unsafe {
         notify(
+            "add",
             hwnd,
             NIM_ADD,
             NIF_ICON | NIF_MESSAGE | NIF_TIP,
@@ -256,7 +415,11 @@ unsafe fn load_icon() -> Option<HICON> {
 }
 
 /// `Shell_NotifyIconW` 薄封装：统一填公共字段，按需写 tip / icon。
+///
+/// `kind` 只进日志。之前没有它，事故取证时无法区分「`NIM_ADD` 被拒」与
+/// 「`NIM_MODIFY` 被拒」，只能靠 `tip_len` 与相邻日志反推（见 `ShellRecovery`）。
 unsafe fn notify(
+    kind: &'static str,
     hwnd: HWND,
     message: NOTIFY_ICON_MESSAGE,
     flags: NOTIFY_ICON_DATA_FLAGS,
@@ -278,19 +441,23 @@ unsafe fn notify(
         write_tip(&mut nid.szTip, tip);
     }
     let ok = unsafe { Shell_NotifyIconW(message, &nid).as_bool() };
-    // 诊断：tooltip 不显示的排查靠这几行（message/flags/tip 长度 + 结果）。
-    // meliora.log 里 grep "tray shell"。
+    // 诊断：tooltip 不显示的排查靠这几行（kind/flags/tip 长度 + 结果）。
+    // meliora.log 里 grep "tray shell"。失败意味着这次 IPC 没被壳接受（最常见
+    // 是注册已不在），必须到 warn 才不会被淹没在每次切歌的刷新日志中。
     if !ok {
         let err = unsafe { GetLastError() };
-        tracing::info!(
+        tracing::warn!(
             target: "tray",
             ?err,
+            kind,
+            flags = flags.0,
             tip_len = tip.map(str::len),
             "tray shell: Shell_NotifyIconW failed"
         );
     } else {
         tracing::debug!(
             target: "tray",
+            kind,
             tip_len = tip.map(str::len),
             "tray shell: Shell_NotifyIconW ok"
         );
@@ -332,20 +499,11 @@ unsafe extern "system" fn tray_wndproc(
                 }
                 LRESULT(0)
             }
-            // explorer 崩溃重启：重新注册图标。
+            // explorer 重启的广播。message-only 窗口收不到它（模块文档引了 MSDN
+            // 原文），所以这条只是保险：窗口类型若改成顶层隐藏窗它会立即生效。
+            // 真正的检测在 `service_shell_recovery` 的心跳探针里。
             m if Some(m) == TASKBAR_CREATED_MSG.get().copied() => {
-                let icon = load_icon();
-                let tip = LAST_TOOLTIP
-                    .lock_recovered()
-                    .clone()
-                    .unwrap_or_else(super::app_name_label);
-                notify(
-                    hwnd,
-                    NIM_ADD,
-                    NIF_ICON | NIF_MESSAGE | NIF_TIP,
-                    Some(tip.as_str()),
-                    icon,
-                );
+                arm_reregister();
                 LRESULT(0)
             }
             // 第二次启动的唤回请求。
@@ -420,4 +578,25 @@ fn main_window_visible() -> bool {
         return false;
     }
     unsafe { IsWindowVisible(HWND(raw as *mut _)).as_bool() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 退避阶梯：200ms 起步、倍增、10s 封顶；放弃前累计 562.4s（约 9.4 分钟），
+    /// 必须明显长于 explorer 重启的实际耗时，否则自愈会在壳回来之前就停手。
+    #[test]
+    fn reregister_backoff_ladder_is_bounded() {
+        assert_eq!(reregister_delay(0), Duration::from_millis(200));
+        assert_eq!(reregister_delay(1), Duration::from_millis(400));
+        assert_eq!(reregister_delay(5), Duration::from_millis(6400));
+        assert_eq!(reregister_delay(6), REREGISTER_BACKOFF_MAX);
+        assert_eq!(reregister_delay(u32::MAX), REREGISTER_BACKOFF_MAX);
+
+        let total: Duration = (1..=REREGISTER_MAX_ATTEMPTS)
+            .map(reregister_delay)
+            .fold(Duration::ZERO, |acc, delay| acc + delay);
+        assert_eq!(total.as_millis(), 562_400);
+    }
 }

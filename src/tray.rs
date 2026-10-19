@@ -106,6 +106,17 @@ impl PlatformTray {
         }
     }
 
+    /// 壳侧自愈（重注册退避 + 心跳探针）。Windows 独有，其余平台空实现。
+    fn service_shell_recovery(&self) {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(tray) => tray.service_shell_recovery(),
+            #[cfg(target_os = "macos")]
+            Self::MacOs(_) => {}
+            Self::None => {}
+        }
+    }
+
     /// 记录主窗口句柄（Windows 菜单标签的显隐判断用；macOS 无此需求）。
     fn note_window(&self, window: &Window) {
         match self {
@@ -205,11 +216,17 @@ pub fn init(cx: &mut App) {
 
     // drain：壳事件 → 需要 cx 的处理。100ms 轮询；不能阻塞 recv——主线程
     // 卡住就是掉帧。
+    //
+    // 同一 tick 顺带驱动托盘壳自愈：退避阶梯最细到 200ms 一档，所以按 tick
+    // 粒度调用而不是攒到 30s 一次（未到点的调用只是一次无竞争加锁 + 两个
+    // Instant 比较）。它必须跑在主线程——`Shell_NotifyIconW` 与 `set_tooltip`
+    // 同线程，两者才谈得上先后。
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
+            platform.service_shell_recovery();
             while let Ok(command) = rx.try_recv() {
                 cx.update(|cx| handle_command(command, cx));
             }
