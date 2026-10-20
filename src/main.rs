@@ -955,6 +955,10 @@ fn spawn_memory_probe() {
                 tracing::warn!(
                     step_mb = delta,
                     private_mb = private,
+                    // 堆/非堆拆分同 periodic 行的口径：异常的步子落在哪一侧
+                    // 一眼可判（heap = 分配器实活，non-heap = 驱动/图集/栈）。
+                    heap_commit_mb = heap_committed_mb,
+                    non_heap_mb = private.saturating_sub(heap_committed_mb),
                     render_cache_mb = render_cache,
                     img_cache_mb = img_mb,
                     // 阶梯值：低频档刷新（见上方 covers_mb 刷新点）
