@@ -49,6 +49,14 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
         // 预算：这是**每连接**的额度，3 连接最坏 24 MB，与下面把连接数压到 3
         // 的取舍同源，故取拐点左侧的保守值。
         .pragma("cache_size", "-8000")
+        // 读路径的 mmap：默认走 read() 把页从 OS 缓存拷进连接自己的页缓存，
+        // 有序扫描（列表查询的顺序读页）在 mmap 之后省掉这次 memcpy。只映射
+        // 文件前 64MB——封面 blob 占库体 42%（见上），整库映射会把几乎不被
+        // 随机读的 artwork 也拖进地址空间；64MB 足够盖住元数据表的热工作集。
+        // 与 cache_size 不同，这一项**未在本机做配对实测**（纯 I/O 策略、
+        // 零正确性风险，改动可单行回退）：验证口径是 `[db] slow ui-thread
+        // query` 与 row_build_bench 里有序列查询的耗时，无改善就删掉本行。
+        .pragma("mmap_size", "67108864")
         .create_if_missing(true);
     // 桌面应用读写并发有限：限制连接数（默认 10 个连接 × 各自 page cache 徒增常驻内存）
     let pool = SqlitePoolOptions::new()

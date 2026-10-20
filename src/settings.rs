@@ -265,10 +265,12 @@ pub struct SettingsGlobal {
 
 impl Global for SettingsGlobal {}
 
-/// 从 `path` 加载设置、发布 [`SettingsGlobal`]，并 watch 所在目录，
-/// 使手工编辑的 `settings.json` 能被实时重读。
-pub fn setup_settings(cx: &mut App, path: PathBuf) {
-    let outcome = create_settings(&path);
+/// 发布 [`SettingsGlobal`] 并 watch 设置文件所在目录，使手工编辑的
+/// `settings.json` 能被实时重读。设置文件的读取/解析已在别处完成：启动预取
+/// 在 tokio 的 spawn_blocking 上并行做（见 `ui/app.rs` 的启动序列），启动
+/// 关键路径上只做 gpui 侧的注册与 watch。watcher 回读仍走同步的
+/// [`create_settings`]——那是 1s 轮询上的冷路径，不值得再拆。
+pub fn setup_settings_with_outcome(cx: &mut App, path: PathBuf, outcome: SettingsLoadOutcome) {
     let initial_corrupt_path = match &outcome {
         SettingsLoadOutcome::Corrupt { path, .. } => Some(path.clone()),
         SettingsLoadOutcome::Loaded(_) => None,

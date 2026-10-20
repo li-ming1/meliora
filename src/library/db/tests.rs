@@ -326,6 +326,175 @@ async fn report_title_sort_index_benefit() {
     b.close().await;
 }
 
+/// 时长 / 曲序两枚候选索引（migrations/20261020120000）到底值多少——配对设计
+/// 与 [`report_title_sort_index_benefit`] 完全相同：两份字节同源的 6 万行库、
+/// 只在 B 上保留候选索引（迁移已把它装进两份库 ⇒ 对照组在 A 上显式拆掉）、
+/// 每遍交换 A/B 先后、min-of-4，同时打印两侧 EXPLAIN QUERY PLAN——"计划有没
+/// 有从临时树变成索引扫描"才是机制证据，计时只是它的价格。
+///
+/// 与标题探针的差异：时长与曲序的排序键都**不是**全序（真实库里大量并列），
+/// 而并列行在"排序器输出"与"索引顺序"下的相对次序没有保证，故播种时把两个
+/// 键都取成全序（duration = 行号、track_number = 行号），`assert_eq!` 两侧
+/// 序列相同才站得住。写侧成本未在此复量：形状与 20261017120000 相同
+/// （同一张表再多两枚索引的维护），那次的写放大数字可直接类比。
+///
+/// `#[ignore]`：要灌 6 万行。运行：
+/// `cargo test --release --features kugou report_track_sort_index_benefit -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "cost probe: duration/number index benefit, seeds 60k rows, explicit run only"]
+async fn report_track_sort_index_benefit() {
+    // sqlx 的 `SqliteConnectOptions` 默认开着外键，所以 `track.album_id` 必须指向真实专辑行。
+    const ALBUMS: usize = 4_000;
+    const ROWS: usize = 60_000;
+    // `EXPLAIN` 必须用 `&'static` 串（sqlx 0.9 禁运行期拼接），故走 `concat!`。
+    const EQP_LENGTH_ASC: &str = concat!(
+        "EXPLAIN QUERY PLAN ",
+        include_str!("../../../queries/library/find_tracks_length_asc.sql")
+    );
+    const EQP_LENGTH_DESC: &str = concat!(
+        "EXPLAIN QUERY PLAN ",
+        include_str!("../../../queries/library/find_tracks_length_desc.sql")
+    );
+    const EQP_NUMBER_ASC: &str = concat!(
+        "EXPLAIN QUERY PLAN ",
+        include_str!("../../../queries/library/find_tracks_number_asc.sql")
+    );
+    const EQP_NUMBER_DESC: &str = concat!(
+        "EXPLAIN QUERY PLAN ",
+        include_str!("../../../queries/library/find_tracks_number_desc.sql")
+    );
+
+    async fn plan(pool: &SqlitePool, sql: &'static str) -> String {
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(sql).fetch_all(pool).await.unwrap();
+        rows.iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+
+    let (dir, seed_pool) = crate::test_support::create_test_pool("meliora-tracksort").await;
+    let seed_path = dir.join("library.db");
+    {
+        let mut tx = seed_pool.begin().await.unwrap();
+        for i in 0..ALBUMS {
+            sqlx::query("INSERT INTO album (id, title, title_sortable) VALUES (?, ?, ?)")
+                .bind(i as i64 + 1)
+                .bind(format!("AL{i:05}"))
+                .bind(format!("al{i:05}"))
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap();
+        }
+        for i in 0..ROWS {
+            sqlx::query(
+                "INSERT INTO track (title, title_sortable, album_id, duration, location, folder, \
+                     disc_number, track_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(format!("T{i:06}"))
+            .bind(format!("ts{:05}", i % 20_000))
+            .bind((i % ALBUMS) as i64 + 1)
+            // 两个排序键都取行号：全序，两侧序列才可直接对比（见函数注释）
+            .bind(i as i64)
+            .bind(format!("lib\\d{:03}\\f{i:06}.flac", i % 300))
+            .bind(format!("d{:03}", i % 300))
+            .bind((i % 5) as i64 + 1)
+            .bind(i as i64)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_optional(&seed_pool)
+        .await
+        .unwrap();
+    sqlx::query("ANALYZE").execute(&seed_pool).await.unwrap();
+    seed_pool.close().await;
+
+    // 按字节复制成两份同内容库（-wal 已 TRUNCATE、池已关闭 ⇒ 无半截事务）
+    let a_path = dir.join("noidx.db");
+    let b_path = dir.join("withidx.db");
+    std::fs::copy(&seed_path, &a_path).unwrap();
+    std::fs::copy(&seed_path, &b_path).unwrap();
+    let a = create_pool(&a_path).await.unwrap();
+    let b = create_pool(&b_path).await.unwrap();
+    // `create_pool` 会跑迁移，而 20261020120000 已把两枚索引装进两份库 ⇒
+    // 不显式拆掉对照组，这里测的就是"有索引 vs 有索引"。同标题探针的规矩。
+    sqlx::query("DROP INDEX IF EXISTS idx_track_duration")
+        .execute(&a)
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX IF EXISTS idx_track_disc_track_number")
+        .execute(&a)
+        .await
+        .unwrap();
+    for pool in [&a, &b] {
+        sqlx::query("ANALYZE").execute(pool).await.unwrap();
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+    }
+
+    println!("rows = {ROWS} / albums = {ALBUMS}（两份库内容同源，只差那两枚索引）");
+    for (label, sql, sort) in [
+        ("length asc", EQP_LENGTH_ASC, TrackSortMethod::DurationAsc),
+        (
+            "length desc",
+            EQP_LENGTH_DESC,
+            TrackSortMethod::DurationDesc,
+        ),
+        (
+            "number asc",
+            EQP_NUMBER_ASC,
+            TrackSortMethod::TrackNumberAsc,
+        ),
+        (
+            "number desc",
+            EQP_NUMBER_DESC,
+            TrackSortMethod::TrackNumberDesc,
+        ),
+    ] {
+        println!("  [{label}] A 无索引计划: {}", plan(&a, sql).await);
+        println!("  [{label}] B 有索引计划: {}", plan(&b, sql).await);
+
+        let mut ta: Vec<u128> = Vec::new();
+        let mut tb: Vec<u128> = Vec::new();
+        for rep in 0..4 {
+            // 每遍交换 A/B 先后：谁先跑谁可能吃到页缓存/文件系统预读的便宜
+            let (ra, rb) = if rep % 2 == 0 {
+                let t0 = std::time::Instant::now();
+                let ra = list_tracks(&a, sort).await.unwrap();
+                ta.push(t0.elapsed().as_micros());
+                let t1 = std::time::Instant::now();
+                let rb = list_tracks(&b, sort).await.unwrap();
+                tb.push(t1.elapsed().as_micros());
+                (ra, rb)
+            } else {
+                let t1 = std::time::Instant::now();
+                let rb = list_tracks(&b, sort).await.unwrap();
+                tb.push(t1.elapsed().as_micros());
+                let t0 = std::time::Instant::now();
+                let ra = list_tracks(&a, sort).await.unwrap();
+                ta.push(t0.elapsed().as_micros());
+                (ra, rb)
+            };
+            assert_eq!(ra, rb, "{label}: 两侧序列必须相同");
+        }
+        let ma = ta.iter().min().unwrap();
+        let mb = tb.iter().min().unwrap();
+        println!(
+            "  [{label}] A 无索引 min={:.1}ms {ta:?} | B 有索引 min={:.1}ms {tb:?} | 收益 {:.2}x",
+            *ma as f64 / 1000.0,
+            *mb as f64 / 1000.0,
+            *ma as f64 / (*mb).max(1) as f64
+        );
+    }
+    a.close().await;
+    b.close().await;
+}
+
 #[tokio::test]
 async fn remove_tracks_renumbers_positions_contiguously() {
     let (_dir, pool) = crate::test_support::create_test_pool("playlist-remove-test").await;

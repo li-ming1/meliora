@@ -450,6 +450,32 @@ where
         self.matcher.tick(iterations as u64);
     }
 
+    /// 回到刚构造好的空展示态：查询、分类展开、匹配集、行视图缓存、选中与
+    /// 滚动全部清空——但**保留** nucleo 索引与已注入条目（跨面板开合复用的
+    /// 关键，见 `Palette` 的 show 观察者）。面板关闭期间到达的条目更新由
+    /// 轮询循环在后台合入索引，下次打开直接可用；这里只重置"给人看"的部分，
+    /// 于是打开时的观感与旧行为（关闭即销毁、重开重建）逐像素一致。
+    pub fn clear_display(&mut self, cx: &mut Context<Self>) {
+        self.query.clear();
+        self.expanded_categories.clear();
+        self.matcher
+            .pattern
+            .reparse(0, "", CaseMatching::Smart, Normalization::Smart, false);
+        // 附加条目按当前查询重算：与 `set_query("")` 同一口径，空查询下
+        // providers 返回的就是"无查询"那一批。
+        self.recompute_extra_items();
+        self.last_match = Vec::new();
+        self.display_list = Arc::new(Vec::new());
+        self.views_model = cx.new(|_| FxHashMap::default());
+        self.render_counter = cx.new(|_| 0);
+        self.list_state = Self::make_list_state(None);
+        self.current_selection.update(cx, |sel, cx| {
+            *sel = 0;
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     /// 用新的条目列表对账 matcher。稳定条目注入 nucleo，索引跨更新保持纯追加：只有稳定集
     /// 内部发生变化（本地索引重载、库重扫描）才触发完整 `restart` + 重新注入。易变条目
     /// （例如在线搜索结果，每次查询变化都整体替换）永不进索引——它们连同搜索文本存在这里，

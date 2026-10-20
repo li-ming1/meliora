@@ -25,7 +25,7 @@ use crate::{
                 table_data::{GridContext, capped_table_width},
             },
             tooltip::build_tooltip,
-            uniform_grid::uniform_grid,
+            uniform_grid::{DEFAULT_ITEM_EXTRA_HEIGHT, uniform_grid},
         },
         library::{
             context_menus::{AlbumContextMenuContext, queue_items_from_tracks},
@@ -110,6 +110,20 @@ const TRACK_ROW_HEIGHT: f32 = 40.0;
 /// 高度，超出后内部滚动，而不是把页面滚动撑长。
 const MAX_VISIBLE_TRACK_ROWS: usize = 12;
 
+/// 专辑网格在这个条目数以内保持自然高度、随页面滚动（旧行为）；超过后改为
+/// 有界高度 + 自身滚动句柄的内部滚动。auto_height 模式下 uniform_grid 每次
+/// 渲染都要 layout **全部**瓦片——合辑 / Various Artists 动辄数百张专辑，
+/// 页面每滚动一帧就是数百次瓦片 layout，且 prune 在 auto_height 下剪不掉
+/// 任何行（`render_counter` 被最后一格顶到末尾），GridItem 实体同样全量常驻。
+/// 阈值以下两种模式视觉无差，故取一个普通艺人远达不到的值，把行为变化限制
+/// 在真正昂贵的合辑场景。
+const ALBUM_GRID_MAX_INLINE_ITEMS: usize = 24;
+
+/// 有界模式下的可见行数。容器高度按 `行数 × (min_item_width + 行高附加)`
+/// 估算：窗口更宽时单元被拉伸、行更高，可见行数只会变少（多滚一点），不会
+/// 出现空白区；窗口更窄时单元缩到 min_item_width 以下则反之。
+const ALBUM_GRID_MAX_VISIBLE_ROWS: usize = 2;
+
 pub struct ArtistDetailView {
     artist_id: i64,
     artist_name: Option<DBString>,
@@ -127,6 +141,10 @@ pub struct ArtistDetailView {
     /// 位置不丢，做法同 PlaylistView。
     liked_scroll_handle: UniformListScrollHandle,
     standalone_scroll_handle: UniformListScrollHandle,
+    /// 专辑网格超过 `ALBUM_GRID_MAX_INLINE_ITEMS` 后改用内部滚动时的滚动状态。
+    /// 详情页不缓存（每次导航新建实体，见 `library.rs` 的 Artist 分支），故无需
+    /// 在换艺人时重置。
+    album_scroll_handle: UniformListScrollHandle,
     grid_views: Entity<FxHashMap<usize, Entity<GridItem<Album, AlbumColumn>>>>,
     grid_render_counter: Entity<usize>,
     nav_model: Entity<super::NavigationHistory>,
@@ -176,6 +194,7 @@ impl ArtistDetailView {
                 scroll_handle: ScrollHandle::new(),
                 liked_scroll_handle: UniformListScrollHandle::new(),
                 standalone_scroll_handle: UniformListScrollHandle::new(),
+                album_scroll_handle: UniformListScrollHandle::new(),
                 grid_views,
                 grid_render_counter,
                 nav_model: nav_model.clone(),
@@ -457,6 +476,14 @@ impl Render for ArtistDetailView {
 
         let album_count = self.album_ids.len();
         let album_ids = self.album_ids.clone();
+        // 专辑网格的两种形态（见 ALBUM_GRID_MAX_INLINE_ITEMS）：条目少时自然
+        // 高度随页面滚动；超过阈值后有界高度 + 自身滚动句柄。高度估算用与
+        // uniform_grid 同一套常量，避免两边漂移。
+        let album_grid_bounded = album_count > ALBUM_GRID_MAX_INLINE_ITEMS;
+        let album_grid_height =
+            px(ALBUM_GRID_MAX_VISIBLE_ROWS as f32
+                * (grid_min_item_width + DEFAULT_ITEM_EXTRA_HEIGHT));
+        let album_grid_scroll_handle = self.album_scroll_handle.clone();
         let grid_views_model = self.grid_views.clone();
         let grid_render_counter = self.grid_render_counter.clone();
         // 网格逐单元回调里只在**本帧第一个单元**做 prune（`ui/components/table.rs`
@@ -782,74 +809,106 @@ impl Render for ArtistDetailView {
                                         .text_size(px(18.0))
                                         .child(tr!("ARTIST_ALBUMS", "Albums")),
                                 )
-                                .child(
-                                    div().px(px(10.0)).pt(px(2.0)).pb(px(10.0)).w_full().child(
-                                        uniform_grid(
-                                            "artist-albums-grid",
-                                            album_count,
-                                            None,
-                                            move |idx, _, cx| {
-                                                if prune_gate.replace(true) {
-                                                    grid_render_counter.update(cx, |m, _| *m = idx);
-                                                } else {
-                                                    prune_views(
-                                                        &grid_views_model,
-                                                        &grid_render_counter,
-                                                        idx,
-                                                        cx,
-                                                    );
-                                                }
+                                .child({
+                                    // 单元渲染闭包：自然高度与有界滚动两种形态共用一份，
+                                    // 故先 hoist 成局部绑定（分支各自 move 它，互斥分支
+                                    // 编译期不会构成双重 move）。
+                                    let render_album_tile = move |idx: usize,
+                                                                _: &mut Window,
+                                                                cx: &mut App|
+                                                                 -> AnyElement {
+                                        if prune_gate.replace(true) {
+                                            grid_render_counter.update(cx, |m, _| *m = idx);
+                                        } else {
+                                            prune_views(
+                                                &grid_views_model,
+                                                &grid_render_counter,
+                                                idx,
+                                                cx,
+                                            );
+                                        }
 
-                                                // `create_or_retrieve_view` 的可失败等价物：
-                                                // 专辑可能在 list_albums_by_artist 与本帧之间
-                                                // 消失（清理轮删了它，或其查询失败），而这里的
-                                                // 旧 `.unwrap` 曾在陈旧的 album_ids 快照上把
-                                                // 整个 app panic 掉。
-                                                let cached_view =
-                                                    grid_views_model.read(cx).get(&idx).cloned();
+                                        // `create_or_retrieve_view` 的可失败等价物：
+                                        // 专辑可能在 list_albums_by_artist 与本帧之间
+                                        // 消失（清理轮删了它，或其查询失败），而这里的
+                                        // 旧 `.unwrap` 曾在陈旧的 album_ids 快照上把
+                                        // 整个 app panic 掉。
+                                        let cached_view =
+                                            grid_views_model.read(cx).get(&idx).cloned();
 
-                                                match cached_view {
-                                                    Some(view) => div()
-                                                        .size_full()
-                                                        .child(view)
-                                                        .into_any_element(),
-                                                    None => {
-                                                        let item_id = album_ids[idx].clone();
-                                                        match GridItem::<Album, AlbumColumn>::new(
-                                                            cx,
-                                                            item_id,
-                                                            handler.clone(),
-                                                            AlbumContextMenuContext {
-                                                                show_go_to_artist: false,
-                                                            },
-                                                            GridContext::Standalone,
-                                                        ) {
-                                                            Some(view) => {
-                                                                grid_views_model.update(
-                                                                    cx,
-                                                                    |m, _| {
-                                                                        m.insert(idx, view.clone());
-                                                                    },
-                                                                );
-                                                                div()
-                                                                    .size_full()
-                                                                    .child(view)
-                                                                    .into_any_element()
-                                                            }
-                                                            // 专辑已消失：本帧渲染一个空白格；
-                                                            // 已在途的那次 reload 会替换掉
-                                                            // 陈旧快照。
-                                                            None => div().into_any_element(),
-                                                        }
+                                        match cached_view {
+                                            Some(view) => div()
+                                                .size_full()
+                                                .child(view)
+                                                .into_any_element(),
+                                            None => {
+                                                let item_id = album_ids[idx].clone();
+                                                match GridItem::<Album, AlbumColumn>::new(
+                                                    cx,
+                                                    item_id,
+                                                    handler.clone(),
+                                                    AlbumContextMenuContext {
+                                                        show_go_to_artist: false,
+                                                    },
+                                                    GridContext::Standalone,
+                                                ) {
+                                                    Some(view) => {
+                                                        grid_views_model.update(cx, |m, _| {
+                                                            m.insert(idx, view.clone());
+                                                        });
+                                                        div()
+                                                            .size_full()
+                                                            .child(view)
+                                                            .into_any_element()
                                                     }
+                                                    // 专辑已消失：本帧渲染一个空白格；
+                                                    // 已在途的那次 reload 会替换掉
+                                                    // 陈旧快照。
+                                                    None => div().into_any_element(),
                                                 }
-                                            },
+                                            }
+                                        }
+                                    };
+
+                                    let base = div().px(px(10.0)).pt(px(2.0)).pb(px(10.0)).w_full();
+                                    if album_grid_bounded {
+                                        // 有界形态：容器限高，网格填满容器并内部滚动
+                                        // （非 auto_height 模式按 relative(1.) + flex_grow
+                                        // 撑满父高，故高度由外层容器决定），滚动条与
+                                        // 主库网格同一摆法（relative 容器内的浮层）。
+                                        base.relative()
+                                            .h(album_grid_height)
+                                            .child(
+                                                uniform_grid(
+                                                    "artist-albums-grid",
+                                                    album_count,
+                                                    Some(album_grid_scroll_handle.clone()),
+                                                    render_album_tile,
+                                                )
+                                                .min_item_width(px(grid_min_item_width))
+                                                .gap(px(0.0)),
+                                            )
+                                            .child(
+                                                floating_scrollbar(
+                                                    "artist-albums-grid-scrollbar",
+                                                    album_grid_scroll_handle,
+                                                )
+                                                .right(px(4.0)),
+                                            )
+                                    } else {
+                                        base.child(
+                                            uniform_grid(
+                                                "artist-albums-grid",
+                                                album_count,
+                                                None::<UniformListScrollHandle>,
+                                                render_album_tile,
+                                            )
+                                            .min_item_width(px(grid_min_item_width))
+                                            .gap(px(0.0))
+                                            .auto_height(),
                                         )
-                                        .min_item_width(px(grid_min_item_width))
-                                        .gap(px(0.0))
-                                        .auto_height(),
-                                    ),
-                                )
+                                    }
+                                })
                             })
                             .when_some(liked_track_header, move |this, header| {
                                 this.child(header).child(

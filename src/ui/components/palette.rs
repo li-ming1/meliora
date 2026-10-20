@@ -54,6 +54,10 @@ where
 {
     input: Entity<TextInput>,
     handle: FocusHandle,
+    /// 首次打开面板时构建，之后**跨开合保留**（关闭不再销毁）：`Finder::new`
+    /// 要把整个条目集重新注入 nucleo，是打开面板时最贵的一段 UI 线程工作，
+    /// 大库上每次打开搜索都要为整个库规模付一次。展示态（查询/选中/滚动/行
+    /// 视图）在每次开合时由 `Finder::clear_display` 清空，观感与旧行为一致。
     finder: Option<Entity<Finder<T, MatcherFunc, OnAccept>>>,
     items: SplitItems<T>,
     extra_providers: Vec<ExtraItemProvider>,
@@ -139,8 +143,16 @@ where
             let matcher = Arc::new(matcher);
             let on_accept = Arc::new(on_accept);
 
+            // 面板开合时保留 Finder：`Finder::new` 要把整个条目集重新注入
+            // nucleo（大库上数十 ms 的 UI 线程工作），而"关闭即销毁"让每次
+            // 打开搜索都为整个库规模付一次注入。finder 跨开合存活，索引随之
+            // 保留；每次开合仍清空"给人看"的状态（查询/选中/滚动/行视图），
+            // 打开时的观感与旧行为一致。条目集在关闭期间的变化（如扫描完成
+            // 刷新本地索引）由 Finder 自己的轮询循环在后台合入索引，下次打开
+            // 直接可用。代价：索引随面板实体常驻（与 SearchModel 的
+            // local_items 同量级，且本来首次打开后就已常驻）。
             cx.observe(show, move |this, show, cx| {
-                if *show.read(cx) {
+                if *show.read(cx) && this.finder.is_none() {
                     trace!("Creating finder for palette");
 
                     let finder =
@@ -157,9 +169,12 @@ where
                     });
 
                     this.finder = Some(finder);
-                } else {
-                    trace!("Destroying finder for palette");
-                    this.finder = None;
+                }
+
+                if let Some(finder) = &this.finder {
+                    cx.update_entity(finder, |finder, cx| {
+                        finder.clear_display(cx);
+                    });
                 }
 
                 cx.notify()

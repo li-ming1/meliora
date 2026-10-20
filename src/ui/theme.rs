@@ -938,14 +938,16 @@ pub struct ThemeWatcher(pub Box<dyn Watcher>);
 
 impl Global for ThemeWatcher {}
 
-pub fn setup_theme(cx: &mut App, data_dir: PathBuf) {
+/// 发布主题相关的 Global（选项列表 + 选中主题）并 watch 主题目录。主题目录
+/// 枚举已在别处完成：启动预取在 tokio 的 spawn_blocking 上并行做（见
+/// `ui/app.rs` 的启动序列）。选中主题的文件读取（`load_selected_theme`，
+/// 单个小 JSON）保持同步——首帧前就需要 Theme，且它依赖设置加载的结果，
+/// 无法再往前并行。
+pub fn setup_theme_with_options(cx: &mut App, data_dir: PathBuf, theme_options: Vec<ThemeOption>) {
     let settings_model = cx.global::<SettingsGlobal>().model.clone();
     let selected_theme = settings_model.read(cx).interface.theme.clone();
     let selected_theme_state = Arc::new(RwLock::new(selected_theme.clone()));
-    let theme_options_model = cx.new({
-        let data_dir = data_dir.clone();
-        move |_| discover_theme_options(&data_dir)
-    });
+    let theme_options_model = cx.new(|_| theme_options);
 
     cx.set_global(ThemeOptionsGlobal {
         model: theme_options_model.clone(),

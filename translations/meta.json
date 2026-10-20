@@ -295,13 +295,13 @@
   },
   "ARTIST_ALBUMS": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:783",
+    "definedIn": "src/ui/library/artist_detail_view.rs:810",
     "plural": false,
     "description": null
   },
   "ARTIST_LIKED_TRACKS": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:515",
+    "definedIn": "src/ui/library/artist_detail_view.rs:542",
     "plural": false,
     "description": null
   },
@@ -1387,7 +1387,7 @@
   },
   "PALETTE_SHOW_MORE": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:838",
+    "definedIn": "src/ui/components/palette/finder.rs:864",
     "plural": true,
     "description": null
   },
@@ -2011,7 +2011,7 @@
   },
   "SORT_ASCENDING": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:558",
+    "definedIn": "src/ui/library/artist_detail_view.rs:585",
     "plural": false,
     "description": null
   },
@@ -2023,7 +2023,7 @@
   },
   "SORT_DESCENDING": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:563",
+    "definedIn": "src/ui/library/artist_detail_view.rs:590",
     "plural": false,
     "description": null
   },
@@ -2035,19 +2035,19 @@
   },
   "SORT_RECENTLY_ADDED": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:574",
+    "definedIn": "src/ui/library/artist_detail_view.rs:601",
     "plural": false,
     "description": null
   },
   "SORT_RELEASE_ORDER": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:582",
+    "definedIn": "src/ui/library/artist_detail_view.rs:609",
     "plural": false,
     "description": null
   },
   "SORT_TITLE": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:578",
+    "definedIn": "src/ui/library/artist_detail_view.rs:605",
     "plural": false,
     "description": null
   },

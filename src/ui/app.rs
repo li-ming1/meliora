@@ -30,7 +30,7 @@ use crate::{
     },
     power::PowerManager,
     settings::{
-        SettingsGlobal, setup_settings,
+        SettingsGlobal, setup_settings_with_outcome,
         storage::{Storage, StorageData},
     },
     toasts,
@@ -61,7 +61,7 @@ use super::{
     right_sidebar::RightSidebar,
     search::SearchView,
     settings::close_orphaned_settings_windows,
-    theme::setup_theme,
+    theme::setup_theme_with_options,
 };
 
 pub(crate) struct MainWindow {
@@ -547,6 +547,29 @@ pub fn run() -> anyhow::Result<()> {
         )
     })?;
 
+    // 启动预取：建窗前只有 pool 是硬依赖（MelioraAssetSource 要用它），而
+    // app_data / playback_session / settings 三个 JSON 与主题目录枚举和
+    // "连接 + 迁移"互不依赖——在 create_pool 的 block_on 期间并行读，首帧前
+    // 的串行磁盘读从四次降到一次（pool 自己）。句柄带进下面的 run() 闭包
+    // 收敛；正常情况下收敛点只是 join，磁盘 IO 已并行做完。
+    let preload_app_data = {
+        let path = data_dir.join("app_data.json");
+        // `Storage::new` 只是包一个路径，读取逻辑原样跑在 blocking 池上
+        crate::RUNTIME.spawn_blocking(move || Storage::new(path).load_or_default())
+    };
+    let preload_session = {
+        let path = data_dir.join("playback_session.json");
+        crate::RUNTIME.spawn_blocking(move || PlaybackSessionStorageWorker::load(&path))
+    };
+    let preload_settings = {
+        let path = data_dir.join("settings.json");
+        crate::RUNTIME.spawn_blocking(move || crate::settings::create_settings(&path))
+    };
+    let preload_theme_options = {
+        let path = data_dir.clone();
+        crate::RUNTIME.spawn_blocking(move || crate::ui::theme::discover_theme_options(&path))
+    };
+
     // 一次性启动打点：create_pool（连接 + 迁移）的耗时决定它是否值得异步化
     // （MelioraAssetSource 在窗口创建前就需要 pool，异步化是大手术）。数据
     // 说话——日志里 elapsed_ms 长期小于几十毫秒就不动（教义 §1/§39）。
@@ -606,11 +629,18 @@ pub fn run() -> anyhow::Result<()> {
         }
 
         let storage = Storage::new(data_dir.join("app_data.json"));
-        let storage_data = storage.load_or_default();
+        // 启动预取的收敛点（spawn 见 run() 外）：pool 建立期间这些任务已在
+        // tokio blocking 池上并行跑完，正常情况这里只是 join。任务 panic 只
+        // 可能是启动期缺陷，与原先同步调用 panic 等价，直接带上下文退出。
+        let storage_data = crate::RUNTIME
+            .block_on(preload_app_data)
+            .expect("startup preload: app data task failed");
         startup_step!("app data restored");
 
         let session_file = data_dir.join("playback_session.json");
-        let playback_session = PlaybackSessionStorageWorker::load(&session_file);
+        let playback_session = crate::RUNTIME
+            .block_on(preload_session)
+            .expect("startup preload: playback session task failed");
         startup_step!("session restored");
         let initial_position = playback_session
             .queue_position
@@ -625,8 +655,20 @@ pub fn run() -> anyhow::Result<()> {
         let (queue_tx, queue_rx) = tokio::sync::watch::channel(playback_session.clone());
         crate::RUNTIME.spawn(PlaybackSessionStorageWorker::new(session_file, queue_rx).run());
 
-        setup_settings(cx, data_dir.join("settings.json"));
-        setup_theme(cx, data_dir.clone());
+        setup_settings_with_outcome(
+            cx,
+            data_dir.join("settings.json"),
+            crate::RUNTIME
+                .block_on(preload_settings)
+                .expect("startup preload: settings task failed"),
+        );
+        setup_theme_with_options(
+            cx,
+            data_dir.clone(),
+            crate::RUNTIME
+                .block_on(preload_theme_options)
+                .expect("startup preload: theme options task failed"),
+        );
         cx.set_global(Pool(pool.clone()));
 
         let settings = cx.global::<SettingsGlobal>().model.read(cx);
@@ -819,19 +861,34 @@ pub fn run() -> anyhow::Result<()> {
 
         let main_window = ensure_main_window(cx, toast_layer_entity).unwrap();
         startup_step!("main window created");
-        main_window
-            .update(cx, |_, window, cx| {
-                init_pbc_task(cx, window);
-            })
-            .unwrap();
-        register_pbc_event_handlers(cx);
 
-        // 系统托盘（Windows/macOS）：壳事件经 mpsc 编组回 GPUI drain 任务；
-        // init 内部登记主窗口句柄，start_minimized 时以隐藏状态启动。
-        // Linux 无托盘模块，不建壳（关闭行为由 window_header 就地回退）。
-        #[cfg(any(windows, target_os = "macos"))]
-        crate::tray::init(cx);
-        startup_step!("tray and media keys wired");
+        // 桌面集成（SMTC + 托盘壳）与首帧无依赖：元数据由随后的播放事件经
+        // PbcHandle 推送，托盘壳只在用户交互时才被需要。整段挪出启动关键路径
+        // ——用 0ms 定时器任务而不是 on_next_frame：后者依赖帧回调，而
+        // start_minimized / 全遮挡下没有帧产生，桌面集成将永远装不上。
+        // 定时器不依赖帧，且失败处理与原先同步调用完全一致（退化为"无桌面
+        // 集成"）；PbcHandle 的全局与事件观察者在同一个 cx.update 块里装配，
+        // 不存在"观察者先于全局存在"的窗口。
+        let main_window_for_integrations = main_window.clone();
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(0))
+                .await;
+            cx.update(|cx| {
+                let _ = main_window_for_integrations.update(cx, |_, window, cx| {
+                    init_pbc_task(cx, window);
+                });
+                register_pbc_event_handlers(cx);
+
+                // 系统托盘（Windows/macOS）：壳事件经 mpsc 编组回 GPUI drain 任务；
+                // init 内部登记主窗口句柄，start_minimized 时以隐藏状态启动。
+                // Linux 无托盘模块，不建壳（关闭行为由 window_header 就地回退）。
+                #[cfg(any(windows, target_os = "macos"))]
+                crate::tray::init(cx);
+                startup_step!("tray and media keys wired");
+            });
+        })
+        .detach();
 
         // 桌面歌词悬浮窗：设置开启即随主窗口恢复（句柄与歌词实体已在主
         // 窗口构建时注入 Global）。

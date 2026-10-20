@@ -8,7 +8,10 @@ use smallvec::SmallVec;
 use std::{cmp, rc::Rc};
 
 const DEFAULT_MIN_ITEM_WIDTH: f32 = 192.0;
-const DEFAULT_ITEM_EXTRA_HEIGHT: f32 = 50.0;
+/// 单元在图片之外额外占的高度（文字区）。`pub(crate)`：艺人详情页的有界网格
+/// 要按"可见行数 × (min_item_width + 本常量)"估算容器高度（见
+/// `library/artist_detail_view.rs`），两边不能各自硬编码一份而漂移。
+pub(crate) const DEFAULT_ITEM_EXTRA_HEIGHT: f32 = 50.0;
 const DEFAULT_OVERSCAN_ROWS: usize = 1;
 
 type RenderItemCallback = Rc<dyn Fn(usize, &mut Window, &mut App) -> AnyElement>;
