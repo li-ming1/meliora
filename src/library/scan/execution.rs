@@ -159,6 +159,10 @@ pub(super) struct ScanExecution<'a> {
     /// 清空 + 三张表重读）值不值得加"零变更即跳过"的门，只能靠这个数在真实
     /// 会话里的分布来判（AGENTS.md §1 先测量后优化），故随完成日志打点。
     mutations: u64,
+    /// 本次扫描改写的封面链接行数（专辑/曲目的 `artwork_id`/`artwork_source`）。
+    /// 封面可以在曲目零变更时独立写库，所以完成扇出的"零变更"判据不能只看
+    /// `mutations`；两者一起构成完成日志里可供决策的分布。
+    art_changes: u64,
     decode_failures: DecodeFailureCounters,
     artist_matcher: ArtistMatcher,
     tx: Option<Transaction<'static, Sqlite>>,
@@ -200,6 +204,7 @@ impl<'a> ScanExecution<'a> {
             processed: 0,
             skipped_duplicate: 0,
             mutations: 0,
+            art_changes: 0,
             decode_failures: DecodeFailureCounters::default(),
             artist_matcher: ArtistMatcher::new(),
             tx,
@@ -645,7 +650,7 @@ impl<'a> ScanExecution<'a> {
     }
 
     async fn finalize_artwork(&mut self) {
-        finalize_artwork(
+        self.art_changes = finalize_artwork(
             self.context.pool,
             &self.context.mode,
             &self.active.folder_art_observations,
@@ -693,6 +698,7 @@ impl<'a> ScanExecution<'a> {
         // 是否加门，不在没有数据的情况下改失效路径（§1/§39）。
         info!(
             mutations = self.mutations,
+            art_changes = self.art_changes,
             tracks_deleted = self.context.tracks_deleted,
             targeted = matches!(self.context.mode, ScanMode::Targeted { .. }),
             watching,
@@ -872,7 +878,7 @@ pub(super) async fn finalize_artwork(
     art_ids: &mut ArtIdCache,
     examined_albums: &mut FxHashSet<i64>,
     tracks_deleted: bool,
-) {
+) -> u64 {
     if let Err(e) = examine_folder_art(
         pool,
         &folder_art_observations.snapshot(),
@@ -888,7 +894,7 @@ pub(super) async fn finalize_artwork(
     }
 
     let touched: FxHashSet<i64> = album_cache.values().copied().collect();
-    if let Err(e) = finalize_scan_art(
+    match finalize_scan_art(
         pool,
         mode.force_albums(),
         &touched,
@@ -898,6 +904,10 @@ pub(super) async fn finalize_artwork(
     )
     .await
     {
-        error!("Failed to finalize scan artwork: {:?}", e);
+        Ok(changed) => changed,
+        Err(e) => {
+            error!("Failed to finalize scan artwork: {:?}", e);
+            0
+        }
     }
 }
