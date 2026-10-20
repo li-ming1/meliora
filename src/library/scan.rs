@@ -38,8 +38,8 @@ pub fn start_scanner(
     let (cmd_tx, command_rx) = channel(COMMAND_CHANNEL_CAPACITY);
     let (event_tx, events_rx) = unbounded_channel();
 
-    // 扫描器是库数据库的唯一写入者，而它的 handle 过去是被丢弃的：它内部任何一处
-    // panic 都会让 UI 卡在「正在扫描」上，且完全不提示发生了什么。盯着这个任务，
+    // 扫描器是库内容（曲目/专辑/歌手/封面）的唯一写入者，而它的 handle 过去是被丢弃的：
+    // 它内部任何一处 panic 都会让 UI 卡在「正在扫描」上，且完全不提示发生了什么。盯着这个任务，
     // 至少让失败被记录并暴露出来。
     let handle = crate::RUNTIME.spawn(scanner::run_scanner(
         pool,

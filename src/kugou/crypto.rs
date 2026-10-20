@@ -144,7 +144,7 @@ fn parse_spki_pem(pem: &str) -> Option<(BigUint, BigUint)> {
 /// 需要大写的调用方自己转。
 ///
 /// 输入被零填充进单个固定 `key_len`（128 字节）的 RSA 分块，所以 `data` 不得超过 128 字节；
-/// 超界返回 None（唯一调用方把它映射成 `KugouError::Api` 而不是 panic——信封里的 token 由
+/// 超界返回 None（唯一调用方把它映射成 `KugouError::local` 而不是 panic——信封里的 token 由
 /// 服务端控制，而 `panic = "abort"` 会在被毒化的持久会话上杀掉整个进程）。
 pub fn rsa_raw_encrypt(data: &str) -> Option<String> {
     let (n, e) = service_key();

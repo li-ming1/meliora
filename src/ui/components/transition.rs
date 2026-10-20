@@ -85,8 +85,8 @@ impl RenderOnce for HoverTransition {
                 // `Entity::update` + `Context::notify` 在渲染之外是安全的；
                 // `window.request_animation_frame()` 不是（current_view 为空）。
                 // 装饰性动画自行检查动效偏好（与 drag_drop.rs / immersive.rs 同一纪律；
-                // gpui 的 request_animation_frame 文档有此要求，而本应用从不设置
-                // 从不设置 App::set_reduce_motion）。
+                // gpui 的 request_animation_frame 文档有此要求，而本应用从不调用
+                // App::set_reduce_motion）。
                 let reduced_motion = reduced_motion_enabled(cx);
                 state.update(cx, |s, cx| {
                     let target = if *hovered { 1.0 } else { 0.0 };
