@@ -631,9 +631,26 @@ pub fn run() -> anyhow::Result<()> {
     // 一次性启动打点：create_pool（连接 + 迁移）的耗时决定它是否值得异步化
     // （MelioraAssetSource 在窗口创建前就需要 pool，异步化是大手术）。数据
     // 说话——日志里 elapsed_ms 长期小于几十毫秒就不动（教义 §1/§39）。
+    // 连接池的建立与 gpui 平台初始化（D3D 设备 + DirectWrite + 字体系统，
+    // 实测百毫秒级）互不依赖：先把建池任务丢到 runtime 上，再同步建平台，
+    // 两者重叠——原先"建池 21ms → 建平台 ~195ms"的串行等待缩短为较长的一段。
+    // 四个启动预取任务同样在这段平台初始化期间并行完成。
     let pool_create_started_at = std::time::Instant::now();
+    let pool_task = crate::RUNTIME.spawn(create_pool(data_dir.join("library.db")));
+
+    let platform_started_at = std::time::Instant::now();
+    let application = Application::with_platform(current_platform(false));
+    // 平台创建的耗时（D3D 设备 + DirectWrite + 字体系统）：gpui 在
+    // `Application::run` 之前同步建好这些，之后 run() 只是直通调用闭包。
+    // 与 "[startup] fonts registered" 的时间差即 run() prologue 的缺口。
+    tracing::info!(
+        elapsed_ms = platform_started_at.elapsed().as_millis() as u64,
+        "[startup] platform created"
+    );
+
     let pool = crate::RUNTIME
-        .block_on(create_pool(data_dir.join("library.db")))
+        .block_on(pool_task)
+        .expect("database pool task panicked")
         .inspect_err(|error| {
             tracing::error!(?error, "fatal: unable to create database pool");
         })?;
@@ -641,9 +658,7 @@ pub fn run() -> anyhow::Result<()> {
         elapsed_ms = pool_create_started_at.elapsed().as_millis() as u64,
         "[startup] database pool ready"
     );
-
-    let application = Application::with_platform(current_platform(false))
-        .with_assets(MelioraAssetSource::new(pool.clone()));
+    let application = application.with_assets(MelioraAssetSource::new(pool.clone()));
     let toast_layer: Rc<OnceCell<Entity<ToastLayer>>> = Rc::new(OnceCell::new());
     let toast_layer_for_reopen = toast_layer.clone();
     application.on_reopen(move |cx| {
@@ -727,6 +742,7 @@ pub fn run() -> anyhow::Result<()> {
                 .block_on(preload_theme_options)
                 .expect("startup preload: theme options task failed"),
         );
+        startup_step!("settings and theme ready");
         cx.set_global(Pool(pool.clone()));
 
         let settings = cx.global::<SettingsGlobal>().model.read(cx);
@@ -752,6 +768,7 @@ pub fn run() -> anyhow::Result<()> {
             playback_session.shuffle,
             initial_repeat,
         );
+        startup_step!("models built");
 
         // 唤醒恢复出来的在线队列条目：签名流 URL 在应用关闭期间过期了，
         // 就在后台重新取一个新 URL，并让当前曲目/信息区都以新 URL 为键。
@@ -810,6 +827,7 @@ pub fn run() -> anyhow::Result<()> {
         scan_interface.start_broadcast(scan_events, scan_state, playlist_tracker, cx);
 
         cx.set_global(scan_interface);
+        startup_step!("scanner started");
 
         let settings_health = cx.global::<Models>().settings_health.clone();
         cx.observe(&settings_health, |health, cx| {
@@ -855,6 +873,7 @@ pub fn run() -> anyhow::Result<()> {
             playback_interface.pause();
         }
         cx.set_global(playback_interface);
+        startup_step!("playback started");
 
         let toast_layer_entity = ToastLayer::new(cx, toast_receiver);
         toast_layer
@@ -909,6 +928,7 @@ pub fn run() -> anyhow::Result<()> {
             close_orphaned_settings_windows(cx);
         })
         .detach();
+        startup_step!("shell wired");
 
         if let Some(window_information) = storage_data.window_information {
             // 这个中间绑定让 `cx` 的共享借用先结束，`write` 才能拿到可变借用——
@@ -917,6 +937,7 @@ pub fn run() -> anyhow::Result<()> {
             window_information_entity.write(cx, Some(window_information));
         }
 
+        startup_step!("pre-window wiring done");
         let main_window = ensure_main_window(cx, toast_layer_entity).unwrap();
         startup_step!("main window created");
 
