@@ -198,10 +198,12 @@ pub(super) struct PathInspection {
 }
 
 struct PendingDirectoryEntry {
-    raw_path: Utf8PathBuf,
+    /// 解析后的路径（符号链接已 canonicalize 到目标）。
     path: Utf8PathBuf,
+    /// 仅符号链接需要：链接自身的路径（sidecar/文件夹封面要就近于链接名而不是目标）。
+    /// 普通文件两者相同，用 `None` 省掉每文件一次整串克隆。
+    raw_path: Option<Utf8PathBuf>,
     metadata: Metadata,
-    is_symlink: bool,
 }
 
 fn normalized_file_name(path: &Utf8Path, case_insensitive: bool) -> Option<String> {
@@ -246,8 +248,7 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
             return None;
         }
     };
-    let is_symlink = file_type.is_symlink();
-    let (path, metadata) = if is_symlink {
+    let (path, raw_path, metadata) = if file_type.is_symlink() {
         let canonical = match raw_std_path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -272,7 +273,7 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
                 return None;
             }
         };
-        (path, metadata)
+        (path, Some(raw_path), metadata)
     } else {
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
@@ -284,14 +285,13 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
                 return None;
             }
         };
-        (raw_path.clone(), metadata)
+        (raw_path, None, metadata)
     };
 
     Some(PendingDirectoryEntry {
-        raw_path,
         path,
+        raw_path,
         metadata,
-        is_symlink,
     })
 }
 
@@ -305,7 +305,8 @@ fn materialize_scan_entry(
     lyrics_timestamps: &FxHashMap<String, SystemTime>,
     case_insensitive: bool,
 ) -> ScanDirectoryEntry {
-    let (lyrics_timestamp, sidecar_lyrics) = if entry.is_symlink {
+    let naming = entry.raw_path.as_deref().unwrap_or(&entry.path);
+    let (lyrics_timestamp, sidecar_lyrics) = if entry.raw_path.is_some() {
         let lyrics_timestamp = sidecar_modified(&entry.path);
         let sidecar_lyrics = if lyrics_timestamp.is_some() {
             SidecarLyrics::Present
@@ -316,7 +317,7 @@ fn materialize_scan_entry(
     } else if lyrics_timestamps.is_empty() {
         (None, SidecarLyrics::Absent)
     } else {
-        let lyrics_timestamp = sidecar_lyrics_path(&entry.raw_path)
+        let lyrics_timestamp = sidecar_lyrics_path(naming)
             .and_then(|path| normalized_file_name(&path, case_insensitive))
             .and_then(|name| lyrics_timestamps.get(&name).copied());
         let sidecar_lyrics = if lyrics_timestamp.is_some() {
@@ -352,28 +353,29 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
             continue;
         };
 
-        let is_lyrics = entry.raw_path.extension().is_some_and(|extension| {
+        // sidecar/封面都按“链接名”就近查找：symlink 用 raw，普通文件即 path。
+        let naming = entry.raw_path.as_deref().unwrap_or(&entry.path);
+        let is_lyrics = naming.extension().is_some_and(|extension| {
             extension == "lrc" || (case_insensitive && extension.eq_ignore_ascii_case("lrc"))
         });
         if entry.metadata.is_file()
             && is_lyrics
-            && let Some(name) = normalized_file_name(&entry.raw_path, case_insensitive)
+            && let Some(name) = normalized_file_name(naming, case_insensitive)
             && let Ok(modified) = entry.metadata.modified()
         {
             lyrics_timestamps.insert(name, modified);
         }
 
-        let art_rank = entry
-            .raw_path
+        let art_rank = naming
             .extension()
-            .zip(entry.raw_path.file_stem())
+            .zip(naming.file_stem())
             .and_then(|(extension, stem)| is_folder_art_name(stem, extension));
         if entry.metadata.is_file()
             && let Some(rank) = art_rank
             && !is_hidden_file(&entry.metadata)
         {
             let candidate = FolderArtCandidate {
-                path: entry.raw_path.clone(),
+                path: naming.to_owned(),
                 rank,
             };
             if folder_art
