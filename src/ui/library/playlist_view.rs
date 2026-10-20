@@ -626,6 +626,35 @@ impl PlaylistView {
         matches!(self.sort_method, PlaylistTrackSortMethod::Custom)
     }
 
+    /// 一次 `drag_move` 的共享收尾：边缘滚动、状态变化门控与一次合并的重绘。
+    /// `drag_move` 以鼠标上报频率触发，无条件 notify 会让每次移动都重渲染整个视图，
+    /// 所以只有滚动真的发生、或拖拽状态与 `before` 快照不同才通知。
+    fn finish_drag_move(
+        &mut self,
+        before: (bool, Option<(usize, DropPosition)>),
+        scrolled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if scrolled {
+            // 有守卫，最多挂起一条帧链
+            request_edge_scroll(
+                self.drag_drop_manager.clone(),
+                self.scroll_handle.clone().into(),
+                window,
+                cx,
+            );
+        }
+
+        let changed = {
+            let manager = self.drag_drop_manager.read(cx);
+            scrolled || (manager.state.is_dragging, manager.state.drop_target) != before
+        };
+        if changed {
+            cx.notify();
+        }
+    }
+
     fn resolve_target_position(
         &self,
         drop_target: Option<(usize, DropPosition)>,
@@ -926,28 +955,7 @@ impl Render for PlaylistView {
                                         reduced_motion,
                                     );
 
-                                    if scrolled {
-                                        // 有守卫，最多挂起一条帧链
-                                        request_edge_scroll(
-                                            this.drag_drop_manager.clone(),
-                                            this.scroll_handle.clone().into(),
-                                            window,
-                                            cx,
-                                        );
-                                    }
-
-                                    // 只在可见内容真的移动时重绘：drag move 以鼠标
-                                    // 上报频率触发，无条件 notify 会让每次移动都把整
-                                    // 个视图重渲染一遍
-                                    let changed = {
-                                        let manager = this.drag_drop_manager.read(cx);
-                                        scrolled
-                                            || (manager.state.is_dragging, manager.state.drop_target)
-                                                != before
-                                    };
-                                    if changed {
-                                        cx.notify();
-                                    }
+                                    this.finish_drag_move(before, scrolled, window, cx);
                                 },
                             ))
                             .on_drag_move::<AlbumDragData>(cx.listener(
@@ -975,25 +983,7 @@ impl Render for PlaylistView {
                                         reduced_motion,
                                     );
 
-                                    if scrolled {
-                                        request_edge_scroll(
-                                            this.drag_drop_manager.clone(),
-                                            this.scroll_handle.clone().into(),
-                                            window,
-                                            cx,
-                                        );
-                                    }
-
-                                    // 与上面的曲目处理器采用同一套门控
-                                    let changed = {
-                                        let manager = this.drag_drop_manager.read(cx);
-                                        scrolled
-                                            || (manager.state.is_dragging, manager.state.drop_target)
-                                                != before
-                                    };
-                                    if changed {
-                                        cx.notify();
-                                    }
+                                    this.finish_drag_move(before, scrolled, window, cx);
                                 },
                             ))
                             .on_drop(cx.listener(
