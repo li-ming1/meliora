@@ -1,6 +1,9 @@
 use std::{
     collections::hash_map::Entry,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use camino::Utf8PathBuf;
@@ -35,6 +38,9 @@ enum FolderArtLoadState {
 pub struct FolderArtLoader {
     states: Arc<Mutex<FxHashMap<Utf8PathBuf, FolderArtLoadState>>>,
     permits: Arc<Semaphore>,
+    /// 真正发起文件读取的次数（扫描内缓存命中不计）。完成日志用它度量
+    /// "零变更扫描仍会重读文件夹封面"这一已知成本的规模。
+    reads: Arc<AtomicUsize>,
 }
 
 impl FolderArtLoader {
@@ -42,7 +48,12 @@ impl FolderArtLoader {
         Self {
             states: Arc::new(Mutex::new(FxHashMap::default())),
             permits: Arc::new(Semaphore::new(concurrency.max(1))),
+            reads: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn read_count(&self) -> usize {
+        self.reads.load(Ordering::Relaxed)
     }
 
     pub async fn load(&self, candidate: FolderArtCandidate) -> Option<ScannedArt> {
@@ -87,8 +98,10 @@ impl FolderArtLoader {
 
     fn load_future(&self, path: Utf8PathBuf) -> FolderArtFuture {
         let permits = Arc::clone(&self.permits);
+        let reads = Arc::clone(&self.reads);
         async move {
             let _permit = permits.acquire_owned().await.ok()?;
+            reads.fetch_add(1, Ordering::Relaxed);
             spawn_blocking(move || std::fs::read(path).ok().map(Arc::new))
                 .await
                 .ok()

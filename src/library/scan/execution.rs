@@ -163,6 +163,8 @@ pub(super) struct ScanExecution<'a> {
     /// 封面可以在曲目零变更时独立写库，所以完成扇出的"零变更"判据不能只看
     /// `mutations`；两者一起构成完成日志里可供决策的分布。
     art_changes: u64,
+    /// 本次扫描真正发起文件夹封面文件读取的次数（扫描内缓存命中不计）。
+    art_reads: usize,
     decode_failures: DecodeFailureCounters,
     artist_matcher: ArtistMatcher,
     tx: Option<Transaction<'static, Sqlite>>,
@@ -205,6 +207,7 @@ impl<'a> ScanExecution<'a> {
             skipped_duplicate: 0,
             mutations: 0,
             art_changes: 0,
+            art_reads: 0,
             decode_failures: DecodeFailureCounters::default(),
             artist_matcher: ArtistMatcher::new(),
             tx,
@@ -650,7 +653,7 @@ impl<'a> ScanExecution<'a> {
     }
 
     async fn finalize_artwork(&mut self) {
-        self.art_changes = finalize_artwork(
+        let (changes, reads) = finalize_artwork(
             self.context.pool,
             &self.context.mode,
             &self.active.folder_art_observations,
@@ -663,6 +666,8 @@ impl<'a> ScanExecution<'a> {
             self.context.tracks_deleted,
         )
         .await;
+        self.art_changes = changes;
+        self.art_reads = reads;
     }
 
     async fn finish_checkpoint_write(&mut self) {
@@ -699,6 +704,7 @@ impl<'a> ScanExecution<'a> {
         info!(
             mutations = self.mutations,
             art_changes = self.art_changes,
+            art_reads = self.art_reads,
             tracks_deleted = self.context.tracks_deleted,
             targeted = matches!(self.context.mode, ScanMode::Targeted { .. }),
             watching,
@@ -878,7 +884,7 @@ pub(super) async fn finalize_artwork(
     art_ids: &mut ArtIdCache,
     examined_albums: &mut FxHashSet<i64>,
     tracks_deleted: bool,
-) -> u64 {
+) -> (u64, usize) {
     if let Err(e) = examine_folder_art(
         pool,
         &folder_art_observations.snapshot(),
@@ -892,9 +898,10 @@ pub(super) async fn finalize_artwork(
     {
         error!("Failed to examine folder art: {:?}", e);
     }
+    let art_reads = folder_art_loader.read_count();
 
     let touched: FxHashSet<i64> = album_cache.values().copied().collect();
-    match finalize_scan_art(
+    let changed = match finalize_scan_art(
         pool,
         mode.force_albums(),
         &touched,
@@ -909,5 +916,6 @@ pub(super) async fn finalize_artwork(
             error!("Failed to finalize scan artwork: {:?}", e);
             0
         }
-    }
+    };
+    (changed, art_reads)
 }
