@@ -244,8 +244,8 @@ fn read_metadata_for_unreadable_file_is_transient() {
 /// 3000x3000 -> 1024x1024  152.339 ms  116.527 ms   87.504 ms   (production main-image site)
 /// 1024x1024 -> 1024x1024   ~0.29 ms for every filter: image 0.25.10
 ///                          对同尺寸缩放短路成一次纯拷贝
-///                          (imageops/sample.rs:985)——不涉及任何滤波器；
-///                          而且生产路径本来就把 <=1024 的图原样留着。
+///                          (image::imageops::resize 的同尺寸分支)——不涉及任何
+///                          滤波器；而且生产路径本来就把 <=1024 的图原样留着。
 /// ```
 ///
 /// 结论：保留 Lanczos3。在唯一的生产位点上 CatmullRom 没达到 >=30% 这条线
@@ -253,8 +253,8 @@ fn read_metadata_for_unreadable_file_is_transient() {
 /// 1. 这次缩放每个 >1024px 的封面只在后台扫描工作线程里跑一次（绝不在 UI/音频路径），
 ///    与数据库工作相互重叠，结果还会缓存进数据库。没有 profiling 证据把封面缩放标成
 ///    扫描瓶颈，所以每个超大封面省下的 ~65 ms 并非已证明的端到端收益（§1/§39）。
-/// 2. 质量依据，取自 image 0.25.10 源码：`resize` 会按缩小倍率放大核窗口并对权重归一化
-///    （sample.rs:259-261 与 295-297），所以在 2.93x 缩小倍率下 Triangle 用帽形核对约
+/// 2. 质量依据，取自 image 0.25.10 源码：`image::imageops::resize` 会按缩小倍率
+///    放大核窗口并对权重归一化，所以在 2.93x 缩小倍率下 Triangle 用帽形核对约
 ///    +/-2.9 px 的窗口取平均，而 Lanczos3 用 3 叶 sinc 对约 +/-8.8 px 取平均。Lanczos3
 ///    因此有最好的阻带抑制——细节更锐，细密文字与密集图案上的摩尔纹/走样泄漏最少，
 ///    而那正是专辑封面携带的内容。主图是全应用看得最多的封面；为一次纯后台微基准的
@@ -348,8 +348,8 @@ mod bench {
                     println!("  thumbnail() median {m:8.3} ms  (production thumbnail path)");
                 }
                 // image 0.25.10 会把同尺寸缩放短路成一次朴素拷贝
-                // （imageops/sample.rs:985），所以那一行量的是 memcpy，
-                // 不是滤镜。
+                // （image::imageops::resize 的同尺寸分支），所以那一行量的是
+                // memcpy，不是滤镜。
                 if src.width() == tw && src.height() == th {
                     println!(
                         "  note: same-size resize is short-circuited to a copy in image 0.25 - no filter work involved"

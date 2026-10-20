@@ -931,6 +931,8 @@ pub struct ThemeEvTransmitter;
 
 impl EventEmitter<Theme> for ThemeEvTransmitter {}
 
+/// 字段本身从不被读：把它放进 global 只为让 `Box<dyn Watcher>` 随进程存活，
+/// 一旦被替换或移除，主题目录的监听就静默停止。
 #[allow(dead_code)]
 pub struct ThemeWatcher(pub Box<dyn Watcher>);
 

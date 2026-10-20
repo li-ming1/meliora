@@ -442,9 +442,9 @@ fn anonymous_window_tag(window_id: gpui::WindowId) -> String {
 }
 
 /// `[frame]` 渲染归属探针。gpui 侧只能看到窗口级 draw 聚合，`invalidations_max`
-/// 不给归属；而 `mark_view_dirty` 会把一次 notify 的**整条祖先链**标脏
-/// （gpui window.rs:1937），非 `.cached()` 的视图在脏祖先下逐层重跑 `render()`
-/// （view.rs:387 的子树回放只对"自己不脏"的视图生效）。于是"切一首先歌到底让
+/// 不给归属；而 `Window::mark_view_dirty` 会把一次 notify 的**整条祖先链**标脏，
+/// 非 `.cached()` 的视图在脏祖先下逐层重跑 `render()`（`View::cached` 的跳过
+/// 判据只对"自己不脏"的视图生效）。于是"切一首先歌到底让
 /// 多少层重渲"这个问题在宿主侧完全不可见——本表把每个视图的 render 次数与
 /// 耗时（µs 总和/峰值）按 30s 窗口差分出来，输出成 `[frame] render tally` 行。
 ///
