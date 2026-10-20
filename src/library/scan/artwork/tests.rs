@@ -174,9 +174,9 @@ async fn write_album_cached(
     }
 }
 
-async fn finalize(pool: &SqlitePool, is_force: bool) {
+async fn finalize(pool: &SqlitePool, is_force: bool) -> u64 {
     let mut candidates = FolderArtCandidates::default();
-    finalize_with(pool, is_force, &FxHashSet::default(), &mut candidates).await;
+    finalize_with(pool, is_force, &FxHashSet::default(), &mut candidates).await
 }
 
 async fn finalize_with(
@@ -184,7 +184,7 @@ async fn finalize_with(
     is_force: bool,
     examined: &FxHashSet<i64>,
     candidates: &mut FolderArtCandidates,
-) {
+) -> u64 {
     let touched: FxHashSet<i64> = sqlx::query_scalar("SELECT id FROM album")
         .fetch_all(pool)
         .await
@@ -193,7 +193,7 @@ async fn finalize_with(
         .collect();
     finalize_scan_art(pool, is_force, &touched, examined, candidates, true)
         .await
-        .unwrap();
+        .unwrap()
 }
 
 /// 对经 `caches` 写入的那些专辑跑一次扫描结束时的挑选，但不把封面落盘。
@@ -963,4 +963,32 @@ async fn report_zero_change_artwork_finalize_storm() {
         "  => zero-change scan, fixed DB cost at this scale: {fixed:.3?} \
          (gated ceiling removes the embedded storm only)"
     );
+}
+
+/// 无封面专辑的收尾不应产生写：clear_* 已带值守卫，连续两次 finalize 的
+/// rows_affected 都必须为 0。
+#[tokio::test]
+async fn finalize_counts_zero_writes_for_an_album_without_art() {
+    let (dir, pool) = create_test_pool("artwork-finalize-empty-count").await;
+    let no_art = FileArt {
+        embedded: None,
+        folder: None,
+        representative: false,
+    };
+    write_album_track(&dir, &pool, 1, &no_art).await;
+
+    assert_eq!(finalize(&pool, false).await, 0);
+    assert_eq!(finalize(&pool, false).await, 0);
+}
+
+/// 有封面的专辑首轮写专辑/曲目链接；同样的数据再跑一遍必须计 0
+/// （update_album_art 与 assign_track_art 的值守卫）。
+#[tokio::test]
+async fn finalize_counts_zero_on_a_second_identical_pass() {
+    let (dir, pool) = create_test_pool("artwork-finalize-count").await;
+    let art = embedded_art(red());
+    write_album(&dir, &pool, &[&art, &art]).await;
+
+    assert!(finalize(&pool, false).await > 0);
+    assert_eq!(finalize(&pool, false).await, 0);
 }
