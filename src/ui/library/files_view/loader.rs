@@ -129,14 +129,18 @@ async fn lookup_tracks(locs: &[String], pool: &sqlx::SqlitePool) -> FxHashMap<St
     track_map
 }
 
+/// 整夹递归入队的硬上界：一次用户动作最多收集 2000 首，防止误选盘符根目录时
+/// 把整块磁盘塞进队列（行实体与拖拽负载都按队列长度线性付费）。命中时记一条
+/// WARN——静默少收是观测缺陷。
 const RECURSIVE_COLLECT_CAP: usize = 2000;
 
 pub(super) async fn collect_audio_recursive(
     path: PathBuf,
     pool: sqlx::SqlitePool,
 ) -> Vec<(PathBuf, Option<TrackRef>)> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>, truncated: &mut bool) {
         if out.len() >= RECURSIVE_COLLECT_CAP {
+            *truncated = true;
             return;
         }
         let Ok(rd) = std::fs::read_dir(dir) else {
@@ -160,24 +164,32 @@ pub(super) async fn collect_audio_recursive(
         dirs.sort_by_cached_key(by_name);
         files.sort_by_cached_key(by_name);
         for d in &dirs {
-            walk(d, out);
+            walk(d, out, truncated);
         }
         for f in files {
             if out.len() >= RECURSIVE_COLLECT_CAP {
+                *truncated = true;
                 return;
             }
             out.push(f);
         }
     }
 
-    let files: Vec<PathBuf> = crate::RUNTIME
+    let (files, truncated): (Vec<PathBuf>, bool) = crate::RUNTIME
         .spawn_blocking(move || {
             let mut out = Vec::new();
-            walk(&path, &mut out);
-            out
+            let mut truncated = false;
+            walk(&path, &mut out, &mut truncated);
+            (out, truncated)
         })
         .await
         .unwrap_or_default();
+    if truncated {
+        tracing::warn!(
+            cap = RECURSIVE_COLLECT_CAP,
+            "recursive folder collect hit its cap; remaining audio files were not queued"
+        );
+    }
 
     let locs: Vec<String> = files
         .iter()
