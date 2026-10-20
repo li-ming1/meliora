@@ -54,31 +54,26 @@ actions!(
     ]
 );
 
+/// 光标导航眼里的“词”：unicode 分词结果去掉纯空白段。三个导航函数共用这一条
+/// 规则，避免三份遍历各自演化出不同的空白处理。迭代器零堆分配，调用频率是按键级。
+fn word_segments(content: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+    content
+        .split_word_bound_indices()
+        .filter(|(_, segment)| !segment.chars().all(|c| c.is_whitespace()))
+        .map(|(start, segment)| start..start + segment.len())
+}
+
 fn next_word_boundary(content: &str, offset: usize) -> usize {
-    for (start, segment) in content.split_word_bound_indices() {
-        if segment.chars().all(|c| c.is_whitespace()) {
-            continue;
-        }
-        let end = start + segment.len();
-        if end > offset {
-            return end;
-        }
-    }
-    content.len()
+    word_segments(content)
+        .find(|range| range.end > offset)
+        .map_or(content.len(), |range| range.end)
 }
 
 fn previous_word_boundary(content: &str, offset: usize) -> usize {
-    let mut last_start = 0;
-    for (start, segment) in content.split_word_bound_indices() {
-        if segment.chars().all(|c| c.is_whitespace()) {
-            continue;
-        }
-        if start >= offset {
-            return last_start;
-        }
-        last_start = start;
-    }
-    last_start
+    word_segments(content)
+        .take_while(|range| range.start < offset)
+        .last()
+        .map_or(0, |range| range.start)
 }
 
 fn word_range_for_offset(content: &str, offset: usize) -> Range<usize> {
@@ -86,20 +81,15 @@ fn word_range_for_offset(content: &str, offset: usize) -> Range<usize> {
         return 0..0;
     }
 
-    let mut last_before: Option<Range<usize>> = None;
-
-    for (start, segment) in content.split_word_bound_indices() {
-        if segment.chars().all(|c| c.is_whitespace()) {
-            continue;
+    let mut last_before = None;
+    for range in word_segments(content) {
+        if range.start <= offset && offset < range.end {
+            return range;
         }
-        let end = start + segment.len();
-        if start <= offset && offset < end {
-            return start..end;
-        }
-        if end <= offset {
-            last_before = Some(start..end);
+        if range.end <= offset {
+            last_before = Some(range);
         } else {
-            return last_before.unwrap_or(start..end);
+            return last_before.unwrap_or(range);
         }
     }
 
