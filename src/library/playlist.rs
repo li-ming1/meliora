@@ -143,7 +143,20 @@ fn parse_m3u(file: File) -> impl futures::Stream<Item = anyhow::Result<M3UEntry>
     futures::stream::try_unfold(lines, async |mut lines| {
         let mut current_entry = M3UEntry::default();
         while let Some((line, res)) = lines.next().await {
-            let txt = res.inspect_err(|err| error!(%line, ?err, "IO error: {err}"))?;
+            let txt = match res {
+                Ok(txt) => txt,
+                // 单行不是合法 UTF-8（GBK/Latin-1 歌单里的中文路径很常见）：
+                // 丢掉这一条继续读后面的行。`lines()` 已消费掉坏行，下一次
+                // next() 从下一行继续；若在此终止，一条坏路径就会让歌单在
+                // 该行之后被整体截断（而导入前刚刚清空过目标歌单）。
+                // 其余 IO 错误仍结束整条流——继续读只会重复同一个错误。
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+                    error!(%line, ?err, "M3U line is not valid UTF-8; skipping it");
+                    current_entry = M3UEntry::default();
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
             if let Some(line) = txt.strip_prefix("#EXTINF:") {
                 let Some((dur, info)) = line.split_once(',') else {
                     continue;
@@ -351,6 +364,39 @@ mod tests {
             .fetch_one(pool)
             .await
             .unwrap()
+    }
+
+    /// 非 UTF-8 行只丢自身：GBK/Latin-1 歌单里的中文路径不能让其后条目被截断，
+    /// 也不能把坏行之前那条的元数据粘到下一首上。
+    #[tokio::test]
+    async fn parse_m3u_skips_non_utf8_lines_instead_of_truncating() {
+        use futures::StreamExt as _;
+
+        let (dir, _pool) = create_test_pool("meliora-m3u-non-utf8").await;
+        let path = dir.join("list.m3u");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"#EXTINF:1,A - One\n/music/one.flac\n");
+        bytes.extend_from_slice(b"#EXTINF:2,B - Two\n/music/");
+        bytes.extend_from_slice(&[0xFF, 0xFE]);
+        bytes.extend_from_slice(b".flac\n");
+        bytes.extend_from_slice(b"#EXTINF:3,C - Three\n/music/three.flac\n");
+        std::fs::write(&path, bytes).unwrap();
+
+        let entries: Vec<M3UEntry> = parse_m3u(File::open(&path).await.unwrap())
+            .filter_map(|result| std::future::ready(result.ok()))
+            .collect()
+            .await;
+
+        let locations: Vec<String> = entries
+            .iter()
+            .map(|entry| entry.location.display().to_string())
+            .collect();
+        assert_eq!(locations, vec!["/music/one.flac", "/music/three.flac"]);
+        assert_eq!(
+            entries[1].track_title.as_deref(),
+            Some("Three"),
+            "坏行之后的条目不应继承前一条的标题"
+        );
     }
 
     /// 两阶段解析的等价性与计划形状回归（2026-10-17 修 `SCAN t` 时钉下）：
