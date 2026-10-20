@@ -280,16 +280,32 @@ symphonia-format-riff = { opt-level = 3 }
 symphonia-metadata = { opt-level = 3 }
 symphonia-adapter-fdk-aac = { opt-level = 3 }
 symphonia-adapter-libopus = { opt-level = 3 }
-# 封面解码与缩放（缩略图、背景管线、取色的输入）
+# 音频输出路径（2026-10-20 审计补）：豁免集合原本只覆盖了解码侧，回调取数的
+# rtrb 环形缓冲、cpal 的 WASAPI 事件循环与 audioadapter 的缓冲搬运全在 "s" 里。
+# 回调体本身是本仓代码（根 crate 恒为 3），但它逐块调用的这三层不是——按
+# AGENTS.md 的实时性优先级（REALTIME SAFETY > 一切），输出侧与解码侧同级。
+rtrb = { opt-level = 3 }
+cpal = { opt-level = 3 }
+audioadapter-buffers = { opt-level = 3 }
+# 封面解码与缩放（缩略图、背景管线、取色的输入）。2026-10-20 审计补：JPEG/PNG
+# 的逐像素解码本体在 zune-jpeg / png 里，`image` 门面只做容器分发与 resize——
+# 只钉门面等于把解码热区留在了 "s"（webp 当初钉 image-webp 正是这个理由）。
 image = { opt-level = 3 }
 image-webp = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+png = { opt-level = 3 }
 palette = { opt-level = 3 }
 palette_math = { opt-level = 3 }
 # 重采样与 FFT（音频线程与均衡器分析）
 rubato = { opt-level = 3 }
 realfft = { opt-level = 3 }
 rustfft = { opt-level = 3 }
-# 每帧渲染与无障碍
+# 每帧渲染与无障碍。2026-10-20 审计补：taffy 是布局引擎本体（§59 判读"剩余
+# draw 成本在布局/预绘制/场景提交"，布局就是它）；etagere 是图集分配器，paint
+# 期每个新瓦片都要过它。两者都是 gpui 的直接依赖但不在 gpui crate 内，通配
+# 降档时它们跟着掉进 "s"。
+taffy = { opt-level = 3 }
+etagere = { opt-level = 3 }
 gpui = { opt-level = 3 }
 gpui-unofficial = { opt-level = 3 }
 gpui_platform = { opt-level = 3 }
