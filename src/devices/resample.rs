@@ -348,8 +348,20 @@ impl Resampler {
     ) -> Option<usize> {
         for ch in 0..self.channels {
             let drain_count = max_frames.min(self.input_buffer[ch].len());
-            self.temp_input[ch].clear();
-            self.temp_input[ch].extend(self.input_buffer[ch].drain(..drain_count));
+            let temp = &mut self.temp_input[ch];
+            temp.clear();
+            // VecDeque 的物理存储是环形的：`as_slices` 给出按逻辑顺序的首尾
+            // 两段，用两次 `extend_from_slice` 做 bulk 拷贝，取代逐元素
+            // `extend(drain(..))`——44.1k→48k 的重采样每次播放都走这里，
+            // 每分片每声道上千次逐元素 push。随后的 `drain(..n)` 对 f64
+            // 无 Drop 负担，只是头指针前移。
+            let (front, back) = self.input_buffer[ch].as_slices();
+            let front_take = drain_count.min(front.len());
+            temp.extend_from_slice(&front[..front_take]);
+            if drain_count > front_take {
+                temp.extend_from_slice(&back[..drain_count - front_take]);
+            }
+            self.input_buffer[ch].drain(..drain_count);
         }
 
         let input_frames = self.temp_input.first().map(|v| v.len()).unwrap_or(0);

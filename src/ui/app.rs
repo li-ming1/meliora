@@ -376,6 +376,20 @@ fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
     }
 }
 
+/// 启动打点脚手架（2026-10-20）：构造 `build()` 并把耗时记进 `costs`，
+/// 用于 build_main_window 的视图树分账。拿到分账数据、惰性化落地后，
+/// 这个辅助函数连同全部调用点一起清理。
+fn timed_build<T>(
+    label: &'static str,
+    costs: &mut Vec<(&'static str, u128)>,
+    build: impl FnOnce() -> T,
+) -> T {
+    let started = std::time::Instant::now();
+    let value = build();
+    costs.push((label, started.elapsed().as_micros()));
+    value
+}
+
 fn build_main_window(
     window: &mut Window,
     cx: &mut App,
@@ -384,10 +398,22 @@ fn build_main_window(
     let window_title = tr!("APP_NAME").to_string();
     window.set_window_title(&window_title);
 
+    // 视图树构造分解打点（2026-10-20）：`[startup] main window created` 实测
+    // ~303ms，惰性化改造之前先知道时间花在哪个子视图上（教义 §1/§39：先量
+    // 后改）。这是测量脚手架：拿到分账数据、惰性化落地后一并清理。
+    let palette_started = std::time::Instant::now();
     let palette = CommandPalette::new(cx, window);
+    tracing::info!(
+        elapsed_us = palette_started.elapsed().as_micros() as u64,
+        "[startup] view command_palette"
+    );
     cx.set_global(CommandPaletteHolder::new(palette.clone()));
 
-    cx.new(|cx| {
+    // 各子视图构造耗时累加在这里，闭包末尾汇总成一行（见下面的
+    // `[startup] view tree breakdown`）。
+    let mut view_build_us: Vec<(&'static str, u128)> = Vec::new();
+
+    let window_root = cx.new(|cx| {
         cx.observe_window_activation(window, |_, window, cx| {
             // 33ms 档的 OR 条件：桌面歌词悬浮窗开着时，主窗口失焦也不降档
             // （其主场景恰是主窗失焦的逐字扫色）。
@@ -458,7 +484,12 @@ fn build_main_window(
         let lyrics_height = cx.global::<Models>().lyrics_height.clone();
         cx.observe(&lyrics_height, |_, _, cx| cx.notify()).detach();
 
+        let right_sidebar_started = std::time::Instant::now();
         let right_sidebar = RightSidebar::new(cx);
+        view_build_us.push((
+            "right_sidebar",
+            right_sidebar_started.elapsed().as_micros(),
+        ));
         let lyrics_model = right_sidebar.lyrics();
 
         // 桌面歌词悬浮窗的全局宿主：controls 开关、启动恢复、主窗关闭联动。
@@ -488,34 +519,61 @@ fn build_main_window(
         });
 
         MainWindow {
-            controls: Controls::new(cx, show_queue.clone(), show_lyrics.clone()),
-            sidebar: {
+            controls: timed_build("controls", &mut view_build_us, || {
+                Controls::new(cx, show_queue.clone(), show_lyrics.clone())
+            }),
+            sidebar: timed_build("sidebar", &mut view_build_us, || {
                 let nav_model = cx.global::<Models>().switcher_model.clone();
                 Sidebar::new(cx, nav_model)
-            },
+            }),
             right_sidebar,
-            library: Library::new(cx),
-            header: Header::new(cx),
-            search: SearchView::new(cx),
-            artist_picker: ArtistPickerView::new(cx),
+            library: timed_build("library", &mut view_build_us, || Library::new(cx)),
+            header: timed_build("header", &mut view_build_us, || Header::new(cx)),
+            search: timed_build("search", &mut view_build_us, || SearchView::new(cx)),
+            artist_picker: timed_build("artist_picker", &mut view_build_us, || {
+                ArtistPickerView::new(cx)
+            }),
             show_queue,
             show_lyrics,
             show_about,
             immersive,
-            immersive_view: ImmersiveView::new(cx, lyrics_model),
+            immersive_view: timed_build("immersive_view", &mut view_build_us, || {
+                ImmersiveView::new(cx, lyrics_model)
+            }),
             about_focus,
-            missing_folder_dialog: MissingFolderDialog::new(cx),
-            corrupt_settings_dialog: CorruptSettingsDialog::new(cx),
+            missing_folder_dialog: timed_build(
+                "missing_folder_dialog",
+                &mut view_build_us,
+                || MissingFolderDialog::new(cx),
+            ),
+            corrupt_settings_dialog: timed_build(
+                "corrupt_settings_dialog",
+                &mut view_build_us,
+                || CorruptSettingsDialog::new(cx),
+            ),
             palette,
             // 用一个非常小的全局图片缓存
             // 这纯粹是为了保证图片*迟早*都会从内存里被移除
             //
             // 如果你的视图用了很多图片，你需要有自己的图片
             // 缓存
-            image_cache: MelioraImageCache::new(12, cx),
+            image_cache: timed_build("image_cache", &mut view_build_us, || {
+                MelioraImageCache::new(12, cx)
+            }),
             toast_layer,
         }
-    })
+    });
+
+    // 视图树分账汇总：一行看完全部子视图的构造耗时（相邻 `[startup]` 行的
+    // 时间差减去这里的各项，剩余即平台建窗开销）。惰性化对象的决策数据。
+    let breakdown = view_build_us
+        .iter()
+        .map(|(label, us)| format!("{label}={us}us"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    tracing::info!(breakdown = %breakdown, "[startup] view tree breakdown");
+
+    window_root
 }
 
 fn ensure_main_window(

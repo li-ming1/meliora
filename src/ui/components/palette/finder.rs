@@ -23,6 +23,22 @@ use crate::ui::{
 const MAX_VISIBLE_PER_CATEGORY: usize = 5;
 /// 每次查询刷新（`get_matches`）收集到的匹配命中数上限。
 const MAX_MATCHES: usize = 100;
+/// 稳定条目变化超过这个规模才走分帧注入；小集合（命令面板 ~30 条）一次推完
+/// 更简单，也免得首帧出现半份列表。
+const INJECTION_SYNC_MAX: usize = 1024;
+/// 分帧注入每帧推入的条目数：按搜索文本构造 + injector.push ~1µs/条估，
+/// 4096 条约 4ms，留在帧预算内。
+const INJECTION_CHUNK: usize = 4096;
+/// 分帧注入的帧间隔：与 25ms 的轮询循环错开，让匹配与展示刷新跟上。
+const INJECTION_FRAME_MS: u64 = 16;
+
+/// 分帧注入的在途状态：`items[next..]` 是尚未推入 matcher 的稳定条目。
+/// `generation` 与 Finder 的 `injection_generation` 对账，换代后旧任务退场。
+struct PendingInjection<T> {
+    items: Vec<Arc<T>>,
+    next: usize,
+    generation: u64,
+}
 
 /// 条目列表的指针相等判定：同样的 `Arc` 同样的顺序就是同样的条目，从而避免每 25ms 一次
 /// matcher 轮询上做深 `PartialEq` 遍历（逐项 String 比较）。
@@ -101,6 +117,16 @@ where
     /// 当前注入 matcher 的稳定条目，用于对账更新：纯追加的变化只推入新的尾部，而不重建整个
     /// matcher（见 `set_items`）。
     injected: Vec<Arc<T>>,
+    /// 稳定条目的搜索文本构造器：分帧注入跨帧推进时需要它（`set_items` 的调用方
+    /// 只借不存，故这里存一份 Arc）。
+    item_display: Arc<MatcherFunc>,
+    /// 在途的分帧注入（非纯追加的大集重注入）：matcher 已 restart，条目按每帧
+    /// [`INJECTION_CHUNK`] 条推进，避免大库重扫/首载时一次数十到数百 ms 的 UI
+    /// 线程长任务。`None` = 没有在途注入。
+    pending_injection: Option<PendingInjection<T>>,
+    /// 每次启动新的分帧注入都递增；在途任务发现世代不符即自行退场（被更新的
+    /// `set_items` 取代，不与新注入交错推同一批条目）。
+    injection_generation: u64,
     /// 易变条目（`PaletteItem::is_volatile`，例如在线搜索结果）连同其搜索文本：不进 matcher
     /// 索引，而是在 `get_matches` 里与当前查询比对，因此刷新结果永远不会重启索引。
     dynamic_items: Vec<(Arc<T>, Utf32String)>,
@@ -263,6 +289,9 @@ where
                 views_model,
                 last_match: Vec::new(),
                 injected,
+                item_display: get_item_display,
+                pending_injection: None,
+                injection_generation: 0,
                 dynamic_items,
                 dynamic_matcher,
                 display_list: Arc::new(Vec::new()),
@@ -481,13 +510,27 @@ where
     /// （例如在线搜索结果，每次查询变化都整体替换）永不进索引——它们连同搜索文本存在这里，
     /// 在 `get_matches` 里与当前查询打分，于是刷新它们的成本是 O(易变条目数)，
     /// 而不是一次索引重建。
-    fn set_items(&mut self, items: &[Arc<T>], get_item_display: &MatcherFunc, cx: &mut App) {
+    ///
+    /// 大集的全新注入（本地索引首载/重扫，10 万条库上是数十到数百 ms 的 UI
+    /// 线程工作）走分帧推进：matcher 先 restart，条目按每帧
+    /// [`INJECTION_CHUNK`] 条推入，注入期间匹配结果逐步增长、轮询循环照常
+    /// 刷新展示——用户看到列表填起来，而不是一次长卡顿。世代守卫保证更新的
+    /// `set_items` 到达时在途注入立即作废。
+    fn set_items(
+        &mut self,
+        items: &[Arc<T>],
+        get_item_display: &Arc<MatcherFunc>,
+        cx: &mut Context<Self>,
+    ) {
+        // 分帧注入跨帧要用构造器，先存一份（调用方只借不存）。
+        self.item_display = get_item_display.clone();
+
         self.dynamic_items.clear();
         self.dynamic_items.extend(
             items
                 .iter()
                 .filter(|item| item.is_volatile())
-                .map(|item| (item.clone(), (get_item_display)(item, cx))),
+                .map(|item| (item.clone(), (self.item_display)(item, cx))),
         );
 
         // 新稳定条目能复现当前已注入前缀的多少（同样的 `Arc`、同样的相对顺序，跳过易变条目）。
@@ -511,23 +554,108 @@ where
             self.matcher.restart(false);
         }
 
-        let injector = self.matcher.injector();
-        // `restart` 会清空 matcher 的条目存储，所以非纯追加的变化必须重新注入每一个稳定条目
-        // ——只推变化的尾部会把未变的前缀（例如整个本地索引）从后续本次会话的匹配中丢掉。
-        for (stable_idx, item) in items.iter().filter(|item| !item.is_volatile()).enumerate() {
-            if append_only && stable_idx < common {
-                continue;
+        // 换代：在途的分帧注入（若有）就此作废——其任务下次醒来发现世代不符
+        // 即退场，不会与新注入交错推同一批条目。
+        self.injection_generation = self.injection_generation.wrapping_add(1);
+        let generation = self.injection_generation;
+        self.pending_injection = None;
+
+        self.injected.clear();
+        let stable: Vec<Arc<T>> = items
+            .iter()
+            .filter(|item| !item.is_volatile())
+            .cloned()
+            .collect();
+        // 纯追加时前缀已在 matcher 里，只需推新尾部；否则（restart 后）从零推。
+        let skip = if append_only { common } else { 0 };
+        let fresh = stable.len() - skip;
+
+        if fresh > INJECTION_SYNC_MAX {
+            if skip > 0 {
+                // 前缀已在 matcher 里：`injected` 先收回前缀，分帧注入只追加
+                // 尾部——否则注入完成后 `injected` 缺前缀，之后的对账永远判
+                // 不出纯追加，白丢这份优化。
+                self.injected = stable[..skip].to_vec();
             }
-            let item = item.clone();
-            let search_text = (get_item_display)(&item, cx);
-            injector.push(item, move |_v, dest| {
+            self.pending_injection = Some(PendingInjection {
+                items: stable,
+                next: skip,
+                generation,
+            });
+            self.spawn_injection(cx);
+            return;
+        }
+
+        let injector = self.matcher.injector();
+        for item in &stable[skip..] {
+            let search_text = (self.item_display)(item, cx);
+            injector.push(item.clone(), move |_v, dest| {
                 dest[0] = search_text;
             });
         }
+        self.injected = stable;
+    }
 
-        self.injected.clear();
-        self.injected
-            .extend(items.iter().filter(|item| !item.is_volatile()).cloned());
+    /// 启动分帧注入任务：每帧推一批（[`inject_chunk`]），推完或世代作废即退场。
+    /// 任务跟随 Finder 实体生命周期（弱引用），面板关闭后实体销毁时自然结束。
+    fn spawn_injection(&mut self, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        cx.spawn(async move |_, cx| {
+            loop {
+                let finished = weak
+                    .update(cx, |this, cx| this.inject_chunk(cx))
+                    .unwrap_or(true);
+                if finished {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(INJECTION_FRAME_MS))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    /// 分帧注入的一帧：推入至多 [`INJECTION_CHUNK`] 条稳定条目。返回 `true`
+    /// 表示无需继续——全部推完、没有在途注入、或世代已被更新的 `set_items`
+    /// 作废（旧任务自行退场，不与新注入交错）。
+    fn inject_chunk(&mut self, cx: &mut Context<Self>) -> bool {
+        let Self {
+            matcher,
+            pending_injection,
+            injected,
+            item_display,
+            injection_generation,
+            ..
+        } = self;
+        let Some(pending) = pending_injection.as_mut() else {
+            return true;
+        };
+        if pending.generation != *injection_generation {
+            return true;
+        }
+        let start = pending.next;
+        let end = (start + INJECTION_CHUNK).min(pending.items.len());
+        let total = pending.items.len();
+
+        let injector = matcher.injector();
+        for item in &pending.items[start..end] {
+            let search_text = (item_display)(item, cx);
+            injector.push(item.clone(), move |_v, dest| {
+                dest[0] = search_text;
+            });
+        }
+        // `injected` 只记录真正推进去的条目：在途期间到达的新 `set_items`
+        // 拿它做前缀对账，对不上即走完整 restart + 重新分帧注入。
+        injected.extend_from_slice(&pending.items[start..end]);
+
+        if end >= total {
+            *pending_injection = None;
+            true
+        } else {
+            pending.next = end;
+            false
+        }
     }
 
     fn get_matches(&mut self) -> Vec<Arc<T>> {
