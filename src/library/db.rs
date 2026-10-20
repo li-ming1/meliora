@@ -29,6 +29,11 @@ fn windows_line_ending_recovery_versions() -> &'static [i64] {
         20250825225240,
         20250825234341,
         20251022214837,
+        // 20261020120000 不是历史遗留：它首次落地时工作区副本是 CRLF（.gitattributes
+        // 的 eol=lf 尚未被 git 触碰归一），那一版构建算出的校验和是 CRLF 内容版，
+        // 已由该构建完成迁移的库里记着它。工作区归一为 LF 后（blob 一直是 LF），
+        // 新构建算 LF 校验和就会撞 VersionMismatch——没有这条就是启动即打不开库。
+        20261020120000,
     ]
 }
 
