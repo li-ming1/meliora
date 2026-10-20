@@ -1,6 +1,5 @@
 pub(crate) mod krc;
 pub(crate) mod lrc;
-pub(crate) mod yrc;
 
 use lrc::{LrcLine, LrcWord, parse_lrc};
 
@@ -347,12 +346,6 @@ impl Lyrics {
                 && let Some(parsed) = krc::parse_krc(&krc)
             {
                 return (Some(krc), Some(Arc::new(parsed)));
-            }
-            let sidecar = path.with_file_name(format!("{}.yrc", stem.to_string_lossy()));
-            if let Ok(yrc) = tokio::fs::read_to_string(&sidecar).await
-                && let Some(parsed) = yrc::parse_yrc(&yrc)
-            {
-                return (Some(yrc), Some(Arc::new(parsed)));
             }
         }
 
@@ -1246,11 +1239,9 @@ enum FollowTarget {
     Target(Pixels),
 }
 
-/// 统一歌词解析：先按 LRC，再按 KRC / YRC 明文；无时间行返回 `None`。
+/// 统一歌词解析：先按 LRC，再按 KRC 明文；无时间行返回 `None`。
 pub(crate) fn parse_lyrics(content: &str) -> Option<Vec<LrcLine>> {
-    parse_lrc(content)
-        .or_else(|| krc::parse_krc(content))
-        .or_else(|| yrc::parse_yrc(content))
+    parse_lrc(content).or_else(|| krc::parse_krc(content))
 }
 
 fn lerp(start: f32, end: f32, progress: f32) -> f32 {
