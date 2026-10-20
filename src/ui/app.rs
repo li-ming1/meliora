@@ -376,9 +376,12 @@ fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
     }
 }
 
-/// 启动打点脚手架（2026-10-20）：构造 `build()` 并把耗时记进 `costs`，
-/// 用于 build_main_window 的视图树分账。拿到分账数据、惰性化落地后，
-/// 这个辅助函数连同全部调用点一起清理。
+/// 启动打点（2026-10-20 实测定案）：构造 `build()` 并把耗时记进 `costs`，
+/// 由 `[startup] view tree breakdown` 一行输出各子视图的构造分账。首次测量
+/// 证明 11 个子视图合计仅 ~2.3ms（controls/library 各 ~0.5-1ms，其余微秒级）
+/// ——"惰性化首屏视图树”的方案因此被数据否决，287ms 的建窗大头在 gpui 的
+/// open_window 平台路径里。保留这份分账作为常驻观测：将来若有人给某个子视图
+/// 的构造加上重活，这里会立刻显形。
 fn timed_build<T>(
     label: &'static str,
     costs: &mut Vec<(&'static str, u128)>,

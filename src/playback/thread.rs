@@ -124,6 +124,11 @@ pub struct PlaybackThread {
     /// 空闲等待挂起期间从通道取出的命令，交给下一次 `command_intake`，
     /// 因此唤醒它的那条命令绝不会丢。
     pending_command: Option<PlaybackCommand>,
+    /// 启动后的首个在线打开是否要先刷新 URL：线程构造时置位（恢复出来的会话
+    /// 里当前曲目是 HTTP 直链——签名 URL 跨进程必然过期）。见
+    /// [`Self::open_with_resampler`] 的先行刷新分支。
+    #[cfg(feature = "online_sources")]
+    initial_online_open: bool,
 }
 
 impl PlaybackThread {
@@ -147,6 +152,17 @@ impl PlaybackThread {
                 // 下保住环形缓冲的生产者——2026-10-04 的 696 次 underrun
                 // 就是泵线程被后台构建饿穿（见 devices::mmcss 模块文档）。
                 crate::devices::mmcss::register_playback_thread();
+                // 恢复出来的会话里当前曲目若是在线直链，其签名 URL 跨进程
+                // 必然过期：首个打开前先刷新，省掉一轮注定 403 的陈旧打开
+                // （见 open_with_resampler 的先行刷新分支）。
+                #[cfg(feature = "online_sources")]
+                let initial_online_open = {
+                    let position = session.queue_position.unwrap_or(usize::MAX);
+                    session
+                        .queue
+                        .get(position)
+                        .is_some_and(|item| crate::media::is_http_path(item.get_path()))
+                };
                 let queue_manager =
                     QueueManager::new(queue, playback_settings.clone(), session, storage_tx);
 
@@ -169,6 +185,8 @@ impl PlaybackThread {
                     stop_after_current: false,
                     no_progress_cycles: 0,
                     pending_command: None,
+                    #[cfg(feature = "online_sources")]
+                    initial_online_open,
                 };
 
                 thread.run();
@@ -539,6 +557,27 @@ impl PlaybackThread {
         path: &Path,
         preserve_resampler: bool,
     ) -> Result<(), PlaybackStartError> {
+        // 启动恢复出来的在线曲目先行刷新：队列里的 HTTP 直链是跨进程持久化的
+        // 签名 URL，必然已过期，直接打开只会吃一轮 403 再走下面的重试——
+        // 实测那一轮白等 ~575ms，刷新 ~490ms，起播从 ~1.4s 才能开始。先刷新
+        // 再打开，起播提前到 ~0.7s。只对启动后的首个在线打开生效；会话中途
+        // 新取的 URL 不受影响。刷新失败就原样走下面的打开 + 重试逻辑，
+        // 行为与没有这个分支时完全一致。
+        #[cfg(feature = "online_sources")]
+        let pre_refreshed = if self.initial_online_open && crate::media::is_http_path(path) {
+            self.initial_online_open = false;
+            let refreshed = self.refresh_expired_online_url();
+            if refreshed.is_some() {
+                info!("restored online track: pre-refreshed expired stream URL before first open");
+            }
+            refreshed
+        } else {
+            None
+        };
+        #[cfg(not(feature = "online_sources"))]
+        let pre_refreshed: Option<std::path::PathBuf> = None;
+        let path = pre_refreshed.as_deref().unwrap_or(path);
+
         info!("Opening track '{}'", path.display());
 
         self.last_track_gain = None;
