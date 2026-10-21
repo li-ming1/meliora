@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, atomic::Ordering};
+use std::sync::{Arc, Mutex};
 
 use cntp_i18n::{I18N_MANAGER, I18nString, tr, tr_noop};
 use gpui::{
@@ -376,7 +376,9 @@ impl CommandPalette {
             let weak_self = cx.weak_entity();
             let show_clone = show.clone();
             App::on_action(cx, move |_: &OpenPalette, cx: &mut App| {
-                if cx.global::<ModalActive>().0.load(Ordering::Relaxed) {
+                if super::app::find_main_window(cx)
+                    .is_some_and(|main| cx.global::<ModalActive>().active_in(main.window_id()))
+                {
                     return;
                 }
 

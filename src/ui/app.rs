@@ -86,14 +86,17 @@ pub(crate) struct MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::MainWindow);
         // 启动可观测性：首帧落地的时刻直接读日志行的前缀（logging.rs 用的是
         // `fmt::time::uptime()`，即进程年龄），所以这里不需要自带耗时字段。
         // 代价 = 每次重绘一次 `Once` 的原子读。
         static FIRST_FRAME: std::sync::Once = std::sync::Once::new();
         FIRST_FRAME.call_once(|| tracing::info!("[startup] first frame"));
-        cx.global::<ModalActive>().0.store(false, Ordering::Relaxed);
+        // 先清掉本窗上一帧的模态标记；本帧若有 modal，子树 render 会重新标记。
+        // 其它窗口的标记不受影响（设置窗的扫码框不该让主窗快捷键失效）。
+        cx.global::<ModalActive>()
+            .clear(window.window_handle().window_id());
 
         let show_about = *self.show_about.read(cx);
         let immersive = *self.immersive.read(cx);
@@ -489,10 +492,7 @@ fn build_main_window(
 
         let right_sidebar_started = std::time::Instant::now();
         let right_sidebar = RightSidebar::new(cx);
-        view_build_us.push((
-            "right_sidebar",
-            right_sidebar_started.elapsed().as_micros(),
-        ));
+        view_build_us.push(("right_sidebar", right_sidebar_started.elapsed().as_micros()));
         let lyrics_model = right_sidebar.lyrics();
 
         // 桌面歌词悬浮窗的全局宿主：controls 开关、启动恢复、主窗关闭联动。
@@ -544,11 +544,9 @@ fn build_main_window(
                 ImmersiveView::new(cx, lyrics_model)
             }),
             about_focus,
-            missing_folder_dialog: timed_build(
-                "missing_folder_dialog",
-                &mut view_build_us,
-                || MissingFolderDialog::new(cx),
-            ),
+            missing_folder_dialog: timed_build("missing_folder_dialog", &mut view_build_us, || {
+                MissingFolderDialog::new(cx)
+            }),
             corrupt_settings_dialog: timed_build(
                 "corrupt_settings_dialog",
                 &mut view_build_us,
@@ -780,7 +778,7 @@ pub fn run() -> anyhow::Result<()> {
 
         super::keymap::load_default_keymap(cx);
 
-        cx.set_global(modal::ModalActive(AtomicBool::new(false)));
+        cx.set_global(modal::ModalActive::default());
 
         let settings_model = cx.global::<SettingsGlobal>().model.clone();
         // 定向 refresh 第一批（2026-09-26 审计 A-4）：观察回调做内容级 diff，

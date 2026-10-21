@@ -1,14 +1,43 @@
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use gpui::*;
 use prelude::FluentBuilder;
+use smallvec::SmallVec;
 
+use crate::sync::RecoveredMutex;
 use crate::ui::{constants::APP_SHADOW_SIZE, theme::Theme};
 
 use super::window_chrome::round_untiled_corners;
 
-pub struct ModalActive(pub AtomicBool);
+/// 哪些窗口当前渲染了模态框。必须按窗口记账：设置窗的扫码/确认框过去会
+/// 通过一个进程级 bool 让主窗的 Ctrl+K/Ctrl+F 静默失效。
+pub struct ModalActive(pub Mutex<SmallVec<[WindowId; 4]>>);
+
+impl Default for ModalActive {
+    fn default() -> Self {
+        Self(Mutex::new(SmallVec::new()))
+    }
+}
+
+impl ModalActive {
+    fn mark(&self, window: WindowId) {
+        let mut active = self.0.lock_recovered();
+        if !active.contains(&window) {
+            active.push(window);
+        }
+    }
+
+    /// 清掉指定窗口的标记；主窗在每帧 render 开头调用，modal 子树随后重新标记。
+    pub fn clear(&self, window: WindowId) {
+        self.0.lock_recovered().retain(|active| *active != window);
+    }
+
+    pub fn active_in(&self, window: WindowId) -> bool {
+        self.0.lock_recovered().contains(&window)
+    }
+}
+
 impl Global for ModalActive {}
 
 pub type OnExitHandler = dyn Fn(&mut Window, &mut App);
@@ -43,7 +72,8 @@ impl ParentElement for Modal {
 
 impl RenderOnce for Modal {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        cx.global::<ModalActive>().0.store(true, Ordering::Relaxed);
+        cx.global::<ModalActive>()
+            .mark(window.window_handle().window_id());
 
         let decorations = window.window_decorations();
         let theme = cx.global::<Theme>();
