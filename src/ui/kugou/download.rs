@@ -210,6 +210,11 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
     let key = track.hash.clone();
     if !pending_downloads().write_recovered().insert(key.clone()) {
         tracing::info!(hash = %track.hash, "kugou download already in flight; ignoring click");
+        // 重复点击此前只记 info 日志：用户看不到"已经在下载"，会以为点击失效。
+        emit_toast(Toast::info(tr!(
+            "KUGOU_DOWNLOAD_IN_PROGRESS",
+            "This track is already downloading"
+        )));
         return;
     }
 

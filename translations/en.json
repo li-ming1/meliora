@@ -146,6 +146,7 @@
   "KUGOU_DOWNLOAD": "Download",
   "KUGOU_DOWNLOADED": "Downloaded to {{path}}",
   "KUGOU_DOWNLOAD_FAILED": "Download failed: {{err}}",
+  "KUGOU_DOWNLOAD_IN_PROGRESS": "This track is already downloading",
   "KUGOU_DOWNLOAD_NO_URL": "No full-track URL for this song (lossless usually needs VIP)",
   "KUGOU_IMPORT_CANCEL": "Cancel",
   "KUGOU_IMPORT_CREATE_FAILED": "Could not create playlist: {{err}}",

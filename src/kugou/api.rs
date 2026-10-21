@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::client::{
     APPID, CLIENTVER, GATEWAY, KugouClient, KugouError, KugouRequest, KugouResponse, SRCAPPID,
-    UserProfile, today_utc, unix_now_secs,
+    UserProfile, today_local, unix_now_secs,
 };
 use super::crypto;
 
@@ -532,7 +532,7 @@ pub enum VipClaimOutcome {
 impl KugouClient {
     /// 今天免费的一天 VIP。对照 `youth_day_vip.js`：对 youth 充值端点发完不管。
     pub async fn receive_one_day_vip(&self) -> Result<KugouResponse, KugouError> {
-        let today = today_utc();
+        let today = today_local();
         let spec = KugouRequest::new(GATEWAY, "/youth/v1/recharge/receive_vip_listen_song")
             .post()
             .param("source_id", 90139)
@@ -576,7 +576,7 @@ impl KugouClient {
             return VipClaimOutcome::NotLoggedIn;
         }
 
-        let today = today_utc();
+        let today = today_local();
 
         // 同日守卫：只有今天的尝试确实拿到了 VIP 才跳过。失败的尝试（例如在登录已过期时
         // 发起、在 get_vip_record 处以 51002 失败）不该把这一天用掉——否则标记会毒化领取，

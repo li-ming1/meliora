@@ -65,15 +65,17 @@ pub(super) fn unix_now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 今天的 UTC 日期，格式 `yyyy-MM-dd`，用作每日 VIP 领取的标记。
-pub(super) fn today_utc() -> String {
-    chrono::Utc::now().format("%Y-%m-%d").to_string()
+/// 今天的本地日期，格式 `yyyy-MM-dd`，用作每日 VIP 领取的标记。酷狗按北京时间
+/// （服务端本地日）切日，领取请求与「今日已领」守卫必须用同一个日期：用 UTC
+/// 会让 CST 0-8 点送出前一天、UTC 16-24 点提前判已领。
+pub(super) fn today_local() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum KugouError {
     #[error("network error: {0}")]
-    Http(#[from] zed_reqwest::Error),
+    Http(zed_reqwest::Error),
     #[error("api error {status}: {msg}")]
     Api {
         status: i64,
@@ -81,6 +83,15 @@ pub enum KugouError {
         /// 载荷层的 `error_code`（响应体带了才非空）；调用方按它匹配，而不是按消息文本。
         error_code: Option<i64>,
     },
+}
+
+impl From<zed_reqwest::Error> for KugouError {
+    fn from(error: zed_reqwest::Error) -> Self {
+        // reqwest 的 Display 会附上完整请求 URL，而酷狗把 token 放在 query 里：
+        // 一条断网日志/失败 toast 就会把凭据写进用户可能分享的轮转日志。
+        // 去掉 URL 后仍保留状态码与传输错误本身。
+        Self::Http(error.without_url())
+    }
 }
 
 impl KugouError {
@@ -110,7 +121,7 @@ pub struct KugouSession {
     pub userid: Option<i64>,
     /// 可选的 VIP 明细，从 `/v1/get_union_vip` 取来用于展示。
     pub vip_detail: Option<Value>,
-    /// 最后一次尝试每日 VIP 领取的 UTC 日期（yyyy-MM-dd）。用于避免同一天跨重启重复领取
+    /// 最后一次尝试每日 VIP 领取的本地日期（yyyy-MM-dd）。用于避免同一天跨重启重复领取
     /// （以及重复打端点）。
     pub last_claim_day: Option<String>,
     pub nickname: Option<String>,
@@ -373,7 +384,7 @@ impl KugouClient {
         session_io::save(&*session, &self.session_path, "kugou");
     }
 
-    /// 最后一次每日 VIP 领取尝试的 UTC 日期串（yyyy-MM-dd），从未尝试过则为 `None`。持久化
+    /// 最后一次每日 VIP 领取尝试的本地日期串（yyyy-MM-dd），从未尝试过则为 `None`。持久化
     /// 它，好让失败的领取不会在同一天跨重启反复重试。
     pub fn last_claim_day(&self) -> Option<String> {
         self.session_guard().last_claim_day.clone()
@@ -381,7 +392,7 @@ impl KugouClient {
 
     /// 把今天的 VIP 领取标为已尝试并持久化。
     pub fn mark_claim_attempted(&self) {
-        let today = today_utc();
+        let today = today_local();
         let mut session = self.session_guard();
         session.last_claim_day = Some(today);
         session_io::save(&*session, &self.session_path, "kugou");
@@ -528,6 +539,7 @@ impl KugouClient {
             .inspect_err(|err| {
                 tracing::debug!(path = spec.path, error = %err, "kugou request failed");
             })?;
+        let http_status = response.status();
         let bytes = response.bytes().await.inspect_err(|err| {
             tracing::debug!(path = spec.path, error = %err, "kugou request failed");
         })?;
@@ -553,6 +565,11 @@ impl KugouClient {
                 notify_login_expired();
             }
             return Err(err);
+        }
+        // 网关/限流的非 2xx 响应不一定带载荷 status；此前会被当成空成功，
+        // 表现为搜索/歌单静默为空。载荷已先检查（保留登录过期判定）。
+        if !http_status.is_success() {
+            return Err(KugouError::local(format!("HTTP {http_status}")));
         }
         Ok(KugouResponse { body })
     }

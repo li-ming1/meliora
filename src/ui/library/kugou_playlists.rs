@@ -813,6 +813,9 @@ fn kugou_track_count(count: i64) -> cntp_i18n::I18nString {
 impl Render for KugouPlaylistsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
+        // i18n 生成器要求每个词条只有一个定义点：这里取一次，下面的重试按钮与
+        // “加载更多”失败态共用。
+        let retry_label = tr!("KUGOU_RETRY", "Retry");
         let scroll_handle = self.scroll_handle.clone();
 
         // 两个大列表（曲目列表、歌单总览）都在各自虚拟化的 uniform_list 内滚动；
@@ -833,7 +836,7 @@ impl Render for KugouPlaylistsView {
                     content = content.child(error_line(message.clone(), theme)).child(
                         button()
                             .id("kugou-retry-tracks")
-                            .child(tr!("KUGOU_RETRY", "Retry"))
+                            .child(retry_label.clone())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.retry_tracks(cx);
                             })),
@@ -884,7 +887,7 @@ impl Render for KugouPlaylistsView {
                     content = content.child(error_line(message.clone(), theme)).child(
                         button()
                             .id("kugou-retry-playlists")
-                            .child(tr!("KUGOU_RETRY"))
+                            .child(retry_label.clone())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.refresh_playlists(cx);
                             })),
@@ -916,6 +919,39 @@ impl Render for KugouPlaylistsView {
         if tracks_ready {
             // uniform_list 本身就是滚动容器，所以曲目在屏时页面级滚动器整体被替换
             let tracks_scroll_handle = self.tracks_scroll_handle.clone();
+            // 外层 theme 的借用止于 content 构建；render_header(&mut cx) 之后重新取
+            // 一次，供下面的 load_more label 使用。
+            let theme = cx.global::<Theme>();
+
+            // 分页失败此前只写进 TracksState：已有曲目时底部仍显示 "Load More"，
+            // 用户看不出是网络失败还是到底了。失败时把错误与重试放到同一个按钮
+            // 位置。先构造 owned 的 label，避免 `theme` 借用跨越下面的 `&mut cx`。
+            let load_more = self.has_more_tracks.then(|| {
+                let (id, label): (&'static str, gpui::AnyElement) = match &self.tracks_state {
+                    TracksState::Failed(message) => (
+                        "kugou-load-more-failed",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(error_line(message.clone(), theme))
+                            .child(retry_label.clone().into_any_element())
+                            .into_any_element(),
+                    ),
+                    _ => (
+                        "kugou-load-more",
+                        tr!("KUGOU_LOAD_MORE", "Load More").into_any_element(),
+                    ),
+                };
+                LoadMoreSpec {
+                    id,
+                    label,
+                    on_click: Box::new(|view: &mut Self, cx: &mut Context<Self>| {
+                        view.load_more_tracks(cx)
+                    }),
+                }
+            });
 
             root = root.child(online_list_container(
                 cx,
@@ -930,13 +966,7 @@ impl Render for KugouPlaylistsView {
                 None,
                 |view| &view.tracks,
                 |view, index, track, entity, cx| view.render_track_row(track, index, entity, cx),
-                self.has_more_tracks.then(|| LoadMoreSpec {
-                    id: "kugou-load-more",
-                    label: tr!("KUGOU_LOAD_MORE", "Load More").into_any_element(),
-                    on_click: Box::new(|view: &mut Self, cx: &mut Context<Self>| {
-                        view.load_more_tracks(cx)
-                    }),
-                }),
+                load_more,
             ));
         } else if overview_ready {
             // 歌单总览本身就是滚动容器，所以这里页面级滚动器同样整体被替换
