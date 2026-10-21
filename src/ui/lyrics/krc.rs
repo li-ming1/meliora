@@ -46,8 +46,13 @@ struct KrcLanguageSection {
     lyric_content: Vec<Vec<String>>,
 }
 
+/// 解密后的明文上限。逐字歌词通常几十 KB，4 MB 已远超任何真实载荷；
+/// 网络载荷可能是高压缩比数据，无上限解压会撞内存硬上限重启进程。
+#[cfg(feature = "kugou")]
+const MAX_KRC_PLAIN_BYTES: usize = 4 * 1024 * 1024;
+
 /// 解密 base64 KRC 内容，返回解压后的明文；失败（非 base64 / 解压错误 /
-/// 非 UTF-8）返回 `None`。
+/// 非 UTF-8 / 超出上限）返回 `None`。
 #[cfg(feature = "kugou")]
 pub fn decrypt_krc(base64_content: &str) -> Option<String> {
     let mut bytes = STANDARD.decode(base64_content.trim()).ok()?;
@@ -59,9 +64,13 @@ pub fn decrypt_krc(base64_content: &str) -> Option<String> {
         *byte ^= KRC_KEY[i % KRC_KEY.len()];
     }
 
-    let mut decoder = ZlibDecoder::new(&bytes[4..]);
+    // 多读 1 字节用来区分「恰好等于上限」与「被截断」。
+    let mut decoder = ZlibDecoder::new(&bytes[4..]).take(MAX_KRC_PLAIN_BYTES as u64 + 1);
     let mut out = Vec::new();
     decoder.read_to_end(&mut out).ok()?;
+    if out.len() > MAX_KRC_PLAIN_BYTES {
+        return None;
+    }
     // 解压不出任何内容（坏数据/空流）时视为无效，让调用方回退 LRC。
     if out.is_empty() {
         return None;
@@ -245,6 +254,15 @@ mod tests {
             *byte ^= KRC_KEY[i % KRC_KEY.len()];
         }
         STANDARD.encode(data)
+    }
+
+    /// 高压缩比载荷必须在解压上限处被拒绝，而不是把整段明文读进内存。
+    #[cfg(feature = "kugou")]
+    #[test]
+    fn oversized_krc_payload_is_rejected() {
+        let plain = "a".repeat(MAX_KRC_PLAIN_BYTES + 1024);
+        let encoded = encrypt_krc_for_test(&plain);
+        assert!(decrypt_krc(&encoded).is_none());
     }
 
     // 只被下方 kugou 门控的回环测试消费。

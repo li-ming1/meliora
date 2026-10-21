@@ -93,10 +93,10 @@ pub fn open(cx: &mut App) {
         .interface
         .desktop_lyrics_pos;
     let Some(handle) = open_window(cx, lyrics.clone(), pos) else {
-        // 开窗失败（GDI/HWND 资源瞬态等）降级为未开启，不能 panic——
-        // release 是 panic=abort，会让整个应用带着播放一起死。
-        tracing::error!("desktop lyrics: open failed, degrading to disabled");
-        set_enabled(cx, false);
+        // 开窗失败（GDI/HWND 资源瞬态等）只降级本次会话，不能 panic——
+        // release 是 panic=abort，会让整个应用带着播放一起死。也不能写设置：
+        // 一次瞬态失败不该永久关掉用户偏好，下次启动仍应重试。
+        tracing::error!("desktop lyrics: open failed for this session; keeping the preference");
         sync_broadcast(cx);
         return;
     };

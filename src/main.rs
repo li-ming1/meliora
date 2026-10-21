@@ -1135,6 +1135,42 @@ fn enforce_single_instance() -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let result = main_inner();
+    if let Err(error) = &result {
+        // 日志可能尚未初始化（例如数据目录不可写）；error! 可能只是空转，
+        // 所以同时给原生对话框，避免 GUI 子系统下"点开就消失"。
+        tracing::error!(?error, "fatal startup error");
+        show_fatal_error(&format!("{error:#}"));
+    }
+    result
+}
+
+/// 启动期致命错误的原生提示。GUI 子系统没有控制台，用户只会看到进程消失；
+/// 至少把错误与日志路径摆到眼前。
+fn show_fatal_error(message: &str) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows::{
+            Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+            core::{HSTRING, PCWSTR},
+        };
+        let text = HSTRING::from(format!(
+            "Meliora could not start.\n\n{message}\n\nLog: {}",
+            crate::logging::active_log_path().display()
+        ));
+        let caption = HSTRING::from("Meliora");
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
+    eprintln!("Meliora could not start: {message}");
+}
+
+fn main_inner() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     enforce_single_instance()?;
 

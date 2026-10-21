@@ -47,7 +47,23 @@ pub fn save<T: serde::Serialize + ?Sized>(value: &T, path: &Path, provider: &str
     // Windows 上 `fs::rename` 会替换已存在的目标，因此该交换在所有受支持
     // 平台都是原子的。
     let tmp = path.with_extension("json.tmp");
-    if let Err(err) = std::fs::write(&tmp, json) {
+    // 会话文件里有 token 与签名流 URL；Unix 上按 umask 默认会是 0644，
+    // 同机其他用户可读。Windows 的用户目录 ACL 已足够，保持原样。
+    #[cfg(unix)]
+    let written = {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .and_then(|mut file| file.write_all(json.as_bytes()))
+    };
+    #[cfg(not(unix))]
+    let written = std::fs::write(&tmp, json);
+    if let Err(err) = written {
         tracing::warn!(%err, "failed to write {provider} session temp file");
         let _ = std::fs::remove_file(&tmp);
         return;
