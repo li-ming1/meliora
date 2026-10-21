@@ -190,6 +190,19 @@ fn parse_m3u(file: File) -> impl futures::Stream<Item = anyhow::Result<M3UEntry>
     })
 }
 
+/// 转义 LIKE 模式里的 `\`、`%`、`_`（配合 SQL 的 `ESCAPE '\'`）：文件名里的
+/// 下划线很常见，不转义会把 `a_b` 匹配成 `axb`，把曲目导入到错误的位置。
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
 /// M3U 单条目 → 库内 track id 的两阶段查找。阶段一只做索引化精确路径匹配
 /// （`track.location` 上有 UNIQUE 隐式索引，EXPLAIN 为 SEARCH … USING COVERING
 /// INDEX），只有没命中的少数条目才进阶段二的模糊匹配。原实现把两支放在同一个
@@ -229,11 +242,13 @@ async fn lookup_m3u_track(pool: &SqlitePool, result: anyhow::Result<M3UEntry>) -
         .bind(entry.duration)
         .bind(format!(
             "%{}%",
-            entry
-                .location
-                .file_stem()
-                .and_then(OsStr::to_str)
-                .unwrap_or_default()
+            escape_like(
+                entry
+                    .location
+                    .file_stem()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or_default()
+            )
         ))
         .fetch_one(pool)
         .await
@@ -339,6 +354,12 @@ mod tests {
     use super::*;
     use crate::test_support::{create_test_pool, insert_metadata, track_metadata};
     use sqlx::Row as _;
+
+    #[test]
+    fn like_pattern_escapes_wildcards() {
+        assert_eq!(escape_like("a_b%c\\d"), "a\\_b\\%c\\\\d");
+        assert_eq!(escape_like("plain"), "plain");
+    }
 
     const EXACT_SQL: &str = include_str!("../../queries/playlist/lookup_track_by_location.sql");
     // sqlx 0.9 禁止运行期拼接的 SQL 串，故在编译期把 EXPLAIN 前缀与查询文件拼成静态串
