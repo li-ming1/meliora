@@ -46,6 +46,28 @@ fn same_items<T>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| Arc::ptr_eq(a, b))
 }
 
+/// `stable` 复现了 `injected` 多长的前缀，以及新集合是否为已注入集合的**纯追加**。
+///
+/// 返回 `(common, append_only)`：`append_only == true` 表示 `injected` 整体是
+/// `stable` 的前缀，此时 matcher 无需 `restart`、只需推入 `stable[common..]`。
+///
+/// 判据必须是"注入项被**完整**复现"（`common == injected.len()`），而不是"没遇到
+/// 指针不等"：后者会把"已注入项耗尽、后面全是新条目"这种最典型的追加误判成不匹配。
+/// 2026-10-21 之前就是这个形状——`None`（耗尽）与 `Some(不相等)` 共用一个 arm，
+/// 于是任何**增长**的列表都走 restart + 全量重注入，纯追加分支只在"集合完全不变"
+/// 时才会命中，等于从没生效过。
+fn common_prefix<T>(injected: &[Arc<T>], stable: &[Arc<T>]) -> (usize, bool) {
+    let mut common = 0;
+    while common < injected.len() && common < stable.len() {
+        if !Arc::ptr_eq(&injected[common], &stable[common]) {
+            return (common, false);
+        }
+        common += 1;
+    }
+    // 注入项全被复现 ⇒ 纯追加（或完全不变）；否则是删除/重排 ⇒ 必须 restart。
+    (common, common == injected.len())
+}
+
 pub trait PaletteItem {
     fn left_content(&self, cx: &mut App) -> Option<FinderItemLeft>;
     fn middle_content(&self, cx: &mut App) -> SharedString;
@@ -533,22 +555,15 @@ where
                 .map(|item| (item.clone(), (self.item_display)(item, cx))),
         );
 
-        // 新稳定条目能复现当前已注入前缀的多少（同样的 `Arc`、同样的相对顺序，跳过易变条目）。
-        let mut common = 0usize;
-        let mut append_only = true;
-        for item in items {
-            if item.is_volatile() {
-                continue;
-            }
-            match self.injected.get(common) {
-                Some(injected_item) if Arc::ptr_eq(injected_item, item) => common += 1,
-                _ => {
-                    append_only = false;
-                    break;
-                }
-            }
-        }
-        let append_only = append_only && common == self.injected.len();
+        // 稳定条目（易变条目不进索引，只与当前查询比对）。
+        let stable: Vec<Arc<T>> = items
+            .iter()
+            .filter(|item| !item.is_volatile())
+            .cloned()
+            .collect();
+
+        // 新稳定条目能复现当前已注入前缀的多少（同样的 `Arc`、同样的相对顺序）。
+        let (common, append_only) = common_prefix(&self.injected, &stable);
 
         if !append_only {
             self.matcher.restart(false);
@@ -561,11 +576,6 @@ where
         self.pending_injection = None;
 
         self.injected.clear();
-        let stable: Vec<Arc<T>> = items
-            .iter()
-            .filter(|item| !item.is_volatile())
-            .cloned()
-            .collect();
         // 纯追加时前缀已在 matcher 里，只需推新尾部；否则（restart 后）从零推。
         let skip = if append_only { common } else { 0 };
         let fresh = stable.len() - skip;
@@ -1263,5 +1273,65 @@ where
         } else {
             base
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::common_prefix;
+    use std::sync::Arc;
+
+    fn arcs(n: usize) -> Vec<Arc<u32>> {
+        (0..n as u32).map(Arc::new).collect()
+    }
+
+    #[test]
+    fn identical_set_is_a_noop_append() {
+        let injected = arcs(4);
+        let (common, append_only) = common_prefix(&injected, &injected);
+        assert_eq!((common, append_only), (4, true));
+    }
+
+    /// 回归：增长（纯追加）必须被认成 append_only。旧实现里"注入项耗尽"与
+    /// "指针不等"共用 arm，这里会返回 (4, false)，于是每次索引刷新都 restart。
+    #[test]
+    fn growing_set_is_append_only() {
+        let injected = arcs(4);
+        let mut stable = injected.clone();
+        stable.extend(arcs(6).into_iter().skip(4));
+        let (common, append_only) = common_prefix(&injected, &stable);
+        assert_eq!((common, append_only), (4, true));
+    }
+
+    #[test]
+    fn shrinking_set_needs_restart() {
+        let injected = arcs(4);
+        let stable = injected[..3].to_vec();
+        let (common, append_only) = common_prefix(&injected, &stable);
+        assert_eq!((common, append_only), (3, false));
+    }
+
+    #[test]
+    fn middle_insert_needs_restart() {
+        let injected = arcs(4);
+        let stable = vec![injected[0].clone(), Arc::new(99), injected[1].clone()];
+        let (common, append_only) = common_prefix(&injected, &stable);
+        assert_eq!((common, append_only), (1, false));
+    }
+
+    #[test]
+    fn same_values_but_new_arcs_needs_restart() {
+        // 值相等但指针不同 ⇒ 索引里的条目仍是旧的，必须重注入。
+        let injected = arcs(3);
+        let stable = arcs(3);
+        let (common, append_only) = common_prefix(&injected, &stable);
+        assert_eq!((common, append_only), (0, false));
+    }
+
+    #[test]
+    fn empty_injected_is_append_only_from_zero() {
+        let injected: Vec<Arc<u32>> = Vec::new();
+        let stable = arcs(3);
+        assert_eq!(common_prefix(&injected, &stable), (0, true));
     }
 }

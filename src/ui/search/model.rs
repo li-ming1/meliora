@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-use super::search_item::SearchPaletteItem;
+use super::search_item::{SearchPaletteItem, reuse_unchanged};
 
 type MatcherFunc = Box<dyn Fn(&Arc<SearchPaletteItem>, &mut App) -> Utf32String + 'static>;
 type OnAccept = Box<dyn Fn(&Arc<SearchPaletteItem>, &mut App) + 'static>;
@@ -245,10 +245,19 @@ impl SearchModel {
         self.load_generation += 1;
         let generation = self.load_generation;
         let pool = cx.global::<Pool>().0.clone();
+        // 上一份索引只克隆 `Arc`（O(1)），带进后台任务里做"内容未变的条目复用
+        // 旧 `Arc`"——这是 `Finder` 的 `common_prefix` 能判出纯追加、从而只注入
+        // 增量的**前提**：不传它，重建出来的每个 `Arc` 都是新的，对账在索引 0
+        // 就失败，每次重扫都退化成 restart + 全量重注入。
+        let previous = self.local_items.clone();
 
         cx.spawn(async move |this, cx| {
             let new_items = crate::RUNTIME
-                .spawn(async move { load_search_items_off_thread(pool).await })
+                .spawn(async move {
+                    load_search_items_off_thread(pool)
+                        .await
+                        .map(|items| reuse_unchanged(&previous, items))
+                })
                 .await
                 .unwrap_or_else(|e| Err(format!("search index task failed: {e:?}")));
 

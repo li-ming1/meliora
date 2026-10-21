@@ -2,6 +2,7 @@ use std::{rc::Rc, sync::Arc};
 
 use cntp_i18n::{I18nString, tr};
 use gpui::{AnyView, App, IntoElement, SharedString, Window, div};
+use rustc_hash::FxHashMap;
 
 use crate::ui::{
     components::{
@@ -55,7 +56,61 @@ pub enum SearchPaletteItem {
     },
 }
 
+/// 复用上一份索引里**内容完全相同**的条目 `Arc`，让索引重建后的 `set_items`
+/// 能认出"纯追加"（见 `Finder` 的 `common_prefix`）。
+///
+/// 为什么必须有这一步：`Finder` 判断"要不要 restart 索引"靠的是 `Arc` 指针
+/// 相等。本地索引每次重建都 `Arc::new` 出一批全新指针，于是即使整个库一个字节
+/// 都没变，对账也会在索引 0 就失败、退化成 `restart` + 全量重注入——10 万条库
+/// 上是数百 ms 的 UI 线程工作（`Finder` 只能用分帧推进把它摊开）。复用旧
+/// `Arc` 之后：无变更重扫 → 零注入；新增 5 首 → 只注入 5 条。
+///
+/// 正确性：只有**值相等**（`SearchPaletteItem` 的 `PartialEq`，逐字段比较）
+/// 才复用；改过名/改过艺人的条目会拿到新 `Arc`，索引随之重注入。比较成本是
+/// 一次 memcmp 级别的逐字段比对，且发生在**后台线程**（调用点在
+/// `load_search_items_off_thread` 的返回值上），不占 UI 线程。
+pub fn reuse_unchanged(
+    old: &[Arc<SearchPaletteItem>],
+    new: Vec<Arc<SearchPaletteItem>>,
+) -> Vec<Arc<SearchPaletteItem>> {
+    if old.is_empty() || new.is_empty() {
+        return new;
+    }
+    let mut by_key: FxHashMap<(u8, i64), &Arc<SearchPaletteItem>> =
+        FxHashMap::with_capacity_and_hasher(old.len(), Default::default());
+    for item in old {
+        if let Some(key) = item.reuse_key() {
+            // 同一 key 重复出现时保留先出现的那个：索引顺序本身不该有重复，
+            // 真出现了也只影响复用命中率，不影响正确性。
+            by_key.entry(key).or_insert(item);
+        }
+    }
+    new.into_iter()
+        .map(
+            |item| match item.reuse_key().and_then(|key| by_key.get(&key)) {
+                Some(previous) if **previous == item => Arc::clone(previous),
+                _ => item,
+            },
+        )
+        .collect()
+}
+
 impl SearchPaletteItem {
+    /// 条目身份键：同一 `(类别, id)` 在两次索引重建之间指的是"同一条目"，
+    /// 可以拿去比对内容是否变过（见 [`reuse_unchanged`]）。
+    ///
+    /// 在线（酷狗）条目不给键：它们是易变条目，根本不进稳定集，也不会出现在
+    /// 本地索引里。
+    fn reuse_key(&self) -> Option<(u8, i64)> {
+        match self {
+            Self::Album { id, .. } => Some((0, *id)),
+            Self::Artist { id, .. } => Some((1, *id)),
+            Self::Track { id, .. } => Some((2, *id)),
+            #[cfg(feature = "kugou")]
+            Self::KugouTrack { .. } => None,
+        }
+    }
+
     /// 某专辑缩略图的图片缓存 URI。
     fn thumbnail_path(album_id: i64) -> String {
         format!("!db://album/{}/thumb", album_id)
@@ -357,5 +412,91 @@ mod bench {
             let items = SearchPaletteItem::from_search_results(albums, artists, tracks);
             assert_eq!(items.len(), ALBUMS + ARTISTS + TRACKS);
         });
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::{SearchPaletteItem, reuse_unchanged};
+    use std::sync::Arc;
+
+    fn track(id: i64, title: &str) -> Arc<SearchPaletteItem> {
+        Arc::new(SearchPaletteItem::Track {
+            id,
+            title: title.to_owned(),
+            artists: "someone".to_owned(),
+            album_id: Some(1),
+            search_text: title.into(),
+        })
+    }
+
+    fn same_arc(a: &Arc<SearchPaletteItem>, b: &Arc<SearchPaletteItem>) -> bool {
+        Arc::ptr_eq(a, b)
+    }
+
+    /// 内容全同 ⇒ 每个条目都拿到旧 `Arc`，`Finder` 的对账因此判出"完全不变"。
+    #[test]
+    fn identical_rebuild_reuses_every_arc() {
+        let old = vec![track(1, "a"), track(2, "b"), track(3, "c")];
+        let new = vec![track(1, "a"), track(2, "b"), track(3, "c")];
+        let merged = reuse_unchanged(&old, new);
+        assert_eq!(merged.len(), 3);
+        for (m, o) in merged.iter().zip(old.iter()) {
+            assert!(same_arc(m, o), "内容未变的条目必须复用旧 Arc");
+        }
+    }
+
+    /// 只追加 ⇒ 旧前缀全部复用，新条目保持新 `Arc`（对账因此是"纯追加"）。
+    #[test]
+    fn append_reuses_prefix_and_keeps_new() {
+        let old = vec![track(1, "a"), track(2, "b")];
+        let new = vec![track(1, "a"), track(2, "b"), track(3, "c")];
+        let merged = reuse_unchanged(&old, new);
+        assert_eq!(merged.len(), 3);
+        assert!(same_arc(&merged[0], &old[0]));
+        assert!(same_arc(&merged[1], &old[1]));
+        assert_eq!(
+            merged[2].as_ref(),
+            &SearchPaletteItem::Track {
+                id: 3,
+                title: "c".to_owned(),
+                artists: "someone".to_owned(),
+                album_id: Some(1),
+                search_text: "c".into(),
+            }
+        );
+    }
+
+    /// 内容变过的条目**不能**复用，否则索引里留的是旧搜索文本。
+    #[test]
+    fn changed_content_is_not_reused() {
+        let old = vec![track(1, "a"), track(2, "b")];
+        let new = vec![track(1, "a"), track(2, "b renamed")];
+        let merged = reuse_unchanged(&old, new);
+        assert!(same_arc(&merged[0], &old[0]));
+        assert!(!same_arc(&merged[1], &old[1]), "改名必须重注入");
+    }
+
+    /// 跨类别同 id 不能互相顶替（专辑 7 与曲目 7 是两条不同条目）。
+    #[test]
+    fn same_id_across_categories_is_not_reused() {
+        let old = vec![track(7, "x")];
+        let new = vec![Arc::new(SearchPaletteItem::Album {
+            id: 7,
+            title: "x".to_owned(),
+            artist: "someone".to_owned(),
+            artists: "someone".to_owned(),
+            available: true,
+            search_text: "x".into(),
+        })];
+        let merged = reuse_unchanged(&old, new);
+        assert!(!same_arc(&merged[0], &old[0]));
+    }
+
+    #[test]
+    fn empty_old_returns_new_unchanged() {
+        let old: Vec<Arc<SearchPaletteItem>> = Vec::new();
+        let new = vec![track(1, "a")];
+        assert_eq!(reuse_unchanged(&old, new).len(), 1);
     }
 }
