@@ -97,6 +97,16 @@ pub enum CheckSource {
     Manual,
 }
 
+/// 更新失败的阶段：同一条“失败”文案把网络问题、校验不通过与安装目录不可写
+/// 混在一起，会把用户引向错误的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateFailureStage {
+    Check,
+    Download,
+    Verify,
+    Install,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateStatus {
     Idle,
@@ -120,7 +130,9 @@ pub enum UpdateStatus {
     ReadyToRestart {
         version: String,
     },
-    Failed,
+    Failed {
+        stage: UpdateFailureStage,
+    },
 }
 
 #[derive(Debug)]
@@ -221,7 +233,12 @@ pub fn check_for_updates(cx: &mut App, source: CheckSource) {
 
 fn mark_check_failed(cx: &mut App, error: String) {
     warn!(error = %error, "updater: check failed");
-    set_status(cx, UpdateStatus::Failed);
+    set_status(
+        cx,
+        UpdateStatus::Failed {
+            stage: UpdateFailureStage::Check,
+        },
+    );
 }
 
 fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource) {
@@ -321,7 +338,12 @@ pub fn start_download(cx: &mut App) {
             if !sender_alive {
                 break task
                     .await
-                    .map_err(|error| format!("download task failed: {error}"))
+                    .map_err(|error| {
+                        UpdateFailure::new(
+                            UpdateFailureStage::Download,
+                            format!("download task failed: {error}"),
+                        )
+                    })
                     .and_then(|result| result);
             }
             tokio::select! {
@@ -347,7 +369,12 @@ pub fn start_download(cx: &mut App) {
                 }
                 done = &mut task => {
                     break done
-                        .map_err(|error| format!("download task failed: {error}"))
+                        .map_err(|error| {
+                        UpdateFailure::new(
+                            UpdateFailureStage::Download,
+                            format!("download task failed: {error}"),
+                        )
+                    })
                         .and_then(|result| result);
                 }
             }
@@ -372,9 +399,18 @@ pub fn start_download(cx: &mut App) {
                     .with_action(tr!("UPDATE_RESTART_NOW"), restart_to_apply),
                 );
             }
-            Err(error) => {
-                warn!(error = %error, "updater: download/install failed");
-                set_status(cx, UpdateStatus::Failed);
+            Err(failure) => {
+                warn!(
+                    stage = ?failure.stage,
+                    error = %failure.message,
+                    "updater: download/install failed"
+                );
+                set_status(
+                    cx,
+                    UpdateStatus::Failed {
+                        stage: failure.stage,
+                    },
+                );
             }
         });
     })
@@ -432,28 +468,50 @@ async fn http_get_text(url: &str) -> Result<String, String> {
 
 /// 下载 → sha256 → 交换。全程跑在 tokio runtime 上；watch 发送端把节流后的
 /// `(received, total)` 进度带给 UI。
+/// 下载/校验/安装链路的分阶段失败；`message` 只进日志，不上屏。
+struct UpdateFailure {
+    stage: UpdateFailureStage,
+    message: String,
+}
+
+impl UpdateFailure {
+    fn new(stage: UpdateFailureStage, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            message: message.into(),
+        }
+    }
+}
+
 async fn download_and_swap(
     binary_url: String,
     checksums_url: Option<String>,
     exe_path: PathBuf,
     staged_path: PathBuf,
     progress: tokio::sync::watch::Sender<(u64, u64)>,
-) -> Result<(), String> {
+) -> Result<(), UpdateFailure> {
     // 失败即关闭：校验和清单是这条流程唯一的完整性锚点（没有代码签名、没有钉死
     // 的哈希）。清单或其条目缺失，就意味着我们无法区分损坏的下载与被篡改的下载，
     // 因此拒绝自动安装并把用户指向 release 页面——两条早退都发生在下载之前，
     // 校验用的哈希因此不可能被跳过。
     let checksums = checksums_url.as_ref().ok_or_else(|| {
-        "updater: release has no checksums.txt; refusing to install an unverified binary — \
-         download it manually from the release page instead"
-            .to_string()
+        UpdateFailure::new(
+            UpdateFailureStage::Verify,
+            "updater: release has no checksums.txt; refusing to install an unverified binary — \
+             download it manually from the release page instead",
+        )
     })?;
-    let manifest = http_get_text(checksums).await?;
+    let manifest = http_get_text(checksums)
+        .await
+        .map_err(|error| UpdateFailure::new(UpdateFailureStage::Download, error))?;
     let asset_name = binary_url.rsplit('/').next().unwrap_or_default();
     let expected = lookup_checksum(&manifest, asset_name).ok_or_else(|| {
-        format!(
-            "updater: checksums.txt has no entry for {asset_name}; refusing to install an \
-             unverified binary — download it manually from the release page instead"
+        UpdateFailure::new(
+            UpdateFailureStage::Verify,
+            format!(
+                "updater: checksums.txt has no entry for {asset_name}; refusing to install an \
+                 unverified binary — download it manually from the release page instead"
+            ),
         )
     })?;
 
@@ -462,18 +520,29 @@ async fn download_and_swap(
         .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
-        .map_err(|error| format!("download request failed: {error}"))?;
+        .map_err(|error| {
+            UpdateFailure::new(
+                UpdateFailureStage::Download,
+                format!("download request failed: {error}"),
+            )
+        })?;
     if !response.status().is_success() {
-        return Err(format!("download returned {}", response.status()));
+        return Err(UpdateFailure::new(
+            UpdateFailureStage::Download,
+            format!("download returned {}", response.status()),
+        ));
     }
     let total = response.content_length().unwrap_or(0);
     let mut response = response;
     let mut file = tokio::fs::File::create(&staged_path)
         .await
         .map_err(|error| {
-            format!(
-                "cannot stage update in {}: {error} (is the install directory writable?)",
-                staged_path.display()
+            UpdateFailure::new(
+                UpdateFailureStage::Install,
+                format!(
+                    "cannot stage update in {}: {error} (is the install directory writable?)",
+                    staged_path.display()
+                ),
             )
         })?;
     use tokio::io::AsyncWriteExt;
@@ -487,27 +556,37 @@ async fn download_and_swap(
     } else {
         1024 * 1024
     };
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("download interrupted: {error}"))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        UpdateFailure::new(
+            UpdateFailureStage::Download,
+            format!("download interrupted: {error}"),
+        )
+    })? {
         hasher.update(&chunk);
-        file.write_all(&chunk)
-            .await
-            .map_err(|error| format!("writing staged update failed: {error}"))?;
+        file.write_all(&chunk).await.map_err(|error| {
+            UpdateFailure::new(
+                UpdateFailureStage::Install,
+                format!("writing staged update failed: {error}"),
+            )
+        })?;
         received += chunk.len() as u64;
         if received - last_sent >= step {
             last_sent = received;
             let _ = progress.send((received, total));
         }
     }
-    file.flush()
-        .await
-        .map_err(|error| format!("flushing staged update failed: {error}"))?;
-    file.sync_all()
-        .await
-        .map_err(|error| format!("syncing staged update failed: {error}"))?;
+    file.flush().await.map_err(|error| {
+        UpdateFailure::new(
+            UpdateFailureStage::Install,
+            format!("flushing staged update failed: {error}"),
+        )
+    })?;
+    file.sync_all().await.map_err(|error| {
+        UpdateFailure::new(
+            UpdateFailureStage::Install,
+            format!("syncing staged update failed: {error}"),
+        )
+    })?;
     drop(file);
     let _ = progress.send((received, total));
 
@@ -518,12 +597,14 @@ async fn download_and_swap(
         .collect::<String>();
     if !actual.eq_ignore_ascii_case(&expected) {
         let _ = tokio::fs::remove_file(&staged_path).await;
-        return Err(format!(
-            "checksum mismatch for staged update: expected {expected}, got {actual}"
+        return Err(UpdateFailure::new(
+            UpdateFailureStage::Verify,
+            format!("checksum mismatch for staged update: expected {expected}, got {actual}"),
         ));
     }
 
-    swap_install(&exe_path, &staged_path)?;
+    swap_install(&exe_path, &staged_path)
+        .map_err(|message| UpdateFailure::new(UpdateFailureStage::Install, message))?;
     Ok(())
 }
 

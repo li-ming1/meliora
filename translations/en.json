@@ -429,7 +429,9 @@
   "UPDATE_AVAILABLE_TOAST": "Meliora {{version}} is available",
   "UPDATE_CHECK_NOW": "Check Now",
   "UPDATE_CURRENT": "Current version: {{version}}",
+  "UPDATE_DOWNLOAD_FAILED": "Update download failed — check your network and try again",
   "UPDATE_DOWNLOAD_NOW": "Download and Install",
+  "UPDATE_INSTALL_FAILED": "Could not install the update — try again from the release page",
   "UPDATE_OPEN_RELEASE": "View Release Page",
   "UPDATE_PLAYLIST": "Update {{name}}",
   "UPDATE_READY_TOAST": "Meliora {{version}} downloaded — restart to apply",
@@ -443,5 +445,6 @@
   "UPDATE_STATUS_IDLE": "Never checked",
   "UPDATE_STATUS_READY": "Version {{version}} downloaded — restart to apply",
   "UPDATE_STATUS_UP_TO_DATE": "You're on the latest version",
+  "UPDATE_VERIFY_FAILED": "The downloaded update failed verification — try again",
   "WINDOW": "Window"
 }

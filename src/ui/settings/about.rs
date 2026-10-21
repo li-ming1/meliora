@@ -24,7 +24,7 @@ use crate::{
         checkbox::checkbox,
         label::{Label, label},
     },
-    updater::{CheckSource, UpdateStatus, UpdaterGlobal},
+    updater::{CheckSource, UpdateFailureStage, UpdateStatus, UpdaterGlobal},
 };
 
 pub struct AboutSettings {
@@ -125,11 +125,25 @@ impl AboutSettings {
                 tr!("UPDATE_STATUS_UP_TO_DATE", "You're on the latest version").into(),
                 UpdateAction::Check,
             ),
-            UpdateStatus::Failed => (
-                tr!(
-                    "UPDATE_STATUS_FAILED",
-                    "Update check failed — check your network and try again"
-                )
+            UpdateStatus::Failed { stage } => (
+                match stage {
+                    UpdateFailureStage::Check => tr!(
+                        "UPDATE_STATUS_FAILED",
+                        "Update check failed — check your network and try again"
+                    ),
+                    UpdateFailureStage::Download => tr!(
+                        "UPDATE_DOWNLOAD_FAILED",
+                        "Update download failed — check your network and try again"
+                    ),
+                    UpdateFailureStage::Verify => tr!(
+                        "UPDATE_VERIFY_FAILED",
+                        "The downloaded update failed verification — try again"
+                    ),
+                    UpdateFailureStage::Install => tr!(
+                        "UPDATE_INSTALL_FAILED",
+                        "Could not install the update — try again from the release page"
+                    ),
+                }
                 .into(),
                 UpdateAction::Check,
             ),
