@@ -981,13 +981,21 @@ async fn finalize_counts_zero_writes_for_an_album_without_art() {
     assert_eq!(finalize(&pool, false).await, 0);
 }
 
-/// 有封面的专辑首轮写专辑/曲目链接；同样的数据再跑一遍必须计 0
-/// （update_album_art 与 assign_track_art 的值守卫）。
+/// 多数派封面与写入时的暂定封面不同：首轮翻转专辑链接（有写），同样的数据
+/// 再跑一遍必须计 0（update_album_art 与 assign_track_art 的值守卫）。
+/// 夹具不能张张相同：曲目写入时专辑/曲目已 provisional 链上该封面，全同数据
+/// 的首轮就是 0 写——那种形状由无封面的
+/// `finalize_counts_zero_writes_for_an_album_without_art` 与写入时链接的
+/// `album_gets_provisional_art_at_write_time` 覆盖。
 #[tokio::test]
 async fn finalize_counts_zero_on_a_second_identical_pass() {
     let (dir, pool) = create_test_pool("artwork-finalize-count").await;
-    let art = embedded_art(red());
-    write_album(&dir, &pool, &[&art, &art]).await;
+    let a = red();
+    let b = green();
+
+    write_album_track(&dir, &pool, 1, &embedded_art(a.clone())).await;
+    write_album_track(&dir, &pool, 2, &embedded_art(b.clone())).await;
+    write_album_track(&dir, &pool, 3, &embedded_art(b.clone())).await;
 
     assert!(finalize(&pool, false).await > 0);
     assert_eq!(finalize(&pool, false).await, 0);
