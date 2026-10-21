@@ -128,6 +128,12 @@ async fn finalize_album(
         get_or_create_artwork(conn, winner_hash, None).await
     };
 
+    // 候选哈希没有对应的 artwork 行（封面解码失败，或只观察到未入库）：
+    // 保留现有封面。用 NULL 覆盖会让一次坏 cover.jpg 把整张专辑的封面清空。
+    let Some(winner_id) = winner_id else {
+        return Ok(0);
+    };
+
     let mut changed = sqlx::query(include_str!(
         "../../../../queries/scan/update_album_art.sql"
     ))
@@ -138,9 +144,7 @@ async fn finalize_album(
     .await?
     .rows_affected();
 
-    if let Some(winner_id) = winner_id {
-        changed += assign_track_art(conn, album_id, winner_hash, winner_id, art_cache).await?;
-    }
+    changed += assign_track_art(conn, album_id, winner_hash, winner_id, art_cache).await?;
     Ok(changed)
 }
 

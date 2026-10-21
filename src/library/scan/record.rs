@@ -43,7 +43,7 @@ impl ScanRecord {
 }
 
 pub async fn load_scan_record(path: &Path) -> ScanRecord {
-    let mut file = match tokio::fs::File::open(path)
+    let file = match tokio::fs::File::open(path)
         .await
         .map(BufReader::new)
         .map(ZlibDecoder::new)
@@ -59,8 +59,19 @@ pub async fn load_scan_record(path: &Path) -> ScanRecord {
         }
     };
 
+    // 数据目录里的文件可能被同步盘/备份工具替换成高压缩比数据：无上限解压会在
+    // 启动路径上直接撞内存上限，且损坏文件会被每次启动重复读取。
+    const MAX_SCAN_RECORD_BYTES: u64 = 64 * 1024 * 1024;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).await.unwrap_or_default();
+    let _ = file
+        .take(MAX_SCAN_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await;
+    if bytes.len() as u64 > MAX_SCAN_RECORD_BYTES {
+        error!("Could not read scan record: decompressed size exceeds the limit");
+        error!("Scanning will be slow until the scan record is rebuilt");
+        return ScanRecord::new_current();
+    }
 
     match postcard::from_bytes(&bytes) {
         Ok(scan_record) => scan_record,

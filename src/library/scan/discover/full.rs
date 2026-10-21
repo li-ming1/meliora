@@ -165,11 +165,18 @@ pub async fn discover(
 
 const CLEANUP_PAGE_SIZE: i64 = 1000;
 
-/// `path` 位于某个已不再配置的目录之下时为 true。
-fn in_removed_directory(path: &Utf8Path, removed_dirs: &[Utf8PathBuf]) -> bool {
+/// `path` 位于某个已不再配置的目录之下、且自身不在任何当前扫描根之下时为 true。
+/// 后半句不可省：库根从父目录改成其子目录时，旧父根仍是「已移除」，但子根下的
+/// 曲目仍在扫描范围内，按前缀直接删行会丢掉歌单条目。
+fn in_removed_directory(
+    path: &Utf8Path,
+    removed_dirs: &[Utf8PathBuf],
+    current_dirs: &FxHashSet<Utf8PathBuf>,
+) -> bool {
     !removed_dirs.is_empty() && {
         let folded = fold_path(path);
-        removed_dirs.iter().any(|dir| folded.starts_with(dir))
+        !current_dirs.iter().any(|dir| folded.starts_with(dir))
+            && removed_dirs.iter().any(|dir| folded.starts_with(dir))
     }
 }
 
@@ -207,7 +214,10 @@ async fn cleanup_stale_tracks_paged(
         .directories
         .iter()
         .map(|p| fold_path(&canonicalize_or_keep(p)))
-        .filter(|p| !current_set.contains(p))
+        // 被当前任一扫描根覆盖的旧目录不算「已移除」：库根从子目录改成其父目录时，
+        // 旧子目录仍在扫描范围内，单纯按前缀判定会把仍存在的曲目删行（playlist_item
+        // 会随外键级联清空）。
+        .filter(|p| !current_set.iter().any(|current| p.starts_with(current)))
         .collect();
 
     let excluded = fold_excluded_roots(excluded_roots);
@@ -250,7 +260,7 @@ async fn cleanup_stale_tracks_paged(
             if is_under_excluded(&path, &excluded) {
                 continue;
             }
-            if in_removed_directory(&path, &removed_dirs) {
+            if in_removed_directory(&path, &removed_dirs, &current_set) {
                 to_delete.push(path);
             } else {
                 existence_candidates.push(path);
@@ -281,7 +291,7 @@ async fn cleanup_stale_tracks_paged(
         if is_under_excluded(&path, &excluded) {
             continue;
         }
-        if in_removed_directory(&path, &removed_dirs) {
+        if in_removed_directory(&path, &removed_dirs, &current_set) {
             to_delete.push(path);
         } else {
             existence_candidates.push(path);
@@ -728,19 +738,22 @@ mod tests {
             track_metadata("Album A", "Artist", "Track A", 1),
         )
         .await;
-        let sub = dir_path.join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
+        // 被移除的根必须是独立目录：若它落在保留根之下，保留根的递归扫描下一轮
+        // 仍会发现它，删掉旧行只会让曲目以新 id 回来并丢掉歌单条目（父根覆盖
+        // 旧子根的场景见 keeps_tracks_covered_by_a_parent_root）。
+        let removed_dir = TestDir::new("cleanup-removed-other");
+        let removed_path = removed_dir.utf8_path().canonicalize_utf8().unwrap();
         let path_b = insert_track_file_with_meta(
             &pool,
-            &sub,
+            &removed_path,
             "track_b.flac",
             track_metadata("Album B", "Artist", "Track B", 1),
         )
         .await;
 
-        // 上次扫描时两个根都在配置里，如今只剩 dir_path
+        // 上次扫描时两个独立根都在配置里，如今只剩 dir_path
         let mut scan_record = record_of(&[&path_a, &path_b]);
-        scan_record.directories = vec![dir_path.clone(), sub.clone()];
+        scan_record.directories = vec![dir_path.clone(), removed_path];
 
         let updated = cleanup_stale_tracks(&pool, &mut scan_record, &[dir_path], &[]).await;
         assert!(updated.is_empty());
@@ -748,6 +761,49 @@ mod tests {
         assert!(!scan_record.records.contains_key(&path_b));
         assert_eq!(count_tracks_at(&pool, &path_a).await, 1);
         assert_eq!(count_tracks_at(&pool, &path_b).await, 0);
+    }
+
+    /// 库根从子目录改成其父目录：旧子目录仍在当前根下，曲目不得被当成
+    /// 「已移除目录」删行（playlist_item 会随外键级联清空）。
+    #[tokio::test]
+    async fn cleanup_removed_directories_keeps_tracks_covered_by_a_parent_root() {
+        let (dir, pool) = create_test_pool("cleanup-removed-test").await;
+
+        let dir_path = dir.utf8_path().canonicalize_utf8().unwrap();
+        let sub = dir_path.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let path = insert_track_file(&pool, &sub, "track.flac", 1).await;
+
+        let mut scan_record = record_of(&[&path]);
+        scan_record.directories = vec![sub];
+
+        let updated = cleanup_stale_tracks(&pool, &mut scan_record, &[dir_path], &[]).await;
+        assert!(updated.is_empty());
+        assert!(scan_record.records.contains_key(&path));
+        assert_eq!(count_tracks_at(&pool, &path).await, 1);
+    }
+
+    /// 反向：库根从父目录改成其子目录。旧父根仍是「已移除」，父根下其它曲目
+    /// 照删，但当前子根里的曲目不能被旧父根的前缀判定带走。
+    #[tokio::test]
+    async fn cleanup_removed_parent_root_keeps_tracks_in_current_child_root() {
+        let (dir, pool) = create_test_pool("cleanup-removed-test").await;
+
+        let parent = dir.utf8_path().canonicalize_utf8().unwrap();
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let inside = insert_track_file(&pool, &child, "inside.flac", 1).await;
+        let outside = insert_track_file(&pool, &parent, "outside.flac", 2).await;
+
+        let mut scan_record = record_of(&[&inside, &outside]);
+        scan_record.directories = vec![parent];
+
+        let updated = cleanup_stale_tracks(&pool, &mut scan_record, &[child], &[]).await;
+        assert!(updated.is_empty());
+        assert!(scan_record.records.contains_key(&inside));
+        assert!(!scan_record.records.contains_key(&outside));
+        assert_eq!(count_tracks_at(&pool, &inside).await, 1);
+        assert_eq!(count_tracks_at(&pool, &outside).await, 0);
     }
 
     #[tokio::test]
@@ -889,8 +945,11 @@ mod tests {
         let (dir, pool) = create_test_pool("cleanup-ghost-removed-test").await;
 
         let dir_path = dir.utf8_path().canonicalize_utf8().unwrap();
-        let removed = dir_path.join("removed");
-        std::fs::create_dir_all(&removed).unwrap();
+        // 被移除的根必须是独立目录：落在当前根之下时它仍被递归扫描覆盖，删行
+        // 只会让曲目以新 id 回来并丢掉歌单条目（父根覆盖旧子根的场景见
+        // cleanup_removed_directories_keeps_tracks_covered_by_a_parent_root）。
+        let removed_dir = TestDir::new("cleanup-ghost-removed-other");
+        let removed = removed_dir.utf8_path().canonicalize_utf8().unwrap();
         let path = insert_track_file(&pool, &removed, "track.flac", 1).await;
 
         // `removed` 上次扫描时还在配置里，现在不在了
