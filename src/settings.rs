@@ -316,7 +316,12 @@ pub fn setup_settings_with_outcome(cx: &mut App, path: PathBuf, outcome: Setting
                         }
                         match v.kind {
                             notify::EventKind::Remove(_) => {
-                                info!("Settings file removed, using default settings");
+                                // 我们自己的原子保存（tmp + rename 覆盖）在 Windows 上
+                                // 同样以 Remove 呈现：文件还在就只是一次替换，回读拿到
+                                // 的就是新内容。别把"用默认设置"写进日志误导排查。
+                                if !path_for_watcher.exists() {
+                                    info!("Settings file removed, using default settings");
+                                }
                             }
                             notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {}
                             _ => continue,
