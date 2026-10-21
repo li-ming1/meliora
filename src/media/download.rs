@@ -5,7 +5,10 @@
 //! 行为不会再漂移。真正 provider 专属的部分留在调用方：URL 质量梯队、
 //! 歌词 sidecar 格式，以及酷狗的 UA 头（经 `extra_headers` 传入）。
 
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use lofty::{
     config::WriteOptions,
@@ -80,12 +83,16 @@ pub async fn http_download_to_file(
         return Err(format!("HTTP {}", response.status()));
     }
 
+    // 先写同目录的 `.part`，成功后再 rename 就位：直接写目标会先截断已有文件，
+    // 网络失败时删除它等于把用户上次下载好的曲目也删掉；进程中途死掉则会留下
+    // 半截音频，下一次扫描会把它当成正常曲目入库。
+    let tmp = partial_path(dest);
     let mut total = 0u64;
     let result = async {
         let mut file = tokio::io::BufWriter::with_capacity(
             // 固定 ~64KB：落盘系统调用粒度与网络块到达节奏解耦。
             64 * 1024,
-            tokio::fs::File::create(dest)
+            tokio::fs::File::create(&tmp)
                 .await
                 .map_err(|err| format!("write audio: {err}"))?,
         );
@@ -112,14 +119,25 @@ pub async fn http_download_to_file(
     .await;
 
     if let Err(err) = result {
-        let _ = tokio::fs::remove_file(dest).await;
+        let _ = tokio::fs::remove_file(&tmp).await;
         return Err(err);
     }
     if total < 1024 {
-        let _ = tokio::fs::remove_file(dest).await;
+        let _ = tokio::fs::remove_file(&tmp).await;
         return Err("downloaded file is empty".into());
     }
+    if let Err(err) = tokio::fs::rename(&tmp, dest).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!("finalize download: {err}"));
+    }
     Ok(total)
+}
+
+/// 半成品路径：与目标同目录的 `.part` 后缀，保证 rename 在同一卷内完成。
+fn partial_path(dest: &Path) -> PathBuf {
+    let mut path = dest.as_os_str().to_owned();
+    path.push(".part");
+    PathBuf::from(path)
 }
 
 /// 把 标题/歌手/专辑、歌词与封面写入已下载的文件。

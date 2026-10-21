@@ -102,7 +102,15 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<bytes::Bytes>>
 
     let mut response = match request.send().await {
         Ok(response) if response.status().is_success() => response,
-        _ => return Ok(None),
+        Ok(response) => {
+            // 404/410 是「这档确实不存在」，交给上层按会话负缓存；403（限流）、
+            // 429、5xx 是瞬态，不能把整个档位拉黑一整场会话。
+            return match response.status() {
+                StatusCode::NOT_FOUND | StatusCode::GONE => Ok(None),
+                status => Err(anyhow::anyhow!("cover fetch failed: HTTP {status}")),
+            };
+        }
+        Err(error) => return Err(error.into()),
     };
     // Content-Length 超限直接按 "无图" 返回，不开始收集；头缺失或被压缩
     // 代理改写成 chunked 时该检查失效，由收集循环按累计大小兜底截断。
@@ -120,7 +128,7 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<bytes::Bytes>>
                 collected.extend_from_slice(&chunk);
             }
             Ok(None) => break,
-            Err(_) => return Ok(None),
+            Err(error) => return Err(error.into()),
         }
     }
     if collected.is_empty() {
