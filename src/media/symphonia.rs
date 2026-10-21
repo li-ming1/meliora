@@ -779,8 +779,10 @@ impl MediaStream for SymphoniaStream {
         self.pending_loop_seek = false;
         self.needs_loop_start_trim = false;
         if enabled {
-            self.loop_start_seconds = self.current_metadata.loop_start;
-            self.loop_end_seconds = self.current_metadata.loop_end;
+            (self.loop_start_seconds, self.loop_end_seconds) = validated_loop_window(
+                self.current_metadata.loop_start,
+                self.current_metadata.loop_end,
+            );
         } else {
             self.loop_start_seconds = None;
             self.loop_end_seconds = None;
@@ -788,10 +790,41 @@ impl MediaStream for SymphoniaStream {
     }
 }
 
+/// 坏标签（非有限值、`start >= end`）不启用循环：seek 回 `loop_start` 后
+/// `frame_start` 仍越界，`decode_into` 会在同一判据上无限重试，播放线程
+/// 100% CPU 且收不到任何命令。循环区间只有在严格有序时才可信。
+fn validated_loop_window(start: Option<f64>, end: Option<f64>) -> (Option<f64>, Option<f64>) {
+    match (start, end) {
+        (Some(start), Some(end)) if start.is_finite() && end.is_finite() && start < end => {
+            (Some(start), Some(end))
+        }
+        _ => (None, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::TestDir;
+
+    #[test]
+    fn invalid_loop_windows_do_not_loop() {
+        assert_eq!(
+            validated_loop_window(Some(0.0), Some(1.0)),
+            (Some(0.0), Some(1.0))
+        );
+        assert_eq!(validated_loop_window(Some(1.0), Some(1.0)), (None, None));
+        assert_eq!(validated_loop_window(Some(2.0), Some(1.0)), (None, None));
+        assert_eq!(
+            validated_loop_window(Some(f64::NAN), Some(1.0)),
+            (None, None)
+        );
+        assert_eq!(
+            validated_loop_window(Some(0.0), Some(f64::INFINITY)),
+            (None, None)
+        );
+        assert_eq!(validated_loop_window(None, Some(1.0)), (None, None));
+    }
 
     #[test]
     fn map_probe_error_treats_truncated_file_as_corrupt() {

@@ -564,8 +564,9 @@ impl PlaybackThread {
         // 新取的 URL 不受影响。刷新失败就原样走下面的打开 + 重试逻辑，
         // 行为与没有这个分支时完全一致。
         #[cfg(feature = "online_sources")]
-        let pre_refreshed = if self.initial_online_open && crate::media::is_http_path(path) {
-            self.initial_online_open = false;
+        let pre_refreshed = if std::mem::take(&mut self.initial_online_open)
+            && crate::media::is_http_path(path)
+        {
             let refreshed = self.refresh_expired_online_url();
             if refreshed.is_some() {
                 info!("restored online track: pre-refreshed expired stream URL before first open");

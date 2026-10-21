@@ -728,6 +728,41 @@ impl AudioEngine {
         Ok(())
     }
 
+    /// 设备流缺失时的自愈。`open`/`process_cycle` 的所有 reset/play/重建都以
+    /// `has_stream` 为前置，缺了这条路径就永久静音（每曲报 Ok+Playing、空转
+    /// 到跳歌）。退避与 WriteTimeout 共用，避免设备长期不可用时每周期重试。
+    fn retry_missing_stream(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some((next_recreate, _)) = self.device_recreate_defer
+            && now < next_recreate
+        {
+            return;
+        }
+        let failures = self
+            .device_recreate_defer
+            .map(|(_, failures)| failures + 1)
+            .unwrap_or(0);
+        let defer = DEVICE_RECREATE_BACKOFF_INITIAL
+            .saturating_mul(1_u32 << failures.min(4))
+            .min(DEVICE_RECREATE_BACKOFF_MAX);
+        self.device_recreate_defer = Some((now + defer, failures));
+        warn!(
+            failures,
+            ?defer,
+            "audio device has no stream; retrying stream creation"
+        );
+        match self.recreate_stream() {
+            Ok(()) => match self.device.play() {
+                Ok(()) => {
+                    self.device_recreate_defer = None;
+                    info!("audio stream recreated after missing stream");
+                }
+                Err(e) => error!("Failed to start playback after stream recreation: {:?}", e),
+            },
+            Err(e) => error!("Failed to recreate missing stream: {:?}", e),
+        }
+    }
+
     /// 更新影响播放的设置。
     pub fn update_settings(&mut self, settings: &PlaybackSettings) {
         self.eq.set_config(&settings.equalizer);
@@ -751,7 +786,14 @@ impl AudioEngine {
             return EngineCycleResult::NothingToDo;
         }
 
-        if !self.device.has_stream() || !self.media.has_stream() {
+        if !self.device.has_stream() {
+            // 初始化失败或一次重建失败后没有流：不重试就会永久静音，每首空转到
+            // 跳过。退避复用 WriteTimeout 的阶梯，设备长期不可用时不至于每周期重试。
+            self.retry_missing_stream();
+            return EngineCycleResult::NothingToDo;
+        }
+
+        if !self.media.has_stream() {
             return EngineCycleResult::NothingToDo;
         }
 
