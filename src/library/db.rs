@@ -54,14 +54,14 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
         // 预算：这是**每连接**的额度，3 连接最坏 24 MB，与下面把连接数压到 3
         // 的取舍同源，故取拐点左侧的保守值。
         .pragma("cache_size", "-8000")
-        // 读路径的 mmap：默认走 read() 把页从 OS 缓存拷进连接自己的页缓存，
-        // 有序扫描（列表查询的顺序读页）在 mmap 之后省掉这次 memcpy。只映射
-        // 文件前 64MB——封面 blob 占库体 42%（见上），整库映射会把几乎不被
-        // 随机读的 artwork 也拖进地址空间；64MB 足够盖住元数据表的热工作集。
-        // 与 cache_size 不同，这一项**未在本机做配对实测**（纯 I/O 策略、
-        // 零正确性风险，改动可单行回退）：验证口径是 `[db] slow ui-thread
-        // query` 与 row_build_bench 里有序列查询的耗时，无改善就删掉本行。
-        .pragma("mmap_size", "67108864")
+        // **刻意不设 `mmap_size`**：2026-10-17 的配对实测（同一 schema、20k 项歌单、
+        // cache_size=-8000 固定为基线、min-of-7）给出 21.2→39.7ms / 23.7→48.3ms /
+        // 28.8→55.5ms —— **开 64MB mmap 慢约 1.9 倍**（台账第二十七轮）。
+        // 机制：`SCAN t USING INDEX` 之后每行都要按 rowid 回表取 `location`，
+        // 走 mmap 时每次访问都是缺页（soft fault）+ TLB 未命中，比 read() 的
+        // 顺序拷贝更贵；库体 42% 是封面 blob，映射进去还会把地址空间搅浑。
+        // 2026-10-20 这条 pragma 曾被以"纯 I/O 策略、零正确性风险"重新加回，
+        // 2026-10-21 复查后按实测结论再次移除——**要再开，先重做同输入配对**。
         .create_if_missing(true);
     // 桌面应用读写并发有限：限制连接数（默认 10 个连接 × 各自 page cache 徒增常驻内存）
     let pool = SqlitePoolOptions::new()

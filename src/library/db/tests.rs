@@ -393,12 +393,15 @@ async fn report_track_sort_index_benefit() {
             .bind(format!("T{i:06}"))
             .bind(format!("ts{:05}", i % 20_000))
             .bind((i % ALBUMS) as i64 + 1)
-            // 两个排序键都取行号：全序，两侧序列才可直接对比（见函数注释）
-            .bind(i as i64)
+            // 排序键取"行号的伪随机置换"：仍是全序（两侧序列可逐项对比），但
+            // 索引序与 rowid 序**无关**——真实库里索引扫描要付的随机回表代价
+            // 只有这样才量得出来。旧版把两个键都写成 `i`，索引扫描恰好退化成
+            // 顺序访问，等于只测了最有利的情形（2026-10-21 修正形状）。
+            .bind((i as i64 * 7919) % ROWS as i64)
             .bind(format!("lib\\d{:03}\\f{i:06}.flac", i % 300))
             .bind(format!("d{:03}", i % 300))
             .bind((i % 5) as i64 + 1)
-            .bind(i as i64)
+            .bind((i as i64 * 104_729) % ROWS as i64)
             .fetch_optional(&mut *tx)
             .await
             .unwrap();
@@ -419,16 +422,15 @@ async fn report_track_sort_index_benefit() {
     std::fs::copy(&seed_path, &b_path).unwrap();
     let a = create_pool(&a_path).await.unwrap();
     let b = create_pool(&b_path).await.unwrap();
-    // `create_pool` 会跑迁移，而 20261020120000 已把两枚索引装进两份库 ⇒
-    // 不显式拆掉对照组，这里测的就是"有索引 vs 有索引"。同标题探针的规矩。
-    sqlx::query("DROP INDEX IF EXISTS idx_track_duration")
-        .execute(&a)
-        .await
-        .unwrap();
-    sqlx::query("DROP INDEX IF EXISTS idx_track_disc_track_number")
-        .execute(&a)
-        .await
-        .unwrap();
+    // 20261021090000 已把这两枚索引从迁移里撤掉（配对实测为回退，见该迁移
+    // 注释），所以对照组 A 天然无索引；B 必须**显式**建回来。探针因此自足，
+    // 不再依赖"迁移里刚好有这两枚索引"这个副作用。
+    for ddl in [
+        "CREATE INDEX idx_track_duration ON track (duration)",
+        "CREATE INDEX idx_track_disc_track_number ON track (disc_number, track_number)",
+    ] {
+        sqlx::query(ddl).execute(&b).await.unwrap();
+    }
     for pool in [&a, &b] {
         sqlx::query("ANALYZE").execute(pool).await.unwrap();
         sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")

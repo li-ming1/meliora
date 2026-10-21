@@ -1,0 +1,22 @@
+-- 撤销 20261020120000 的两枚 track 全局排序索引。
+--
+-- 那一版迁移的注释写的是"实测数字待补"，而 2026-10-21 的配对实测给出的是
+-- **反方向**的结论（同库同输入、只变有没有索引、min-of-7、A/B 顺序逐轮交换）：
+--
+--   60k 行，按专辑内连续插入（真实形态）：
+--     ORDER BY duration                     74.0ms → 170.7ms   2.31× 慢
+--     ORDER BY disc_number, track_number   138.2ms → 154.7ms   1.12× 慢
+--   60k 行，行序与索引序无关（最坏形态）：
+--     duration 83.5 → 281.8ms (2.17×) / disc+track 106.8 → 1080.8ms (7.62×)
+--   20k 行：两者都在噪声内（1.01× / 0.97×）—— 即**任何规模都没有收益**
+--   写侧：5k 行 UPDATE 31.2ms → 89.3ms（2.86×），索引维护加在最大的表上
+--
+-- 机制：这两个查询 SELECT id, album_id, location，索引里没有 location，
+-- 于是 `SCAN t USING INDEX` 之后每行都要按 rowid 回表随机取一次长字符串；
+-- 而 cache_size 已经修好（台账第二十六轮，3.7×），SCAN + 临时 B 树是顺序
+-- 访问，反而更快。**这是"给 ORDER BY 建索引一定更快"的经典反例。**
+--
+-- 保留迁移 20261020120000 本身不动（它已在真实库里跑过，校验和不能改），
+-- 用这条迁移把结果改回来；新库会经历"建了又删"，一次性成本可忽略。
+DROP INDEX IF EXISTS idx_track_duration;
+DROP INDEX IF EXISTS idx_track_disc_track_number;
