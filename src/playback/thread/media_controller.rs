@@ -100,7 +100,10 @@ impl MediaController {
         path: &Path,
         refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<Option<u64>, PlaybackStartError> {
-        debug!("Opening track '{}'", path.display());
+        debug!(
+            "Opening track '{}'",
+            crate::media::redact_media_path(&path.to_string_lossy())
+        );
 
         // 先关掉已有的流
         self.close();
@@ -111,7 +114,7 @@ impl MediaController {
         self.current_path = Some(path.to_path_buf());
 
         info!(
-            path = %path.display(),
+            path = %crate::media::redact_media_path(&path.to_string_lossy()),
             ?duration_ms,
             "media prepared for playback"
         );
@@ -126,7 +129,7 @@ impl MediaController {
         prepared: PreparedMedia,
     ) -> Result<Option<u64>, PlaybackStartError> {
         info!(
-            path = %prepared.path.display(),
+            path = %crate::media::redact_media_path(&prepared.path.to_string_lossy()),
             "attaching pre-opened media stream"
         );
         self.close();

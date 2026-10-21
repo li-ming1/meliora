@@ -354,7 +354,7 @@ impl AudioEngine {
                 match outcome.result {
                     Ok((stream, duration_ms)) => {
                         info!(
-                            path = %outcome.path.display(),
+                            path = %crate::media::redact_media_path(&outcome.path.to_string_lossy()),
                             "next track pre-opened for gapless advance"
                         );
                         self.prepared = Some(PreparedMedia {
@@ -439,7 +439,10 @@ impl AudioEngine {
         preserve_resampler: bool,
         refresh: Option<crate::media::http_source::MediaUrlRefresh>,
     ) -> Result<Option<u64>, PlaybackStartError> {
-        debug!("AudioEngine: Opening track '{}'", path.display());
+        debug!(
+            "AudioEngine: Opening track '{}'",
+            crate::media::redact_media_path(&path.to_string_lossy())
+        );
 
         self.drain = DrainState::Inactive;
         self.rebuild_attempts = 0;

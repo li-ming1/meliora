@@ -528,7 +528,7 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
         };
         tracing::info!(
             hash = %track.hash,
-            url = %url,
+            url = %crate::media::redact_media_path(&url),
             "kugou play_track: got play URL"
         );
 

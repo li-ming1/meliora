@@ -503,7 +503,7 @@ impl HttpRangeSource {
         };
 
         tracing::info!(
-            url = %url,
+            url = %crate::media::redact_media_path(url.as_str()),
             ?total_len,
             range_supported,
             "opened remote media stream"
@@ -554,7 +554,10 @@ impl HttpRangeSource {
         {
             self.refresh_used = true;
             self.url = url;
-            tracing::info!(url = %self.url, "refreshed expired media URL mid-stream");
+            tracing::info!(
+                url = %crate::media::redact_media_path(self.url.as_str()),
+                "refreshed expired media URL mid-stream"
+            );
             match self.send_range_request() {
                 Ok(response) => return self.accept_body(response).map(|_| true),
                 Err(err) => last_err = err,

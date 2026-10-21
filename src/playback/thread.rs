@@ -579,7 +579,10 @@ impl PlaybackThread {
         let pre_refreshed: Option<std::path::PathBuf> = None;
         let path = pre_refreshed.as_deref().unwrap_or(path);
 
-        info!("Opening track '{}'", path.display());
+        info!(
+            "Opening track '{}'",
+            crate::media::redact_media_path(&path.to_string_lossy())
+        );
 
         self.last_track_gain = None;
         self.last_album_gain = None;
@@ -614,7 +617,7 @@ impl PlaybackThread {
         // [mem] 探针：每次换曲都采样，让长会话的日志能看出已提交的 private 字节是
         // 逐曲持续爬升还是回落到稳定基线（真实的存活增长，而非工作集噪声）。
         let (private, working) = crate::process_memory_mb();
-        tracing::info!(path = %open_path.display(), private_mb = private, working_mb = working, "[mem] track open");
+        tracing::info!(path = %crate::media::redact_media_path(&open_path.to_string_lossy()), private_mb = private, working_mb = working, "[mem] track open");
 
         // 单曲循环开启时启用循环点感知解码
         self.engine
@@ -843,7 +846,10 @@ impl PlaybackThread {
 
     /// 往队列新增一个 [`QueueItemData`]。若当前没在播任何东西，就开始播放它。
     fn queue_item(&mut self, item: &QueueItemData) {
-        info!("Adding file to queue: {}", item);
+        info!(
+            "Adding file to queue: {}",
+            crate::media::redact_media_path(&item.get_path().to_string_lossy())
+        );
 
         let index = self.queue.queue_item(item.clone());
         self.refresh_rg_auto_hint();
