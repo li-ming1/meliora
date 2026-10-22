@@ -9,7 +9,7 @@
 use std::sync::{OnceLock, mpsc::Sender};
 
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
     runtime::{AnyObject, NSObject, NSObjectProtocol},
     sel,
@@ -48,8 +48,8 @@ impl Drop for MacOsTray {
     }
 }
 
-/// 菜单动作的接收 target。无 ivars——命令统一走 `TRAY_TX` 静态（与
-/// Windows 的 WndProc 同一模式）。
+// 菜单动作的接收 target。无 ivars——命令统一走 `TRAY_TX` 静态（与
+// Windows 的 WndProc 同一模式）。
 define_class!(
     #[unsafe(super = NSObject)]
     #[thread_kind = MainThreadOnly]
@@ -95,7 +95,10 @@ pub(super) fn init(tx: Sender<TrayCommand>) -> Option<MacOsTray> {
     // 托盘只能在主线程创建；AppKit 全部 API 亦同。
     let mtm = MainThreadMarker::new()?;
 
-    let target = {
+    // 返回类型必须显式标注：msg_send! 的 RetainSemantics 推断不出 init 家族的
+    // Retained 返回时，会把返回类型推成裸 MelioraTrayTarget（继而要求
+    // MelioraTrayTarget: Encode 而失败）。
+    let target: Retained<MelioraTrayTarget> = {
         // 无 ivars 的 define_class! 类型：alloc → set_ivars(()) → super init，
         // 与 objc2 官方示例同一模式（直接对 Allocated 做 super init 没有
         // RetainSemantics 实现）。
@@ -108,7 +111,7 @@ pub(super) fn init(tx: Sender<TrayCommand>) -> Option<MacOsTray> {
     let status_bar = NSStatusBar::systemStatusBar();
     let status_item = status_bar.statusItemWithLength(status_bar.thickness());
     if let Some(button) = status_item.button(mtm) {
-        button.setImage(Some(&tray_icon(mtm)));
+        button.setImage(Some(&tray_icon()));
         button.setToolTip(Some(&NSString::from_str(&super::app_name_label())));
     }
     status_item.setMenu(Some(&menu));
@@ -185,63 +188,55 @@ fn add_item(
 
 /// 程序化绘制 18pt 音符图标：`setTemplate(true)` 后由系统按菜单栏明暗
 /// 着色，零资产依赖、无 SF Symbols 版本门槛。
-fn tray_icon(mtm: MainThreadMarker) -> Retained<NSImage> {
-    // SAFETY: NSImage 的初始化与 NSBezierPath 的全部绘制调用都是 unsafe；
-    // 调用方持有 mtm（托盘 init 只在主线程跑）。
-    unsafe {
-        let image = NSImage::initWithSize(
-            NSImage::alloc(mtm),
-            objc2_foundation::NSSize::new(18.0, 18.0),
-        );
-        image.lockFocus();
-        // 符头（椭圆）
-        NSBezierPath::bezierPathWithOvalInRect(objc2_foundation::NSRect::new(
-            objc2_foundation::NSPoint::new(3.5, 2.0),
-            objc2_foundation::NSSize::new(6.5, 5.0),
-        ))
-        .fill();
-        // 符杆
-        NSBezierPath::fillRect(objc2_foundation::NSRect::new(
-            objc2_foundation::NSPoint::new(9.3, 4.0),
-            objc2_foundation::NSSize::new(1.7, 12.0),
-        ));
-        // 符尾（三角）
-        let flag = NSBezierPath::bezierPath();
-        flag.moveToPoint(objc2_foundation::NSPoint::new(11.0, 15.6));
-        flag.lineToPoint(objc2_foundation::NSPoint::new(15.2, 13.6));
-        flag.lineToPoint(objc2_foundation::NSPoint::new(11.0, 11.6));
-        flag.closePath();
-        flag.fill();
-        image.unlockFocus();
-        image.setTemplate(true);
-        image
-    }
+fn tray_icon() -> Retained<NSImage> {
+    // NSImage 是 AnyThread 类（app-kit 0.3.2 无 thread_kind），alloc 零参数；
+    // initWithSize / lockFocus / NSBezierPath 绘制在 0.3 起均为安全方法。
+    let image = NSImage::initWithSize(NSImage::alloc(), objc2_foundation::NSSize::new(18.0, 18.0));
+    image.lockFocus();
+    // 符头（椭圆）
+    NSBezierPath::bezierPathWithOvalInRect(objc2_foundation::NSRect::new(
+        objc2_foundation::NSPoint::new(3.5, 2.0),
+        objc2_foundation::NSSize::new(6.5, 5.0),
+    ))
+    .fill();
+    // 符杆
+    NSBezierPath::fillRect(objc2_foundation::NSRect::new(
+        objc2_foundation::NSPoint::new(9.3, 4.0),
+        objc2_foundation::NSSize::new(1.7, 12.0),
+    ));
+    // 符尾（三角）
+    let flag = NSBezierPath::bezierPath();
+    flag.moveToPoint(objc2_foundation::NSPoint::new(11.0, 15.6));
+    flag.lineToPoint(objc2_foundation::NSPoint::new(15.2, 13.6));
+    flag.lineToPoint(objc2_foundation::NSPoint::new(11.0, 11.6));
+    flag.closePath();
+    flag.fill();
+    image.unlockFocus();
+    image.setTemplate(true);
+    image
 }
 
 pub(super) fn show_window(window: &mut gpui::Window) {
     let Some(ns_window) = ns_window(window) else {
         return;
     };
-    unsafe {
-        ns_window.makeKeyAndOrderFront(None);
-        ns_window.orderFrontRegardless();
-    }
+    // app-kit 0.3 起窗口显隐均为安全方法。
+    ns_window.makeKeyAndOrderFront(None);
+    ns_window.orderFrontRegardless();
 }
 
 pub(super) fn hide_window(window: &mut gpui::Window) {
     let Some(ns_window) = ns_window(window) else {
         return;
     };
-    unsafe {
-        ns_window.orderOut(None);
-    }
+    ns_window.orderOut(None);
 }
 
 pub(super) fn window_visible(window: &mut gpui::Window) -> bool {
     let Some(ns_window) = ns_window(window) else {
         return false;
     };
-    unsafe { ns_window.isVisible() }
+    ns_window.isVisible()
 }
 
 /// raw-window-handle 0.6 的 AppKit 句柄只带 `ns_view`（无 ns_window 字段），
