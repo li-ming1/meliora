@@ -1,0 +1,65 @@
+name: Check
+
+# push-to-main 编译门禁：本地只编 Windows，macOS/Linux 平台代码历来到发布日
+# 才第一次编译（v0.0.6 因此三轮 CI 失败）。这里在提交当天用 cargo check
+# （不链接、每目标数分钟）把四类非 Windows 目标过一遍，kugou feature 与
+# release.yml 的构建组合保持一致。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 非 Windows 目标各在其原生 runner 上 check（Windows 侧由本地开发覆盖）
+          - { os: macos-latest,      target: x86_64-apple-darwin }
+          - { os: macos-latest,      target: aarch64-apple-darwin }
+          - { os: ubuntu-latest,     target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu }
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml 钉死 Windows-msvc（仅本机非标准工具链需要），
+      # CI 上删除并改用各平台宿主 stable + matrix target（同 release.yml）。
+      - name: Drop machine-specific toolchain pin
+        shell: bash
+        run: rm -f rust-toolchain.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # opusic-sys（bundled）构建期用 cmake 编译 libopus（check 也跑 build script）。
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
+      # Linux 系统依赖（cpal/GPUI），与 release.yml 同一份清单。
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libasound2-dev libpipewire-0.3-dev pkg-config \
+            libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check
+        run: cargo check --locked --target ${{ matrix.target }} --features kugou

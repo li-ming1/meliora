@@ -173,8 +173,8 @@ jobs:
 
             ### 主要功能 / Features
 
-            - 本地音乐库：扫描与管理、元数据解析、内嵌封面、歌单、ReplayGain、歌词（LRC/KRC/YRC 逐字卡拉OK）
-            - Local library: scanning, metadata, embedded covers, playlists, ReplayGain, lyrics (LRC/KRC/YRC word-by-word karaoke)
+            - 本地音乐库：扫描与管理、元数据解析、内嵌封面、歌单、ReplayGain、歌词（LRC/KRC 逐字卡拉OK）
+            - Local library: scanning, metadata, embedded covers, playlists, ReplayGain, lyrics (LRC/KRC word-by-word karaoke)
             - 沉浸模式：全出血封面背景、圆盘唱片与歌词逐行跟随、每歌主题色
             - Immersive mode: full-bleed cover backdrop, vinyl disc with line-following lyrics, per-track accent color
             - 酷狗音乐在线：扫码登录、搜索、歌单、榜单、在线播放与下载
