@@ -2353,7 +2353,7 @@
   },
   "TRAY_TOGGLE": {
     "context": "macos.rs",
-    "definedIn": "src/tray/macos.rs:145",
+    "definedIn": "src/tray/macos.rs:151",
     "plural": false,
     "description": null
   },
@@ -2425,7 +2425,7 @@
   },
   "UPDATE_AVAILABLE_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:270",
+    "definedIn": "src/updater.rs:269",
     "plural": false,
     "description": null
   },
@@ -2473,13 +2473,13 @@
   },
   "UPDATE_READY_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:394",
+    "definedIn": "src/updater.rs:393",
     "plural": false,
     "description": null
   },
   "UPDATE_RESTART_FAILED_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:428",
+    "definedIn": "src/updater.rs:427",
     "plural": false,
     "description": null
   },
