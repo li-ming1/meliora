@@ -242,14 +242,13 @@ fn mark_check_failed(cx: &mut App, error: String) {
 }
 
 fn apply_check_result(cx: &mut App, release: LatestRelease, source: CheckSource) {
-    let Some(Ordering::Less) = compare_versions(env!("CARGO_PKG_VERSION"), &release.tag_name)
-    else {
+    if !update_available(env!("CARGO_PKG_VERSION"), &release.tag_name) {
         // 等于或旧于运行中的版本，或者 tag 解析不出三个数字段——"无法判断"绝不能
         // 提供更新。
         info!(tag = %release.tag_name, "updater: no update over the running version");
         set_status(cx, UpdateStatus::UpToDate);
         return;
-    };
+    }
 
     info!(version = %release.tag_name, "updater: update available");
     let (binary_url, checksums_url) = find_update_assets(&release);
@@ -723,6 +722,13 @@ fn compare_versions(current: &str, tag: &str) -> Option<Ordering> {
     Some(parse_version_tag(current)?.cmp(&parse_version_tag(tag)?))
 }
 
+/// 是否应当向用户提供更新：**运行版本低于 tag** 才算。抽成纯函数让匹配方向可被
+/// 测试锁住——v0.0.5 曾在 `apply_check_result` 里把 `Greater`/`Less` 匹配写反
+/// （新版本全被误报"已是最新"，反向场景还会误提示降级），且无测试覆盖该方向。
+fn update_available(current: &str, tag: &str) -> bool {
+    matches!(compare_versions(current, tag), Some(Ordering::Less))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +766,21 @@ mod tests {
         assert_eq!(parse_version_tag("latest"), None);
         assert_eq!(parse_version_tag(""), None);
         assert_eq!(compare_versions("0.0.4", "v1.2.3-rc1"), None);
+    }
+
+    /// v0.0.5 回归：方向写反时新版本全被误报"已是最新"，反向场景还会误提示降级。
+    #[test]
+    fn update_available_only_when_running_version_is_older() {
+        // 运行版 < tag → 提供更新（v0.0.5 用户升级 v0.0.6 的路径）。
+        assert!(update_available("0.0.5", "v0.0.6"));
+        assert!(update_available("0.0.4", "v0.1.0"));
+        assert!(update_available("0.0.99", "v0.1.0"));
+        // 相等或运行版更新 → 不提供（后者防"降级陷阱"）。
+        assert!(!update_available("0.0.6", "v0.0.6"));
+        assert!(!update_available("0.0.7", "v0.0.6"));
+        // tag 解析不了 → 不提供（"无法判断"绝不提供更新）。
+        assert!(!update_available("0.0.5", "v1.2"));
+        assert!(!update_available("0.0.5", "latest"));
     }
 
     #[test]
