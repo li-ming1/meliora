@@ -384,7 +384,7 @@ impl MprisController {
             .properties_changed([Property::Metadata(
                 self.server.imp().metadata_int().await.unwrap(),
             )])
-            .await
+            .await?
     }
 }
 

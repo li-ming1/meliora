@@ -9,7 +9,7 @@
 use std::sync::{OnceLock, mpsc::Sender};
 
 use objc2::{
-    MainThreadMarker, define_class, msg_send,
+    MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
     runtime::{AnyObject, NSObject, NSObjectProtocol},
     sel,
