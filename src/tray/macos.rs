@@ -18,7 +18,6 @@ use objc2_app_kit::{
     NSBezierPath, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSView, NSWindow,
 };
 use objc2_foundation::NSString;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::TrayCommand;
 use cntp_i18n::tr;
@@ -97,7 +96,11 @@ pub(super) fn init(tx: Sender<TrayCommand>) -> Option<MacOsTray> {
     let mtm = MainThreadMarker::new()?;
 
     let target = {
-        let this = MelioraTrayTarget::alloc(mtm);
+        // 无 ivars 的 define_class! 类型：alloc → set_ivars(()) → super init，
+        // 与 objc2 官方示例同一模式（直接对 Allocated 做 super init 没有
+        // RetainSemantics 实现）。
+        let this = MelioraTrayTarget::alloc(mtm).set_ivars(());
+        // SAFETY: `NSObject` 的 `init` 签名即此；ivars 已由 set_ivars 初始化。
         unsafe { msg_send![super(this), init] }
     };
     let menu = build_menu(mtm, &target);
@@ -105,7 +108,7 @@ pub(super) fn init(tx: Sender<TrayCommand>) -> Option<MacOsTray> {
     let status_bar = NSStatusBar::systemStatusBar();
     let status_item = status_bar.statusItemWithLength(status_bar.thickness());
     if let Some(button) = status_item.button(mtm) {
-        button.setImage(Some(&tray_icon()));
+        button.setImage(Some(&tray_icon(mtm)));
         button.setToolTip(Some(&NSString::from_str(&super::app_name_label())));
     }
     status_item.setMenu(Some(&menu));
@@ -164,12 +167,15 @@ fn add_item(
     title: &str,
     action: objc2::runtime::Sel,
 ) {
-    let item = NSMenuItem::initWithTitle_action_keyEquivalent(
-        NSMenuItem::alloc(mtm),
-        &NSString::from_str(title),
-        Some(action),
-        &NSString::from_str(""),
-    );
+    // SAFETY: initWithTitle:action:keyEquivalent: 是 NSMenuItem 的指定初始化器。
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(title),
+            Some(action),
+            &NSString::from_str(""),
+        )
+    };
     // `setTarget` 收 `Option<&AnyObject>`；AnyObject 是 ZST 类型擦除引用，
     // 指针转换与 objc2 的 `ProtocolObject::from_ref` 内部同一手法。
     let target_ref: &AnyObject = unsafe { &*(std::ptr::from_ref(target).cast::<AnyObject>()) };
@@ -179,10 +185,15 @@ fn add_item(
 
 /// 程序化绘制 18pt 音符图标：`setTemplate(true)` 后由系统按菜单栏明暗
 /// 着色，零资产依赖、无 SF Symbols 版本门槛。
-fn tray_icon() -> Retained<NSImage> {
-    let image = NSImage::initWithSize(NSImage::alloc(), objc2_foundation::NSSize::new(18.0, 18.0));
-    image.lockFocus();
+fn tray_icon(mtm: MainThreadMarker) -> Retained<NSImage> {
+    // SAFETY: NSImage 的初始化与 NSBezierPath 的全部绘制调用都是 unsafe；
+    // 调用方持有 mtm（托盘 init 只在主线程跑）。
     unsafe {
+        let image = NSImage::initWithSize(
+            NSImage::alloc(mtm),
+            objc2_foundation::NSSize::new(18.0, 18.0),
+        );
+        image.lockFocus();
         // 符头（椭圆）
         NSBezierPath::bezierPathWithOvalInRect(objc2_foundation::NSRect::new(
             objc2_foundation::NSPoint::new(3.5, 2.0),
@@ -201,10 +212,10 @@ fn tray_icon() -> Retained<NSImage> {
         flag.lineToPoint(objc2_foundation::NSPoint::new(11.0, 11.6));
         flag.closePath();
         flag.fill();
+        image.unlockFocus();
+        image.setTemplate(true);
+        image
     }
-    image.unlockFocus();
-    image.setTemplate(true);
-    image
 }
 
 pub(super) fn show_window(window: &mut gpui::Window) {
@@ -236,7 +247,11 @@ pub(super) fn window_visible(window: &mut gpui::Window) -> bool {
 /// raw-window-handle 0.6 的 AppKit 句柄只带 `ns_view`（无 ns_window 字段），
 /// 窗口经 `-[NSView window]` 取。
 fn ns_window(window: &gpui::Window) -> Option<Retained<NSWindow>> {
-    let handle = window.window_handle().ok()?;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    // UFCS 显式选 trait 方法：gpui::Window 另有同名 inherent 方法
+    // （返回 AnyWindowHandle），直接点调用会解析到它（同 windows.rs）。
+    let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         return None;
     };
