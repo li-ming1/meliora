@@ -32,3 +32,6 @@ patches/
 
 # ZCode agent workspace
 .zcode/
+
+# WorkBuddy agent workspace（记忆与过程文件，仅本机）
+.workbuddy-ai/
