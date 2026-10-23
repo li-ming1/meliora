@@ -332,10 +332,27 @@ fn show_main_window(cx: &mut App) {
         crate::ui::app::restore_main_window(cx);
         return;
     };
-    let _ = handle.update(cx, |_, window, _| {
-        platform_show_window(window);
-        window.activate_window();
-    });
+    // 显示本身是异步投递的（tray/windows.rs 的 ShowWindowAsync），这里只是
+    // 把请求交给壳，不会同步派发消息，因此不会在 App 借用期内重入 gpui。
+    let _ = handle.update(cx, |_, window, _| platform_show_window(window));
+    // 拿前台推迟到下一拍：此刻窗口还没真的可见（显示请求只是被投递），立刻
+    // 设前台是无效操作。前台任务体由 gpui 在消息循环里轮询
+    // （WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD），**不在任何 App 借用期内**，
+    // 所以那时直调 `SetForegroundWindow` 是安全的：它同步派发进来的
+    // WM_ACTIVATE 会被 gpui 正常处理，而不是像在 `cx.update` 里那样被丢弃。
+    // 50ms 足够让消息循环处理完投递的 show 请求（空闲时一个消息就到了）。
+    #[cfg(windows)]
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        platform_focus_main_window();
+    })
+    .detach();
+    // macOS 没有同步重入本进程窗口过程的问题（NSApp activate 由系统异步
+    // 投递），保持 gpui 自己的路径。
+    #[cfg(target_os = "macos")]
+    let _ = handle.update(cx, |_, window, _| window.activate_window());
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -348,6 +365,13 @@ fn hide_main_window(cx: &mut App) {
 #[cfg(windows)]
 fn platform_show_window(window: &mut Window) {
     windows::show_window(window)
+}
+
+/// 把主窗口拿到前台。只在没有 App 借用的主线程上下文调用（托盘显隐的下一拍
+/// 前台任务）。见 `show_main_window` 里的说明。
+#[cfg(windows)]
+fn platform_focus_main_window() {
+    windows::focus_main_window()
 }
 
 /// 把触发关闭的窗口登记进平台壳（Windows 菜单标签的显隐判断依赖

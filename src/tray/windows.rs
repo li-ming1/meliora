@@ -35,8 +35,9 @@ use windows::{
                 GetSystemMetrics, GetWindowThreadProcessId, HICON, HMENU, HWND_MESSAGE, IMAGE_ICON,
                 IsWindowVisible, LR_SHARED, LoadImageW, MF_SEPARATOR, MF_STRING, PostMessageW,
                 RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_HIDE,
-                SW_RESTORE, SetForegroundWindow, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-                TrackPopupMenu, WINDOW_EX_STYLE, WM_DESTROY, WM_LBUTTONUP, WM_MBUTTONUP, WM_NULL,
+                SW_RESTORE, SetForegroundWindow, ShowWindowAsync, TPM_RETURNCMD,
+                TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_DESTROY, WM_LBUTTONUP,
+                WM_MBUTTONUP, WM_NULL,
                 WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
             },
         },
@@ -335,11 +336,17 @@ pub(super) fn show_window(window: &mut gpui::Window) {
         return;
     };
     MAIN_HWND.store(hwnd.0 as usize, Ordering::Relaxed);
+    // 异步显示：`ShowWindow` 会在同线程**同步派发** WM_ACTIVATE / WM_SIZE /
+    // WM_MOVE / WM_MOUSEMOVE 进我们自己的 wndproc，而本函数处在 App 借用期内
+    // （托盘命令经 `cx.update(|cx| handle_command(..))` 执行）——gpui 的
+    // on_input / on_resize / on_moved 会 `try_borrow_mut` 失败并被静默丢弃
+    // （audit-2026-10-22 P3-19 实测 window.rs:1749/1685/1677）。
+    // `ShowWindowAsync` 只把 show 请求 post 到消息队列，那些消息在消息循环里
+    // 重新排队，届时没有任何借用。激活由调用方在下一拍补做（窗口那时才真的
+    // 可见，SetForegroundWindow 才有效）。
     unsafe {
         // SW_RESTORE 同时覆盖"隐藏中"与"最小化中"两种状态。
-        let _ = ShowWindow(hwnd, SW_RESTORE);
-        // 托盘点击时本进程就是前台进程，SetForegroundWindow 不受前台锁约束。
-        let _ = SetForegroundWindow(hwnd);
+        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
     }
 }
 
@@ -348,8 +355,11 @@ pub(super) fn hide_window(window: &mut gpui::Window) {
         return;
     };
     MAIN_HWND.store(hwnd.0 as usize, Ordering::Relaxed);
+    // 同 `show_window`：隐藏也是异步投递，避免同步派发在 App 借用期内重入
+    // gpui 回调并被丢弃（audit-2026-10-22 P3-19）。隐藏的可见性判断
+    // （`window_visible` / 菜单标签）都发生在用户操作时，晚一拍无妨。
     unsafe {
-        let _ = ShowWindow(hwnd, SW_HIDE);
+        let _ = ShowWindowAsync(hwnd, SW_HIDE);
     }
 }
 
@@ -358,6 +368,22 @@ pub(super) fn window_visible(window: &mut gpui::Window) -> bool {
         return false;
     };
     unsafe { IsWindowVisible(hwnd).as_bool() }
+}
+
+/// 把主窗口拿到前台。只在**没有 App 借用**的主线程上下文调用（托盘显隐的
+/// 下一拍任务）：此刻调用 `SetForegroundWindow` 同步派发进来的 WM_ACTIVATE
+/// 会被 gpui 正常处理（借用拿得到），而不是像在 `cx.update` 里那样被丢弃。
+/// 用主线程直调而不是 `Window::activate_window()`：后者在 gpui 里是
+/// `executor.spawn` 到线程池上调 `SetActiveWindow`/`SetFocus`，跨线程的
+/// SetFocus 对别的消息队列无效，前台并不可靠。
+pub(super) fn focus_main_window() {
+    let hwnd = HWND(MAIN_HWND.load(Ordering::Relaxed) as *mut _);
+    if hwnd.0.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = SetForegroundWindow(hwnd);
+    }
 }
 
 /// 第二次启动：定位运行中实例的 message-only 窗口并投递激活消息。
