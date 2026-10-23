@@ -58,11 +58,19 @@ pub fn init() -> anyhow::Result<()> {
         let _ = LOG_FILE.set(writer.file.clone());
     }
 
+    // 设 MELIORA_LOG_LOCATION=1 时每行附带源文件:行号。默认关闭：日常日志
+    // 每行会多出 40+ 字符，而 gpui 的日志（经 tracing-log 桥接，file/line
+    // 由 log 记录的 Record 带过来）恰恰只有 file:line 才能定位到具体回调——
+    // 例如 "RefCell already borrowed" 只说是 gpui::window，加了这个才知道
+    // 是哪一处 `handle.update(...).log_err()` 撞上了重入借用。
+    let with_location = std::env::var_os("MELIORA_LOG_LOCATION").is_some();
     let stderr_layer = fmt::layer()
         .with_writer(StderrMakeWriter)
         .with_ansi(io::stderr().is_terminal())
         .with_thread_names(true) // nice to have until we replace with tasks
         .with_timer(fmt::time::uptime()) // date's useless
+        .with_file(with_location)
+        .with_line_number(with_location)
         .with_filter(env.clone());
     let file_layer = file_writer.map(|writer| {
         fmt::layer()
@@ -70,6 +78,8 @@ pub fn init() -> anyhow::Result<()> {
             .with_ansi(false)
             .with_thread_names(true)
             .with_timer(fmt::time::uptime())
+            .with_file(with_location)
+            .with_line_number(with_location)
             .with_filter(env)
     });
 
