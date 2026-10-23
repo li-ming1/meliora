@@ -294,6 +294,43 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
         .as_ref()
         .map(|c| c.handles_volume())
         .unwrap_or(true);
+    // 消费循环的执行位置按平台分（audit-2026-10-22 P2-3）：
+    //
+    // Windows 的循环体内是 WinRT 调用（SetPosition / SetThumbnail /
+    // UpdateTimelineProperties…），走 shell RPC，偶尔会卡住——tray/windows.rs
+    // 里记录过一次 Shell_NotifyIconW 阻塞 7.06s。卡在 RUNTIME 的 2 个 async
+    // worker 上就等于吃掉 50% 的异步容量，而 UI 线程的
+    // `LibraryAccess::blocking_query` 等的正是这个 runtime，于是"壳一卡，
+    // 行预取跟着卡"。阻塞线程池本来就是为"可能卡住的调用"准备的，SMTC 又是
+    // 单消费者，常驻一个阻塞线程没有并发代价。
+    //
+    // macOS 的控制器是纯同步 API（0 处 await）；Linux 的 MPRIS 是真正 await
+    // D-Bus 的 zbus 调用，与 shell RPC 无关，两者都留在 async 循环上。
+    #[cfg(windows)]
+    crate::RUNTIME.spawn_blocking(move || {
+        let span = debug_span!("pbc_task");
+
+        while let Some(event) = pbc_rx.blocking_recv() {
+            let span = trace_span!(parent: &span, "handle_all", ?event);
+            // 各平台的 handler 都是 async fn；Windows 只有 StoreAsync 一处真
+            // 异步（WinRT 完成回调在线程池上，不需要 tokio reactor），所以
+            // block_on 足够。将来若有平台引入真正的 await，block_on 也只会
+            // 停住这个阻塞线程，不会传染给别人。
+            if let Some(pbc) = controller.as_mut()
+                && let Err(err) = futures::executor::block_on(
+                    event
+                        .handle_event(pbc.as_mut())
+                        .instrument(span.clone()),
+                )
+            {
+                error!(?err, "playback controller: {err}");
+            }
+        }
+
+        info!("channel closed, ending task");
+    });
+
+    #[cfg(not(windows))]
     crate::RUNTIME.spawn(async move {
         let span = debug_span!("pbc_task");
 
