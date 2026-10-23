@@ -254,8 +254,8 @@ impl SymphoniaStream {
         let Some(format) = self.format.as_mut() else {
             return Err(PlaybackReadError::InvalidState);
         };
-        if let Some(loop_start) = self.loop_start_seconds
-            && format
+        if let Some(loop_start) = self.loop_start_seconds {
+            let seeked = format
                 .seek(
                     SeekMode::Accurate,
                     SeekTo::Time {
@@ -263,9 +263,19 @@ impl SymphoniaStream {
                         track_id: Some(self.current_track),
                     },
                 )
-                .is_err()
-        {
-            return Err(PlaybackReadError::Eof);
+                .is_ok();
+            if !seeked {
+                return Err(PlaybackReadError::Eof);
+            }
+            // 循环回跳是一次与上一包不连续的跳转。symphonia 的 AudioDecoder
+            // trait 文档要求"下一个包与上一个不连续时必须 reset 解码器，
+            // 最典型的就是 seek 之后"；不 reset 的话 MDCT 类编码（MP3/AAC/
+            // Vorbis/Opus）的 overlap-add 会带着回跳前的尾帧，在回跳点产生
+            // 一次点击/杂音。needs_loop_start_trim 负责丢掉回跳后的首包前置
+            // 静音，reset 负责清掉回跳前的重叠历史，两者互补、都要做。
+            if let Some(decoder) = self.decoder.as_mut() {
+                decoder.reset();
+            }
         }
         self.pending_loop_seek = false;
         self.needs_loop_start_trim = true;
@@ -514,6 +524,19 @@ impl MediaStream for SymphoniaStream {
                 },
             )
             .map_err(|e| SeekError::Unknown(e.to_string()))?;
+
+        // seek 之后必须重置解码器。symphonia-core 0.6.1 的 AudioDecoder trait
+        // 文档原文："A decoder must be reset when the next packet is
+        // discontinuous with respect to the last decoded packet. Most notably,
+        // this occurs after a seek."
+        // 引擎侧的 `flush_for_seek`（playback/thread/audio_engine.rs）已经重置了
+        // 设备、重采样器、混音器、EQ 与管线缓冲，唯独漏了解码器。不重置的话，
+        // MP3/AAC/Vorbis/Opus 的 overlap-add 会带着 seek 前的尾帧，在 seek 点
+        // 产生一次点击/杂音（Opus 的 pre-skip 更明显）——用户每次拖进度条都可能
+        // 听到。PCM/FLAC 无重叠状态，reset 对它们是空操作。
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.reset();
+        }
 
         if let Some(timebase) = timebase
             && let Some(t) = timebase.calc_time(seek.actual_ts)
