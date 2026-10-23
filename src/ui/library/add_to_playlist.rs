@@ -24,9 +24,10 @@ use crate::{
             modal::modal,
             palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
         },
-        library_access::LibraryAccess,
+        library_access::{LibraryAccess, is_duplicate_playlist_name, playlist_name_taken_toast},
         models::{Models, PlaylistInfoTransfer},
     },
+    toasts::emit_toast,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,22 +99,30 @@ fn track_playlist_ids(track_list: &TrackList, cx: &mut App) -> Option<FxHashSet<
     }
 }
 
+/// 等待派生的歌单 DB 任务，用调用点的消息记录失败，并把失败形态原样带回——
+/// 调用方需要区分"撞了歌单名唯一约束"（要提示用户改名）与其它失败。
+enum PlaylistTaskFailure {
+    Db(sqlx::Error),
+    /// 任务本身 panic。消息已在 `await_playlist_task` 里记进日志，这里只作标记。
+    Panicked,
+}
+
 /// 等待派生的歌单 DB 任务，并用调用点的消息记录它的两种失败形态；只有任务完全成功时
 /// 才交出载荷，于是调用方可以据此决定要不要发后续事件。
 async fn await_playlist_task<T>(
     task: tokio::task::JoinHandle<Result<T, sqlx::Error>>,
     failure_log: &'static str,
     panic_log: &'static str,
-) -> Option<T> {
+) -> Result<T, PlaylistTaskFailure> {
     match task.await {
-        Ok(Ok(payload)) => Some(payload),
+        Ok(Ok(payload)) => Ok(payload),
         Ok(Err(err)) => {
             error!("{}: {err:?}", failure_log);
-            None
+            Err(PlaylistTaskFailure::Db(err))
         }
         Err(err) => {
             error!("{}: {err:?}", panic_log);
-            None
+            Err(PlaylistTaskFailure::Panicked)
         }
     }
 }
@@ -169,7 +178,7 @@ fn spawn_write_and_announce<T: 'static>(
     cx.spawn(async move |cx| {
         if await_playlist_task(task, failure_log, panic_log)
             .await
-            .is_some()
+            .is_ok()
         {
             announce_playlist_update(&playlist_tracker, cx, playlist_id);
         }
@@ -317,6 +326,9 @@ impl AddToPlaylist {
                         let pool = cx.global::<Pool>().0.clone();
                         let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
                         let name_string = name_string.clone();
+                        // toast 里要显示用户输入的名字：RUNTIME 任务会把
+                        // name_string 移走，这里留一份克隆给失败分支用
+                        let create_name_for_toast = name_string.clone();
                         // 接受时再取选中曲目（对齐主 accept）：对话框打开后
                         // 选集仍可能被专辑流程后台补齐
                         let create_track_ids = track_list_for_accept.borrow().ids().to_vec();
@@ -329,17 +341,24 @@ impl AddToPlaylist {
                                 Ok::<i64, sqlx::Error>(playlist_id)
                             });
 
-                            let Some(playlist_id) = await_playlist_task(
+                            match await_playlist_task(
                                 task,
                                 "could not create playlist and add track",
                                 "create playlist task panicked",
                             )
                             .await
-                            else {
-                                return;
-                            };
-
-                            announce_playlist_update(&playlist_tracker, cx, playlist_id);
+                            {
+                                Ok(playlist_id) => {
+                                    announce_playlist_update(&playlist_tracker, cx, playlist_id);
+                                }
+                                // 撞名时对话框会留着（on_accept 不写 show=false），
+                                // 但此前连解释都没有；其它失败沿用既有的只记日志。
+                                Err(PlaylistTaskFailure::Db(err))
+                                    if is_duplicate_playlist_name(&err) =>
+                                {
+                                    emit_toast(playlist_name_taken_toast(&create_name_for_toast));                                }
+                                Err(_) => {}
+                            }
                         })
                         .detach();
 

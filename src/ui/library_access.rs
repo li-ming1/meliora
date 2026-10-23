@@ -12,13 +12,17 @@ use std::{
     },
 };
 
+use cntp_i18n::tr;
 use gpui::App;
 use rustc_hash::FxHashSet;
 
-use crate::library::{
-    Pool,
-    db::{self, LikedTrackSortMethod, PlaylistTrackRow, PlaylistTrackSortMethod},
-    types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track},
+use crate::{
+    library::{
+        Pool,
+        db::{self, LikedTrackSortMethod, PlaylistTrackRow, PlaylistTrackSortMethod},
+        types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track},
+    },
+    toasts::Toast,
 };
 
 pub trait LibraryAccess {
@@ -111,6 +115,28 @@ fn blocking_query<T>(method: &'static str, future: impl std::future::Future<Outp
     }
 
     result
+}
+
+/// 歌单名撞上 `playlist.name TEXT NOT NULL UNIQUE`
+/// （`migrations/20250825224757_create_playlist_table.sql`）的判定。SQLite 的
+/// UNIQUE 对 TEXT 区分大小写，所以同名必然冲突。
+///
+/// 创建/重命名歌单是高频路径，撞名很容易碰到，调用方必须能把它和其它 DB 失败
+/// 区分开：撞名要提示用户改名（此前四个入口全部静默失败，见 audit-2026-10-22
+/// P2-6），其它失败只值得记日志。
+pub(crate) fn is_duplicate_playlist_name(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db_err) if db_err.is_unique_violation())
+}
+
+/// 歌单撞名时给用户的提示。**默认文本只在这一处定义**：`cntp_i18n_gen` 把同一键的
+/// 第二处默认文本报成 Duplicate definition，所以创建/重命名的几个入口共用这条
+/// 消息，而不是各写一份 `tr!`。
+pub(crate) fn playlist_name_taken_toast(name: &str) -> Toast {
+    Toast::warning(tr!(
+        "PLAYLIST_NAME_TAKEN",
+        "A playlist named \"{{name}}\" already exists",
+        name = name
+    ))
 }
 
 impl LibraryAccess for App {

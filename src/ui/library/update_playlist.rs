@@ -19,9 +19,10 @@ use crate::{
             modal::modal,
             palette::{ExtraItem, ExtraItemProvider, FinderItemLeft, Palette, PaletteItem},
         },
-        library_access::LibraryAccess,
+        library_access::{LibraryAccess, is_duplicate_playlist_name, playlist_name_taken_toast},
         models::Models,
     },
+    toasts::emit_toast,
 };
 
 impl PaletteItem for Playlist {
@@ -124,7 +125,12 @@ impl UpdatePlaylist {
                         let playlist_id = match cx.create_playlist(&name_string) {
                             Ok(id) => id,
                             Err(e) => {
-                                error!("Failed to create playlist '{}': {}", name_string, e);
+                                // 撞名（歌单名 UNIQUE）时对话框会留着，但此前连
+                                // 解释都没有，看起来就是"点了创建没反应"。
+                                if is_duplicate_playlist_name(&e) {
+                                    emit_toast(playlist_name_taken_toast(&name_string));
+                                } else {                                    error!("Failed to create playlist '{}': {}", name_string, e);
+                                }
                                 return;
                             }
                         };

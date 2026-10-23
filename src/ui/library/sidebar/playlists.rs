@@ -35,7 +35,7 @@ use crate::{
             textbox::Textbox,
         },
         library::{NavigationHistory, ViewSwitchMessage, playlist_view::find_playlist_tracks},
-        library_access::LibraryAccess,
+        library_access::{LibraryAccess, is_duplicate_playlist_name, playlist_name_taken_toast},
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
         util::{reduced_motion_enabled, two_column_enabled},
@@ -177,13 +177,25 @@ impl PlaylistList {
             return;
         }
 
-        if let Ok(id) = cx.create_playlist(&name) {
-            let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-            announce_playlist_update(&playlist_tracker, cx, id);
+        match cx.create_playlist(&name) {
+            Ok(id) => {
+                let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+                announce_playlist_update(&playlist_tracker, cx, id);
+                self.popover_open = false;
+                self.new_playlist_input.update(cx, |tb, cx| tb.reset(cx));
+            }
+            Err(err) => {
+                // 撞名是这条路径上最常见的失败（`playlist.name` 是 UNIQUE）。
+                // 此前这里是 `if let Ok(id)`：失败时连日志都没有，popover 照常
+                // 关闭、输入框照常清空——用户看到的就是"回车之后毫无反应"。
+                // 撞名时保留 popover 与输入内容，让用户就地改名。
+                if is_duplicate_playlist_name(&err) {
+                    emit_toast(playlist_name_taken_toast(name.as_str()));
+                } else {
+                    error!("Failed to create playlist '{}': {err}", name);
+                }
+            }
         }
-
-        self.popover_open = false;
-        self.new_playlist_input.update(cx, |tb, cx| tb.reset(cx));
         cx.notify();
     }
 
@@ -199,16 +211,25 @@ impl PlaylistList {
         }
 
         if let Some(pl_id) = self.rename_popover_playlist {
-            if let Err(err) = cx.rename_playlist(pl_id, &name) {
-                error!("Failed to rename playlist: {}", err);
-            } else {
-                let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
-                announce_playlist_update(&playlist_tracker, cx, pl_id);
+            match cx.rename_playlist(pl_id, &name) {
+                Ok(()) => {
+                    let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
+                    announce_playlist_update(&playlist_tracker, cx, pl_id);
+                    self.rename_popover_playlist = None;
+                    self.rename_playlist_input.update(cx, |tb, cx| tb.reset(cx));
+                }
+                Err(err) => {
+                    // 撞名（含"改成另一个已存在歌单的名字"）在 UNIQUE 上必然失败。
+                    // 此前只 `error!` 一条然后照常关闭 popover，用户同样看不到解释。
+                    if is_duplicate_playlist_name(&err) {
+                        emit_toast(playlist_name_taken_toast(name.as_str()));
+                    } else {
+                        error!("Failed to rename playlist: {err}");
+                    }
+                }
             }
         }
 
-        self.rename_popover_playlist = None;
-        self.rename_playlist_input.update(cx, |tb, cx| tb.reset(cx));
         cx.notify();
     }
 

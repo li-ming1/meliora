@@ -592,3 +592,40 @@ async fn add_playlist_items_moves_block_contiguously() {
         vec![1, 2, 6, 7, 8, 3, 4, 5]
     );
 }
+
+/// 撞名检测的回归测试（audit-2026-10-22 P2-6）。`playlist.name` 是
+/// `TEXT NOT NULL UNIQUE`，创建/重命名歌单撞名时 UI 要弹"已存在同名歌单"，
+/// 判据就是 `ui::library_access::is_duplicate_playlist_name`。这条测试同时钉住
+/// 反面：其它约束失败不能被误判成撞名，否则真正的错误会被一句
+/// "已存在同名歌单"掩盖掉。
+#[tokio::test]
+async fn duplicate_playlist_name_is_detected_as_unique_violation() {
+    let (_dir, pool) = crate::test_support::create_test_pool("duplicate-playlist-name").await;
+
+    create_playlist(&pool, "Roadtrip").await.unwrap();
+    let clash = create_playlist(&pool, "Roadtrip").await.unwrap_err();
+    assert!(
+        crate::ui::library_access::is_duplicate_playlist_name(&clash),
+        "同名创建必须被判为撞名，实际错误：{clash:?}"
+    );
+
+    // 重命名成另一个已存在歌单的名字，同样撞 UNIQUE
+    let focus = create_playlist(&pool, "Focus").await.unwrap();
+    let rename_err = rename_playlist(&pool, focus, "Roadtrip")
+        .await
+        .unwrap_err();
+    assert!(
+        crate::ui::library_access::is_duplicate_playlist_name(&rename_err),
+        "重命名撞名必须被判为撞名，实际错误：{rename_err:?}"
+    );
+
+    // 反面：NOT NULL 约束失败不是撞名
+    let not_null_err = sqlx::query("INSERT INTO playlist (name) VALUES (NULL)")
+        .execute(&pool)
+        .await
+        .unwrap_err();
+    assert!(
+        !crate::ui::library_access::is_duplicate_playlist_name(&not_null_err),
+        "NOT NULL 失败不该被判为撞名，实际错误：{not_null_err:?}"
+    );
+}
