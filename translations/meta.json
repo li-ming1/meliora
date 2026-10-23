@@ -1505,6 +1505,12 @@
     "plural": false,
     "description": null
   },
+  "PLAYBACK_THREAD_GONE": {
+    "context": "interface.rs",
+    "definedIn": "src/playback/interface.rs:72",
+    "plural": false,
+    "description": null
+  },
   "PLAYLIST_NAME_TAKEN": {
     "context": "library_access.rs",
     "definedIn": "src/ui/library_access.rs:136",

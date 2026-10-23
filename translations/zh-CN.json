@@ -165,6 +165,7 @@
   "PLAYBACK_PREVIOUS_JUMPS": "已播放超过 5 秒时，上一首按钮跳转到曲目开头",
   "PLAYBACK_RG_FALLBACK_PREAMP": "ReplayGain 备用前置增益",
   "PLAYBACK_RG_FALLBACK_PREAMP_SUBTEXT": "曲目没有 ReplayGain 数据时使用。",
+  "PLAYBACK_THREAD_GONE": "播放已停止响应，请重启应用",
   "PLAYLIST_NAME_TAKEN": "已存在同名歌单“{{name}}”",
   "PLAYLIST_TRACK_COUNT": {
     "other": "{{count}} 首曲目"

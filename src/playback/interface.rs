@@ -1,9 +1,13 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use cntp_i18n::tr;
 use gpui::App;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{
     playback::{dsp::spectrum::SpectrumTapConsumer, events::RepeatState},
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
+    toasts::{Toast, emit_toast},
 };
 
 use super::{
@@ -27,6 +31,10 @@ pub struct PlaybackInterface {
 
 impl gpui::Global for PlaybackInterface {}
 
+/// 是否已经报告过"播放线程没了"。见 [`PlaybackInterface::send`]：toast 只发一次，
+/// 之后重复的失败只进日志。
+static PLAYBACK_GONE: AtomicBool = AtomicBool::new(false);
+
 impl PlaybackInterface {
     pub fn new(
         cmd_tx: UnboundedSender<PlaybackCommand>,
@@ -46,9 +54,28 @@ impl PlaybackInterface {
     }
 
     /// 即发即忘地送往播放线程。无界通道发送只在接收端已消失（播放线程早已
-    /// 拆除）时才失败，对这些由 UI 发起的命令无害——故刻意忽略返回值。
+    /// 拆除）时才失败。
+    ///
+    /// 失败时必须让人知道：播放线程是裸 `std::thread`，全仓没有 `catch_unwind`
+    /// 边界（audit-2026-10-22 P2-4），一次 panic 之后线程就没了，而命令发送
+    /// 失败此前的处理是 `let _ =` 静默丢弃——UI 停在最后一帧状态，之后每次点
+    /// 播放/暂停/上一首/下一首/音量都毫无反应，用户只能重启应用。
+    /// 现在至少把"播放已停止工作"变成一个用户可见的状态。
+    ///
+    /// toast 只发一次：用户连点十次播放，不该弹十条同样的提示；第一次之后
+    /// 只留日志。
     fn send(&self, command: PlaybackCommand) {
-        let _ = self.cmd_tx.send(command);
+        if self.cmd_tx.send(command).is_err() {
+            if !PLAYBACK_GONE.swap(true, Ordering::Relaxed) {
+                tracing::error!("playback thread is gone; playback commands are being dropped");
+                emit_toast(Toast::error(tr!(
+                    "PLAYBACK_THREAD_GONE",
+                    "Playback has stopped responding. Please restart the app."
+                )));
+            } else {
+                tracing::debug!("playback command dropped: thread already gone");
+            }
+        }
     }
 
     pub fn play(&self) {

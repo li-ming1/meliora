@@ -262,6 +262,7 @@
   "PLAYBACK_PREVIOUS_JUMPS": "Previous button jumps to the beginning of the track if more than 5 seconds has elapsed",
   "PLAYBACK_RG_FALLBACK_PREAMP": "ReplayGain fallback pre-amp",
   "PLAYBACK_RG_FALLBACK_PREAMP_SUBTEXT": "Applied when tracks have no ReplayGain data.",
+  "PLAYBACK_THREAD_GONE": "Playback has stopped responding. Please restart the app.",
   "PLAYLIST_NAME_TAKEN": "A playlist named \"{{name}}\" already exists",
   "PLAYLIST_TRACK_COUNT": {
     "one": "{{count}} track",
