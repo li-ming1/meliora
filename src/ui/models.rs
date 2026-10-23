@@ -1,7 +1,11 @@
 use std::{
     collections::HashSet,
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
 };
 
 use gpui::{
@@ -10,7 +14,7 @@ use gpui::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     library::{
@@ -331,9 +335,11 @@ pub fn build_models(
     })
     .detach();
 
-    // 专辑/艺人/曲目的可用性快照：启动时加载，每次扫描完成时刷新。扫描同样是
-    // 专辑元数据的唯一写入方，所以供行构建用的专辑缓存也在同一点丢弃。
-    reload_availability(cx);
+    // 专辑/艺人/曲目的可用性快照：启动时的**首跑**已挪到
+    // `ui/app.rs` 的 "main window created" 之后（见那里的注释）——这一趟要付
+    // 连接池首次建连与首查准备的冷启动成本（实测本机 480ms，同数据的暖趟
+    // 1.7ms），而首帧正是在 ensure_main_window 里画出来的，不能让它压在那
+    // 前面。此后每次扫描完成仍在这里刷新。
     let scan_state = cx.global::<Models>().scan_state.clone();
     cx.observe(&scan_state, |scan_event, cx| {
         if matches!(
@@ -679,6 +685,22 @@ pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
     }
 }
 
+/// 在途的可用性重算趟数。扫描完成事件会触发整库 stat pass：启动时一次、
+/// 首次扫描完成后又一次。100k 级库上单趟可达十几秒，两趟重叠会同时压满
+/// CPU、瞬时内存与 3 条连接的池。这里只做观测（不改行为），用来回答
+/// "启动期到底有没有重叠"这个此前只能靠推断的问题。
+static AVAILABILITY_PASSES: AtomicUsize = AtomicUsize::new(0);
+
+/// 在途计数的守卫：async 任务被取消或实体被 drop 时同样会递减，
+/// 不会把计数永久钉高。
+struct AvailabilityPassGuard;
+
+impl Drop for AvailabilityPassGuard {
+    fn drop(&mut self) {
+        AVAILABILITY_PASSES.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// 在异步运行时上（重）加载专辑、艺人与曲目三份可用性快照：一次全量
 /// `(location, id, album_id)` 曲目扫描加一次纯整数的 `(track_id, artist_id)`
 /// 署名扫描，随后一趟阻塞处理，对每个不同的曲目路径只 stat 一次就得出全部
@@ -689,12 +711,14 @@ pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
 /// 查询或任务失败时三份旧快照原地保留，绝不发布空集合。
 pub(crate) fn reload_availability(cx: &mut App) {
     // 只有派生的查询完全成功时才交出这些行；每次失败都会被记录，好让调用方
-    // 保留上一次的快照。
+    // 保留上一次的快照。每步单独计时：这一趟的冷启动成本（建连/首查准备）
+    // 与真正的 stat pass 差两个数量级，不分步就永远不知道 480ms 花在哪。
     async fn query_rows<T>(
         what: &'static str,
         task: tokio::task::JoinHandle<sqlx::Result<T>>,
     ) -> Option<T> {
-        match task.await {
+        let started = Instant::now();
+        let rows = match task.await {
             Ok(Ok(rows)) => Some(rows),
             Ok(Err(err)) => {
                 warn!("could not load {what}: {err}, keeping previous availability snapshots");
@@ -704,14 +728,27 @@ pub(crate) fn reload_availability(cx: &mut App) {
                 warn!("{what} task failed: {err}, keeping previous availability snapshots");
                 None
             }
-        }
+        };
+        info!(
+            step = what,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "availability pass step"
+        );
+        rows
     }
 
     let pool = cx.global::<Pool>().0.clone();
     let albums = cx.global::<Models>().available_albums.clone();
     let artists = cx.global::<Models>().available_artists.clone();
     let tracks = cx.global::<Models>().available_tracks.clone();
+    let started = Instant::now();
+    let concurrent = AVAILABILITY_PASSES.fetch_add(1, Ordering::Relaxed) + 1;
+    if concurrent > 1 {
+        warn!("availability pass started while {concurrent} passes are in flight");
+    }
+    let guard = AvailabilityPassGuard;
     cx.spawn(async move |cx| {
+        let _guard = guard;
         let Some(track_rows) = query_rows(
             "track rows",
             crate::RUNTIME.spawn({
@@ -723,6 +760,7 @@ pub(crate) fn reload_availability(cx: &mut App) {
         else {
             return;
         };
+        let track_count = track_rows.len();
         let Some(artist_credits) = query_rows(
             "track artist credits",
             crate::RUNTIME.spawn({
@@ -736,7 +774,14 @@ pub(crate) fn reload_availability(cx: &mut App) {
         };
         let (album_set, artist_set, track_set) = match crate::RUNTIME
             .spawn_blocking(move || {
-                compute_availability_from_tracks(track_rows, artist_credits)
+                let started = Instant::now();
+                let sets = compute_availability_from_tracks(track_rows, artist_credits);
+                info!(
+                    step = "stat pass",
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                    "availability pass step"
+                );
+                sets
             })
             .await
         {
@@ -760,6 +805,12 @@ pub(crate) fn reload_availability(cx: &mut App) {
             *slot = Some(Arc::new(track_set));
             cx.notify();
         });
+        info!(
+            tracks = track_count,
+            concurrent,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "availability pass finished"
+        );
     })
     .detach();
 }

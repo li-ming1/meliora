@@ -942,6 +942,14 @@ pub fn run() -> anyhow::Result<()> {
         let main_window = ensure_main_window(cx, toast_layer_entity).unwrap();
         startup_step!("main window created");
 
+        // 可用性快照的启动首跑放在这里，而不是 models 构建时：首帧正是在
+        // `ensure_main_window` 里画出来的，而这一趟要付连接池首次建连与首查
+        // 准备的冷启动成本（实测本机 67 曲 480ms，同一份数据的暖趟只有
+        // 1.7ms）。放在首帧之后，用户已经看到界面，冷启动成本落在"已经在看
+        // 界面"的时间里，而不是抢在首帧前面。扫描完成事件触发的重跑照旧
+        // （那时连接已暖，约 2ms）。
+        models::reload_availability(cx);
+
         // 桌面集成（SMTC + 托盘壳）与首帧无依赖：元数据由随后的播放事件经
         // PbcHandle 推送，托盘壳只在用户交互时才被需要。整段挪出启动关键路径
         // ——用 0ms 定时器任务而不是 on_next_frame：后者依赖帧回调，而
