@@ -92,6 +92,11 @@ struct Shared<S> {
 /// 立即结束重试循环：致命错误交给 consumer，让它在几秒内跳过该曲目，
 /// 而不是先播 30 秒静音。
 fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
+    // 在线流生产者线程与解码泵同登记 MMCSS：2026-10-21 在线播放实测单 run
+    // 累计 5262 次 callback underrun（本地回放零欠载），网络填充是播放链条
+    // 上唯一未登记的生产环节；登记失败静默降级（mmcss 模块契约：线程退出
+    // 登记随之失效，逐曲目重建线程无泄漏）。
+    crate::devices::mmcss::register_playback_thread();
     let mut consecutive_errors = 0u32;
     loop {
         // 等待有活干：有待施加的 seek，或缓冲低于高水位。
