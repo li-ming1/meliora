@@ -1042,7 +1042,11 @@ impl PlaybackThread {
 
     /// 在队列的指定位置插入一个 [`QueueItemData`]。若当前没在播任何东西，就开始播放它。
     fn insert_at(&mut self, item: &QueueItemData, position: usize) {
-        info!("Inserting file to queue at position {}: {}", position, item);
+        info!(
+            "Inserting file to queue at position {}: {}",
+            position,
+            crate::media::redact_media_path(&item.get_path().to_string_lossy())
+        );
 
         match self.queue.insert_item(position, item.clone()) {
             InsertResult::Inserted { first_index } => {
