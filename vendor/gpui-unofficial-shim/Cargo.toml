@@ -12,10 +12,7 @@ publish = false
 # `gpui`". The rev pin below is the whole point of vendoring.
 
 [features]
-# windows-manifest 不在 default 里：meliora 经 icon.rc 内嵌自己的超集清单
-# （gpui.manifest.xml 的全部设置 + longPathAware）。两份 id=1 的 RT_MANIFEST
-# 会在 CVTRES 阶段撞车（CVT1100 资源重复），只能二选一。
-default = ["font-kit", "wayland", "x11"]
+default = ["font-kit", "wayland", "x11", "windows-manifest"]
 font-kit = ["gpui_real/font-kit"]
 input-latency-histogram = ["gpui_real/input-latency-histogram"]
 inspector = ["gpui_real/inspector"]

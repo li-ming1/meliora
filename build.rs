@@ -37,16 +37,12 @@ fn main() -> Result<()> {
     // [mem] 探针经裸 extern 块调 mimalloc 统计 API（mi_process_info /
     // mi_collect）；符号位于静态链接的 mimalloc.lib，其对象带 DLL 风格
     // 导出装饰，MSVC 对每次引用发 LNK4217/LNK4286 remark。导入本身正是
-    // 我们要的——压掉 remark，而不是砍 feature。这三个是 MSVC-only
+    // 我们要的——压掉 remark，而不是砍 feature。这两个是 MSVC-only
     // flag：其它链接器会把它们当文件路径，构建直接失败（macOS/Linux
     // CI 腿实测）。
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/IGNORE:4217");
         println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
-        // 自定义 manifest（longPathAware）经 icon.rc 以 RT_MANIFEST 资源嵌入；
-        // 链接器默认还会自己生成一份同 id 的 manifest，两者在 CVTRES 阶段
-        // 撞车（CVT1100 资源重复），显式关掉链接器侧。
-        println!("cargo:rustc-link-arg-bins=/MANIFEST:NO");
     }
 
     // 可选的本地 .env：从不自动创建，只有手动建了才会被读取
