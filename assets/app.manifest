@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- 覆盖 MSVC 工具链嵌入的默认清单：保留 asInvoker，新增 longPathAware。
+       本清单生效前提是系统策略 LongPathsEnabled（Win10 1607+ 注册表开关）；
+       未开启时本清单无害，std 的 MAX_PATH 行为不变。 -->
+  <assemblyIdentity type="win32" name="Meliora" version="0.0.6.0" processorArchitecture="*"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>
