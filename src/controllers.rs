@@ -318,9 +318,7 @@ pub fn init_pbc_task(cx: &mut App, window: &Window) {
             // 停住这个阻塞线程，不会传染给别人。
             if let Some(pbc) = controller.as_mut()
                 && let Err(err) = futures::executor::block_on(
-                    event
-                        .handle_event(pbc.as_mut())
-                        .instrument(span.clone()),
+                    event.handle_event(pbc.as_mut()).instrument(span.clone()),
                 )
             {
                 error!(?err, "playback controller: {err}");

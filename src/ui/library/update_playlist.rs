@@ -13,6 +13,7 @@ use crate::{
         playlist::import_playlist,
         types::{Playlist, PlaylistType},
     },
+    toasts::emit_toast,
     ui::{
         components::{
             icons::{PLAYLIST, PLAYLIST_ADD, STAR_FILLED},
@@ -22,7 +23,6 @@ use crate::{
         library_access::{LibraryAccess, is_duplicate_playlist_name, playlist_name_taken_toast},
         models::Models,
     },
-    toasts::emit_toast,
 };
 
 impl PaletteItem for Playlist {
@@ -129,7 +129,8 @@ impl UpdatePlaylist {
                                 // 解释都没有，看起来就是"点了创建没反应"。
                                 if is_duplicate_playlist_name(&e) {
                                     emit_toast(playlist_name_taken_toast(&name_string));
-                                } else {                                    error!("Failed to create playlist '{}': {}", name_string, e);
+                                } else {
+                                    error!("Failed to create playlist '{}': {}", name_string, e);
                                 }
                                 return;
                             }

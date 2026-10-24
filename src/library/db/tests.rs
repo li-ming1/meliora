@@ -611,9 +611,7 @@ async fn duplicate_playlist_name_is_detected_as_unique_violation() {
 
     // 重命名成另一个已存在歌单的名字，同样撞 UNIQUE
     let focus = create_playlist(&pool, "Focus").await.unwrap();
-    let rename_err = rename_playlist(&pool, focus, "Roadtrip")
-        .await
-        .unwrap_err();
+    let rename_err = rename_playlist(&pool, focus, "Roadtrip").await.unwrap_err();
     assert!(
         crate::ui::library_access::is_duplicate_playlist_name(&rename_err),
         "重命名撞名必须被判为撞名，实际错误：{rename_err:?}"

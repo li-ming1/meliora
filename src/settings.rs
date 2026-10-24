@@ -243,7 +243,7 @@ pub fn flush_pending_settings() {
         return;
     }
     let generation = pending.generation;
-    let result = write_settings_file(&*pending.snapshot, &pending.path, generation, "flush");
+    let result = write_settings_file(&pending.snapshot, &pending.path, generation, "flush");
     if result.is_ok() {
         SETTINGS_WRITTEN_GENERATION.fetch_max(generation, Ordering::Relaxed);
     } else if let Err(e) = result {

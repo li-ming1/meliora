@@ -17,6 +17,7 @@ use crate::{
         playlist::announce_playlist_update,
         types::Playlist,
     },
+    toasts::emit_toast,
     ui::{
         app::Pool,
         components::{
@@ -27,7 +28,6 @@ use crate::{
         library_access::{LibraryAccess, is_duplicate_playlist_name, playlist_name_taken_toast},
         models::{Models, PlaylistInfoTransfer},
     },
-    toasts::emit_toast,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -356,7 +356,8 @@ impl AddToPlaylist {
                                 Err(PlaylistTaskFailure::Db(err))
                                     if is_duplicate_playlist_name(&err) =>
                                 {
-                                    emit_toast(playlist_name_taken_toast(&create_name_for_toast));                                }
+                                    emit_toast(playlist_name_taken_toast(&create_name_for_toast));
+                                }
                                 Err(_) => {}
                             }
                         })

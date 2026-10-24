@@ -957,7 +957,7 @@ pub fn run() -> anyhow::Result<()> {
         // 定时器不依赖帧，且失败处理与原先同步调用完全一致（退化为"无桌面
         // 集成"）；PbcHandle 的全局与事件观察者在同一个 cx.update 块里装配，
         // 不存在"观察者先于全局存在"的窗口。
-        let main_window_for_integrations = main_window.clone();
+        let main_window_for_integrations = main_window;
         cx.spawn(async move |cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(0))
