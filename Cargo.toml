@@ -169,6 +169,10 @@ embed-resource = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
+    # 零字面引用但不可删：StorageLibrary::Folders() 的返回类型
+    # IObservableVector 落在 Foundation::Collections，windows crate 内该方法被
+    # #[cfg(all(feature = "Foundation_Collections", feature = "Storage_Search"))]
+    # 双重门控（settings/scan.rs 默认库扫描依赖它）。
     "Foundation_Collections",
     "Media",
     # 零字面引用但不可删：StorageLibrary::Folders() 在 windows crate 内被

@@ -34,13 +34,12 @@ fn version_id_from_git() -> Result<String> {
 }
 
 fn main() -> Result<()> {
-    // The [mem] probe calls mimalloc's statistics API (mi_process_info /
-    // mi_collect) via a bare extern block; the symbols live in the statically
-    // linked mimalloc.lib, whose objects carry DLL-style export decorations,
-    // so MSVC remarks LNK4217/LNK4286 on every reference. The import is
-    // exactly what we want — silence the remark instead of the feature.
-    // MSVC-only flags: other linkers parse them as file paths and fail the
-    // build (observed on the macOS/Linux CI legs).
+    // [mem] 探针经裸 extern 块调 mimalloc 统计 API（mi_process_info /
+    // mi_collect）；符号位于静态链接的 mimalloc.lib，其对象带 DLL 风格
+    // 导出装饰，MSVC 对每次引用发 LNK4217/LNK4286 remark。导入本身正是
+    // 我们要的——压掉 remark，而不是砍 feature。这两个是 MSVC-only
+    // flag：其它链接器会把它们当文件路径，构建直接失败（macOS/Linux
+    // CI 腿实测）。
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/IGNORE:4217");
         println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
@@ -56,7 +55,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // embed the application icon into the Windows executable
+    // 把应用图标嵌进 Windows exe
     // 本 build.rs 已发射多条 rerun 指令（i18n 生成器），embed-resource
     // 依赖的"无指令则扫描全包"默认随之失效，图标资源必须显式追踪；
     // rc 编译失败必须上抛，静默吞掉会拿旧图标出包。

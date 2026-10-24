@@ -165,7 +165,6 @@ mod bench {
 
     /// 酷狗登录态会话：generate() 设备身份（guid/mid/dev/dfid）+ ~256 字符
     /// 的不透明登录 token + 资料字段。
-    #[cfg(feature = "kugou")]
     fn kugou_small() -> KugouSession {
         let mut session = KugouSession::generate();
         session.token = Some("t".repeat(256));
@@ -178,7 +177,6 @@ mod bench {
     /// 酷狗现实上界：小负载 + 携带 40 条 `busi_vip` 产品数组的
     /// `vip_detail`（设置页与 `has_active_vip` 实际消费的结构，前两条
     /// 置 is_vip=1 走活跃分支）。
-    #[cfg(feature = "kugou")]
     fn kugou_large() -> KugouSession {
         let mut session = kugou_small();
         session.last_claim_day = Some("2026-10-05".to_string());
@@ -214,7 +212,6 @@ mod bench {
             "F022: session_io::save 单次耗时（serialize pretty + tmp 写 + rename），\
              预热 {WARMUP} 次 + 计时 {ITERATIONS} 次，普通测试线程："
         );
-        #[cfg(feature = "kugou")]
         {
             summarize(
                 "kugou 小负载（登录态会话）",

@@ -1009,31 +1009,31 @@
   },
   "KUGOU_LIKE_ADDED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:659",
+    "definedIn": "src/ui/kugou.rs:663",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:671",
+    "definedIn": "src/ui/kugou.rs:675",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:780",
+    "definedIn": "src/ui/kugou.rs:784",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_REMOVED_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:785",
+    "definedIn": "src/ui/kugou.rs:789",
     "plural": false,
     "description": null
   },
   "KUGOU_LIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:685",
+    "definedIn": "src/ui/kugou.rs:689",
     "plural": false,
     "description": null
   },
@@ -1225,7 +1225,7 @@
   },
   "KUGOU_UNLIKE_TASK_FAILED": {
     "context": "kugou.rs",
-    "definedIn": "src/ui/kugou.rs:790",
+    "definedIn": "src/ui/kugou.rs:794",
     "plural": false,
     "description": null
   },
@@ -2323,7 +2323,7 @@
   },
   "TRAY_HIDE": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:557",
+    "definedIn": "src/tray/windows.rs:556",
     "plural": false,
     "description": null
   },
@@ -2359,7 +2359,7 @@
   },
   "TRAY_SHOW": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:559",
+    "definedIn": "src/tray/windows.rs:558",
     "plural": false,
     "description": null
   },
