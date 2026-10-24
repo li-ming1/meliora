@@ -232,6 +232,23 @@ fn spawn_library_load(
     let task = crate::RUNTIME.spawn(async move {
         let track = db::get_track_by_id(&pool, track_id).await;
         let album = db::get_album_by_id(&pool, album_id).await;
+        // Ok(None)（行已不在库里）是正常路径不告警；Err（DB 锁冲突/IO 故障）
+        // 此前被 .ok() 静默吞掉，该行元数据降级到磁盘回落却零信号，补 warn
+        // 对齐 spawn_metadata_load 的日志纪律。
+        if let Err(err) = &track {
+            tracing::warn!(
+                track_id,
+                error = %err,
+                "queue metadata: track row query failed; falling back to disk metadata"
+            );
+        }
+        if let Err(err) = &album {
+            tracing::warn!(
+                album_id,
+                error = %err,
+                "queue metadata: album row query failed; falling back to disk metadata"
+            );
+        }
         (track.ok(), album.ok())
     });
     cx.spawn(async move |cx| {
