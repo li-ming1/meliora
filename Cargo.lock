@@ -4378,7 +4378,7 @@ dependencies = [
  "palette",
  "postcard",
  "qrcode",
- "rand 0.10.2",
+ "rand 0.9.5",
  "raw-window-handle",
  "realfft",
  "rtrb",
