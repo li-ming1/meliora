@@ -144,7 +144,8 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 }
 
 /// 若 `path` 是经本应用到达的流，返回为它记下的在线曲目。匹配先用嵌在 URL 里的
-/// `mixsongid`（与队列去重逻辑同一启发式），再退化到逐字节 URL 比较，所以即使重定向目标
+/// `mixsongid`（队列去重已改走结构化 OnlineIdentity，此启发式仅剩本处的
+/// 流 URL 回溯在用），再退化到逐字节 URL 比较，所以即使重定向目标
 /// 与产生它的 URL 不同也仍能解析出来。
 pub fn online_track_matching_path(path: &Path) -> Option<KugouTrackInfo> {
     let path_str = path.to_string_lossy();

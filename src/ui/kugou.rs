@@ -47,7 +47,7 @@ pub use crate::online_sources::kugou::{
 };
 pub(crate) use crate::online_sources::kugou::{
     LIKED_SET_INIT, fetch_liked_entries, liked_fileids, liked_load_lock, liked_set,
-    mixsongid_in_url, refresh_liked_set_from_service, store_liked_entries,
+    refresh_liked_set_from_service, store_liked_entries,
 };
 
 /// 单个用户歌单。
@@ -544,10 +544,14 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
                 .read(cx)
                 .data
                 .clone();
+            // 条目身份走结构化 OnlineIdentity 而非 URL 文本解析：`find("_mx")`
+            // 取首次出现的启发式对 URL 布局脆弱，误判会把新 URL 经 replace_path
+            // 写到别的歌上。远古会话恢复的条目 identity=None，不命中只是多插
+            // 一条而非错写（一次性迁移边界，可接受）。
             let existing = queue_data.read_recovered().iter().position(|item| {
-                crate::media::is_http_path(item.get_path())
-                    && mixsongid_in_url(&item.get_path().to_string_lossy())
-                        .is_some_and(|id| id == track.mix_song_id)
+                item.online_identity().is_some_and(|id| {
+                    matches!(id, OnlineIdentity::Kugou { mix_song_id, .. } if *mix_song_id == track.mix_song_id)
+                })
             });
 
             if let Some(index) = existing {
@@ -557,9 +561,9 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
                 let mut guard = queue_data.write_recovered();
                 let entries = Arc::make_mut(&mut guard);
                 let same_track = entries.get(index).is_some_and(|item| {
-                    crate::media::is_http_path(item.get_path())
-                        && mixsongid_in_url(&item.get_path().to_string_lossy())
-                            .is_some_and(|id| id == track.mix_song_id)
+                    item.online_identity().is_some_and(|id| {
+                        matches!(id, OnlineIdentity::Kugou { mix_song_id, .. } if *mix_song_id == track.mix_song_id)
+                    })
                 });
                 let replaced = same_track
                     && entries
