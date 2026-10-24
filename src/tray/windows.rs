@@ -103,6 +103,12 @@ static RECOVERY: Mutex<ShellRecovery> = Mutex::new(ShellRecovery::INIT);
 /// 心跳探针间隔：丢失后最迟 30s 发现，覆盖「丢失后一直没人切歌」的情形。
 /// 一次 `NIM_MODIFY` 的开销与每次切歌的刷新同量级，30s 一档可忽略。
 const SHELL_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// `Shell_NotifyIconW` 慢调用告警线：跨进程 IPC 实测可阻塞到秒级
+/// （2026-10-19 取证单次 7.06s），50ms ≈ 三个帧预算，超线说明调用方
+/// （主线程）被壳侧卡住——攒频率面数据，供「托盘 IPC 挪出主线程」
+/// 路线图项裁决。
+const SHELL_NOTIFY_SLOW: Duration = Duration::from_millis(50);
 /// 首次重注册延迟。**不是实测值**——我们没量过壳多久才开始接受 `NIM_ADD`，这一
 /// 档只是「别在同一瞬间连环重发」的下限。实测的是那次事故里「一次都不重试」的
 /// 代价（4.6h 无图标），所以这里的纪律是：一定要重试，但退避有界（见
@@ -465,7 +471,9 @@ unsafe fn notify(
     if let Some(tip) = tip {
         write_tip(&mut nid.szTip, tip);
     }
+    let started = Instant::now();
     let ok = unsafe { Shell_NotifyIconW(message, &nid).as_bool() };
+    let elapsed = started.elapsed();
     // 诊断：tooltip 不显示的排查靠这几行（kind/flags/tip 长度 + 结果）。
     // meliora.log 里 grep "tray shell"。失败意味着这次 IPC 没被壳接受（最常见
     // 是注册已不在），必须到 warn 才不会被淹没在每次切歌的刷新日志中。
@@ -480,11 +488,22 @@ unsafe fn notify(
             "tray shell: Shell_NotifyIconW failed"
         );
     } else {
+        // elapsed 进成功日志：每条既有 ok 行都成为计时样本，慢调用频率面
+        // 不用等超线告警也能从分布里读出来。
         tracing::debug!(
             target: "tray",
             kind,
             tip_len = tip.map(str::len),
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
             "tray shell: Shell_NotifyIconW ok"
+        );
+    }
+    if elapsed >= SHELL_NOTIFY_SLOW {
+        tracing::warn!(
+            target: "tray",
+            kind,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            "tray shell: Shell_NotifyIconW blocked the caller"
         );
     }
     ok
