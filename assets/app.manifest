@@ -1,19 +1,39 @@
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <!-- 覆盖 MSVC 工具链嵌入的默认清单：保留 asInvoker，新增 longPathAware。
-       本清单生效前提是系统策略 LongPathsEnabled（Win10 1607+ 注册表开关）；
-       未开启时本清单无害，std 的 MAX_PATH 行为不变。 -->
-  <assemblyIdentity type="win32" name="Meliora" version="0.0.6.0" processorArchitecture="*"/>
-  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
-    <security>
-      <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
-      </requestedPrivileges>
-    </security>
-  </trustInfo>
-  <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings>
-      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
-    </windowsSettings>
-  </application>
+    <!-- 覆盖 gpui 的 windows-manifest（shim 的 default 已移除该 feature）。内容必须
+         保持 gpui.manifest.xml 的超集：PerMonitorV2/SegmentHeap/Common-Controls/
+         supportedOS 逐项保留（缺任何一项都是行为回归——DPI 降级、堆策略回退、
+         公共控件样式退化），在此之上新增 longPathAware（系统策略 LongPathsEnabled
+         开启时支持 >260 字符路径；未开启时无影响）。 -->
+    <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+        <security>
+            <requestedPrivileges>
+                <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+            </requestedPrivileges>
+        </security>
+    </trustInfo>
+    <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+        <application>
+            <!-- Windows 10 -->
+            <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+        </application>
+    </compatibility>
+    <application xmlns="urn:schemas-microsoft-com:asm.v3">
+        <windowsSettings>
+            <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+            <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+            <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+            <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+        </windowsSettings>
+    </application>
+    <dependency>
+        <dependentAssembly>
+            <assemblyIdentity
+                type='win32'
+                name='Microsoft.Windows.Common-Controls'
+                version='6.0.0.0'
+                processorArchitecture='*'
+                publicKeyToken='6595b64144ccf1df'
+            />
+        </dependentAssembly>
+    </dependency>
 </assembly>
