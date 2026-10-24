@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
     }
 
-    // read env from an optional local .env file (never created automatically)
+    // 可选的本地 .env：从不自动创建，只有手动建了才会被读取
     if let Ok(envfile) = std::fs::read_to_string(".env") {
         println!("cargo:rerun-if-changed=.env");
         dotenvy::from_read(envfile.as_bytes())?;
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
             .context("failed to compile assets/icon.rc")?;
     }
 
-    // generate translations
+    // 生成翻译（构建时重写 translations/meta.json 的行号引用，出现 diff 属正常）
     let path: PathBuf = env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR is not set")
         .into();
@@ -107,7 +107,7 @@ fn main() -> Result<()> {
     }
     println!("cargo:rustc-env=MELIORA_I18N_STAMP={:016x}", stamp.finish());
 
-    // prefer env over file, default to `stable`
+    // 渠道优先级：环境变量 > package/RELEASE_CHANNEL 文件 > 内置 `stable`
     let channel = option_env("MELIORA_RELEASE_CHANNEL").unwrap_or_else(|| {
         match std::fs::read_to_string("package/RELEASE_CHANNEL") {
             Ok(channel) => {
@@ -118,7 +118,8 @@ fn main() -> Result<()> {
         }
     });
 
-    // get parenthesized version id based on channel kind
+    // 按渠道取括号内的版本标识（dev→git sha、stable→release、flake→nix 提供的 sha），
+    // 拼进 MELIORA_VERSION_STRING 尾部
     channel.and_then(|kind| {
         let id = option_env("MELIORA_VERSION_ID");
         let (suffix, mut id) = match &*kind {
