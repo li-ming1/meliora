@@ -59,6 +59,10 @@ pub fn shared_record_with(path: &Utf8PathBuf, timestamp: SystemTime) -> Arc<Mute
     Arc::new(Mutex::new(record))
 }
 
+pub fn shared_empty_record() -> Arc<Mutex<ScanRecord>> {
+    Arc::new(Mutex::new(ScanRecord::new_current()))
+}
+
 pub fn record_of(paths: &[&Utf8PathBuf]) -> ScanRecord {
     let mut record = ScanRecord::new_current();
     for path in paths {
@@ -69,13 +73,15 @@ pub fn record_of(paths: &[&Utf8PathBuf]) -> ScanRecord {
 
 pub fn run_rescan(
     paths: Vec<Utf8PathBuf>,
-    record: Option<Arc<Mutex<ScanRecord>>>,
+    record: Arc<Mutex<ScanRecord>>,
+    respect_record: bool,
     recursive: bool,
 ) -> (u64, Receiver<DiscoveredPath>, Receiver<Relocation>) {
     let (path_tx, path_rx, relocate_tx, relocate_rx) = channels();
     let count = crate::RUNTIME.block_on(rescan_discover(
         paths,
         record,
+        respect_record,
         recursive,
         path_tx,
         relocate_tx,

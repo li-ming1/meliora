@@ -118,11 +118,15 @@ impl ActiveScan {
                     recursive,
                 } => {
                     let paths = paths.clone();
+                    let respect_record = *respect_record;
                     let recursive = *recursive;
-                    let record = respect_record.then(|| scan_record.clone());
+                    // record-blind 也持记录：classify 与大小写改名搬迁照跑，
+                    // `respect_record` 只决定时间戳未变时是否跳过重读
+                    let record = scan_record.clone();
                     spawn(rescan_discover(
                         paths,
                         record,
+                        respect_record,
                         recursive,
                         path_tx,
                         relocate_tx,

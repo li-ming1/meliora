@@ -24,7 +24,9 @@ pub(super) enum ScanCommand {
     Scan,
     /// 忽略扫描记录的全量重扫（schema 变更、SCAN_VERSION 变化）。
     ForceScan,
-    /// 重扫指定路径；`respect_record` 会跳过未变化的文件，`recursive` 会向下遍历子目录。
+    /// 重扫指定路径；`respect_record=false`（record-blind）强制重读元数据，但
+    /// classify 与纯大小写改名搬迁和尊重记录时同款；`respect_record=true` 会跳过
+    /// 未变化的文件；`recursive` 会向下遍历子目录。
     RescanPaths {
         paths: Vec<Utf8PathBuf>,
         respect_record: bool,
@@ -96,6 +98,9 @@ impl ScanInterface {
         self.try_send(ScanCommand::ForceScan, "force re-scan start command");
     }
 
+    /// record-blind 定向重扫（右键重扫 / watcher 封面批次）：强制重读元数据。
+    /// 纯大小写改名仍会搬迁合并（rescan_discover 保证），不会给同一文件插出
+    /// 新拼写行而留下双行。
     pub fn rescan_paths(&self, paths: Vec<Utf8PathBuf>) {
         if paths.is_empty() {
             return;

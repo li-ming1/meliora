@@ -24,7 +24,7 @@ use crate::library::scan::{
         canonicalize_or_keep, classify, delete_tracks, fold_excluded_roots, is_missing,
         is_under_excluded, missing_paths, schedule_directory_read,
     },
-    fs_case::{fold_key, fold_path, folded_starts_with},
+    fs_case::{fold_key, fold_path, folded_starts_with, same_file},
     record::ScanRecord,
 };
 
@@ -81,11 +81,15 @@ fn index_records_under(
     index
 }
 
-/// 在给定路径之下跑 discovery。跳过未变化的文件，把纯大小写改名发往 `relocate_tx`。
+/// 在给定路径之下跑 discovery：classify 与纯大小写改名搬迁和全量同款（合并语义）。
+/// `respect_record=false`（record-blind，右键重扫/watcher 封面批次）只保留一个差异
+/// ——时间戳未变也强制重读；若 record-blind 干脆跳过 classify，大小写改名会在库里
+/// 插出新拼写行而旧拼写行保留，同一文件变成双行。
 #[allow(clippy::too_many_arguments)]
 pub async fn rescan_discover(
     paths: Vec<Utf8PathBuf>,
-    scan_record: Option<Arc<Mutex<ScanRecord>>>,
+    scan_record: Arc<Mutex<ScanRecord>>,
+    respect_record: bool,
     recursive: bool,
     path_tx: Sender<DiscoveredPath>,
     relocate_tx: Sender<Relocation>,
@@ -107,10 +111,7 @@ pub async fn rescan_discover(
         }
     }
 
-    let mut state = match scan_record {
-        Some(scan_record) => Some(RescanState::new(scan_record, &targets).await),
-        None => None,
-    };
+    let mut state = RescanState::new(scan_record, &targets).await;
 
     let mut visited = FxHashSet::default();
     let mut discovered_total: u64 = 0;
@@ -181,7 +182,8 @@ pub async fn rescan_discover(
                 &entry.path,
                 entry.scan_timestamp,
                 directory_art.clone(),
-                state.as_mut(),
+                &mut state,
+                respect_record,
                 &path_tx,
                 &relocate_tx,
                 &cancel_flag,
@@ -210,7 +212,8 @@ pub async fn rescan_discover(
             &path,
             Some(timestamp),
             folder_candidate,
-            state.as_mut(),
+            &mut state,
+            respect_record,
             &path_tx,
             &relocate_tx,
             &cancel_flag,
@@ -227,38 +230,57 @@ pub async fn rescan_discover(
     discovered_total
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn emit_rescan_path(
     path: &Utf8Path,
     timestamp: Option<SystemTime>,
     folder_art: Option<FolderArtCandidate>,
-    state: Option<&mut RescanState>,
+    state: &mut RescanState,
+    respect_record: bool,
     path_tx: &Sender<DiscoveredPath>,
     relocate_tx: &Sender<Relocation>,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Option<SystemTime> {
     let timestamp = timestamp?;
 
-    let rescan_ts = if let Some(state) = state {
-        let action = {
-            let RescanState {
-                scan_record,
-                folded_index,
-            } = state;
-            let records = scan_record.lock().await;
-            classify(path, timestamp, &records.records, folded_index).0
-        };
+    let (action, stale) = {
+        let RescanState {
+            scan_record,
+            folded_index,
+        } = state;
+        let records = scan_record.lock().await;
+        classify(path, timestamp, &records.records, folded_index)
+    };
 
-        match action {
-            DiscoverAction::Skip => return None,
-            DiscoverAction::Scan(timestamp) => Some(timestamp),
-            DiscoverAction::Relocate { candidates, ts } => {
-                apply_relocation(path, ts, candidates, relocate_tx)
-                    .await
-                    .ok()?
-            }
+    // 与全量同款（full.rs）：丢掉指向同一个文件的其它已记录拼写。大小写不敏感
+    // 卷上不合并的话，重扫入库就是同文件双行。搬迁发送在记录锁外进行。
+    for (old, old_ts) in stale {
+        if same_file(&old, path)
+            && relocate_tx
+                .send((old, path.to_path_buf(), old_ts))
+                .await
+                .is_err()
+        {
+            return None;
         }
-    } else {
-        Some(timestamp)
+    }
+
+    let rescan_ts = match action {
+        // record-blind 的目的就是强制重读：Skip 只在尊重记录时生效
+        DiscoverAction::Skip => {
+            if respect_record {
+                return None;
+            }
+            Some(timestamp)
+        }
+        DiscoverAction::Scan(timestamp) => Some(timestamp),
+        DiscoverAction::Relocate { candidates, ts } => {
+            let relocated = apply_relocation(path, ts, candidates, relocate_tx)
+                .await
+                .ok()?;
+            // 时间戳相等的纯改名在尊重模式下只搬迁不重读；record-blind 仍要重读
+            if respect_record { relocated } else { Some(ts) }
+        }
     };
 
     let timestamp = rescan_ts?;
@@ -399,8 +421,12 @@ mod tests {
         let path = write_track(&dir, "track.flac");
         let dir_path = dir.utf8_path().canonicalize_utf8().unwrap();
 
-        let (count, mut path_rx, _relocate_rx) =
-            run_rescan(vec![path.clone(), dir_path], None, false);
+        let (count, mut path_rx, _relocate_rx) = run_rescan(
+            vec![path.clone(), dir_path],
+            shared_empty_record(),
+            false,
+            false,
+        );
         assert_eq!(count, 1);
         assert_eq!(path_rx.blocking_recv().unwrap().path, path);
         assert!(path_rx.blocking_recv().is_none());
@@ -416,7 +442,8 @@ mod tests {
         std::fs::write(nested.join("deep.flac"), b"").unwrap();
 
         let dir_path = dir.utf8_path().canonicalize_utf8().unwrap();
-        let (count, mut path_rx, _relocate_rx) = run_rescan(vec![dir_path], None, false);
+        let (count, mut path_rx, _relocate_rx) =
+            run_rescan(vec![dir_path], shared_empty_record(), false, false);
         assert_eq!(count, 1);
         assert_eq!(
             path_rx.blocking_recv().unwrap().path.file_name().unwrap(),
@@ -434,7 +461,8 @@ mod tests {
         std::fs::write(nested.join("deep.flac"), b"").unwrap();
 
         let dir_path = dir.utf8_path().canonicalize_utf8().unwrap();
-        let (count, path_rx, _relocate_rx) = run_rescan(vec![dir_path], None, true);
+        let (count, path_rx, _relocate_rx) =
+            run_rescan(vec![dir_path], shared_empty_record(), false, true);
         assert_eq!(count, 2);
 
         let mut names: Vec<String> = collect_paths(path_rx)
@@ -445,15 +473,21 @@ mod tests {
         assert_eq!(names, ["deep.flac", "top.flac"]);
     }
 
+    /// record-blind 的核心契约：记录时间戳与文件一致（尊重记录时会 Skip）时，
+    /// 强制重扫仍必须重读。
     #[test]
-    fn rescan_discover_ignores_scan_record_state() {
+    fn rescan_discover_forces_reread_when_record_blind() {
         register_test_media_providers();
         let dir = TestDir::new("rescan-test");
         let path = write_track(&dir, "track.flac");
+        let ts = file_scan_timestamp(&path).unwrap();
 
-        let (count, mut path_rx, _relocate_rx) = run_rescan(vec![path.clone()], None, false);
+        let record = shared_record_with(&path, ts);
+        let (count, mut path_rx, _relocate_rx) =
+            run_rescan(vec![path.clone()], record, false, false);
         assert_eq!(count, 1);
         assert_eq!(path_rx.blocking_recv().unwrap().path, path);
+        assert!(path_rx.blocking_recv().is_none());
     }
 
     #[test]
@@ -465,7 +499,7 @@ mod tests {
 
         let record = shared_record_with(&path, ts);
         let (count, mut path_rx, _relocate_rx) =
-            run_rescan(vec![path.clone()], Some(Arc::clone(&record)), true);
+            run_rescan(vec![path.clone()], Arc::clone(&record), true, true);
         assert_eq!(count, 0);
         assert!(path_rx.blocking_recv().is_none());
 
@@ -475,7 +509,7 @@ mod tests {
             .records
             .insert(path.clone(), ts - Duration::from_secs(1));
 
-        let (count, mut path_rx, _relocate_rx) = run_rescan(vec![path.clone()], Some(record), true);
+        let (count, mut path_rx, _relocate_rx) = run_rescan(vec![path.clone()], record, true, true);
         assert_eq!(count, 1);
         assert_eq!(path_rx.blocking_recv().unwrap().path, path);
     }
@@ -492,7 +526,7 @@ mod tests {
         let record = shared_record_with(&old, ts);
 
         let (count, mut path_rx, mut relocate_rx) =
-            run_rescan(vec![path.clone()], Some(record), true);
+            run_rescan(vec![path.clone()], record, true, true);
 
         if !is_case_insensitive(&dir.utf8_path()) {
             // 在大小写敏感的卷上它们是两个不同的文件——按新文件处理
@@ -508,6 +542,71 @@ mod tests {
         assert!(relocate_rx.blocking_recv().is_none());
     }
 
+    /// 大小写改名 + record-blind（右键重扫）：搬迁照发（合并旧拼写行），且仍强制
+    /// 重读。修复前 record-blind 完全不跑 classify——新拼写直接解码入库，旧拼写
+    /// 行保留，同一文件双行。
+    #[test]
+    fn rescan_discover_record_blind_relocates_case_only_renames() {
+        register_test_media_providers();
+        let dir = TestDir::new("rescan-test");
+        let path = write_track(&dir, "track.flac");
+        let ts = file_scan_timestamp(&path).unwrap();
+
+        // 记录在改名前的旧大小写之下——时间戳未变的纯大小写改名
+        let old = dir.utf8_join("TRACK.FLAC");
+        let record = shared_record_with(&old, ts);
+
+        let (count, mut path_rx, mut relocate_rx) =
+            run_rescan(vec![path.clone()], record, false, false);
+
+        if !is_case_insensitive(&dir.utf8_path()) {
+            // 大小写敏感的卷上它们是两个不同的文件——按新文件处理，无搬迁
+            assert_eq!(count, 1);
+            assert_eq!(path_rx.blocking_recv().unwrap().path, path);
+            assert!(relocate_rx.blocking_recv().is_none());
+            return;
+        }
+
+        // 与尊重记录模式（只搬迁不重读）相对：搬迁 + 强制重读
+        assert_eq!(count, 1);
+        assert_eq!(path_rx.blocking_recv().unwrap().path, path);
+        assert!(path_rx.blocking_recv().is_none());
+        assert_eq!(relocate_rx.blocking_recv(), Some((old, path, ts)));
+        assert!(relocate_rx.blocking_recv().is_none());
+    }
+
+    /// 记录里同一文件有两种拼写（历史双行）：发现其一时即使时间戳未变（尊重记录
+    /// 模式不重读），另一种拼写也必须搬迁合并——与全量同款语义。
+    #[test]
+    fn rescan_discover_merges_duplicate_record_spellings() {
+        register_test_media_providers();
+        let dir = TestDir::new("rescan-test");
+        let path = write_track(&dir, "track.flac");
+        let ts = file_scan_timestamp(&path).unwrap();
+
+        let dupe = dir.utf8_join("TRACK.FLAC");
+        let mut record = ScanRecord::new_current();
+        record.records.insert(path.clone(), ts);
+        record.records.insert(dupe.clone(), ts);
+        let record = Arc::new(Mutex::new(record));
+
+        let (count, mut path_rx, mut relocate_rx) =
+            run_rescan(vec![path.clone()], record, true, false);
+
+        if !is_case_insensitive(&dir.utf8_path()) {
+            // 大小写敏感的卷上没有折叠命中：时间戳相等即跳过，无搬迁
+            assert_eq!(count, 0);
+            assert!(path_rx.blocking_recv().is_none());
+            assert!(relocate_rx.blocking_recv().is_none());
+            return;
+        }
+
+        assert_eq!(count, 0);
+        assert!(path_rx.blocking_recv().is_none());
+        assert_eq!(relocate_rx.blocking_recv(), Some((dupe, path, ts)));
+        assert!(relocate_rx.blocking_recv().is_none());
+    }
+
     #[test]
     fn rescan_discover_relocates_modified_case_only_renames() {
         register_test_media_providers();
@@ -518,7 +617,7 @@ mod tests {
         let record = shared_record_with(&old, UNIX_EPOCH);
 
         let (count, mut path_rx, mut relocate_rx) =
-            run_rescan(vec![path.clone()], Some(record), true);
+            run_rescan(vec![path.clone()], record, true, true);
 
         if !is_case_insensitive(&dir.utf8_path()) {
             assert_eq!(count, 1);
