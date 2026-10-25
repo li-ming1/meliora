@@ -465,13 +465,24 @@ impl PlaylistView {
         cx.spawn(async move |this, cx| {
             let loaded = crate::RUNTIME
                 .spawn(async move {
-                    let playlist = db::get_playlist(&pool, playlist_id).await.ok();
+                    // 查询失败按原样降级为 None（视图保留旧数据），但不静默：照
+                    // sidebar 先例记 warn，使 Err 与 Ok(None) 在日志里可分辨。
+                    let playlist = db::get_playlist(&pool, playlist_id)
+                        .await
+                        .inspect_err(
+                            |err| tracing::warn!(error = %err, "playlist header query failed"),
+                        )
+                        .ok();
                     let tracks = db::list_playlist_tracks_sorted(&pool, playlist_id, sort_method)
                         .await
+                        .inspect_err(
+                            |err| tracing::warn!(error = %err, "playlist tracks query failed"),
+                        )
                         .ok();
                     (playlist, tracks)
                 })
                 .await
+                .inspect_err(|err| tracing::warn!(error = ?err, "playlist reload task failed"))
                 .unwrap_or((None, None));
 
             let _ = this.update(cx, |this, cx| {

@@ -270,10 +270,20 @@ impl ReleaseView {
         cx.spawn(async move |this, cx| {
             let loaded = crate::RUNTIME
                 .spawn(async move {
-                    let album = db::get_album_by_id(&pool, album_id).await.ok();
+                    // 查询失败按原样降级（保留占位头部/空列表/未全赞），但不静默：
+                    // 照 sidebar 先例记 warn，使 Err 与正常空结果在日志里可分辨。
+                    let album = db::get_album_by_id(&pool, album_id)
+                        .await
+                        .inspect_err(
+                            |err| tracing::warn!(error = %err, "album header query failed"),
+                        )
+                        .ok();
                     let tracks = db::list_tracks_in_album(&pool, album_id)
                         .await
-                        .unwrap_or_else(|_| Arc::new(Vec::new()));
+                        .unwrap_or_else(|err| {
+                            tracing::warn!(error = %err, "album tracks query failed");
+                            Arc::new(Vec::new())
+                        });
                     // 与 `compute_all_liked` 完全相同的已点赞专辑检查（含它的空列表
                     // 提前返回），但挪出 UI 线程：这些 id 只在曲目列表加载完后才存在，
                     // 所以检查就搭在这里跑。
@@ -283,11 +293,15 @@ impl ReleaseView {
                         let ids: Vec<i64> = tracks.iter().map(|track| track.id).collect();
                         db::playlist_contains_all_tracks(&pool, LIKED_SONGS_PLAYLIST_ID, &ids)
                             .await
-                            .unwrap_or(false)
+                            .unwrap_or_else(|err| {
+                                tracing::warn!(error = %err, "album liked check query failed");
+                                false
+                            })
                     };
                     (album, tracks, all_liked)
                 })
                 .await
+                .inspect_err(|err| tracing::warn!(error = ?err, "album reload task failed"))
                 .unwrap_or((None, Arc::new(Vec::new()), false));
 
             let _ = this.update(cx, |this, cx| {

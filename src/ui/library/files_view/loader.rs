@@ -113,17 +113,24 @@ async fn lookup_tracks(locs: &[String], pool: &sqlx::SqlitePool) -> FxHashMap<St
         for loc in chunk {
             query = query.bind(loc.as_str());
         }
-        if let Ok(rows) = query.fetch_all(pool).await {
-            for (location, id, album_id, liked) in rows {
-                track_map.insert(
-                    location,
-                    TrackRef {
-                        id,
-                        album_id,
-                        liked,
-                    },
-                );
+        // 分块查询失败按原样跳过该块（这些文件显示为未入库），但不静默：照
+        // sidebar 先例记 warn，使 Err 与「库里确实没有」在日志里可分辨。
+        let rows = match query.fetch_all(pool).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                tracing::warn!(error = %err, "track lookup query failed");
+                continue;
             }
+        };
+        for (location, id, album_id, liked) in rows {
+            track_map.insert(
+                location,
+                TrackRef {
+                    id,
+                    album_id,
+                    liked,
+                },
+            );
         }
     }
     track_map
