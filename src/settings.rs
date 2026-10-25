@@ -163,10 +163,13 @@ static SETTINGS_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// 同步补写。
 static SETTINGS_WRITTEN_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// 最近一次请求的快照登记（generation、内容、目标路径）：退出 flush 的
-/// 数据源。防抖任务正常落盘后摘除自己的登记。
+/// 最近一次请求的快照登记（generation、内容、目标路径、登记时的文件字节
+/// 基线）：退出 flush 的数据源。防抖任务正常落盘后摘除自己的登记。
 struct PendingSettingsSave {
     generation: u64,
+    /// 登记瞬间的 settings.json 字节快照：防抖醒来与退出 flush 写盘前
+    /// 比对，文件已被动过（手编/他进程）即弃写——丢弃语义见防抖任务。
+    baseline: Option<Vec<u8>>,
     snapshot: Arc<Settings>,
     path: PathBuf,
 }
@@ -194,6 +197,25 @@ fn write_settings_file(
         })
 }
 
+/// 写盘前校验：登记以来 settings.json 的字节没被动过。None（不存在/读
+/// 不了）与登记时一致同样算"未动过"。比对字节而不是看 watcher 是否装载
+/// 过：watcher 轮询最长 1s，还没轮到装载的手编同样必须拦下；而本进程自
+/// 己的写盘不会落在这个窗口里（更早 generation 的防抖任务醒来即退，
+/// flush 只在退出路径），窗口内字节变化只能来自外部。
+fn file_unchanged_since_registration(path: &Path, baseline: &Option<Vec<u8>>) -> bool {
+    &fs::read(path).ok() == baseline
+}
+
+/// 摘除指定 generation 的 pending 登记（可能已被更新的 generation 覆盖，
+/// 那笔归它自己的任务处理，只在相等时摘）。
+fn take_pending_registration(generation: u64) {
+    if let Ok(mut pending) = PENDING_SETTINGS_SAVE.lock()
+        && pending.as_ref().is_some_and(|p| p.generation == generation)
+    {
+        *pending = None;
+    }
+}
+
 /// 立即把 `settings` 推给播放线程与扫描器，再对磁盘写入做防抖（trailing edge，
 /// 见 [`SETTINGS_SAVE_DEBOUNCE`]）。
 pub fn save_settings(cx: &mut App, settings: &Settings) {
@@ -209,9 +231,16 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
     // 上面这些全局对象必须实时生效；只有磁盘写入会被合并为
     // 一次 trailing-edge 写入（与均衡器的保存同一套路）。
     let generation = SETTINGS_SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    // 登记瞬间的文件字节基线：防抖醒来时若文件已被手编动过则弃写（丢弃
+    // 语义见防抖任务内注释）。读的是 KB 级配置文件，且调用方已在 300ms
+    // UI 防抖之后——冷路径。
+    let baseline = fs::read(&path).ok();
     if let Ok(mut pending) = PENDING_SETTINGS_SAVE.lock() {
         *pending = Some(PendingSettingsSave {
             generation,
+            // 克隆一份给防抖任务自用：登记与异步校验两处都要这份基线
+            // （KB 级配置，冷路径）。
+            baseline: baseline.clone(),
             snapshot: snapshot.clone(),
             path: path.clone(),
         });
@@ -222,23 +251,29 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
             return;
         }
         let result = tokio::task::spawn_blocking(move || {
-            write_settings_file(&snapshot, &path, generation, "")
+            // 写盘前校验：登记以来文件被手编动过就弃写。丢弃语义：磁盘上
+            // 后写的文件是用户意图，内存为准（watcher 已把/会把装载刷进
+            // 内存），这笔旧快照落盘只会把手编覆盖掉、再被回声把内存回
+            // 滚，手编静默丢失。登记刻意保留：退出 flush 会带着同一校验
+            // 再试（文件恢复原样则照常补写，仍是手编则同样弃写）。
+            if !file_unchanged_since_registration(&path, &baseline) {
+                return Ok(false);
+            }
+            write_settings_file(&snapshot, &path, generation, "").map(|()| true)
         })
         .await;
-        let written = matches!(&result, Ok(Ok(())));
-        match &result {
-            Ok(Ok(())) => {
+        match result {
+            Ok(Ok(true)) => {
                 SETTINGS_WRITTEN_GENERATION.fetch_max(generation, Ordering::Relaxed);
+                // 已落盘的登记摘除（可能已被更新的 generation 覆盖，只在
+                // 相等时摘）。
+                take_pending_registration(generation);
+            }
+            Ok(Ok(false)) => {
+                info!("settings debounce drop: file changed externally during window");
             }
             Ok(Err(e)) => warn!("Failed to save settings file: {e:?}"),
             Err(e) => warn!("settings save task failed: {e}"),
-        }
-        // 已落盘的登记摘除（可能已被更新的 generation 覆盖，只在相等时摘）。
-        if written
-            && let Ok(mut pending) = PENDING_SETTINGS_SAVE.lock()
-            && pending.as_ref().is_some_and(|p| p.generation == generation)
-        {
-            *pending = None;
         }
     });
 }
@@ -247,7 +282,10 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
 /// 消 sleep 中的防抖任务），同步补写。挂在主窗口 on_release（先于进程退
 /// 出）与硬 cap 阀门的 exit(70) 前。flush 与防抖任务并发写同一内容时用
 /// 不同 tmp 名（flush 后缀），rename 各自原子、字节一致，不会互相截断。
+/// 同时是两处退出路径的收听统计收口：先把 stats 模块在途的异步 flush
+/// 排空再继续（见 stats::drain_inflight_flushes_for_exit）。
 pub fn flush_pending_settings() {
+    crate::stats::drain_inflight_flushes_for_exit();
     let Some(pending) = PENDING_SETTINGS_SAVE
         .lock()
         .ok()
@@ -256,6 +294,12 @@ pub fn flush_pending_settings() {
         return;
     };
     if SETTINGS_WRITTEN_GENERATION.load(Ordering::Relaxed) >= pending.generation {
+        return;
+    }
+    // 与防抖任务同一丢弃语义：登记以来文件被手编动过就不覆盖——磁盘上
+    // 后写的文件是用户意图，内存为准。
+    if !file_unchanged_since_registration(&pending.path, &pending.baseline) {
+        info!("settings exit flush drop: file changed externally during window");
         return;
     }
     let generation = pending.generation;
@@ -640,5 +684,64 @@ mod tests {
 
         assert_eq!(settings.playback.replaygain.preamp_db, -3.5);
         assert_eq!(settings.playback.replaygain.fallback_preamp_db, 2.0);
+    }
+
+    /// 串行化触碰写盘 statics 的测试（#[test] 并行跑会互踩）。
+    static SETTINGS_STATICS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 登记 pending 之后文件被手编动过（字节变化）：退出 flush 必须弃写，
+    /// 磁盘上后写的文件是用户意图，不得被登记时的旧快照覆盖。
+    /// 覆盖防抖任务与 flush 共用的同一校验（file_unchanged_since_registration）。
+    #[test]
+    fn flush_pending_settings_drops_when_file_changed_under_pending() {
+        let _guard = SETTINGS_STATICS_LOCK.lock().unwrap();
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        let old_bytes = b"{\"scanning\": {}}".to_vec();
+        fs::write(&path, &old_bytes).unwrap();
+
+        super::SETTINGS_SAVE_GENERATION.store(9, std::sync::atomic::Ordering::Relaxed);
+        super::SETTINGS_WRITTEN_GENERATION.store(0, std::sync::atomic::Ordering::Relaxed);
+        *super::PENDING_SETTINGS_SAVE.lock().unwrap() = Some(super::PendingSettingsSave {
+            generation: 9,
+            baseline: Some(old_bytes),
+            snapshot: std::sync::Arc::new(Settings::default()),
+            path: path.clone(),
+        });
+
+        // 登记后手编：文件字节变了（含"文件从无到有"的 None→Some 变体）
+        let hand_edited = "{\"playback\": {\"always_repeat\": true}}";
+        fs::write(&path, hand_edited).unwrap();
+        super::flush_pending_settings();
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("always_repeat"),
+            "手编内容不得被旧快照覆盖"
+        );
+    }
+
+    /// 文件自登记起未动过：退出 flush 照常补写 pending 快照。
+    #[test]
+    fn flush_pending_settings_writes_when_file_unchanged() {
+        let _guard = SETTINGS_STATICS_LOCK.lock().unwrap();
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+
+        super::SETTINGS_SAVE_GENERATION.store(10, std::sync::atomic::Ordering::Relaxed);
+        super::SETTINGS_WRITTEN_GENERATION.store(0, std::sync::atomic::Ordering::Relaxed);
+        *super::PENDING_SETTINGS_SAVE.lock().unwrap() = Some(super::PendingSettingsSave {
+            generation: 10,
+            // 登记时文件不存在（基线 None），到 flush 时仍不存在 = 未动过
+            baseline: None,
+            snapshot: std::sync::Arc::new(Settings::default()),
+            path: path.clone(),
+        });
+
+        super::flush_pending_settings();
+
+        assert!(path.exists(), "文件未动时退出 flush 必须补写");
+        let written = create_settings(&path).into_settings();
+        assert_eq!(written, Settings::default());
     }
 }
