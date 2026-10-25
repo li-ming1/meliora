@@ -111,6 +111,79 @@ fn push(
 mod tests {
     use super::*;
 
+    /// F053 同族测量门：下混（逐索引跨平面 gather）与峰值（逐平面扫描）的
+    /// 对照基准。跑法：
+    /// cargo test --release --features kugou spectrum_push_variants -- --ignored --nocapture
+    /// 裁决口径：两变体每回调块的耗时都远低于回调预算的万分之一即可维持现状
+    /// （这段只在 EQ 视图打开时活跃，viewers==0 时零成本早退）。
+    #[test]
+    #[ignore]
+    fn spectrum_push_variants_bench() {
+        const FRAMES: usize = 1152;
+        const ITER: usize = 20_000;
+        let left: Vec<f64> = (0..FRAMES).map(|i| (i as f64 * 0.001).sin()).collect();
+        let right: Vec<f64> = (0..FRAMES).map(|i| (i as f64 * 0.002).cos()).collect();
+        let planes_ref = [left, right];
+        let mut out = vec![0f32; FRAMES];
+
+        // 变体 A（现行形态）：逐索引 gather 求和 + 逐平面峰值，两趟
+        let mut a_peak = 0.0f32;
+        let t_a = std::time::Instant::now();
+        for _ in 0..ITER {
+            let scale = 1.0 / planes_ref.len() as f64;
+            for i in 0..FRAMES {
+                out[i] =
+                    (planes_ref[0][i] + planes_ref[1][i]) as f32 * scale as f32;
+            }
+            let mut peak = 0.0f32;
+            for plane in &planes_ref {
+                for &s in plane.iter() {
+                    peak = peak.max(s.abs() as f32);
+                }
+            }
+            a_peak = peak;
+        }
+        let d_a = t_a.elapsed();
+
+        // 变体 B（候选合并）：逐平面单趟累加 + 峰值，顺序访问；acc 复用
+        // （真实现也应线程外预置，循环内分配会淹没测量）
+        let mut b_peak = 0.0f32;
+        let mut acc = vec![0f64; FRAMES];
+        let t_b = std::time::Instant::now();
+        for _ in 0..ITER {
+            let scale = 1.0 / planes_ref.len() as f64;
+            acc.iter_mut().for_each(|a| *a = 0.0);
+            let mut peak = 0.0f32;
+            for plane in &planes_ref {
+                for (a, &s) in acc.iter_mut().zip(plane.iter()) {
+                    *a += s;
+                }
+                for &s in plane.iter() {
+                    peak = peak.max(s.abs() as f32);
+                }
+            }
+            for (o, a) in out.iter_mut().zip(acc.iter()) {
+                *o = (*a * scale) as f32;
+            }
+            b_peak = peak;
+        }
+        let d_b = t_b.elapsed();
+
+        let ns_a = d_a.as_nanos() as f64 / ITER as usize as f64;
+        let ns_b = d_b.as_nanos() as f64 / ITER as usize as f64;
+        let cb_per_sec = 44_100.0 / FRAMES as f64;
+        println!(
+            "spectrum push 变体（{FRAMES} 帧 × 2 平面 × {ITER} 次）：\n\
+             A 现行 gather+两趟峰值：{ns_a:.0} ns/块 → {:.1} µs/s 播放\n\
+             B 合并逐平面单趟：      {ns_b:.0} ns/块 → {:.1} µs/s 播放\n\
+             比值 B/A = {:.2}（peak 校验 {}）",
+            ns_a * cb_per_sec / 1000.0,
+            ns_b * cb_per_sec / 1000.0,
+            ns_b / ns_a,
+            (a_peak - b_peak).abs() < 1e-6,
+        );
+    }
+
     fn planes(frames: usize) -> Vec<Vec<f64>> {
         let left: Vec<f64> = (0..frames).map(|i| i as f64).collect();
         vec![left.clone(), left]
