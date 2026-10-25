@@ -1238,24 +1238,40 @@ impl Render for Queue {
                                 .unwrap_or(false);
 
                             if is_internal {
+                                // 回调内需再读一次投放目标来定补偿边界：handle_track_drop_multi
+                                // 在回调返回之后才 end_drag 清空它（drag_drop.rs:726→730）。
+                                let drop_manager = this.drag_drop_manager.clone();
                                 handle_track_drop_multi(
                                     this.drag_drop_manager.clone(),
                                     drag_data,
                                     cx,
-                                    |drag_data, to, cx| {
+                                    move |drag_data, to, cx| {
                                         if drag_data.additional_indices.is_empty() {
                                             let Some(source) = drag_data.source_index else {
                                                 return;
                                             };
                                             cx.global::<PlaybackInterface>().move_item(source, to);
                                         } else {
-                                            let corrected_to = to.saturating_sub(
-                                                drag_data
-                                                    .additional_indices
-                                                    .iter()
-                                                    .filter(|&&idx| idx < to)
-                                                    .count(),
-                                            );
+                                            // 坐标系换算与边界公式的 rationale 见
+                                            // corrected_multi_drop_target 契约；bound 是投放
+                                            // 间隙的原始坐标上界（Before 目标行 t → t，After → t+1）。
+                                            let corrected_to =
+                                                match drop_manager.read(cx).state.drop_target {
+                                                    Some((target_index, position)) => {
+                                                        let bound = match position {
+                                                            DropPosition::Before => target_index,
+                                                            DropPosition::After => target_index + 1,
+                                                        };
+                                                        corrected_multi_drop_target(
+                                                            to,
+                                                            &drag_data.additional_indices,
+                                                            bound,
+                                                        )
+                                                    }
+                                                    // 理论不可达：handle_track_drop_multi 仅在
+                                                    // drop_target 存在时才回调；保守按原值透传。
+                                                    None => to,
+                                                };
                                             let indices = drag_data.all_indices();
                                             cx.global::<PlaybackInterface>()
                                                 .move_items(indices, corrected_to);
@@ -1582,4 +1598,94 @@ enum FollowTarget {
     PendingLayout,
     NoScrollNeeded,
     Target(Pixels),
+}
+
+/// 多选拖放的落点补偿：把 `calculate_move_target` 输出的"仅移除 source_index 后"
+/// 坐标系插入位，换算成 `move_items` 契约（queue_manager.rs：移除全部选中行后的
+/// 插入位）的落点。
+///
+/// `bound` 是投放间隙在原始坐标里的上界（Before 目标行 t → t，After → t+1）：
+/// 间隙上方（原始坐标 `< bound`）的每个额外选中行被移除后，插入位都前移一格。
+/// 边界随分支变向——Before/s<t 时 to=t-1 恰是间隙上一行（须计入 a==to），
+/// After/s>t 时 to=t+1 是间隙下一行（必须排除 a==to），统一按 `to` 比较的
+/// `<to` / `<=to` 各只对一半分支成立：`<to` 漏掉选中块尾行紧贴投放间隙的
+/// 整块差一（M4 原始 bug），`<=to` 则在向上拖经块首时反向差一。故必须以
+/// drop_target 的原始坐标为界。
+fn corrected_multi_drop_target(to: usize, additional: &[usize], bound: usize) -> usize {
+    to.saturating_sub(additional.iter().filter(|&&idx| idx < bound).count())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::corrected_multi_drop_target;
+    use crate::ui::components::drag_drop::{DropPosition, calculate_move_target};
+
+    /// 模拟 queue_manager::move_items 的"先移除全部选中、再从 to 起连续插回"语义
+    /// （queue_manager.rs:1119 契约；含超出尾端的钳位）。
+    fn apply_multi_move(len: usize, selected: &[usize], to: usize) -> Vec<usize> {
+        let queue: Vec<usize> = (0..len).collect();
+        let mut kept: Vec<usize> = Vec::with_capacity(queue.len());
+        let mut moved: Vec<usize> = Vec::new();
+        for (idx, item) in queue.iter().enumerate() {
+            if selected.contains(&idx) {
+                moved.push(*item);
+            } else {
+                kept.push(*item);
+            }
+        }
+        let insert_at = to.min(kept.len());
+        kept.splice(insert_at..insert_at, moved);
+        kept
+    }
+
+    /// 端到端复现投放回调的完整链路（calculate_move_target → 落点补偿 →
+    /// move_items 语义）：五元素队列把选中块 {1,2} 拖回原位时整队恒等。
+    /// 旧 blanket `idx < to` 在 Before 尾贴间隙 / After 目标行选中两处差一，
+    /// 反向拟改 `idx <= to` 则在向上拖的两处差一——四个场景合钉全部边界。
+    fn assert_drag_block_returns_identity(
+        source: usize,
+        additional: &[usize],
+        target: usize,
+        position: DropPosition,
+    ) {
+        let to = calculate_move_target(source, target, position);
+        let bound = match position {
+            DropPosition::Before => target,
+            DropPosition::After => target + 1,
+        };
+        let corrected = corrected_multi_drop_target(to, additional, bound);
+        let mut selected = additional.to_vec();
+        selected.push(source);
+        selected.sort_unstable();
+        assert_eq!(
+            apply_multi_move(5, &selected, corrected),
+            vec![0, 1, 2, 3, 4],
+            "source={source} additional={additional:?} target={target} \
+             {position:?} to={to} bound={bound} corrected={corrected}",
+        );
+    }
+
+    /// M4 原例：Before、向下拖、选中块尾行（2）紧贴投放间隙。
+    #[test]
+    fn multi_drop_before_tail_flush_with_gap() {
+        assert_drag_block_returns_identity(1, &[2], 3, DropPosition::Before);
+    }
+
+    /// After、向上拖、选中块首行（1）紧贴间隙下方——排除 `<=to` 拟改法。
+    #[test]
+    fn multi_drop_after_head_flush_with_gap() {
+        assert_drag_block_returns_identity(2, &[1], 0, DropPosition::After);
+    }
+
+    /// After、向下拖、目标行本身 ∈ 选中集（t=2 ∈ S）——旧逻辑的隐藏镜像 bug。
+    #[test]
+    fn multi_drop_after_target_inside_selection() {
+        assert_drag_block_returns_identity(1, &[2], 2, DropPosition::After);
+    }
+
+    /// Before、向上拖、目标行本身 ∈ 选中集（t=1 ∈ S）。
+    #[test]
+    fn multi_drop_before_target_inside_selection() {
+        assert_drag_block_returns_identity(2, &[1], 1, DropPosition::Before);
+    }
 }
