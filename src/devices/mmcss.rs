@@ -21,8 +21,9 @@ const PRO_AUDIO: PCWSTR = windows::core::w!("Pro Audio");
 const PLAYBACK: PCWSTR = windows::core::w!("Playback");
 
 thread_local! {
-    /// 实时回调路径的每线程一次性登记标记：登记后置位，后续调用只剩
-    /// 一次 thread_local 读。
+    /// 实时回调路径的每线程尝试标记：首次尝试后置位（无论成败——缓存的
+    /// 是『已尝试』而非『已成功』，失败重试只会在每帧回调里重付系统调用），
+    /// 后续调用只剩一次 thread_local 读。
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -39,13 +40,14 @@ fn register(task: PCWSTR) -> bool {
     }
 }
 
-/// 实时音频回调内调用：本线程首次执行时登记一次，后续调用零系统调用。
-/// cpal 的回调线程由 cpal 自行创建，无法在创建侧登记，只能在回调首帧
-/// 补登记。
+/// 实时音频回调内调用：本线程至多尝试登记一次（无论成败都置位，失败
+/// 静默退回默认调度且不重试），后续调用零系统调用。cpal 的回调线程由
+/// cpal 自行创建，无法在创建侧登记，只能在回调首帧补登记。
 pub fn register_audio_thread_once() {
     REGISTERED.with(|registered| {
         if !registered.get() {
-            registered.set(register(PRO_AUDIO));
+            register(PRO_AUDIO);
+            registered.set(true);
         }
     });
 }

@@ -104,6 +104,11 @@ impl ImageCache for MelioraImageCache {
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) -> Option<Result<std::sync::Arc<gpui::RenderImage>, gpui::ImageCacheError>> {
+        // max_items==0：零容量装不下任何条目，继续走会在空 usage_list 的逐出分支 pop_back().unwrap() 恐慌；早退不加载。
+        if self.max_items == 0 {
+            return None;
+        }
+
         let hash = hash(resource);
 
         if let Some(item) = self.cache.get_mut(&hash) {
