@@ -1,4 +1,9 @@
+use std::sync::Arc;
+
+use xxhash_rust::xxh3::xxh3_64;
+
 use super::*;
+use crate::library::scan::decode::{ProcessedArt, RawArt, process_owned_album_art};
 use crate::test_support::{
     TestDir, add_track_to_playlist, count_rows, create_test_pool, insert_metadata, track_metadata,
 };
@@ -752,6 +757,200 @@ async fn update_metadata_writes_album_less_track() {
         .await
         .unwrap();
     assert_eq!(name, "Artist");
+}
+
+/// 合法的小 PNG；颜色不同则字节与哈希都不同。
+fn solid_png(r: u8, g: u8, b: u8) -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(16, 16, image::Rgb([r, g, b]));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .unwrap();
+    buf.into_inner()
+}
+
+/// 造一枚已成功处理的封面候选：processed 必须就绪——get_or_create_artwork 只有
+/// 拿到数据才会为未见过的哈希建 artwork 行（repository.rs `let data = data?`）。
+fn staged_art(bytes: Vec<u8>, source: ArtSource) -> ScannedArt {
+    let hash = xxh3_64(&bytes);
+    let (image, thumb) = process_owned_album_art(RawArt::Owned(bytes.into_boxed_slice())).unwrap();
+    ScannedArt {
+        raw: None,
+        processed: Some(Arc::new(ProcessedArt { image, thumb })),
+        hash,
+        source,
+    }
+}
+
+fn folder_only_art(bytes: Vec<u8>) -> FileArt {
+    FileArt {
+        folder: Some(staged_art(bytes, ArtSource::Folder(1))),
+        ..FileArt::default()
+    }
+}
+
+fn embedded_only_art(bytes: Vec<u8>) -> FileArt {
+    FileArt {
+        embedded: Some(staged_art(bytes, ArtSource::Embedded)),
+        ..FileArt::default()
+    }
+}
+
+/// 观察到文件夹封面却暂存不出 artwork 行（解码失败的坏 cover.jpg）：
+/// folder 在场但无 processed，stage 后得到 None。
+fn unstaged_folder_art() -> FileArt {
+    FileArt {
+        folder: Some(ScannedArt {
+            raw: None,
+            processed: None,
+            hash: 0xDEAD_BEEF,
+            source: ArtSource::Folder(1),
+        }),
+        representative: true,
+        ..FileArt::default()
+    }
+}
+
+async fn track_artwork_id(pool: &SqlitePool, location: &str) -> Option<i64> {
+    let (artwork_id,): (Option<i64>,) =
+        sqlx::query_as("SELECT artwork_id FROM track WHERE location = $1")
+            .bind(location)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    artwork_id
+}
+
+/// 无专辑曲目删掉 cover.jpg 后重扫：曲目封面链接必须就地清掉。无专辑曲目不在
+/// finalize 的按专辑收尾范围内（touched 只收专辑 id），update_metadata 是唯一
+/// 写点；对照曲目证明清的是本行而非全体无专辑曲目。
+#[tokio::test]
+async fn update_metadata_clears_album_less_track_art_when_cover_disappears() {
+    let (dir, pool) = create_test_pool("db-noalbum-art-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let mut meta = track_metadata("Album", "Artist", "Track", 1);
+    meta.album = None; // track_current = 1 → 代表曲目
+
+    let gone = dir.utf8_join("gone.flac");
+    let kept = dir.utf8_join("kept.flac");
+    let mut caches = WriteCaches::default();
+
+    // 第一轮：两首无专辑曲目各自持有不同的文件夹封面
+    update_metadata(
+        &mut conn,
+        &meta,
+        &gone,
+        100,
+        &folder_only_art(solid_png(255, 0, 0)),
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+    update_metadata(
+        &mut conn,
+        &meta,
+        &kept,
+        100,
+        &folder_only_art(solid_png(0, 255, 0)),
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+    assert!(track_artwork_id(&pool, gone.as_str()).await.is_some());
+    assert!(track_artwork_id(&pool, kept.as_str()).await.is_some());
+
+    // gone 的 cover.jpg 被删除后重扫：代表曲目查过文件夹且内嵌/文件夹皆无
+    update_metadata(
+        &mut conn,
+        &meta,
+        &gone,
+        100,
+        &FileArt {
+            representative: true,
+            ..FileArt::default()
+        },
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(track_artwork_id(&pool, gone.as_str()).await, None);
+    assert!(track_artwork_id(&pool, kept.as_str()).await.is_some());
+}
+
+/// 封面状态未被证明消失时不得清：非代表曲目没查过文件夹（folder 为 None 只是
+/// "没查"），坏 cover.jpg 观察到了却暂存不出行——两者都保留现状，与 finalize
+/// 对专辑"候选哈希无行则保留现有封面"的约定同源。
+#[tokio::test]
+async fn update_metadata_keeps_album_less_art_when_cover_state_unproven() {
+    let (dir, pool) = create_test_pool("db-noalbum-keep-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let mut meta = track_metadata("Album", "Artist", "Track", 1);
+    meta.album = None;
+
+    let unexamined = dir.utf8_join("unexamined.flac");
+    let corrupt = dir.utf8_join("corrupt.flac");
+    let mut caches = WriteCaches::default();
+
+    // unexamined 的封面来自内嵌（生产中非代表曲目只可能这样拿到封面）
+    update_metadata(
+        &mut conn,
+        &meta,
+        &unexamined,
+        100,
+        &embedded_only_art(solid_png(10, 20, 30)),
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+    // corrupt 的封面来自文件夹
+    update_metadata(
+        &mut conn,
+        &meta,
+        &corrupt,
+        100,
+        &folder_only_art(solid_png(40, 50, 60)),
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+    assert!(track_artwork_id(&pool, unexamined.as_str()).await.is_some());
+    assert!(track_artwork_id(&pool, corrupt.as_str()).await.is_some());
+
+    // 非代表曲目重扫（FileArt::default 的 representative=false）：文件夹未被检查
+    update_metadata(
+        &mut conn,
+        &meta,
+        &unexamined,
+        100,
+        &FileArt::default(),
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+    // 代表曲目重扫，cover.jpg 在场但解码失败
+    update_metadata(
+        &mut conn,
+        &meta,
+        &corrupt,
+        100,
+        &unstaged_folder_art(),
+        false,
+        &mut caches,
+    )
+    .await
+    .unwrap();
+
+    assert!(track_artwork_id(&pool, unexamined.as_str()).await.is_some());
+    assert!(track_artwork_id(&pool, corrupt.as_str()).await.is_some());
 }
 
 #[tokio::test]

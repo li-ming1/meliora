@@ -158,6 +158,12 @@ pub async fn update_metadata(
         }
     }
 
+    // 代表曲目这次扫描确实查过文件夹封面；folder 仍为 None 才构成"文件夹封面已
+    // 消失"的证据。非代表曲目（曲目号 ≥2）不查文件夹，None 不说明任何事；读取
+    // 失败与"无封面文件"同样落在 None——专辑侧 examine 读不出封面时也会照常收尾
+    // 清空（artwork.rs examine_folder_art），两侧语义一致。
+    let checked_folder_without_art = art.representative && art.folder.is_none();
+
     // 专辑内曲目用内嵌封面，没有专辑的曲目在可用时用文件夹封面
     let track_art = match album_id {
         Some(_) => embedded_id,
@@ -169,6 +175,19 @@ pub async fn update_metadata(
             .bind(track_id)
             .execute(&mut *conn)
             .await?;
+    } else if album_id.is_none() && art.embedded.is_none() && checked_folder_without_art {
+        // 无专辑曲目不在 finalize 的收尾范围内（touched/examined 只收专辑 id，
+        // clear_track_art.sql 也按 album_id 匹配），update_metadata 是其曲目封面的
+        // 唯一写点：这里不清，删掉 cover.jpg 后重扫就会让 artwork_id 永久指向已
+        // 删除的封面行。只在内嵌与文件夹封面都被证明不存在时才清——观察到封面却
+        // 暂存失败（解码失败的坏 cover.jpg）时保留现状，与 finalize 对专辑"候选
+        // 哈希无行则保留现有封面"的约定同源。
+        sqlx::query(include_str!(
+            "../../../queries/scan/clear_track_art_by_id.sql"
+        ))
+        .bind(track_id)
+        .execute(&mut *conn)
+        .await?;
     }
 
     // 专辑还没有封面时的临时挑选（有文件夹封面就用它，否则用内嵌）
