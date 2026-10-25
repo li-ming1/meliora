@@ -78,6 +78,11 @@ fn capture_samples<T: Copy + Into<f64>>(staging: &[Vec<T>], read: usize) {
 /// - `HB_DUMMY_DRAIN_FRAMES`：每次 `consume_from` 调用有界环排空的帧数。默认 1024。
 /// - `HB_DUMMY_DIE_AFTER_FRAMES`：消费到这么多帧后让流故障一次（见
 ///   [`arm_device_death`]）。无默认值：未设置即流永不死。
+/// - `HB_DUMMY_PERSISTENT_FAULT`：硬故障模拟——流打开时已设置即无界流的每个
+///   `consume_from` 都返回设备错误（与 `HB_DUMMY_DIE_AFTER_FRAMES` 同在
+///   `open_device` 读取一次）。与 `HB_DUMMY_DIE_AFTER_FRAMES` 的一次性
+///   闩锁不同，重建出的新流同样立即失败，用于把引擎逼进设备重建退避窗。
+///   无默认值：未设置即不生效。
 pub struct DummyDeviceProvider {}
 
 impl DummyDeviceProvider {
@@ -151,6 +156,13 @@ impl DummyDevice {
     pub fn get_die_after_frames() -> Option<usize> {
         env_parsed("HB_DUMMY_DIE_AFTER_FRAMES")
     }
+
+    /// 硬故障模拟 knob 是否生效（`HB_DUMMY_PERSISTENT_FAULT` 已设置即生效，
+    /// 不解析值）。仅在 `open_device` 调用：`consume_from` 每周期查询 env 会
+    /// 分配，破坏播放线程稳态零分配契约（alloc_guard 测试的守护对象）。
+    pub fn persistent_fault() -> bool {
+        env::var("HB_DUMMY_PERSISTENT_FAULT").is_ok()
+    }
 }
 
 impl Device for DummyDevice {
@@ -161,6 +173,7 @@ impl Device for DummyDevice {
         }
         let device = DummyStream {
             die_after: DummyDevice::get_die_after_frames(),
+            persistent_fault: DummyDevice::persistent_fault(),
             consumed: 0,
         };
         Ok(Box::new(device) as Box<dyn OutputStream>)
@@ -184,6 +197,9 @@ impl Device for DummyDevice {
 pub struct DummyStream {
     /// 若设置，消费到这么多帧后故障一次（见 [`arm_device_death`]）。
     die_after: Option<usize>,
+    /// 硬故障模拟闩锁：`HB_DUMMY_PERSISTENT_FAULT` 在流打开时已设置即 true
+    /// （`open_device` 读一次；`consume_from` 查 env 会每周期分配）。
+    persistent_fault: bool,
     consumed: usize,
 }
 
@@ -226,6 +242,12 @@ impl OutputStream for DummyStream {
     }
 
     fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError> {
+        // 硬故障模拟：持续失败（区别于下方 DIE_AFTER 的一次性死亡），重建出的
+        // 新流同样立即失败，用于把引擎逼进设备重建退避窗。
+        if self.persistent_fault {
+            return Err(SubmissionError::DeviceError);
+        }
+
         // 在读取之前先故障，这样不丢任何帧
         if self.should_die() {
             return Err(SubmissionError::DeviceError);

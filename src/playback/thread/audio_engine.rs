@@ -72,6 +72,10 @@ pub enum EngineCycleResult {
     FatalError(String),
     /// 无事可做——不在播放态，或没有可用的流。
     NothingToDo,
+    /// 设备处于重建退避窗（[`DEVICE_RECREATE_BACKOFF_INITIAL`] 起步的阶梯）：
+    /// 本轮无产出不是曲料的错。调用方不得计入无进展跳曲——否则退避上界
+    /// （15 s）内 50 周期早已跳光队列。
+    DeviceBackoff,
 }
 
 #[derive(Debug)]
@@ -473,20 +477,36 @@ impl AudioEngine {
         self.mixer = None;
 
         // 无缝衔接快路径：下一曲已在后台预打开（连接 + 探测 + 启动都已在线下完成）。
+        // attach_prepared 实际不可失败（MediaController 内部恒 Ok），`?` 只是签名使然。
         let duration_ms = match self.prepared.take() {
             Some(prepared) if prepared.path == path => self.media.attach_prepared(prepared)?,
             Some(stale) => {
                 // 只有队列变更能改写目标；它的 QueueUpdated 已经丢弃了预备的流，
                 // 所以这里出现陈旧且不匹配的流很罕见——直接丢掉即可。
                 drop(stale);
-                self.media.open(path, refresh.clone())?
+                match self.media.open(path, refresh.clone()) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.fail_open();
+                        return Err(e);
+                    }
+                }
             }
-            None => self.media.open(path, refresh.clone())?,
+            // media.open 内部已 close 旧流；fail_open 的 close 幂等。
+            None => match self.media.open(path, refresh.clone()) {
+                Ok(d) => d,
+                Err(e) => {
+                    self.fail_open();
+                    return Err(e);
+                }
+            },
         };
 
         if recreation_required {
             if let Err(e) = self.device.create_stream(None) {
                 error!("Failed to recreate stream: {:?}", e);
+                // media 已挂上新曲：必须关掉再走，保住「open 失败 ⇒ 无媒体」。
+                self.fail_open();
                 return Err(PlaybackStartError::StreamError(format!(
                     "Failed to recreate stream: {:?}",
                     e
@@ -496,7 +516,7 @@ impl AudioEngine {
 
             if let Err(e) = self.device.play() {
                 error!("Device was recreated and we still can't play: {:?}", e);
-                self.stop();
+                self.fail_open();
                 return Err(PlaybackStartError::StreamError(format!(
                     "Device was recreated but playback could not start: {e:?}"
                 )));
@@ -507,7 +527,7 @@ impl AudioEngine {
 
         if let Some(device_format) = self.device.current_format().cloned() {
             if let Err(e) = self.setup_pipeline(&device_format, PipelineOverrides::default()) {
-                self.stop();
+                self.fail_open();
                 return Err(PlaybackStartError::MediaError(format!(
                     "Failed to set up audio pipeline: {e}"
                 )));
@@ -521,24 +541,24 @@ impl AudioEngine {
                     Ok(DecodeStepResult::Rebuild(overrides)) => {
                         attempts += 1;
                         if attempts > MAX_REBUILD_ATTEMPTS {
-                            self.stop();
+                            self.fail_open();
                             return Err(PlaybackStartError::MediaError(
                                 "audio format kept changing while priming the pipeline".to_string(),
                             ));
                         }
                         if let Err(e) = self.rebuild_pipeline(overrides) {
-                            self.stop();
+                            self.fail_open();
                             return Err(PlaybackStartError::MediaError(format!(
                                 "Failed to rebuild audio pipeline: {e}"
                             )));
                         }
                     }
                     Ok(DecodeStepResult::FatalError(msg)) => {
-                        self.stop();
+                        self.fail_open();
                         return Err(PlaybackStartError::MediaError(msg));
                     }
                     Err(e) => {
-                        self.stop();
+                        self.fail_open();
                         return Err(PlaybackStartError::MediaError(e.to_string()));
                     }
                 }
@@ -625,6 +645,17 @@ impl AudioEngine {
         self.device.has_deferred_work()
     }
 
+    /// 引擎此刻是否处于设备重建退避窗内。播放线程在 play_audio 返回 false 后
+    /// 询问（bool 契约被 main_loop 与未来调用方共用，不改签名）。已知一周期级
+    /// 误差：窗口刚过期但本轮已返回 DeviceBackoff 时此处为 false → 该周期落入
+    /// 计数分支、多计 1 次（50 预算内，良性）。另一有界误分类：媒体缺失 + 设备
+    /// 残留未过期窗口 → 被判为退避、跳曲延迟至多该窗口（≤15 s）——设备刚故障过，
+    /// 此延迟合理。
+    pub fn in_device_backoff(&self) -> bool {
+        self.device_recreate_defer
+            .is_some_and(|(next, _)| std::time::Instant::now() < next)
+    }
+
     /// 停止播放并清空全部状态。
     pub fn stop(&mut self) {
         // 把重采样器的尾巴冲刷到设备，避免最后一曲被截断
@@ -637,6 +668,19 @@ impl AudioEngine {
         self.state = EngineState::Idle;
     }
 
+    /// open 失败的统一落地：关媒体、清管线，但保持 Playing——播放线程的无进展
+    /// 机制因此能观测（process_cycle 对无媒体流返回 NothingToDo → 50 周期跳曲），
+    /// 队列继续前进。落 Idle 会让线程 idle_wait 挂起、UI 永久停留在旧曲播放态。
+    /// 全队打不开 + RepeatAll 会以 ~2.3 s/曲轮转（与既有 media.open 失败路径
+    /// 同构，不新增失败形态）；无循环时 EndOfQueue → stop() → Stopped，UI 收敛。
+    /// 保证「open 失败 ⇒ 无媒体」不变量：media 已挂上新曲的失败出口必须关掉，
+    /// 否则设备恢复后播的是新曲音频、而线程未发 SongChanged——音画错位比静默更糟。
+    fn fail_open(&mut self) {
+        self.media.close();
+        self.clear_pipeline();
+        self.state = EngineState::Playing;
+    }
+
     /// 跳转到指定时间（单位：秒）。
     pub fn seek(&mut self, time: f64) -> Result<(), SeekError> {
         let result = self.media.seek(time);
@@ -645,8 +689,14 @@ impl AudioEngine {
             self.drain = DrainState::Inactive;
             self.rebuild_attempts = 0;
 
-            if self.state == EngineState::Playing {
-                self.flush_for_seek();
+            match self.state {
+                EngineState::Playing => self.flush_for_seek(),
+                // 暂停中跳转：管线里缓冲的是跳转前的帧，恢复播放后会先于跳转目标
+                // 播出（错位音频），注定要丢——就地冲刷。设备队列不必动：play()
+                // 恢复分支本就 reset/重建设备，届时自清。普通暂停（未 seek）不走
+                // 此臂，合法缓冲音频保留，无缝续播语义不变。
+                EngineState::Paused => self.flush_pipeline_stages(),
+                EngineState::Idle => {}
             }
         }
         result
@@ -663,6 +713,11 @@ impl AudioEngine {
             }
         }
 
+        self.flush_pipeline_stages();
+    }
+
+    /// 冲刷管线各级缓冲（重采样器/混音器/均衡器/管线两条环形缓冲），不动设备。
+    fn flush_pipeline_stages(&mut self) {
         if let Some(resampler) = &mut self.resampler {
             resampler.reset();
         }
@@ -793,7 +848,9 @@ impl AudioEngine {
             // 初始化失败或一次重建失败后没有流：不重试就会永久静音，每首空转到
             // 跳过。退避复用 WriteTimeout 的阶梯，设备长期不可用时不至于每周期重试。
             self.retry_missing_stream();
-            return EngineCycleResult::NothingToDo;
+            // retry_missing_stream 刚立起（或仍持着）退避窗：无产出是设备的错，
+            // 不是曲料的错，不得计入无进展跳曲。
+            return EngineCycleResult::DeviceBackoff;
         }
 
         if !self.media.has_stream() {
@@ -945,8 +1002,9 @@ impl AudioEngine {
             {
                 // 推迟窗口之内：这一轮故障已经记过日志、重建也已推迟——再把同一个
                 // WriteTimeout 记一遍，就会按 consume 超时的节奏重复（~4 Hz，
-                // 设备 outage 期间有时持续几分钟，性能准则 §29）。
-                return EngineCycleResult::NothingToDo;
+                // 设备 outage 期间有时持续几分钟，性能准则 §29）。窗口内的静默
+                // 无产出是设备的错，不是曲料的错。
+                return EngineCycleResult::DeviceBackoff;
             }
             warn!(parent: &s, ?err, "Failed to consume from pipeline: {err}");
 
@@ -962,7 +1020,8 @@ impl AudioEngine {
 
             if let Err(e) = self.recreate_stream() {
                 error!(parent: &s, "Failed to recreate stream: {:?}", e);
-                return EngineCycleResult::NothingToDo;
+                // 上面刚立起新的退避窗：重建失败的无产出同样不计入无进展跳曲。
+                return EngineCycleResult::DeviceBackoff;
             }
 
             let Some(pipeline) = &mut self.pipeline else {

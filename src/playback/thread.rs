@@ -33,7 +33,7 @@ use super::{
     queue::QueueItemData,
 };
 
-use audio_engine::{AudioEngine, EngineCycleResult, EngineState, OnlineRefresh};
+use audio_engine::{AudioEngine, EngineCycleResult, EngineState, OnlineRefresh, PrepareReport};
 use queue_manager::{
     DequeueManyResult, DequeueResult, InsertResult, JumpResult, MoveResult, QueueManager,
     QueueNavigationResult, ReplaceResult, Reshuffled, ShuffleResult, UndoResult,
@@ -45,6 +45,10 @@ const BACKGROUND_POSITION_BROADCAST_INTERVAL_MS: u64 = 250;
 
 /// 播放中连续多少个无进展周期之后跳过当前曲目。
 const MAX_NO_PROGRESS_CYCLES: u32 = 50;
+
+/// 设备重建退避窗内的轮询间隔：窗口 2-15 s，100 ms 轮询 = 每窗 20-150 次
+/// 重试探询，设备恢复后额外延迟 ≤100 ms（音频已死秒级，无感）。
+const DEVICE_BACKOFF_POLL_INTERVAL_MS: u64 = 100;
 
 /// 播放循环内在线 URL 刷新的上限：提供者客户端没有逐请求超时，而这个重试在播放
 /// 线程上同步执行，所以无响应的 API 绝不能拖住音频循环。
@@ -223,21 +227,28 @@ impl PlaybackThread {
         // 先把设备的延后工作收尾（例如异步暂停淡出），但不因此阻塞命令收取。
         self.engine.poll();
 
-        // 收集已完成的无缝切歌预备（若有）。预备成功但落地路径与所请求的不同，
-        // 说明预备线程把过期的在线 URL 救了回来：把新 URL 写回当初请求预备的那个
-        // 队列条目，这样 EOF 前进时打开的是就绪的流而不是过期 URL。
-        // 若解析出的下一条目已与请求不符，`replace_next_path` 会静默丢弃这次写入。
+        // 收集已完成的无缝切歌预备（若有）：先回写刷新救回的路径，再校验预备
+        // 落地时 next 是否仍指向它——预备在途期间 next 可能被导航/循环模式改写
+        // （后者不发任何钩子事件），陈旧预备落地即弃（L-prepared 爪2）。
         if let Some(report) = self.engine.poll_prepared()
             && report.succeeded
-            && report.path != report.requested
         {
-            self.queue.replace_next_path(&report.requested, report.path);
+            self.handle_prepared_report(report);
         }
 
         if self.engine.state() == EngineState::Playing {
             if self.play_audio() {
                 self.no_progress_cycles = 0;
                 self.maybe_prepare_next();
+            } else if self.engine.in_device_backoff() {
+                // 设备重建退避窗内的无产出不是曲料的错：清零计数（抖动型故障
+                // 不得向 50 周期跳曲累积——干净 consume 本就经上面的分支清零，
+                // 二者一致），按退避节奏轮询而不是 2 ms 空转。真无料（媒体缺失/
+                // 死流/EOF）不走此分支，跳曲语义不变。
+                self.no_progress_cycles = 0;
+                sleep(std::time::Duration::from_millis(
+                    DEVICE_BACKOFF_POLL_INTERVAL_MS,
+                ));
             } else {
                 self.no_progress_cycles = self.no_progress_cycles.saturating_add(1);
                 if self.no_progress_cycles >= MAX_NO_PROGRESS_CYCLES {
@@ -396,8 +407,12 @@ impl PlaybackThread {
         if current_state == PlaybackState::Stopped
             && let Some((path, index)) = self.queue.first_playable_path()
         {
-            self.open_or_log(&path);
+            // 光标先于 open 归位（F2）：open 期间的流刷新钩子（identity/display/
+            // URL 回写）经 queue.current_* 解析，须指向被打开的条目而不是旧光标
+            // ——次序与 jump/next 一致。
             self.queue.set_position(index);
+            self.drop_stale_prepared_after_navigation();
+            self.open_or_log(&path);
             self.send_event(PlaybackEvent::QueuePositionChanged(index));
         }
     }
@@ -588,6 +603,9 @@ impl PlaybackThread {
         self.last_album_gain = None;
         self.last_track_peak = None;
         self.last_album_peak = None;
+        // 同步清掉旧曲时长：失败早退时若残留，maybe_prepare_next 会按旧曲的
+        // 时间窗做无谓预备。成功路径在下方照旧赋新值。
+        self.duration_ms = None;
 
         let (duration, open_path) = {
             // 为已打开的流装上流中 URL 刷新（过期的签名 URL 会在 fill 线程上自愈）；
@@ -785,8 +803,11 @@ impl PlaybackThread {
         // 就会撞上 EndOfQueue 而不是继续播。
         if self.state() == PlaybackState::Stopped {
             if let Some((path, index)) = self.queue.last_playable_path() {
-                self.open_or_log(&path);
+                // 光标先于 open 归位（F2）：流刷新钩子按 queue.current_* 解析，
+                // 须指向被打开的条目（与 jump 次序一致）。
                 self.queue.set_position(index);
+                self.drop_stale_prepared_after_navigation();
+                self.open_or_log(&path);
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
             return;
@@ -799,6 +820,10 @@ impl PlaybackThread {
                 reshuffled: _,
             } => {
                 info!("Opening previous file in queue at index {}", index);
+                // queue.previous 已把光标移到新条目：open 之前丢弃为旧"下一曲"
+                // 预备/在途的预备（L-prepared 爪1）。Unchanged 臂光标未动、
+                // next 未变，不加。
+                self.drop_stale_prepared_after_navigation();
                 self.open_or_log(&path);
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
@@ -819,8 +844,12 @@ impl PlaybackThread {
             return;
         }
         let path = item.get_path();
-        self.open_or_log(path);
+        // 光标先于 open 归位（F2）：流刷新钩子按 queue.current_* 解析，须指向
+        // 被打开的条目。停止态通常无预备（stop() 已 drop），此处调用属一致性
+        // 防御，早退门保证零成本。
         self.queue.set_position(first_index);
+        self.drop_stale_prepared_after_navigation();
+        self.open_or_log(path);
         self.send_event(PlaybackEvent::QueuePositionChanged(first_index));
     }
 
@@ -838,9 +867,11 @@ impl PlaybackThread {
             return;
         };
         let path = first.get_path();
-        self.open_or_log(path);
+        // 光标先于 open 归位（F2），同 start_playing_inserted_if_stopped。
         let position = first_index + relative_idx;
         self.queue.set_position(position);
+        self.drop_stale_prepared_after_navigation();
+        self.open_or_log(path);
         self.send_event(PlaybackEvent::QueuePositionChanged(position));
     }
 
@@ -884,11 +915,12 @@ impl PlaybackThread {
         // `first` 已内含 Stopped 判定
         if let Some((relative_idx, first)) = first {
             let path = first.get_path();
-            self.open_or_log(path);
             let position = first_index + relative_idx;
             // 随机播放开启时 `queue_items` 会把追加的整批打乱，被打开的那个条目
             // 便不再位于 `first_index + relative_idx`；经原始顺序解析出它的真实
             // 槽位，让游标跟着已打开的路径走（jump 自己会持久化状态）。
+            // 光标先于 open 归位（F2）：open 期间的流刷新钩子（identity/display/
+            // URL 回写）按 queue.current_* 解析，须指向被打开的条目。
             let position = match self.queue.jump_unshuffled(position) {
                 JumpResult::Jumped { .. } => self.queue.current_position().unwrap_or(position),
                 JumpResult::OutOfBounds => {
@@ -896,6 +928,8 @@ impl PlaybackThread {
                     position
                 }
             };
+            self.drop_stale_prepared_after_navigation();
+            self.open_or_log(path);
             self.send_event(PlaybackEvent::QueuePositionChanged(position));
         }
 
@@ -1158,6 +1192,9 @@ impl PlaybackThread {
         match self.queue.jump(index) {
             JumpResult::Jumped { path } => {
                 self.set_stop_after_current(false);
+                // queue.jump 已置光标：open 之前丢弃为旧"下一曲"预备/在途的预备
+                // （L-prepared 爪1）。
+                self.drop_stale_prepared_after_navigation();
                 self.open_or_log(&path);
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }
@@ -1173,6 +1210,8 @@ impl PlaybackThread {
         match self.queue.jump_unshuffled(index) {
             JumpResult::Jumped { path } => {
                 self.set_stop_after_current(false);
+                // 同 jump：光标已落定，open 之前丢弃陈旧预备（L-prepared 爪1）。
+                self.drop_stale_prepared_after_navigation();
                 self.open_or_log(&path);
                 // 取在（可能已洗牌的）队列里的真实位置
                 if let Some(pos) = self.queue.current_position() {
@@ -1406,6 +1445,43 @@ impl PlaybackThread {
                 true
             }
             EngineCycleResult::NothingToDo => false,
+            // 退避窗内的静默无产出：对本函数的 bool 契约而言与 NothingToDo 同义，
+            // 区别只在 main_loop 是否把它计入无进展跳曲（见 in_device_backoff 分支）。
+            EngineCycleResult::DeviceBackoff => false,
+        }
+    }
+
+    /// 导航改写当前曲目后，为旧"下一曲"预备/在途的预备已过期：它既压制真实
+    /// 下一首的 gapless 预备（maybe_prepare_next 的 is_next_prepared 早退门），
+    /// 又白持一条 HTTP 连接直到下次 open 才被丢弃。与 send_event 的
+    /// QueueUpdated 钩子同一判定；导航不发 QueueUpdated，故在光标落定后、
+    /// open 之前显式触发。无预备时零成本（免队列锁+stat）。
+    fn drop_stale_prepared_after_navigation(&mut self) {
+        if !self.engine.is_next_prepared() {
+            return;
+        }
+        let next = self.queue.peek_next_path();
+        self.engine.drop_prepared_unless_next(next.as_deref());
+    }
+
+    /// 已完成预备的落地处理：刷新救回的路径回写队列条目，随后校验预备落地时
+    /// next 是否仍指向它——预备在途期间 next 可能被导航/循环模式改写（后者不
+    /// 发任何钩子事件）。陈旧预备压真实下一首的预备、白持连接，落地即弃；
+    /// drop_prepared 的 2s 冷却键在陈旧路径上，不阻塞真下一首的重新预备。
+    /// 时序：poll_prepared 先于 play_audio 与 maybe_prepare_next 执行，此处的
+    /// drop 在同一轮的 is_next_prepared 早退门之前落地，真下一首当轮即可重新
+    /// 布防，无空窗。
+    fn handle_prepared_report(&mut self, report: PrepareReport) {
+        if report.path != report.requested {
+            self.queue
+                .replace_next_path(&report.requested, report.path.clone());
+        }
+        let still_next = self
+            .queue
+            .peek_next_path()
+            .is_some_and(|p| p == report.path);
+        if !still_next {
+            self.engine.drop_prepared();
         }
     }
 
@@ -1413,12 +1489,213 @@ impl PlaybackThread {
         // 队列变更可能改变接下来要播哪一曲：从此刻起无缝衔接的预打开（若有）就
         // 已过期——但仅限"下一条条目确实变了"的情况。别处的编辑（元数据刷新、
         // 不触及 next 的重排）留下的预打开仍然有效，不必在预备冷却窗口里重付
-        // 一次完整打开。
-        if matches!(event, PlaybackEvent::QueueUpdated) {
+        // 一次完整打开。无预备时直接跳过 peek（省一次队列锁+stat）。
+        if matches!(event, PlaybackEvent::QueueUpdated) && self.engine.is_next_prepared() {
             let next = self.queue.peek_next_path();
             self.engine.drop_prepared_unless_next(next.as_deref());
         }
         // Err 只代表 UI（连同它的接收端）已经没了
         let _ = self.events_tx.send(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{TestDir, register_test_media_providers};
+
+    /// 写一个最小的有效 PCM wav（全零样本）：足以被 symphonia/lofty 打开探测。
+    /// 引擎不 initialize 设备，open 只走媒体级（无设备流 → 不搭管线）。
+    fn write_wav_i16(path: &Path, rate: u32, channels: u16, frames: usize) {
+        let samples = frames * usize::from(channels);
+        let data = vec![0_u8; samples * 2];
+        let block_align = channels * 16 / 8;
+        let byte_rate = rate * u32::from(block_align);
+        let riff_len = 4 + 24 + 8 + data.len() as u32;
+        let mut out = Vec::with_capacity(riff_len as usize + 8);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&riff_len.to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&channels.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&byte_rate.to_le_bytes());
+        out.extend_from_slice(&block_align.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&data);
+        std::fs::write(path, out).expect("failed to write test WAV");
+    }
+
+    /// 组装一个真实的 PlaybackThread（真实通道 + QueueManager + 引擎），引擎
+    /// 保持 Idle（不 initialize 设备）：open 只走媒体级。按 thread.rs 构造形态
+    /// 用同模块私有字段直填。
+    fn thread_with_queue(
+        items: Vec<QueueItemData>,
+    ) -> (PlaybackThread, UnboundedReceiver<PlaybackEvent>) {
+        let queue = Arc::new(RwLock::new(Arc::new(items)));
+        let (storage_tx, _storage_rx) = watch::channel(PlaybackSessionData::default());
+        let queue_manager = QueueManager::new(
+            queue,
+            PlaybackSettings::default(),
+            PlaybackSessionData::default(),
+            storage_tx,
+        );
+        let (events_tx, events_rx) = unbounded_channel();
+        let thread = PlaybackThread {
+            playback_settings: PlaybackSettings::default(),
+            commands_rx: unbounded_channel().1,
+            events_tx: events_tx.clone(),
+            last_timestamp: u64::MAX,
+            last_broadcast_timestamp: u64::MAX,
+            position_broadcast_active: true,
+            engine: AudioEngine::new(events_tx, spectrum_tap().0),
+            queue: queue_manager,
+            initial_volume: 1.0,
+            rg_auto_hint: ReplayGainAutoHint::PreferTrack,
+            last_track_gain: None,
+            last_album_gain: None,
+            last_track_peak: None,
+            last_album_peak: None,
+            duration_ms: None,
+            stop_after_current: false,
+            no_progress_cycles: 0,
+            pending_command: None,
+            #[cfg(feature = "online_sources")]
+            initial_online_open: false,
+        };
+        (thread, events_rx)
+    }
+
+    /// 建临时目录并写入 count 个有效 wav 条目。TestDir 句柄必须随条目存活到
+    /// 测试结束（Drop 即删目录），故一并返回。
+    fn wav_dir_items(prefix: &str, count: usize) -> (TestDir, Vec<QueueItemData>) {
+        let dir = TestDir::new(prefix);
+        let items = (0..count)
+            .map(|i| {
+                let path = dir.join(&format!("t{i}.wav"));
+                write_wav_i16(&path, 44_100, 2, 1_024);
+                QueueItemData::new(path, None, None)
+            })
+            .collect();
+        (dir, items)
+    }
+
+    /// 收取事件流里首个 SongChanged 与首个 QueuePositionChanged 的到达序号。
+    fn event_order(
+        events_rx: &mut UnboundedReceiver<PlaybackEvent>,
+    ) -> (Option<usize>, Option<usize>, Option<usize>) {
+        let mut order = 0;
+        let (mut song, mut position, mut position_value) = (None, None, None);
+        while let Ok(event) = events_rx.try_recv() {
+            match event {
+                PlaybackEvent::SongChanged(_) if song.is_none() => song = Some(order),
+                PlaybackEvent::QueuePositionChanged(idx) if position.is_none() => {
+                    position = Some(order);
+                    position_value = Some(idx);
+                }
+                _ => {}
+            }
+            order += 1;
+        }
+        (song, position, position_value)
+    }
+
+    /// 停止态 play 先把光标归位再 open（F2）：open 期间的流刷新钩子按
+    /// queue.current_* 解析，须指向被打开的条目。事件序契约与 jump 一致：
+    /// SongChanged 先于 QueuePositionChanged。
+    #[test]
+    fn stopped_play_positions_cursor_before_open() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-play-cursor", 2);
+        let (mut thread, mut events_rx) = thread_with_queue(items);
+
+        thread.play();
+
+        assert_eq!(thread.queue.current_position(), Some(0));
+        let (song, position, position_value) = event_order(&mut events_rx);
+        // open 成功（真实 wav）：SongChanged 必须存在且先于 QueuePositionChanged。
+        assert_eq!(position_value, Some(0));
+        let song = song.expect("open succeeded; SongChanged must be emitted");
+        let position = position.expect("QueuePositionChanged must be emitted");
+        assert!(
+            song < position,
+            "SongChanged must precede QueuePositionChanged"
+        );
+    }
+
+    /// 停止态 previous 从最后一个可播条目起播（F2）：光标同样先于 open 归位。
+    #[test]
+    fn stopped_previous_positions_cursor_on_last_playable() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-prev-cursor", 2);
+        let (mut thread, mut events_rx) = thread_with_queue(items);
+
+        thread.previous();
+
+        assert_eq!(thread.queue.current_position(), Some(1));
+        let (_song, position, position_value) = event_order(&mut events_rx);
+        assert_eq!(position_value, Some(1));
+        assert!(position.is_some(), "QueuePositionChanged must be emitted");
+    }
+
+    /// 导航（jump）丢弃为旧"下一曲"布防的预备（L-prepared 爪1），且不阻塞
+    /// 真实下一首的重新布防。
+    #[test]
+    fn navigation_drops_stale_prepare() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-nav-prepared", 4);
+        let (mut thread, _events_rx) = thread_with_queue(items);
+
+        thread.jump(0);
+        // 逼近曲尾，让 maybe_prepare_next 为 B（下标 1）布防。
+        thread.duration_ms = Some(1_000);
+        thread.last_timestamp = 0;
+        thread.maybe_prepare_next();
+        assert!(thread.engine.is_next_prepared());
+
+        // 导航到 C（下标 2）：为 B 的预备已过期，jump 内的爪1 应同步丢弃。
+        thread.jump(2);
+        assert!(!thread.engine.is_next_prepared());
+
+        // 真下一首 D（下标 3）不受陈旧冷却键影响，当轮即可重新布防。
+        thread.maybe_prepare_next();
+        assert!(thread.engine.is_next_prepared());
+    }
+
+    /// 预备落地时 next 已被（不发钩子的）导航改写：报告落地即弃，不压制
+    /// 真实下一首（L-prepared 爪2）。
+    #[test]
+    fn stale_prepare_report_is_dropped_on_landing() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-stale-report", 4);
+        let (mut thread, _events_rx) = thread_with_queue(items);
+
+        thread.jump(0);
+        thread.duration_ms = Some(1_000);
+        thread.last_timestamp = 0;
+        thread.maybe_prepare_next();
+
+        // 绕过爪1：直接移队列光标，模拟未发 QueueUpdated 的改写（如 set_repeat）。
+        assert!(matches!(thread.queue.jump(2), JumpResult::Jumped { .. }));
+
+        // 本地 wav 的预备线程 µs 级完成；仍给有界自旋。
+        let mut report = None;
+        for _ in 0..200 {
+            if let Some(r) = thread.engine.poll_prepared() {
+                report = Some(r);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let report = report.expect("prepare outcome must arrive within the spin budget");
+        assert!(report.succeeded, "local wav prepare must succeed");
+
+        // poll_prepared 落地后 prepared 持有 B 的流；报告处理时 next 已是 D → 弃。
+        thread.handle_prepared_report(report);
+        assert!(!thread.engine.is_next_prepared());
     }
 }

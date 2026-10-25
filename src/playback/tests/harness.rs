@@ -72,7 +72,10 @@ pub fn run_to_eof(engine: &mut AudioEngine, max_cycles: usize) -> usize {
     for cycle in 0..max_cycles {
         match engine.process_cycle() {
             EngineCycleResult::Eof => return cycle,
-            EngineCycleResult::Continue | EngineCycleResult::NothingToDo => {}
+            // 退避窗内的静默无产出：对 run_to_eof 与 NothingToDo 同义（继续轮询）。
+            EngineCycleResult::Continue
+            | EngineCycleResult::NothingToDo
+            | EngineCycleResult::DeviceBackoff => {}
             EngineCycleResult::FatalError(msg) => panic!("fatal engine error: {msg}"),
         }
     }
