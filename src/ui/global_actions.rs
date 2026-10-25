@@ -249,11 +249,25 @@ fn shuffle_all(_: &ShuffleAll, cx: &mut App) {
     // 首次使用时才在 UI 线程上解析——所以线程外不会构建任何 GPUI 拥有的东西。
     let pool = cx.global::<Pool>().0.clone();
     cx.spawn(async move |cx| {
-        let tracks = crate::RUNTIME
+        // 失败保留旧队列（"失败保留旧快照"惯例）：查询失败若吞错为空表，下面
+        // 会 replace_queue(空) 把队列直接清空。空库（Ok(空 vec)）是合法状态，
+        // 维持"替换为空"的现有行为。
+        let tracks = match crate::RUNTIME
             .spawn(async move { db::list_all_tracks(&pool).await })
             .await
-            .map(|result| result.unwrap_or_default())
-            .unwrap_or_default();
+        {
+            // JoinError：RUNTIME 任务级失败（阻塞池关闭/任务 panic）
+            Err(join_err) => {
+                warn!("shuffle all: track list task failed: {join_err}, keeping previous queue");
+                return;
+            }
+            // DB 错误：不开 shuffle、不 replace，保留旧队列
+            Ok(Err(db_err)) => {
+                warn!("shuffle all: could not load tracks: {db_err}, keeping previous queue");
+                return;
+            }
+            Ok(Ok(tracks)) => tracks,
+        };
 
         let items: Vec<QueueItemData> = tracks
             .into_iter()
