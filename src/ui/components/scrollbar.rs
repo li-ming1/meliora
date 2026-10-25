@@ -8,10 +8,10 @@ use std::{
 use gpui::{
     AbsoluteLength, App, Background, BorderStyle, Bounds, Corners, CursorStyle, DispatchPhase,
     Edges, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, ListState, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Refineable, RenderOnce, ScrollHandle, ScrollWheelEvent,
-    Style, StyleRefinement, Styled, UniformListScrollHandle, Window, black, div, px, quad, rgb,
-    white,
+    InteractiveElement, IntoElement, LayoutId, ListState, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Refineable, RenderOnce, ScrollHandle,
+    ScrollWheelEvent, Style, StyleRefinement, Styled, UniformListScrollHandle, Window, black, div,
+    px, quad, rgb, white,
 };
 
 use crate::settings::SettingsGlobal;
@@ -708,6 +708,9 @@ impl Element for Scrollbar {
                     if phase != DispatchPhase::Bubble || !hitbox_down.is_hovered(window) {
                         return;
                     }
+                    if ev.button != MouseButton::Left {
+                        return;
+                    }
 
                     window.prevent_default();
                     cx.stop_propagation();
@@ -847,8 +850,11 @@ impl Element for Scrollbar {
                 });
 
                 // 结束拖动
-                window.on_mouse_event(move |_ev: &MouseUpEvent, phase, window, _cx| {
+                window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, _cx| {
                     if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    if ev.button != MouseButton::Left {
                         return;
                     }
                     let mut state = state_for_up.borrow_mut();

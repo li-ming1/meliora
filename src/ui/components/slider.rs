@@ -265,6 +265,9 @@ impl Element for Slider {
             if phase != gpui::DispatchPhase::Bubble {
                 return;
             }
+            if ev.button != MouseButton::Left {
+                return;
+            }
             if !hitbox.is_hovered(window) {
                 return;
             }
@@ -323,8 +326,11 @@ impl Element for Slider {
         let func_release = func.clone();
         let flush_on_release = change_interval.is_some();
 
-        window.on_mouse_event(move |_ev: &MouseUpEvent, phase, window, cx| {
+        window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, cx| {
             if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
+            if ev.button != MouseButton::Left {
                 return;
             }
             let flushed = drag_state_up.update(cx, |state, _| {
