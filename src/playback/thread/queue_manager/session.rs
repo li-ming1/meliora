@@ -1,4 +1,4 @@
-//! Session 持久化防抖：队列快照/播放位置的节流持久化与挂起快照冲刷。
+//! Session 持久化防抖：队列快照/播放位置的防抖持久化与挂起快照冲刷。
 //! 自 queue_manager.rs 原样搬出；经 `use super::*` 白盒访问 QueueManager
 //! 的私有字段与关联函数。内部方法放宽为 `pub(super)`（宿主子树可见），
 //! `flush_pending_session` 维持 `pub`（thread.rs 主循环经原路径调用）。

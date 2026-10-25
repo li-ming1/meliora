@@ -11,7 +11,7 @@ where
     T: SampleInto<f64> + SampleFrom<f64> + Copy,
 {
     fn scale(self, factor: f64) -> T {
-        // 超过 1.0 或低于 -1.0 的值都会被钳住，因为它们越界
+        // 超过 1.0 或低于 -1.0 的值都会被钳位，因为它们越界
         let scaled = (self.sample_into() * factor).clamp(-1.0, 1.0);
         T::sample_from(scaled)
     }

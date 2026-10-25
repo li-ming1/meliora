@@ -5,7 +5,7 @@ use std::f64::consts::PI;
 use crate::settings::equalizer::{EqBandKind, EqBandSettings, EqualizerSettings, MAX_EQ_BANDS};
 
 pub const MIN_FREQUENCY: f64 = 10.0;
-/// 计算系数时还会进一步夹到 0.45 × 采样率。
+/// 计算系数时还会进一步钳位到 0.45 × 采样率。
 pub const MAX_FREQUENCY: f64 = 30_000.0;
 pub const MAX_GAIN_DB: f64 = 24.0;
 pub const MIN_Q: f64 = 0.1;
@@ -22,7 +22,7 @@ const DENORMAL_THRESHOLD: f64 = 1e-30;
 /// 搜索合成响应峰值时所用的对数间隔采样点数。
 const COMP_GRID_POINTS: usize = 512;
 
-/// 有限值夹进区间，非有限值（NaN/±inf，只会来自损坏的设置文件）回落。设置层的
+/// 有限值钳位到区间内，非有限值（NaN/±inf，只会来自损坏的设置文件）回落。设置层的
 /// `EqualizerSettings::sanitize` 用的就是这一条——它原先有一份逐字相同的副本。
 #[inline]
 pub(crate) fn clamp_finite(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
@@ -39,7 +39,7 @@ fn frequency_ceiling(sample_rate: f64) -> f64 {
     MAX_FREQUENCY.min(0.45 * sample_rate).max(MIN_FREQUENCY)
 }
 
-/// 夹到 cookbook 公式保持稳定且准确的区间内。
+/// 钳位到 cookbook 公式保持稳定且准确的区间内。
 pub fn clamp_frequency(frequency: f64, sample_rate: f64) -> f64 {
     clamp_finite(
         frequency,
@@ -928,7 +928,7 @@ mod tests {
                     0.953_281_959_705_200_2,
                 ],
             ),
-            // 夹到 0.45 × Fs
+            // 钳位到 0.45 × Fs
             (
                 EqBandKind::LowPass,
                 44_100.0,
@@ -943,7 +943,7 @@ mod tests {
                     0.641_307_084_742_889_1,
                 ],
             ),
-            // 夹到 10 Hz
+            // 钳位到 10 Hz
             (
                 EqBandKind::Bell,
                 48_000.0,
@@ -1623,7 +1623,7 @@ mod tests {
         let bands = [
             band(EqBandKind::Bell, 100.0, 6.0, 1.2),
             band(EqBandKind::HighPass, 500.0, 0.0, 4.0),
-            band(EqBandKind::Bell, 25_000.0, 8.0, 2.0), // 会被夹到 0.45 × 采样率
+            band(EqBandKind::Bell, 25_000.0, 8.0, 2.0), // 会被钳位到 0.45 × 采样率
             disabled,
             band(EqBandKind::Notch, 9_000.0, -6.0, 8.0),
         ];
