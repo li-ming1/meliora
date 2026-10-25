@@ -296,9 +296,10 @@ impl KugouPlaylistsView {
 
     /// 加载所选歌单的第一批曲目。
     ///
-    /// v4 端点按最新优先返回曲目（fsort 降序），界面却按最旧优先显示。
-    /// 于是先用一次廉价的第 1 页探测读出总数 `data.count`，真正的首批曲目
-    /// 改从最后一页取回再反转；`load_more_tracks` 从那里往回走。
+    /// v4 端点按最新优先返回曲目（fsort 降序），界面却按最旧优先显示，所以
+    /// 首批从最后一页取回再反转，`load_more_tracks` 从那里往回走。歌单列表
+    /// 本身已带上曲目数，有数时直接取最后一页；探测第 1 页读 `data.count`
+    /// 只是列表没报曲目数时的兜底。
     fn load_first_page(&mut self, cx: &mut Context<Self>) {
         let Some(selected) = self.selected.clone() else {
             return;
@@ -1064,8 +1065,11 @@ impl KugouPlaylistsView {
             .on_exit(move |_window, cx| {
                 if let Some(view) = weak.upgrade() {
                     view.update(cx, |view, cx| {
+                        // 关闭模态框不中止导入管线，这里不能清 `import_busy`：清了会让
+                        // 重新打开的模态框对同一歌单提交第二次导入。busy 由 Finished 事件
+                        // 兜底清除（管线任务死掉时通道关闭同样结束监听循环），契约原文见
+                        // `open_import` 内的同名注释。
                         view.import_open = false;
-                        view.import_busy = false;
                         cx.notify();
                     });
                 }

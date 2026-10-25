@@ -32,7 +32,6 @@ use crate::{
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
         },
-        library_access::LibraryAccess,
         models::{
             LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent,
             is_track_available_snapshot,
@@ -153,6 +152,10 @@ pub struct ArtistDetailView {
     /// 每次重载「已点赞曲目」都自增，使晚于新一轮完成的慢加载不能覆盖它
     /// （与 `Table::reload_rows` 同一个守卫）。
     liked_load_generation: u64,
+    /// 每次重载「散曲目」都自增，作用同 `liked_load_generation`：排序切换异步化后
+    /// 两次重载可并发在途，慢的旧查询晚落地时按世代丢弃，避免旧序覆盖新序、
+    /// 列表与排序控件状态脱钩。
+    standalone_load_generation: u64,
     /// 整视图加载时自增，使晚于新一轮完成的慢加载不能覆盖它
     /// （与 `Table::reload_rows` 同一个守卫）。
     load_generation: u64,
@@ -201,6 +204,7 @@ impl ArtistDetailView {
                 liked_sort,
                 standalone_sort: LikedTrackSortMethod::ReleaseOrder,
                 liked_load_generation: 0,
+                standalone_load_generation: 0,
                 load_generation: 0,
             };
             // 打开视图时在运行时上加载艺术家头部、专辑网格与三个曲目列表（见 reload）；
@@ -214,12 +218,13 @@ impl ArtistDetailView {
 
     /// 在后台运行时上加载艺术家头部、专辑网格与三个曲目列表：打开视图过去会连着
     /// 五条查询阻塞 UI 线程。加载落地前视图保持空白；世代守卫丢弃被更新一轮加载
-    /// 取代的结果，且已点赞列表额外受 `liked_load_generation` 把关，因此与本轮赛跑的
-    /// 点赞/取消赞或已点赞排序重载，绝不会是这个更慢的整视图加载覆盖掉的。
+    /// 取代的结果，且已点赞与散曲目列表额外受各自的重载世代把关，因此与本轮赛跑
+    /// 的点赞/取消赞或排序重载，绝不会是这个更慢的整视图加载覆盖掉的。
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         let liked_generation = self.liked_load_generation;
+        let standalone_generation = self.standalone_load_generation;
         let artist_id = self.artist_id;
         let liked_sort = self.liked_sort;
         let standalone_sort = self.standalone_sort;
@@ -271,7 +276,11 @@ impl ArtistDetailView {
                 this.album_ids = Arc::new(album_ids);
                 this.all_tracks = all_tracks;
                 this.all_tracks_available = availability_map(cx, &this.all_tracks);
-                this.set_standalone_tracks(standalone_tracks, cx);
+                // 在本轮整视图加载在途期间启动的散曲目排序重载才拥有散曲目列表：
+                // 这里跳过陈旧快照，让它自己的世代守卫交付更新的那一份。
+                if this.standalone_load_generation == standalone_generation {
+                    this.set_standalone_tracks(standalone_tracks, cx);
+                }
                 // 在本轮整视图加载在途期间启动的已点赞重载才拥有已点赞列表：这里跳过
                 // 陈旧快照，让它自己的世代守卫交付更新的那一份。
                 if this.liked_load_generation == liked_generation {
@@ -311,6 +320,38 @@ impl ArtistDetailView {
                     return;
                 }
                 this.set_liked_tracks(liked_tracks, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// 在后台运行时上重载艺术家的散曲目列表：排序切换过去在 UI 线程上同步跑这条
+    /// 查询。世代守卫丢弃被更新一次重载取代的结果（逐形照抄 `reload_liked_tracks`，
+    /// 含 `reload` 内的对应防线——该竞态当前实测不可达：排序控件仅在散曲目列表
+    /// 非空时渲染，而 `reload` 只在视图构造时调用一次、先于任何交互）。
+    fn reload_standalone_tracks(&mut self, cx: &mut Context<Self>) {
+        self.standalone_load_generation = self.standalone_load_generation.wrapping_add(1);
+        let generation = self.standalone_load_generation;
+        let artist_id = self.artist_id;
+        let sort = self.standalone_sort;
+        let pool = cx.global::<Pool>().0.clone();
+
+        cx.spawn(async move |this, cx| {
+            let standalone_tracks = crate::RUNTIME
+                .spawn(async move {
+                    db::list_standalone_tracks_by_artist(&pool, artist_id, sort)
+                        .await
+                        .unwrap_or_else(|_| Arc::new(Vec::new()))
+                })
+                .await
+                .unwrap_or_else(|_| Arc::new(Vec::new()));
+
+            let _ = this.update(cx, |this, cx| {
+                // 更新的一次重载已取代这一轮：本结果陈旧。
+                if this.standalone_load_generation != generation {
+                    return;
+                }
+                this.set_standalone_tracks(standalone_tracks, cx);
             });
         })
         .detach();
@@ -357,12 +398,9 @@ impl ArtistDetailView {
         }
 
         self.standalone_sort = next_sort;
-
-        let standalone_tracks = cx
-            .list_standalone_tracks_by_artist(self.artist_id, self.standalone_sort)
-            .unwrap_or_else(|_| Arc::new(Vec::new()));
-
-        self.set_standalone_tracks(standalone_tracks, cx);
+        // 散曲目排序是视图局部状态（初始 ReleaseOrder，不与全局排序模型同步）；
+        // 重排后的列表在运行时上加载（见 reload_standalone_tracks）。
+        self.reload_standalone_tracks(cx);
     }
 
     fn set_standalone_tracks(
@@ -380,10 +418,7 @@ impl ArtistDetailView {
 
     fn toggle_standalone_sort_order(&mut self, cx: &mut Context<Self>) {
         self.standalone_sort = Self::toggled_sort(self.standalone_sort);
-        let standalone_tracks = cx
-            .list_standalone_tracks_by_artist(self.artist_id, self.standalone_sort)
-            .unwrap_or_else(|_| Arc::new(Vec::new()));
-        self.set_standalone_tracks(standalone_tracks, cx);
+        self.reload_standalone_tracks(cx);
     }
 
     fn base_sort(sort_method: LikedTrackSortMethod) -> LikedTrackSortMethod {
