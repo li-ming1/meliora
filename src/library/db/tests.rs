@@ -668,7 +668,8 @@ async fn move_and_remove_playlist_items_keep_positions_contiguous() {
     .unwrap();
     assert_eq!(order, vec![1, 2, 3, 0]);
 
-    // 删掉现处于中间的 track 2（原 item_ids[1]）：压缩后无空洞
+    // 删掉现处于队头的 track 2（原 item_ids[1]；上一步把首条移到末尾后，
+    // [1,2,3,0] 断言钉住的顺序里它已在 position 0）——删除后压缩无空洞
     remove_playlist_item(&pool, item_ids[1]).await.unwrap();
     let positions: Vec<i64> = sqlx::query_scalar(
         "SELECT position FROM playlist_item WHERE playlist_id = ? ORDER BY position",

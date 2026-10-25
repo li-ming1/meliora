@@ -770,10 +770,13 @@ impl PlaybackThread {
                 reshuffled,
             } => {
                 info!("Opening next file in queue at index {}", index);
-                // 用户主动跳过单曲循环目标：为旧目标布防的在途预备已过期
-                //（其余导航站点同款；Unchanged 臂刻意不清——repeat-one 下
-                // 预备的就是当前曲本身，对下一次前进仍然有效）。
-                self.drop_stale_prepared_after_navigation();
+                // 与「即将打开的这首」比对而非 peek_next（那已是再下一首）：
+                // 用户主动跳过单曲循环目标时旧预备不匹配→清；自然 EOF 前进时
+                // 预备的恰好就是 path（gapless 的全部意义所在）→保留直挂。
+                // 无条件清会在每次自然切歌误杀无缝衔接流（2026-10-25 终审
+                // 抓到的回归）。Unchanged 臂不比——repeat-one 下预备的就是
+                // 当前曲本身，对下一次前进仍然有效。
+                self.engine.drop_prepared_unless_next(Some(&path));
 
                 if reshuffled == Reshuffled::Reshuffled {
                     self.send_event(PlaybackEvent::QueueUpdated);
@@ -1714,6 +1717,35 @@ mod tests {
 
         // poll_prepared 落地后 prepared 持有 B 的流；报告处理时 next 已是 D → 弃。
         thread.handle_prepared_report(report);
+        assert!(!thread.engine.is_next_prepared());
+    }
+
+    /// EOF 前进不清与「即将打开的这首」匹配的预备（终审回归钉）：next() Changed
+    /// 臂的 drop 谓词按 path 比对——自然 EOF（预备==path）保留直挂、用户跳过
+    /// （旧目标≠path）才清。旧写法按 peek_next 比对会把每次自然切歌的无缝
+    /// 衔接流误杀成完整同步 open。
+    #[test]
+    fn eof_advance_predicate_keeps_matching_prepared() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-eof-prepared", 3);
+        let (mut thread, _events_rx) = thread_with_queue(items);
+
+        thread.jump(0);
+        thread.duration_ms = Some(1_000);
+        thread.last_timestamp = 0;
+        thread.maybe_prepare_next();
+        assert!(thread.engine.is_next_prepared());
+
+        let next_path = thread.queue.peek_next_path().expect("B prepared");
+        // 自然 EOF 前进：即将打开的就是预备的这首——谓词必须保留。
+        thread.engine.drop_prepared_unless_next(Some(&next_path));
+        assert!(
+            thread.engine.is_next_prepared(),
+            "EOF advance must keep the matching prepared stream (gapless)"
+        );
+        // 用户跳过到别处（path 不匹配）——同一谓词必须清。
+        let current = thread.queue.current_path().unwrap();
+        thread.engine.drop_prepared_unless_next(Some(&current));
         assert!(!thread.engine.is_next_prepared());
     }
 }

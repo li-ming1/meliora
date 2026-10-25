@@ -132,8 +132,7 @@ mod tests {
         for _ in 0..ITER {
             let scale = 1.0 / planes_ref.len() as f64;
             for i in 0..FRAMES {
-                out[i] =
-                    (planes_ref[0][i] + planes_ref[1][i]) as f32 * scale as f32;
+                out[i] = (planes_ref[0][i] + planes_ref[1][i]) as f32 * scale as f32;
             }
             let mut peak = 0.0f32;
             for plane in &planes_ref {
@@ -169,8 +168,8 @@ mod tests {
         }
         let d_b = t_b.elapsed();
 
-        let ns_a = d_a.as_nanos() as f64 / ITER as usize as f64;
-        let ns_b = d_b.as_nanos() as f64 / ITER as usize as f64;
+        let ns_a = d_a.as_nanos() as f64 / ITER as f64;
+        let ns_b = d_b.as_nanos() as f64 / ITER as f64;
         let cb_per_sec = 44_100.0 / FRAMES as f64;
         println!(
             "spectrum push 变体（{FRAMES} 帧 × 2 平面 × {ITER} 次）：\n\

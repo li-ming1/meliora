@@ -418,10 +418,11 @@ pub(crate) async fn refresh_liked_set_from_service() {
 
 /// 用一次分页拉取的结果同时替换两个喜欢缓存（hash 集 + hash→fileid 映射）。
 /// `generation` 是抓取开工前捕获的世代：与当前不等（抓取期间发生了 invalidate）
-/// 就整份丢弃且不置 init 旗标，下次惰性刷新拿新账号数据。比对与写入放在
-/// `liked_set` 的同一把写守卫内，而 invalidate 的清空+世代递增也在写守卫内——
-/// 两条路径由此互斥，堵死「比对通过后才被 invalidate 清空、又把旧账号数据写回」
-/// 的交错窗口。
+/// 就整份丢弃且不置 init 旗标，下次惰性刷新拿新账号数据。比对与**两份写入
+/// 加旗标**都持双写守卫完成（set→fileids，与 invalidate 同序），两条路径由此
+/// 真正互斥——只守卫 set 半边的话，invalidate 落在 set 写入与 fileids 写入
+/// 之间会留下「hash 集已清、fileids/INIT 却是旧账号」的半清状态（2026-10-25
+/// 终审抓到的残余窗口），INIT 错置为 true 还会让惰性刷新整个会话不再自愈。
 pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>, generation: u64) {
     let mut hashes = HashSet::with_capacity(entries.len());
     let mut fileids = HashMap::with_capacity(entries.len());
@@ -433,9 +434,11 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>, generation: u64) 
     if generation != LIKED_GENERATION.load(Ordering::Relaxed) {
         return;
     }
+    let mut fileids_guard = liked_fileids().write_recovered();
     *set_guard = hashes;
+    *fileids_guard = fileids;
+    drop(fileids_guard);
     drop(set_guard);
-    *liked_fileids().write_recovered() = fileids;
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
