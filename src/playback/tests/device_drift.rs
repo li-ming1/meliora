@@ -39,7 +39,12 @@ fn device_rate_drift_on_recreate_rebuilds_pipeline() {
     let dir = TestDir::new("hb-device-drift-rate");
     let frames = 144_000;
     let path = dir.join("a.wav");
-    write_wav_i16(&path, rate, CHANNELS, &constant_signal(frames, CHANNELS as usize, 9_000));
+    write_wav_i16(
+        &path,
+        rate,
+        CHANNELS,
+        &constant_signal(frames, CHANNELS as usize, 9_000),
+    );
 
     let capture = dummy::install_capture();
     // die_after 只在 open_device 时读一次 env：死点要钉在首条流上，必须先于建引擎
@@ -99,7 +104,12 @@ fn device_channel_drift_fallback_rebuilds_pipeline() {
     let dir = TestDir::new("hb-device-drift-channels");
     let frames = 40_000;
     let path = dir.join("a.wav");
-    write_wav_i16(&path, rate, CHANNELS, &constant_signal(frames, CHANNELS as usize, 9_000));
+    write_wav_i16(
+        &path,
+        rate,
+        CHANNELS,
+        &constant_signal(frames, CHANNELS as usize, 9_000),
+    );
 
     let capture = dummy::install_capture();
     // 同 T1：die_after 在 open_device 读一次，死点（首次 consume 即死）必须钉在
