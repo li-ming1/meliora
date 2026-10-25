@@ -50,16 +50,14 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
         // 否则会在 None 上空转。
         while let Some(event) = events_rx.recv().await {
             // 归并积压：一次繁忙的帧之后通道里可能积着几十条过期位置 tick，
-            // 重放它们只是把同一批实体写入再做一遍。每个变体都是值替换语义
-            // （最新者胜；QueueUpdated 是裸信号），所以每个变体只保留最后一次
-            // 出现即可保持正确，其余全部丢弃。
-            let mut latest = vec![event];
-            while let Ok(next) = events_rx.try_recv() {
-                let disc = std::mem::discriminant(&next);
-                latest.retain(|e| std::mem::discriminant(e) != disc);
-                latest.push(next);
-            }
-            for event in latest {
+            // 重放它们只是把同一批实体写入再做一遍。值替换语义的镜像字段
+            // （最新者胜；QueueUpdated 是裸信号）按判别式只留最新一条即可
+            // 保持正确；SongChanged/StateChanged 是例外——它们是
+            // StatsRecorder（纯事件累计器）的输入，压掉中间事件会把两次
+            // 切歌间的半行收听永久丢失（忙帧窗口两次切歌压成一次时，中间
+            // 曲既没被 finalize 也没被计入），因此全量保序保留（见
+            // [`drain_backlog`]）。两者都是低频事件，不合并无性能代价。
+            for event in drain_backlog(event, &mut events_rx) {
                 match event {
                     PlaybackEvent::MetadataUpdate(v) => {
                         metadata_model.write(cx, *v);
@@ -186,6 +184,30 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
     .detach();
 }
 
+/// 把一次 `recv()` 已取出的首事件连同通道里的全部积压归并成待处理批次：
+/// 值替换语义的镜像事件按判别式只留最新一条；SongChanged/StateChanged
+/// 全量保序保留（理由见 start_broadcast 内注释——它们是事件累计器的
+/// 输入，不是镜像字段）。
+fn drain_backlog(
+    first: PlaybackEvent,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<PlaybackEvent>,
+) -> Vec<PlaybackEvent> {
+    let mut latest = vec![first];
+    while let Ok(next) = rx.try_recv() {
+        if matches!(
+            next,
+            PlaybackEvent::SongChanged(_) | PlaybackEvent::StateChanged(_)
+        ) {
+            latest.push(next);
+            continue;
+        }
+        let disc = std::mem::discriminant(&next);
+        latest.retain(|e| std::mem::discriminant(e) != disc);
+        latest.push(next);
+    }
+    latest
+}
+
 /// 把一次收听记录步进喂给共享的统计记录器并刷出它产出的行。毒化的锁会被从中
 /// 恢复：更早一次记录步进里的 panic 绝不能把广播循环卡死。
 fn record_and_flush<T>(
@@ -206,4 +228,61 @@ fn update_if_changed<T: PartialEq + 'static>(entity: &Entity<T>, cx: &mut AsyncA
             cx.notify();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drain_backlog;
+    use crate::playback::{events::PlaybackEvent, thread::PlaybackState};
+    use std::path::PathBuf;
+
+    /// 事件语义的两类（StatsRecorder 的输入）在积压归并中必须全量保序，
+    /// 镜像字段仍按判别式只留最新——忙帧窗口的两次切歌/状态翻转不得
+    /// 被压成一次，否则中间曲的半行收听永久丢失。
+    #[test]
+    fn backlog_merge_keeps_events_but_collapses_mirrors() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for event in [
+            PlaybackEvent::PositionChanged(1),
+            PlaybackEvent::SongChanged(PathBuf::from("a.mp3")),
+            PlaybackEvent::PositionChanged(2),
+            PlaybackEvent::StateChanged(PlaybackState::Playing),
+            PlaybackEvent::StateChanged(PlaybackState::Paused),
+            PlaybackEvent::SongChanged(PathBuf::from("b.mp3")),
+            PlaybackEvent::PositionChanged(3),
+        ] {
+            tx.send(event).unwrap();
+        }
+        drop(tx);
+
+        let first = rx.try_recv().unwrap();
+        let merged = drain_backlog(first, &mut rx);
+
+        let songs: Vec<_> = merged
+            .iter()
+            .filter_map(|e| match e {
+                PlaybackEvent::SongChanged(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(songs, vec![PathBuf::from("a.mp3"), PathBuf::from("b.mp3")]);
+
+        let states: Vec<_> = merged
+            .iter()
+            .filter_map(|e| match e {
+                PlaybackEvent::StateChanged(state) => Some(*state),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, vec![PlaybackState::Playing, PlaybackState::Paused]);
+
+        let positions: Vec<_> = merged
+            .iter()
+            .filter_map(|e| match e {
+                PlaybackEvent::PositionChanged(pos) => Some(*pos),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(positions, vec![3]);
+    }
 }

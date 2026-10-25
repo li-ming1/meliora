@@ -5,7 +5,9 @@
 //! → [`close_from_within`]（两者落盘同一设置位）。开关状态与拖动后的位
 //! 置持久化在 interface settings（`desktop_lyrics` / `desktop_lyrics_pos`，
 //! 后者在 view 的 on_release 统一落盘——Windows 的 start_window_move 是
-//! 异步投递而非阻塞循环，拖动结果只能在销毁路径读 `last_bounds` 拿到）。
+//! 异步投递而非阻塞循环，拖动结果只能在销毁路径读 `last_bounds` 拿到；
+//! 进程退出例外，由 on_app_quit 经 [`persist_now`] 提前落盘，防抖会被
+//! 退出窗口掐死）。
 //! 主窗口关闭时经其 root 的 `on_release` 联动关闭本窗（避免只剩悬浮窗的
 //! 孤儿会话）；悬浮窗自身被 Alt+F4 关闭时 view 的 on_release 清理 Global
 //! 残留句柄并恢复广播档位，设置位保持 true，主窗开关再点即重开（自愈）。
@@ -85,27 +87,70 @@ pub fn open(cx: &mut App) {
     if cx.global::<DesktopLyricsState>().is_open() {
         return;
     }
-    let lyrics = cx.global::<DesktopLyricsState>().lyrics.clone();
     let pos = cx
         .global::<SettingsGlobal>()
         .model
         .read(cx)
         .interface
         .desktop_lyrics_pos;
+    if open_registered(cx, pos) {
+        set_enabled(cx, true);
+    }
+    sync_broadcast(cx);
+}
+
+/// 开窗 + 全局登记 + 歌词可见性补载，不触碰设置位。`open`（成功后写位）与
+/// 设置 watcher 的对齐入口 [`apply_enabled`] 共用——后者跑在 Settings 实体
+/// 自身的 update 闭包内，回写设置位是对同一实体的重入。返回是否真的开了窗。
+fn open_registered(cx: &mut App, pos: Option<[f64; 2]>) -> bool {
+    let lyrics = cx.global::<DesktopLyricsState>().lyrics.clone();
     let Some(handle) = open_window(cx, lyrics.clone(), pos) else {
         // 开窗失败（GDI/HWND 资源瞬态等）只降级本次会话，不能 panic——
         // release 是 panic=abort，会让整个应用带着播放一起死。也不能写设置：
         // 一次瞬态失败不该永久关掉用户偏好，下次启动仍应重试。
         tracing::error!("desktop lyrics: open failed for this session; keeping the preference");
-        sync_broadcast(cx);
-        return;
+        return false;
     };
     cx.global_mut::<DesktopLyricsState>().window = Some(handle);
     // 侧栏面板与沉浸页都关闭时，这个窗口是唯一可见的歌词消费者；把可见性门控
     // 在「什么都没显示」期间跳过的那次加载补上。
     lyrics.update(cx, |lyrics, cx| lyrics.ensure_loaded(cx));
-    set_enabled(cx, true);
-    sync_broadcast(cx);
+    true
+}
+
+/// 设置 watcher 的 diff 推送入口（settings.rs `apply_settings_outcome`）：
+/// 手编 `settings.json` 的 `desktop_lyrics` 位后把悬浮窗实态对齐到文件——
+/// 不推送的话开关按钮与窗口实态各执一词（位=true 而窗不存在）。不回写设置
+/// 位：值本来就来自文件，且此刻正处在 Settings 实体的 update 闭包内，再
+/// update 同一会重入 panic；关窗走 `close`，它同样不写设置位。`pos` 也由
+/// 调用方带入（同理不能在函数内 read 设置实体）。
+pub(crate) fn apply_enabled(cx: &mut App, on: bool, pos: Option<[f64; 2]>) {
+    if on {
+        if !cx.global::<DesktopLyricsState>().is_open() && open_registered(cx, pos) {
+            sync_broadcast(cx);
+        }
+    } else if cx.global::<DesktopLyricsState>().is_open() {
+        close(cx);
+    }
+}
+
+/// 进程退出路径的主动位置落盘：on_app_quit（app.rs）在 gpui 释放任何窗口
+/// 之前调用。view 的 on_release 也能落盘，但退出序列里主窗先于本窗释放，
+/// 主窗 on_release 的 `flush_pending_settings` 因此早于本窗的位置注册——
+/// 那份 pending 没有下一次 flush 兜底，500ms 防抖又被 ~200ms 的退出窗口
+/// 掐死。这里赶在 flush 之前把最后已知位置写进设置（注册 pending）。
+/// 悬浮窗不存在时是空操作。
+pub(crate) fn persist_now(cx: &mut App) {
+    let Some(handle) = cx.global::<DesktopLyricsState>().window else {
+        return;
+    };
+    let pos = handle
+        .update(cx, |view, _window, _cx| view.last_bounds)
+        .ok()
+        .flatten();
+    if let Some(pos) = pos {
+        persist_position(pos, cx);
+    }
 }
 
 pub fn close(cx: &mut App) {
@@ -289,12 +334,15 @@ fn disable_os_window_chrome(window: &mut Window) {
 #[cfg(not(windows))]
 fn disable_os_window_chrome(_window: &mut Window) {}
 
-/// 持久化窗口位置。调用点是 view 的 on_release（见 last_bounds 注释）：
+/// 持久化窗口位置。常规调用点是 view 的 on_release（见 last_bounds 注释）：
 /// Windows 的 start_window_move 是**异步投递** WM_NCLBUTTONDOWN 而非阻塞
 /// 模态循环——按下时刻读 bounds 拿到的是拖动前坐标（旧实现的
 /// "模态循环返回即拖动结束"前提不成立，位置持久化滞后一次交互）；
-/// 渲染期缓存最后位置、销毁时落盘，是唯一覆盖全部销毁路径
-/// （✕/toggle/Alt+F4/主窗关闭/进程退出）的时机。
+/// 渲染期缓存最后位置、销毁时落盘，覆盖 ✕/toggle/Alt+F4/主窗关闭。
+/// 进程退出例外：退出序列里本窗 on_release 晚于主窗（持有
+/// flush_pending_settings 的 on_release）释放，注册的位置 pending 没有
+/// 下一次 flush 兜底、500ms 防抖又被退出窗口掐死——该路径由 on_app_quit
+/// 经 [`persist_now`] 提前落盘（见其注释）。
 fn persist_position(pos: [f64; 2], cx: &mut App) {
     let model = cx.global::<SettingsGlobal>().model.clone();
     model.update(cx, |s, cx| {

@@ -1,7 +1,7 @@
 use crate::sync::RecoveredRwLock;
 use crate::ui::design::ICON_SM;
 use crate::{
-    playback::{interface::PlaybackInterface, queue::QueueItemData},
+    playback::{interface::PlaybackInterface, queue::QueueItemData, thread::PlaybackState},
     settings::SettingsGlobal,
     toasts::{Toast, emit_toast},
     ui::{
@@ -224,6 +224,17 @@ impl QueueItem {
             })
             .detach();
 
+            // 播放态镜像也要驱动行重绘：render 的 is_current 守卫读它，而
+            // 停止/恢复不必然伴随 position 变化（thread.rs 的 stop() 只发
+            // StateChanged，不发 QueuePositionChanged），只观察队列实体会让
+            // 高亮在 Stopped↔Playing 转换上滞后到下一次队列通知。状态转换
+            // 是用户操作频率，行数有界（虚拟化），扇出可忽略。
+            let playback_state = cx.global::<PlaybackInfo>().playback_state.clone();
+            cx.observe(&playback_state, |_, _, cx| {
+                cx.notify();
+            })
+            .detach();
+
             let track_id = item.get_db_id();
             // 元数据住在 ui 侧旁表，以条目的 uid 为键（加载器与恢复分支同旧槽位）
             let data = queue_metadata::queue_ui_data(cx, &item);
@@ -324,7 +335,14 @@ impl Render for QueueItem {
                 settings.model.read(cx).interface.always_show_scrollbars
                     && scroll_handle.should_draw_vertical_scrollbar()
             };
-            let is_current = self.current == self.idx;
+            // queue.position 的 0 是双义值：停止态被播放线程置 0 作「无当前
+            // 曲目」哨兵（thread.rs 的撤销到空路径发 QueuePositionChanged(0)，
+            // 且 stop() 后 position 可能残留旧值），播放中的 0 则真的是队头
+            // 在播——只比 current==idx 会让停止后的第 0 行假高亮（undo 清空
+            // 播放历史后尤其误导）。播放态守卫：Stopped 下不高亮任何行。
+            let playing =
+                *cx.global::<PlaybackInfo>().playback_state.read(cx) != PlaybackState::Stopped;
+            let is_current = playing && self.current == self.idx;
             let image_key = track_id.map(ManagedImageKey::Track).or_else(|| {
                 #[cfg(feature = "online_sources")]
                 {

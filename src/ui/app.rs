@@ -854,7 +854,16 @@ pub fn run() -> anyhow::Result<()> {
         let last_volume = *cx.global::<PlaybackInfo>().volume.read(cx);
 
         // 收听统计记录器：由播放事件循环喂数据，退出时刷进 SQLite。
-        cx.set_global(crate::stats::StatsHandle::new());
+        let stats_handle = crate::stats::StatsHandle::new();
+        // 硬 cap 阀门的 exit(70) 是裸进程退出，不走 gpui 退出路径——下面的
+        // on_app_quit 排空不会执行。把记录器与连接池登记给探针线程
+        // （main.rs 的 EXIT_STATS_FLUSH），阀门退出前照 on_app_quit 的同一
+        // 写法补落未满 60s 的半行（见 main.rs exit(70) 分支）。
+        crate::register_exit_stats_flush(
+            crate::stats::StatsHandle(stats_handle.0.clone()),
+            cx.global::<Pool>().0.clone(),
+        );
+        cx.set_global(stats_handle);
 
         let mut playback_interface: PlaybackInterface = PlaybackThread::start(
             queue.clone(),
@@ -900,6 +909,17 @@ pub fn run() -> anyhow::Result<()> {
         // 退出应用时更新 `StorageData` 并把它保存到文件系统。
         cx.on_app_quit({
             move |cx| {
+                // 桌面歌词位置必须先于一切落盘动作注册：gpui 退出序列先跑
+                // on_app_quit 观察者、后 windows.clear() 释放窗口，而主窗
+                // （SlotMap 序在前）on_release 里的 flush_pending_settings
+                // 早于悬浮窗 on_release 的位置注册——那份 pending 只剩
+                // 500ms 防抖，会被 ~200ms 的退出窗口掐死。这里同步把最后
+                // 已知位置写进设置（注册 pending），随后主窗释放时的 flush
+                // 就能看到并同步补写它。EQ 尾笔（equalizer/view.rs 的释放
+                // 守卫）有同样的时序缺口——其 pending 同样注册在主窗 flush
+                // 之后，只能赌防抖任务在退出竞速中落地；已知限制，本次不动
+                // （改它需要把守卫逻辑挪进本闭包，超出最小改动）。
+                crate::ui::desktop_lyrics::persist_now(cx);
                 let data = StorageData::new(cx);
                 let storage = storage.clone();
 

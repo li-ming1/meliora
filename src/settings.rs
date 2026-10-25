@@ -38,6 +38,21 @@ pub struct Settings {
     pub update: update::UpdateSettings,
 }
 
+impl Settings {
+    /// 修复手编 settings.json 可能带入的越界值（对照 equalizer.rs 的
+    /// sanitize 先例：Deserialize 后钳位）。ReplayGain 前置增益的文档承诺
+    /// -6.0..+6.0（replaygain.rs），但序列化侧只有 `#[serde(default)]`
+    /// 没有钳位——越界值会直接进 `10^(dB/20)` 的指数（+20dB 即 10 倍
+    /// 增益），回退前置增益同理；非有限值则让整个增益计算失控。
+    fn sanitize(&mut self) {
+        use crate::playback::dsp::equalizer::clamp_finite;
+        self.playback.replaygain.preamp_db =
+            clamp_finite(self.playback.replaygain.preamp_db, -6.0, 6.0, 0.0);
+        self.playback.replaygain.fallback_preamp_db =
+            clamp_finite(self.playback.replaygain.fallback_preamp_db, -6.0, 6.0, 0.0);
+    }
+}
+
 fn has_stored_theme_setting(value: &serde_json::Value) -> bool {
     value
         .get("interface")
@@ -133,6 +148,7 @@ pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
     };
 
     apply_legacy_theme_selection(path, &mut settings, has_theme_setting);
+    settings.sanitize();
     SettingsLoadOutcome::Loaded(settings)
 }
 
@@ -385,6 +401,18 @@ fn apply_settings_outcome(
                 let power = cx.global::<crate::power::PowerManager>().clone();
                 power.set_prevent_idle(cx, settings.playback.prevent_idle);
             }
+            // desktop_lyrics 同样不在播放线程的 SettingsChanged 消费路径里：
+            // 悬浮窗实态由 desktop_lyrics 模块自持，手编设置位后若不推送，
+            // 开关按钮与窗口实态各执一词（位=true 而窗不存在）。设置位与
+            // 位置都由调用方带入——本函数跑在 Settings 实体自身的 update
+            // 闭包内，被调函数里不得再 read/update 该实体（重入 panic）。
+            if current.interface.desktop_lyrics != settings.interface.desktop_lyrics
+                && cx.has_global::<crate::ui::desktop_lyrics::DesktopLyricsState>()
+            {
+                let on = settings.interface.desktop_lyrics;
+                let pos = settings.interface.desktop_lyrics_pos;
+                crate::ui::desktop_lyrics::apply_enabled(cx, on, pos);
+            }
             // 内容相同的 reload（我们自己保存的回声、notify 风暴）不得
             // 级联触发全应用的 refresh_windows 观察者
             let changed = *current != settings;
@@ -576,5 +604,38 @@ mod tests {
 
         assert!(settings.update.auto_check);
         assert!(settings.update.auto_download);
+    }
+
+    /// 手编的越界 ReplayGain 前置增益必须在读入时被钳回文档承诺的
+    /// -6.0..+6.0（replaygain.rs），否则直接进 10^(dB/20) 的指数。
+    #[test]
+    fn create_settings_clamps_out_of_range_replaygain_preamp() {
+        let dir = create_test_dir();
+        fs::write(
+            settings_path(&dir),
+            r#"{"playback": {"replaygain": {"preamp_db": 100.0, "fallback_preamp_db": -100.0}}}"#,
+        )
+        .unwrap();
+
+        let settings = create_settings(&settings_path(&dir)).into_settings();
+
+        assert_eq!(settings.playback.replaygain.preamp_db, 6.0);
+        assert_eq!(settings.playback.replaygain.fallback_preamp_db, -6.0);
+    }
+
+    /// 界内值原样通过：钳位不得改动合法设置。
+    #[test]
+    fn create_settings_keeps_in_range_replaygain_preamp() {
+        let dir = create_test_dir();
+        fs::write(
+            settings_path(&dir),
+            r#"{"playback": {"replaygain": {"preamp_db": -3.5, "fallback_preamp_db": 2.0}}}"#,
+        )
+        .unwrap();
+
+        let settings = create_settings(&settings_path(&dir)).into_settings();
+
+        assert_eq!(settings.playback.replaygain.preamp_db, -3.5);
+        assert_eq!(settings.playback.replaygain.fallback_preamp_db, 2.0);
     }
 }

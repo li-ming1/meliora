@@ -398,6 +398,19 @@ pub(crate) fn spawn_replacement() -> bool {
         .is_some()
 }
 
+/// 硬 cap 阀门 exit(70) 路径的收听统计落盘登记。探针任务跑在 RUNTIME 上、
+/// 拿不到 gpui Global，而 exit(70) 是裸进程退出、不走 gpui 退出路径——
+/// app.rs on_app_quit 里那套排空（on_state(Stopped) + take_pending +
+/// 落盘）不会执行，recorder 未满 60s 的半行就此丢失。app.rs 在 StatsHandle
+/// 与 Pool 就绪后把两者登记进来，阀门退出分支照同一写法补落。OnceLock 的
+/// 写入必然早于任何可能的触发（登记在启动装配 ~1s，阀门要求 ≥300s 存活）。
+static EXIT_STATS_FLUSH: OnceLock<(crate::stats::StatsHandle, sqlx::SqlitePool)> = OnceLock::new();
+
+/// 登记入口（app.rs 启动装配调用一次；重复调用保留首个）。
+pub(crate) fn register_exit_stats_flush(stats: crate::stats::StatsHandle, pool: sqlx::SqlitePool) {
+    let _ = EXIT_STATS_FLUSH.set((stats, pool));
+}
+
 /// [frame] 探针的窗口标签注册表：gpui 的 `FrameTiming` 只带 `WindowId`，
 /// 按窗口归因（主窗口 / 桌面歌词悬浮窗的帧节奏差一个数量级，混在一行里
 /// 无法判读）需要应用在开窗时登记人类可读标签。
@@ -988,6 +1001,24 @@ fn spawn_memory_probe() {
                     // 阀门重启依赖会话/设置随改随存：防抖窗口内的最后一笔
                     // 同步补写后再退出，替换进程才能读到完整状态。
                     crate::settings::flush_pending_settings();
+                    // 收听统计同补：exit(70) 不走 gpui 退出路径，on_app_quit
+                    // 的排空不会执行（见 EXIT_STATS_FLUSH 注释）。照它的写法
+                    // 取半行（on_state(Stopped)+take_pending）后直接在本任务
+                    // 内 await 落盘——探针本来就跑在 RUNTIME 上，再
+                    // RUNTIME.block_on 会 panic（运行时内不能再进入运行时），
+                    // await 语义等同"exit 前同步完成"，时间预算与 flush 同
+                    // 量级（几行 SQLite 插入）。
+                    if let Some((stats, pool)) = EXIT_STATS_FLUSH.get() {
+                        use crate::sync::RecoveredMutex;
+                        let pending_rows = {
+                            let mut recorder = stats.0.lock_recovered();
+                            recorder.on_state(crate::playback::thread::PlaybackState::Stopped);
+                            recorder.take_pending()
+                        };
+                        if !pending_rows.is_empty() {
+                            crate::stats::queries::write_rows(pool, pending_rows).await;
+                        }
+                    }
                     std::process::exit(70);
                 }
                 tracing::error!("memory hard cap: replacement spawn failed; continuing degraded");
