@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{
     FromRow, SqlitePool,
     sqlite::{
-        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+        SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePoolOptions, SqliteRow,
+        SqliteSynchronous,
     },
 };
 use tracing::debug;
@@ -718,11 +719,18 @@ pub async fn reorder_playlist(
     playlist_id: i64,
     new_position: i64,
 ) -> sqlx::Result<()> {
+    // move 脚本里的两条 UPDATE 必须同时生效或全不生效：只提交位移那一条，
+    // 会让其后的每个歌单都错一位。原位置读取也放进同一事务，免得位移区间
+    // 按过期锚点计算——防御性加固：playlist 表的 position 现无任何后台写者
+    // （create=MAX+1 追加、delete=纯删、rename 不动位，reorder 仅 UI 线程
+    // 串行调用），与 move/remove 同批收敛只为防未来后台写者。
+    let mut tx = pool.begin().await?;
+
     let original_position: i64 = sqlx::query_scalar(include_str!(
         "../../queries/playlist/get_playlist_position.sql"
     ))
     .bind(playlist_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
 
     let move_query = if original_position < new_position {
@@ -732,10 +740,6 @@ pub async fn reorder_playlist(
     } else {
         return Ok(());
     };
-
-    // move 脚本里的两条 UPDATE 必须同时生效或全不生效：只提交位移那一条，
-    // 会让其后的每个歌单都错一位。
-    let mut tx = pool.begin().await?;
 
     sqlx::query(move_query)
         .bind(new_position)
@@ -754,8 +758,20 @@ pub async fn move_playlist_item(
     item_id: i64,
     new_position: i64,
 ) -> sqlx::Result<()> {
-    // 取当前项的位置
-    let original_item = get_playlist_item(pool, item_id).await?;
+    // 原位置读取必须与位移 UPDATE 同事务：playlist_item 的 position 有真实
+    // 后台写者（remove_tracks_from_playlist 的整表 renumber、add_playlist_items
+    // 的区间平移），事务外读到的 position 在窗口内被并发改写时，位移区间按
+    // 过期锚点计算会产生重复 position；窗口内条目被删除则事务内查询返回
+    // RowNotFound → Err，对外行为与原先事务外失败一致。残余限制：new_position
+    // 仍由调用方在事务外读出，对手提交后目标位可能漂移——越界只产生空洞
+    // （相对顺序不破），事务内 clamp 留作后续工作；并发冲突时 DEFERRED 事务
+    // 读后写升级可能返回 BUSY 类错误（未运行验证），由调用方现有 error 日志
+    // 路径承接，属可接受的行为变化（原行为是静默损坏）。
+    // 不能给 (playlist_id, position) 补 UNIQUE 兜底：add_playlist_items 的
+    // 平移式写法（先整体 +块长再逐条定位）中间态瞬时同位，直接加约束该路径
+    // 必然失败；需两阶段偏移（先挪负区间再回正）或改写法，属独立工程。
+    let mut tx = pool.begin().await?;
+    let original_item = get_playlist_item_in_tx(&mut tx, item_id).await?;
 
     let move_query = if original_item.position < new_position {
         include_str!("../../queries/playlist/move_track_down.sql")
@@ -766,8 +782,6 @@ pub async fn move_playlist_item(
     };
 
     // 位移 + 重排这两条语句必须同时生效或全不生效
-    let mut tx = pool.begin().await?;
-
     sqlx::query(move_query)
         .bind(new_position)
         .bind(original_item.position)
@@ -783,10 +797,12 @@ pub async fn move_playlist_item(
 
 pub async fn remove_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Result<()> {
     let query = include_str!("../../queries/playlist/remove_track.sql");
-    let item = get_playlist_item(pool, item_id).await?;
 
-    // 位置压缩与删除必须同时生效或全不生效
+    // 位置压缩与删除必须同时生效或全不生效；原位置读取同进事务（对手面与
+    // move_playlist_item 相同：后台整表 renumber / 区间平移）。窗口内条目被
+    // 并发删除 → 事务内 RowNotFound → Err，对外行为与原先事务外失败一致。
     let mut tx = pool.begin().await?;
+    let item = get_playlist_item_in_tx(&mut tx, item_id).await?;
 
     sqlx::query(query)
         .bind(item.playlist_id)
@@ -804,6 +820,18 @@ pub async fn get_playlist_item(pool: &SqlitePool, item_id: i64) -> sqlx::Result<
     let query = include_str!("../../queries/playlist/select_playlist_item.sql");
 
     sqlx::query_as(query).bind(item_id).fetch_one(pool).await
+}
+
+/// [`get_playlist_item`] 的事务内变体：move/remove 的原位置读取必须与后续
+/// UPDATE 同一事务（竞态窗口见各调用点注释）；走 pool 的事务外读取正是
+/// 被收敛掉的窗口。
+async fn get_playlist_item_in_tx(
+    tx: &mut SqliteConnection,
+    item_id: i64,
+) -> sqlx::Result<PlaylistItem> {
+    let query = include_str!("../../queries/playlist/select_playlist_item.sql");
+
+    sqlx::query_as(query).bind(item_id).fetch_one(tx).await
 }
 
 pub async fn playlist_has_track(
