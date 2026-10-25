@@ -5,7 +5,10 @@
 //! 窗口管理。主线程创建，gpui 的 GetMessage 泵顺带派发它的消息
 //! （`DispatchMessage` 对 message-only 窗口与普通窗口一视同仁），因此
 //! **不需要给 gpui 打任何补丁**。它同时充当第二次启动的激活消息靶点
-//! （`FindWindowW` 按类名定位，隐藏窗口也可查找）。
+//! （经 `FindWindowExW` 以 `HWND_MESSAGE` 为父定位：message-only 窗口不进
+//! 顶层窗口表，`FindWindowW` 查不到——MSDN「Window Features → Message-Only
+//! Windows」原文 *To find message-only windows, specify HWND_MESSAGE in the
+//! hwndParent parameter of FindWindowEx*）。
 //!
 //! 图标丢失的自愈**不**依赖 `TaskbarCreated`：message-only 窗口收不到广播
 //! 消息（MSDN「Window Features → Message-Only Windows」原文
@@ -31,7 +34,7 @@ use windows::{
             },
             WindowsAndMessaging::{
                 AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW,
-                DefWindowProcW, DestroyMenu, DestroyWindow, FindWindowW, GetCursorPos,
+                DefWindowProcW, DestroyMenu, DestroyWindow, FindWindowExW, GetCursorPos,
                 GetSystemMetrics, GetWindowThreadProcessId, HICON, HMENU, HWND_MESSAGE, IMAGE_ICON,
                 IsWindowVisible, LR_SHARED, LoadImageW, MF_SEPARATOR, MF_STRING, PostMessageW,
                 RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_HIDE,
@@ -392,10 +395,13 @@ pub(super) fn focus_main_window() {
 }
 
 /// 第二次启动：定位运行中实例的 message-only 窗口并投递激活消息。
+/// 定位必须走 `FindWindowExW` 且父窗口给 `HWND_MESSAGE`——message-only 窗口
+/// 不在顶层窗口表里，`FindWindowW` 对它永远查空（2026-10-25 修复的正是
+/// 这个：唤回失效回落到弹窗）。
 /// 前台锁处理：本进程（用户刚启动、是前台）授权目标进程设置前台。
 pub(super) fn activate_existing_instance() -> bool {
     unsafe {
-        let Ok(hwnd) = FindWindowW(TRAY_CLASS, PCWSTR::null()) else {
+        let Ok(hwnd) = FindWindowExW(Some(HWND_MESSAGE), None, TRAY_CLASS, PCWSTR::null()) else {
             return false;
         };
         let mut pid = 0u32;
