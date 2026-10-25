@@ -485,6 +485,18 @@ where
             return Err(SubmissionError::DeviceError);
         }
 
+        // 纵深守卫：本流按 open 时的 `config.channels` 交织消费，管线生产者
+        // 平面数不一致即拒绝——否则样本会被拆进错误声道（率漂移则是变调变速）
+        // 且表现为静默垃圾音频。整数比较零分配；引擎侧在 recreate_stream 后
+        // 校验管线与流格式一致（修复后此处结构上不可达：不经 recreate_stream
+        // 的格式变化不存在，CpalStream::reset 沿用同一 config）。
+        if input.channel_count() != self.config.channels as usize {
+            return Err(SubmissionError::FormatMismatch {
+                stream_channels: self.config.channels as usize,
+                pipeline_channels: input.channel_count(),
+            });
+        }
+
         self.report_underruns();
 
         let capacity_frames = self.interleave_buffer.capacity() / input.channel_count().max(1);

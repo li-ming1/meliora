@@ -83,6 +83,14 @@ fn capture_samples<T: Copy + Into<f64>>(staging: &[Vec<T>], read: usize) {
 ///   `open_device` 读取一次）。与 `HB_DUMMY_DIE_AFTER_FRAMES` 的一次性
 ///   闩锁不同，重建出的新流同样立即失败，用于把引擎逼进设备重建退避窗。
 ///   无默认值：未设置即不生效。
+/// - `HB_DUMMY_STRICT_FORMAT`：格式严格模式——`open_device` 在已设置时拒绝
+///   声道数与当前 `HB_DUMMY_CHANNELS` 不符的请求（`InvalidSampleFormat`），
+///   把 DeviceController 逼进「回退设备默认格式」分支，用于复现声道漂移。
+///   同在 `open_device` 读取一次。无默认值：未设置即不生效。
+///
+/// 流在打开时记录请求的声道数，`consume_from` 校验管线消费者平面数与之一致
+/// （不一致返回 [`SubmissionError::FormatMismatch`]）——与 cpal 流的纵深守卫
+/// 同构，把「按管线声道数交织进新声道布局」从静默垃圾音频变为显式错误。
 pub struct DummyDeviceProvider {}
 
 impl DummyDeviceProvider {
@@ -163,15 +171,31 @@ impl DummyDevice {
     pub fn persistent_fault() -> bool {
         env::var("HB_DUMMY_PERSISTENT_FAULT").is_ok()
     }
+
+    /// 格式严格模式 knob 是否生效（`HB_DUMMY_STRICT_FORMAT` 已设置即生效，
+    /// 不解析值）。仅在 `open_device` 调用，零分配纪律同
+    /// [`DummyDevice::persistent_fault`]。
+    pub fn strict_format() -> bool {
+        env::var("HB_DUMMY_STRICT_FORMAT").is_ok()
+    }
 }
 
 impl Device for DummyDevice {
-    fn open_device(&mut self, _format: FormatInfo) -> Result<Box<dyn OutputStream>, OpenError> {
+    fn open_device(&mut self, format: FormatInfo) -> Result<Box<dyn OutputStream>, OpenError> {
+        // 格式严格模式：拒绝与当前设备声道配置不符的请求，把 DeviceController
+        // 逼进「回退设备默认格式」分支（真实设备对不支持的布局才会这样拒绝）。
+        if DummyDevice::strict_format() && format.channels.count() != DummyDevice::get_channels() {
+            return Err(OpenError::InvalidSampleFormat);
+        }
+        // 流按本次请求的声道布局消费；consume_from 据此校验管线生产者平面数。
+        let channels = format.channels.count() as usize;
         if let Some(capacity) = DummyDevice::get_bounded_frames() {
             let drain = DummyDevice::get_drain_frames();
-            return Ok(Box::new(BoundedDummyStream::new(capacity, drain)) as Box<dyn OutputStream>);
+            return Ok(Box::new(BoundedDummyStream::new(capacity, drain, channels))
+                as Box<dyn OutputStream>);
         }
         let device = DummyStream {
+            channels,
             die_after: DummyDevice::get_die_after_frames(),
             persistent_fault: DummyDevice::persistent_fault(),
             consumed: 0,
@@ -195,6 +219,9 @@ impl Device for DummyDevice {
 }
 
 pub struct DummyStream {
+    /// 本流打开时的声道数（open 请求的 `FormatInfo.channels`）。
+    /// consume_from 用它校验管线平面数，格式不匹配即显式拒绝。
+    channels: usize,
     /// 若设置，消费到这么多帧后故障一次（见 [`arm_device_death`]）。
     die_after: Option<usize>,
     /// 硬故障模拟闩锁：`HB_DUMMY_PERSISTENT_FAULT` 在流打开时已设置即 true
@@ -253,6 +280,15 @@ impl OutputStream for DummyStream {
             return Err(SubmissionError::DeviceError);
         }
 
+        // 纵深守卫：流按 open 时的声道数消费，管线平面数不一致即拒绝——
+        // 整数比较零分配；修复引擎侧漂移检测后结构上不可达。
+        if self.channels != input.channel_count() {
+            return Err(SubmissionError::FormatMismatch {
+                stream_channels: self.channels,
+                pipeline_channels: input.channel_count(),
+            });
+        }
+
         let available = input.potentially_available();
         if available == 0 {
             return Ok(0);
@@ -273,15 +309,18 @@ impl OutputStream for DummyStream {
 pub struct BoundedDummyStream {
     capacity: usize,
     drain: usize,
+    /// 本流打开时的声道数；consume_from 的格式守卫依据（同 [`DummyStream`]）。
+    channels: usize,
     /// 当前缓冲在被建模硬件环中的帧数。
     fill: usize,
 }
 
 impl BoundedDummyStream {
-    fn new(capacity: usize, drain: usize) -> Self {
+    fn new(capacity: usize, drain: usize, channels: usize) -> Self {
         Self {
             capacity,
             drain: drain.max(1),
+            channels,
             fill: 0,
         }
     }
@@ -310,6 +349,15 @@ impl OutputStream for BoundedDummyStream {
     }
 
     fn consume_from(&mut self, input: &mut ChannelConsumers) -> Result<usize, SubmissionError> {
+        // 纵深守卫（同 DummyStream）：流按 open 时的声道数消费，管线平面数
+        // 不一致即拒绝，不推进也不消费。
+        if self.channels != input.channel_count() {
+            return Err(SubmissionError::FormatMismatch {
+                stream_channels: self.channels,
+                pipeline_channels: input.channel_count(),
+            });
+        }
+
         // 推进播放：从环里排空至多 `drain` 帧
         self.fill = self.fill.saturating_sub(self.drain);
 

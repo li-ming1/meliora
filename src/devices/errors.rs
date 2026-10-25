@@ -6,6 +6,16 @@ pub enum SubmissionError {
     WriteTimeout,
     #[error("The audio device reported a fatal error (disconnected?)")]
     DeviceError,
+    // 流按 `stream_channels` 声道交织消费，而管线生产者是 `pipeline_channels`
+    // 个平面——继续提交会把样本拆进错误的声道（采样率漂移则是变调变速）。
+    // 修复引擎侧漂移检测后此错误结构上不可达，纯纵深守卫。
+    #[error(
+        "Pipeline channel count {pipeline_channels} does not match the open stream ({stream_channels})"
+    )]
+    FormatMismatch {
+        stream_channels: usize,
+        pipeline_channels: usize,
+    },
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Error)]

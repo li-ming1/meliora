@@ -779,11 +779,57 @@ impl AudioEngine {
 
     /// 用当前声道格式重建设备流并把均衡器重新同步到它。返回原始设备错误，
     /// 好让每个调用方按自己的措辞上报。
+    ///
+    /// 契约：成功返回后，活管线的设备侧参数（target_rate / device_channel_count）
+    /// 与流实际格式一致——检测见 [`AudioEngine::rebuild_pipeline_if_device_format_drifted`]。
     fn recreate_stream(&mut self) -> Result<(), DeviceError> {
         let channels = self.device.current_format().map(|f| f.channels.clone());
         self.device.create_stream(channels).map(|_| ())?;
+        self.rebuild_pipeline_if_device_format_drifted();
         self.sync_eq_format();
         Ok(())
+    }
+
+    /// 设备流（重）建后校验「管线设备侧参数 == 流实际格式」。create_stream 的
+    /// 请求始终叠加在新设备默认格式之上（热插拔后默认率必变），回退分支还会
+    /// 换掉声道布局——成功建流 ≠ 格式没漂。漂移则按新格式重建管线各级；
+    /// 缓冲音频按一次设备故障的语义丢弃。drain 期漂移：新环为空 → 下轮
+    /// drain_cycle 即 Eof（尾巴损失 ≤ ~1 重采样分块 + 环内容）。重采样器不
+    /// 在此处强建：下一解码包的 matches_params 检查对新 p.target_rate 自动
+    /// 闭环（源率 == 新目标率时直接弃用）。无漂移路径是纯整数比较，零分配。
+    fn rebuild_pipeline_if_device_format_drifted(&mut self) {
+        // 先 Copy 出两侧参数再拿 &mut self 重建，避免 device/pipeline 借用交叠。
+        let (actual_rate, actual_channels) = match self.device.current_format() {
+            Some(format) => (
+                format.sample_rate,
+                format.channels.to_layout().count().max(1),
+            ),
+            None => return,
+        };
+        let (target_rate, device_channels) = match self.pipeline.as_ref() {
+            Some(p) => (p.target_rate, p.device_channel_count),
+            // initialize/open 的建流路径管线必空（open 在 476-477 已清管线，
+            // 528 用新 current_format 重搭），活管线只随本方法所在的
+            // recreate_stream 走到这里。
+            None => return,
+        };
+        if target_rate == actual_rate && device_channels == actual_channels {
+            return;
+        }
+        warn!(
+            old_rate = target_rate,
+            new_rate = actual_rate,
+            old_channels = device_channels,
+            new_channels = actual_channels,
+            "device format drifted on stream (re)create; rebuilding pipeline stages"
+        );
+        // source_spec 取当前媒体真实声道——漂移在设备侧，源侧不变。
+        // 重建失败（如混音器不支持该布局对）→ 清管线，交给 process_cycle
+        // 既有自愈重搭。
+        if let Err(e) = self.rebuild_pipeline(PipelineOverrides::default()) {
+            error!("pipeline rebuild after format drift failed: {e:?}; clearing for self-heal");
+            self.clear_pipeline();
+        }
     }
 
     /// 设备流缺失时的自愈。`open`/`process_cycle` 的所有 reset/play/重建都以

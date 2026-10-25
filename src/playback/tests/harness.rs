@@ -4,12 +4,13 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::sync::RecoveredMutex;
 use crate::{
     playback::{
         dsp::spectrum::spectrum_tap,
+        events::PlaybackEvent,
         thread::audio_engine::{AudioEngine, EngineCycleResult},
     },
     test_support::register_test_media_providers,
@@ -24,7 +25,8 @@ pub fn engine_lock() -> MutexGuard<'static, ()> {
 
 pub fn configure_dummy_device(rate: u32, bit_format: &str, channels: u16) {
     // 这些变量由 dummy 提供者在设备构造时读取（engine.initialize 那一步）；
-    // 在创建引擎之前于本线程直接设置即可，无并发读写之争。
+    // 在创建引擎之前于本线程直接设置即可，无并发读写之争。清理清单兜底
+    // 上个测试遗留的故障/严格格式 knob（error_handling.rs 的兜底纪律所指）。
     unsafe {
         std::env::set_var("DEVICE_PROVIDER", "dummy");
         std::env::set_var("HB_DUMMY_SAMPLE_RATE", rate.to_string());
@@ -34,6 +36,7 @@ pub fn configure_dummy_device(rate: u32, bit_format: &str, channels: u16) {
         std::env::remove_var("HB_DUMMY_DRAIN_FRAMES");
         std::env::remove_var("HB_DUMMY_DIE_AFTER_FRAMES");
         std::env::remove_var("HB_DUMMY_PERSISTENT_FAULT");
+        std::env::remove_var("HB_DUMMY_STRICT_FORMAT");
     }
 }
 
@@ -51,11 +54,23 @@ pub fn configure_device_death(frames: usize) {
     crate::devices::dummy::arm_device_death();
 }
 
-/// 新建一个已在 dummy 设备上播放 `path` 的音频引擎。
-pub fn engine_playing(path: &Path) -> AudioEngine {
+/// 模拟默认设备热插拔后的格式变更：改写 dummy 的采样率/声道 env。引擎由测试
+/// 单线程驱动，set_var 发生在周期之间，而设备只在 create_stream 时读 env，
+/// 无竞态（同 [`configure_dummy_device`] 的既有声明）。
+pub fn configure_hotplug_format(rate: u32, channels: u16) {
+    unsafe {
+        std::env::set_var("HB_DUMMY_SAMPLE_RATE", rate.to_string());
+        std::env::set_var("HB_DUMMY_CHANNELS", channels.to_string());
+    }
+}
+
+/// 新建一个已在 dummy 设备上播放 `path` 的音频引擎，并返回事件接收端
+/// （供断言 SampleRateChanged 等播放事件）。
+pub fn engine_playing_with_events(path: &Path) -> (AudioEngine, UnboundedReceiver<PlaybackEvent>) {
     register_test_media_providers();
 
-    let mut engine = AudioEngine::new(unbounded_channel().0, spectrum_tap().0);
+    let (events_tx, events_rx) = unbounded_channel();
+    let mut engine = AudioEngine::new(events_tx, spectrum_tap().0);
     engine.initialize().expect("engine initialization failed");
     engine.set_volume(1.0).expect("failed to set volume");
     engine
@@ -64,7 +79,12 @@ pub fn engine_playing(path: &Path) -> AudioEngine {
     engine
         .open(path, false, None)
         .expect("failed to open the generated test WAV");
-    engine
+    (engine, events_rx)
+}
+
+/// 新建一个已在 dummy 设备上播放 `path` 的音频引擎。
+pub fn engine_playing(path: &Path) -> AudioEngine {
+    engine_playing_with_events(path).0
 }
 
 /// 反复调用 `process_cycle` 直到 EOF；遇到致命错误、或 EOF 始终不来就 panic。
