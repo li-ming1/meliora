@@ -1000,6 +1000,10 @@ fn spawn_memory_probe() {
                 if spawn_replacement() {
                     // 阀门重启依赖会话/设置随改随存：防抖窗口内的最后一笔
                     // 同步补写后再退出，替换进程才能读到完整状态。
+                    // 已知限制：桌面歌词位置不在此列——它只在 view on_release
+                    // 与 persist_now（gpui 退出路径）落盘，exit(70) 不经两者，
+                    // 本会话内最后一次拖动会回退到上次落盘值（与 EQ 尾笔同类
+                    // 缺口；修复需要 UI 线程钩子，非本路径能补）。
                     crate::settings::flush_pending_settings();
                     // 收听统计同补：exit(70) 不走 gpui 退出路径，on_app_quit
                     // 的排空不会执行（见 EXIT_STATS_FLUSH 注释）。照它的写法

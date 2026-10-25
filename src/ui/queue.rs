@@ -356,7 +356,9 @@ impl Render for QueueItem {
                 ))
             });
             let idx = self.idx;
-            let current = self.current;
+            // 停止态下 queue.position 是 0 哨兵/残留旧值（is_current 同款守卫），
+            // 不作为 shift 区间选择的锚点——锚到不可见/误导行会展开错误区间。
+            let current = playing.then_some(self.current);
             let selection = self.selection.clone();
             let selection_for_drag = selection.clone();
             let selection_for_aux = selection.clone();
@@ -425,8 +427,7 @@ impl Render for QueueItem {
                                 } else if ctrl {
                                     selection.update(cx, |s, cx| s.ctrl_toggle(idx, cx));
                                 } else if modifiers.shift {
-                                    selection
-                                        .update(cx, |s, cx| s.shift_range(idx, Some(current), cx));
+                                    selection.update(cx, |s, cx| s.shift_range(idx, current, cx));
                                 } else if select_on_click {
                                     selection.update(cx, |s, cx| s.select(idx, cx));
                                 } else {

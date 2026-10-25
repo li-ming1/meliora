@@ -33,6 +33,7 @@ pub fn configure_dummy_device(rate: u32, bit_format: &str, channels: u16) {
         std::env::remove_var("HB_DUMMY_BOUNDED_FRAMES");
         std::env::remove_var("HB_DUMMY_DRAIN_FRAMES");
         std::env::remove_var("HB_DUMMY_DIE_AFTER_FRAMES");
+        std::env::remove_var("HB_DUMMY_PERSISTENT_FAULT");
     }
 }
 

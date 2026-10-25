@@ -426,7 +426,11 @@ impl PlaybackThread {
     /// 正在进行的那次队列操作也必须走完。
     fn open_or_log(&mut self, path: &Path) {
         if let Err(err) = self.open(path) {
-            error!(path = %path.display(), ?err, "Unable to open file: {err}");
+            error!(
+                path = %crate::media::redact_media_path(&path.to_string_lossy()),
+                ?err,
+                "Unable to open file: {err}"
+            );
         }
     }
 
@@ -434,7 +438,11 @@ impl PlaybackThread {
     /// （无缝切歌前进）。
     fn open_or_log_resampled(&mut self, path: &Path, preserve_resampler: bool) {
         if let Err(err) = self.open_with_resampler(path, preserve_resampler) {
-            error!(path = %path.display(), ?err, "Unable to open file: {err}");
+            error!(
+                path = %crate::media::redact_media_path(&path.to_string_lossy()),
+                ?err,
+                "Unable to open file: {err}"
+            );
         }
     }
 
@@ -762,6 +770,10 @@ impl PlaybackThread {
                 reshuffled,
             } => {
                 info!("Opening next file in queue at index {}", index);
+                // 用户主动跳过单曲循环目标：为旧目标布防的在途预备已过期
+                //（其余导航站点同款；Unchanged 臂刻意不清——repeat-one 下
+                // 预备的就是当前曲本身，对下一次前进仍然有效）。
+                self.drop_stale_prepared_after_navigation();
 
                 if reshuffled == Reshuffled::Reshuffled {
                     self.send_event(PlaybackEvent::QueueUpdated);
@@ -1637,9 +1649,15 @@ mod tests {
         thread.previous();
 
         assert_eq!(thread.queue.current_position(), Some(1));
-        let (_song, position, position_value) = event_order(&mut events_rx);
+        let (song, position, position_value) = event_order(&mut events_rx);
         assert_eq!(position_value, Some(1));
-        assert!(position.is_some(), "QueuePositionChanged must be emitted");
+        // open 成功（真实 wav）：与 play 路径同款次序钉——光标归位先于 open。
+        let song = song.expect("open succeeded; SongChanged must be emitted");
+        let position = position.expect("QueuePositionChanged must be emitted");
+        assert!(
+            song < position,
+            "SongChanged must precede QueuePositionChanged"
+        );
     }
 
     /// 导航（jump）丢弃为旧"下一曲"布防的预备（L-prepared 爪1），且不阻塞

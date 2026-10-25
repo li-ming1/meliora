@@ -158,8 +158,10 @@ fn backoff_window_cycle_is_device_backoff_not_no_progress() {
     // 首次失败在退避窗外：warn → 重建（dummy open_device 成功）→ 重试仍失败
     // → FatalError（旧语义保留；2s 退避窗在重建前已立起）。
     let first = engine.process_cycle();
-    // 窗口活跃（2s）内打开 B 成功后：consume 的失败走窗口内早退。env 在取值
-    // 之后、断言之前清理，任何断言 panic 都不遗留污染。
+    // 窗口活跃（2s）内打开 B 成功后：consume 的失败走窗口内早退。env 的清理
+    // 不防本测试自身的 panic 遗留（remove_var 之前的 expect 同样是 panic 点），
+    // 但 harness 的 configure_dummy_device 清单会兜底——同进程串行的后续
+    // dummy 测试只要经它配置设备即被净化。
     engine.open(&path_b, false, None).expect("open B succeeded");
     let in_window = engine.process_cycle();
     unsafe {

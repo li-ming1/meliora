@@ -406,6 +406,9 @@ fn apply_settings_outcome(
             // 开关按钮与窗口实态各执一词（位=true 而窗不存在）。设置位与
             // 位置都由调用方带入——本函数跑在 Settings 实体自身的 update
             // 闭包内，被调函数里不得再 read/update 该实体（重入 panic）。
+            // 注意 pos 只在开关位翻转触发 open 时被消费：窗口开着时其自身
+            // 位置即权威，手编仅改 pos 不会重定位已开的悬浮窗（重启或关开
+            // 生效）——有意取舍，不是接线遗漏。
             if current.interface.desktop_lyrics != settings.interface.desktop_lyrics
                 && cx.has_global::<crate::ui::desktop_lyrics::DesktopLyricsState>()
             {

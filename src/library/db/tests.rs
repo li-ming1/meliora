@@ -627,3 +627,55 @@ async fn duplicate_playlist_name_is_detected_as_unique_violation() {
         "NOT NULL 失败不该被判为撞名，实际错误：{not_null_err:?}"
     );
 }
+
+/// 事务化改位的顺序语义钉：move/remove 后 position 必须无重复、无空洞、
+/// 与实际行序一致（6e4cc24 修复把原位置读取移入事务，本测试把顺序语义
+/// 钉住——并发交错本身无法在单测复现，但同事务读后写的正确形态可以）。
+#[tokio::test]
+async fn move_and_remove_playlist_items_keep_positions_contiguous() {
+    let (_dir, pool) = crate::test_support::create_test_pool("playlist-tx-order-test").await;
+
+    let playlist_id = create_playlist(&pool, "test").await.unwrap();
+    let mut item_ids = Vec::new();
+    for n in 0..=3i64 {
+        sqlx::query(
+            "INSERT INTO track (title, title_sortable, duration, location) \
+                 VALUES ('t', 't', 0, ?)",
+        )
+        .bind(format!("t{n}.flac"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let row: (i64,) =
+            sqlx::query_as("INSERT INTO playlist_item (playlist_id, track_id, position) VALUES (?, ?, ?) RETURNING id")
+                .bind(playlist_id)
+                .bind(n + 1)
+                .bind(n)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        item_ids.push(row.0);
+    }
+
+    // 首条移到末尾：0,1,2,3 → 1,2,3,0
+    move_playlist_item(&pool, item_ids[0], 3).await.unwrap();
+    let order: Vec<i64> = sqlx::query_scalar(
+        "SELECT track_id - 1 FROM playlist_item WHERE playlist_id = ? ORDER BY position",
+    )
+    .bind(playlist_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(order, vec![1, 2, 3, 0]);
+
+    // 删掉现处于中间的 track 2（原 item_ids[1]）：压缩后无空洞
+    remove_playlist_item(&pool, item_ids[1]).await.unwrap();
+    let positions: Vec<i64> = sqlx::query_scalar(
+        "SELECT position FROM playlist_item WHERE playlist_id = ? ORDER BY position",
+    )
+    .bind(playlist_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(positions, vec![0, 1, 2]);
+}
