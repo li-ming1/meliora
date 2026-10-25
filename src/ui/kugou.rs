@@ -485,6 +485,18 @@ async fn fetch_play_url(
     .await
 }
 
+/// 队列去重的同曲判定：条目身份是酷狗且 `mix_song_id` 与目标曲目相等。0 是端点
+/// 省略 id 时的哨兵（与流注册表同语义，见 `online_sources::kugou::remember_online_track`
+/// 的逐条守卫），绝不能参与匹配：否则任意两条无 id 曲目会互配，后取回的 URL 经
+/// `replace_path` 写到别的歌的队列行上、播错音频。
+fn queue_item_is_same_kugou_track(id: &OnlineIdentity, mix_song_id: i64) -> bool {
+    matches!(
+        id,
+        OnlineIdentity::Kugou { mix_song_id: existing, .. }
+            if *existing != 0 && *existing == mix_song_id
+    )
+}
+
 fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
     let quality = cx
         .global::<SettingsGlobal>()
@@ -497,8 +509,11 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
     let track = track.clone();
     cx.spawn(async move |cx| {
         // 合并对同一首歌的并发点击：只有第一次点击会抓取并入队；同一窗口内的
-        // 后续点击直接丢弃（claim_fetch，与在线胶水层共用）。
-        {
+        // 后续点击直接丢弃（claim_fetch，与在线胶水层共用）。0 是无 id 哨兵，不能
+        // 当去重键——那会把所有无 id 曲目的点击并进同一趟抓取；此时退化为不去重，
+        // 连点最多多付一次抓取与一条队列条目（可见、可删），不会写错歌。
+        let merge_clicks = track.mix_song_id != 0;
+        if merge_clicks {
             let mut dedup = write_pending_fetches();
             if !claim_fetch(&mut dedup, track.mix_song_id, intent, Instant::now()) {
                 return;
@@ -517,8 +532,11 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
             .await;
 
         let Some(url) = request.ok().flatten() else {
-            // 只清掉「已在途」标记：失败的抓取必须能在下一次点击时重试。
-            write_pending_fetches().in_flight.remove(&track.mix_song_id);
+            // 只清掉「已在途」标记：失败的抓取必须能在下一次点击时重试。未参与
+            // 合并（id=0）时不碰表——只在参与了去重时才动它的条目。
+            if merge_clicks {
+                write_pending_fetches().in_flight.remove(&track.mix_song_id);
+            }
             tracing::warn!(hash = %track.hash, "kugou play_track: no playable URL in response");
             emit_toast(Toast::warning(tr!(
                 "KUGOU_NO_URL",
@@ -549,9 +567,8 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
             // 写到别的歌上。远古会话恢复的条目 identity=None，不命中只是多插
             // 一条而非错写（一次性迁移边界，可接受）。
             let existing = queue_data.read_recovered().iter().position(|item| {
-                item.online_identity().is_some_and(|id| {
-                    matches!(id, OnlineIdentity::Kugou { mix_song_id, .. } if *mix_song_id == track.mix_song_id)
-                })
+                item.online_identity()
+                    .is_some_and(|id| queue_item_is_same_kugou_track(id, track.mix_song_id))
             });
 
             if let Some(index) = existing {
@@ -561,9 +578,8 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
                 let mut guard = queue_data.write_recovered();
                 let entries = Arc::make_mut(&mut guard);
                 let same_track = entries.get(index).is_some_and(|item| {
-                    item.online_identity().is_some_and(|id| {
-                        matches!(id, OnlineIdentity::Kugou { mix_song_id, .. } if *mix_song_id == track.mix_song_id)
-                    })
+                    item.online_identity()
+                        .is_some_and(|id| queue_item_is_same_kugou_track(id, track.mix_song_id))
                 });
                 let replaced = same_track
                     && entries
@@ -595,7 +611,7 @@ fn play_track(cx: &mut App, track: &KugouTrackInfo, intent: PlayIntent) {
             }
         });
 
-        {
+        if merge_clicks {
             let mut dedup = write_pending_fetches();
             settle_fetch(&mut dedup, track.mix_song_id, intent, Instant::now());
         }
@@ -947,5 +963,31 @@ mod parse_costs {
     fn report_online_page_parse_costs() {
         report("pascal_first_hit", &fixture(true));
         report("snake_last_hit", &fixture(false));
+    }
+}
+
+#[cfg(test)]
+mod queue_dedup_tests {
+    use super::*;
+
+    fn identity(mix_song_id: i64) -> OnlineIdentity {
+        OnlineIdentity::Kugou {
+            hash: format!("hash-{mix_song_id}"),
+            mix_song_id,
+            album_id: 0,
+        }
+    }
+
+    /// 0 是端点省略 id 时的哨兵：两条无 id 曲目绝不互配——否则后取回的 URL 会经
+    /// `replace_path` 写到别的歌的队列行上（播错音频），这正是该守卫要堵的洞。
+    #[test]
+    fn zero_mix_song_id_never_matches() {
+        // 双方任一侧是 0 都不互配（含 0==0：两条不同的无 id 曲目）。
+        assert!(!queue_item_is_same_kugou_track(&identity(0), 0));
+        assert!(!queue_item_is_same_kugou_track(&identity(0), 42));
+        assert!(!queue_item_is_same_kugou_track(&identity(42), 0));
+        // 非 0 且相等才命中；不相等不命中。
+        assert!(queue_item_is_same_kugou_track(&identity(42), 42));
+        assert!(!queue_item_is_same_kugou_track(&identity(42), 43));
     }
 }

@@ -351,6 +351,17 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
+/// 账号身份变了（登录/登出/换号）时清空喜欢缓存：hash 集、hash→fileid 映射与
+/// init 旗标一并复位（并发形态照 `store_liked_entries`：毒化可恢复写锁 + Relaxed
+/// 旗标）。喜欢列表是以登录用户为键的服务端状态——星标是否点亮、unlike 要用的
+/// fileid 都只对当前账号有效，换号后残留会让星标按旧账号点亮、取消喜欢删到旧
+/// 账号的列表。
+pub(crate) fn invalidate_liked_cache() {
+    liked_set().write_recovered().clear();
+    liked_fileids().write_recovered().clear();
+    LIKED_SET_INIT.store(false, Ordering::Relaxed);
+}
+
 /// 编译期 provider 注册表里的酷狗条目（A-1 第②步）；各方法体委托给上面的自由函数。
 pub struct KugouSource;
 

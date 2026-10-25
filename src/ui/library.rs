@@ -55,6 +55,9 @@ mod kugou_ranks;
 pub(crate) fn invalidate_online_account_caches() {
     kugou_playlists::invalidate_cached_playlists();
     kugou_ranks::invalidate_cached_recommend();
+    // 喜欢缓存（星标 + unlike 用的 fileid）同属账号键：登录成功（on_login）与登出
+    // 都经本函数，换号后旧账号的喜欢状态不再点亮星标、不再误删旧账号列表。
+    crate::online_sources::kugou::invalidate_liked_cache();
 }
 #[cfg(feature = "kugou")]
 mod kugou_view_common;

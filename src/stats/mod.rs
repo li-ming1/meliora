@@ -79,6 +79,9 @@ pub fn song_info(
         });
 
         let identity = item.as_ref().and_then(|item| item.online_identity());
+        // 已知口径限制：mix_song_id=0（端点省略 id 的哨兵，见 online_sources/kugou.rs
+        // 的注册表守卫）的曲目全部并进 kugou:0 一个键——去重侧已加 0 守卫（ui/kugou.rs），
+        // 统计侧改键会制造历史孤儿行，维持现状。
         let key = match identity {
             Some(OnlineIdentity::Kugou { mix_song_id, .. }) => format!("kugou:{mix_song_id}"),
             None => return (format!("hash:{}", url_hash(path)), None),
