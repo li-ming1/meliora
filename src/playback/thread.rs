@@ -1728,6 +1728,8 @@ mod tests {
     fn eof_advance_predicate_keeps_matching_prepared() {
         register_test_media_providers();
         let (_dir, items) = wav_dir_items("hb-thread-eof-prepared", 3);
+        // 第三首的路径：用户"跳到别处"的比对目标（items 稍后 move 进队列）
+        let elsewhere = items[2].get_path().to_path_buf();
         let (mut thread, _events_rx) = thread_with_queue(items);
 
         thread.jump(0);
@@ -1744,8 +1746,8 @@ mod tests {
             "EOF advance must keep the matching prepared stream (gapless)"
         );
         // 用户跳过到别处（path 不匹配）——同一谓词必须清。
-        let current = thread.queue.current_path().unwrap();
-        thread.engine.drop_prepared_unless_next(Some(&current));
+        // （current_path 访问器是 online_sources 门控的，测试直接用另一首的路径）
+        thread.engine.drop_prepared_unless_next(Some(&elsewhere));
         assert!(!thread.engine.is_next_prepared());
     }
 }

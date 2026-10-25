@@ -453,7 +453,7 @@ impl Lyrics {
     /// 缓存查询：正结果原样返回；在线负结果在 TTL 内返回空（免重发
     /// search 请求），过期视为未命中（条目保留，重拉落地后被覆盖）。命中
     /// 即 LRU 续命。
-    fn cached_lyrics(&mut self, key: &Path) -> Option<CachedLyric> {
+    fn cached_lyrics(&mut self, key: &std::path::Path) -> Option<CachedLyric> {
         let hit = match self.lyric_cache.get(key) {
             Some(LyricCacheEntry::Positive(loaded)) => Some(loaded.clone()),
             Some(LyricCacheEntry::Negative(at)) => {

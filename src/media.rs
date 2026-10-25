@@ -5,6 +5,15 @@ pub mod download;
 // 在线音源（酷狗等）使用的 HTTP(S) range 请求媒体源。
 #[cfg(feature = "online_sources")]
 pub mod http_source;
+// 占位形态：播放层的非门控签名（OnlineRefresh / 刷新钩子 / open_stream 参数）
+// 引用 MediaUrlRefresh 类型名，online_sources 缺席时模块无真实实现，只需
+// 保持类型名与形态（真身见门控侧 http_source.rs:79）。2026-10-06 台账挂账，
+// 2026-10-25 清偿——默认 feature 集从"编不过"恢复可编译。
+#[cfg(not(feature = "online_sources"))]
+pub mod http_source {
+    use std::{path::PathBuf, sync::Arc};
+    pub type MediaUrlRefresh = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+}
 pub mod lofty;
 pub mod lookup_table;
 pub mod metadata;

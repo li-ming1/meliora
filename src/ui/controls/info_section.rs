@@ -332,23 +332,24 @@ impl InfoSection {
                 .on_click(cx.listener(move |_this, _, _, cx| {
                     if let Some(track_id) = track_id {
                         toggle_like(track_id, cx.entity(), cx);
-                        return;
-                    }
-                    #[cfg(feature = "kugou")]
-                    let this = _this;
-                    #[cfg(feature = "kugou")]
-                    if let Some(online) = this.online_track.clone() {
-                        match &online {
-                            OnlinePlayingTrack::Kugou(track) => {
-                                if this.is_online_liked {
-                                    kugou_unlike_track(cx, track);
-                                } else {
-                                    kugou_like_track(cx, track);
+                    } else {
+                        #[cfg(feature = "kugou")]
+                        {
+                            let this = _this;
+                            if let Some(online) = this.online_track.clone() {
+                                match &online {
+                                    OnlinePlayingTrack::Kugou(track) => {
+                                        if this.is_online_liked {
+                                            kugou_unlike_track(cx, track);
+                                        } else {
+                                            kugou_like_track(cx, track);
+                                        }
+                                    }
                                 }
+                                this.is_online_liked = !this.is_online_liked;
+                                cx.notify();
                             }
                         }
-                        this.is_online_liked = !this.is_online_liked;
-                        cx.notify();
                     }
                 })),
         )
@@ -445,29 +446,24 @@ impl Render for InfoSection {
             )
         });
 
+        // 在线曲目没有音乐库曲目；复用当前队列条目存好的 cover_url，与队列
+        // 缩略图的做法完全一致。默认集无在线源，本地曲目键直接短路。
+        #[cfg(feature = "online_sources")]
+        let online_cover_key = self.queue_item_data.as_ref().and_then(|data| {
+            data.read(cx).clone().and_then(|data| {
+                data.cover_url
+                    .filter(|url| !url.is_empty())
+                    .map(ManagedImageKey::HttpCover)
+            })
+        });
+        #[cfg(not(feature = "online_sources"))]
+        let online_cover_key: Option<ManagedImageKey> = None;
+
         let image_key = self
             .current_library_track
             .as_ref()
             .map(|track| ManagedImageKey::Track(track.id))
-            .or_else(|| {
-                // 在线曲目没有音乐库曲目；复用当前队列条目存好的 cover_url，与队列
-                // 缩略图的做法完全一致。
-                #[cfg(feature = "online_sources")]
-                {
-                    self.queue_item_data
-                        .as_ref()
-                        .and_then(|data| data.read(cx).clone())
-                        .and_then(|data| {
-                            data.cover_url
-                                .filter(|url| !url.is_empty())
-                                .map(ManagedImageKey::HttpCover)
-                        })
-                }
-                #[cfg(not(feature = "online_sources"))]
-                {
-                    None
-                }
-            })
+            .or(online_cover_key)
             .or_else(|| {
                 self.current_track_path
                     .as_ref()
@@ -659,6 +655,9 @@ impl Render for InfoSection {
                 ),
             });
             #[cfg(not(feature = "kugou"))]
+            // kugou 侧的同名绑定是真实元组；默认集的影子绑定只需同型
+            //（cfg 影子绑定先例，见 4fdab1f0）
+            #[allow(clippy::type_complexity)]
             let online_download: Option<(SharedString, Rc<dyn Fn(&mut App)>)> = None;
 
             div()

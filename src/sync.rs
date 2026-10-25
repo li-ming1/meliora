@@ -41,6 +41,8 @@ impl<T> RecoveredRwLock<T> for RwLock<T> {
 
 /// `Condvar` 的等待同样返回 `LockResult`：被唤醒时锁可能已经因持锁线程
 /// panic 而毒化，等待方拿回守卫继续判断状态即可（谓词都在自己手里）。
+/// 唯一消费者是 media/prefetch（online_sources 门控）——默认构建下未用。
+#[cfg_attr(not(feature = "online_sources"), allow(dead_code))]
 pub(crate) trait RecoveredCondvar {
     fn wait_recovered<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T>;
     fn wait_timeout_recovered<'a, T>(
