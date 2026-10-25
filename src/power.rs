@@ -69,7 +69,10 @@ impl PlatformPower {
             if display.is_ok() && system.is_ok() {
                 self.handle = Some(handle);
             } else {
-                // 任一请求失败立即释放句柄并保持 handle 为 None,下次 update() 重试。
+                // 任一请求失败立即释放句柄并保持 handle 为 None；本次抑制就此
+                // 缺席，不会自动重试——上游 set_state/set_prevent_idle 对未变化
+                // 的状态早退，只有播放/抑制状态真正翻转（暂停后再播放、设置
+                // 开关往返）才会再次进入 inhibit()。
                 if let Err(e) = CloseHandle(handle) {
                     tracing::error!("Failed to close power request handle: {:?}", e)
                 }

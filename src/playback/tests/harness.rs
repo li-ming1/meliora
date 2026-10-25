@@ -23,7 +23,8 @@ pub fn engine_lock() -> MutexGuard<'static, ()> {
 }
 
 pub fn configure_dummy_device(rate: u32, bit_format: &str, channels: u16) {
-    // 这些环境变量别处既不读也不改，直接设置即可。
+    // 这些变量由 dummy 提供者在设备构造时读取（engine.initialize 那一步）；
+    // 在创建引擎之前于本线程直接设置即可，无并发读写之争。
     unsafe {
         std::env::set_var("DEVICE_PROVIDER", "dummy");
         std::env::set_var("HB_DUMMY_SAMPLE_RATE", rate.to_string());
@@ -66,7 +67,7 @@ pub fn engine_playing(path: &Path) -> AudioEngine {
 }
 
 /// 反复调用 `process_cycle` 直到 EOF；遇到致命错误、或 EOF 始终不来就 panic。
-/// 返回实际跑掉的周期数。
+/// 返回值是返回 Eof 那一轮的 0 起序号（即 EOF 之前完成的周期数，不含该轮）。
 pub fn run_to_eof(engine: &mut AudioEngine, max_cycles: usize) -> usize {
     for cycle in 0..max_cycles {
         match engine.process_cycle() {
