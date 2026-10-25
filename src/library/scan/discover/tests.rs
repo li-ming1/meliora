@@ -45,6 +45,26 @@ fn sidecar_lyrics_path_returns_none_without_stem() {
 }
 
 #[test]
+#[cfg(windows)]
+fn slow_directory_policy_matches_verbatim_paths_on_windows() {
+    // canonicalize 产出 \\?\ 前缀的 verbatim 形态，而 sysinfo 的挂载点是 C:\
+    // 普通形态——裸 starts_with 恒不匹配会让所有读串到通道 0（2026-10-25
+    // 修复的回归钉：正确命中各自通道、且与普通形态路径同判）。
+    let mounts = vec![Utf8PathBuf::from("C:\\"), Utf8PathBuf::from("D:\\")];
+    let mount_to_channel = [
+        (Utf8PathBuf::from("C:\\"), 0),
+        (Utf8PathBuf::from("D:\\"), 1),
+    ]
+    .into_iter()
+    .collect();
+    let policy = DirectoryReadPolicy::slow(mounts, mount_to_channel, 2);
+
+    assert_eq!(policy.channel_for(Utf8Path::new(r"\\?\C:\music")), 0);
+    assert_eq!(policy.channel_for(Utf8Path::new(r"\\?\D:\music")), 1);
+    assert_eq!(policy.channel_for(Utf8Path::new(r"C:\music")), 0);
+}
+
+#[test]
 fn directory_snapshot_selects_the_best_supported_art_name() {
     let dir = TestDir::new("folder-art-discovery-test");
     std::fs::write(dir.join("front.jpeg"), b"front").unwrap();

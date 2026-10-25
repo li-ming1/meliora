@@ -62,7 +62,14 @@ impl DirectoryReadPolicy {
     pub(super) fn channel_for(&self, path: &Utf8Path) -> usize {
         self.mounts
             .iter()
-            .find(|mount| path.as_std_path().starts_with(mount.as_std_path()))
+            // path_is_under_mount 而非裸 starts_with：canonicalize 的 verbatim
+            // 路径与挂载点普通形态在 Windows 上恒不匹配（见 disk.rs 该函数契约）
+            .find(|mount| {
+                crate::library::scan::disk::path_is_under_mount(
+                    path.as_std_path(),
+                    mount.as_std_path(),
+                )
+            })
             .and_then(|mount| self.mount_to_channel.get(mount))
             .copied()
             .unwrap_or(0)

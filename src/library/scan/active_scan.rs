@@ -176,11 +176,15 @@ impl ActiveScan {
                         .as_ref()
                         .and_then(|path| dir_cache.get(path).copied())
                         .or_else(|| {
+                            // path_is_under_mount 而非裸 starts_with：canonicalize
+                            // 的 verbatim 路径与挂载点普通形态在 Windows 上恒不
+                            // 匹配（disk.rs 该函数契约）——修复前这里的 dir_cache
+                            // 插入在 Windows 上恒不可达（find 永远落空）
                             let mount_point = mounts_sorted.iter().find(|mount| {
-                                discovered
-                                    .path
-                                    .as_std_path()
-                                    .starts_with(mount.as_std_path())
+                                crate::library::scan::disk::path_is_under_mount(
+                                    discovered.path.as_std_path(),
+                                    mount.as_std_path(),
+                                )
                             })?;
                             let channel = mount_to_channel
                                 .get(mount_point)

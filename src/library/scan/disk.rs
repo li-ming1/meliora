@@ -71,12 +71,16 @@ pub(crate) fn group_paths_by_disk(paths: &[Utf8PathBuf]) -> DiskGroups {
 }
 
 #[cfg(not(windows))]
-fn path_is_under_mount(path: &Path, mount: &Path) -> bool {
+pub(super) fn path_is_under_mount(path: &Path, mount: &Path) -> bool {
     path.starts_with(mount)
 }
 
+/// 挂载点归属判定。Windows 上 discover 的路径全部经 canonicalize（产出
+/// `\\?\C:\...` verbatim 形态），而 sysinfo 的挂载点是 `C:\` 普通形态——
+/// 裸 starts_with 恒不匹配（2026-10-25：directory.rs 与 active_scan.rs 的
+/// 通道路由曾因此整体失效，所有读串到通道 0），故命中失败再试 verbatim 变体。
 #[cfg(windows)]
-fn path_is_under_mount(path: &Path, mount: &Path) -> bool {
+pub(super) fn path_is_under_mount(path: &Path, mount: &Path) -> bool {
     if path.starts_with(mount) {
         return true;
     }
