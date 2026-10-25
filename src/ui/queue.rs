@@ -10,9 +10,9 @@ use crate::{
             context::context,
             drag_drop::{
                 AlbumDragData, DragDropItemState, DragDropListConfig, DragDropListManager,
-                DragPreview, DropIndicator, DropPosition, TrackDragData, check_drag_cancelled,
-                handle_external_drag_move, handle_track_drag_move, handle_track_drop_multi,
-                request_edge_scroll,
+                DragPreview, DropIndicator, DropPosition, TrackDragData, calculate_move_target,
+                check_drag_cancelled, handle_external_drag_move, handle_track_drag_move,
+                handle_track_drop_multi, request_edge_scroll,
             },
             icons::{CROSS, DISC, PLAYLIST_ADD, STAR, STAR_FILLED, TRASH, USERS, icon},
             managed_image::{ManagedImageKey, managed_image},
@@ -33,7 +33,7 @@ use gpui::*;
 use prelude::FluentBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tracing::error;
+use tracing::{debug, error};
 
 use super::{
     components::button::{ButtonSize, ButtonStyle, button},
@@ -160,6 +160,27 @@ impl QueueSelection {
     }
 }
 
+/// [`QueueItem`] 的多选拖拽同伴缓存：有序选中集减去本行，键为（选中 epoch，
+/// 本行索引）。
+///
+/// `QueueSelection::sorted()` 已是每次变更都维护的快照，因此残留的每帧重算
+/// 只剩喂给拖拽负载的那次 filter+collect `Vec`；负载的 `additional_indices`
+/// 是 `Arc<[usize]>`，本缓存把那次每帧分配变成一次引用计数自增。
+///
+/// `uids` 与 `indices` 同帧捕获、一一对应：拖拽负载的 source/additional 索引
+/// 冻结在拖拽开始那一帧，投放时要靠这份同帧的 uid 指纹才能把"当时被拖的是
+/// 哪几行"重解析为当前索引（见 [`InternalDragLedger`]）。
+struct DragOthers {
+    /// 选中 epoch：任何选中变更（含队列内容变化引发的清空，见 Queue 观察
+    /// 者）都自增，让坐标与指纹整组重建，绝不半新半旧。
+    epoch: u64,
+    idx: usize,
+    /// 喂给负载 `additional_indices` 的索引快照。
+    indices: Arc<[usize]>,
+    /// 同伴槽位在捕获时刻的 `QueueItemData::uid`。
+    uids: Arc<[u64]>,
+}
+
 pub struct QueueItem {
     item: QueueItemData,
     current: usize,
@@ -167,6 +188,9 @@ pub struct QueueItem {
     drag_drop_manager: Entity<DragDropListManager>,
     scroll_handle: UniformListScrollHandle,
     selection: Entity<QueueSelection>,
+    /// 队列内重排拖拽的指纹账本（与列表共享同一实体）：拖拽开始时把本行
+    /// 负载的坐标与槽位 uid 指纹记入账本，投放回调对账重验。
+    drag_ledger: Entity<InternalDragLedger>,
     add_to: Option<Entity<AddToPlaylist>>,
     show_add_to: Option<Entity<bool>>,
     track_id: Option<i64>,
@@ -180,12 +204,8 @@ pub struct QueueItem {
     /// 缓存的拖拽负载基底，仅在该行显示名变化（元数据加载）时重建。
     /// 每帧只克隆它并重新盖上实时索引与选中状态，不再重新分配路径与名称。
     drag_base: Option<(SharedString, TrackDragData)>,
-    /// 缓存的多选拖拽同伴：有序选中集减去本行，键为（选中 epoch，本行索引）。
-    /// `QueueSelection::sorted()` 已是每次变更都维护的快照，因此残留的每帧
-    /// 重算只剩喂给拖拽负载的那次 filter+collect `Vec`；负载的
-    /// `additional_indices` 现在是 `Arc<[usize]>`，本缓存把那次每帧分配
-    /// 变成一次引用计数自增。
-    drag_others: Option<(u64, usize, Arc<[usize]>)>,
+    /// 缓存的多选拖拽同伴（内容见 [`DragOthers`]）。
+    drag_others: Option<DragOthers>,
 }
 
 impl HasLikedState for QueueItem {
@@ -198,13 +218,17 @@ impl HasLikedState for QueueItem {
 }
 
 impl QueueItem {
-    pub fn new(
+    // 模块内私有：签名携带本模块私有的 `InternalDragLedger`，公开到
+    // `pub(in crate::ui)` 会触发 private_interfaces；唯一调用点在下方
+    // 列表渲染处（同模块）。
+    fn new(
         cx: &mut App,
         item: QueueItemData,
         idx: usize,
         drag_drop_manager: Entity<DragDropListManager>,
         scroll_handle: UniformListScrollHandle,
         selection: Entity<QueueSelection>,
+        drag_ledger: Entity<InternalDragLedger>,
     ) -> Entity<Self> {
         cx.new(move |cx| {
             cx.on_release(|m: &mut QueueItem, cx| {
@@ -265,6 +289,7 @@ impl QueueItem {
                 drag_drop_manager,
                 scroll_handle,
                 selection,
+                drag_ledger,
                 // AddToPlaylist 面板（及其 show 旗标）只在右键菜单真正需要它
                 // 的第一次才构建
                 add_to: None,
@@ -488,11 +513,13 @@ impl Render for QueueItem {
                                 // 3. 即使未来某个变更器在拖拽中途触发，它的
                                 //    epoch 自增会在下一帧重建缓存——输出与旧的
                                 //    每帧重算完全一致，绝不会过期。
+                                // 4. 队列内容变化会清空选中（Queue 观察者）
+                                //    → epoch 自增 → 坐标与 uid 指纹整组重建。
                                 let selection_epoch = selection_for_drag.read(cx).epoch();
                                 if self
                                     .drag_others
                                     .as_ref()
-                                    .is_none_or(|(e, i, _)| *e != selection_epoch || *i != idx)
+                                    .is_none_or(|c| c.epoch != selection_epoch || c.idx != idx)
                                 {
                                     let others: Arc<[usize]> = selection_for_drag
                                         .read(cx)
@@ -501,12 +528,36 @@ impl Render for QueueItem {
                                         .filter(|&&i| i != idx)
                                         .copied()
                                         .collect();
-                                    self.drag_others = Some((selection_epoch, idx, others));
+                                    // 同帧捕获同伴槽位的 uid 指纹（与上面的
+                                    // 索引快照一一对应）：负载坐标在拖拽开始
+                                    // 那一刻冻结，投放时要靠这份同帧指纹才能
+                                    // 重验并重解析为当前索引（见
+                                    // InternalDragLedger）。
+                                    let others_uids: Arc<[u64]> = {
+                                        let queue = cx.global::<Models>().queue.read(cx);
+                                        let data = queue.data.read_recovered();
+                                        others
+                                            .iter()
+                                            .map(|&i| data.get(i).map(|item| item.uid()))
+                                            .collect::<Option<Vec<u64>>>()
+                                            // 越界即选中集与队列脱钩（理论不可达：
+                                            // 内容变化即清空选中）——记空指纹，
+                                            // 投放侧按数量不符取消，而不是移错行
+                                            .unwrap_or_default()
+                                            .into()
+                                    };
+                                    self.drag_others = Some(DragOthers {
+                                        epoch: selection_epoch,
+                                        idx,
+                                        indices: others,
+                                        uids: others_uids,
+                                    });
                                 }
-                                if let Some((_, _, others)) = &self.drag_others {
+                                if let Some(cache) = &self.drag_others {
                                     // 引用计数自增：负载上的
                                     // `additional_indices` 是 `Arc<[usize]>`
-                                    drag_data = drag_data.with_additional_indices(others.clone());
+                                    drag_data =
+                                        drag_data.with_additional_indices(cache.indices.clone());
                                 }
                             }
 
@@ -514,7 +565,26 @@ impl Render for QueueItem {
                                 // 取一份克隆：下面的 move 闭包不能吞掉本次
                                 // render 里后面还要复用的 `track_name`
                                 let track_name = track_name.clone();
-                                move |_, _, _, cx| DragPreview::new(cx, track_name.clone())
+                                // 指纹与负载同帧冻结：source 的 uid 就是本行
+                                // 条目（行视图以 uid 为键，与负载的 source 坐标
+                                // 恒一致），同伴 uid 借上面的同帧缓存。
+                                let own_uid = self.item.uid();
+                                let others_uids =
+                                    self.drag_others.as_ref().map(|cache| cache.uids.clone());
+                                let drag_ledger = self.drag_ledger.clone();
+                                // 本构造器由 gpui 在拖拽激活那一刻调用一次
+                                // （官方语义：等价 on-drag-start）：把负载坐标与
+                                // 同帧 uid 指纹一起记入账本——负载在整个拖拽
+                                // 会话里恒定，这份账本就是投放侧唯一的对账依据。
+                                move |drag, _, _, cx| {
+                                    let entry = build_drag_fingerprints(
+                                        drag,
+                                        own_uid,
+                                        others_uids.as_deref(),
+                                    );
+                                    drag_ledger.update(cx, |ledger, _| ledger.entry = entry);
+                                    DragPreview::new(cx, track_name.clone())
+                                }
                             })
                             .drag_over::<TrackDragData>(
                                 move |style, _, _, _| style.bg(gpui::rgba(0x88888822)),
@@ -850,6 +920,121 @@ fn queue_slot_matches(cx: &App, index: usize, track_id: Option<i64>, path: &Path
         .is_some_and(|item| item.get_db_id() == track_id && item.get_path() == path)
 }
 
+/// 队列内重排拖拽的会话指纹：拖拽开始那一刻与负载坐标同帧捕获的各槽位
+/// `QueueItemData::uid`（source 在首位、additional 按负载顺序随后）。
+///
+/// 缘由：拖拽负载的 source/additional 索引冻结在拖拽开始那一帧，而投放
+/// 目标（指示线）是活跃坐标——拖拽期间 EOF 消费/stop-after-current/洗牌
+/// 回绕任一发生，冻结索引就会与活跃坐标混算（`move_items` 移错行）。右键
+/// 移除路径对同类并发有 `queue_slot_matches` 逐槽位内容守卫；拖拽路径的
+/// 等价物就是本结构：按实例 uid（跨克隆稳定、永不复用）识别被拖的行，
+/// 投放时重解析为当前索引（见 [`resolve_internal_drag_core`]）。
+struct InternalDragFingerprints {
+    /// 负载的 source_index（拖拽开始帧的坐标）。投放时与负载核对——账本
+    /// 必须属于"这一次"拖拽会话，上一会话的残留不得复用。
+    source_index: usize,
+    /// 负载的 additional_indices（同一帧的坐标）。
+    additional: Arc<[usize]>,
+    /// 被拖各槽位的 uid：`[source, additional…]`，与上面两个坐标一一对应。
+    uids: Arc<[u64]>,
+}
+
+/// 指纹账本：行视图在拖拽开始时写入，队列的投放回调读取对账。独立小实体
+/// 而不是挂在 Queue 或 QueueSelection 的字段上——行与列表都持有句柄，共享
+/// 方式与 `drag_drop_manager` 相同；它只在拖拽开始/投放这两个用户操作频率
+/// 的时刻被触碰，不在任何渲染热路径上。
+struct InternalDragLedger {
+    /// 最近一次队列内拖拽的指纹；None = 没有可验证的会话（投放侧取消）。
+    entry: Option<InternalDragFingerprints>,
+}
+
+/// 投放决策：指纹重验通过后，被拖条目在活队列里的当前坐标。
+struct ResolvedDrag {
+    source: usize,
+    additional: Vec<usize>,
+}
+
+/// 拖拽开始时把负载坐标与同帧捕获的槽位 uid 组成会话指纹。负载与指纹
+/// 必须出自同一帧渲染（坐标在负载里冻结、同伴 uid 在 `DragOthers` 缓存里
+/// 冻结）；对不上号（source 缺失、多选坐标与同伴指纹数量不符）就记 None
+/// ——账本里没有可验证的会话，投放时按取消处理。
+fn build_drag_fingerprints(
+    drag: &TrackDragData,
+    source_uid: u64,
+    others_uids: Option<&[u64]>,
+) -> Option<InternalDragFingerprints> {
+    let source_index = drag.source_index?;
+    let additional = drag.additional_indices.clone();
+    let mut uids = Vec::with_capacity(1 + additional.len());
+    uids.push(source_uid);
+    if !additional.is_empty() {
+        let others = others_uids?;
+        if others.len() != additional.len() {
+            return None;
+        }
+        uids.extend_from_slice(others);
+    }
+    Some(InternalDragFingerprints {
+        source_index,
+        additional,
+        uids: uids.into(),
+    })
+}
+
+/// 投放决策的纯核心（无 gpui 依赖，便于单测）：账本指纹 ↔ 负载坐标 ↔
+/// 活跃队列三方对账。
+///
+/// 返回 `Some` 当且仅当：账本存在且坐标与负载逐一相符（防上一会话残留），
+/// 且每个被拖条目的 uid 都仍在活队列里——此时给出重解析后的当前索引，
+/// 落点换算（`calculate_move_target` / `corrected_multi_drop_target`）全部
+/// 以当前坐标进行。任一条目已离开队列即整组取消（返回 None）：用户拖了
+/// 一个已经变化的队列，取消比移错行正确（与右键移除的守卫同一取舍，但
+/// 那边校验的是"槽位内容没变"，这边是"被拖的行还在线"）。
+///
+/// uid 在队列内视为唯一（行视图 `views_model` 同以 uid 为键，重复实例会在
+/// 更上游塌缩）。
+fn resolve_internal_drag_core(
+    entry: Option<&InternalDragFingerprints>,
+    payload_source: Option<usize>,
+    payload_additional: &[usize],
+    queue_uids: &[u64],
+) -> Option<ResolvedDrag> {
+    let entry = entry?;
+    let source_coord = payload_source?;
+    if entry.source_index != source_coord || entry.additional.as_ref() != payload_additional {
+        return None;
+    }
+    let index_by_uid: FxHashMap<u64, usize> = queue_uids
+        .iter()
+        .enumerate()
+        .map(|(i, &uid)| (uid, i))
+        .collect();
+    let (source_uid, others_uids) = entry.uids.split_first()?;
+    let source = *index_by_uid.get(source_uid)?;
+    let additional = others_uids
+        .iter()
+        .map(|uid| index_by_uid.get(uid).copied())
+        .collect::<Option<Vec<usize>>>()?;
+    Some(ResolvedDrag { source, additional })
+}
+
+/// `resolve_internal_drag_core` 的 gpui 包装：读账本与活队列，喂给纯核心。
+fn resolve_internal_drag(
+    cx: &App,
+    ledger: &Entity<InternalDragLedger>,
+    drag: &TrackDragData,
+) -> Option<ResolvedDrag> {
+    let queue = cx.global::<Models>().queue.read(cx);
+    let data = queue.data.read_recovered();
+    let queue_uids: Vec<u64> = data.iter().map(|item| item.uid()).collect();
+    resolve_internal_drag_core(
+        ledger.read(cx).entry.as_ref(),
+        drag.source_index,
+        &drag.additional_indices,
+        &queue_uids,
+    )
+}
+
 pub struct Queue {
     /// 行视图以所属条目的 uid 为键（`QueueItemData::uid`）——跨克隆与队列变更
     /// 都稳定，不像旧的「每条目实体 id」键，且无需触碰任何实体就能取到。
@@ -858,6 +1043,9 @@ pub struct Queue {
     scroll_handle: UniformListScrollHandle,
     drag_drop_manager: Entity<DragDropListManager>,
     selection: Entity<QueueSelection>,
+    /// 队列内重排拖拽的指纹账本（行视图在拖拽开始时写入，投放回调读取
+    /// 对账，见 [`InternalDragLedger`]）。
+    drag_ledger: Entity<InternalDragLedger>,
     last_queue_position: usize,
     queue_hovered: bool,
     follow_current_pending: bool,
@@ -903,6 +1091,7 @@ impl Queue {
             let config = DragDropListConfig::new(QUEUE_LIST_ID, px(QUEUE_ITEM_HEIGHT));
             let drag_drop_manager = DragDropListManager::new(cx, config);
             let selection = QueueSelection::new(cx);
+            let drag_ledger = cx.new(|_| InternalDragLedger { entry: None });
 
             cx.observe(&items, move |this: &mut Queue, _, cx| {
                 let (new_position, new_content_epoch) = {
@@ -954,6 +1143,7 @@ impl Queue {
                 scroll_handle: UniformListScrollHandle::new(),
                 drag_drop_manager,
                 selection,
+                drag_ledger,
                 last_queue_position: initial_queue_position,
                 queue_hovered: false,
                 follow_current_pending: initial_has_current_track,
@@ -1097,6 +1287,7 @@ impl Render for Queue {
         let item_scroll_handle = scroll_handle.clone();
         let drag_drop_manager = self.drag_drop_manager.clone();
         let selection = self.selection.clone();
+        let drag_ledger = self.drag_ledger.clone();
         let reduced_motion = reduced_motion_enabled(cx);
         let is_dragging = self.drag_drop_manager.read(cx).state.is_dragging;
 
@@ -1260,38 +1451,67 @@ impl Render for Queue {
                                 // 回调内需再读一次投放目标来定补偿边界：handle_track_drop_multi
                                 // 在回调返回之后才 end_drag 清空它（drag_drop.rs:726→730）。
                                 let drop_manager = this.drag_drop_manager.clone();
+                                let drag_ledger = this.drag_ledger.clone();
                                 handle_track_drop_multi(
                                     this.drag_drop_manager.clone(),
                                     drag_data,
                                     cx,
-                                    move |drag_data, to, cx| {
+                                    move |drag_data, _to, cx| {
+                                        // 内容重验（照右键移除的 queue_slot_matches
+                                        // 先例，但按实例 uid 而非槽位内容比对）：
+                                        // 负载的 source/additional 索引冻结在拖拽
+                                        // 开始那一帧，投放目标却是活跃坐标——期间
+                                        // EOF 消费/stop-after-current/洗牌回绕任一
+                                        // 发生即混算。先按指纹把被拖条目重解析为
+                                        // 当前索引；任一条目已不在队列或账本对不上，
+                                        // 就整个取消（用户拖了一个已经变化的队列，
+                                        // 取消比移错行正确）。
+                                        let drop_target = drop_manager.read(cx).state.drop_target;
+                                        let Some((target_index, position)) = drop_target else {
+                                            // 理论不可达：handle_track_drop_multi 仅在
+                                            // drop_target 存在时才回调；保守取消。
+                                            return;
+                                        };
+                                        let resolved =
+                                            resolve_internal_drag(cx, &drag_ledger, drag_data);
+                                        let Some(resolved) = resolved else {
+                                            debug!(
+                                                "queue drop cancelled: queue changed while \
+                                                 dragging (source={:?}, additional={:?})",
+                                                drag_data.source_index,
+                                                drag_data.additional_indices.as_ref(),
+                                            );
+                                            return;
+                                        };
+                                        // 以重解析后的 source 重算落点：`_to` 是
+                                        // handle_track_drop_multi 用冻结 source 算出的，
+                                        // 队列变化后会偏离指示线；用同一纯函数以当前
+                                        // source 重算，队列未变时与 `_to` 恒等。
+                                        let to = calculate_move_target(
+                                            resolved.source,
+                                            target_index,
+                                            position,
+                                        );
                                         if drag_data.additional_indices.is_empty() {
-                                            let Some(source) = drag_data.source_index else {
-                                                return;
-                                            };
-                                            cx.global::<PlaybackInterface>().move_item(source, to);
+                                            cx.global::<PlaybackInterface>()
+                                                .move_item(resolved.source, to);
                                         } else {
                                             // 坐标系换算与边界公式的 rationale 见
                                             // corrected_multi_drop_target 契约；bound 是投放
                                             // 间隙的原始坐标上界（Before 目标行 t → t，After → t+1）。
-                                            let corrected_to =
-                                                match drop_manager.read(cx).state.drop_target {
-                                                    Some((target_index, position)) => {
-                                                        let bound = match position {
-                                                            DropPosition::Before => target_index,
-                                                            DropPosition::After => target_index + 1,
-                                                        };
-                                                        corrected_multi_drop_target(
-                                                            to,
-                                                            &drag_data.additional_indices,
-                                                            bound,
-                                                        )
-                                                    }
-                                                    // 理论不可达：handle_track_drop_multi 仅在
-                                                    // drop_target 存在时才回调；保守按原值透传。
-                                                    None => to,
-                                                };
-                                            let indices = drag_data.all_indices();
+                                            let bound = match position {
+                                                DropPosition::Before => target_index,
+                                                DropPosition::After => target_index + 1,
+                                            };
+                                            let corrected_to = corrected_multi_drop_target(
+                                                to,
+                                                &resolved.additional,
+                                                bound,
+                                            );
+                                            let mut indices = resolved.additional;
+                                            indices.push(resolved.source);
+                                            indices.sort_unstable();
+                                            indices.dedup();
                                             cx.global::<PlaybackInterface>()
                                                 .move_items(indices, corrected_to);
                                         }
@@ -1412,6 +1632,7 @@ impl Render for Queue {
                                         let drag_drop_manager = drag_drop_manager.clone();
                                         let scroll_handle = item_scroll_handle.clone();
                                         let item_selection = selection.clone();
+                                        let item_ledger = drag_ledger.clone();
 
                                         // uid 总在手上，所以「为了读实体 id 而先
                                         // 构建元数据实体」这个旧兜底已移除
@@ -1448,6 +1669,7 @@ impl Render for Queue {
                                                     drag_drop_manager,
                                                     scroll_handle,
                                                     item_selection,
+                                                    item_ledger,
                                                 )
                                             },
                                             cx,
@@ -1636,8 +1858,12 @@ fn corrected_multi_drop_target(to: usize, additional: &[usize], bound: usize) ->
 
 #[cfg(test)]
 mod tests {
-    use super::corrected_multi_drop_target;
-    use crate::ui::components::drag_drop::{DropPosition, calculate_move_target};
+    use super::{
+        InternalDragFingerprints, QUEUE_LIST_ID, build_drag_fingerprints,
+        corrected_multi_drop_target, resolve_internal_drag_core,
+    };
+    use crate::ui::components::drag_drop::{DropPosition, TrackDragData, calculate_move_target};
+    use std::sync::Arc;
 
     /// 模拟 queue_manager::move_items 的"先移除全部选中、再从 to 起连续插回"语义
     /// （queue_manager.rs:1119 契约；含超出尾端的钳位）。
@@ -1706,5 +1932,134 @@ mod tests {
     #[test]
     fn multi_drop_before_target_inside_selection() {
         assert_drag_block_returns_identity(2, &[1], 1, DropPosition::Before);
+    }
+
+    // ─── A2：拖拽索引跨秒过期的内容重验（指纹账本） ─────────────────────
+
+    /// 共用夹具：拖拽开始帧 source 在槽位 2（uid 30）、additional 在槽位 3
+    /// （uid 40）的会话指纹。
+    fn drag_entry_30_40() -> InternalDragFingerprints {
+        InternalDragFingerprints {
+            source_index: 2,
+            additional: Arc::from([3usize]),
+            uids: Arc::from([30u64, 40]),
+        }
+    }
+
+    /// 队列未变：重解析结果与冻结坐标一致。
+    #[test]
+    fn drag_fingerprints_resolve_identity_when_queue_unchanged() {
+        let entry = drag_entry_30_40();
+        let queue = [10u64, 20, 30, 40, 50];
+        let resolved =
+            resolve_internal_drag_core(Some(&entry), Some(2), &[3], &queue).expect("应可解析");
+        assert_eq!(resolved.source, 2);
+        assert_eq!(resolved.additional, vec![3]);
+    }
+
+    /// 拖拽期间上游条目被 EOF 消费：被拖条目仍在线，重解析为前移后的
+    /// 当前索引——用户抓的还是那两行，落点换算全部用当前坐标。
+    #[test]
+    fn drag_fingerprints_resolve_shifted_after_upstream_consumption() {
+        let entry = drag_entry_30_40();
+        // 拖拽开始时 uid 30/40 在槽位 2/3；投放时 uid 10 已被消费
+        let queue = [20u64, 30, 40, 50];
+        let resolved =
+            resolve_internal_drag_core(Some(&entry), Some(2), &[3], &queue).expect("应可解析");
+        assert_eq!(resolved.source, 1);
+        assert_eq!(resolved.additional, vec![2]);
+    }
+
+    /// 任一被拖条目已离开队列（source 本人被消费、或同伴被并发移除）：
+    /// 整组取消——宁可不动也不能移错行。
+    #[test]
+    fn drag_fingerprints_cancel_when_any_dragged_item_left_queue() {
+        let entry = drag_entry_30_40();
+        // source（uid 30）被消费
+        assert!(resolve_internal_drag_core(Some(&entry), Some(2), &[3], &[20, 40, 50]).is_none());
+        // 同伴（uid 40）被移除
+        assert!(resolve_internal_drag_core(Some(&entry), Some(2), &[3], &[20, 30, 50]).is_none());
+    }
+
+    /// 账本与负载坐标对不上（上一会话残留 / 负载缺 source / 根本没记账）：
+    /// 一律按不可验证取消，绝不带着存疑坐标执行 move。
+    #[test]
+    fn drag_fingerprints_cancel_on_ledger_payload_mismatch() {
+        let entry = drag_entry_30_40();
+        let queue = [10u64, 20, 30, 40, 50];
+        // source 坐标不符
+        assert!(resolve_internal_drag_core(Some(&entry), Some(1), &[3], &queue).is_none());
+        // additional 坐标不符
+        assert!(resolve_internal_drag_core(Some(&entry), Some(2), &[4], &queue).is_none());
+        // 负载缺 source 坐标（handle_track_drop_multi 已在上游拦截，
+        // 这里钉住纯核心自己的守卫）
+        assert!(resolve_internal_drag_core(Some(&entry), None, &[3], &queue).is_none());
+        // 没有账本
+        assert!(resolve_internal_drag_core(None, Some(2), &[3], &queue).is_none());
+    }
+
+    /// 记账侧守卫：负载坐标与同伴指纹必须同帧对上号，对不上就记 None
+    /// （投放时按不可验证取消）。单拖的指纹就是 source 自己。
+    #[test]
+    fn drag_fingerprints_build_rejects_snapshot_mismatch() {
+        let multi = TrackDragData::new("a.mp3", "A")
+            .with_reorder_info(QUEUE_LIST_ID, 2)
+            .with_additional_indices(vec![3, 4]);
+        // 同伴指纹数量与负载坐标不符
+        assert!(build_drag_fingerprints(&multi, 30, Some(&[40])).is_none());
+        // 多选负载却缺同伴指纹
+        assert!(build_drag_fingerprints(&multi, 30, None).is_none());
+        // 对上号：source 在首位、同伴按负载顺序随后
+        let entry = build_drag_fingerprints(&multi, 30, Some(&[40, 50])).expect("应可记账");
+        assert_eq!(entry.source_index, 2);
+        assert_eq!(entry.additional.as_ref(), &[3, 4]);
+        assert_eq!(entry.uids.as_ref(), &[30, 40, 50]);
+        // 单拖（无 additional）：指纹就是 source 本人，不需要同伴快照
+        let single = TrackDragData::new("a.mp3", "A").with_reorder_info(QUEUE_LIST_ID, 0);
+        let entry = build_drag_fingerprints(&single, 7, None).expect("应可记账");
+        assert_eq!(entry.uids.as_ref(), &[7]);
+    }
+
+    /// A2 坐标层端到端（良性场景）：上游条目被消费后把选中块投回它自己的
+    /// 间隙，重解析坐标保持恒等——用户看到"放回原处"就真的原处。
+    ///
+    /// 拖拽开始时队列 [a,C,D,e]、拖 C(source=1)+D(additional=[2])；投放前
+    /// a 被消费 → 活队列 [C,D,e]（值 0..2），指纹重解析 C→0、D→1；指示线
+    /// 在 D 之后（活坐标 target=1, After）＝块自己的间隙。
+    #[test]
+    fn multi_drop_shifted_queue_returns_identity() {
+        let to = calculate_move_target(0, 1, DropPosition::After);
+        let corrected = corrected_multi_drop_target(to, &[1], 2);
+        assert_eq!(apply_multi_move(3, &[0, 1], corrected), vec![0, 1, 2]);
+    }
+
+    /// A2 坐标层端到端（混算对照）：拖拽期间上游条目被消费后，重解析坐标 +
+    /// 以当前 source 重算落点移动的是用户真正抓住的行；同一投放若用冻结
+    /// 坐标计算，选中的是别的行——这正是本修复要消除的"移错行"。
+    ///
+    /// 拖拽开始时队列 [a,C,X,D,e]、拖 C(source=1)+D(additional=[3])；投放前
+    /// a 被消费 → 活队列 [C,X,D,e]（值 0..3 即 C,X,D,e），指纹重解析 C→0、
+    /// D→2；指示线在 D 之后（活坐标 target=2, After）。
+    #[test]
+    fn multi_drop_shifted_queue_uses_fingerprint_coords() {
+        let resolved_source = 0;
+        let resolved_additional = [2usize];
+        let to = calculate_move_target(resolved_source, 2, DropPosition::After);
+        let bound = 3; // After → target + 1
+        let corrected = corrected_multi_drop_target(to, &resolved_additional, bound);
+        let mut selected = resolved_additional.to_vec();
+        selected.push(resolved_source);
+        selected.sort_unstable();
+        // 选中块 [C,D] 落到 X 与 e 之间：块尾贴着投放间隙
+        assert_eq!(apply_multi_move(4, &selected, corrected), vec![1, 0, 2, 3]);
+
+        // 对照（旧混算，非现行为）：冻结坐标 source=1/additional=[3] 在活
+        // 队列上选中 X 与 e，把它们挪去队尾——移的是用户根本没拖的行。
+        let stale_to = calculate_move_target(1, 2, DropPosition::After);
+        let stale_corrected = corrected_multi_drop_target(stale_to, &[3], 3);
+        assert_eq!(
+            apply_multi_move(4, &[1, 3], stale_corrected),
+            vec![0, 2, 1, 3]
+        );
     }
 }
