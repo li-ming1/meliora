@@ -46,8 +46,8 @@ pub use crate::online_sources::kugou::{
     online_track_matching_path, remember_online_track,
 };
 pub(crate) use crate::online_sources::kugou::{
-    LIKED_SET_INIT, fetch_liked_entries, liked_fileids, liked_load_lock, liked_set,
-    refresh_liked_set_from_service, store_liked_entries,
+    LIKED_SET_INIT, fetch_liked_entries, liked_fileids, liked_generation, liked_load_lock,
+    liked_set, refresh_liked_set_from_service, store_liked_entries,
 };
 
 /// 单个用户歌单。
@@ -481,6 +481,9 @@ async fn fetch_play_url(
         track.mix_song_id,
         track.album_id,
         quality,
+        // 用户点歌没有外层总预算，维持网关 30s 档（实时档是给播放钩子的 6s 预算
+        // 准备的，见 REALTIME_URL_REQUEST_TIMEOUT）。
+        None,
     )
     .await
 }
@@ -643,6 +646,13 @@ fn online_queue_item(url: String, track: &KugouTrackInfo) -> QueueItemData {
     })
 }
 
+/// 「加入喜欢」响应体的成功判定：`error_code=0` 且 `status=1`。缓存 insert 与
+/// toast 分两步消费同一个判定（insert 要先过串行锁，见 like_track）。
+fn like_response_ok(body: &Value) -> bool {
+    body.get("error_code").and_then(Value::as_i64) == Some(0)
+        && body.get("status").and_then(Value::as_i64) == Some(1)
+}
+
 /// 把 `track` 加入酷狗「我喜欢」歌单（listid 2）并把结果做成 toast。
 /// 请求和其他所有酷狗调用一样跑在 Tokio 运行时上。
 pub fn like_track(cx: &mut App, track: &KugouTrackInfo) {
@@ -661,20 +671,20 @@ pub fn like_track(cx: &mut App, track: &KugouTrackInfo) {
             })
             .await;
 
+        // 先判定结果：本地缓存的 insert 要在 async 上下文里经串行锁
+        // （liked_load_lock）落地，而 toast 的 cx.update 是同步闭包，两步拆开。
+        let liked = matches!(&request, Ok(Ok(response)) if like_response_ok(&response.body));
+        if liked {
+            // 锁序（A1）：不持锁直接 insert 会被在途整份抓取完成后的整表替换抹掉
+            // 刚点亮的 hash（INIT 已 true，不会自动重拉）——insert 必须等锁释放后
+            // 落地，与整表替换串行化。
+            let _guard = liked_load_lock().lock().await;
+            liked_set().write_recovered().insert(track.hash.clone());
+        }
+
         cx.update(|_cx| match request {
             Ok(Ok(response)) => {
-                let error_code = response
-                    .body
-                    .get("error_code")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(-1);
-                let status = response
-                    .body
-                    .get("status")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                if error_code == 0 && status == 1 {
-                    liked_set().write_recovered().insert(track.hash.clone());
+                if liked {
                     emit_toast(Toast::success(tr!(
                         "KUGOU_LIKE_ADDED",
                         "Added to your KuGou liked songs"
@@ -768,11 +778,29 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
         let cached = liked_fileids().read_recovered().get(&hash).copied();
         let fileid = match cached {
             Some(fid) => Some(fid),
-            None => fetch_liked_entries().await.and_then(|entries| {
-                let found = entries.iter().find(|(h, _)| *h == hash).map(|(_, f)| *f);
-                store_liked_entries(entries);
-                found
-            }),
+            None => {
+                // 未命中才付整份分页抓取。锁序（A1）：抓取 + 整表替换与
+                // refresh_liked_set_from_service / like_track 的缓存改动共用
+                // liked_load_lock 串行——不持锁的整表替换会抹掉并发落地的单点
+                // 改动；等锁期间也可能已有别的路径把 fileid 预热好，锁下重查
+                // （重查结果同样绑局部：守卫作 scrutinee 会活过 else 分支的
+                // `.await`，饿死抓取期间的写入方）。
+                let _guard = liked_load_lock().lock().await;
+                let warmed = liked_fileids().read_recovered().get(&hash).copied();
+                match warmed {
+                    Some(fid) => Some(fid),
+                    None => {
+                        // 世代在抓取开工前捕获：抓取期间发生换号/登出则整份丢弃
+                        // （A1 世代守卫，见 store_liked_entries）。
+                        let generation = liked_generation();
+                        fetch_liked_entries().await.and_then(|entries| {
+                            let found = entries.iter().find(|(h, _)| *h == hash).map(|(_, f)| *f);
+                            store_liked_entries(entries, generation);
+                            found
+                        })
+                    }
+                }
+            }
         };
 
         let request = match fileid {
@@ -792,15 +820,22 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
             }
         };
 
+        // 先判定结果：本地缓存的 remove 要在 async 上下文里经串行锁落地，
+        // toast 的 cx.update 是同步闭包，两步拆开。
+        let removed = matches!(&request, Ok(Ok(_)));
+        if removed {
+            // 锁序（A1）：remove 也要与在途整份抓取串行——抓取的快照早于服务端
+            // 移除时，整表替换会把刚移除的 hash 写回来（星标复亮）。
+            let _guard = liked_load_lock().lock().await;
+            liked_set().write_recovered().remove(&hash);
+            liked_fileids().write_recovered().remove(&hash);
+        }
+
         cx.update(|_cx| match request {
-            Ok(Ok(_)) => {
-                liked_set().write_recovered().remove(&hash);
-                liked_fileids().write_recovered().remove(&hash);
-                emit_toast(Toast::success(tr!(
-                    "KUGOU_LIKE_REMOVED",
-                    "Removed from your KuGou liked songs"
-                )))
-            }
+            Ok(Ok(_)) => emit_toast(Toast::success(tr!(
+                "KUGOU_LIKE_REMOVED",
+                "Removed from your KuGou liked songs"
+            ))),
             Ok(Err(err)) => emit_toast(Toast::warning(tr!(
                 "KUGOU_LIKE_REMOVED_FAILED",
                 "Could not unlike track: {{err}}",

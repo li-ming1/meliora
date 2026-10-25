@@ -7,8 +7,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         OnceLock, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use gpui::SharedString;
@@ -143,6 +144,24 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     });
 }
 
+/// 刷新重登记时从既有注册表条目沿用专辑名（A4）。刷新路径的展示四元组没有 album
+/// 字段，直接落空串会覆盖原始注册（点歌时的全量元数据）写下的专辑；此后按 URL 解析
+/// （统计侧 `identify_path`）拿到空 album，upsert 再把库里正确的专辑抹成空串——该曲
+/// 从按专辑统计消失。`remember_online_track` 以最新条目置顶，同曲（同 mix_song_id）
+/// 旧条目在重登记发生**之前**取用、尚未被逐出，取到的就是原始注册的值；0 是端点
+/// 省略 id 的哨兵，不得按 id 匹配（会抓到别的歌的专辑），无旧条目时返回空串。
+fn carried_album(mix_song_id: i64) -> SharedString {
+    if mix_song_id == 0 {
+        return SharedString::default();
+    }
+    stream_map()
+        .read_recovered()
+        .iter()
+        .find(|e| e.mix_song_id == mix_song_id)
+        .map(|e| SharedString::from(e.album.clone()))
+        .unwrap_or_default()
+}
+
 /// 若 `path` 是经本应用到达的流，返回为它记下的在线曲目。匹配先用嵌在 URL 里的
 /// `mixsongid`（队列去重已改走结构化 OnlineIdentity，此启发式仅剩本处的
 /// 流 URL 回溯在用），再退化到逐字节 URL 比较，所以即使重定向目标
@@ -187,20 +206,60 @@ pub fn extract_song_url(body: &Value) -> Option<String> {
 /// 标准 128 kbps 片段的音质档位——请求档位不可用时的兜底（例如没有 VIP）。
 const FALLBACK_QUALITY: &str = "128";
 
+/// 实时播放路径的单请求时限档位。播放侧钩子给整个刷新 6s 总预算
+/// （playback/thread.rs 的 `STREAM_REFRESH_TIMEOUT`），而网关 client 单请求 30s、
+/// 失败再打一次 128k 兜底——最坏 60s：慢网下外层总在 6s 超时返回 `None`，内层
+/// spawn 继续跑完但结果被整体丢弃（新 URL 白拿，下次重试再付一遍）。压到 3s/请求
+/// 后两连发 ≤6s 内收敛，让 6s 预算内真正可能成功。非实时路径（用户点歌等）传
+/// `None` 维持网关 30s 档。
+const REALTIME_URL_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 带（可选）单请求时限的 `song_url`：超时折算成 [`kugou::KugouError::local`]，
+/// 走调用方同一条失败/兜底路径。时限到期时 future 被 drop，底层的 HTTP 请求随之
+/// 取消（不像外层总预算超时那样任由内层任务跑完再丢结果）。`None` = 不加时限，
+/// 维持网关 client 的 30s 总体上界。
+async fn song_url_bounded(
+    client: &kugou::KugouClient,
+    hash: &str,
+    mix_song_id: i64,
+    album_id: i64,
+    quality: &str,
+    per_request: Option<Duration>,
+) -> Result<kugou::client::KugouResponse, kugou::KugouError> {
+    let free_part = !client.has_active_vip();
+    let call = client.song_url(hash, mix_song_id, album_id, quality, free_part);
+    match per_request {
+        Some(limit) => match tokio::time::timeout(limit, call).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(kugou::KugouError::local(
+                "realtime URL request exceeded its budget",
+            )),
+        },
+        None => call.await,
+    }
+}
+
 /// 按请求的 `quality` 为酷狗曲目取一个可播放 URL，更高档位不可用时（例如没有 VIP）退化到
 /// 标准 128 kbps 片段。完全没取回可播放 URL 时返回 `None`。实时播放与会话恢复期的 URL
-/// 刷新共用。
+/// 刷新共用；`per_request_timeout` 是单请求时限档位（REALTIME_URL_REQUEST_TIMEOUT），
+/// 传 `None` 维持网关 30s 档。
 pub async fn fetch_stream_url(
     client: &kugou::KugouClient,
     hash: &str,
     mix_song_id: i64,
     album_id: i64,
     quality: &str,
+    per_request_timeout: Option<Duration>,
 ) -> Option<String> {
-    let free_part = !client.has_active_vip();
-    match client
-        .song_url(hash, mix_song_id, album_id, quality, free_part)
-        .await
+    match song_url_bounded(
+        client,
+        hash,
+        mix_song_id,
+        album_id,
+        quality,
+        per_request_timeout,
+    )
+    .await
     {
         Ok(resp) => {
             if let Some(url) = extract_song_url(&resp.body) {
@@ -213,9 +272,15 @@ pub async fn fetch_stream_url(
         }
     }
     if quality != FALLBACK_QUALITY {
-        let resp = match client
-            .song_url(hash, mix_song_id, album_id, FALLBACK_QUALITY, free_part)
-            .await
+        let resp = match song_url_bounded(
+            client,
+            hash,
+            mix_song_id,
+            album_id,
+            FALLBACK_QUALITY,
+            per_request_timeout,
+        )
+        .await
         {
             Ok(resp) => resp,
             Err(error) => {
@@ -322,6 +387,17 @@ pub fn liked_set_contains(hash: &str) -> bool {
     liked_set().read_recovered().contains(hash)
 }
 
+/// 喜欢缓存的世代计数。`invalidate_liked_cache` 在 UI 线程同步调用，拿不了
+/// `liked_load_lock`（tokio 锁需要 `.await`），世代计数是它与在途抓取之间唯一的
+/// 串行化交接点：invalidate 递增世代；抓取方开工前捕获、落地前比对，世代已变即
+/// 整份丢弃——旧账号的整份抓取结果绝不回填进已清空的缓存。
+static LIKED_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// 当前喜欢缓存世代（抓取方在开工前捕获）。
+pub(crate) fn liked_generation() -> u64 {
+    LIKED_GENERATION.load(Ordering::Relaxed)
+}
+
 /// 串行化首次喜欢列表加载，让并发的 `online_track_is_liked` 查询（例如缓存预热前的快速换歌）
 /// 等第一次完整分页拉取跑完，而不是各自发一份。
 pub(crate) fn liked_load_lock() -> &'static tokio::sync::Mutex<()> {
@@ -332,21 +408,33 @@ pub(crate) fn liked_load_lock() -> &'static tokio::sync::Mutex<()> {
 /// 从服务刷新内存里的喜欢集（尽力而为）。拉取失败会保留先前的缓存与 init 旗标，于是下次
 /// 查询是重试，而不是相信一个空列表（那会静默地把每首歌都取消喜欢直到重启）。
 pub(crate) async fn refresh_liked_set_from_service() {
+    // 抓取开工前捕获世代：抓取期间发生 invalidate（登录/登出/换号）则结果整份作废。
+    let generation = liked_generation();
     let Some(entries) = fetch_liked_entries().await else {
         return;
     };
-    store_liked_entries(entries);
+    store_liked_entries(entries, generation);
 }
 
 /// 用一次分页拉取的结果同时替换两个喜欢缓存（hash 集 + hash→fileid 映射）。
-pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
+/// `generation` 是抓取开工前捕获的世代：与当前不等（抓取期间发生了 invalidate）
+/// 就整份丢弃且不置 init 旗标，下次惰性刷新拿新账号数据。比对与写入放在
+/// `liked_set` 的同一把写守卫内，而 invalidate 的清空+世代递增也在写守卫内——
+/// 两条路径由此互斥，堵死「比对通过后才被 invalidate 清空、又把旧账号数据写回」
+/// 的交错窗口。
+pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>, generation: u64) {
     let mut hashes = HashSet::with_capacity(entries.len());
     let mut fileids = HashMap::with_capacity(entries.len());
     for (hash, fileid) in entries {
         hashes.insert(hash.clone());
         fileids.insert(hash, fileid);
     }
-    *liked_set().write_recovered() = hashes;
+    let mut set_guard = liked_set().write_recovered();
+    if generation != LIKED_GENERATION.load(Ordering::Relaxed) {
+        return;
+    }
+    *set_guard = hashes;
+    drop(set_guard);
     *liked_fileids().write_recovered() = fileids;
     LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
@@ -355,9 +443,14 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>) {
 /// init 旗标一并复位（并发形态照 `store_liked_entries`：毒化可恢复写锁 + Relaxed
 /// 旗标）。喜欢列表是以登录用户为键的服务端状态——星标是否点亮、unlike 要用的
 /// fileid 都只对当前账号有效，换号后残留会让星标按旧账号点亮、取消喜欢删到旧
-/// 账号的列表。
+/// 账号的列表。世代递增在写守卫内完成（见 `store_liked_entries` 的互斥说明）；
+/// 在途抓取拿不了这把锁，靠世代在落地前自行丢弃。
 pub(crate) fn invalidate_liked_cache() {
-    liked_set().write_recovered().clear();
+    {
+        let mut guard = liked_set().write_recovered();
+        guard.clear();
+        LIKED_GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
     liked_fileids().write_recovered().clear();
     LIKED_SET_INIT.store(false, Ordering::Relaxed);
 }
@@ -404,21 +497,36 @@ impl super::OnlineSourceProvider for KugouSource {
         let kugou_quality = ctx.kugou_quality.to_string();
         // spawn 出去的拉取用一份克隆；原件进下面的注册表条目。
         let fetch_hash = hash.clone();
+        // 实时档单请求时限：本刷新的主要消费者是播放钩子的 6s 总预算
+        // （STREAM_REFRESH_TIMEOUT），30s 档在慢网下永远赶不上；会话恢复路径
+        // 失败的条目由播放线程按需重试兜底，同受此档约束无害。
         let url = crate::RUNTIME
             .spawn(async move {
-                fetch_stream_url(&client, &fetch_hash, mix_song_id, album_id, &kugou_quality).await
+                fetch_stream_url(
+                    &client,
+                    &fetch_hash,
+                    mix_song_id,
+                    album_id,
+                    &kugou_quality,
+                    Some(REALTIME_URL_REQUEST_TIMEOUT),
+                )
+                .await
             })
             .await
             .ok()
             .flatten()?;
 
         let (name, artist, duration, cover) = ctx.display.clone();
+        // 展示四元组没有 album：沿用注册表里原始注册的同曲条目的专辑，而不是落
+        // 空串覆盖它（A4，见 carried_album）。必须在 remember_online_track 之前取：
+        // 重登记会逐出同曲旧条目。
+        let album = carried_album(mix_song_id);
         remember_online_track(
             url.clone(),
             KugouTrackInfo {
                 title: name.unwrap_or_default().into(),
                 artist: artist.unwrap_or_default().into(),
-                album: gpui::SharedString::default(),
+                album,
                 duration: duration.unwrap_or(0),
                 hash,
                 mix_song_id,
@@ -427,5 +535,45 @@ impl super::OnlineSourceProvider for KugouSource {
             },
         );
         Some(url)
+    }
+}
+
+#[cfg(test)]
+mod liked_cache_tests {
+    use super::*;
+
+    /// 世代守卫（A1）：换号/登出时 invalidate 清空缓存并递增世代，在途抓取随后
+    /// 带着旧世代完成——必须整份丢弃，不得把旧账号的喜欢集回填进已清空的缓存、
+    /// 也不得置 init 旗标（否则星标按旧账号点亮，且不再自动重拉）。
+    /// 串行执行依赖：本文件唯一触碰这些全局的测试；并行测试间无共享。
+    #[test]
+    fn stale_generation_store_is_discarded_after_invalidate() {
+        // 基线：当前世代的结果正常落地。
+        store_liked_entries(vec![("hash-a".into(), 11)], liked_generation());
+        assert!(LIKED_SET_INIT.load(Ordering::Relaxed));
+        assert!(liked_set_contains("hash-a"));
+
+        // 换号：清空 + 世代递增。
+        invalidate_liked_cache();
+        assert!(!LIKED_SET_INIT.load(Ordering::Relaxed));
+        assert!(!liked_set_contains("hash-a"));
+
+        // invalidate 之前开工的在途抓取此刻完成（携带旧世代）：整份丢弃。
+        let stale_generation = liked_generation() - 1;
+        store_liked_entries(vec![("hash-old".into(), 22)], stale_generation);
+        assert!(!liked_set_contains("hash-old"), "旧世代的结果必须被丢弃");
+        assert!(
+            !liked_fileids().read_recovered().contains_key("hash-old"),
+            "fileid 旁表同样不得回填"
+        );
+        assert!(
+            !LIKED_SET_INIT.load(Ordering::Relaxed),
+            "丢弃时不得置 init 旗标"
+        );
+
+        // 下一次刷新携带新世代：正常落地。
+        store_liked_entries(vec![("hash-new".into(), 33)], liked_generation());
+        assert!(liked_set_contains("hash-new"));
+        assert!(LIKED_SET_INIT.load(Ordering::Relaxed));
     }
 }
