@@ -78,17 +78,17 @@ use crate::{
 };
 
 /// 歌词行之间的垂直间距，单位 px。
-const LINE_PITCH_PX: f32 = 44.0;
+const LINE_PITCH_PX: f32 = 52.0;
 /// 歌词字号——只允许离散档位，保证字形图集安全。
-const CURRENT_LINE_SIZE: f32 = 22.0;
-const NEIGHBOR_LINE_SIZE: f32 = 18.0;
-const TRANSLATION_SIZE: f32 = 13.0;
-/// 活动行两侧各渲染多少行歌词（13 行窗口）。
-const LINE_WINDOW: i64 = 6;
-/// 歌词视口高度：十三个行距。
-const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 13.0;
+const CURRENT_LINE_SIZE: f32 = 28.0;
+const NEIGHBOR_LINE_SIZE: f32 = 20.0;
+const TRANSLATION_SIZE: f32 = 14.0;
+/// 活动行两侧各渲染多少行歌词（11 行窗口）。
+const LINE_WINDOW: i64 = 5;
+/// 歌词视口高度：十一个行距。
+const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 11.0;
 /// 按「与活动行的距离」给出的逐行不透明度（下标 = 距离）。
-const LINE_OPACITY: [f32; 7] = [1.0, 0.82, 0.64, 0.47, 0.33, 0.22, 0.14];
+const LINE_OPACITY: [f32; 7] = [1.0, 0.80, 0.60, 0.42, 0.28, 0.18, 0.10];
 const LINE_ANIMATION: Duration = Duration::from_millis(320);
 /// 圆盘直径占左栏高度的比例。
 const VINYL_SIZE_FRACTION: f32 = 0.34;
@@ -1091,18 +1091,17 @@ impl Render for ImmersiveView {
                 (1.0 - fade_progress).clamp(0.0, 1.0),
             ))
             .child(self.backdrop_layer(self.backdrop_active, fade_progress.clamp(0.0, 1.0)));
-        // 整体权重：底部更重（卡片区）、顶部更轻
-        // （0deg = 朝上：0% 色标落在底边）。
+        // 整体暗度：全局底板遮罩深度提升，确保大图背景不抢戏
         let vertical_shade = div().absolute().inset_0().bg(linear_gradient(
             0.0,
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.42), 0.0),
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.12), 1.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.65), 0.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.35), 1.0),
         ));
-        // 右侧歌词区：压在封面上时透明、朝右边缘变暗（90deg = 朝右）。
+        // 右侧歌词阅读区专用渐变暗角（Vignette Scrim）：彻底保障白色与高光文字对比度
         let right_shade = div().absolute().inset_0().bg(linear_gradient(
             90.0,
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 0.30),
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.52), 1.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.35), 0.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.82), 1.0),
         ));
 
         // ── 左栏：圆形封面、曲名、磨砂播放卡 ──────────────────────────
@@ -1121,7 +1120,10 @@ impl Render for ImmersiveView {
                         .thumb_max(LABEL_THUMB_PX)
                         .h(relative(VINYL_LABEL_FRACTION))
                         .aspect_square()
-                        .rounded_full()
+                        .rounded(px(16.0))
+                        .shadow_lg()
+                        .border_1()
+                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.14))
                         .object_fit(ObjectFit::Cover),
                 )
             })
@@ -1130,14 +1132,14 @@ impl Render for ImmersiveView {
                     div()
                         .h(relative(VINYL_LABEL_FRACTION))
                         .aspect_square()
-                        .rounded_full()
+                        .rounded(px(16.0))
                         .bg(Rgba::new(1.0, 1.0, 1.0, 0.06)),
                 )
             });
         let vinyl_disc = div()
             .absolute()
             .inset_0()
-            .rounded_full()
+            .rounded(px(16.0))
             .bg(Rgba::new(0.045, 0.045, 0.058, 1.0));
         let vinyl = div()
             .relative()

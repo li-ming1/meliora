@@ -400,10 +400,7 @@ impl Render for TrackItem {
                                         div()
                                             .ml(px(10.0))
                                             .flex_shrink_0()
-                                            .min_w(px(60.0))
-                                            .border_l_1()
-                                            .pl(px(10.0))
-                                            .border_color(theme.border_color)
+                                            .min_w(px(54.0))
                                             .text_align(TextAlign::Right)
                                             .child(self.duration_text.clone()),
                                     ),

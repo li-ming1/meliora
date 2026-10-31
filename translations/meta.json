@@ -318,8 +318,8 @@
     "description": null
   },
   "CLOSE": {
-    "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1371",
+    "context": "right_sidebar.rs",
+    "definedIn": "src/ui/right_sidebar.rs:177",
     "plural": false,
     "description": null
   },
@@ -451,7 +451,7 @@
   },
   "DESKTOP_LYRICS": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:793",
+    "definedIn": "src/ui/controls.rs:786",
     "plural": false,
     "description": null
   },
@@ -667,13 +667,13 @@
   },
   "IMMERSIVE_ENTER": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:782",
+    "definedIn": "src/ui/controls.rs:794",
     "plural": false,
     "description": null
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1421",
+    "definedIn": "src/ui/immersive.rs:1423",
     "plural": false,
     "description": null
   },
@@ -1326,14 +1326,14 @@
     "description": null
   },
   "LYRICS": {
-    "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:774",
+    "context": "right_sidebar.rs",
+    "definedIn": "src/ui/right_sidebar.rs:169",
     "plural": false,
     "description": null
   },
   "MUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:695",
+    "definedIn": "src/ui/controls.rs:690",
     "plural": false,
     "description": null
   },
@@ -1345,7 +1345,7 @@
   },
   "NEXT_TRACK": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:346",
+    "definedIn": "src/ui/controls.rs:341",
     "plural": false,
     "description": null
   },
@@ -1549,7 +1549,7 @@
   },
   "PREVIOUS_TRACK": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:277",
+    "definedIn": "src/ui/controls.rs:276",
     "plural": false,
     "description": null
   },
@@ -1633,19 +1633,19 @@
   },
   "REPEAT": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:425",
+    "definedIn": "src/ui/controls.rs:420",
     "plural": false,
     "description": null
   },
   "REPEAT_OFF": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:415",
+    "definedIn": "src/ui/controls.rs:410",
     "plural": false,
     "description": null
   },
   "REPEAT_ONE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:434",
+    "definedIn": "src/ui/controls.rs:429",
     "plural": false,
     "description": null
   },
@@ -2215,13 +2215,13 @@
   },
   "STOP_AFTER_CURRENT_TOOLTIP": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:323",
+    "definedIn": "src/ui/controls.rs:322",
     "plural": false,
     "description": null
   },
   "STOP_REPEATING": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:393",
+    "definedIn": "src/ui/controls.rs:388",
     "plural": false,
     "description": null
   },
@@ -2395,7 +2395,7 @@
   },
   "UNMUTE": {
     "context": "controls.rs",
-    "definedIn": "src/ui/controls.rs:692",
+    "definedIn": "src/ui/controls.rs:687",
     "plural": false,
     "description": null
   },

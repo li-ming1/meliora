@@ -11,7 +11,7 @@ use crate::{
         components::{
             context::context,
             icons::{
-                BUBBLE_TEXT, MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK,
+                LYRICS, MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK,
                 REPEAT, REPEAT_OFF, REPEAT_ONCE, SHUFFLE, icon,
             },
             menu::{menu, menu_check_item, menu_item},
@@ -266,10 +266,9 @@ impl Render for PlaybackSection {
             )
             .child(
                 div()
-                    .rounded(px(theme.radius_sm))
-                    .border_color(theme.playback_button_border)
-                    .border_1()
                     .flex()
+                    .items_center()
+                    .gap(px(4.0))
                     .child(
                         transport_button(
                             "header-prev-button",
@@ -278,35 +277,35 @@ impl Render for PlaybackSection {
                             TransportAction::Previous,
                             theme,
                         )
-                        .rounded_l(px(theme.radius_sm)),
+                        .rounded_full(),
                     )
                     .child(
                         context("header-play-button-context")
                             .with(
                                 div()
-                                    .w(px(32.0))
-                                    .h(px(28.0))
-                                    .bg(theme.playback_button)
-                                    .border_l(px(1.0))
-                                    .border_r(px(1.0))
-                                    .border_color(theme.playback_button_border)
+                                    .size(px(32.0))
+                                    .rounded_full()
+                                    .bg(theme.button_primary)
+                                    .text_color(theme.button_primary_text)
+                                    .shadow_sm()
                                     .relative()
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
                                     .id("header-play-button")
-                                    .active(|style| style.bg(theme.playback_button_active))
+                                    .hover(|style| style.bg(theme.button_primary_hover))
+                                    .active(|style| style.bg(theme.button_primary_active))
                                     .on_mouse_down(MouseButton::Left, swallow_press)
                                     .on_click(|_, window, cx| {
                                         window.dispatch_action(Box::new(PlayPause), cx);
                                     })
                                     .when(*state == PlaybackState::Playing, |div| {
-                                        div.child(icon(PAUSE).size(ICON_MD))
+                                        div.child(icon(PAUSE).size(ICON_SM).text_color(theme.button_primary_text))
                                             .tooltip(build_tooltip(tr!("PAUSE")))
                                     })
                                     .when(*state != PlaybackState::Playing, |div| {
-                                        div.child(icon(PLAY).size(ICON_MD))
+                                        div.child(icon(PLAY).size(ICON_SM).text_color(theme.button_primary_text))
                                             .tooltip(build_tooltip(tr!("PLAY")))
                                     })
                                     .when(stop_after_current, |this| {
@@ -314,8 +313,8 @@ impl Render for PlaybackSection {
                                             div()
                                                 .id("stop-after-current-indicator")
                                                 .absolute()
-                                                .top(px(3.0))
-                                                .right(px(3.0))
+                                                .top(px(2.0))
+                                                .right(px(2.0))
                                                 .size(px(6.0))
                                                 .rounded_full()
                                                 .bg(theme.stop_after_current_indicator)
@@ -324,11 +323,7 @@ impl Render for PlaybackSection {
                                                     "Will stop after current track"
                                                 ))),
                                         )
-                                    })
-                                    .into_transition(
-                                        theme.playback_button,
-                                        theme.playback_button_hover,
-                                    ),
+                                    }),
                             )
                             .child(menu().item(menu_check_item(
                                 "stop-after-current-menu-item",
@@ -347,7 +342,7 @@ impl Render for PlaybackSection {
                             TransportAction::Next,
                             theme,
                         )
-                        .rounded_r(px(theme.radius_sm)),
+                        .rounded_full(),
                     ),
             )
             .child(
@@ -737,41 +732,58 @@ impl Render for SecondaryControls {
                 .child(self.replaygain_button.clone())
                 .child(
                     div()
-                        .h(px(24.0))
+                        .h(px(20.0))
                         .w(px(1.0))
-                        .mt(px(3.0))
-                        .mx(px(4.0))
+                        .mt(px(4.0))
+                        .mx(px(6.0))
                         .bg(theme.border_color),
                 )
-                .child(
+                .child({
+                    let show_queue_for_lyrics = self.show_queue.clone();
+                    sidebar_toggle_button("lyrics-button", LYRICS, lyrics_active)
+                        .on_click(move |_, _, cx| {
+                            let next = !*show_lyrics.read(cx);
+                            show_lyrics.update(cx, |m, cx| {
+                                *m = next;
+                                cx.notify();
+                            });
+                            if next {
+                                show_queue_for_lyrics.update(cx, |m, cx| {
+                                    *m = false;
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .tooltip(build_tooltip(tr!("LYRICS")))
+                })
+                .child({
+                    let show_lyrics_for_queue = self.show_lyrics.clone();
                     sidebar_toggle_button("queue-button", MENU, queue_active)
                         .on_click(move |_, _, cx| {
+                            let next = !*show_queue.read(cx);
                             show_queue.update(cx, |m, cx| {
-                                *m = !*m;
-                                crate::log_mem_event(if *m {
-                                    "sidebar: queue show"
-                                } else {
-                                    "sidebar: queue hide"
-                                });
+                                *m = next;
                                 cx.notify();
-                            })
+                            });
+                            if next {
+                                show_lyrics_for_queue.update(cx, |m, cx| {
+                                    *m = false;
+                                    cx.notify();
+                                });
+                            }
                         })
-                        .tooltip(build_tooltip(tr!("QUEUE_TITLE"))),
-                )
+                        .tooltip(build_tooltip(tr!("QUEUE_TITLE")))
+                })
                 .child(
-                    sidebar_toggle_button("lyrics-button", MICROPHONE, lyrics_active)
-                        .on_click(move |_, _, cx| {
-                            show_lyrics.update(cx, |m, cx| {
-                                *m = !*m;
-                                crate::log_mem_event(if *m {
-                                    "sidebar: lyrics show"
-                                } else {
-                                    "sidebar: lyrics hide"
-                                });
-                                cx.notify();
-                            })
-                        })
-                        .tooltip(build_tooltip(tr!("LYRICS", "Lyrics"))),
+                    sidebar_toggle_button(
+                        "desktop-lyrics-button",
+                        MICROPHONE,
+                        desktop_lyrics_active,
+                    )
+                    .on_click(|_, _, cx| {
+                        crate::ui::desktop_lyrics::toggle(cx);
+                    })
+                    .tooltip(build_tooltip(tr!("DESKTOP_LYRICS", "Desktop Lyrics"))),
                 )
                 .child(
                     sidebar_toggle_button("immersive-button", MAXIMIZE, immersive_active)
@@ -780,17 +792,6 @@ impl Render for SecondaryControls {
                             crate::ui::immersive::set_immersive(entering, cx);
                         })
                         .tooltip(build_tooltip(tr!("IMMERSIVE_ENTER", "Immersive Mode"))),
-                )
-                .child(
-                    sidebar_toggle_button(
-                        "desktop-lyrics-button",
-                        BUBBLE_TEXT,
-                        desktop_lyrics_active,
-                    )
-                    .on_click(|_, _, cx| {
-                        crate::ui::desktop_lyrics::toggle(cx);
-                    })
-                    .tooltip(build_tooltip(tr!("DESKTOP_LYRICS", "Desktop Lyrics"))),
                 ),
         )
     }
