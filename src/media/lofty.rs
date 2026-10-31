@@ -231,12 +231,33 @@ fn push_unique_vec(names: &mut (impl AsRef<[String]> + Extend<String>), name: &s
     }
 }
 
+/// 流派值收集：trim 去空 + 大小写不敏感去重，保持首现次序（语义对齐上游
+/// hummingbird 的 `push_unique_genre`）。Meliora 的单列流派模型把同一标签内
+/// 的多个流派按 "; " 拼接存储；跨标签的取舍由 `tags_by_priority` 的应用次序
+/// 决定——更优格式的流派整体替换，不与回退格式的值混排。
+fn push_unique_genre(values: &mut Vec<String>, value: String) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    let normalized = value.to_lowercase();
+    if !values
+        .iter()
+        .any(|existing| existing.to_lowercase() == normalized)
+    {
+        values.push(value.to_string());
+    }
+}
+
 fn apply_tag_items(
     tag: &Tag,
     split_artists: bool,
     metadata: &mut Metadata,
     artist_names: &mut ArtistNames,
 ) {
+    // 同一标签内的多个流派先收集再拼接（见 `push_unique_genre`），本标签
+    // 应用完整体落地一次
+    let mut genres: Vec<String> = Vec::new();
     for item in tag.items() {
         let Some(meta_tag) = map_standard_tag(item) else {
             continue;
@@ -274,8 +295,12 @@ fn apply_tag_items(
             MetadataTag::ArtistSort(value) => {
                 push_unique_name(&mut metadata.artist_sort, &value, " & ");
             }
+            MetadataTag::Genre(value) => push_unique_genre(&mut genres, value),
             _ => apply_tag(meta_tag, metadata),
         }
+    }
+    if !genres.is_empty() {
+        metadata.genre = Some(genres.join("; "));
     }
 }
 
@@ -345,10 +370,19 @@ fn tags_by_priority(tags: &[Tag], has_id3v2: bool) -> Vec<&Tag> {
         return tags.iter().collect();
     }
 
-    let is_text_tag = |tag: &&Tag| matches!(tag.tag_type(), TagType::RiffInfo | TagType::AiffText);
+    // 回退类标签先应用，让更规范的 ID3v2 / VorbisComment 同名字段覆盖它们。
+    // APE 块在文件尾是常态（ID3v2 在文件头），不归入回退组就会被存储顺序
+    // 顶掉 ID3v2 的值——回归测试 `id3v2_overrides_conflicting_ape_fields`
+    // 钉住的就是这点（语义对齐上游 hummingbird）。
+    let is_fallback_tag = |tag: &&Tag| {
+        matches!(
+            tag.tag_type(),
+            TagType::Ape | TagType::RiffInfo | TagType::AiffText
+        )
+    };
     tags.iter()
-        .filter(|tag| is_text_tag(tag))
-        .chain(tags.iter().filter(|tag| !is_text_tag(tag)))
+        .filter(|tag| is_fallback_tag(tag))
+        .chain(tags.iter().filter(|tag| !is_fallback_tag(tag)))
         .collect()
 }
 
@@ -644,6 +678,58 @@ mod tests {
         assert_eq!(metadata.name.as_deref(), Some("Avril 14th (ID3)"));
         let expected_date = Utc.with_ymd_and_hms(2001, 10, 22, 0, 0, 0).unwrap();
         assert_eq!(metadata.date, Some(expected_date));
+    }
+
+    #[test]
+    fn id3v2_overrides_conflicting_ape_fields() {
+        // APE 块在文件尾是常态；没有回退位归组时存储顺序会让 APE 顶掉
+        // ID3v2 的同名值（移植自上游 hummingbird 的同名回归测试，补流派整值
+        // 替换断言）
+        let mut id3 = Tag::new(TagType::Id3v2);
+        assert!(id3.insert_text(ItemKey::AlbumTitle, "Essentials (Apple Music)".to_string()));
+        assert!(id3.insert_text(ItemKey::TrackNumber, "11".to_string()));
+        assert!(id3.insert_text(ItemKey::RecordingDate, "2024".to_string()));
+        assert!(id3.insert_text(ItemKey::Genre, "Metal".to_string()));
+
+        let mut ape = Tag::new(TagType::Ape);
+        assert!(ape.insert_text(ItemKey::AlbumTitle, "Essentials".to_string()));
+        assert!(ape.insert_text(ItemKey::TrackNumber, "5".to_string()));
+        assert!(ape.insert_text(ItemKey::Year, "2020".to_string()));
+        assert!(ape.insert_text(ItemKey::Isrc, "APE-ONLY".to_string()));
+        assert!(ape.insert_text(ItemKey::Genre, "Rock".to_string()));
+
+        let tags = [id3, ape];
+        let ordered = tags_by_priority(&tags, true);
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].tag_type(), TagType::Ape);
+        assert_eq!(ordered[1].tag_type(), TagType::Id3v2);
+
+        let mut metadata = Metadata::default();
+        let mut artist_names = ArtistNames::default();
+        for tag in ordered {
+            apply_tag_items(tag, false, &mut metadata, &mut artist_names);
+        }
+
+        // APE 先应用、ID3v2 后覆盖：共有字段 ID3v2 胜出，APE 独有的 isrc
+        // 照样落地；流派是整值替换，不得与 APE 的值混排
+        assert_eq!(metadata.album.as_deref(), Some("Essentials (Apple Music)"));
+        assert_eq!(metadata.track_current, Some(11));
+        assert_eq!(metadata.year, Some(2024));
+        assert_eq!(metadata.isrc.as_deref(), Some("APE-ONLY"));
+        assert_eq!(metadata.genre.as_deref(), Some("Metal"));
+    }
+
+    #[test]
+    fn genres_within_one_tag_are_trimmed_and_deduplicated() {
+        // 上游 hummingbird 的流派去重语义适配单列模型：trim、大小写不敏感
+        // 去重、跳过空值，按首现次序 "; " 拼接
+        let tag = tag_with_items(
+            TagType::VorbisComments,
+            ItemKey::Genre,
+            &[" Rock ", "rock", "Dream Pop", "DREAM POP", "Rock/Pop"],
+        );
+        let metadata = applied_metadata(&tag, false);
+        assert_eq!(metadata.genre.as_deref(), Some("Rock; Dream Pop; Rock/Pop"));
     }
 
     #[test]

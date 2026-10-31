@@ -374,7 +374,113 @@ fn parse_slash_pair(value: &str) -> Option<(u64, Option<u64>)> {
     Some((track.parse().ok()?, total.parse().ok()))
 }
 
+/// 音轨号解析。先走语法化文法（语义对齐上游 hummingbird numbering.rs，不引
+/// 入 regex 依赖）：`[面字母][数字][[.-]数字][/数字]`。文法不认的脏值回退到
+/// 旧链（`parse_track_number_lenient`），保证存量可解析值一个不少。
+///
+/// 三类此前整号丢失的形态由文法补齐：
+/// - `"1-2"` 的 section 后缀（古典/现场专辑常见）——单列编号模型没有存储位，
+///   解析通过但只落轨号，不再整号返回 None；
+/// - 黑胶单曲的面字母连写（`"AA"` = 面 A 第 2 轨）；
+/// - 黑胶面 + section（`"A1.2"`）。
 pub(crate) fn parse_track_number(value: &str) -> Option<ParsedTrackNumber> {
+    parse_track_number_grammar(value).or_else(|| parse_track_number_lenient(value))
+}
+
+/// 语法化文法：`[面字母*][数字*][[.-]数字][/数字]`，全串必须消费完毕。
+fn parse_track_number_grammar(value: &str) -> Option<ParsedTrackNumber> {
+    let value = value.trim();
+    let letter_end = value
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(value.len());
+    let (letters, rest) = value.split_at(letter_end);
+    let digit_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (digits, rest) = rest.split_at(digit_end);
+
+    // `[.-]` 后必须紧跟数字，否则整条文法不成立（"1-A"、"1."）
+    let (section, rest) = match rest.strip_prefix(['.', '-']) {
+        Some(rest) => {
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            if end == 0 {
+                return None;
+            }
+            (Some(&rest[..end]), &rest[end..])
+        }
+        None => (None, rest),
+    };
+    let (track_max, rest) = match rest.strip_prefix('/') {
+        Some(rest) => {
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            if end == 0 {
+                return None;
+            }
+            (Some(&rest[..end]), &rest[end..])
+        }
+        None => (None, rest),
+    };
+    // 尾巴有杂字符（"3/12 (CD 1)"）交给 lenient 链
+    if !rest.is_empty() {
+        return None;
+    }
+    // section 在单列模型里无存储位（见 `parse_track_number` 文档），
+    // 消费它只为守住文法边界
+    let _ = section;
+    let track_max = track_max.and_then(|digits| digits.parse().ok());
+
+    let mut parsed = ParsedTrackNumber {
+        track_max,
+        ..ParsedTrackNumber::default()
+    };
+    match (letters.is_empty(), digits.is_empty()) {
+        // 纯数字："1"、"1/12"、"1-2"（section 丢弃，轨号保住）
+        (true, false) => parsed.track = digits.parse().ok()?,
+        // 黑胶单曲：面字母逐轨连写（"A"、"AA"、"BBB.1"），轨号 = 连写长度
+        (false, true) => {
+            let (disc, track) = decode_side_run(letters)?;
+            parsed.disc = Some(disc);
+            parsed.track = track;
+            parsed.is_vinyl = true;
+        }
+        // 黑胶面 + 轨号（"A3"、"A1.2"）：面字母必须单个
+        (false, false) => {
+            let mut chars = letters.chars();
+            let side = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            parsed.disc = Some((side.to_ascii_uppercase() as u64) - ('A' as u64) + 1);
+            parsed.track = digits.parse().ok()?;
+            parsed.is_vinyl = true;
+        }
+        (true, true) => return None,
+    }
+    Some(parsed)
+}
+
+/// 黑胶单曲的面字母连写（"A"=1、"AA"=2）：所有字母大小写不敏感地相同，
+/// 长度封顶防病态输入（上游 MAX_VINYL_SINGLE_TRACK = 64）。
+fn decode_side_run(letters: &str) -> Option<(u64, u64)> {
+    const MAX_VINYL_SINGLE_TRACK: usize = 64;
+    let side = letters.chars().next()?.to_ascii_uppercase();
+    if letters.len() > MAX_VINYL_SINGLE_TRACK
+        || !letters
+            .chars()
+            .all(|candidate| candidate.to_ascii_uppercase() == side)
+    {
+        return None;
+    }
+    Some(((side as u64) - ('A' as u64) + 1, letters.len() as u64))
+}
+
+/// 旧链兜底：黑胶「面字母+轨号」与任意位置的斜杠对。文法先跑，这里只接
+/// 文法不认的脏值（"3/12 (CD 1)"、"Track 3/12"），存量可解析值零回退。
+fn parse_track_number_lenient(value: &str) -> Option<ParsedTrackNumber> {
     let mut parsed = ParsedTrackNumber::default();
 
     // 检查黑胶式编号：一个字母的面标识 + 可选数字
@@ -600,6 +706,28 @@ mod tests {
         track_number_parses("A", Some(1), 1, None, true);
         track_number_parses("B", Some(2), 1, None, true);
         track_number_parses("Z", Some(26), 1, None, true);
+    }
+
+    #[test]
+    fn parse_track_number_handles_sections_and_vinyl_singles() {
+        // 上游 hummingbird numbering.rs 补齐的三类此前整号丢失的形态
+        track_number_parses("1-2", None, 1, None, false);
+        track_number_parses("A1.2", Some(1), 1, None, true);
+        track_number_parses("AA", Some(1), 2, None, true);
+        track_number_parses("BBB.1", Some(2), 3, None, true);
+        // 文法外的脏值仍拒绝：混合面字母、连写带轨号、section 位置非数字
+        assert_eq!(super::parse_track_number("AB"), None);
+        assert_eq!(super::parse_track_number("AA1"), None);
+        assert_eq!(super::parse_track_number("1-A"), None);
+        assert_eq!(super::parse_track_number("1.1.1"), None);
+        assert_eq!(super::parse_track_number("Intro"), None);
+    }
+
+    #[test]
+    fn parse_track_number_lenient_chain_still_covers_dirty_slash_values() {
+        // 文法要求全串消费完毕；尾巴带杂字符的斜杠对回退旧链提取
+        track_number_parses("3/12 (CD 1)", None, 3, Some(12), false);
+        track_number_parses("Track 3/12", None, 3, Some(12), false);
     }
 
     #[test]
