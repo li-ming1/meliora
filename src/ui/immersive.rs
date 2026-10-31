@@ -44,9 +44,9 @@ use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ObjectFit, ParentElement, Render, Rgba, ScrollWheelEvent,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
-    linear_color_stop, linear_gradient, px, relative,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba, ScrollWheelEvent,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window, canvas, div,
+    linear_color_stop, linear_gradient, point, px, relative,
 };
 use tracing::warn;
 
@@ -56,7 +56,7 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{DISC, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
+            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
@@ -1494,8 +1494,8 @@ impl Render for ImmersiveView {
             );
 
         let stage_center_view = if is_stage_mode {
-            let gold_glow = Rgba::new(1.0, 0.85, 0.42, 1.0);
-            let dimmed_color = lerp_color(text, text_secondary, 0.5);
+            let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
+            let dimmed_color = lerp_color(text, text_secondary, 0.45);
 
             let waterfall_lines = self.parsed.as_ref().map(|parsed| {
                 let visual_line = self.visual_line;
@@ -1507,16 +1507,16 @@ impl Render for ImmersiveView {
                         let line = &parsed[index];
                         let distance = (index as f32 - visual_line).abs().round() as i64;
                         let (font_size, opacity) = match distance {
-                            0 => (30.0f32, 1.0f32),
-                            1 => (22.0f32, 0.70f32),
-                            2 => (18.0f32, 0.40f32),
-                            _ => (15.0f32, 0.18f32),
+                            0 => (52.0f32, 1.0f32),
+                            1 => (22.0f32, 0.65f32),
+                            2 => (18.0f32, 0.35f32),
+                            _ => (15.0f32, 0.14f32),
                         };
                         let line_time_ms = line.time_ms;
 
                         let text_child: AnyElement = if is_current && !line.words.is_empty() {
                             let unsung = dimmed_color;
-                            let mut row = div().flex().flex_wrap().justify_center().items_baseline();
+                            let mut row = div().flex().flex_wrap().justify_start().items_baseline();
                             for word in &line.words {
                                 let progress = word_progress(word, position_ms);
                                 let color = lerp_color(unsung, gold_glow, progress);
@@ -1525,16 +1525,16 @@ impl Render for ImmersiveView {
                             row.into_any_element()
                         } else {
                             let color = if is_current { gold_glow } else { dimmed_color };
-                            div().text_center().text_color(color).child(line.text.clone()).into_any_element()
+                            div().text_left().text_color(color).child(line.text.clone()).into_any_element()
                         };
 
                         div()
-                            .id(("stage-wf-line", index))
+                            .id(("stage-bloom-line", index))
                             .cursor_pointer()
                             .w_full()
                             .opacity(opacity)
                             .text_size(px(font_size))
-                            .line_height(relative(1.25))
+                            .line_height(relative(1.20))
                             .font_weight(if is_current { FontWeight::BOLD } else { FontWeight::MEDIUM })
                             .on_click(move |_, _, cx| {
                                 let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
@@ -1546,9 +1546,9 @@ impl Render for ImmersiveView {
                             .when(is_current && line.translation.is_some(), |el| {
                                 el.child(
                                     div()
-                                        .mt(px(4.0))
-                                        .text_center()
-                                        .text_size(px(15.0))
+                                        .mt(px(6.0))
+                                        .text_left()
+                                        .text_size(px(18.0))
                                         .text_color(text_secondary)
                                         .child(line.translation.clone().unwrap()),
                                 )
@@ -1556,270 +1556,214 @@ impl Render for ImmersiveView {
                     })
             });
 
-            let hero_card = div()
-                .id("stage-hero-poster")
-                .w(px(580.0))
-                .h(px(510.0))
-                .rounded(px(20.0))
+            // 背景星轨几何罗盘装饰层
+            let compass_canvas = canvas(
+                move |bounds, _, _| bounds,
+                move |bounds, _, window, _cx| {
+                    let w = f32::from(bounds.size.width);
+                    let h = f32::from(bounds.size.height);
+                    let center_x = w * 0.38;
+                    let center_y = h * 0.50;
+                    let compass_color = Rgba::new(1.0, 1.0, 1.0, 0.045);
+
+                    // 同心星轨圆
+                    for r in [220.0f32, 360.0f32] {
+                        let mut circle = PathBuilder::stroke(px(1.0));
+                        for i in 0..=36 {
+                            let angle = (i as f32 / 36.0) * std::f32::consts::TAU;
+                            let pt = point(px(center_x + r * angle.cos()), px(center_y + r * angle.sin()));
+                            if i == 0 {
+                                circle.move_to(pt);
+                            } else {
+                                circle.line_to(pt);
+                            }
+                        }
+                        if let Ok(path) = circle.build() {
+                            window.paint_path(path, compass_color);
+                        }
+                    }
+
+                    // 十字刻度线
+                    let mut axes = PathBuilder::stroke(px(1.0));
+                    axes.move_to(point(px(center_x - 420.0), px(center_y)));
+                    axes.line_to(point(px(center_x + 420.0), px(center_y)));
+                    axes.move_to(point(px(center_x), px(center_y - 280.0)));
+                    axes.line_to(point(px(center_x), px(center_y + 280.0)));
+                    if let Ok(path) = axes.build() {
+                        window.paint_path(path, compass_color);
+                    }
+                },
+            );
+
+            // 右侧手机式精致中控卡片（Console Pod）
+            let right_console = div()
+                .id("stage-console-pod")
+                .w(px(310.0))
+                .h(px(520.0))
+                .rounded(px(22.0))
                 .shadow_lg()
                 .border_1()
-                .border_color(Rgba::new(1.0, 1.0, 1.0, 0.20))
-                .bg(Rgba::new(0.06, 0.07, 0.09, 0.82))
-                .backdrop_blur(px(20.0))
-                .p(px(22.0))
+                .border_color(Rgba::new(1.0, 1.0, 1.0, 0.16))
+                .bg(Rgba::new(0.06, 0.07, 0.09, 0.88))
+                .backdrop_blur(px(24.0))
+                .p(px(20.0))
                 .flex()
                 .flex_col()
                 .justify_between()
-                .overflow_hidden()
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(270.0))
+                        .rounded(px(16.0))
+                        .shadow_md()
+                        .border_1()
+                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                        .overflow_hidden()
+                        .when_some(self.image_key.clone(), |el, key| {
+                            el.child(
+                                managed_image(("stage-console-art", image_gen), key)
+                                    .thumb_max(512)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover),
+                            )
+                        }),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(4.0))
+                        .gap(px(3.0))
                         .child(
                             div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    div()
-                                        .px(px(8.0))
-                                        .py(px(2.0))
-                                        .rounded_full()
-                                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
-                                        .text_size(px(10.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.button_primary)
-                                        .child("正在播放"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(text_secondary)
-                                        .child(self.artist_name.clone().unwrap_or_default()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(22.0))
+                                .text_size(px(17.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(text)
                                 .truncate()
                                 .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(text_secondary)
+                                .truncate()
+                                .child(self.artist_name.clone().unwrap_or_default()),
                         ),
                 )
                 .child(
                     div()
-                        .flex_1()
                         .w_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(12.0))
-                        .children(waterfall_lines.into_iter().flatten()),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .pt(px(12.0))
-                        .border_t_1()
-                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
                         .flex()
                         .items_center()
                         .justify_between()
                         .child(
                             div()
-                                .flex()
-                                .items_center()
-                                .gap(px(12.0))
-                                .child(
-                                    div()
-                                        .id("hero-prev-btn")
-                                        .cursor_pointer()
-                                        .p(px(6.0))
-                                        .rounded_full()
-                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
-                                        .child(icon(PREV_TRACK).size(px(18.0)).text_color(text))
-                                        .on_click(|_, _, cx| {
-                                            cx.global::<PlaybackInterface>().previous();
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .id("hero-play-btn")
-                                        .cursor_pointer()
-                                        .size(px(40.0))
-                                        .rounded_full()
-                                        .bg(theme.button_primary)
-                                        .text_color(theme.button_primary_text)
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .shadow_md()
-                                        .hover(|s| s.bg(theme.button_primary_hover))
-                                        .child(icon(if playing { PAUSE } else { PLAY }).size(px(20.0)).text_color(theme.button_primary_text))
-                                        .on_click(|_, _, cx| {
-                                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                                            let interface = cx.global::<PlaybackInterface>();
-                                            if state == PlaybackState::Playing {
-                                                interface.pause();
-                                            } else {
-                                                interface.play();
-                                            }
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .id("hero-next-btn")
-                                        .cursor_pointer()
-                                        .p(px(6.0))
-                                        .rounded_full()
-                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
-                                        .child(icon(NEXT_TRACK).size(px(18.0)).text_color(text))
-                                        .on_click(|_, _, cx| {
-                                            cx.global::<PlaybackInterface>().next();
-                                        }),
-                                ),
+                                .id("console-prev-btn")
+                                .cursor_pointer()
+                                .p(px(8.0))
+                                .rounded_full()
+                                .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
+                                .child(icon(PREV_TRACK).size(px(18.0)).text_color(text))
+                                .on_click(|_, _, cx| {
+                                    cx.global::<PlaybackInterface>().previous();
+                                }),
                         )
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(text_secondary)
-                                .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
+                                .id("console-play-btn")
+                                .cursor_pointer()
+                                .size(px(46.0))
+                                .rounded_full()
+                                .bg(theme.button_primary)
+                                .text_color(theme.button_primary_text)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .shadow_md()
+                                .hover(|s| s.bg(theme.button_primary_hover))
+                                .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
+                                .on_click(|_, _, cx| {
+                                    let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                    let interface = cx.global::<PlaybackInterface>();
+                                    if state == PlaybackState::Playing {
+                                        interface.pause();
+                                    } else {
+                                        interface.play();
+                                    }
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("console-next-btn")
+                                .cursor_pointer()
+                                .p(px(8.0))
+                                .rounded_full()
+                                .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
+                                .child(icon(NEXT_TRACK).size(px(18.0)).text_color(text))
+                                .on_click(|_, _, cx| {
+                                    cx.global::<PlaybackInterface>().next();
+                                }),
                         ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(text_secondary)
+                        .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000))
+                        .child("Ephemeral Bloom"),
                 );
 
-            let queue_model = self.queue.read(cx);
-            let current_q_pos = queue_model.position;
-            let total_q_items = queue_model.data.read_recovered().len();
-
-            let mut prev_cards = Vec::new();
-            if current_q_pos > 0 {
-                let p1 = current_q_pos - 1;
-                prev_cards.push(div()
-                    .id(("stage-prev-card", p1))
-                    .w(px(200.0))
-                    .h(px(250.0))
-                    .rounded(px(16.0))
-                    .shadow_md()
-                    .border_1()
-                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.10))
-                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.65))
-                    .p(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .justify_between()
-                    .cursor_pointer()
-                    .opacity(0.65)
-                    .hover(|s| s.opacity(1.0).bg(Rgba::new(0.12, 0.14, 0.18, 0.85)))
-                    .on_click(move |_, _, cx| {
-                        cx.global::<PlaybackInterface>().jump(p1);
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(text_secondary)
-                            .child(format!("上一首 · #{p1}")),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex_1()
-                            .my(px(8.0))
-                            .rounded(px(10.0))
-                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon(DISC).size(px(42.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.25))),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(text)
-                            .child("点击切播"),
-                    ),
+            let lyrics_stream = div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .pl(px(80.0))
+                .pr(px(40.0))
+                .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                    if !this.active {
+                        return;
+                    }
+                    let dy = f32::from(ev.delta.pixel_delta(px(52.0)).y);
+                    this.scroll_accum -= dy / 52.0;
+                    let whole = this.scroll_accum as i64;
+                    if whole != 0 {
+                        this.scroll_accum -= whole as f32;
+                        this.browse_offset += whole;
+                        this.last_scroll = Some(Instant::now());
+                        this.sync_display_target(true);
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(760.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(18.0))
+                        .children(waterfall_lines.into_iter().flatten()),
                 );
-            }
-
-            let mut next_cards = Vec::new();
-            if current_q_pos + 1 < total_q_items {
-                let n1 = current_q_pos + 1;
-                next_cards.push(div()
-                    .id(("stage-next-card", n1))
-                    .w(px(200.0))
-                    .h(px(250.0))
-                    .rounded(px(16.0))
-                    .shadow_md()
-                    .border_1()
-                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.10))
-                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.65))
-                    .p(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .justify_between()
-                    .cursor_pointer()
-                    .opacity(0.65)
-                    .hover(|s| s.opacity(1.0).bg(Rgba::new(0.12, 0.14, 0.18, 0.85)))
-                    .on_click(move |_, _, cx| {
-                        cx.global::<PlaybackInterface>().jump(n1);
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(text_secondary)
-                            .child(format!("下一首 · #{n1}")),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex_1()
-                            .my(px(8.0))
-                            .rounded(px(10.0))
-                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon(DISC).size(px(42.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.25))),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(text)
-                            .child("点击切换"),
-                    ),
-                );
-            }
 
             Some(
                 div()
                     .absolute()
                     .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(24.0))
-                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                        if !this.active {
-                            return;
-                        }
-                        let dy = f32::from(ev.delta.pixel_delta(px(52.0)).y);
-                        this.scroll_accum -= dy / 52.0;
-                        let whole = this.scroll_accum as i64;
-                        if whole != 0 {
-                            this.scroll_accum -= whole as f32;
-                            this.browse_offset += whole;
-                            this.last_scroll = Some(Instant::now());
-                            this.sync_display_target(true);
-                            cx.notify();
-                        }
-                    }))
-                    .children(prev_cards)
-                    .child(hero_card)
-                    .children(next_cards),
+                    .child(compass_canvas)
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .pr(px(52.0))
+                            .child(lyrics_stream)
+                            .child(right_console),
+                    ),
             )
         } else {
             None
