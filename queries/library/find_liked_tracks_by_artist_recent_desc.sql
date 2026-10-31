@@ -14,4 +14,5 @@ FROM track t
 JOIN track_artist ta ON ta.track_id = t.id
 JOIN playlist_item pi ON pi.track_id = t.id
 WHERE ta.artist_id = $1 AND pi.playlist_id = 1
-ORDER BY liked_at DESC;
+ORDER BY liked_at DESC,
+    t.id ASC;

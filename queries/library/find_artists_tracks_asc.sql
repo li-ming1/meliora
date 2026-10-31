@@ -8,4 +8,5 @@ LEFT JOIN (SELECT ta.artist_id AS id, COUNT(DISTINCT ta.track_id) AS n
            GROUP BY ta.artist_id) tc ON tc.id = a.id
 GROUP BY a.id
 ORDER BY COALESCE(at.n, 0) + COALESCE(tc.n, 0) ASC,
-         a.name_sortable COLLATE NOCASE ASC;
+         a.name_sortable COLLATE NOCASE ASC,
+    a.id ASC;
