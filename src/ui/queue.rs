@@ -14,7 +14,9 @@ use crate::{
                 check_drag_cancelled, handle_external_drag_move, handle_track_drag_move,
                 handle_track_drop_multi, request_edge_scroll,
             },
-            icons::{CROSS, DISC, PLAYLIST_ADD, STAR, STAR_FILLED, TRASH, USERS, icon},
+            icons::{
+                CROSS, DISC, FOLDER_SEARCH, PLAYLIST_ADD, STAR, STAR_FILLED, TRASH, USERS, icon,
+            },
             managed_image::{ManagedImageKey, managed_image},
             menu::{menu, menu_item, menu_separator},
             nav_button::nav_button,
@@ -790,6 +792,11 @@ impl Render for QueueItem {
                             .and_then(|id| cx.artist_ids_for_track(id).ok())
                             .unwrap_or_default();
                         let can_go_to_artist = !artist_ids.is_empty();
+                        // 「在文件管理器中显示」的数据源与移除回调共用同一份
+                        // 打开时快照；克隆 path，别把 remove_snapshot 搬进闭包
+                        let reveal_path = remove_snapshot
+                            .as_ref()
+                            .map(|(_, path)| path.clone());
                         menu()
                             .when(has_add_to, |menu| {
                                 menu.item(
@@ -826,6 +833,19 @@ impl Render for QueueItem {
                                     )
                                     .disabled(!is_available || !can_go_to_artist),
                                 )
+                                .when_some(reveal_path, |menu, path| {
+                                    menu.item(menu_item(
+                                        "queue_show_in_file_manager",
+                                        Some(FOLDER_SEARCH),
+                                        crate::ui::library::context_menus::track_show_in_file_manager_label(),
+                                        move |_, _, cx| {
+                                            crate::ui::util::reveal_path_for_file_manager(
+                                                path.as_path(),
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                })
                                 .item(menu_separator())
                                 .item(menu_item(
                                     "add_to_playlist",

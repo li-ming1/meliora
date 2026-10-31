@@ -7,9 +7,10 @@ use crate::{
     library::types::Album,
     ui::{
         components::{
-            icons::{PLAY, PLAYLIST_ADD, PLUS, SHUFFLE, USERS},
+            icons::{FOLDER_SEARCH, PLAY, PLAYLIST_ADD, PLUS, SHUFFLE, USERS},
             menu::{menu, menu_item, menu_separator},
         },
+        library_access::LibraryAccess,
         models::Models,
     },
 };
@@ -114,7 +115,33 @@ impl RenderOnce for AlbumContextMenu {
                 move |_, _, cx| {
                     rescan_album(cx, &album_for_rescan);
                 },
-            ));
+            ))
+            .item(menu_separator());
+        // 「在文件管理器中显示」（上游 447064d）：取专辑第一首可用曲目的
+        // 位置让文件管理器定位。与曲目菜单同款 reveal 助手；查询走
+        // LibraryAccess 的点击路径（UI 线程 block_on + 慢查询告警），专辑
+        // 行数少、有 Arc 缓存的索引查询。
+        let menu = if is_available {
+            let album_for_reveal = self.album.clone();
+            menu.item(menu_item(
+                "album_show_in_file_manager",
+                Some(FOLDER_SEARCH),
+                crate::ui::library::context_menus::track_show_in_file_manager_label(),
+                move |_, _, cx| {
+                    let Ok(tracks) = cx.list_tracks_in_album(album_for_reveal.id) else {
+                        return;
+                    };
+                    if let Some(track) = tracks
+                        .iter()
+                        .find(|t| crate::ui::models::is_track_available_snapshot(cx, t))
+                    {
+                        crate::ui::util::reveal_path_for_file_manager(track.location.as_path(), cx);
+                    }
+                },
+            ))
+        } else {
+            menu
+        };
 
         if show_go_to_artist {
             menu.item(menu_separator()).item(menu_item(
