@@ -90,22 +90,27 @@ pub async fn update_metadata(
     let artist = metadata.artist.as_deref().filter(|s| !s.trim().is_empty());
     let display_override = album_artist.or(artist);
 
-    let album_id = insert_album(
-        conn,
-        metadata,
-        display_override,
-        is_force,
-        &mut caches.force_encountered,
-        &mut caches.albums,
-    )
-    .await?;
-
-    // 重打 tag 可能把曲目挪到另一个专辑——旧专辑同样需要重建
+    // 曲目当前所在专辑先行锚定：display_override 属可变展示元数据，retag 改变
+    // 它时 get_album_id 的等值匹配会失配、UPSERT 会分裂出第二张同 title+mbid
+    // 的幽灵专辑——用旧专辑 id 作锚定分支就地复用并更新原行（上游 bde230c）。
+    // 同时它也是「重打 tag 把曲目挪了专辑，旧专辑也要重建」的依据。
     let previous_album: Option<(Option<i64>,)> = sqlx::query_as(include_str!(
         "../../../queries/scan/get_album_id_at_location.sql"
     ))
     .bind(path.as_str())
     .fetch_optional(&mut *conn)
+    .await?;
+    let previous_album_id = previous_album.and_then(|(id,)| id);
+
+    let album_id = insert_album(
+        conn,
+        metadata,
+        display_override,
+        previous_album_id,
+        is_force,
+        &mut caches.force_encountered,
+        &mut caches.albums,
+    )
     .await?;
 
     let art_hash = art.embedded.as_ref().map(|embedded| embedded.hash as i64);
@@ -202,13 +207,14 @@ pub async fn update_metadata(
             .await?;
     }
 
-    // 每批次里每个专辑只算一次专辑歌手，没有专辑的曲目各自建链接
+    // 每批次里每个专辑只算一次专辑歌手；曲目级链接对所有曲目重建（含专辑
+    // 曲目——收编/retag 不再经触发器清空 track_artist，见迁移
+    // 20261031090000，写侧必须始终维护它才能保持一致）
     if let Some(album_id) = album_id {
         caches.pending_albums.insert(album_id);
-    } else {
-        caches.pending_tracks.insert(track_id);
     }
-    if let Some((Some(old_id),)) = previous_album
+    caches.pending_tracks.insert(track_id);
+    if let Some(old_id) = previous_album_id
         && Some(old_id) != album_id
     {
         caches.pending_albums.insert(old_id);

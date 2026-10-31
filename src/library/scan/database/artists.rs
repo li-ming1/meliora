@@ -129,3 +129,27 @@ pub(super) fn derive_claimed_artists(
 
     (names, fallback)
 }
+
+/// 曲目级署名收录 artists 列表的每一位成员（上游 16904fd 语义）：专辑级
+/// 排序键只为曲目级链接提供更精确的排序值，绝不决定是否建链。单曲目沿用
+/// 自身的 artist_sort 以便合并别名；多曲目在 keys 里按规范化键匹配。
+pub(super) fn derive_track_artists(row: &TrackArtistRow) -> Vec<(String, Option<String>)> {
+    let artists = decode_artist_list(row.artists.as_deref());
+    let keys = decode_artist_list(row.album_artist_keys.as_deref());
+    let single_sort = (artists.len() == 1)
+        .then(|| row.artist_sort.clone())
+        .flatten()
+        .filter(|sort| !sort.trim().is_empty());
+
+    artists
+        .into_iter()
+        .map(|name| {
+            let sort = single_sort.clone().or_else(|| {
+                keys.iter()
+                    .find(|key| token_key(key) == token_key(&name))
+                    .cloned()
+            });
+            (name, sort)
+        })
+        .collect()
+}

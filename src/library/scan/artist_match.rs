@@ -82,10 +82,16 @@ impl ArtistMatcher {
     ) -> anyhow::Result<i64> {
         self.load(&mut *conn).await?;
 
-        let sort = sort_name.filter(|s| !s.trim().is_empty()).unwrap_or(name);
+        // 显式 sort tag 与回退（用名字顶替）分开记：显式 tag 撞名时直接替换
+        // 存量 sort（retag 改排序键必须能跟上），回退 sort 只在存量也是回退
+        // 形态时升级——好让别名合并（上游 ae5d78b）
+        let explicit_sort = sort_name.filter(|s| !s.trim().is_empty());
+        let sort = explicit_sort.unwrap_or(name);
         let key = token_key(sort);
         let Some(&artist_id) = self.by_key.get(&key) else {
-            return self.create(conn, name, sort, key).await;
+            return self
+                .create(conn, name, sort, key, explicit_sort.is_some())
+                .await;
         };
 
         // 优先采用匹配 sort key 的名字——平局时保留现有行，所以顺序无关紧要
@@ -124,6 +130,7 @@ impl ArtistMatcher {
         name: &str,
         sort_name: &str,
         key: String,
+        explicit_sort: bool,
     ) -> anyhow::Result<i64> {
         let result: Result<(i64,), sqlx::Error> =
             sqlx::query_as(include_str!("../../../queries/scan/create_artist.sql"))
@@ -132,47 +139,57 @@ impl ArtistMatcher {
                 .fetch_one(&mut *conn)
                 .await;
 
-        let (id, name, key) = match result {
+        // 命中/升级/沿用都以库里已存的行为准：升级分支写入的是新 sort，缓存
+        // 必须记「存量名 + 生效后的 key」，否则 by_key 与库行漂移
+        let (id, stored_name, stored_key) = match result {
             Ok((id,)) => (id, name.to_string(), key),
             // 名字被 key 不同的另一个歌手占着——改用那一行
             Err(sqlx::Error::RowNotFound) => {
-                let (id, name, sort): (i64, String, String) =
+                let (id, stored_name, stored_sort): (i64, String, String) =
                     sqlx::query_as(include_str!("../../../queries/scan/get_artist_id.sql"))
                         .bind(name)
                         .fetch_one(&mut *conn)
                         .await?;
-                let existing_key = token_key(&sort);
-                // 若 sort 回退成了名字，且入参 sort 尚未被占用就采纳它，好让别名合并
-                let upgrade =
-                    sort == name && key != existing_key && !self.by_key.contains_key(&key);
+                let existing_key = token_key(&stored_sort);
+                // sort 空缺即采纳：显式 tag 直接替换（retag 跟随）；回退 sort
+                // 只在存量也是回退形态时升级，好让别名合并
+                let can_take_sort = key != existing_key && !self.by_key.contains_key(&key);
+                let upgrade = can_take_sort && (explicit_sort || stored_sort == stored_name);
                 if upgrade {
                     sqlx::query(include_str!("../../../queries/scan/update_artist_sort.sql"))
                         .bind(sort_name)
                         .bind(id)
                         .execute(&mut *conn)
                         .await?;
-                    (id, name, key)
+                    (id, stored_name, key)
                 } else {
-                    (id, name, existing_key)
+                    (id, stored_name, existing_key)
                 }
             }
             Err(e) => return Err(e.into()),
         };
 
         if let Some(entry) = self.artists.as_mut().unwrap().get_mut(&id) {
-            let old_key = std::mem::replace(&mut entry.key, key.clone());
-            entry.name = name;
-            if old_key != key {
-                self.by_key.remove(&old_key);
-                self.by_key.insert(key, id);
+            let old_key = std::mem::replace(&mut entry.key, stored_key.clone());
+            entry.name = stored_name;
+            if old_key != stored_key {
+                // 旧库里的重复 key 都映射到最小 id——只清理属于自己的那条
+                if self.by_key.get(&old_key) == Some(&id) {
+                    self.by_key.remove(&old_key);
+                }
+                self.by_key.insert(stored_key, id);
             }
             return Ok(id);
         }
-        self.by_key.insert(key.clone(), id);
-        self.artists
-            .as_mut()
-            .unwrap()
-            .insert(id, ArtistEntry { id, name, key });
+        self.by_key.insert(stored_key.clone(), id);
+        self.artists.as_mut().unwrap().insert(
+            id,
+            ArtistEntry {
+                id,
+                name: stored_name,
+                key: stored_key,
+            },
+        );
         Ok(id)
     }
 }

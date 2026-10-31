@@ -11,7 +11,7 @@ FROM
     track t
     JOIN album al ON t.album_id = al.id
     JOIN album_artist aa ON aa.album_id = al.id
-UNION ALL
+UNION
 SELECT
     ta.track_id,
     ta.artist_id

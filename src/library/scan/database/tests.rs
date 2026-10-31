@@ -1031,22 +1031,37 @@ async fn update_metadata_retag_removes_dropped_single_artists() {
 }
 
 #[tokio::test]
-async fn update_metadata_adopting_album_drops_single_artists() {
-    let (dir, pool) = create_test_pool("db-single-adopt-test").await;
+async fn update_metadata_writes_artists_for_album_track() {
+    // 语义翻转（上游 16904fd / 迁移 20261031090000）：专辑曲目的曲目级署名
+    // 不再被 adopt 触发器清空，扫描对全部曲目维护 track_artist——专辑级与
+    // 曲目级是并列的信贷来源，旧断言「收编即清空」钉的是被上游定为 bug 的
+    // 行为。
+    let (dir, pool) = create_test_pool("db-album-track-artists-test").await;
     let mut conn = pool.acquire().await.unwrap();
     let path = dir.utf8_join("track.flac");
 
-    let mut meta = track_metadata("Album", "Artist", "Track", 1);
-    meta.album = None;
-    insert_metadata(&mut conn, &meta, &path).await.unwrap();
-    assert_eq!(count_rows(&pool, "track_artist").await, 1);
-
-    meta.album = Some("Real Album".to_string());
+    let mut meta = track_metadata("Real Album", "Main Artist feat. Guest Artist", "Track", 1);
+    meta.artists = names(&["Main Artist", "Guest Artist"]);
+    meta.album_artist_keys = names(&["Main Artist"]);
     insert_metadata(&mut conn, &meta, &path).await.unwrap();
 
-    assert_eq!(count_rows(&pool, "track_artist").await, 0);
+    assert_eq!(count_rows(&pool, "track_artist").await, 2);
     assert_eq!(count_rows(&pool, "album_artist").await, 1);
-    assert_eq!(count_rows(&pool, "artist").await, 1);
+    assert_eq!(count_rows(&pool, "artist").await, 2);
+
+    let track_artists: Vec<(String,)> = sqlx::query_as(
+        "SELECT a.name
+         FROM track_artist ta
+         JOIN artist a ON a.id = ta.artist_id
+         ORDER BY a.name",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        track_artists,
+        [("Guest Artist".to_string(),), ("Main Artist".to_string(),)]
+    );
 }
 
 #[tokio::test]
@@ -1669,4 +1684,154 @@ async fn update_metadata_album_artist_links_union_across_tracks() {
         linked_artist_names(&pool, "Album").await,
         vec!["Artist A", "Artist B"]
     );
+}
+
+#[tokio::test]
+async fn update_metadata_retag_changes_existing_artist_sort() {
+    // 回归（上游 ae5d78b）：撞名升级分支此前只在「入参 sort 回退成名字」时
+    // 采纳——显式 sort tag 的 retag 永远跟不上存量行
+    let (dir, pool) = create_test_pool("db-artist-sort-change-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+    let path = dir.utf8_join("track1.flac");
+
+    let mut meta = track_metadata("Album", "Artist", "Track", 1);
+    meta.artist_sort = Some("Old Sort".to_string());
+    insert_metadata(&mut conn, &meta, &path).await.unwrap();
+
+    let (sort,): (String,) = sqlx::query_as("SELECT name_sortable FROM artist")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sort, "Old Sort");
+
+    // 非 force 重扫也必须应用改动的 tag
+    let mut retagged = track_metadata("Album", "Artist", "Track", 1);
+    retagged.artist_sort = Some("New Sort".to_string());
+    insert_metadata(&mut conn, &retagged, &path).await.unwrap();
+
+    let (sort,): (String,) = sqlx::query_as("SELECT name_sortable FROM artist")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sort, "New Sort");
+}
+
+#[tokio::test]
+async fn update_metadata_retag_changes_existing_album_artist_sort() {
+    let (dir, pool) = create_test_pool("db-album-artist-sort-change-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+    let path = dir.utf8_join("track1.flac");
+
+    let mut meta = track_metadata("Album", "Artist", "Track", 1);
+    meta.album_artist_sort = Some("Old Album Sort".to_string());
+    insert_metadata(&mut conn, &meta, &path).await.unwrap();
+
+    let (sort,): (String,) = sqlx::query_as("SELECT artist_sort FROM album")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sort, "Old Album Sort");
+
+    // 非 force 重扫也必须应用改动的 tag
+    let mut retagged = track_metadata("Album", "Artist", "Track", 1);
+    retagged.album_artist_sort = Some("New Album Sort".to_string());
+    insert_metadata(&mut conn, &retagged, &path).await.unwrap();
+
+    let (sort,): (String,) = sqlx::query_as("SELECT artist_sort FROM album")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sort, "New Album Sort");
+
+    // 无 sort tag 的文件不得清空专辑已有的 tag
+    let untagged = track_metadata("Album", "Artist", "Track", 1);
+    insert_metadata(&mut conn, &untagged, &path).await.unwrap();
+
+    let (sort,): (String,) = sqlx::query_as("SELECT artist_sort FROM album")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sort, "New Album Sort");
+}
+
+#[tokio::test]
+async fn update_metadata_retag_updates_album_artist_display() {
+    // 回归（上游 bde230c）：display_override 属可变展示元数据，非 force retag
+    // 必须经锚定分支就地复用原专辑行并更新它，而不是分裂出第二张同
+    // title+mbid 的幽灵专辑
+    let (dir, pool) = create_test_pool("db-retag-album-display-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+    let path1 = dir.utf8_join("track1.flac");
+    let path2 = dir.utf8_join("track2.flac");
+
+    let mut first = track_metadata("Album", "Old Display", "Track 1", 1);
+    let second = track_metadata("Album", "Old Display", "Track 2", 2);
+    insert_metadata(&mut conn, &first, &path1).await.unwrap();
+    insert_metadata(&mut conn, &second, &path2).await.unwrap();
+
+    first.album_artist = Some("New Display".to_string());
+    first.album_artist_sort = Some("Artist, Canonical".to_string());
+    insert_metadata(&mut conn, &first, &path1).await.unwrap();
+
+    let albums: Vec<(String,)> = sqlx::query_as("SELECT artist_display_override FROM album")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(albums, [("New Display".to_string(),)]);
+
+    let albums_on_tracks: (i64,) =
+        sqlx::query_as("SELECT COUNT(DISTINCT album_id) FROM track WHERE location IN ($1, $2)")
+            .bind(path1.as_str())
+            .bind(path2.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(albums_on_tracks.0, 1);
+}
+
+#[tokio::test]
+async fn update_metadata_adopt_keeps_track_artist_links() {
+    // 回归（上游 20260818000000 迁移）：曲目从无专辑被收编进专辑时，
+    // update_track_album_adopt 触发器曾删除其全部曲目级歌手链接。触发器
+    // 已删，收编后 track_artist 必须原样保留且继续由扫描维护。
+    let (dir, pool) = create_test_pool("db-adopt-keeps-track-artists-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+    let path = dir.utf8_join("track1.flac");
+
+    // 先建一条带曲目级署名的无专辑曲目
+    let mut standalone = track_metadata("Album", "Album Artist", "Track", 1);
+    standalone.album = None;
+    standalone.artist = Some("Track Artist".to_string());
+    standalone.artists = names(&["Track Artist"]);
+    insert_metadata(&mut conn, &standalone, &path)
+        .await
+        .unwrap();
+
+    let track_links: Vec<(String,)> =
+        sqlx::query_as("SELECT a.name FROM track_artist ta JOIN artist a ON a.id = ta.artist_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(track_links, [("Track Artist".to_string(),)]);
+
+    // 重扫：曲目进了专辑（专辑歌手另有署名），曲目级链接不得丢失
+    let mut adopted = track_metadata("Album", "Album Artist", "Track", 1);
+    adopted.artist = Some("Track Artist".to_string());
+    adopted.artists = names(&["Track Artist"]);
+    adopted.album_artist_keys = names(&["Album Artist"]);
+    insert_metadata(&mut conn, &adopted, &path).await.unwrap();
+
+    let track_links: Vec<(String,)> =
+        sqlx::query_as("SELECT a.name FROM track_artist ta JOIN artist a ON a.id = ta.artist_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(track_links, [("Track Artist".to_string(),)]);
+
+    let album_links: Vec<(String,)> =
+        sqlx::query_as("SELECT a.name FROM album_artist aa JOIN artist a ON a.id = aa.artist_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(album_links, [("Album Artist".to_string(),)]);
 }

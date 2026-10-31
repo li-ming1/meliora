@@ -3,7 +3,8 @@ use sqlx::{SqliteConnection, SqlitePool};
 use tracing::error;
 
 use super::artists::{
-    TrackArtistRow, derive_claimed_artists, display_is_credited, push_album_artist_name,
+    TrackArtistRow, derive_claimed_artists, derive_track_artists, display_is_credited,
+    push_album_artist_name,
 };
 use crate::library::scan::artist_match::ArtistMatcher;
 
@@ -166,7 +167,10 @@ pub async fn flush_album_artists(
     }
 }
 
-/// 用同样的认领规则重建没有专辑的曲目的歌手链接。
+/// 重建曲目的歌手链接。曲目级署名收录 artists 列表全体成员（不再限于无
+/// 专辑曲目）：收编/retag 不再经触发器清空 track_artist（迁移
+/// 20261031090000），写侧对所有曲目保持维护，署名消费方（统计 credits、
+/// InfoSection）的数据才稳定。
 pub(crate) async fn recompute_track_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
@@ -183,14 +187,12 @@ pub(crate) async fn recompute_track_artists(
         return Ok(());
     };
 
-    let (mut names, fallback) = derive_claimed_artists(std::slice::from_ref(&row));
+    let mut names = derive_track_artists(&row);
 
     if names.is_empty() {
         let display = row.artist_names.as_deref().filter(|d| !d.trim().is_empty());
         if let Some(display) = display {
             names.push((display.to_string(), row.artist_sort.clone()));
-        } else {
-            push_fallback_names(&mut names, fallback);
         }
     }
 

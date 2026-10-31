@@ -34,6 +34,7 @@ pub(super) async fn insert_album(
     conn: &mut SqliteConnection,
     metadata: &Metadata,
     display_override: Option<&str>,
+    previous_album_id: Option<i64>,
     is_force: bool,
     force_encountered_albums: &mut FxHashSet<i64>,
     album_cache: &mut FxHashMap<AlbumCacheKey, i64>,
@@ -62,6 +63,7 @@ pub(super) async fn insert_album(
             .bind(album)
             .bind(&mbid)
             .bind(display_override)
+            .bind(previous_album_id)
             .fetch_one(&mut *conn)
             .await;
 
@@ -75,6 +77,29 @@ pub(super) async fn insert_album(
 
     match result {
         Ok((id,)) if !should_force => {
+            // 非 force 重扫命中已有专辑时也要应用改动的 tag：锚定/mbid 分支
+            // 命中的行其 display_override 可能已过时（上游 bde230c）；无 tag
+            // 的文件保持专辑现有值不清空（COALESCE 见查询）
+            sqlx::query(include_str!(
+                "../../../../queries/scan/update_album_display.sql"
+            ))
+            .bind(id)
+            .bind(display_override)
+            .execute(&mut *conn)
+            .await?;
+            if let Some(sort_tag) = metadata
+                .album_artist_sort
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                sqlx::query(include_str!(
+                    "../../../../queries/scan/update_album_artist_sort_tag.sql"
+                ))
+                .bind(id)
+                .bind(sort_tag)
+                .execute(&mut *conn)
+                .await?;
+            }
             album_cache.insert(cache_key, id);
             Ok(Some(id))
         }
