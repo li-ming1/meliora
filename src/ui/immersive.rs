@@ -43,7 +43,7 @@ use std::{
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
+    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ObjectFit, ParentElement, Render, Rgba, ScrollWheelEvent,
     SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
     linear_color_stop, linear_gradient, px, relative,
@@ -124,10 +124,19 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
     cx.defer(move |cx| crate::ui::app::set_main_window_fullscreen(entering, cx));
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImmersiveStageMode {
+    Classic,
+    #[default]
+    Waterfall,
+}
+
 pub struct ImmersiveView {
     focus_handle: FocusHandle,
     /// 镜像 `Models::immersive`；守每次观察者的 `notify`。
     active: bool,
+    /// 沉浸模式下的舞台展示形态：Classic（经典双栏）与 Waterfall（居中瀑布流巨幕舞台）。
+    stage_mode: ImmersiveStageMode,
 
     position: Entity<u64>,
     volume: Entity<f64>,
@@ -346,6 +355,7 @@ impl ImmersiveView {
             let mut this = Self {
                 focus_handle: cx.focus_handle(),
                 active: *immersive_flag.read(cx),
+                stage_mode: ImmersiveStageMode::Waterfall,
                 position: info.position.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
@@ -1038,12 +1048,6 @@ impl Render for ImmersiveView {
             }
         }
 
-        let theme = cx.global::<Theme>();
-        let text = theme.text;
-        let text_secondary = theme.text_secondary;
-        let accent = self.accent.unwrap_or(theme.text);
-        let image_gen = self.image_element_key;
-
         // 背景重采样目标 = 背景 inset_0 元素的设备像素尺寸（本机
         // 1920×1080@125% → 1920×1028）。长边超 2560 时等比缩界，把
         // 4K 屏的纹理驻留压回合理区间（放大交还 GPU，质量仍优于旧路径）。
@@ -1065,6 +1069,12 @@ impl Render for ImmersiveView {
                 self.arm_backdrop(cx);
             }
         }
+
+        let theme = cx.global::<Theme>();
+        let text = theme.text;
+        let text_secondary = theme.text_secondary;
+        let accent = self.accent.unwrap_or(theme.text);
+        let image_gen = self.image_element_key;
 
         // PlaybackInfo 的位置用毫秒。进度条在自己的实体（ImmersiveProgress）里
         // 读位置/时长。
@@ -1423,7 +1433,169 @@ impl Render for ImmersiveView {
             .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
 
-        div()
+        let primary_color = theme.button_primary;
+        let primary_text_color = theme.button_primary_text;
+        let is_stage_mode = self.stage_mode == ImmersiveStageMode::Waterfall;
+
+        let mode_switch_button = div()
+            .id("stage-mode-toggle")
+            .absolute()
+            .top(px(14.0))
+            .right(px(54.0))
+            .flex()
+            .items_center()
+            .p(px(2.0))
+            .rounded_full()
+            .bg(Rgba::new(0.08, 0.09, 0.12, 0.75))
+            .border_1()
+            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.15))
+            .shadow_sm()
+            .child(
+                div()
+                    .id("stage-toggle-classic")
+                    .px(px(10.0))
+                    .py(px(3.0))
+                    .rounded_full()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .when(!is_stage_mode, move |el| {
+                        el.bg(primary_color).text_color(primary_text_color)
+                    })
+                    .when(is_stage_mode, |el| {
+                        el.text_color(text_secondary).hover(|s| s.text_color(text))
+                    })
+                    .child("经典")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stage_mode = ImmersiveStageMode::Classic;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("stage-toggle-waterfall")
+                    .px(px(10.0))
+                    .py(px(3.0))
+                    .rounded_full()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .when(is_stage_mode, move |el| {
+                        el.bg(primary_color).text_color(primary_text_color)
+                    })
+                    .when(!is_stage_mode, |el| {
+                        el.text_color(text_secondary).hover(|s| s.text_color(text))
+                    })
+                    .child("瀑布流")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stage_mode = ImmersiveStageMode::Waterfall;
+                        cx.notify();
+                    })),
+            );
+
+        let stage_center_view = if is_stage_mode {
+            let gold_glow = Rgba::new(1.0, 0.85, 0.42, 1.0);
+            let dimmed_color = lerp_color(text, text_secondary, 0.5);
+
+            let waterfall_lines = self.parsed.as_ref().map(|parsed| {
+                let visual_line = self.visual_line;
+                let current_line = self.current_line;
+
+                lyric_window(visual_line, parsed.len(), current_line)
+                    .into_iter()
+                    .map(move |(index, _top, is_current)| {
+                        let line = &parsed[index];
+                        let distance = (index as f32 - visual_line).abs().round() as i64;
+                        let (font_size, opacity) = match distance {
+                            0 => (30.0f32, 1.0f32),
+                            1 => (22.0f32, 0.70f32),
+                            2 => (18.0f32, 0.40f32),
+                            _ => (15.0f32, 0.18f32),
+                        };
+                        let line_time_ms = line.time_ms;
+
+                        let text_child: AnyElement = if is_current && !line.words.is_empty() {
+                            let unsung = dimmed_color;
+                            let mut row = div().flex().flex_wrap().justify_center().items_baseline();
+                            for word in &line.words {
+                                let progress = word_progress(word, position_ms);
+                                let color = lerp_color(unsung, gold_glow, progress);
+                                row = row.child(div().child(word.text.clone()).text_color(color));
+                            }
+                            row.into_any_element()
+                        } else {
+                            let color = if is_current { gold_glow } else { dimmed_color };
+                            div().text_center().text_color(color).child(line.text.clone()).into_any_element()
+                        };
+
+                        div()
+                            .id(("stage-wf-line", index))
+                            .cursor_pointer()
+                            .w_full()
+                            .opacity(opacity)
+                            .text_size(px(font_size))
+                            .line_height(relative(1.25))
+                            .font_weight(if is_current { FontWeight::BOLD } else { FontWeight::MEDIUM })
+                            .on_click(move |_, _, cx| {
+                                let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                if state != PlaybackState::Stopped {
+                                    cx.global::<PlaybackInterface>().seek(line_time_ms as f64 / 1000.0);
+                                }
+                            })
+                            .child(text_child)
+                            .when(is_current && line.translation.is_some(), |el| {
+                                el.child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .text_center()
+                                        .text_size(px(15.0))
+                                        .text_color(text_secondary)
+                                        .child(line.translation.clone().unwrap()),
+                                )
+                            })
+                    })
+            });
+
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                        if !this.active {
+                            return;
+                        }
+                        let dy = f32::from(ev.delta.pixel_delta(px(52.0)).y);
+                        this.scroll_accum -= dy / 52.0;
+                        let whole = this.scroll_accum as i64;
+                        if whole != 0 {
+                            this.scroll_accum -= whole as f32;
+                            this.browse_offset += whole;
+                            this.last_scroll = Some(Instant::now());
+                            this.sync_display_target(true);
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(880.0))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(16.0))
+                            .children(waterfall_lines.into_iter().flatten()),
+                    ),
+            )
+        } else {
+            None
+        };
+
+        let mut root = div()
             .id("immersive-view")
             .key_context("Immersive")
             .track_focus(&self.focus_handle)
@@ -1434,10 +1606,15 @@ impl Render for ImmersiveView {
             .bg(Rgba::new(0.02, 0.02, 0.03, 1.0))
             .child(backdrop)
             .child(vertical_shade)
-            .child(right_shade)
-            .child(left_column)
-            .child(right_column)
-            .child(exit_button)
+            .child(right_shade);
+
+        if let Some(stage_view) = stage_center_view {
+            root = root.child(stage_view);
+        } else {
+            root = root.child(left_column).child(right_column);
+        }
+
+        root.child(mode_switch_button).child(exit_button)
     }
 }
 
