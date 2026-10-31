@@ -188,7 +188,12 @@ struct HeaderState {
 }
 
 impl ReleaseView {
-    pub(super) fn new(cx: &mut App, album_id: i64, target_track_id: Option<i64>) -> Entity<Self> {
+    pub(super) fn new(
+        cx: &mut App,
+        album_id: i64,
+        target_track_id: Option<i64>,
+        initial_scroll_offset: Option<f32>,
+    ) -> Entity<Self> {
         cx.new(|cx| {
             // 观察的是集合本身而不是歌单追踪器：追踪器在异步 reload 落地前就触发，
             // 那时读缓存会是陈旧的。
@@ -270,8 +275,28 @@ impl ReleaseView {
             })
             .detach();
 
+            // 恢复导航历史记忆的滚动位置（上游 e15e8ba）；「跳转到曲目」的
+            // 目标滚动优先，带 target 的入口不恢复。存取两侧都是原始 offset
+            // 原样往返，不做符号归一。
+            if target_track_id.is_none()
+                && let Some(y) = initial_scroll_offset
+            {
+                this.scroll_handle
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(y)));
+            }
+
             this
         })
+    }
+
+    /// 导航历史用的滚动记忆：主内容 handle 的纵向原始偏移。
+    pub(super) fn get_scroll_offset(&self) -> f32 {
+        self.scroll_handle.offset().y.into()
+    }
+
+    /// 滚动历史的键（抹掉「跳转到曲目」分量，见 library::scroll_storage_key）。
+    pub(super) fn scroll_storage_key(&self) -> super::ViewSwitchMessage {
+        super::ViewSwitchMessage::Release(self.album.id, None)
     }
 
     /// 在后台运行时上加载专辑头部及其曲目列表：打开视图过去会在「专辑行 + 完整曲目列表

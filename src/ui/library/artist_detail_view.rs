@@ -166,6 +166,7 @@ impl ArtistDetailView {
         cx: &mut App,
         artist_id: i64,
         nav_model: Entity<super::NavigationHistory>,
+        initial_scroll_offset: Option<f32>,
     ) -> Entity<Self> {
         let view: Entity<Self> = cx.new(|cx| {
             let liked_sort = *cx.global::<Models>().liked_tracks_sort_method.read(cx);
@@ -209,6 +210,12 @@ impl ArtistDetailView {
             };
             // 打开视图时在运行时上加载艺术家头部、专辑网格与三个曲目列表（见 reload）；
             // 落地前视图显示空页。
+            // 恢复导航历史记忆的滚动位置（上游 e15e8ba），原始 offset 原样往返
+            if let Some(y) = initial_scroll_offset {
+                this.scroll_handle
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(y)));
+            }
+
             this.reload(cx);
 
             // 重扫完成即刷新打开中的详情（上游 bcea976），语义同 ReleaseView
@@ -235,6 +242,16 @@ impl ArtistDetailView {
     /// 五条查询阻塞 UI 线程。加载落地前视图保持空白；世代守卫丢弃被更新一轮加载
     /// 取代的结果，且已点赞与散曲目列表额外受各自的重载世代把关，因此与本轮赛跑
     /// 的点赞/取消赞或排序重载，绝不会是这个更慢的整视图加载覆盖掉的。
+    /// 导航历史用的滚动记忆：主内容 handle 的纵向原始偏移。
+    pub(super) fn get_scroll_offset(&self) -> f32 {
+        self.scroll_handle.offset().y.into()
+    }
+
+    /// 滚动历史的键（同 ReleaseView，见 library::scroll_storage_key）。
+    pub(super) fn scroll_storage_key(&self) -> super::ViewSwitchMessage {
+        super::ViewSwitchMessage::Artist(self.artist_id)
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;

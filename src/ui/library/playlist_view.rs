@@ -337,6 +337,7 @@ pub struct PlaylistView {
     render_counter: Entity<usize>,
     focus_handle: FocusHandle,
     first_render: bool,
+    playlist_id: i64,
     scroll_handle: UniformListScrollHandle,
     drag_drop_manager: Entity<DragDropListManager>,
     list_id: gpui::ElementId,
@@ -369,7 +370,11 @@ fn placeholder_playlist(playlist_id: i64) -> Playlist {
 }
 
 impl PlaylistView {
-    pub(super) fn new(cx: &mut App, playlist_id: i64) -> Entity<Self> {
+    pub(super) fn new(
+        cx: &mut App,
+        playlist_id: i64,
+        initial_scroll_offset: Option<f32>,
+    ) -> Entity<Self> {
         cx.new(|cx| {
             let playlist_tracker = cx.global::<Models>().playlist_tracker.clone();
 
@@ -437,6 +442,7 @@ impl PlaylistView {
                 render_counter,
                 focus_handle,
                 first_render: true,
+                playlist_id,
                 scroll_handle,
                 drag_drop_manager,
                 list_id,
@@ -444,11 +450,31 @@ impl PlaylistView {
                 track_row_cache,
                 prefetch_state,
             };
+            // 恢复导航历史记忆的滚动位置（上游 e15e8ba），原始 offset 原样往返；
+            // UniformList 句柄经 base_handle 落位（同 Table 的恢复路径）
+            if let Some(y) = initial_scroll_offset {
+                this.scroll_handle
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(y)));
+            }
+
             // 打开视图时在运行时上加载歌单头部 + 其排序后的曲目列表（见 reload）；
             // 结果落地前视图显示占位头部与空列表。
             this.reload(cx);
             this
         })
+    }
+
+    /// 导航历史用的滚动记忆：列表 handle 的纵向原始偏移。
+    pub(super) fn get_scroll_offset(&self) -> f32 {
+        self.scroll_handle.0.borrow().base_handle.offset().y.into()
+    }
+
+    /// 滚动历史的键（同 ReleaseView，见 library::scroll_storage_key）。
+    pub(super) fn scroll_storage_key(&self) -> super::ViewSwitchMessage {
+        super::ViewSwitchMessage::Playlist(self.playlist_id)
     }
 
     /// 在后台运行时上加载歌单头部及其排序后的曲目列表：打开视图（以及每一次

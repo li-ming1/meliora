@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 use std::{path::PathBuf, time::Duration};
 
 use album_view::AlbumView;
@@ -31,11 +32,20 @@ use crate::{
 
 #[derive(Clone, Default)]
 struct ScrollStateStorage {
-    album_view_scroll: Option<f32>,
-    track_view_scroll: Option<f32>,
-    artist_view_scroll: Option<f32>,
-    files_view_scroll: Option<f32>,
+    /// 滚动记忆按导航消息键存（上游 e15e8ba 的 FxHashMap 方案）：详情页是
+    /// 「页面实例」粒度，四个固定字段装不下，哈希键天然覆盖任意多的专辑/
+    /// 歌手/歌单。存取两侧都是原始 offset 值的原样往返（不做符号归一）。
+    scroll_offsets: FxHashMap<ViewSwitchMessage, f32>,
     files_expanded: Vec<PathBuf>,
+}
+
+/// 滚动记忆的键：详情页把「跳转到曲目」的 target 分量抹掉，让同一详情页的
+/// 不同入口（点封面进、点曲目跳进）共享一份滚动位置。
+fn scroll_storage_key(message: &ViewSwitchMessage) -> ViewSwitchMessage {
+    match message {
+        ViewSwitchMessage::Release(id, _) => ViewSwitchMessage::Release(*id, None),
+        other => *other,
+    }
 }
 
 pub mod add_to_playlist;
@@ -333,7 +343,7 @@ pub struct Library {
     _focus_lost_sub: Option<Subscription>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ViewSwitchMessage {
     Albums,
     Tracks,
@@ -411,28 +421,60 @@ fn make_view(
         ViewSwitchMessage::Albums => LibraryView::Album(AlbumView::new(
             cx,
             model.clone(),
-            scroll_state.album_view_scroll,
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
         )),
-        ViewSwitchMessage::Tracks => {
-            LibraryView::Tracks(TrackView::new(cx, scroll_state.track_view_scroll))
-        }
+        ViewSwitchMessage::Tracks => LibraryView::Tracks(TrackView::new(
+            cx,
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
+        )),
         ViewSwitchMessage::Artists => LibraryView::Artists(ArtistView::new(
             cx,
             model.clone(),
-            scroll_state.artist_view_scroll,
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
         )),
         ViewSwitchMessage::Files => LibraryView::Files(FilesView::new(
             cx,
             scroll_state.files_expanded.clone(),
-            scroll_state.files_view_scroll,
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
         )),
-        ViewSwitchMessage::Release(id, target_track_id) => {
-            LibraryView::Release(ReleaseView::new(cx, *id, *target_track_id))
-        }
-        ViewSwitchMessage::Artist(id) => {
-            LibraryView::ArtistDetail(ArtistDetailView::new(cx, *id, model.clone()))
-        }
-        ViewSwitchMessage::Playlist(id) => LibraryView::Playlist(PlaylistView::new(cx, *id)),
+        ViewSwitchMessage::Release(id, target_track_id) => LibraryView::Release(ReleaseView::new(
+            cx,
+            *id,
+            *target_track_id,
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
+        )),
+        ViewSwitchMessage::Artist(id) => LibraryView::ArtistDetail(ArtistDetailView::new(
+            cx,
+            *id,
+            model.clone(),
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
+        )),
+        ViewSwitchMessage::Playlist(id) => LibraryView::Playlist(PlaylistView::new(
+            cx,
+            *id,
+            scroll_state
+                .scroll_offsets
+                .get(&scroll_storage_key(message))
+                .copied(),
+        )),
         #[cfg(feature = "kugou")]
         ViewSwitchMessage::KugouPlaylists => {
             LibraryView::KugouPlaylists(kugou_playlists::KugouPlaylistsView::new(cx))
@@ -475,22 +517,43 @@ impl Library {
     /// 把即将离开的视图的滚动位置（外加文件视图的展开集合）快照进 `scroll_state`，
     /// 这样重建出来的视图能恢复读者读到的位置。
     fn save_scroll_state(view: &LibraryView, scroll_state: &mut ScrollStateStorage, cx: &App) {
-        match view {
-            LibraryView::Album(view) => {
-                scroll_state.album_view_scroll = Some(view.read(cx).get_scroll_offset(cx));
+        let (key, offset): (ViewSwitchMessage, Option<f32>) = match view {
+            LibraryView::Album(v) => (
+                ViewSwitchMessage::Albums,
+                Some(v.read(cx).get_scroll_offset(cx)),
+            ),
+            LibraryView::Tracks(v) => (
+                ViewSwitchMessage::Tracks,
+                Some(v.read(cx).get_scroll_offset(cx)),
+            ),
+            LibraryView::Artists(v) => (
+                ViewSwitchMessage::Artists,
+                Some(v.read(cx).get_scroll_offset(cx)),
+            ),
+            LibraryView::Files(v) => {
+                scroll_state.files_expanded = v.read(cx).expanded_paths();
+                (
+                    ViewSwitchMessage::Files,
+                    Some(v.read(cx).get_scroll_offset()),
+                )
             }
-            LibraryView::Tracks(view) => {
-                scroll_state.track_view_scroll = Some(view.read(cx).get_scroll_offset(cx));
-            }
-            LibraryView::Artists(view) => {
-                scroll_state.artist_view_scroll = Some(view.read(cx).get_scroll_offset(cx));
-            }
-            LibraryView::Files(view) => {
-                let view = view.read(cx);
-                scroll_state.files_view_scroll = Some(view.get_scroll_offset());
-                scroll_state.files_expanded = view.expanded_paths();
-            }
-            _ => {}
+            // 详情页从视图自身取 id 组键——离开时拿到的就是它
+            LibraryView::Release(v) => (
+                v.read(cx).scroll_storage_key(),
+                Some(v.read(cx).get_scroll_offset()),
+            ),
+            LibraryView::ArtistDetail(v) => (
+                v.read(cx).scroll_storage_key(),
+                Some(v.read(cx).get_scroll_offset()),
+            ),
+            LibraryView::Playlist(v) => (
+                v.read(cx).scroll_storage_key(),
+                Some(v.read(cx).get_scroll_offset()),
+            ),
+            _ => return,
+        };
+        if let Some(offset) = offset {
+            scroll_state.scroll_offsets.insert(key, offset);
         }
     }
 
