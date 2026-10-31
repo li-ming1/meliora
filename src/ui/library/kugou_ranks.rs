@@ -120,9 +120,44 @@ impl KugouRanksView {
                 scroll_handle: ScrollHandle::new(),
                 tracks_scroll_handle: UniformListScrollHandle::new(),
             };
+            // 账号代际观察：同 kugou_playlists（推荐页按登录态取数，换号后
+            // 挂载中的视图不得滞留旧账号数据）
+            let account_epoch = cx
+                .try_global::<crate::ui::library::KugouAccountEpoch>()
+                .map(|epoch| epoch.0)
+                .unwrap_or(0);
+            cx.observe_global::<crate::ui::library::KugouAccountEpoch>(
+                move |this: &mut Self, cx: &mut Context<Self>| {
+                    let current = cx
+                        .try_global::<crate::ui::library::KugouAccountEpoch>()
+                        .map(|epoch| epoch.0)
+                        .unwrap_or(0);
+                    if current != account_epoch {
+                        this.reset_for_account_switch(cx);
+                    }
+                },
+            )
+            .detach();
+
             view.load_ranks(cx);
             view
         })
+    }
+
+    /// 账号代际变化：清掉账号键的展示数据并重载榜单（榜单本体是公共内容，
+    /// 推荐与星标随新登录态走）。在途分页由世代号丢弃。
+    fn reset_for_account_switch(&mut self, cx: &mut Context<Self>) {
+        self.selected = None;
+        self.tracks = Vec::new();
+        self.tracks_state = TracksState::Idle;
+        self.track_page = 0;
+        self.has_more_tracks = false;
+        self.track_generation = self.track_generation.wrapping_add(1);
+        self.liked.clear();
+        self.like_in_flight.clear();
+        self.recommend = RecommendState::Idle;
+        self.load_ranks(cx);
+        cx.notify();
     }
 
     fn load_ranks(&mut self, cx: &mut Context<Self>) {

@@ -106,7 +106,7 @@ impl KugouSettings {
         kugou::shared_client().logout();
         // 播放列表概要是会话级缓存：把它丢掉，好让之后的登录（可能是另一个账号）
         // 永远不会被喂到旧数据。
-        crate::ui::library::invalidate_online_account_caches();
+        crate::ui::library::invalidate_online_account_caches(cx);
         self.logged_in = false;
         self.nickname = None;
         self.profile_failed = false;
@@ -184,7 +184,7 @@ impl QrLoginHost for KugouSettings {
         self.logged_in = true;
         // 与 logout() 同理：缓存的概览绝不能跨越账号身份的变化，包括服务端会话过期
         // 之后的静默重新登录。
-        crate::ui::library::invalidate_online_account_caches();
+        crate::ui::library::invalidate_online_account_caches(cx);
         self.nickname = None;
         self.profile_failed = false;
         crate::ui::kugou::claim_daily_vip_async();

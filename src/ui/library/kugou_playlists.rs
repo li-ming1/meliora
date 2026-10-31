@@ -187,8 +187,55 @@ impl KugouPlaylistsView {
                 view.playlists = PlaylistsState::LoggedOut;
             }
 
+            // 账号代际观察：设置窗登录/登出/换号后，挂载中的本视图按新登录态
+            // 重建展示数据。构造时的初始代际不触发动作（try_global 兜底 0 与
+            // 首次递增的 1 区分开）。
+            let account_epoch = cx
+                .try_global::<crate::ui::library::KugouAccountEpoch>()
+                .map(|epoch| epoch.0)
+                .unwrap_or(0);
+            cx.observe_global::<crate::ui::library::KugouAccountEpoch>(move |this, cx| {
+                let current = cx
+                    .try_global::<crate::ui::library::KugouAccountEpoch>()
+                    .map(|epoch| epoch.0)
+                    .unwrap_or(0);
+                if current != account_epoch {
+                    this.reset_for_account_switch(cx);
+                }
+            })
+            .detach();
+
             view
         })
+    }
+
+    /// 账号代际变化：清掉全部账号键的展示数据，按新登录态重建（语义与
+    /// 构造时的登录分支一致）。在途的分页响应由世代号丢弃。
+    fn reset_for_account_switch(&mut self, cx: &mut Context<Self>) {
+        let logged_in = kugou::shared_client().logged_in();
+        self.selected = None;
+        self.tracks = Vec::new();
+        self.tracks_state = TracksState::Idle;
+        self.track_page = 0;
+        self.has_more_tracks = false;
+        self.track_generation = self.track_generation.wrapping_add(1);
+        self.liked.clear();
+        self.unliked.clear();
+        self.like_in_flight.clear();
+        self.import_open = false;
+        self.import_input = None;
+        self.import_busy = false;
+        self.import_status = SharedString::default();
+        self.playlists = if logged_in {
+            PlaylistsState::Loading
+        } else {
+            PlaylistsState::LoggedOut
+        };
+        if logged_in {
+            self.load_playlists_initial(cx);
+            self.ensure_profile(cx);
+        }
+        cx.notify();
     }
 
     /// 视图构造时的首次加载：缓存新鲜就直接命中会话缓存（实体每次切标签都会

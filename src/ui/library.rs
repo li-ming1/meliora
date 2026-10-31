@@ -62,13 +62,30 @@ mod kugou_ranks;
 
 /// 账号身份变了（登录/登出或换了一个账号）：丢掉所有以登录用户为键的会话缓存。
 #[cfg(feature = "kugou")]
-pub(crate) fn invalidate_online_account_caches() {
+pub(crate) fn invalidate_online_account_caches(cx: &mut App) {
     kugou_playlists::invalidate_cached_playlists();
     kugou_ranks::invalidate_cached_recommend();
     // 喜欢缓存（星标 + unlike 用的 fileid）同属账号键：登录成功（on_login）与登出
     // 都经本函数，换号后旧账号的喜欢状态不再点亮星标、不再误删旧账号列表。
     crate::online_sources::kugou::invalidate_liked_cache();
+    // 代际信号递增：挂载中的在线歌单/榜单/发现页视图 observe 它按新登录态
+    // 重建展示数据——设置是独立窗口，主窗的 kugou 页在换号期间仍挂载，
+    // 只清缓存不发事件会让它滞留旧账号的歌单、榜单与星标。
+    let next = if cx.has_global::<KugouAccountEpoch>() {
+        cx.global::<KugouAccountEpoch>().0 + 1
+    } else {
+        1
+    };
+    cx.set_global(KugouAccountEpoch(next));
 }
+
+/// 在线账号代际：登录/登出/换号递增。kugou 视图 observe 它触发重载。
+#[cfg(feature = "kugou")]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct KugouAccountEpoch(pub(crate) u64);
+
+#[cfg(feature = "kugou")]
+impl gpui::Global for KugouAccountEpoch {}
 #[cfg(feature = "kugou")]
 mod kugou_view_common;
 pub mod missing_folder_dialog;
