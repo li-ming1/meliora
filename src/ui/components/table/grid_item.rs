@@ -119,6 +119,9 @@ where
             .w_full()
             .flex_1()
             .rounded(px(theme.radius_md))
+            .shadow_md()
+            .border_1()
+            .border_color(theme.border_color)
             .bg(theme.album_art_background)
             .overflow_hidden();
 
@@ -138,10 +141,11 @@ where
             .child(img_container)
             .child(
                 div()
-                    .mt(px(8.0))
+                    .mt(px(9.0))
                     .w_full()
                     .text_sm()
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
                     .text_ellipsis()
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -150,6 +154,7 @@ where
             .when_some(self.secondary_text.clone(), |this, secondary| {
                 this.child(
                     gpui::div()
+                        .mt(px(2.0))
                         .w_full()
                         .text_xs()
                         .text_color(theme.text_secondary)

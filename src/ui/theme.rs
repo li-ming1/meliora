@@ -543,8 +543,8 @@ impl Default for Theme {
             palette_item_active: rgb(0x0E0F15),
             palette_item_border_active: rgb(0x1F212E),
 
-            scrollbar_background: rgb(0x252839),
-            scrollbar_foreground: rgb(0x616794),
+            scrollbar_background: rgba(0x00000000),
+            scrollbar_foreground: rgba(0xFFFFFF38),
 
             textbox_background: rgb(0x373B4E),
             textbox_border: rgb(0x4F5267),
@@ -718,8 +718,8 @@ impl Theme {
             palette_item_active: rgb(0xE9E5D9),
             palette_item_border_active: rgb(0xDAD4C4),
 
-            scrollbar_background: rgb(0xE9E5DB),
-            scrollbar_foreground: rgb(0xC7C0AF),
+            scrollbar_background: rgba(0x00000000),
+            scrollbar_foreground: rgba(0x00000030),
 
             textbox_background: rgb(0xFFFFFF),
             textbox_border: rgb(0xD9D3C4),

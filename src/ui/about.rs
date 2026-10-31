@@ -92,33 +92,59 @@ impl RenderOnce for AboutDialog {
                 .id("about-modal")
                 .track_focus(&self.focus_handle)
                 .role(gpui::Role::Dialog)
-                .p(px(20.0))
-                .pb(px(18.0))
+                .p(px(24.0))
+                .pb(px(22.0))
                 .flex()
-                .child(img("!bundled:images/logo.png").w(px(66.0)).mr(px(20.0)))
+                .child(
+                    div()
+                        .size(px(68.0))
+                        .rounded(px(theme.radius_md))
+                        .p(px(6.0))
+                        .bg(theme.background_secondary)
+                        .border_1()
+                        .border_color(theme.border_color)
+                        .shadow_sm()
+                        .mr(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(img("!bundled:images/logo.png").size(px(52.0)).rounded_sm()),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .child(
-                            div().flex().mr(px(200.0)).child(
+                            div().flex().mr(px(180.0)).child(
                                 div()
                                     .child(
                                         div()
                                             .font_weight(FontWeight::BOLD)
                                             .font_family("Lexend")
-                                            .text_size(px(36.0))
-                                            .line_height(px(36.0))
-                                            .ml(px(-2.0))
+                                            .text_size(px(32.0))
+                                            .line_height(px(34.0))
+                                            .text_color(theme.text)
                                             .child(tr!("APP_NAME")),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(13.0))
-                                            .line_height(px(13.0))
-                                            .text_color(theme.text_secondary)
-                                            .mt(px(1.0))
-                                            .child(crate::VERSION_STRING)
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .mt(px(6.0))
+                                            .child(
+                                                div()
+                                                    .px(px(8.0))
+                                                    .py(px(2.0))
+                                                    .rounded_full()
+                                                    .bg(theme.background_secondary)
+                                                    .border_1()
+                                                    .border_color(theme.border_color)
+                                                    .text_size(px(11.0))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.text_secondary)
+                                                    .child(format!("v{}", crate::VERSION_STRING)),
+                                            )
                                             .children(update_badge),
                                     ),
                             ),
