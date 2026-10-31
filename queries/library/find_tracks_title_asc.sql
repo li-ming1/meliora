@@ -7,4 +7,5 @@ FROM
 ORDER BY
     t.title_sortable,
     t.album_id,
-    t.location COLLATE NOCASE ASC;
+    t.location COLLATE NOCASE ASC,
+    t.id ASC;

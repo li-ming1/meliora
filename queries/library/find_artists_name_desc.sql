@@ -1,2 +1,3 @@
 SELECT id FROM artist
-ORDER BY name_sortable COLLATE NOCASE DESC;
+ORDER BY name_sortable COLLATE NOCASE DESC,
+    id ASC;

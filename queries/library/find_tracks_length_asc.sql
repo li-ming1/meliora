@@ -5,4 +5,5 @@ SELECT
 FROM
     track t
 ORDER BY
-    t.duration ASC;
+    t.duration ASC,
+    t.id ASC;

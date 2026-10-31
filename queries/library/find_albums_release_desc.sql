@@ -7,4 +7,5 @@ FROM
     album
 ORDER BY
     release_date DESC,
-    title_sortable COLLATE NOCASE ASC;
+    title_sortable COLLATE NOCASE ASC,
+    id ASC;

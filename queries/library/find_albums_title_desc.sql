@@ -4,4 +4,5 @@ SELECT
 FROM
     album
 ORDER BY
-    title_sortable COLLATE NOCASE DESC;
+    title_sortable COLLATE NOCASE DESC,
+    id ASC;

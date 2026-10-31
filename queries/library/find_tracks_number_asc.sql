@@ -6,4 +6,5 @@ FROM
     track t
 ORDER BY
     t.disc_number ASC,
-    t.track_number ASC;
+    t.track_number ASC,
+    t.id ASC;

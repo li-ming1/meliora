@@ -5,4 +5,5 @@ FROM
     album
 ORDER BY
     catalog_number COLLATE NOCASE ASC,
-    release_date ASC;
+    release_date ASC,
+    id ASC;
