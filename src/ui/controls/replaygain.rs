@@ -99,11 +99,11 @@ impl Render for ReplayGainButton {
                 this.child(
                     popover()
                         .position(PopoverPosition::TopRight)
-                        .edge_offset(px(8.0))
+                        .edge_offset(px(10.0))
+                        .min_w(px(220.0))
                         .on_dismiss(move |_, cx| {
                             entity.update(cx, |this, cx| this.close_popover(cx)).ok();
                         })
-                        .min_w(px(200.0))
                         .on_mouse_down_out(move |_, _, cx| {
                             click_away_entity
                                 .update(cx, |this, cx| this.close_popover(cx))
@@ -113,9 +113,9 @@ impl Render for ReplayGainButton {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(10.0))
-                                .p(px(4.0))
-                                .pb(px(8.0))
+                                .gap(px(12.0))
+                                .p(px(6.0))
+                                .pb(px(6.0))
                                 .child(replaygain_mode_section(settings.clone(), rg_mode, theme))
                                 .when(rg_mode != ReplayGainMode::Off, |this| {
                                     this.child(replaygain_preamp_section(

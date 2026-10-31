@@ -85,9 +85,9 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
         let mut row = div()
             .flex()
             .when(!self.fit_content, |this| this.w_full())
-            .rounded(px(theme.radius_sm))
+            .rounded(px(theme.radius_md))
             .gap(px(2.0))
-            .p(px(2.0))
+            .p(px(2.5))
             .border_1()
             .border_color(theme.elevated_border_color)
             .bg(theme.background_secondary);
@@ -115,6 +115,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
                 .when(is_selected, |this| {
                     this.bg(theme.button_primary)
                         .text_color(theme.button_primary_text)
+                        .shadow_sm()
                 })
                 .when(!is_selected, |this| {
                     this.text_color(theme.text_secondary)
