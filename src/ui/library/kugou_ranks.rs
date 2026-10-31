@@ -9,9 +9,10 @@ use std::{
 use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::tr;
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, Styled, UniformListScrollHandle, WeakEntity, Window, div,
-    px, uniform_list,
+    AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
+    ObjectFit, ParentElement, Render, ScrollHandle, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::{
@@ -19,6 +20,8 @@ use crate::{
     ui::{
         components::{
             button::{ButtonIntent, ButtonStyle, button},
+            icons::{HEART, HEART_FILLED, PLAY, icon},
+            managed_image::{ManagedImageKey, managed_image},
             scrollbar::floating_scrollbar,
         },
         kugou::{
@@ -80,8 +83,17 @@ enum RecommendState {
     Ready(Vec<Arc<KugouTrackInfo>>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecommendViewMode {
+    #[default]
+    List,
+    Stage,
+}
+
 pub struct KugouRanksView {
     tab: Tab,
+    recommend_view_mode: RecommendViewMode,
+    stage_focus_index: usize,
     ranks: RanksState,
     selected: Option<KugouRank>,
     tracks: Vec<Arc<KugouTrackInfo>>,
@@ -107,6 +119,8 @@ impl KugouRanksView {
         cx.new(|cx| {
             let mut view = Self {
                 tab: Tab::Ranks,
+                recommend_view_mode: RecommendViewMode::List,
+                stage_focus_index: 0,
                 ranks: RanksState::Loading,
                 selected: None,
                 tracks: Vec::new(),
@@ -368,11 +382,43 @@ impl KugouRanksView {
         let mut header = view_header(title.to_string());
 
         if self.selected.is_none() {
+            let is_stage = self.recommend_view_mode == RecommendViewMode::Stage;
+            let is_recommend = self.tab == Tab::DailyRecommend;
             header = header.right(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.0))
+                    .gap(px(8.0))
+                    .when(is_recommend, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(2.0))
+                                .child(
+                                    button()
+                                        .id("recommend-list-mode")
+                                        .style(if !is_stage { ButtonStyle::Regular } else { ButtonStyle::Minimal })
+                                        .intent(if !is_stage { ButtonIntent::Primary } else { ButtonIntent::Secondary })
+                                        .child("列表")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.recommend_view_mode = RecommendViewMode::List;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    button()
+                                        .id("recommend-stage-mode")
+                                        .style(if is_stage { ButtonStyle::Regular } else { ButtonStyle::Minimal })
+                                        .intent(if is_stage { ButtonIntent::Primary } else { ButtonIntent::Secondary })
+                                        .child("舞台")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.recommend_view_mode = RecommendViewMode::Stage;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                    })
                     .child(self.tab_button(Tab::Ranks, tr!("KUGOU_RANKS").to_string(), cx))
                     .child(self.tab_button(
                         Tab::DailyRecommend,
@@ -591,6 +637,199 @@ impl KugouRanksView {
             },
         }
     }
+
+    fn render_stage_carousel(
+        &self,
+        tracks: &[Arc<KugouTrackInfo>],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if tracks.is_empty() {
+            return div().into_any_element();
+        }
+
+        let theme = cx.global::<Theme>();
+        let focus = self.stage_focus_index.min(tracks.len().saturating_sub(1));
+        let focus_track = &tracks[focus];
+        let liked = self.is_liked(&focus_track.hash);
+
+        // 左右轮播槽位：展示 [-2, -1, 0, 1, 2] 视差卡片
+        let offsets: [isize; 5] = [-2, -1, 0, 1, 2];
+        let cards = offsets.into_iter().filter_map(|d| {
+            let idx = (focus as isize + d) as usize;
+            if (focus as isize + d) < 0 || idx >= tracks.len() {
+                return None;
+            }
+            let track = &tracks[idx];
+            let is_center = d == 0;
+            let (w, h, shadow_level, opacity_val) = match d.abs() {
+                0 => (px(260.0), px(260.0), true, 1.0f32),
+                1 => (px(200.0), px(200.0), false, 0.60f32),
+                _ => (px(150.0), px(150.0), false, 0.30f32),
+            };
+
+            let card = div()
+                .id(("stage_card_wrap", idx))
+                .w(w)
+                .h(h)
+                .rounded(px(14.0))
+                .overflow_hidden()
+                .border_1()
+                .border_color(if is_center {
+                    theme.button_primary_border
+                } else {
+                    theme.border_color
+                })
+                .bg(theme.album_art_background)
+                .opacity(opacity_val)
+                .cursor_pointer()
+                .when(shadow_level, |s| s.shadow_lg())
+                .when(!shadow_level, |s| s.shadow_md())
+                .child(
+                    managed_image(
+                        ("stage_card", idx),
+                        ManagedImageKey::HttpCover(track.cover_url.clone()),
+                    )
+                    .thumb_max(256)
+                    .w_full()
+                    .h_full()
+                    .object_fit(ObjectFit::Cover),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.stage_focus_index = idx;
+                    cx.notify();
+                }));
+
+            Some(card)
+        });
+
+        let play_track = (*focus_track).clone();
+        let like_track = (*focus_track).clone();
+
+        div()
+            .id("kugou-stage-carousel")
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(24.0))
+            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                let dy = f32::from(ev.delta.pixel_delta(px(1.0)).y);
+                if dy.abs() > 4.0 {
+                    if dy < 0.0 {
+                        this.stage_focus_index = (this.stage_focus_index + 1).min(this.visible_tracks().len().saturating_sub(1));
+                    } else {
+                        this.stage_focus_index = this.stage_focus_index.saturating_sub(1);
+                    }
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(16.0))
+                    .w_full()
+                    .children(cards),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(22.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.text)
+                            .child(focus_track.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(theme.text_secondary)
+                            .child(focus_track.artist.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.0))
+                    .child(
+                        div()
+                            .id("stage-prev-btn")
+                            .size(px(32.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.nav_button_hover))
+                            .text_color(theme.text_secondary)
+                            .child("<")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.stage_focus_index = this.stage_focus_index.saturating_sub(1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("stage-play-btn")
+                            .size(px(44.0))
+                            .rounded_full()
+                            .bg(theme.button_primary)
+                            .text_color(theme.button_primary_text)
+                            .shadow_md()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.button_primary_hover))
+                            .child(icon(PLAY).size(px(20.0)).text_color(theme.button_primary_text))
+                            .on_click(move |_, _, cx| {
+                                crate::ui::kugou::play_track_now(cx, &play_track);
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("stage-like-btn")
+                            .size(px(32.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.nav_button_hover))
+                            .child(icon(if liked { HEART_FILLED } else { HEART }).size(px(18.0)).text_color(if liked { theme.liked_song } else { theme.text_secondary }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_like(&like_track, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("stage-next-btn")
+                            .size(px(32.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.nav_button_hover))
+                            .text_color(theme.text_secondary)
+                            .child(">")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let max = this.visible_tracks().len().saturating_sub(1);
+                                this.stage_focus_index = (this.stage_focus_index + 1).min(max);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 /// 榜单网格与曲目列表两者的加载态、空态所用的静默占位行。
@@ -631,31 +870,39 @@ impl Render for KugouRanksView {
             .child(self.render_header(cx));
 
         if tracks_ready {
-            let has_more_tracks = self.selected.is_some() && self.has_more_tracks;
-            let tracks_scroll_handle = self.tracks_scroll_handle.clone();
-            let title = self.selected.as_ref().map(|rank| rank.name.clone());
+            if self.selected.is_none()
+                && self.tab == Tab::DailyRecommend
+                && self.recommend_view_mode == RecommendViewMode::Stage
+            {
+                let tracks = self.visible_tracks().to_vec();
+                root = root.child(self.render_stage_carousel(&tracks, cx));
+            } else {
+                let has_more_tracks = self.selected.is_some() && self.has_more_tracks;
+                let tracks_scroll_handle = self.tracks_scroll_handle.clone();
+                let title = self.selected.as_ref().map(|rank| rank.name.clone());
 
-            root = root.child(online_list_container(
-                cx,
-                "kugou-ranks-tracks-container",
-                "kugou-rank-tracks",
-                "kugou-ranks-tracks-scrollbar",
-                &tracks_scroll_handle,
-                kugou_view_common::ONLINE_TRACK_ROW_HEIGHT,
-                self.visible_tracks().len(),
-                0.0,
-                false,
-                title,
-                |view| view.visible_tracks(),
-                |view, index, track, entity, cx| view.render_track_row(track, index, entity, cx),
-                has_more_tracks.then(|| LoadMoreSpec {
-                    id: "kugou-rank-load-more",
-                    label: tr!("KUGOU_LOAD_MORE").into_any_element(),
-                    on_click: Box::new(|view: &mut Self, cx: &mut Context<Self>| {
-                        view.load_more(cx)
+                root = root.child(online_list_container(
+                    cx,
+                    "kugou-ranks-tracks-container",
+                    "kugou-rank-tracks",
+                    "kugou-ranks-tracks-scrollbar",
+                    &tracks_scroll_handle,
+                    kugou_view_common::ONLINE_TRACK_ROW_HEIGHT,
+                    self.visible_tracks().len(),
+                    0.0,
+                    false,
+                    title,
+                    |view| view.visible_tracks(),
+                    |view, index, track, entity, cx| view.render_track_row(track, index, entity, cx),
+                    has_more_tracks.then(|| LoadMoreSpec {
+                        id: "kugou-rank-load-more",
+                        label: tr!("KUGOU_LOAD_MORE").into_any_element(),
+                        on_click: Box::new(|view: &mut Self, cx: &mut Context<Self>| {
+                            view.load_more(cx)
+                        }),
                     }),
-                }),
-            ));
+                ));
+            }
         } else if grid_ready {
             root = root.child(self.render_ranks_grid(cx));
         } else {
