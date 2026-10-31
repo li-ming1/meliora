@@ -72,11 +72,26 @@ pub enum TableViewModeSetting {
     Grid,
 }
 
+/// 表格用户上次点选的排序，列以稳定键（`Column::ident`）存储。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableSortSetting {
+    #[serde(default)]
+    pub column: String,
+    /// 缺省升序。
+    #[serde(default = "default_sort_ascending")]
+    pub ascending: bool,
+}
+
+fn default_sort_ascending() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TableSettings {
     #[serde(default)]
     pub column_widths: HashMap<String, f32>,
-    /// 按显示顺序排列的可见列。缺失的列视为隐藏。
+    /// 按显示顺序排列的可见列。缺失的列视为隐藏。条目是列稳定键
+    /// （`Column::ident`），不是本地化显示名。
     #[serde(default)]
     pub column_order: Vec<String>,
     /// 用于迁移旧设置文件的遗留字段。
@@ -84,6 +99,9 @@ pub struct TableSettings {
     pub hidden_columns: Vec<String>,
     #[serde(default = "default_table_view_mode")]
     pub view_mode: TableViewModeSetting,
+    /// 用户最后一次点选的排序；None = 从未点过，走各表默认行为。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<TableSortSetting>,
 }
 
 fn default_split_fractions() -> HashMap<String, f32> {
@@ -274,14 +292,22 @@ impl Storage {
             .and_then(|file| {
                 serde_json::from_reader(file)
                     .map_err(|e| e.into())
-                    .map(|data: StorageData| match &data.current_track {
-                        // 校验路径是否仍然存在
-                        Some(current_track) if !current_track.get_path().exists() => StorageData {
-                            current_track: None,
-                            // 使 current_track 失效时保留其他设置
-                            ..data
-                        },
-                        _ => data,
+                    .map(|mut data: StorageData| {
+                        // 旧版以本地化显示名为表格设置键，先统一迁到稳定键
+                        crate::library::types::table::migrate_legacy_table_settings(
+                            &mut data.table_settings,
+                        );
+                        match &data.current_track {
+                            // 校验路径是否仍然存在
+                            Some(current_track) if !current_track.get_path().exists() => {
+                                StorageData {
+                                    current_track: None,
+                                    // 使 current_track 失效时保留其他设置
+                                    ..data
+                                }
+                            }
+                            _ => data,
+                        }
                     })
             })
             // 首次启动没有设置文件，保持静默；serde_json 错误经 into() 后
@@ -299,7 +325,7 @@ impl Storage {
 mod tests {
     use gpui::{Size, px};
 
-    use super::{Storage, StorageData, TableSettings, TableViewModeSetting};
+    use super::{Storage, StorageData, TableSettings, TableSortSetting, TableViewModeSetting};
     use crate::{
         library::db::{LikedTrackSortMethod, PlaylistTrackSortMethod},
         test_support::TestDir,
@@ -365,6 +391,10 @@ mod tests {
                 column_order: vec!["title".to_string(), "artist".to_string()],
                 hidden_columns: vec!["album".to_string()],
                 view_mode: TableViewModeSetting::Grid,
+                sort: Some(TableSortSetting {
+                    column: "title".to_string(),
+                    ascending: false,
+                }),
             },
         );
 
@@ -440,10 +470,11 @@ mod tests {
         table_settings.insert(
             "albums".to_string(),
             TableSettings {
-                column_widths: HashMap::from([("year".to_string(), 90.0)]),
-                column_order: vec!["year".to_string()],
+                column_widths: HashMap::from([("date".to_string(), 90.0)]),
+                column_order: vec!["date".to_string()],
                 hidden_columns: Vec::new(),
                 view_mode: TableViewModeSetting::List,
+                sort: None,
             },
         );
 
@@ -496,5 +527,59 @@ mod tests {
         assert_eq!(loaded_table.column_widths, stored_table.column_widths);
         assert_eq!(loaded_table.column_order, stored_table.column_order);
         assert_eq!(loaded_table.view_mode, stored_table.view_mode);
+        assert_eq!(loaded_table.sort, stored_table.sort);
+    }
+
+    #[test]
+    fn load_or_default_migrates_legacy_locale_dependent_table_settings() {
+        use crate::library::types::Album;
+        use crate::library::types::table::AlbumColumn;
+        use crate::ui::components::table::table_data::{Column, TableData};
+
+        let dir = create_test_dir();
+        let path = dir.join("storage.json");
+        let storage = Storage::new(path);
+
+        let legacy_key = <Album as TableData<AlbumColumn>>::get_table_name().to_string();
+        let display_name = |column: &AlbumColumn| column.get_column_name().to_string();
+        let stored = StorageData {
+            table_settings: HashMap::from([
+                (
+                    legacy_key.clone(),
+                    TableSettings {
+                        column_widths: HashMap::from([
+                            (display_name(&AlbumColumn::Title), 240.0),
+                            (display_name(&AlbumColumn::Artist), 180.0),
+                            // 解析不了的引用直接丢弃
+                            ("not-a-column".to_string(), 55.0),
+                        ]),
+                        column_order: vec![
+                            display_name(&AlbumColumn::Artist),
+                            display_name(&AlbumColumn::Title),
+                        ],
+                        hidden_columns: Vec::new(),
+                        view_mode: TableViewModeSetting::List,
+                        sort: None,
+                    },
+                ),
+                // 表键对不上任何已知表的条目原样保留
+                ("made-up-table".to_string(), TableSettings::default()),
+            ]),
+            ..StorageData::default()
+        };
+
+        storage.save(&stored);
+        let loaded = storage.load_or_default();
+
+        let migrated = loaded
+            .table_settings
+            .get("albums")
+            .expect("旧键应迁移到稳定表键");
+        assert_eq!(migrated.column_order, ["artist", "title"]);
+        assert_eq!(migrated.column_widths.get("title"), Some(&240.0));
+        assert_eq!(migrated.column_widths.get("artist"), Some(&180.0));
+        assert!(!migrated.column_widths.contains_key("not-a-column"));
+        assert!(!loaded.table_settings.contains_key(&legacy_key));
+        assert!(loaded.table_settings.contains_key("made-up-table"));
     }
 }

@@ -40,7 +40,7 @@ where
             let table_settings = cx.global::<Models>().table_settings.clone();
             let initial_settings = table_settings
                 .read(cx)
-                .get(Table::<T, C>::get_table_name().as_str())
+                .get(Table::<T, C>::get_table_key())
                 .cloned();
 
             let table = Table::new(

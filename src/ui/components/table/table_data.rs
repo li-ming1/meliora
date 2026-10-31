@@ -194,6 +194,15 @@ pub trait Column: Clone + Copy + Debug + Hash + PartialEq + Eq + Send {
     /// 取列的友好显示名称文本。
     fn get_column_name(&self) -> SharedString;
 
+    /// 列的稳定持久化键。列宽/列序/排序设置一律以它为键，绝不随界面语言
+    /// 变化；`get_column_name` 的本地化显示名只用于渲染。
+    fn ident(&self) -> &'static str;
+
+    /// 按稳定键反查列变体，设置加载与迁移用。
+    fn from_ident(ident: &str) -> Option<Self>
+    where
+        Self: Sized;
+
     /// 该列是否允许用户调整宽度。默认为 true。
     fn is_resizable(&self) -> bool {
         true
@@ -236,6 +245,11 @@ where
 
     /// 取表格名称。
     fn get_table_name() -> SharedString;
+
+    /// 表格的稳定持久化键（"albums"/"tracks"/"artists"）。表格设置映射一律以
+    /// 它为键；`get_table_name` 的本地化显示名只用于界面与日志——显示名随
+    /// 界面语言漂移，用它做键会让切换语言静默重置整表设置。
+    fn get_table_key() -> &'static str;
 
     /// 取表格的行。返回值是标识符向量，可用它取回完整行数据；sort 参数用于指定行的排序方向。
     ///

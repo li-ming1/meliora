@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -12,6 +12,7 @@ use super::{
     Album, ArtistWithCounts, DATE_PRECISION_FULL_DATE, DATE_PRECISION_YEAR,
     DATE_PRECISION_YEAR_MONTH, DBString, Track,
 };
+use crate::settings::storage::TableSettings;
 use crate::sync::{RecoveredMutex, RecoveredRwLock};
 use crate::{
     library::db::{self, AlbumSortMethod, ArtistSortMethod, TrackSortMethod},
@@ -33,6 +34,75 @@ use crate::{
         util::format_duration,
     },
 };
+
+/// 把旧版以本地化显示名为键的表格设置迁移到稳定键（`get_table_key` /
+/// `Column::ident`）。显示名随界面语言漂移，用它做键曾让切换语言后三张表的
+/// 列宽/列序静默重置。列内键按「稳定键直认，否则当前 locale 显示名反查」
+/// 解析，解析不了的条目丢弃；表键对不上任何已知表的条目原样保留。跨语言
+/// 保存的遗留条目（存时 locale ≠ 载时 locale）解析不了，随保存时的整表写
+/// 回自然清出——与上游 hummingbird 同一局限。
+pub fn migrate_legacy_table_settings(settings: &mut HashMap<String, TableSettings>) {
+    for (key, mut entry) in std::mem::take(settings) {
+        let table_key = migrate_legacy_table_entry::<Album, AlbumColumn>(&key, &mut entry)
+            .or_else(|| migrate_legacy_table_entry::<Track, TrackColumn>(&key, &mut entry))
+            .or_else(|| {
+                migrate_legacy_table_entry::<ArtistWithCounts, ArtistColumn>(&key, &mut entry)
+            });
+
+        match table_key {
+            Some(table_key) => {
+                settings.insert(table_key.to_owned(), entry);
+            }
+            None => {
+                settings.insert(key, entry);
+            }
+        }
+    }
+}
+
+/// 单表迁移：表键（稳定键或当前 locale 显示名）对上号才处理，已是稳定键的
+/// 条目经 ident 直认后原样重建（幂等）。
+fn migrate_legacy_table_entry<T, C>(key: &str, entry: &mut TableSettings) -> Option<&'static str>
+where
+    T: TableData<C>,
+    C: Column,
+{
+    let table_key = T::get_table_key();
+    if key != table_key && &*T::get_table_name() != key {
+        return None;
+    }
+
+    let resolve = |name: &str| -> Option<String> {
+        C::from_ident(name)
+            .map(|column| column.ident().to_owned())
+            .or_else(|| {
+                T::default_columns()
+                    .keys()
+                    .copied()
+                    .find(|column| column.get_column_name() == name)
+                    .map(|column| column.ident().to_owned())
+            })
+    };
+
+    let column_widths = entry
+        .column_widths
+        .iter()
+        .filter_map(|(name, width)| resolve(name).map(|ident| (ident, *width)))
+        .collect::<HashMap<String, f32>>();
+    let column_order = entry
+        .column_order
+        .iter()
+        .filter_map(|name| resolve(name))
+        .collect::<Vec<String>>();
+
+    *entry = TableSettings {
+        column_widths,
+        column_order,
+        ..std::mem::take(entry)
+    };
+
+    Some(table_key)
+}
 
 fn parse_album_release_date(release_date: &DBString) -> Option<DateTime<Utc>> {
     let date = NaiveDate::parse_from_str(release_date.0.as_ref(), "%Y-%m-%d").ok()?;
@@ -335,6 +405,27 @@ impl Column for AlbumColumn {
         }
     }
 
+    fn ident(&self) -> &'static str {
+        match self {
+            AlbumColumn::Title => "title",
+            AlbumColumn::Artist => "artist",
+            AlbumColumn::Date => "date",
+            AlbumColumn::Label => "label",
+            AlbumColumn::CatalogNumber => "catalog_number",
+        }
+    }
+
+    fn from_ident(ident: &str) -> Option<Self> {
+        Some(match ident {
+            "title" => AlbumColumn::Title,
+            "artist" => AlbumColumn::Artist,
+            "date" => AlbumColumn::Date,
+            "label" => AlbumColumn::Label,
+            "catalog_number" => AlbumColumn::CatalogNumber,
+            _ => return None,
+        })
+    }
+
     fn is_hideable(&self) -> bool {
         !matches!(self, AlbumColumn::Title)
     }
@@ -356,6 +447,10 @@ impl TableData<AlbumColumn> for Album {
 
     fn get_table_name() -> SharedString {
         tr!("TABLE_ALBUMS", "Albums").into()
+    }
+
+    fn get_table_key() -> &'static str {
+        "albums"
     }
 
     fn get_rows(
@@ -570,6 +665,27 @@ impl Column for TrackColumn {
         }
     }
 
+    fn ident(&self) -> &'static str {
+        match self {
+            TrackColumn::TrackNumber => "track_number",
+            TrackColumn::Title => "title",
+            TrackColumn::Album => "album",
+            TrackColumn::Artist => "artist",
+            TrackColumn::Length => "length",
+        }
+    }
+
+    fn from_ident(ident: &str) -> Option<Self> {
+        Some(match ident {
+            "track_number" => TrackColumn::TrackNumber,
+            "title" => TrackColumn::Title,
+            "album" => TrackColumn::Album,
+            "artist" => TrackColumn::Artist,
+            "length" => TrackColumn::Length,
+            _ => return None,
+        })
+    }
+
     fn is_hideable(&self) -> bool {
         !matches!(self, TrackColumn::Title)
     }
@@ -591,6 +707,10 @@ impl TableData<TrackColumn> for Track {
 
     fn get_table_name() -> SharedString {
         tr!("TABLE_TRACKS", "Tracks").into()
+    }
+
+    fn get_table_key() -> &'static str {
+        "tracks"
     }
 
     fn get_rows(
@@ -812,6 +932,23 @@ impl Column for ArtistColumn {
         }
     }
 
+    fn ident(&self) -> &'static str {
+        match self {
+            ArtistColumn::Name => "name",
+            ArtistColumn::Albums => "albums",
+            ArtistColumn::Tracks => "tracks",
+        }
+    }
+
+    fn from_ident(ident: &str) -> Option<Self> {
+        Some(match ident {
+            "name" => ArtistColumn::Name,
+            "albums" => ArtistColumn::Albums,
+            "tracks" => ArtistColumn::Tracks,
+            _ => return None,
+        })
+    }
+
     fn is_hideable(&self) -> bool {
         !matches!(self, ArtistColumn::Name)
     }
@@ -831,6 +968,10 @@ impl TableData<ArtistColumn> for ArtistWithCounts {
 
     fn get_table_name() -> SharedString {
         tr!("TABLE_ARTISTS", "Artists").into()
+    }
+
+    fn get_table_key() -> &'static str {
+        "artists"
     }
 
     fn get_rows(

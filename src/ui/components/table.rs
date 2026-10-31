@@ -11,7 +11,7 @@ use crate::{
     settings::{
         SettingsGlobal,
         interface::clamp_grid_min_item_width,
-        storage::{TableSettings, TableViewModeSetting},
+        storage::{TableSettings, TableSortSetting, TableViewModeSetting},
     },
     ui::{
         app::Pool,
@@ -235,7 +235,8 @@ where
             let view_mode = cx.new(|_| initial_view_mode);
             let grid_scroll_handle = UniformListScrollHandle::new();
 
-            let sort_method = cx.new(|_| None);
+            // 排序恢复：用户上次点选的排序随设置持久化，缺列/坏键静默回退
+            let sort_method = cx.new(|_| initial_settings.and_then(Self::sort_from_settings));
             let list_vertical_scroll_handle = UniformListScrollHandle::new();
             let list_horizontal_scroll_handle = ScrollHandle::new();
             let prefetch_state = Rc::new(Cell::new((0_u64, 0_usize)));
@@ -364,12 +365,13 @@ where
         self.grid_render_counter = cx.new(|_| 0);
     }
 
-    /// 把当前列集/列宽与视图模式写进共享的表格设置模型，以表格名为键。
+    /// 把当前列集/列宽/排序与视图模式写进共享的表格设置模型，以稳定表键
+    /// （`get_table_key`）为键——显示名随界面语言漂移，不能做持久化键。
     fn persist_settings(&self, cx: &mut Context<Self>) {
         let settings = self.get_settings(cx);
         let table_settings_model = cx.global::<Models>().table_settings.clone();
         table_settings_model.update(cx, |map, _| {
-            map.insert(T::get_table_name().to_string(), settings);
+            map.insert(T::get_table_key().to_string(), settings);
         });
     }
 
@@ -480,7 +482,7 @@ where
         for name in column_order {
             if let Some((&col, &default_width)) = default_columns
                 .iter()
-                .find(|(c, _)| c.get_column_name() == name.as_str())
+                .find(|(c, _)| c.ident() == name.as_str())
             {
                 let width = settings
                     .column_widths
@@ -497,7 +499,7 @@ where
             }
             let width = settings
                 .column_widths
-                .get(col.get_column_name().as_ref())
+                .get(col.ident())
                 .copied()
                 .unwrap_or(default_width);
             if col.is_hideable() {
@@ -511,26 +513,42 @@ where
         (visible_columns, hidden_widths)
     }
 
+    /// 从设置恢复用户上次点选的排序。列键是稳定 ident（`Column::ident`），
+    /// 解析不了（列被移除、键损坏）就返回 None 走默认行为。
+    fn sort_from_settings(settings: &TableSettings) -> Option<TableSort<C>> {
+        let sort = settings.sort.as_ref()?;
+        Some(TableSort {
+            column: C::from_ident(&sort.column)?,
+            ascending: sort.ascending,
+        })
+    }
+
     pub fn get_settings(&self, cx: &App) -> TableSettings {
         let columns = self.columns.read(cx);
         let hidden = self.hidden_column_widths.read(cx);
+        let sort_method = self.sort_method.read(cx);
 
+        // 列宽/列序/排序一律以稳定列键（ident）落盘，绝不落本地化显示名
         let mut column_widths = std::collections::HashMap::new();
 
         for (col, width) in columns.iter() {
-            column_widths.insert(col.get_column_name().to_string(), *width);
+            column_widths.insert(col.ident().to_string(), *width);
         }
 
         for (col, width) in hidden.iter() {
-            column_widths.insert(col.get_column_name().to_string(), *width);
+            column_widths.insert(col.ident().to_string(), *width);
         }
 
         let column_order = columns
             .iter()
-            .map(|(col, _)| col.get_column_name().to_string())
+            .map(|(col, _)| col.ident().to_string())
             .collect();
 
         TableSettings {
+            sort: sort_method.as_ref().map(|method| TableSortSetting {
+                column: method.column.ident().to_string(),
+                ascending: method.ascending,
+            }),
             column_widths,
             column_order,
             view_mode: match *self.view_mode.read(cx) {
@@ -557,6 +575,11 @@ where
 
     pub fn get_table_name() -> SharedString {
         T::get_table_name()
+    }
+
+    /// 表格设置的稳定持久化键；设置映射的读写两端都必须用它。
+    pub fn get_table_key() -> &'static str {
+        T::get_table_key()
     }
 }
 
@@ -668,7 +691,9 @@ where
                             }
 
                             cx.notify();
-                        })
+                        });
+                        // 排序变化即时持久化，重启后恢复用户上次的选择
+                        this.persist_settings(cx);
                     }))
                     .on_drag(ColumnReorderDrag { source_index: i }, move |_, _, _, cx| {
                         DragPreview::new(cx, column_id.get_column_name())
