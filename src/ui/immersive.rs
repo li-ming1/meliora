@@ -56,7 +56,7 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
+            icons::{HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, icon},
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
@@ -1520,7 +1520,22 @@ impl Render for ImmersiveView {
                             for word in &line.words {
                                 let progress = word_progress(word, position_ms);
                                 let color = lerp_color(unsung, gold_glow, progress);
-                                row = row.child(div().child(word.text.clone()).text_color(color));
+                                row = row.child(
+                                    div()
+                                        .relative()
+                                        .when(progress > 0.05, |el| {
+                                            el.child(
+                                                div()
+                                                    .absolute()
+                                                    .top(px(-1.0))
+                                                    .left(px(-1.0))
+                                                    .opacity(0.38 * progress)
+                                                    .text_color(Rgba::new(1.0, 0.72, 0.35, 0.75))
+                                                    .child(word.text.clone()),
+                                            )
+                                        })
+                                        .child(div().child(word.text.clone()).text_color(color)),
+                                );
                             }
                             row.into_any_element()
                         } else {
@@ -1592,6 +1607,23 @@ impl Render for ImmersiveView {
                     if let Ok(path) = axes.build() {
                         window.paint_path(path, compass_color);
                     }
+
+                    // 象限四角星芒微粒 (Cross Stars)
+                    for (sx, sy) in [
+                        (center_x + 280.0, center_y - 180.0),
+                        (center_x - 320.0, center_y + 190.0),
+                        (center_x + 340.0, center_y + 220.0),
+                        (center_x - 240.0, center_y - 220.0),
+                    ] {
+                        let mut star = PathBuilder::stroke(px(1.0));
+                        star.move_to(point(px(sx - 7.0), px(sy)));
+                        star.line_to(point(px(sx + 7.0), px(sy)));
+                        star.move_to(point(px(sx), px(sy - 7.0)));
+                        star.line_to(point(px(sx), px(sy + 7.0)));
+                        if let Ok(p) = star.build() {
+                            window.paint_path(p, Rgba::new(1.0, 1.0, 1.0, 0.08));
+                        }
+                    }
                 },
             );
 
@@ -1655,53 +1687,97 @@ impl Render for ImmersiveView {
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap(px(10.0))
                         .child(
                             div()
-                                .id("console-prev-btn")
-                                .cursor_pointer()
-                                .p(px(8.0))
-                                .rounded_full()
-                                .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
-                                .child(icon(PREV_TRACK).size(px(18.0)).text_color(text))
-                                .on_click(|_, _, cx| {
-                                    cx.global::<PlaybackInterface>().previous();
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("console-play-btn")
-                                .cursor_pointer()
-                                .size(px(46.0))
-                                .rounded_full()
-                                .bg(theme.button_primary)
-                                .text_color(theme.button_primary_text)
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .shadow_md()
-                                .hover(|s| s.bg(theme.button_primary_hover))
-                                .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
-                                .on_click(|_, _, cx| {
-                                    let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                                    let interface = cx.global::<PlaybackInterface>();
-                                    if state == PlaybackState::Playing {
-                                        interface.pause();
-                                    } else {
-                                        interface.play();
-                                    }
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .id("console-prev-btn")
+                                        .cursor_pointer()
+                                        .p(px(8.0))
+                                        .rounded_full()
+                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
+                                        .child(icon(PREV_TRACK).size(px(18.0)).text_color(text))
+                                        .on_click(|_, _, cx| {
+                                            cx.global::<PlaybackInterface>().previous();
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("console-play-btn")
+                                        .cursor_pointer()
+                                        .size(px(46.0))
+                                        .rounded_full()
+                                        .bg(theme.button_primary)
+                                        .text_color(theme.button_primary_text)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .shadow_md()
+                                        .hover(|s| s.bg(theme.button_primary_hover))
+                                        .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
+                                        .on_click(|_, _, cx| {
+                                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                            let interface = cx.global::<PlaybackInterface>();
+                                            if state == PlaybackState::Playing {
+                                                interface.pause();
+                                            } else {
+                                                interface.play();
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("console-next-btn")
+                                        .cursor_pointer()
+                                        .p(px(8.0))
+                                        .rounded_full()
+                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
+                                        .child(icon(NEXT_TRACK).size(px(18.0)).text_color(text))
+                                        .on_click(|_, _, cx| {
+                                            cx.global::<PlaybackInterface>().next();
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("console-heart-btn")
+                                .cursor_pointer()
+                                .px(px(14.0))
+                                .py(px(8.0))
+                                .rounded(px(theme.radius_md))
+                                .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
+                                .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
+                                .shadow_sm()
+                                .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(icon(VOLUME).size(px(13.0)).text_color(text_secondary))
+                        .child(
+                            slider()
+                                .id("console-vol-slider")
+                                .w_full()
+                                .h(px(4.0))
+                                .rounded_full()
+                                .value(volume as f32)
+                                .on_change(move |v, _, cx| {
+                                    cx.global::<PlaybackInterface>().set_volume(v as f64);
                                 }),
                         )
                         .child(
                             div()
-                                .id("console-next-btn")
-                                .cursor_pointer()
-                                .p(px(8.0))
-                                .rounded_full()
-                                .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
-                                .child(icon(NEXT_TRACK).size(px(18.0)).text_color(text))
-                                .on_click(|_, _, cx| {
-                                    cx.global::<PlaybackInterface>().next();
-                                }),
+                                .text_size(px(10.0))
+                                .text_color(text_secondary)
+                                .child(format!("{}%", (volume * 100.0).round() as i64)),
                         ),
                 )
                 .child(
