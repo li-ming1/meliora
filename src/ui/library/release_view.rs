@@ -254,6 +254,22 @@ impl ReleaseView {
             // 打开视图时在运行时上加载专辑头部与其曲目列表（见 reload）；
             // 落地前视图显示占位头部与空列表。
             this.reload(cx, target_track_id);
+
+            // 重扫完成即刷新打开中的详情（上游 bcea976）：文件监视器自动重扫
+            // 增删曲目后，停留中的视图不得继续展示旧曲目列表
+            let scan_state = cx.global::<crate::ui::models::Models>().scan_state.clone();
+            cx.observe(&scan_state, |this: &mut Self, e, cx| {
+                if matches!(
+                    e.read(cx),
+                    crate::library::scan::ScanEvent::ScanCompleteIdle
+                        | crate::library::scan::ScanEvent::ScanCompleteWatching
+                        | crate::library::scan::ScanEvent::TargetedRescanComplete
+                ) {
+                    this.reload(cx, None);
+                }
+            })
+            .detach();
+
             this
         })
     }

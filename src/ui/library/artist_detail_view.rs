@@ -210,6 +210,21 @@ impl ArtistDetailView {
             // 打开视图时在运行时上加载艺术家头部、专辑网格与三个曲目列表（见 reload）；
             // 落地前视图显示空页。
             this.reload(cx);
+
+            // 重扫完成即刷新打开中的详情（上游 bcea976），语义同 ReleaseView
+            let scan_state = cx.global::<crate::ui::models::Models>().scan_state.clone();
+            cx.observe(&scan_state, |this: &mut Self, e, cx| {
+                if matches!(
+                    e.read(cx),
+                    crate::library::scan::ScanEvent::ScanCompleteIdle
+                        | crate::library::scan::ScanEvent::ScanCompleteWatching
+                        | crate::library::scan::ScanEvent::TargetedRescanComplete
+                ) {
+                    this.reload(cx);
+                }
+            })
+            .detach();
+
             this
         });
 
