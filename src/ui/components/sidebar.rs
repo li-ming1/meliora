@@ -268,22 +268,21 @@ impl RenderOnce for SidebarItem {
             .bg(theme.background_primary)
             .text_sm()
             .border_1()
-            // 你可能会问：把边框颜色设成这样到底有什么意义？
-            // 嗯，出于某个至今未知的原因，不设这一条、或者把它设成 transparent_black()，
-            // 都会让 hover 效果不能正常生效。
-            // 为什么？我也不知道，这实在完全没道理
-            //
-            // 承重的颜色。
+            // 保持透明底边框，确保 hover 动画平滑过渡
             .border_color(theme.background_primary)
             .when(self.active, |div| {
-                div.bg(theme.nav_button_pressed)
-                    .border_color(theme.nav_button_pressed_border)
+                div.bg(theme.nav_button_active)
+                    .border_color(theme.nav_button_active_border)
+                    .text_color(theme.button_primary)
             })
-            .rounded(px(theme.radius_sm))
-            .py(px(8.0))
+            .when(!self.active, |div| {
+                div.text_color(theme.text)
+            })
+            .rounded(px(theme.radius_md))
+            .py(px(7.5))
             .line_height(px(18.0))
-            .gap(px(6.0))
-            .font_weight(FontWeight::SEMIBOLD)
+            .gap(px(10.0))
+            .font_weight(FontWeight::MEDIUM)
             .hover(|this| {
                 this.bg(theme.nav_button_hover)
                     .border_color(theme.nav_button_hover_border)
