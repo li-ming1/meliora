@@ -117,7 +117,16 @@ pub(crate) fn string_field(value: &Value, keys: &[&str]) -> String {
 pub(crate) fn i64_field(value: &Value, keys: &[&str]) -> i64 {
     for key in keys {
         match value.get(*key) {
-            Some(Value::Number(n)) => return n.as_i64().unwrap_or(0),
+            // 浮点直接 as_i64 会落 0（哨兵语义），与 String 分支「解析失败继续
+            // 尝试下一键」不对称：同样不可解析就 fallthrough
+            Some(Value::Number(n)) => match n.as_i64() {
+                Some(parsed) => return parsed,
+                None => {
+                    if let Ok(parsed) = n.to_string().parse::<i64>() {
+                        return parsed;
+                    }
+                }
+            },
             Some(Value::String(s)) => {
                 if let Ok(parsed) = s.parse::<i64>() {
                     return parsed;

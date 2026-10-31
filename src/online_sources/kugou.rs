@@ -104,7 +104,16 @@ fn stream_map() -> &'static RwLock<Vec<StreamMapEntry>> {
     STREAM_MAP.get_or_init(|| {
         let entries = std::fs::read_to_string(stream_map_path())
             .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .and_then(|contents| {
+                // 逐条目容错：单条损坏（如缺 url 键）只丢该条，不废整张注册表
+                let values: Vec<serde_json::Value> = serde_json::from_str(&contents).ok()?;
+                Some(
+                    values
+                        .into_iter()
+                        .filter_map(|value| serde_json::from_value(value).ok())
+                        .collect::<Vec<StreamMapEntry>>(),
+                )
+            })
             .unwrap_or_default();
         RwLock::new(entries)
     })
@@ -324,8 +333,14 @@ async fn liked_entries_raw() -> Option<Vec<(String, i64)>> {
             .await
         {
             Ok(resp) => {
-                let Some(info) = resp.body.pointer("/data/info").and_then(Value::as_array) else {
-                    break;
+                let info = match resp.body.pointer("/data/info").and_then(Value::as_array) {
+                    Some(info) => info,
+                    // 第一页就缺 /data/info 是「载荷变形」而非「列表为空」：
+                    // 与 Err 路径同语义返回 None，绝不落地空缓存并置
+                    // LIKED_SET_INIT（否则本会话星标全灭且不自愈）。后续页的
+                    // 缺失维持 break（不满一页的正常结束）。
+                    None if page == 1 => return None,
+                    None => break,
                 };
                 out.extend(info.iter().filter_map(|item| {
                     let hash = item

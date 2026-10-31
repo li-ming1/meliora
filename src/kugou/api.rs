@@ -82,6 +82,15 @@ impl KugouClient {
                         error_code: None,
                     });
                 }
+                if userid == 0 {
+                    // userid=0 是「没拿到用户身份」：持久化后歌单/详情/每日推荐
+                    // 全按 0 失败，与 token 缺失同等级的登录失败
+                    return Err(KugouError::Api {
+                        status: 4,
+                        msg: "login succeeded but userid missing".into(),
+                        error_code: None,
+                    });
+                }
                 Ok(QrStatus::Success { token, userid })
             }
             other => Err(KugouError::Api {
@@ -117,7 +126,11 @@ impl KugouClient {
             nickname,
             avatar_url,
         };
-        self.update_user_profile(&profile);
+        // 空 nickname 是「这次没拿到」而非真实资料：读侧 cached_user_profile
+        // 对空串返回 None（缓存永不命中），写侧不落空值以免每次进页都重打
+        if !profile.nickname.is_empty() {
+            self.update_user_profile(&profile);
+        }
         Ok(profile)
     }
 
@@ -375,7 +388,7 @@ impl KugouClient {
             .param("album_audio_id", 0)
             .param("appid", APPID)
             .param("clientver", CLIENTVER)
-            .param("duration", duration)
+            .param("duration", duration * 1000) // API 口径是毫秒（LyricsKit/参考实现），调用方传秒
             .param("hash", hash)
             .param("keyword", keyword)
             .param("lrctxt", 1)

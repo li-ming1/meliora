@@ -250,6 +250,9 @@ fn artist_field(value: &Value) -> String {
         .or_else(|| value.get("singer"))
         .or_else(|| value.get("singerinfo"))
         .or_else(|| value.get("author_name"))
+        // 酷狗旧端点常见的全小写形态（四轮审计 G7：榜单条目拼写未经实测，
+        // 多认一个候选只在其余全部落空时才生效）
+        .or_else(|| value.get("singername"))
     {
         Some(Value::String(s)) if !s.is_empty() => return s.clone(),
         Some(Value::Array(items)) => {
@@ -286,14 +289,18 @@ fn title_field(value: &Value) -> String {
     title
 }
 
-/// 专辑名。搜索结果把它作为纯 `AlbumName` 字符串带回来，而歌单（`/v4`）端点把它
-/// 嵌在 `albuminfo` 对象里。
+/// 专辑名。搜索端点是顶层 `AlbumName` 字符串，歌单（`/v4`）端点嵌在
+/// `albuminfo`（无下划线）对象里，榜单（/openapi/kmr/v2/rank/audio）条目嵌在
+/// `album_info`（下划线）对象里——与封面提取的 `/album_info/sizable_cover`
+/// 同源，两个对象拼写都要认。
 fn album_field(value: &Value) -> String {
-    if let Some(info) = value.get("albuminfo").and_then(Value::as_object)
-        && let Some(name) = info.get("name").and_then(Value::as_str)
-        && !name.is_empty()
-    {
-        return name.to_string();
+    for key in ["albuminfo", "album_info"] {
+        if let Some(info) = value.get(key).and_then(Value::as_object)
+            && let Some(name) = info.get("name").and_then(Value::as_str)
+            && !name.is_empty()
+        {
+            return name.to_string();
+        }
     }
     string_field(value, &["AlbumName", "album_name"])
 }
