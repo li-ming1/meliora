@@ -1497,6 +1497,19 @@ impl Render for ImmersiveView {
             let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
             let dimmed_color = lerp_color(text, text_secondary, 0.45);
 
+            let active_seed = self.current_line
+                .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
+                .map_or(0, |l| l.time_ms);
+
+            // 换句时的全空间戏剧化大跳跃 (Dynamic Spatial Hop: 随着乐句在左侧巨幕空间中左跳右跳)
+            let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 5 {
+                0 => (-60.0f32, -30.0f32), // 偏左上方
+                1 => (90.0f32, 25.0f32),   // 偏右侧
+                2 => (-10.0f32, -15.0f32), // 偏中上
+                3 => (50.0f32, -35.0f32),  // 偏右上
+                _ => (-90.0f32, 20.0f32),  // 偏左下方
+            };
+
             let waterfall_lines = self.parsed.as_ref().map(|parsed| {
                 let visual_line = self.visual_line;
                 let current_line = self.current_line;
@@ -1516,21 +1529,41 @@ impl Render for ImmersiveView {
 
                         let text_child: AnyElement = if is_current && !line.words.is_empty() {
                             let unsung = dimmed_color;
-                            let mut row = div().flex().flex_wrap().justify_start().items_baseline();
-                            for word in &line.words {
+                            let mut row = div().flex().flex_wrap().justify_start().items_baseline().gap(px(4.0));
+                            for (w_idx, word) in line.words.iter().enumerate() {
                                 let progress = word_progress(word, position_ms);
                                 let color = lerp_color(unsung, gold_glow, progress);
+
+                                // 音律单字五线谱高低与横向错落散开 (Word Spread & Jitter)
+                                let pseudo_rand = ((w_idx as f32 * 12.9898 + (active_seed % 1000) as f32 * 78.233).sin() * 43758.5453).fract().abs();
+                                let word_jitter_x = (pseudo_rand - 0.5) * 20.0;
+                                let base_y_offset = match (w_idx + index) % 4 {
+                                    0 => 0.0f32,
+                                    1 => -8.0f32,
+                                    2 => 6.0f32,
+                                    _ => -3.0f32,
+                                };
+                                // 正在唱到的字触发向上的音律跳动 (Spring Bounce)
+                                let bounce_offset = if progress > 0.05 && progress < 0.95 {
+                                    -((progress * std::f32::consts::PI).sin() * 12.0)
+                                } else {
+                                    0.0
+                                };
+                                let total_y_offset = base_y_offset + bounce_offset;
+
                                 row = row.child(
                                     div()
                                         .relative()
+                                        .mt(px(total_y_offset))
+                                        .ml(px(word_jitter_x.max(0.0)))
                                         .when(progress > 0.05, |el| {
                                             el.child(
                                                 div()
                                                     .absolute()
-                                                    .top(px(-1.0))
-                                                    .left(px(-1.0))
-                                                    .opacity(0.38 * progress)
-                                                    .text_color(Rgba::new(1.0, 0.72, 0.35, 0.75))
+                                                    .top(px(-2.0))
+                                                    .left(px(-2.0))
+                                                    .opacity(0.45 * progress)
+                                                    .text_color(Rgba::new(1.0, 0.72, 0.35, 0.85))
                                                     .child(word.text.clone()),
                                             )
                                         })
@@ -1540,7 +1573,22 @@ impl Render for ImmersiveView {
                             row.into_any_element()
                         } else {
                             let color = if is_current { gold_glow } else { dimmed_color };
-                            div().text_left().text_color(color).child(line.text.clone()).into_any_element()
+                            let mut row = div().flex().flex_wrap().justify_start().items_baseline().gap(px(2.0));
+                            for (c_idx, ch) in line.text.chars().enumerate() {
+                                let base_y = match (c_idx + index) % 4 {
+                                    0 => 0.0f32,
+                                    1 => -6.0f32,
+                                    2 => 4.0f32,
+                                    _ => -2.0f32,
+                                };
+                                row = row.child(
+                                    div()
+                                        .mt(px(base_y))
+                                        .text_color(color)
+                                        .child(ch.to_string()),
+                                );
+                            }
+                            row.into_any_element()
                         };
 
                         div()
@@ -1798,7 +1846,8 @@ impl Render for ImmersiveView {
                 .flex()
                 .flex_col()
                 .justify_center()
-                .pl(px(80.0))
+                .pl(px((80.0f32 + space_hop_x).max(20.0)))
+                .mt(px(space_hop_y))
                 .pr(px(40.0))
                 .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
                     if !this.active {
