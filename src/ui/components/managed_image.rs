@@ -78,8 +78,8 @@ static DECODE_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore
 /// 把叠加变成 FIFO 队列：当前曲的 arm 最先入队、约 1 s 内换图，预取排在它后面，峰值恰好
 /// 是一条管线。缓存命中的 retrieve 完全绕过——其查找发生在 acquire 之前，所以即使有新管线
 /// 排队，预取/回跳的背景仍然即时。
-static BACKDROP_PIPELINE_GATE: std::sync::LazyLock<tokio::sync::Semaphore> =
-    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
+static BACKDROP_PIPELINE_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
 
 /// 原地交换 R 与 B 通道，使 `image` crate 的缓冲匹配 GPUI 期望的 BGRA 顺序。
 pub(crate) fn rgb_to_bgr(image: &mut image::RgbaImage) {
@@ -694,10 +694,11 @@ impl ManagedImageKey {
         // 串行化整条背景重管线（见 [`BACKDROP_PIPELINE_GATE`]）：解码、
         // 裁剪带与锐化全程只允许一条在飞。缓存命中的 retrieve 在上面就
         // 返回了，不经过这里——预取命中/回跳不被排队的新管线拖住。
-        let _backdrop_pipeline = match cache {
+        let backdrop_pipeline_gate = match cache {
             ImageCacheMode::Backdrop(_) => Some(
                 BACKDROP_PIPELINE_GATE
-                    .acquire()
+                    .clone()
+                    .acquire_owned()
                     .await
                     .expect("semaphore is never closed"),
             ),
@@ -729,9 +730,19 @@ impl ManagedImageKey {
                 // 峰值从 ~121MB 压到 ~105MB。
                 let src_size = decoded.size(0);
                 let rendered = crate::RUNTIME.spawn_blocking({
-                    move || match backdrop_sharp_fill(decoded, w, h) {
-                        Ok(rendered) => rendered,
-                        Err(original) => original,
+                    // gate permit 移入闭包（与 run_blocking_with_permit 同款
+                    // 取消防护）：帧在 await 点被 abort（切歌/退出沉浸页的
+                    // restart_image/on_release/prefetch abort）时，不可取消
+                    // 的 sharp_fill 继续持闸跑完——否则新管线立刻进闸，两条
+                    // ~105MB 管线叠加即 2026-10-02 硬阀门事故形态。解码段
+                    // 的 abort 只叠加解码瞬态（DECODE_PERMITS 闭包内持有
+                    // 封顶 4），闸门在帧丢弃时归还属可接受放宽。
+                    move || {
+                        let _backdrop_pipeline = backdrop_pipeline_gate;
+                        match backdrop_sharp_fill(decoded, w, h) {
+                            Ok(rendered) => rendered,
+                            Err(original) => original,
+                        }
                     }
                 });
                 let resampled: Arc<RenderImage> = rendered.await?;
