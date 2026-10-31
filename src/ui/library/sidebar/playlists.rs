@@ -34,7 +34,10 @@ use crate::{
             sidebar::sidebar_item,
             textbox::Textbox,
         },
-        library::{NavigationHistory, ViewSwitchMessage, playlist_view::find_playlist_tracks},
+        library::{
+            NavigationHistory, ViewSwitchMessage, context_menus::next_queue_position,
+            playlist_view::find_playlist_tracks,
+        },
         library_access::{LibraryAccess, is_duplicate_playlist_name, playlist_name_taken_toast},
         models::{Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
@@ -567,11 +570,12 @@ impl Render for PlaylistList {
                                             tr!("PLAY_NEXT"),
                                             move |_, _, cx| {
                                                 let tracks = find_playlist_tracks(cx, pl_id);
-                                                let queue_position =
-                                                    cx.global::<Models>().queue.read(cx).position;
+                                                // 停止态 queue.position=0 是哨兵，裸 +1 会
+                                                // 跳过队头；与 context_menus 的行内菜单同
+                                                // 款守卫取插入位
+                                                let queue_position = next_queue_position(cx);
                                                 let interface = cx.global::<PlaybackInterface>();
-                                                interface
-                                                    .insert_list_at(tracks, queue_position + 1);
+                                                interface.insert_list_at(tracks, queue_position);
                                             },
                                         ))
                                         .item(menu_item(

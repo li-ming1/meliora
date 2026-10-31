@@ -321,8 +321,9 @@ fn current_queue_length(cx: &App) -> usize {
 /// 曲目）插队头。queue.position 的 0 是双义哨兵——停止态下它表示「没有当前
 /// 曲目」（thread.rs 的撤销路径置 0，stop() 后也可能残留旧值），此时 +1 会
 /// 把「下一首」插到第 1 位、跳过队头；播放态的 0 则真的是「队头在播」，
-/// 照旧 +1。
-fn next_queue_position(cx: &App) -> usize {
+/// 照旧 +1。所有「下一首播放」消费点必须经它取插入位（契约：queue.position
+/// 的 0 同为双义值，消费侧一律加播放态守卫）。
+pub(crate) fn next_queue_position(cx: &App) -> usize {
     let position = cx.global::<Models>().queue.read(cx).position;
     let stopped = *cx.global::<PlaybackInfo>().playback_state.read(cx) == PlaybackState::Stopped;
     if stopped { 0 } else { position + 1 }

@@ -283,7 +283,7 @@
   },
   "APP_NAME": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:573",
+    "definedIn": "src/ui/controls/info_section.rs:569",
     "plural": false,
     "description": "Use the english name everywhere unless this is strictly disagreeable.\n                                "
   },
@@ -307,7 +307,7 @@
   },
   "CANCEL": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:826",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:830",
     "plural": false,
     "description": null
   },
@@ -355,61 +355,61 @@
   },
   "COLUMN_ALBUM": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:567",
+    "definedIn": "src/library/types/table.rs:662",
     "plural": false,
     "description": null
   },
   "COLUMN_ALBUMS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:810",
+    "definedIn": "src/library/types/table.rs:930",
     "plural": false,
     "description": null
   },
   "COLUMN_ARTIST": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:331",
+    "definedIn": "src/library/types/table.rs:401",
     "plural": false,
     "description": null
   },
   "COLUMN_CATALOG_NUMBER": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:334",
+    "definedIn": "src/library/types/table.rs:404",
     "plural": false,
     "description": null
   },
   "COLUMN_DATE": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:332",
+    "definedIn": "src/library/types/table.rs:402",
     "plural": false,
     "description": null
   },
   "COLUMN_LABEL": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:333",
+    "definedIn": "src/library/types/table.rs:403",
     "plural": false,
     "description": null
   },
   "COLUMN_LENGTH": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:569",
+    "definedIn": "src/library/types/table.rs:664",
     "plural": false,
     "description": null
   },
   "COLUMN_NAME": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:809",
+    "definedIn": "src/library/types/table.rs:929",
     "plural": false,
     "description": null
   },
   "COLUMN_TITLE": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:330",
+    "definedIn": "src/library/types/table.rs:400",
     "plural": false,
     "description": null
   },
   "COLUMN_TRACKS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:811",
+    "definedIn": "src/library/types/table.rs:931",
     "plural": false,
     "description": null
   },
@@ -427,7 +427,7 @@
   },
   "CREATE": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:835",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:839",
     "plural": false,
     "description": null
   },
@@ -439,13 +439,13 @@
   },
   "DELETE_PLAYLIST": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:693",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:697",
     "plural": false,
     "description": null
   },
   "DELETE_PLAYLIST_CONFIRM": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:671",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:675",
     "plural": false,
     "description": null
   },
@@ -601,13 +601,13 @@
   },
   "EXPORT_PLAYLIST": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:644",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:648",
     "plural": false,
     "description": null
   },
   "EXPORT_PLAYLIST_FAILED": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:652",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:656",
     "plural": false,
     "description": null
   },
@@ -1309,7 +1309,7 @@
   },
   "LIKED_SONGS": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:407",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:410",
     "plural": false,
     "description": null
   },
@@ -1339,7 +1339,7 @@
   },
   "NEW_PLAYLIST": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:778",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:782",
     "plural": false,
     "description": null
   },
@@ -1519,7 +1519,7 @@
   },
   "PLAYLIST_TRACK_COUNT": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:445",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:448",
     "plural": true,
     "description": null
   },
@@ -1621,13 +1621,13 @@
   },
   "RENAME": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:752",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:756",
     "plural": false,
     "description": null
   },
   "RENAME_PLAYLIST": {
     "context": "playlists.rs",
-    "definedIn": "src/ui/library/sidebar/playlists.rs:609",
+    "definedIn": "src/ui/library/sidebar/playlists.rs:613",
     "plural": false,
     "description": null
   },
@@ -2233,19 +2233,19 @@
   },
   "TABLE_ALBUMS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:358",
+    "definedIn": "src/library/types/table.rs:449",
     "plural": false,
     "description": null
   },
   "TABLE_ARTISTS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:833",
+    "definedIn": "src/library/types/table.rs:970",
     "plural": false,
     "description": null
   },
   "TABLE_TRACKS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:593",
+    "definedIn": "src/library/types/table.rs:709",
     "plural": false,
     "description": null
   },
@@ -2311,7 +2311,7 @@
   },
   "TRACK_NUMBER": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:565",
+    "definedIn": "src/library/types/table.rs:660",
     "plural": false,
     "description": null
   },
@@ -2371,13 +2371,13 @@
   },
   "UNKNOWN_ARTIST": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:628",
+    "definedIn": "src/ui/controls/info_section.rs:624",
     "plural": false,
     "description": null
   },
   "UNKNOWN_TRACK": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:614",
+    "definedIn": "src/ui/controls/info_section.rs:610",
     "plural": false,
     "description": null
   },
