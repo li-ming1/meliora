@@ -1276,8 +1276,14 @@ impl Render for PlaylistView {
     }
 }
 
-pub fn find_playlist_tracks(cx: &mut App, playlist_id: i64) -> Vec<QueueItemData> {
-    let playlist_tracks = cx.list_playlist_tracks(playlist_id).unwrap_or_default();
-
-    queue_items_from_playlist_rows(&playlist_tracks)
+/// `None` = 查询失败（DB 错误），调用方按「失败保留旧快照」惯例处理——
+/// 绝不能把 Err 吞成空表再去替换队列（bd71f6e0ec 同型：静默清空队列）。
+pub fn find_playlist_tracks(cx: &mut App, playlist_id: i64) -> Option<Vec<QueueItemData>> {
+    match cx.list_playlist_tracks(playlist_id) {
+        Ok(rows) => Some(queue_items_from_playlist_rows(&rows)),
+        Err(err) => {
+            tracing::warn!("playlist {playlist_id}: could not load tracks: {err}");
+            None
+        }
+    }
 }

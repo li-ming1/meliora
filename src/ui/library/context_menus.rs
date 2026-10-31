@@ -243,10 +243,16 @@ pub fn play_from_track_listing(
     let queue_items = if let Some(tracks) = queue_context {
         queue_items_from_tracks(&tracks)
     } else if let Some(playlist_id) = playlist_id {
-        let rows = cx.list_playlist_tracks(playlist_id).unwrap_or_default();
+        let rows = cx.list_playlist_tracks(playlist_id).unwrap_or_else(|e| {
+            tracing::warn!("track listing load failed: {e}");
+            Arc::default()
+        });
         queue_items_from_playlist_rows(&rows)
     } else if let Some(album_id) = track.album_id {
-        let tracks = cx.list_tracks_in_album(album_id).unwrap_or_default();
+        let tracks = cx.list_tracks_in_album(album_id).unwrap_or_else(|e| {
+            tracing::warn!("track listing load failed: {e}");
+            Arc::default()
+        });
         queue_items_from_tracks(&tracks)
     } else {
         vec![queue_item_data(
@@ -453,9 +459,10 @@ pub(crate) fn navigate_to_artist(cx: &mut App, artist_id: i64) {
 }
 
 fn available_album_queue_items(cx: &mut App, album: &Album) -> Vec<QueueItemData> {
-    let tracks = cx
-        .list_tracks_in_album(album.id)
-        .unwrap_or_else(|_| Arc::new(Vec::new()));
+    let tracks = cx.list_tracks_in_album(album.id).unwrap_or_else(|e| {
+        tracing::warn!("album tracks load failed: {e}");
+        Arc::new(Vec::new())
+    });
     queue_items_from_tracks(&tracks)
 }
 

@@ -559,7 +559,10 @@ impl Render for PlaylistList {
                                             Some(PLAY),
                                             tr!("PLAY"),
                                             move |_, _, cx| {
-                                                let tracks = find_playlist_tracks(cx, pl_id);
+                                                let Some(tracks) = find_playlist_tracks(cx, pl_id) else {
+                                                    // 查询失败保留现状（旧队列不动/不插入），见 find_playlist_tracks
+                                                    return;
+                                                };
                                                 let interface = cx.global::<PlaybackInterface>();
                                                 interface.replace_queue(tracks);
                                             },
@@ -569,7 +572,10 @@ impl Render for PlaylistList {
                                             None::<&'static str>,
                                             tr!("PLAY_NEXT"),
                                             move |_, _, cx| {
-                                                let tracks = find_playlist_tracks(cx, pl_id);
+                                                let Some(tracks) = find_playlist_tracks(cx, pl_id) else {
+                                                    // 查询失败保留现状（旧队列不动/不插入），见 find_playlist_tracks
+                                                    return;
+                                                };
                                                 // 停止态 queue.position=0 是哨兵，裸 +1 会
                                                 // 跳过队头；与 context_menus 的行内菜单同
                                                 // 款守卫取插入位
@@ -583,7 +589,10 @@ impl Render for PlaylistList {
                                             Some(SHUFFLE),
                                             tr!("SHUFFLE"),
                                             move |_, _, cx| {
-                                                let tracks = find_playlist_tracks(cx, pl_id);
+                                                let Some(tracks) = find_playlist_tracks(cx, pl_id) else {
+                                                    // 查询失败保留现状（旧队列不动/不插入），见 find_playlist_tracks
+                                                    return;
+                                                };
                                                 let interface = cx.global::<PlaybackInterface>();
                                                 if !(*cx
                                                     .global::<PlaybackInfo>()
@@ -600,7 +609,10 @@ impl Render for PlaylistList {
                                             Some(PLUS),
                                             tr!("ADD_TO_QUEUE"),
                                             move |_, _, cx| {
-                                                let tracks = find_playlist_tracks(cx, pl_id);
+                                                let Some(tracks) = find_playlist_tracks(cx, pl_id) else {
+                                                    // 查询失败保留现状（旧队列不动/不插入），见 find_playlist_tracks
+                                                    return;
+                                                };
                                                 let interface = cx.global::<PlaybackInterface>();
                                                 interface.queue_list(tracks);
                                             },
