@@ -237,7 +237,14 @@ fn resolve_lyrics(
         // 目录列举已证明 sidecar 不存在——跳过那次探测
         SidecarLyrics::Absent => None,
         SidecarLyrics::Unknown | SidecarLyrics::Present => sidecar_lyrics_path(path)
-            .and_then(|lrc_path| std::fs::read_to_string(lrc_path).ok())
+            .and_then(|lrc_path| {
+                // 非 UTF-8 外部文本（GBK .lrc 在中文曲库常见）：lossy 转换而非
+                // 整文件拒读——M3U 侧车同款纪律（f309e4b9ec），拒读的后果是
+                // 歌词静默不入库且每次重扫重复失败；坏字节替换为 U+FFFD
+                std::fs::read(lrc_path)
+                    .ok()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            })
             .filter(|content| !content.trim().is_empty()),
     };
 
