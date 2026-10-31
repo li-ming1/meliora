@@ -311,8 +311,8 @@ impl RenderOnce for Menu {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         self.div
             .min_w(px(200.0))
-            .px(px(3.0))
-            .py(px(3.0))
+            .px(px(4.0))
+            .py(px(4.0))
             .flex()
             .flex_col()
             .children(self.items)

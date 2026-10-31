@@ -129,6 +129,7 @@ impl RenderOnce for Modal {
                     self.div
                         .occlude()
                         .m_auto()
+                        .shadow_lg()
                         .border_color(theme.elevated_border_color)
                         .border_1()
                         .bg(theme.elevated_background)

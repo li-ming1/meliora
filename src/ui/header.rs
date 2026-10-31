@@ -30,12 +30,15 @@ fn nav_switch_button(
     can_go: bool,
     vsm: &Entity<NavigationHistory>,
 ) -> NavButton {
-    nav_button(id, icon).disabled(!can_go).on_click({
-        let vsm = vsm.clone();
-        move |_, _, cx| {
-            vsm.update(cx, |_, cx| cx.emit(message));
-        }
-    })
+    nav_button(id, icon)
+        .disabled(!can_go)
+        .when(!can_go, |btn| btn.opacity(0.35))
+        .on_click({
+            let vsm = vsm.clone();
+            move |_, _, cx| {
+                vsm.update(cx, |_, cx| cx.emit(message));
+            }
+        })
 }
 
 #[derive(IntoElement)]
@@ -291,28 +294,47 @@ pub fn search_bar(cx: &App) -> impl IntoElement {
         .occlude()
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .w(px(280.0))
-        .h(px(30.0))
-        .px(px(10.0))
-        .rounded_md()
+        .justify_between()
+        .w(px(310.0))
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded_full()
         .border_1()
         .border_color(theme.border_color)
-        .bg(theme.background_primary)
+        .bg(theme.background_secondary)
         .cursor(CursorStyle::PointingHand)
         .hover(|style: StyleRefinement| {
             style
-                .bg(theme.nav_button_hover)
-                .border_color(theme.nav_button_hover_border)
+                .bg(theme.elevated_background)
+                .border_color(theme.button_primary_border)
         })
         .on_click(|_, window, cx| {
             window.dispatch_action(Box::new(Search), cx);
         })
-        .child(icon(SEARCH).size(ICON_SM).text_color(theme.text_secondary))
         .child(
             div()
-                .text_sm()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(icon(SEARCH).size(ICON_SM).text_color(theme.text_secondary))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_secondary)
+                        .child(tr!("SEARCH_PLACEHOLDER", "Search songs, artists or lyrics")),
+                ),
+        )
+        .child(
+            div()
+                .px(px(6.0))
+                .py(px(1.5))
+                .rounded_sm()
+                .border_1()
+                .border_color(theme.border_color)
+                .bg(theme.background_primary)
                 .text_color(theme.text_secondary)
-                .child(tr!("SEARCH_PLACEHOLDER", "Search songs, artists or lyrics")),
+                .text_size(px(10.0))
+                .font_weight(FontWeight::MEDIUM)
+                .child("Ctrl+F"),
         )
 }
