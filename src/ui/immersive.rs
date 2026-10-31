@@ -56,7 +56,7 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
+            icons::{DISC, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
@@ -1556,14 +1556,252 @@ impl Render for ImmersiveView {
                     })
             });
 
+            let hero_card = div()
+                .id("stage-hero-poster")
+                .w(px(580.0))
+                .h(px(510.0))
+                .rounded(px(20.0))
+                .shadow_lg()
+                .border_1()
+                .border_color(Rgba::new(1.0, 1.0, 1.0, 0.20))
+                .bg(Rgba::new(0.06, 0.07, 0.09, 0.82))
+                .backdrop_blur(px(20.0))
+                .p(px(22.0))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .px(px(8.0))
+                                        .py(px(2.0))
+                                        .rounded_full()
+                                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                        .text_size(px(10.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.button_primary)
+                                        .child("正在播放"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(text_secondary)
+                                        .child(self.artist_name.clone().unwrap_or_default()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(22.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(text)
+                                .truncate()
+                                .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(12.0))
+                        .children(waterfall_lines.into_iter().flatten()),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .pt(px(12.0))
+                        .border_t_1()
+                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.0))
+                                .child(
+                                    div()
+                                        .id("hero-prev-btn")
+                                        .cursor_pointer()
+                                        .p(px(6.0))
+                                        .rounded_full()
+                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
+                                        .child(icon(PREV_TRACK).size(px(18.0)).text_color(text))
+                                        .on_click(|_, _, cx| {
+                                            cx.global::<PlaybackInterface>().previous();
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("hero-play-btn")
+                                        .cursor_pointer()
+                                        .size(px(40.0))
+                                        .rounded_full()
+                                        .bg(theme.button_primary)
+                                        .text_color(theme.button_primary_text)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .shadow_md()
+                                        .hover(|s| s.bg(theme.button_primary_hover))
+                                        .child(icon(if playing { PAUSE } else { PLAY }).size(px(20.0)).text_color(theme.button_primary_text))
+                                        .on_click(|_, _, cx| {
+                                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                            let interface = cx.global::<PlaybackInterface>();
+                                            if state == PlaybackState::Playing {
+                                                interface.pause();
+                                            } else {
+                                                interface.play();
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("hero-next-btn")
+                                        .cursor_pointer()
+                                        .p(px(6.0))
+                                        .rounded_full()
+                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
+                                        .child(icon(NEXT_TRACK).size(px(18.0)).text_color(text))
+                                        .on_click(|_, _, cx| {
+                                            cx.global::<PlaybackInterface>().next();
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(text_secondary)
+                                .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
+                        ),
+                );
+
+            let queue_model = self.queue.read(cx);
+            let current_q_pos = queue_model.position;
+            let total_q_items = queue_model.data.read_recovered().len();
+
+            let mut prev_cards = Vec::new();
+            if current_q_pos > 0 {
+                let p1 = current_q_pos - 1;
+                prev_cards.push(div()
+                    .id(("stage-prev-card", p1))
+                    .w(px(200.0))
+                    .h(px(250.0))
+                    .rounded(px(16.0))
+                    .shadow_md()
+                    .border_1()
+                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.10))
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.65))
+                    .p(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .cursor_pointer()
+                    .opacity(0.65)
+                    .hover(|s| s.opacity(1.0).bg(Rgba::new(0.12, 0.14, 0.18, 0.85)))
+                    .on_click(move |_, _, cx| {
+                        cx.global::<PlaybackInterface>().jump(p1);
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(text_secondary)
+                            .child(format!("上一首 · #{p1}")),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_1()
+                            .my(px(8.0))
+                            .rounded(px(10.0))
+                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(DISC).size(px(42.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.25))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(text)
+                            .child("点击切播"),
+                    ),
+                );
+            }
+
+            let mut next_cards = Vec::new();
+            if current_q_pos + 1 < total_q_items {
+                let n1 = current_q_pos + 1;
+                next_cards.push(div()
+                    .id(("stage-next-card", n1))
+                    .w(px(200.0))
+                    .h(px(250.0))
+                    .rounded(px(16.0))
+                    .shadow_md()
+                    .border_1()
+                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.10))
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.65))
+                    .p(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .cursor_pointer()
+                    .opacity(0.65)
+                    .hover(|s| s.opacity(1.0).bg(Rgba::new(0.12, 0.14, 0.18, 0.85)))
+                    .on_click(move |_, _, cx| {
+                        cx.global::<PlaybackInterface>().jump(n1);
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(text_secondary)
+                            .child(format!("下一首 · #{n1}")),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_1()
+                            .my(px(8.0))
+                            .rounded(px(10.0))
+                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(DISC).size(px(42.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.25))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(text)
+                            .child("点击切换"),
+                    ),
+                );
+            }
+
             Some(
                 div()
                     .absolute()
                     .inset_0()
                     .flex()
-                    .flex_col()
                     .items_center()
                     .justify_center()
+                    .gap(px(24.0))
                     .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
                         if !this.active {
                             return;
@@ -1579,17 +1817,9 @@ impl Render for ImmersiveView {
                             cx.notify();
                         }
                     }))
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(880.0))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(16.0))
-                            .children(waterfall_lines.into_iter().flatten()),
-                    ),
+                    .children(prev_cards)
+                    .child(hero_card)
+                    .children(next_cards),
             )
         } else {
             None
