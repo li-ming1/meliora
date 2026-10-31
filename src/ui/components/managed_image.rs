@@ -761,7 +761,16 @@ impl ManagedImageKey {
                 resampled
             }
             (ImageCacheMode::Backdrop(None), _) => {
-                let enhanced = enhance_render_image(&decoded).unwrap_or_else(|| decoded.clone());
+                // 定长兜底路径与主路径同纪律：去噪+重采样是数十到百余 ms 级
+                // 同步 CPU，必须 spawn_blocking——内联会占住 RUNTIME 仅有的
+                // 2 个 async worker，拖慢 UI 线程 blocking_query 的排队
+                let enhanced = crate::RUNTIME
+                    .spawn_blocking({
+                        let decoded = decoded.clone();
+                        move || enhance_render_image(&decoded).unwrap_or_else(|| decoded.clone())
+                    })
+                    .await
+                    .unwrap_or_else(|_| decoded.clone());
                 // 旧路径观测点：与上面同目的。
                 let size = enhanced.size(0);
                 info!(
