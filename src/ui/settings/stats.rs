@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate};
 use cntp_i18n::tr;
 use gpui::{
-    App, AppContext, Bounds, Context, Div, Entity, InteractiveElement, IntoElement, ParentElement,
+    App, AppContext, Bounds, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     PathBuilder, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
     canvas, div, fill, point, px, relative, size,
 };
@@ -612,22 +612,26 @@ impl StatsSettings {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
+                    .gap(px(6.0))
                     .bg(theme.background_secondary)
                     .border_1()
-                    .border_color(theme.border_color)
+                    .border_color(theme.elevated_border_color)
                     .rounded(px(theme.radius_md))
+                    .shadow_sm()
+                    .hover(|s| s.bg(theme.elevated_background).border_color(theme.button_primary_border))
                     .px(px(14.0))
-                    .py(px(10.0))
+                    .py(px(12.0))
                     .child(
                         div()
                             .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary)
                             .child(label),
                     )
                     .child(
                         div()
-                            .text_size(px(17.0))
+                            .text_size(px(22.0))
+                            .font_weight(FontWeight::BOLD)
                             .text_color(theme.text)
                             .child(value),
                     )

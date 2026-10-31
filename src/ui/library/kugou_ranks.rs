@@ -18,7 +18,7 @@ use crate::{
     kugou,
     ui::{
         components::{
-            button::{ButtonIntent, button},
+            button::{ButtonIntent, ButtonStyle, button},
             scrollbar::floating_scrollbar,
         },
         kugou::{
@@ -391,9 +391,15 @@ impl KugouRanksView {
         label: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let active = self.tab == tab;
         button()
             .id(format!("kugou-rank-tab-{:?}", tab))
-            .intent(if self.tab == tab {
+            .style(if active {
+                ButtonStyle::Regular
+            } else {
+                ButtonStyle::Minimal
+            })
+            .intent(if active {
                 ButtonIntent::Primary
             } else {
                 ButtonIntent::Secondary
