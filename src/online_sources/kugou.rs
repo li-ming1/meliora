@@ -150,16 +150,15 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
 /// 从按专辑统计消失。`remember_online_track` 以最新条目置顶，同曲（同 mix_song_id）
 /// 旧条目在重登记发生**之前**取用、尚未被逐出，取到的就是原始注册的值；0 是端点
 /// 省略 id 的哨兵，不得按 id 匹配（会抓到别的歌的专辑），无旧条目时返回空串。
-fn carried_album(mix_song_id: i64) -> SharedString {
+fn previous_track_entry(mix_song_id: i64) -> Option<StreamMapEntry> {
     if mix_song_id == 0 {
-        return SharedString::default();
+        return None;
     }
     stream_map()
         .read_recovered()
         .iter()
         .find(|e| e.mix_song_id == mix_song_id)
-        .map(|e| SharedString::from(e.album.clone()))
-        .unwrap_or_default()
+        .cloned()
 }
 
 /// 若 `path` 是经本应用到达的流，返回为它记下的在线曲目。匹配先用嵌在 URL 里的
@@ -520,21 +519,37 @@ impl super::OnlineSourceProvider for KugouSource {
             .flatten()?;
 
         let (name, artist, duration, cover) = ctx.display.clone();
-        // 展示四元组没有 album：沿用注册表里原始注册的同曲条目的专辑，而不是落
-        // 空串覆盖它（A4，见 carried_album）。必须在 remember_online_track 之前取：
-        // 重登记会逐出同曲旧条目。
-        let album = carried_album(mix_song_id);
+        // 展示四元组缺失的字段沿用注册表里原始注册的同曲条目，而不是落空串/0
+        // 覆盖它们（A4 的 album 守卫 + 四轮审计 F3 把 title/artist/duration/cover
+        // 补齐：unwrap_or_default 的空串经 upsert_meta 会抹掉库里正确的艺人）。
+        // 必须在 remember_online_track 之前取：重登记会逐出同曲旧条目。
+        let previous = previous_track_entry(mix_song_id);
+        let album = previous
+            .as_ref()
+            .map(|e| SharedString::from(e.album.clone()))
+            .unwrap_or_default();
         remember_online_track(
             url.clone(),
             KugouTrackInfo {
-                title: name.unwrap_or_default().into(),
-                artist: artist.unwrap_or_default().into(),
+                title: name
+                    .or_else(|| previous.as_ref().map(|e| e.title.clone()))
+                    .unwrap_or_default()
+                    .into(),
+                artist: artist
+                    .or_else(|| previous.as_ref().map(|e| e.artist.clone()))
+                    .unwrap_or_default()
+                    .into(),
                 album,
-                duration: duration.unwrap_or(0),
+                duration: duration
+                    .or(previous.as_ref().map(|e| e.duration))
+                    .unwrap_or(0),
                 hash,
                 mix_song_id,
                 album_id,
-                cover_url: cover.unwrap_or_default().into(),
+                cover_url: cover
+                    .or_else(|| previous.as_ref().map(|e| e.cover_url.clone()))
+                    .unwrap_or_default()
+                    .into(),
             },
         );
         Some(url)
