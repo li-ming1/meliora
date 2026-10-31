@@ -66,8 +66,8 @@ fn find_art_file_for_path(path: &Path) -> Option<Arc<Path>> {
 /// 限制全部 `ManagedImage` 元素的并发封面解码数：每条已在途解码瞬态持有一份全尺寸 RGBA
 /// 缓冲（3000px 封面 ~36MB），而一次快速网格滚动可同时让数十个瓦片未命中渲染缓存。
 /// 与扫描器的封面解码上限同构——渲染缓存约束的是*驻留量*，本信号量约束的是*已在途量*。
-static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
-    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
+static DECODE_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
 
 /// 端到端串行化沉浸页背景重管线（全尺寸解码 → 裁剪带 → 重采样 → 锐化）。单条管线瞬态峰值
 /// ~105 MB 堆——仅 4096² RGBA 源就占 67 MB，其裁剪带再占 ~38 MB——而 `arm_backdrop`
@@ -105,21 +105,44 @@ fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<
     decode_rgba_to_render_image(dynamic_to_rgba_scaled(image, bound))
 }
 
+/// 在阻塞线程池上运行 `task`，持 [`DECODE_PERMITS`] 名额。permit 必须移入
+/// spawn_blocking 闭包内持有：async JoinHandle 被取消（等待侧 drop）时
+/// spawn_blocking 本体不可取消，名额跟着闭包走，「在途解码 ≤ DECODE_PERMITS」
+/// 的硬上限才不会被取消旁路——否则快速滚动封面墙时被取消的解码继续占用
+/// 阻塞池，上限名存实亡（上游 hummingbird 同名修复，回归测试
+/// `aborting_waiter_does_not_release_running_decode_permit` 钉住）。
+async fn run_blocking_with_permit<T, F>(
+    permits: std::sync::Arc<tokio::sync::Semaphore>,
+    task: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let permit = permits
+        .acquire_owned()
+        .await
+        .expect("semaphore is never closed");
+    crate::RUNTIME
+        .spawn_blocking(move || {
+            let _permit = permit;
+            task()
+        })
+        .await
+}
+
 /// 取得一个 [`DECODE_PERMITS`] 名额，在阻塞线程池上把 `data` 解码成 `bound` 封顶的
 /// `RenderImage`。所有字节缓冲解码路径（`HttpCover` / `HttpCoverLarge` / DB 封面）共用，
 /// 好让已在途上限与阻塞池交接只存在一处。`retrieve_uncached` 里基于路径的 `TrackFile`
-/// 分支直接获取同一个信号量，并且必须继续这样做。
+/// 分支经同一个信号量，并且必须继续这样做。
 async fn decode_bounded_with_permit(
     data: impl AsRef<[u8]> + Send + 'static,
     bound: u32,
 ) -> anyhow::Result<Option<Arc<RenderImage>>> {
-    let _permit = DECODE_PERMITS
-        .acquire()
-        .await
-        .expect("semaphore is never closed");
-    crate::RUNTIME
-        .spawn_blocking(move || decode_to_render_image_scaled(data.as_ref(), bound).map(Some))
-        .await?
+    run_blocking_with_permit(DECODE_PERMITS.clone(), move || {
+        decode_to_render_image_scaled(data.as_ref(), bound).map(Some)
+    })
+    .await?
 }
 
 /// 把已解码图像转成 RGBA，优先 steal-or-expand 而非 `to_rgba8` 的全尺寸拷贝：PNG 解码结果
@@ -781,13 +804,11 @@ impl ManagedImageKey {
                 let path = path.clone();
                 // 本分支是所有解码路径中最重的一条（开文件+格式探测+完整
                 // 解码），与字节缓冲路径同占 DECODE_PERMITS：快速滚动时
-                // 无许可的阻塞任务会把在线封面/背景解码挤出阻塞池。
-                let _permit = DECODE_PERMITS
-                    .acquire()
-                    .await
-                    .expect("semaphore is never closed");
-                crate::RUNTIME
-                    .spawn_blocking(move || -> anyhow::Result<Option<Arc<RenderImage>>> {
+                // 无许可的阻塞任务会把在线封面/背景解码挤出阻塞池。permit
+                // 在 `run_blocking_with_permit` 的闭包内持有（取消旁路防护）。
+                run_blocking_with_permit(
+                    DECODE_PERMITS.clone(),
+                    move || -> anyhow::Result<Option<Arc<RenderImage>>> {
                         let Some(mut stream) =
                             try_open_media(&path, MediaProviderFeatures::PROVIDES_METADATA)?
                         else {
@@ -813,8 +834,9 @@ impl ManagedImageKey {
                         Ok(Some(decode_rgba_to_render_image(dynamic_to_rgba_scaled(
                             dyn_image, thumb_size,
                         ))?))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             #[cfg(feature = "online_sources")]
             ManagedImageKey::HttpCover(url) => {
@@ -2051,5 +2073,43 @@ mod bench {
         bench_summarize_n("enhance_render_image 480 (fallback)", 2, 10, || {
             let _ = enhance_render_image(&source).unwrap();
         });
+    }
+
+    #[test]
+    fn aborting_waiter_does_not_release_running_decode_permit() {
+        // 回归用例（移植自上游 hummingbird）：等待侧的 JoinHandle 被 abort 后，
+        // 已在阻塞池里跑的任务必须继续持有名额——下一个申请者在首个任务完成
+        // 前不得进入。permit 绑在 async 帧上的旧形态会立刻归还名额，解码上限
+        // 被取消旁路。
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+
+        let first = crate::RUNTIME.spawn(run_blocking_with_permit(permits.clone(), move || {
+            first_started_tx.send(()).unwrap();
+            release_first_rx.recv().unwrap();
+        }));
+        first_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first blocking task did not start");
+        first.abort();
+
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        crate::RUNTIME.spawn(run_blocking_with_permit(permits, move || {
+            second_started_tx.send(()).unwrap();
+        }));
+
+        assert!(
+            second_started_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        release_first_tx.send(()).unwrap();
+        second_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second task did not start after the first decode finished");
     }
 }
