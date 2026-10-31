@@ -135,6 +135,8 @@ pub struct KugouPlaylistsView {
     /// 每次（重）加载曲目列表都自增；世代号不再匹配的在途分页响应会被丢弃，
     /// 于是快速关闭再打开同一歌单也不可能把同一陈旧页追加两次。
     track_generation: u64,
+    /// 歌单列表加载世代：账号代纪切换与重复刷新递增，旧响应落地时丢弃。
+    list_generation: u64,
     /// 本次会话内点过赞的曲目 hash（驱动星标图标）
     liked: HashSet<String>,
     /// 本次会话内用户显式取消赞的 hash。只在查看「我喜欢的」歌单
@@ -168,6 +170,7 @@ impl KugouPlaylistsView {
                 track_page: 0,
                 has_more_tracks: false,
                 track_generation: 0,
+                list_generation: 0,
                 liked: HashSet::new(),
                 unliked: HashSet::new(),
                 like_in_flight: HashSet::new(),
@@ -226,6 +229,7 @@ impl KugouPlaylistsView {
         self.import_input = None;
         self.import_busy = false;
         self.import_status = SharedString::default();
+        self.list_generation += 1;
         self.playlists = if logged_in {
             PlaylistsState::Loading
         } else {
@@ -268,6 +272,10 @@ impl KugouPlaylistsView {
 
     fn refresh_playlists(&mut self, cx: &mut Context<Self>) {
         self.playlists = PlaylistsState::Loading;
+        // 列表世代守卫：账号代纪切换会递增它，旧账号的在途响应落地时被丢弃
+        // ——否则后到者胜，视图可能换回旧账号的歌单概览（fd2e1f0 的残余竞态）
+        self.list_generation += 1;
+        let list_generation = self.list_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -278,6 +286,9 @@ impl KugouPlaylistsView {
 
             let _ = this
                 .update(cx, |this, cx| {
+                    if list_generation != this.list_generation {
+                        return;
+                    }
                     this.playlists = match request {
                         Ok(Ok(response)) => {
                             let playlists = parse_playlists(&response.body);

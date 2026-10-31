@@ -91,6 +91,10 @@ pub struct KugouRanksView {
     /// 每次（重）加载曲目列表都自增；世代号不再匹配的在途分页响应会被丢弃，
     /// 于是快速关闭再打开同一榜单也不可能把同一陈旧页追加两次。
     track_generation: u64,
+    /// 榜单列表加载世代：账号代纪切换与重复刷新递增，旧响应落地时丢弃。
+    ranks_generation: u64,
+    /// 每日推荐加载世代（登录键数据，守卫语义同上）。
+    recommend_generation: u64,
     recommend: RecommendState,
     /// 本次会话内点过赞的 hash（驱动星标图标）
     liked: HashSet<String>,
@@ -114,6 +118,8 @@ impl KugouRanksView {
                 track_page: 0,
                 has_more_tracks: false,
                 track_generation: 0,
+                ranks_generation: 0,
+                recommend_generation: 0,
                 recommend: RecommendState::Idle,
                 liked: HashSet::new(),
                 like_in_flight: HashSet::new(),
@@ -156,6 +162,8 @@ impl KugouRanksView {
         self.liked.clear();
         self.like_in_flight.clear();
         self.recommend = RecommendState::Idle;
+        self.ranks_generation += 1;
+        self.recommend_generation += 1;
         self.load_ranks(cx);
         cx.notify();
     }
@@ -169,6 +177,10 @@ impl KugouRanksView {
         }
 
         self.ranks = RanksState::Loading;
+        // 列表世代守卫：与歌单页同款（fd2e1f0 的残余竞态）。榜单本体虽是公共
+        // 内容，守卫仍统一——代纪切换时旧响应一律丢弃，语义不靠内容判断
+        self.ranks_generation += 1;
+        let ranks_generation = self.ranks_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -179,6 +191,9 @@ impl KugouRanksView {
 
             let _ = this
                 .update(cx, |this, cx| {
+                    if ranks_generation != this.ranks_generation {
+                        return;
+                    }
                     this.ranks = match request {
                         Ok(Ok(response)) => {
                             let ranks = parse_ranks(&response.body);
@@ -220,6 +235,9 @@ impl KugouRanksView {
         }
 
         self.recommend = RecommendState::Loading;
+        // 每日推荐是登录键数据：世代守卫同 load_ranks，换号后旧响应不得落地
+        self.recommend_generation += 1;
+        let recommend_generation = self.recommend_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -230,6 +248,9 @@ impl KugouRanksView {
 
             let _ = this
                 .update(cx, |this, cx| {
+                    if recommend_generation != this.recommend_generation {
+                        return;
+                    }
                     this.recommend = match request {
                         Ok(Ok(response)) => {
                             let tracks = parse_recommend_tracks(&response.body);
