@@ -148,6 +148,9 @@ pub enum JumpResult {
 /// 发事件这类副作用——那些归 PlaybackThread。
 pub struct QueueManager {
     playback_settings: PlaybackSettings,
+    /// 会话保存时的播放状态：被动重启（MELIORA_RESTART_HANDOFF 交接）的替换
+    /// 进程据此续播。由线程在 play/pause/open 成功/stop 四个翻转点同步进来。
+    session_playing: bool,
     /// 当前队列，与 UI 线程共享用于展示。内层 `Arc` 让会话快照与 undo 快照
     /// 只是计数抓取：变更走 `Arc::make_mut`，因此只有快照确实还活着时才复制
     /// （写时复制）。
@@ -335,6 +338,7 @@ impl QueueManager {
             queue_next: queue_position.map_or(0, |position| position + 1),
             storage_tx,
             undo_stack: VecDeque::with_capacity(UNDO_STACK_CAPACITY),
+            session_playing: false,
             session_dirty: false,
             state_dirty: false,
             last_session_send: None,
@@ -466,6 +470,17 @@ impl QueueManager {
     /// 直接设置队列位置（打开曲目之后使用）。
     pub fn set_position(&mut self, index: usize) {
         self.queue_next = index + 1;
+        self.persist_session_state();
+    }
+
+    /// 记录播放状态进会话快照并触发持久化：被动重启（MELIORA_RESTART_HANDOFF
+    /// 交接）的替换进程读会话里的 `playing` 续播。线程在 play/pause/open 成功/
+    /// stop 四个翻转点调用。
+    pub fn set_session_playing(&mut self, playing: bool) {
+        if self.session_playing == playing {
+            return;
+        }
+        self.session_playing = playing;
         self.persist_session_state();
     }
 

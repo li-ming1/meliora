@@ -865,6 +865,12 @@ pub fn run() -> anyhow::Result<()> {
         );
         cx.set_global(stats_handle);
 
+        // 被动重启（硬阀门/更新重启的 MELIORA_RESTART_HANDOFF 交接）且会话
+        // 保存时正在播放：恢复分支续播而不是暂停——阀门强杀不该顺带把歌停了。
+        // 主动退出再打开维持暂停不变。须在 playback_session 被 move 前读出。
+        let resume_playback =
+            std::env::var_os(crate::RESTART_HANDOFF_ENV).is_some() && playback_session.playing;
+
         let mut playback_interface: PlaybackInterface = PlaybackThread::start(
             queue.clone(),
             playback_settings,
@@ -880,7 +886,9 @@ pub fn run() -> anyhow::Result<()> {
             && let Some(pos) = initial_position
         {
             playback_interface.jump(pos);
-            playback_interface.pause();
+            if !resume_playback {
+                playback_interface.pause();
+            }
         }
         cx.set_global(playback_interface);
         startup_step!("playback started");

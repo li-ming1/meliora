@@ -15,6 +15,11 @@ pub struct PlaybackSessionData {
     pub queue_position: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatState,
+    /// 保存时是否正在播放。被动重启（硬阀门/更新重启的
+    /// MELIORA_RESTART_HANDOFF 交接）的替换进程据此续播；主动退出再打开
+    /// 仍是暂停（app.rs 启动恢复分支）。旧会话文件缺该字段 → false。
+    #[serde(default)]
+    pub playing: bool,
 }
 
 impl Default for PlaybackSessionData {
@@ -25,6 +30,7 @@ impl Default for PlaybackSessionData {
             queue_position: None,
             shuffle: false,
             repeat: RepeatState::NotRepeating,
+            playing: false,
         }
     }
 }
@@ -179,6 +185,7 @@ mod tests {
             queue_position: Some(3),
             shuffle: true,
             repeat: RepeatState::RepeatingOne,
+            playing: true,
         };
 
         fs::write(&path, serde_json::to_vec(&expected).unwrap()).unwrap();

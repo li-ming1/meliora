@@ -52,7 +52,7 @@ const VERSION_STRING: &str = env!("MELIORA_VERSION_STRING");
 /// （gpui 给 quit handler 最多 200ms，外加析构函数），否则子进程会看到单实例互斥量
 /// 仍被占用、激活那个垂死的窗口然后退出——即"重启以应用"反而把应用关掉。带此标记
 /// 时，子进程会等待旧实例释放互斥量。
-const RESTART_HANDOFF_ENV: &str = "MELIORA_RESTART_HANDOFF";
+pub(crate) const RESTART_HANDOFF_ENV: &str = "MELIORA_RESTART_HANDOFF";
 
 // 测试期统计分配次数：播放管线的分配行为测试需要它
 #[cfg(test)]

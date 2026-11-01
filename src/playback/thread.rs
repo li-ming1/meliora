@@ -382,6 +382,7 @@ impl PlaybackThread {
             }
 
             self.send_event(PlaybackEvent::StateChanged(PlaybackState::Paused));
+            self.queue.set_session_playing(false);
         }
     }
 
@@ -400,6 +401,7 @@ impl PlaybackThread {
             }
 
             self.send_event(PlaybackEvent::StateChanged(PlaybackState::Playing));
+            self.queue.set_session_playing(true);
             return;
         }
 
@@ -659,6 +661,7 @@ impl PlaybackThread {
         self.update_ts(true);
 
         self.send_event(PlaybackEvent::StateChanged(PlaybackState::Playing));
+        self.queue.set_session_playing(true);
 
         Ok(())
     }
@@ -1328,6 +1331,7 @@ impl PlaybackThread {
         self.duration_ms = None;
 
         self.send_event(PlaybackEvent::StateChanged(PlaybackState::Stopped));
+        self.queue.set_session_playing(false);
     }
 
     fn consume_current_track(&mut self) {

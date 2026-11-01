@@ -53,11 +53,13 @@ impl QueueManager {
         let queue_position = self.current_position();
         let shuffle = self.shuffle;
         let repeat = self.repeat;
+        let playing = self.session_playing;
 
         self.storage_tx.send_modify(|session| {
             session.queue_position = queue_position;
             session.shuffle = shuffle;
             session.repeat = repeat;
+            session.playing = playing;
         });
 
         self.state_dirty = false;
@@ -115,6 +117,7 @@ impl QueueManager {
         let original_queue = self.original_queue.clone();
         let shuffle = self.shuffle;
         let repeat = self.repeat;
+        let playing = self.session_playing;
 
         self.storage_tx.send_modify(move |session| {
             session.queue = queue_snapshot;
@@ -122,6 +125,7 @@ impl QueueManager {
             session.queue_position = queue_position;
             session.shuffle = shuffle;
             session.repeat = repeat;
+            session.playing = playing;
         });
 
         self.session_dirty = false;

@@ -1,13 +1,17 @@
+#[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cntp_i18n::tr;
 use gpui::{Action, App, AppContext, Menu, MenuItem, SharedString, actions};
-use tracing::{debug, error, info, warn};
+#[cfg(debug_assertions)]
+use tracing::error;
+use tracing::{debug, info, warn};
 
+#[cfg(debug_assertions)]
+use crate::toasts::{Toast, emit_toast};
 use crate::{
     library::{db, scan::ScanInterface},
     playback::{interface::PlaybackInterface, queue::QueueItemData, thread::PlaybackState},
-    toasts::{Toast, emit_toast},
     ui::{
         app::Pool,
         settings::{SettingsSectionKind, open_settings_window, open_settings_window_with_section},
