@@ -97,7 +97,7 @@
   },
   "ACTION_CLOSE_DETAIL_VIEW": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:730",
+    "definedIn": "src/ui/library.rs:734",
     "plural": false,
     "description": null
   },
@@ -121,13 +121,13 @@
   },
   "ACTION_GO_BACK": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:710",
+    "definedIn": "src/ui/library.rs:714",
     "plural": false,
     "description": null
   },
   "ACTION_GO_FORWARD": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:720",
+    "definedIn": "src/ui/library.rs:724",
     "plural": false,
     "description": null
   },
@@ -169,7 +169,7 @@
   },
   "ACTION_IMPORT_PLAYLIST": {
     "context": "library.rs",
-    "definedIn": "src/ui/library.rs:700",
+    "definedIn": "src/ui/library.rs:704",
     "plural": false,
     "description": null
   },
@@ -1861,19 +1861,19 @@
   },
   "SCAN_FAILED_FILES": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:98",
+    "definedIn": "src/library/scan/execution.rs:99",
     "plural": false,
     "description": null
   },
   "SCAN_FAILED_TRANSACTION": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:104",
+    "definedIn": "src/library/scan/execution.rs:105",
     "plural": false,
     "description": null
   },
   "SCAN_FAILED_WORKER": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:92",
+    "definedIn": "src/library/scan/execution.rs:93",
     "plural": false,
     "description": null
   },
@@ -2323,7 +2323,7 @@
   },
   "TRAY_HIDE": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:581",
+    "definedIn": "src/tray/windows.rs:587",
     "plural": false,
     "description": null
   },
@@ -2359,7 +2359,7 @@
   },
   "TRAY_SHOW": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:583",
+    "definedIn": "src/tray/windows.rs:589",
     "plural": false,
     "description": null
   },

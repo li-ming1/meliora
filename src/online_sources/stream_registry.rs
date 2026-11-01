@@ -126,3 +126,110 @@ mod persist_guard_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod persist_tests {
+    //! 持久化去重与回滚守卫（十五轮测试缺口矩阵中危档）：
+    //! - persist_if_changed 去重语义：相同跳写、变化放行、基线始终最近一次
+    //! - spawn_persist 写失败回滚基线：相同快照是重试而非静默跳过；
+    //!   不匹配的失败不得覆盖更新的写者
+    use super::*;
+    use crate::test_support::TestDir;
+    use std::time::Duration;
+
+    #[test]
+    fn persist_if_changed_dedupes_and_admits_changes() {
+        let guard = StreamMapPersistence::new();
+        // 首次放行
+        assert_eq!(
+            guard.persist_if_changed(b"v1".to_vec()).as_deref(),
+            Some(b"v1".as_slice())
+        );
+        // 重复跳过
+        assert_eq!(guard.persist_if_changed(b"v1".to_vec()), None);
+        // 变化放行
+        assert_eq!(
+            guard.persist_if_changed(b"v2".to_vec()).as_deref(),
+            Some(b"v2".as_slice())
+        );
+        // 基线是最近一次（v2），不是历史去重——回到 v1 也是变化
+        assert_eq!(
+            guard.persist_if_changed(b"v1".to_vec()).as_deref(),
+            Some(b"v1".as_slice())
+        );
+    }
+
+    #[test]
+    fn rollback_admits_retry_only_when_bytes_match() {
+        let guard = StreamMapPersistence::new();
+        guard.persist_if_changed(b"v1".to_vec());
+
+        // 模拟写失败 + 回滚（spawn_persist 失败分支的 last.take()），
+        // 基线仍是 v1 → 清除 → 重试放行
+        {
+            let mut last = guard.last.lock_recovered();
+            if last.as_deref() == Some(b"v1".as_slice()) {
+                last.take();
+            }
+        }
+        assert_eq!(
+            guard.persist_if_changed(b"v1".to_vec()).as_deref(),
+            Some(b"v1".as_slice()),
+            "回滚后重试必须放行"
+        );
+
+        // 基线 = v2；模拟 v1 的失败回滚尝试（不匹配 → 不覆盖）
+        guard.persist_if_changed(b"v2".to_vec());
+        {
+            let mut last = guard.last.lock_recovered();
+            if last.as_deref() == Some(b"v1".as_slice()) {
+                last.take();
+            }
+        }
+        assert_eq!(
+            guard.persist_if_changed(b"v2".to_vec()),
+            None,
+            "v2 基线不受 v1 失败影响"
+        );
+    }
+
+    #[test]
+    fn spawn_persist_failure_rolls_back_for_retry() {
+        // 端到端：好路径建立基线，坏路径写失败 → 基线回滚 → 相同快照重试放行
+        let guard: &'static StreamMapPersistence = Box::leak(Box::new(StreamMapPersistence::new()));
+        let dir = TestDir::new("stream-persist-rollback");
+
+        // 建基线 v1 并成功写盘
+        assert_eq!(
+            guard.persist_if_changed(b"v1".to_vec()).as_deref(),
+            Some(b"v1".as_slice())
+        );
+        let good = dir.join("good.json");
+        crate::RUNTIME.block_on(async {
+            guard.spawn_persist(good.clone(), b"v1".to_vec(), |_| {});
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+        assert!(good.exists(), "好路径应成功写盘");
+        assert_eq!(guard.persist_if_changed(b"v1".to_vec()), None);
+
+        // 坏路径发 v2（放行，基线变 v2）→ 写失败 → 基线回滚 → v2 重试放行
+        let bad = dir.join("no-such-dir/bad.json");
+        assert_eq!(
+            guard.persist_if_changed(b"v2".to_vec()).as_deref(),
+            Some(b"v2".as_slice())
+        );
+        crate::RUNTIME.block_on(async {
+            let g = guard;
+            let b = bad.clone();
+            let j = b"v2".to_vec();
+            guard.spawn_persist(b, j, |_| {});
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            drop(g);
+        });
+        assert_eq!(
+            guard.persist_if_changed(b"v2".to_vec()).as_deref(),
+            Some(b"v2".as_slice()),
+            "写失败后基线回滚，重试放行"
+        );
+    }
+}
