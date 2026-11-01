@@ -1682,12 +1682,17 @@ impl Render for ImmersiveView {
                 .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
                 .map_or(0, |l| l.time_ms);
 
-            let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 5 {
-                0 => (-35.0f32, -18.0f32),
-                1 => (40.0f32, 16.0f32),
-                2 => (-10.0f32, -10.0f32),
-                3 => (28.0f32, -22.0f32),
-                _ => (-45.0f32, 12.0f32),
+            // 随机版式选择（0: 巨幕横排流光，1: 优雅心象竖排，2: 错落云阶错位排版）
+            let layout_mode = (active_seed / 2000) % 3;
+
+            // 根据当前版式和乐句种子计算自由跳跃空间 (Dynamic Spatial Hop)
+            let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 6 {
+                0 => (-80.0f32, -35.0f32),
+                1 => (90.0f32, 25.0f32),
+                2 => (-30.0f32, -20.0f32),
+                3 => (60.0f32, -40.0f32),
+                4 => (-65.0f32, 30.0f32),
+                _ => (20.0f32, 10.0f32),
             };
 
             let kinetic_lyric_elements: Vec<AnyElement> = if let Some(parsed) = &self.parsed {
@@ -1771,14 +1776,66 @@ impl Render for ImmersiveView {
                         );
                     }
 
-                    // 巨幕主歌词容器（56px 磅礴典雅主字号，丝滑排版）
+                    // 巨幕主歌词容器：支持多版式演变（横排巨幕 / 心象竖排 / 云阶梯级错位）
+                    let hero_lyrics_container = match layout_mode {
+                        // 版式 1：心象竖排（Vertical Japanese/Poetic Calligraphy）
+                        1 => div()
+                            .id("stage-kinetic-hero-vertical")
+                            .flex()
+                            .flex_row_reverse()
+                            .items_start()
+                            .gap(px(24.0))
+                            .py(px(10.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(10.0))
+                                    .text_size(px(60.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .line_height(relative(1.15))
+                                    .children(words_elements),
+                            ),
+                        // 版式 2：云阶错落（Staircase Floating Layout）
+                        2 => div()
+                            .id("stage-kinetic-hero-staircase")
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.0))
+                            .text_size(px(54.0))
+                            .font_weight(FontWeight::BOLD)
+                            .line_height(relative(1.20))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_baseline()
+                                    .gap(px(8.0))
+                                    .children(words_elements),
+                            ),
+                        // 版式 0：经典磅礴横排（Fluid Horizontal Stream）
+                        _ => div()
+                            .id("stage-kinetic-hero-horizontal")
+                            .w_full()
+                            .text_size(px(58.0))
+                            .line_height(relative(1.22))
+                            .font_weight(FontWeight::BOLD)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .justify_start()
+                                    .items_baseline()
+                                    .gap(px(4.0))
+                                    .children(words_elements),
+                            ),
+                    };
+
                     elements.push(
                         div()
                             .id("stage-kinetic-hero-line")
                             .w_full()
-                            .text_size(px(56.0))
-                            .line_height(relative(1.22))
-                            .font_weight(FontWeight::BOLD)
                             .cursor_pointer()
                             .on_click(move |_, _, cx| {
                                 let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
@@ -1787,15 +1844,7 @@ impl Render for ImmersiveView {
                                         .seek(line_time_ms as f64 / 1000.0);
                                 }
                             })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .justify_start()
-                                    .items_baseline()
-                                    .gap(px(3.0))
-                                    .children(words_elements),
-                            )
+                            .child(hero_lyrics_container)
                             .into_any_element(),
                     );
 
@@ -1836,7 +1885,7 @@ impl Render for ImmersiveView {
                 Vec::new()
             };
 
-            // 电影级多重空间与星轨极光几何罗盘装饰层
+            // 电影级多重空间几何罗盘、悬浮微粒与星轨极光装饰层
             let compass_canvas = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, _cx| {
@@ -1845,8 +1894,84 @@ impl Render for ImmersiveView {
                     let center_x = w * 0.38;
                     let center_y = h * 0.50;
 
-                    // 1. 动态极光流光弧 (Fluid Aurora Ribbons)
-                    let phase = (position_ms as f32 / 1000.0) * 0.4;
+                    let t_sec = position_ms as f32 / 1000.0;
+
+                    // 1. 悬浮几何多边形与旋转虚线框 (Floating Polygons & Geometric Shards)
+                    // 完美还原 Folia 心象/云阶经典深空悬浮图形元素
+                    for (i, (base_x, base_y, r, sides, rot_speed, col)) in [
+                        (w * 0.16, h * 0.28, 48.0f32, 4, 0.08f32, Rgba::new(0.35, 0.55, 0.90, 0.065)),
+                        (w * 0.54, h * 0.22, 58.0f32, 3, -0.06f32, Rgba::new(0.40, 0.60, 0.95, 0.075)),
+                        (w * 0.12, h * 0.72, 62.0f32, 4, 0.05f32, Rgba::new(0.50, 0.65, 0.98, 0.070)),
+                        (w * 0.46, h * 0.68, 72.0f32, 4, -0.04f32, Rgba::new(0.30, 0.50, 0.85, 0.060)),
+                        (w * 0.62, h * 0.52, 40.0f32, 3, 0.07f32, Rgba::new(0.45, 0.65, 1.0, 0.055)),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        // 柔和浮游呼吸
+                        let float_x = base_x + (t_sec * 0.5 + i as f32 * 2.1).sin() * 14.0;
+                        let float_y = base_y + (t_sec * 0.4 + i as f32 * 1.7).cos() * 12.0;
+                        let rot = t_sec * rot_speed;
+
+                        // 填充半透明色块
+                        let mut poly_fill = PathBuilder::fill();
+                        for step in 0..*sides {
+                            let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
+                            let pt = point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
+                            if step == 0 {
+                                poly_fill.move_to(pt);
+                            } else {
+                                poly_fill.line_to(pt);
+                            }
+                        }
+                        if let Ok(p) = poly_fill.build() {
+                            window.paint_path(p, *col);
+                        }
+
+                        // 轮廓描边
+                        let mut poly_stroke = PathBuilder::stroke(px(1.0));
+                        for step in 0..=*sides {
+                            let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
+                            let pt = point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
+                            if step == 0 {
+                                poly_stroke.move_to(pt);
+                            } else {
+                                poly_stroke.line_to(pt);
+                            }
+                        }
+                        let stroke_col = Rgba {
+                            alpha: (col.alpha * 1.8).min(1.0),
+                            ..*col
+                        };
+                        if let Ok(p) = poly_stroke.build() {
+                            window.paint_path(p, stroke_col);
+                        }
+                    }
+
+                    // 2. 空间律动十字十字星与悬浮方块微粒 (Cross Shards & Ambient Dust)
+                    for (i, (rel_x, rel_y, sz)) in [
+                        (0.24, 0.44, 16.0f32),
+                        (0.48, 0.32, 12.0f32),
+                        (0.28, 0.78, 20.0f32),
+                        (0.58, 0.82, 14.0f32),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let cross_x = w * rel_x + (t_sec * 0.3 + i as f32).cos() * 8.0;
+                        let cross_y = h * rel_y + (t_sec * 0.3 + i as f32).sin() * 8.0;
+                        let mut cross = PathBuilder::stroke(px(sz * 0.28));
+                        cross.move_to(point(px(cross_x - sz * 0.5), px(cross_y)));
+                        cross.line_to(point(px(cross_x + sz * 0.5), px(cross_y)));
+                        cross.move_to(point(px(cross_x), px(cross_y - sz * 0.5)));
+                        cross.line_to(point(px(cross_x), px(cross_y + sz * 0.5)));
+                        if let Ok(p) = cross.build() {
+                            window.paint_path(p, Rgba::new(0.35, 0.50, 0.85, 0.08));
+                        }
+                    }
+
+                    // 3. 动态极光流光弧 (Fluid Aurora Ribbons)
+                    let phase = t_sec * 0.4;
                     for (ribbon_idx, (y_off, amp, freq, col)) in [
                         (-60.0f32, 45.0f32, 0.0035f32, Rgba::new(0.35, 0.50, 0.95, 0.065)),
                         (40.0f32, 55.0f32, 0.0028f32, Rgba::new(0.85, 0.40, 0.70, 0.055)),
@@ -1874,7 +1999,7 @@ impl Render for ImmersiveView {
                         }
                     }
 
-                    // 2. 细腻同心星轨圆 (Concentric Celestial Circles)
+                    // 4. 细腻同心星轨圆 (Concentric Celestial Circles)
                     let compass_color = Rgba::new(1.0, 1.0, 1.0, 0.045);
                     for r in [160.0f32, 280.0f32, 420.0f32] {
                         let mut circle = PathBuilder::stroke(px(1.0));
@@ -1892,7 +2017,7 @@ impl Render for ImmersiveView {
                         }
                     }
 
-                    // 3. 极轴十字刻度线与角度微标
+                    // 5. 极轴十字刻度线与坐标尺微标
                     let mut axes = PathBuilder::stroke(px(1.0));
                     axes.move_to(point(px(center_x - 480.0), px(center_y)));
                     axes.line_to(point(px(center_x + 480.0), px(center_y)));
@@ -1902,12 +2027,12 @@ impl Render for ImmersiveView {
                         window.paint_path(path, compass_color);
                     }
 
-                    // 4. 象限四角星芒微粒 (Cross Stars)
+                    // 6. 象限四角星芒与星辉 (Cross Stars)
                     for (sx, sy, star_color) in [
-                        (center_x + 280.0, center_y - 180.0, Rgba::new(1.0, 0.88, 0.65, 0.22)),
-                        (center_x - 320.0, center_y + 190.0, Rgba::new(0.65, 0.85, 1.0, 0.20)),
-                        (center_x + 380.0, center_y + 240.0, Rgba::new(1.0, 0.65, 0.85, 0.18)),
-                        (center_x - 240.0, center_y - 220.0, Rgba::new(0.85, 1.0, 0.85, 0.18)),
+                        (center_x + 280.0, center_y - 180.0, Rgba::new(1.0, 0.88, 0.65, 0.26)),
+                        (center_x - 320.0, center_y + 190.0, Rgba::new(0.65, 0.85, 1.0, 0.24)),
+                        (center_x + 380.0, center_y + 240.0, Rgba::new(1.0, 0.65, 0.85, 0.20)),
+                        (center_x - 240.0, center_y - 220.0, Rgba::new(0.85, 1.0, 0.85, 0.20)),
                     ] {
                         let mut star = PathBuilder::stroke(px(1.2));
                         star.move_to(point(px(sx - 8.0), px(sy)));
