@@ -426,6 +426,51 @@ impl KugouClient {
             .any(|item| item.get("is_vip").and_then(Value::as_i64) == Some(1))
     }
 
+    /// 组装请求的查询参数集：默认参数注入（可选清除）、spec.query 覆盖、need_key
+    /// 签名键。独立成纯函数以便单测——build_signed 的核心风险是参数序与内容错
+    /// （任一算错 = 全部在线请求 403，十五轮测试缺口矩阵的高危第 1 项）。
+    /// BTreeMap 保证键序稳定（签名计算依赖遍历序）。
+    fn assemble_params(
+        clear_default_params: bool,
+        dfid: &str,
+        mid: &str,
+        token: Option<&str>,
+        userid: Option<i64>,
+        clienttime: u64,
+        query: &BTreeMap<String, String>,
+        need_key: bool,
+    ) -> BTreeMap<String, String> {
+        let mut params = BTreeMap::new();
+        if !clear_default_params {
+            params.insert("dfid".to_string(), dfid.to_string());
+            params.insert("mid".to_string(), mid.to_string());
+            params.insert("uuid".to_string(), "-".to_string());
+            params.insert("appid".to_string(), APPID.to_string());
+            params.insert("clientver".to_string(), CLIENTVER.to_string());
+            params.insert("clienttime".to_string(), clienttime.to_string());
+            if let Some(token) = token {
+                params.insert("token".to_string(), token.to_string());
+            }
+            if let Some(userid) = userid.filter(|id| *id != 0) {
+                params.insert("userid".to_string(), userid.to_string());
+            }
+        }
+        for (key, value) in query {
+            params.insert(key.clone(), value.clone());
+        }
+        if need_key {
+            let userid = params.get("userid").cloned().unwrap_or_else(|| "0".into());
+            let key = sign::sign_key(
+                params.get("hash").map(|s| s.as_str()).unwrap_or(""),
+                params.get("mid").map(|s| s.as_str()).unwrap_or(""),
+                &userid,
+                params.get("appid").map(|s| s.as_str()).unwrap_or("3116"),
+            );
+            params.insert("key".to_string(), key);
+        }
+        params
+    }
+
     /// 为 `spec` 构造签名请求。`body` 是调用方精确序列化一次的请求体：在这里签名，随后
     /// 移进出站的请求。全程按引用持会话锁：本函数从不 await，守卫不可能在一个 poll 点
     /// 之间被挂起。
@@ -442,7 +487,6 @@ impl KugouClient {
         };
         let clienttime = unix_now_secs();
 
-        let mut params = BTreeMap::new();
         // 概念版客户端在请求期从（通常随机的）dfid 推导 mid，而不是用固定的设备 mid。
         // 只有随机 dfid 那条路会重算：会话的 dfid 在进程内固定，所以它的 mid 缓存在会话上
         // （由 `new`/`generate` 刷新）。
@@ -451,34 +495,16 @@ impl KugouClient {
         } else {
             session.mid.clone()
         };
-        if !spec.clear_default_params {
-            params.insert("dfid".to_string(), dfid.clone());
-            params.insert("mid".to_string(), mid.clone());
-            params.insert("uuid".to_string(), "-".to_string());
-            params.insert("appid".to_string(), APPID.to_string());
-            params.insert("clientver".to_string(), CLIENTVER.to_string());
-            params.insert("clienttime".to_string(), clienttime.to_string());
-            if let Some(token) = &session.token {
-                params.insert("token".to_string(), token.clone());
-            }
-            if let Some(userid) = session.userid.filter(|id| *id != 0) {
-                params.insert("userid".to_string(), userid.to_string());
-            }
-        }
-        for (key, value) in &spec.query {
-            params.insert(key.clone(), value.clone());
-        }
-
-        if spec.need_key {
-            let userid = params.get("userid").cloned().unwrap_or_else(|| "0".into());
-            let key = sign::sign_key(
-                params.get("hash").map(|s| s.as_str()).unwrap_or(""),
-                params.get("mid").map(|s| s.as_str()).unwrap_or(""),
-                &userid,
-                params.get("appid").map(|s| s.as_str()).unwrap_or("3116"),
-            );
-            params.insert("key".to_string(), key);
-        }
+        let mut params = Self::assemble_params(
+            spec.clear_default_params,
+            &dfid,
+            &mid,
+            session.token.as_deref(),
+            session.userid,
+            clienttime,
+            &spec.query,
+            spec.need_key,
+        );
 
         let signature = match spec.encrypt {
             Encrypt::Android => sign::signature_android(&params, &body),
@@ -727,4 +753,79 @@ mod tests {
         let client = KugouClient::new(dir.path());
         assert!(!client.has_active_vip());
     }
+}
+
+#[test]
+fn assemble_params_injects_defaults_and_respects_clear() {
+    use serde_json::json;
+    // 默认注入：dfid/mid/uuid/appid/clientver/clientver/token/userid 全在
+    let p = KugouClient::assemble_params(
+        false,
+        "test-dfid",
+        "test-mid",
+        Some("tok"),
+        Some(42),
+        1700000000,
+        &BTreeMap::new(),
+        false,
+    );
+    assert_eq!(p.get("dfid").map(String::as_str), Some("test-dfid"));
+    assert_eq!(p.get("mid").map(String::as_str), Some("test-mid"));
+    assert_eq!(p.get("uuid").map(String::as_str), Some("-"));
+    assert_eq!(p.get("token").map(String::as_str), Some("tok"));
+    assert_eq!(p.get("userid").map(String::as_str), Some("42"));
+    assert_eq!(p.get("clienttime").map(String::as_str), Some("1700000000"));
+    assert!(p.contains_key("appid"));
+    assert!(p.contains_key("clientver"));
+    assert!(!p.contains_key("key"), "need_key=false 不得有签名键");
+
+    // clear_default_params=true：全部默认参数消失，只剩 spec.query
+    let query = BTreeMap::from([("hash".to_string(), "abc".to_string())]);
+    let p = KugouClient::assemble_params(true, "dfid", "mid", None, None, 0, &query, false);
+    assert!(!p.contains_key("dfid"));
+    assert!(!p.contains_key("mid"));
+    assert!(!p.contains_key("token"));
+    assert_eq!(p.get("hash").map(String::as_str), Some("abc"));
+}
+
+#[test]
+fn assemble_params_excludes_userid_zero_and_includes_nonzero() {
+    // userid=0 是端点省略 id 的哨兵——不得出现在参数里
+    let p =
+        KugouClient::assemble_params(false, "d", "m", None, Some(0), 0, &BTreeMap::new(), false);
+    assert!(!p.contains_key("userid"));
+    // 非 0 正常注入
+    let p =
+        KugouClient::assemble_params(false, "d", "m", None, Some(42), 0, &BTreeMap::new(), false);
+    assert_eq!(p.get("userid").map(String::as_str), Some("42"));
+}
+
+#[test]
+fn assemble_params_query_overrides_defaults() {
+    // spec.query 的同名键覆盖默认值（mid 被覆盖为 custom-mid）
+    let query = BTreeMap::from([("mid".to_string(), "custom-mid".to_string())]);
+    let p = KugouClient::assemble_params(false, "d", "default-mid", None, None, 0, &query, false);
+    assert_eq!(p.get("mid").map(String::as_str), Some("custom-mid"));
+}
+
+#[test]
+fn assemble_params_need_key_adds_signature() {
+    use serde_json::json;
+    // need_key=true：加了非空 key 且 key 来自 sign_key
+    let query = BTreeMap::from([
+        ("hash".to_string(), "testhash".to_string()),
+        ("appid".to_string(), "1005".to_string()),
+    ]);
+    let p = KugouClient::assemble_params(false, "d", "m", None, Some(42), 0, &query, true);
+    let key = p
+        .get("key")
+        .unwrap_or_else(|| panic!("need_key 必须有 key"));
+    assert!(!key.is_empty());
+    // key 可复现：同输入同输出
+    let p2 = KugouClient::assemble_params(false, "d", "m", None, Some(42), 0, &query, true);
+    assert_eq!(p.get("key"), p2.get("key"), "同输入签名必须一致");
+    // 缺 hash 时 key 仍生成（空 hash 传给 sign_key）
+    let p =
+        KugouClient::assemble_params(false, "d", "m", None, Some(42), 0, &BTreeMap::new(), true);
+    assert!(p.contains_key("key"));
 }

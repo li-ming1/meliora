@@ -224,7 +224,6 @@ mod persist_tests {
             let j = b"v2".to_vec();
             guard.spawn_persist(b, j, |_| {});
             tokio::time::sleep(Duration::from_millis(500)).await;
-            drop(g);
         });
         assert_eq!(
             guard.persist_if_changed(b"v2".to_vec()).as_deref(),
