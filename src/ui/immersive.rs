@@ -990,117 +990,133 @@ impl ImmersiveView {
             .map(|l| l.text.clone())
             .unwrap_or_default();
 
-        let cards: Vec<AnyElement> = item_infos
-            .into_iter()
-            .map(|(idx, is_playing_track, title, artist, cover_key)| {
+        // 5 列流式瀑布流分流：每一列纵向紧密咬合，上下左右绝无任何窟窿空隙
+        const NUM_COLS: usize = 5;
+        let mut column_cards: [Vec<AnyElement>; NUM_COLS] = Default::default();
 
-                // 不规则海报尺寸 (Bento Masonry Proportions: 对齐 647000305-...png)
-                let (w, h) = if is_playing_track {
-                    (px(320.0), px(340.0))
+        for (i, (idx, is_playing_track, title, artist, cover_key)) in item_infos.into_iter().enumerate() {
+            let col_idx = i % NUM_COLS;
+
+            // 宽度统一为 230px，高度不规则错落交替 (180px, 240px, 290px, 210px, 320px)
+            let h = if is_playing_track {
+                px(320.0) // 正在播放的高光大海报
+            } else {
+                match (idx + col_idx) % 4 {
+                    0 => px(230.0),
+                    1 => px(290.0),
+                    2 => px(180.0),
+                    _ => px(250.0),
+                }
+            };
+
+            let card = div()
+                .id(("poster_tile", idx))
+                .w(px(230.0))
+                .h(h)
+                .rounded(px(16.0))
+                .shadow_lg()
+                .border_1()
+                .border_color(if is_playing_track {
+                    theme.button_primary_border
                 } else {
-                    match (idx + 1) % 5 {
-                        0 => (px(230.0), px(230.0)),
-                        1 => (px(170.0), px(240.0)),
-                        2 => (px(240.0), px(170.0)),
-                        3 => (px(160.0), px(160.0)),
-                        _ => (px(190.0), px(220.0)),
-                    }
-                };
-
-                let card = div()
-                    .id(("poster_tile", idx))
-                    .w(w)
-                    .h(h)
-                    .rounded(px(16.0))
-                    .shadow_lg()
-                    .border_1()
-                    .border_color(if is_playing_track {
-                        theme.button_primary_border
-                    } else {
-                        Rgba::new(1.0, 1.0, 1.0, 0.12)
-                    })
-                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
-                    .overflow_hidden()
-                    .relative()
-                    .cursor_pointer()
-                    .hover(|s| s.border_color(theme.button_primary))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.global::<PlaybackInterface>().jump(idx);
-                        this.stage_mode = ImmersiveStageMode::KineticLyrics;
-                        cx.notify();
-                    }))
-                    .child(
-                        managed_image(("poster_img", idx), cover_key)
-                            .thumb_max(512)
-                            .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .pt(px(24.0))
-                            .pb(px(10.0))
-                            .px(px(12.0))
-                            .bg(linear_gradient(
-                                0.0,
-                                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.88), 0.0),
-                                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
-                            ))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .when(is_playing_track, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(6.0))
-                                        .child(
-                                            div()
-                                                .size(px(6.0))
-                                                .rounded_full()
-                                                .bg(theme.button_primary),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(10.0))
-                                                .font_weight(FontWeight::BOLD)
-                                                .text_color(theme.button_primary)
-                                                .child("NOW PLAYING"),
-                                        ),
-                                )
-                            })
-                            .child(
+                    Rgba::new(1.0, 1.0, 1.0, 0.12)
+                })
+                .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
+                .overflow_hidden()
+                .relative()
+                .cursor_pointer()
+                .hover(|s| s.border_color(theme.button_primary))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.global::<PlaybackInterface>().jump(idx);
+                    this.stage_mode = ImmersiveStageMode::KineticLyrics;
+                    cx.notify();
+                }))
+                .child(
+                    managed_image(("poster_img", idx), cover_key)
+                        .thumb_max(512)
+                        .size_full()
+                        .object_fit(ObjectFit::Cover),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .pt(px(28.0))
+                        .pb(px(10.0))
+                        .px(px(12.0))
+                        .bg(linear_gradient(
+                            0.0,
+                            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.90), 0.0),
+                            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                        ))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .when(is_playing_track, |d| {
+                            d.child(
                                 div()
-                                    .text_size(if is_playing_track { px(15.0) } else { px(12.0) })
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
-                                    .truncate()
-                                    .child(title),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .size(px(6.0))
+                                            .rounded_full()
+                                            .bg(theme.button_primary),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(theme.button_primary)
+                                            .child("NOW PLAYING"),
+                                    ),
                             )
-                            .child(
+                        })
+                        .child(
+                            div()
+                                .text_size(if is_playing_track { px(15.0) } else { px(12.0) })
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
+                                .truncate()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                .truncate()
+                                .child(artist),
+                        )
+                        .when(is_playing_track && !current_lyric.is_empty(), |d| {
+                            d.child(
                                 div()
-                                    .text_size(px(10.0))
-                                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                    .mt(px(4.0))
+                                    .text_size(px(11.0))
+                                    .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
                                     .truncate()
-                                    .child(artist),
+                                    .child(current_lyric.clone()),
                             )
-                            .when(is_playing_track && !current_lyric.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .mt(px(4.0))
-                                        .text_size(px(11.0))
-                                        .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
-                                        .truncate()
-                                        .child(current_lyric.clone()),
-                                )
-                            }),
-                    );
+                        }),
+                );
 
-                card.into_any_element()
+            column_cards[col_idx].push(card.into_any_element());
+        }
+
+        let masonry_cols: Vec<AnyElement> = column_cards
+            .into_iter()
+            .enumerate()
+            .map(|(c_idx, col_items)| {
+                div()
+                    .id(("masonry_col", c_idx))
+                    .w(px(230.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.0))
+                    .children(col_items)
+                    .into_any_element()
             })
             .collect();
 
@@ -1116,11 +1132,10 @@ impl ImmersiveView {
                 div()
                     .w_full()
                     .flex()
-                    .flex_wrap()
+                    .flex_row()
                     .justify_center()
-                    .items_center()
-                    .gap(px(18.0))
-                    .children(cards),
+                    .gap(px(16.0))
+                    .children(masonry_cols),
             )
             .into_any_element()
     }
@@ -1645,8 +1660,8 @@ impl Render for ImmersiveView {
             .child(
                 div()
                     .id("stage-toggle-classic")
-                    .px(px(10.0))
-                    .py(px(3.0))
+                    .px(px(12.0))
+                    .py(px(3.5))
                     .rounded_full()
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
@@ -1666,42 +1681,21 @@ impl Render for ImmersiveView {
             .child(
                 div()
                     .id("stage-toggle-poster-wall")
-                    .px(px(10.0))
-                    .py(px(3.0))
+                    .px(px(12.0))
+                    .py(px(3.5))
                     .rounded_full()
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
-                    .when(current_stage_mode == ImmersiveStageMode::PosterWall, move |el| {
+                    .when(current_stage_mode != ImmersiveStageMode::Classic, move |el| {
                         el.bg(primary_color).text_color(primary_text_color)
                     })
-                    .when(current_stage_mode != ImmersiveStageMode::PosterWall, |el| {
+                    .when(current_stage_mode == ImmersiveStageMode::Classic, |el| {
                         el.text_color(text_secondary).hover(|s| s.text_color(text))
                     })
                     .child("海报墙")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.stage_mode = ImmersiveStageMode::PosterWall;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("stage-toggle-kinetic")
-                    .px(px(10.0))
-                    .py(px(3.0))
-                    .rounded_full()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .when(current_stage_mode == ImmersiveStageMode::KineticLyrics, move |el| {
-                        el.bg(primary_color).text_color(primary_text_color)
-                    })
-                    .when(current_stage_mode != ImmersiveStageMode::KineticLyrics, |el| {
-                        el.text_color(text_secondary).hover(|s| s.text_color(text))
-                    })
-                    .child("随意跳动")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.stage_mode = ImmersiveStageMode::KineticLyrics;
                         cx.notify();
                     })),
             );
