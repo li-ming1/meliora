@@ -1,7 +1,7 @@
 {
   "ABOUT": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:72",
+    "definedIn": "src/ui/global_actions.rs:76",
     "plural": false,
     "description": null
   },
@@ -655,13 +655,13 @@
   },
   "HIDE": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:88",
+    "definedIn": "src/ui/global_actions.rs:92",
     "plural": false,
     "description": null
   },
   "HIDE_OTHERS": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:93",
+    "definedIn": "src/ui/global_actions.rs:97",
     "plural": false,
     "description": null
   },
@@ -1573,7 +1573,7 @@
   },
   "QUIT": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:104",
+    "definedIn": "src/ui/global_actions.rs:108",
     "plural": false,
     "description": null
   },
@@ -1969,7 +1969,7 @@
   },
   "SHOW_ALL": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:98",
+    "definedIn": "src/ui/global_actions.rs:102",
     "plural": false,
     "description": null
   },
@@ -2251,37 +2251,37 @@
   },
   "TEST_TOAST_EMIT_ERROR": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:226",
+    "definedIn": "src/ui/global_actions.rs:231",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_ERROR": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:214",
+    "definedIn": "src/ui/global_actions.rs:219",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_INFO": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:198",
+    "definedIn": "src/ui/global_actions.rs:203",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_RETRY": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:218",
+    "definedIn": "src/ui/global_actions.rs:223",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_SUCCESS": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:203",
+    "definedIn": "src/ui/global_actions.rs:208",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_WARNING": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:208",
+    "definedIn": "src/ui/global_actions.rs:213",
     "plural": false,
     "description": null
   },
@@ -2557,7 +2557,7 @@
   },
   "WINDOW": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:110",
+    "definedIn": "src/ui/global_actions.rs:114",
     "plural": false,
     "description": "The Window menu. Must *exactly* match the text required by macOS."
   }
