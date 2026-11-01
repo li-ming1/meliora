@@ -56,10 +56,6 @@ fn available_languages() -> &'static [LanguageOption] {
                 display_name: "Deutsch".into(),
             },
             LanguageOption {
-                code: "el",
-                display_name: "Ελληνικά".into(),
-            },
-            LanguageOption {
                 code: "es",
                 display_name: "Español".into(),
             },
