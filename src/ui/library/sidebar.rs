@@ -104,7 +104,7 @@ fn account_pill(
         .on_click(on_click);
 
     if collapsed {
-        pill.w(px(28.0))
+        pill.size(px(34.0))
             .justify_center()
             .child(icon(brand_icon).size(ICON_SM).text_color(tint))
     } else {
@@ -260,12 +260,10 @@ impl Render for Sidebar {
             .max_h_full()
             .pt(px(8.0))
             .pb(px(4.0))
-            .pl(px(7.0))
-            .pr(px(8.0))
-            .when(!collapsed, |this| this.overflow_hidden())
+            .when(!collapsed, |this| this.pl(px(7.0)).pr(px(8.0)).overflow_hidden())
+            .when(collapsed, |this| this.px(px(8.0)).items_center())
             .flex()
             .flex_col()
-            .when(collapsed, |this| this.items_center())
             // 分组一：音乐库
             .when(!collapsed, |this| {
                 this.child(section_label(

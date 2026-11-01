@@ -773,13 +773,15 @@ impl Render for PlaylistList {
         let new_playlist_input = self.new_playlist_input.clone();
         let weak_self = cx.entity().downgrade();
 
+        let new_pl_label = tr!("NEW_PLAYLIST", "New Playlist");
         main = main.child(
             div()
                 .relative()
                 .child(
                     sidebar_item("new-playlist-btn")
                         .icon(PLUS)
-                        .child(tr!("NEW_PLAYLIST", "New Playlist"))
+                        .when(collapsed, |this| this.collapsed().collapsed_label(new_pl_label.clone()))
+                        .when(!collapsed, |this| this.child(new_pl_label))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {

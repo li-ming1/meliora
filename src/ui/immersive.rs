@@ -2231,7 +2231,7 @@ impl Render for ImmersiveView {
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(760.0))
+                        .max_w(px(920.0))
                         .flex()
                         .flex_col()
                         .gap(px(18.0))

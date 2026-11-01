@@ -10,7 +10,10 @@ use super::{
     },
 };
 use crate::ui::{
-    components::managed_image::{ManagedImageKey, managed_image},
+    components::{
+        icons::{DISC, icon},
+        managed_image::{ManagedImageKey, managed_image},
+    },
     theme::Theme,
 };
 
@@ -134,6 +137,32 @@ where
                     .aspect_square()
                     .rounded(px(theme.radius_md))
                     .object_fit(ObjectFit::Fill),
+            );
+        } else {
+            // 无封面或占位态：优雅的黑胶唱片浮雕与同心环光晕
+            img_container = img_container.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 1.0))
+                    .child(
+                        div()
+                            .size(px(72.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
+                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.03))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                icon(DISC)
+                                    .size(px(32.0))
+                                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.22)),
+                            ),
+                    ),
             );
         }
 
