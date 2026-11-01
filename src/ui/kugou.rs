@@ -1033,3 +1033,130 @@ mod queue_dedup_tests {
         assert!(!queue_item_is_same_kugou_track(&identity(42), 43));
     }
 }
+
+#[cfg(test)]
+mod parse_fixtures {
+    //! 解析纯函数的 fixture 钉子：服务端字段/pointer 变更时，榜单/歌单/推荐
+    //! 「静默渲染为空」这类事故在这里第一时间爆红（十五轮测试缺口矩阵的高危项）。
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_tracks_reads_search_shape_skips_hashless_and_parses_string_ids() {
+        let body = json!({
+            "data": { "lists": [
+                {
+                    "FileHash": "ABC123",
+                    "SongName": "歌名",
+                    "Singer": "歌手",
+                    "AlbumName": "专辑",
+                    "Duration": 245,
+                    "MixSongID": 42,
+                    // AlbumID 在部分端点是数字字符串，i64_field 需接住
+                    "AlbumID": "77",
+                    "Image": "http://cover/{size}.jpg"
+                },
+                { "SongName": "无 hash 的条目必须被丢弃" }
+            ]}
+        });
+        let tracks = parse_tracks(&body, "/data/lists");
+        assert_eq!(tracks.len(), 1, "无 hash 条目应被跳过");
+        let t = &tracks[0];
+        assert_eq!(t.hash, "ABC123");
+        assert_eq!(t.title, "歌名");
+        assert_eq!(t.artist, "歌手");
+        assert_eq!(t.album, "专辑");
+        assert_eq!(t.duration, 245);
+        assert_eq!(t.mix_song_id, 42);
+        assert_eq!(t.album_id, 77);
+        assert_eq!(t.cover_url, "http://cover/256.jpg");
+    }
+
+    #[test]
+    fn parse_ranks_skips_rankid_zero_and_replaces_cover_size() {
+        let body = json!({
+            "data": { "info": [
+                { "rankid": 0, "rankname": "坏条目" },
+                { "rankid": 5, "rankname": "飙升榜", "img_9": "http://x/{size}.png" }
+            ]}
+        });
+        let ranks = parse_ranks(&body);
+        assert_eq!(ranks.len(), 1);
+        assert_eq!(ranks[0].rankid, 5);
+        assert_eq!(ranks[0].name, "飙升榜");
+        assert_eq!(ranks[0].cover_url, "http://x/256.png");
+    }
+
+    #[test]
+    fn parse_rank_tracks_reads_deprecated_layer() {
+        // 榜单条目：hash/毫秒时长在 deprecated 层，封面在 album_info（G1 修复的
+        // album_field 也要能从这里取到专辑名），歌手走 authors 兜底
+        let body = json!({
+            "data": { "songlist": [
+                {
+                    "deprecated": { "FileHash": "RANKHASH", "Duration": 245000 },
+                    "album_info": { "sizable_cover": "http://c/{size}.jpg", "name": "榜单专辑" },
+                    "authors": [ { "author_name": "榜单歌手" } ],
+                    "name": "榜单歌名",
+                    "mixsongid": 99,
+                    "album_id": 7
+                },
+                { "name": "无 hash" }
+            ]}
+        });
+        let tracks = parse_rank_tracks(&body);
+        assert_eq!(tracks.len(), 1);
+        let t = &tracks[0];
+        assert_eq!(t.hash, "RANKHASH");
+        assert_eq!(t.title, "榜单歌名");
+        assert_eq!(t.artist, "榜单歌手");
+        assert_eq!(t.album, "榜单专辑");
+        assert_eq!(t.duration, 245, "毫秒→秒");
+        assert_eq!(t.mix_song_id, 99);
+        assert_eq!(t.cover_url, "http://c/256.jpg");
+    }
+
+    #[test]
+    fn parse_recommend_tracks_reads_time_length_shape() {
+        let body = json!({
+            "data": { "song_list": [
+                {
+                    "songname": "推荐曲",
+                    "author_name": "推荐歌手",
+                    "time_length": 200,
+                    "hash": "RH",
+                    "sizable_cover": "http://r/256.jpg"
+                }
+            ]}
+        });
+        let tracks = parse_recommend_tracks(&body);
+        assert_eq!(tracks.len(), 1);
+        let t = &tracks[0];
+        assert_eq!(t.hash, "RH");
+        assert_eq!(t.title, "推荐曲");
+        assert_eq!(t.artist, "推荐歌手");
+        assert_eq!(t.duration, 200);
+    }
+
+    #[test]
+    fn parse_playlists_handles_id_shapes_and_skips_idless() {
+        let body = json!({
+            "data": { "info": [
+                { "global_collection_id": "gid123", "listid": 9, "name": "我的歌单", "count": 12 },
+                // 数字形态的 id
+                { "global_collection_id": 456, "name": "数字 id 歌单" },
+                // gid 缺失时回退 specialid
+                { "specialid": "sp789", "name": "specialid 歌单" },
+                // 两处都没有：丢弃
+                { "name": "无 id" }
+            ]}
+        });
+        let playlists = parse_playlists(&body);
+        assert_eq!(playlists.len(), 3);
+        assert_eq!(playlists[0].global_collection_id, "gid123");
+        assert_eq!(playlists[0].listid, 9);
+        assert_eq!(playlists[0].count, 12);
+        assert_eq!(playlists[1].global_collection_id, "456");
+        assert_eq!(playlists[2].global_collection_id, "sp789");
+    }
+}

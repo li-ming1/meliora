@@ -94,3 +94,35 @@ impl StreamMapPersistence {
         }
     }
 }
+
+#[cfg(test)]
+mod persist_guard_tests {
+    //! 持久化去重守卫的钉子（十五轮测试缺口矩阵中危档）：相同快照必须跳写、
+    //! 变化必须放行，且回滚条件（基线仍是自己的字节）不在此函数内。
+    use super::*;
+
+    #[test]
+    fn persist_if_changed_dedupes_and_admits_changes() {
+        let guard = StreamMapPersistence::new();
+
+        // 首次：放行
+        let first = guard.persist_if_changed(b"snapshot-1".to_vec());
+        assert_eq!(first.as_deref(), Some(b"snapshot-1".as_slice()));
+
+        // 相同快照：跳写
+        assert_eq!(guard.persist_if_changed(b"snapshot-1".to_vec()), None);
+
+        // 变化：放行并成为新基线
+        assert_eq!(
+            guard.persist_if_changed(b"snapshot-2".to_vec()).as_deref(),
+            Some(b"snapshot-2".as_slice())
+        );
+        assert_eq!(guard.persist_if_changed(b"snapshot-2".to_vec()), None);
+
+        // 回到旧快照也算变化（基线是最近一次，不是历史去重）
+        assert_eq!(
+            guard.persist_if_changed(b"snapshot-1".to_vec()).as_deref(),
+            Some(b"snapshot-1".as_slice())
+        );
+    }
+}

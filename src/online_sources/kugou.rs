@@ -610,3 +610,39 @@ mod liked_cache_tests {
         assert!(LIKED_SET_INIT.load(Ordering::Relaxed));
     }
 }
+
+#[cfg(test)]
+mod url_parse_tests {
+    //! 在线播放最后一跳的解析钉子：extract_song_url 认两种响应形态、
+    //! mixsongid_in_url 从流 URL 里回溯身份（十五轮测试缺口矩阵的高危项）。
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extract_song_url_reads_array_string_and_skips_empties() {
+        // /v5/url 形态：url 是数组，第一个非空者胜
+        assert_eq!(
+            extract_song_url(&json!({"url": ["", "http://a", "http://b"]})),
+            Some("http://a".to_string())
+        );
+        // 字符串直连形态
+        assert_eq!(
+            extract_song_url(&json!({"url": "http://direct"})),
+            Some("http://direct".to_string())
+        );
+        // 全空数组、url 缺失、url 为空串：None（调用方走兜底）
+        assert_eq!(extract_song_url(&json!({"url": ["", ""]})), None);
+        assert_eq!(extract_song_url(&json!({"other": 1})), None);
+        assert_eq!(extract_song_url(&json!({"url": ""})), None);
+    }
+
+    #[test]
+    fn mixsongid_in_url_extracts_digits_after_marker() {
+        assert_eq!(mixsongid_in_url("http://x/_mx42abc?a=1"), Some(42));
+        // 标记在结尾、后面全是数字
+        assert_eq!(mixsongid_in_url("http://x/file_mx7"), Some(7));
+        // 无标记、标记后无数字
+        assert_eq!(mixsongid_in_url("http://x/file.mp3"), None);
+        assert_eq!(mixsongid_in_url("http://x/_mx"), None);
+    }
+}

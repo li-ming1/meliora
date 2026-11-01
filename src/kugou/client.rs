@@ -649,4 +649,82 @@ mod tests {
         assert_eq!(loaded.userid, Some(42));
         assert_eq!(loaded.guid, session.guid);
     }
+
+    #[test]
+    fn parse_jsonp_strips_wrapper_and_rejects_garbage() {
+        assert_eq!(
+            parse_jsonp(br#"cb({"status":1})"#),
+            Some(serde_json::json!({"status": 1}))
+        );
+        // 无括号的纯 JSON 返回 None 是设计行为：调用方（request）先用
+        // serde_json::from_slice 接纯 JSON，本函数只兜 JSONP 包装壳
+        assert_eq!(parse_jsonp(br#"{"status":1}"#), None);
+        // 空括号、缺配对、非 UTF-8：一律 None 而不是 panic
+        assert_eq!(parse_jsonp(b"cb()"), None);
+        assert_eq!(parse_jsonp(b"cb({"), None);
+        assert_eq!(parse_jsonp(&[0xff, 0xfe]), None);
+    }
+
+    #[test]
+    fn check_payload_status_maps_error_shapes() {
+        use serde_json::json;
+        // 正常应答：status=1 且无错误码
+        assert!(check_payload_status(&json!({"status": 1})).is_ok());
+        assert!(check_payload_status(&json!({"status": 1, "error_code": 0})).is_ok());
+        // status=0 取 msg
+        let err = check_payload_status(&json!({"status": 0, "msg": "bad thing"})).unwrap_err();
+        assert!(err.to_string().contains("bad thing"), "{err}");
+        // status 缺失但 error_code 非零：取 err_msg 兜底文案，status 记 -1
+        let err =
+            check_payload_status(&json!({"error_code": 20017, "err_msg": "expired"})).unwrap_err();
+        assert!(err.to_string().contains("expired"), "{err}");
+        // status=1 但 error_code 非零照样失败（G6 的失败侧判定不能放宽）
+        assert!(check_payload_status(&json!({"status": 1, "error_code": 9})).is_err());
+    }
+
+    #[test]
+    fn login_expired_is_matched_by_error_code_only() {
+        let expired = |code: Option<i64>| {
+            is_login_expired(&KugouError::Api {
+                status: 1,
+                msg: "x".into(),
+                error_code: code,
+            })
+        };
+        assert!(expired(Some(KUGOU_ERR_LOGIN_EXPIRED)));
+        assert!(!expired(Some(1)));
+        assert!(!expired(None));
+    }
+
+    #[test]
+    fn has_active_vip_reads_busi_vip_array_both_shapes() {
+        use serde_json::json;
+        let dir = crate::test_support::TestDir::new("kugou-vip-shape-test");
+        let write_session = |vip_detail: Option<serde_json::Value>| {
+            let session = KugouSession {
+                vip_detail,
+                ..KugouSession::generate()
+            };
+            session_io::save(&session, &dir.join("kugou_session.json"), "kugou");
+        };
+
+        write_session(Some(
+            json!({"data": {"busi_vip": [{"is_vip": 0}, {"is_vip": 1}]}}),
+        ));
+        let client = KugouClient::new(dir.path());
+        assert!(client.has_active_vip());
+
+        // 顶层 busi_vip 形态（有的端点不包 data）
+        write_session(Some(json!({"busi_vip": [{"is_vip": 1}]})));
+        let client = KugouClient::new(dir.path());
+        assert!(client.has_active_vip());
+
+        // 全 0 / 缺字段 / 无缓存：都不是生效 VIP
+        write_session(Some(json!({"data": {"busi_vip": [{"is_vip": 0}]}})));
+        let client = KugouClient::new(dir.path());
+        assert!(!client.has_active_vip());
+        write_session(None);
+        let client = KugouClient::new(dir.path());
+        assert!(!client.has_active_vip());
+    }
 }

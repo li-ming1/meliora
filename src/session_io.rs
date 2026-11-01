@@ -228,3 +228,66 @@ mod bench {
         }
     }
 }
+
+#[cfg(test)]
+mod tolerance_tests {
+    //! 损坏容错钉子（十五轮测试缺口矩阵中危档）：会话文件损坏/截断时 load 必须
+    //! 归 None（凭据静默重置），save 的 tmp+rename 不得留下半成品。
+    use super::*;
+    use crate::test_support::TestDir;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Payload {
+        name: String,
+        count: u32,
+    }
+
+    fn payload(name: &str) -> Payload {
+        Payload {
+            name: name.to_string(),
+            count: 7,
+        }
+    }
+
+    #[test]
+    fn load_rejects_corrupted_and_missing_files_quietly() {
+        let dir = TestDir::new("session-io-tolerance");
+        let path = dir.join("p.json");
+
+        // 缺失：None（首次运行的正常路径）
+        assert!(load::<Payload>(&path, "test").is_none());
+
+        // 合法往返
+        save(&payload("ok"), &path, "test");
+        assert_eq!(load::<Payload>(&path, "test"), Some(payload("ok")));
+
+        // 截断/乱码/空文件/类型错：一律 None，不 panic
+        std::fs::write(&path, b"{\"na").unwrap();
+        assert!(load::<Payload>(&path, "test").is_none());
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(load::<Payload>(&path, "test").is_none());
+        std::fs::write(&path, b"").unwrap();
+        assert!(load::<Payload>(&path, "test").is_none());
+        std::fs::write(&path, br#"{"name": 5, "count": "x"}"#).unwrap();
+        assert!(load::<Payload>(&path, "test").is_none());
+    }
+
+    #[test]
+    fn save_never_leaves_a_half_written_target() {
+        let dir = TestDir::new("session-io-tmp");
+        let path = dir.join("p.json");
+        save(&payload("first"), &path, "test");
+        let first = std::fs::read(&path).unwrap();
+
+        // 二次保存覆盖成功；目标文件任何时刻都是完整 JSON（tmp+rename 语义）
+        save(&payload("second"), &path, "test");
+        assert_eq!(load::<Payload>(&path, "test"), Some(payload("second")));
+        assert_ne!(first, std::fs::read(&path).unwrap());
+
+        // 深层目录不存在时 save 自建（create_dir_all 分支）
+        let deep = dir.join("a/b/p.json");
+        save(&payload("deep"), &deep, "test");
+        assert_eq!(load::<Payload>(&deep, "test"), Some(payload("deep")));
+    }
+}
