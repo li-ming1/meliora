@@ -57,7 +57,7 @@ use crate::{
         app::Pool,
         components::{
             icons::{
-                HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, icon,
+                GRID, HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, icon,
             },
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
@@ -1647,34 +1647,7 @@ impl Render for ImmersiveView {
             .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
 
-        let return_to_wall_button = if self.stage_mode == ImmersiveStageMode::KineticLyrics {
-            Some(
-                div()
-                    .id("stage-return-wall")
-                    .absolute()
-                    .top(px(14.0))
-                    .right(px(54.0))
-                    .px(px(14.0))
-                    .py(px(5.0))
-                    .rounded_full()
-                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
-                    .border_1()
-                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.20))
-                    .shadow_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.button_primary).border_color(theme.button_primary_border))
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
-                    .child("海报墙")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.stage_mode = ImmersiveStageMode::PosterWall;
-                        cx.notify();
-                    })),
-            )
-        } else {
-            None
-        };
+        let return_to_wall_button: Option<AnyElement> = None;
 
         let stage_center_view = if self.stage_mode == ImmersiveStageMode::KineticLyrics {
             let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
@@ -2153,15 +2126,42 @@ impl Render for ImmersiveView {
                                     )
                                     .child(
                                         div()
-                                            .id("console-heart-btn")
-                                            .cursor_pointer()
-                                            .px(px(14.0))
-                                            .py(px(8.0))
-                                            .rounded(px(theme.radius_md))
-                                            .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
-                                            .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
-                                            .shadow_sm()
-                                            .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .id("console-poster-wall-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.22))
+                                                    .hover(|s| s.bg(theme.button_primary))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .shadow_sm()
+                                                    .child(icon(GRID).size(px(16.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .tooltip(build_tooltip("返回海报墙"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.stage_mode = ImmersiveStageMode::PosterWall;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("console-heart-btn")
+                                                    .cursor_pointer()
+                                                    .px(px(14.0))
+                                                    .py(px(8.0))
+                                                    .rounded(px(theme.radius_md))
+                                                    .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
+                                                    .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
+                                                    .shadow_sm()
+                                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
+                                            ),
                                     ),
                             )
                             .child(
@@ -2199,17 +2199,6 @@ impl Render for ImmersiveView {
                                     .text_color(text_secondary)
                                     .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
                             ),
-                    )
-                })
-                .when(!self.console_hovered, |zone| {
-                    zone.child(
-                        div()
-                            .id("stage-hover-indicator")
-                            .w(px(4.0))
-                            .h(px(64.0))
-                            .rounded_full()
-                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.18))
-                            .mr(px(8.0)),
                     )
                 });
 
