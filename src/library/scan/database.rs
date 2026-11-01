@@ -1,6 +1,6 @@
 mod albums;
 mod artist_links;
-mod artists;
+pub(crate) mod artists;
 mod relocate;
 mod tracks;
 
@@ -30,6 +30,7 @@ use tracks::{delete_lyrics, insert_track, upsert_lyrics};
 
 #[cfg(test)]
 use albums::bind_release_date;
+use artists::TrackArtistRow;
 #[cfg(test)]
 use artists::{decode_artist_list, encode_artist_list, sort_mentions_artist};
 #[cfg(test)]
@@ -47,7 +48,10 @@ pub(crate) struct WriteCaches {
     pub(crate) albums: FxHashMap<AlbumCacheKey, i64>,
     pub(crate) paths: FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
     pub(crate) pending_albums: FxHashSet<i64>,
-    pub(crate) pending_tracks: FxHashSet<i64>,
+    /// 待重算曲目级署名的曲目：携带 insert_track RETURNING 回来的行快照
+    /// 直通 flush，免掉逐行回读（每曲省一条 SELECT，6 万曲全量重扫约省
+    /// 一半的附加查询）。
+    pub(crate) pending_tracks: FxHashMap<i64, TrackArtistRow>,
     pub(crate) folder_art_candidates: FolderArtCandidates,
     pub(crate) art_ids: ArtIdCache,
     /// 本次扫描检查过文件夹封面的专辑。
@@ -114,7 +118,7 @@ pub async fn update_metadata(
     .await?;
 
     let art_hash = art.embedded.as_ref().map(|embedded| embedded.hash as i64);
-    let Some(track_id) = insert_track(
+    let Some((track_id, track_artist_row)) = insert_track(
         conn,
         metadata,
         album_id,
@@ -213,7 +217,7 @@ pub async fn update_metadata(
     if let Some(album_id) = album_id {
         caches.pending_albums.insert(album_id);
     }
-    caches.pending_tracks.insert(track_id);
+    caches.pending_tracks.insert(track_id, track_artist_row);
     if let Some(old_id) = previous_album_id
         && Some(old_id) != album_id
     {

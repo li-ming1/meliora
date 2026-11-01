@@ -1,4 +1,4 @@
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use sqlx::{SqliteConnection, SqlitePool};
 use tracing::error;
 
@@ -175,19 +175,10 @@ pub(crate) async fn recompute_track_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
     track_id: i64,
+    row: &TrackArtistRow,
 ) -> anyhow::Result<()> {
-    let row: Option<TrackArtistRow> = sqlx::query_as(include_str!(
-        "../../../../queries/scan/get_track_artist_row.sql"
-    ))
-    .bind(track_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-
-    let Some(row) = row else {
-        return Ok(());
-    };
-
-    let mut names = derive_track_artists(&row);
+    // 行随 pending 携带（insert_track RETURNING 直通），不再逐行回读
+    let mut names = derive_track_artists(row);
 
     if names.is_empty() {
         let display = row.artist_names.as_deref().filter(|d| !d.trim().is_empty());
@@ -219,19 +210,19 @@ pub(crate) async fn recompute_track_artists(
     Ok(())
 }
 
-/// 重算待处理的曲目歌手。失败项留在 `pending` 里，提交后重试。
+/// 重算待处理的曲目歌手。失败项连同行数据留在 `pending` 里，提交后重试。
 pub async fn flush_track_artists(
     conn: &mut SqliteConnection,
     matcher: &mut ArtistMatcher,
-    pending: &mut FxHashSet<i64>,
+    pending: &mut FxHashMap<i64, TrackArtistRow>,
 ) -> anyhow::Result<()> {
-    let tracks: Vec<i64> = pending.drain().collect();
+    let tracks: Vec<(i64, TrackArtistRow)> = pending.drain().collect();
     let mut failed = 0usize;
-    for track_id in tracks {
-        if let Err(e) = recompute_track_artists(conn, matcher, track_id).await {
+    for (track_id, row) in tracks {
+        if let Err(e) = recompute_track_artists(conn, matcher, track_id, &row).await {
             error!("Failed to recompute track {track_id} artists: {:?}", e);
             failed += 1;
-            pending.insert(track_id);
+            pending.insert(track_id, row);
         }
     }
     if failed > 0 {

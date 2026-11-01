@@ -65,12 +65,14 @@ pub(super) fn display_is_credited(rows: &[TrackArtistRow], display: &str) -> boo
     })
 }
 
-#[derive(sqlx::FromRow)]
-pub(super) struct TrackArtistRow {
-    pub(super) artists: Option<String>,
-    pub(super) artist_sort: Option<String>,
-    pub(super) album_artist_keys: Option<String>,
-    pub(super) artist_names: Option<String>,
+/// 曲目级署名四列的行快照。`pub(crate)`：随 `WriteCaches.pending_tracks`
+/// 携带直通（免掉 flush 时的逐行回读，见 database.rs 的 pending_tracks 注释）。
+#[derive(Clone, sqlx::FromRow)]
+pub(crate) struct TrackArtistRow {
+    pub(crate) artists: Option<String>,
+    pub(crate) artist_sort: Option<String>,
+    pub(crate) album_artist_keys: Option<String>,
+    pub(crate) artist_names: Option<String>,
 }
 
 /// 取自曲目 tag 的专辑歌手名字与排序值。若无人认领，就把所有署名名字都链接上。

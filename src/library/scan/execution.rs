@@ -36,6 +36,7 @@ use super::{
     watch::WatcherState,
 };
 use crate::{
+    library::scan::database::artists::TrackArtistRow,
     settings::scan::ScanSettings,
     toasts::{Toast, emit_toast},
 };
@@ -722,7 +723,7 @@ async fn retry_artists(
     pool: &SqlitePool,
     matcher: &mut ArtistMatcher,
     pending_albums: &mut FxHashSet<i64>,
-    pending_tracks: &mut FxHashSet<i64>,
+    pending_tracks: &mut FxHashMap<i64, TrackArtistRow>,
 ) {
     if pending_albums.is_empty() && pending_tracks.is_empty() {
         return;

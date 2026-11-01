@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 use sqlx::SqliteConnection;
 use tracing::warn;
 
-use super::{albums::bind_release_date, artists::encode_artist_list};
+use super::{albums::bind_release_date, artists::TrackArtistRow, artists::encode_artist_list};
 use crate::{library::scan::fs_case::paths_equal, media::metadata::Metadata};
 
 /// 每次扫描的专辑路径缓存的键：`(album id, disc 号)`。
@@ -112,7 +112,7 @@ pub(super) async fn insert_track(
     path: &Utf8Path,
     length: u64,
     album_path_cache: &mut FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
-) -> anyhow::Result<Option<i64>> {
+) -> anyhow::Result<Option<(i64, TrackArtistRow)>> {
     // 光秃秃的文件名（没有父目录）退化成空专辑路径，
     // 而不是让整次扫描中止。
     let parent = path.parent().unwrap_or_else(|| Utf8Path::new(""));
@@ -169,34 +169,52 @@ pub(super) async fn insert_track(
     let artists = encode_artist_list(&metadata.artists);
     let album_artist_keys = encode_artist_list(&metadata.album_artist_keys);
 
-    let result: Result<(i64,), sqlx::Error> =
-        sqlx::query_as(include_str!("../../../../queries/scan/create_track.sql"))
-            .bind(name)
-            .bind(name)
-            .bind(album_id)
-            .bind(metadata.track_current.map(|x| x as i32))
-            .bind(metadata.disc_current.map(|x| x as i32))
-            .bind(length as i32)
-            .bind(path.as_str())
-            .bind(&metadata.genre)
-            .bind(&metadata.artist)
-            .bind(parent.as_str())
-            .bind(metadata.replaygain_track_gain)
-            .bind(metadata.replaygain_track_peak)
-            .bind(metadata.replaygain_album_gain)
-            .bind(metadata.replaygain_album_peak)
-            .bind(&metadata.disc_subtitle)
-            .bind(artists)
-            .bind(&metadata.artist_sort)
-            .bind(album_artist_keys)
-            .bind(art_hash)
-            .bind(release_date)
-            .bind(date_precision)
-            .fetch_one(&mut *conn)
-            .await;
+    let result: Result<
+        (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+        sqlx::Error,
+    > = sqlx::query_as(include_str!("../../../../queries/scan/create_track.sql"))
+        .bind(name)
+        .bind(name)
+        .bind(album_id)
+        .bind(metadata.track_current.map(|x| x as i32))
+        .bind(metadata.disc_current.map(|x| x as i32))
+        .bind(length as i32)
+        .bind(path.as_str())
+        .bind(&metadata.genre)
+        .bind(&metadata.artist)
+        .bind(parent.as_str())
+        .bind(metadata.replaygain_track_gain)
+        .bind(metadata.replaygain_track_peak)
+        .bind(metadata.replaygain_album_gain)
+        .bind(metadata.replaygain_album_peak)
+        .bind(&metadata.disc_subtitle)
+        .bind(artists)
+        .bind(&metadata.artist_sort)
+        .bind(album_artist_keys)
+        .bind(art_hash)
+        .bind(release_date)
+        .bind(date_precision)
+        .fetch_one(&mut *conn)
+        .await;
 
     match result {
-        Ok((track_id,)) => Ok(Some(track_id)),
+        // RETURNING 连 artist 四列一起回：待处理集携带数据库亲手写下的行
+        // 直通 flush，免掉逐行回读（pending_tracks 携带直通优化）
+        Ok((track_id, artists, artist_sort, album_artist_keys, artist_names)) => Ok(Some((
+            track_id,
+            TrackArtistRow {
+                artists,
+                artist_sort,
+                album_artist_keys,
+                artist_names,
+            },
+        ))),
         Err(sqlx::Error::RowNotFound) => Err(anyhow::anyhow!("create_track returned no row")),
         Err(e) => Err(e.into()),
     }

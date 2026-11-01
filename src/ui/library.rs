@@ -567,7 +567,11 @@ impl Library {
                 v.read(cx).scroll_storage_key(),
                 Some(v.read(cx).get_scroll_offset()),
             ),
-            _ => return,
+            // 在线页的滚动记忆暂不持久化（页面每次切标签重建）
+            #[cfg(feature = "kugou")]
+            LibraryView::KugouPlaylists(_) => (ViewSwitchMessage::KugouPlaylists, None),
+            #[cfg(feature = "kugou")]
+            LibraryView::KugouRanks(_) => (ViewSwitchMessage::KugouRanks, None),
         };
         if let Some(offset) = offset {
             scroll_state.scroll_offsets.insert(key, offset);

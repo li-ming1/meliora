@@ -26,4 +26,4 @@ INSERT INTO track (title, title_sortable, album_id, track_number, disc_number, d
         art_hash = EXCLUDED.art_hash,
         release_date = EXCLUDED.release_date,
         date_precision = EXCLUDED.date_precision
-    RETURNING id;
+    RETURNING id, artists, artist_sort, album_artist_keys, artist_names;
