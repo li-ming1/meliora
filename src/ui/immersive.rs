@@ -898,7 +898,9 @@ impl ImmersiveView {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.line_anim.is_some() || self.backdrop_fade_started.is_some()
+        self.line_anim.is_some()
+            || self.backdrop_fade_started.is_some()
+            || (self.active && self.stage_mode == ImmersiveStageMode::KineticLyrics)
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1682,17 +1684,14 @@ impl Render for ImmersiveView {
                 .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
                 .map_or(0, |l| l.time_ms);
 
-            // 随机版式选择（0: 巨幕横排流光，1: 优雅心象竖排，2: 错落云阶错位排版）
-            let layout_mode = (active_seed / 2000) % 3;
-
-            // 根据当前版式和乐句种子计算自由跳跃空间 (Dynamic Spatial Hop)
+            // 自由空间位移（根据乐句种子产生平缓随风漂浮的梦幻位置）
             let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 6 {
-                0 => (-80.0f32, -35.0f32),
-                1 => (90.0f32, 25.0f32),
-                2 => (-30.0f32, -20.0f32),
-                3 => (60.0f32, -40.0f32),
-                4 => (-65.0f32, 30.0f32),
-                _ => (20.0f32, 10.0f32),
+                0 => (-60.0f32, -28.0f32),
+                1 => (70.0f32, 20.0f32),
+                2 => (-20.0f32, -15.0f32),
+                3 => (48.0f32, -32.0f32),
+                4 => (-50.0f32, 24.0f32),
+                _ => (15.0f32, 8.0f32),
             };
 
             let kinetic_lyric_elements: Vec<AnyElement> = if let Some(parsed) = &self.parsed {
@@ -1703,33 +1702,36 @@ impl Render for ImmersiveView {
                         line.words
                             .iter()
                             .enumerate()
-                            .map(|(w_idx, word)| {
+                            .map(|(_w_idx, word)| {
                                 let progress = word_progress(word, position_ms);
                                 let color = lerp_color(dimmed_color, gold_glow, progress);
 
-                                // 字级排版与音律起伏 (Kinetic Typography with Fluid Stature)
-                                let w_seed = (active_seed / 50) + w_idx as u64 * 43;
-                                let scatter_y = (w_seed as f32 * 0.71).cos() * 8.0;
-
-                                // 唱到时的轻盈微弹升起 (Smooth Spring Pop)
-                                let bounce_y = if progress > 0.02 && progress < 0.98 {
-                                    -((progress * std::f32::consts::PI).sin() * 8.0)
+                                // 梦幻逐字弹跳与浮动动画 (Dreamy Kinetic Pop-up)
+                                let (pop_y, scale_pt, halo_opacity) = if progress > 0.0 && progress < 1.0 {
+                                    // 正在唱：弹起并伴随柔和回落 (-16px 高度)
+                                    let curve = (progress * std::f32::consts::PI).sin();
+                                    (-curve * 16.0, 62.0f32, 0.70 * curve)
+                                } else if progress >= 1.0 {
+                                    // 已唱完：稳定高光与柔和微悬
+                                    (-2.0, 58.0f32, 0.25)
                                 } else {
-                                    0.0
+                                    // 未唱到：静静等待
+                                    (0.0, 56.0f32, 0.0)
                                 };
-                                let total_y = scatter_y + bounce_y;
-                                let is_active = progress > 0.05;
+
+                                let is_active = progress > 0.02;
 
                                 div()
                                     .relative()
-                                    .mt(px(total_y))
-                                    .when(is_active, |el| {
+                                    .mt(px(pop_y))
+                                    .when(halo_opacity > 0.05, |el| {
                                         el.child(
                                             div()
                                                 .absolute()
-                                                .top(px(-2.0))
-                                                .left(px(-2.0))
-                                                .opacity(0.40 * progress)
+                                                .top(px(-3.0))
+                                                .left(px(-3.0))
+                                                .opacity(halo_opacity)
+                                                .text_size(px(scale_pt))
                                                 .text_color(Rgba::new(1.0, 0.85, 0.45, 0.85))
                                                 .child(word.text.clone()),
                                         )
@@ -1737,6 +1739,7 @@ impl Render for ImmersiveView {
                                     .child(
                                         div()
                                             .child(word.text.clone())
+                                            .text_size(px(scale_pt))
                                             .text_color(color)
                                             .when(is_active, |s| s.font_weight(FontWeight::EXTRA_BOLD))
                                     )
@@ -1753,6 +1756,7 @@ impl Render for ImmersiveView {
                                 div()
                                     .relative()
                                     .mt(px(scatter_y))
+                                    .text_size(px(58.0))
                                     .text_color(gold_glow)
                                     .child(ch.to_string())
                                     .into_any_element()
@@ -1765,7 +1769,7 @@ impl Render for ImmersiveView {
                     if active_idx > 0 && let Some(prev) = parsed.get(active_idx - 1) {
                         elements.push(
                             div()
-                                .mb(px(18.0))
+                                .mb(px(20.0))
                                 .text_left()
                                 .text_size(px(24.0))
                                 .font_weight(FontWeight::MEDIUM)
@@ -1776,62 +1780,7 @@ impl Render for ImmersiveView {
                         );
                     }
 
-                    // 巨幕主歌词容器：支持多版式演变（横排巨幕 / 心象竖排 / 云阶梯级错位）
-                    let hero_lyrics_container = match layout_mode {
-                        // 版式 1：心象竖排（Vertical Japanese/Poetic Calligraphy）
-                        1 => div()
-                            .id("stage-kinetic-hero-vertical")
-                            .flex()
-                            .flex_row_reverse()
-                            .items_start()
-                            .gap(px(24.0))
-                            .py(px(10.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .gap(px(10.0))
-                                    .text_size(px(60.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .line_height(relative(1.15))
-                                    .children(words_elements),
-                            ),
-                        // 版式 2：云阶错落（Staircase Floating Layout）
-                        2 => div()
-                            .id("stage-kinetic-hero-staircase")
-                            .flex()
-                            .flex_col()
-                            .gap(px(14.0))
-                            .text_size(px(54.0))
-                            .font_weight(FontWeight::BOLD)
-                            .line_height(relative(1.20))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_baseline()
-                                    .gap(px(8.0))
-                                    .children(words_elements),
-                            ),
-                        // 版式 0：经典磅礴横排（Fluid Horizontal Stream）
-                        _ => div()
-                            .id("stage-kinetic-hero-horizontal")
-                            .w_full()
-                            .text_size(px(58.0))
-                            .line_height(relative(1.22))
-                            .font_weight(FontWeight::BOLD)
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .justify_start()
-                                    .items_baseline()
-                                    .gap(px(4.0))
-                                    .children(words_elements),
-                            ),
-                    };
-
+                    // 统一而灵动优雅的主歌词容器（自然横排流动，字级梦幻弹跳）
                     elements.push(
                         div()
                             .id("stage-kinetic-hero-line")
@@ -1844,7 +1793,19 @@ impl Render for ImmersiveView {
                                         .seek(line_time_ms as f64 / 1000.0);
                                 }
                             })
-                            .child(hero_lyrics_container)
+                            .child(
+                                div()
+                                    .id("stage-kinetic-hero-horizontal")
+                                    .w_full()
+                                    .line_height(relative(1.22))
+                                    .font_weight(FontWeight::BOLD)
+                                    .flex()
+                                    .flex_wrap()
+                                    .justify_start()
+                                    .items_baseline()
+                                    .gap(px(4.0))
+                                    .children(words_elements),
+                            )
                             .into_any_element(),
                     );
 
