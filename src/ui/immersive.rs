@@ -44,9 +44,9 @@ use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba, ScrollWheelEvent,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window, canvas, div,
-    linear_color_stop, linear_gradient, point, px, relative,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba, ScrollHandle,
+    ScrollWheelEvent, SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, px, relative,
 };
 use tracing::warn;
 
@@ -127,16 +127,18 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImmersiveStageMode {
     Classic,
+    PosterWall,
     #[default]
-    Waterfall,
+    KineticLyrics,
 }
 
 pub struct ImmersiveView {
     focus_handle: FocusHandle,
     /// 镜像 `Models::immersive`；守每次观察者的 `notify`。
     active: bool,
-    /// 沉浸模式下的舞台展示形态：Classic（经典双栏）与 Waterfall（居中瀑布流巨幕舞台）。
+    /// 沉浸模式下的舞台展示形态：Classic（经典双栏）、PosterWall（瀑布流海报墙）、KineticLyrics（随意跳动巨幕歌词）。
     stage_mode: ImmersiveStageMode,
+    poster_wall_scroll: ScrollHandle,
 
     position: Entity<u64>,
     volume: Entity<f64>,
@@ -355,7 +357,8 @@ impl ImmersiveView {
             let mut this = Self {
                 focus_handle: cx.focus_handle(),
                 active: *immersive_flag.read(cx),
-                stage_mode: ImmersiveStageMode::Waterfall,
+                stage_mode: ImmersiveStageMode::KineticLyrics,
+                poster_wall_scroll: ScrollHandle::new(),
                 position: info.position.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
@@ -932,6 +935,195 @@ impl ImmersiveView {
         }
         cx.notify();
     }
+
+    fn render_poster_wall(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (current_pos, queue_items) = {
+            let q = self.queue.read(cx);
+            (q.position, q.data.read_recovered().clone())
+        };
+
+        if queue_items.is_empty() {
+            let theme = cx.global::<Theme>();
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .text_color(theme.text_secondary)
+                        .child("播放列表为空"),
+                )
+                .into_any_element();
+        }
+
+        let item_infos: Vec<(usize, bool, SharedString, SharedString, ManagedImageKey)> = queue_items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let is_playing = idx == current_pos;
+                let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
+                let title = ui_data
+                    .as_ref()
+                    .and_then(|u| u.name.clone())
+                    .unwrap_or_else(|| SharedString::from(format!("Track #{}", idx + 1)));
+                let artist = ui_data
+                    .as_ref()
+                    .and_then(|u| u.artist_name.clone())
+                    .unwrap_or_default();
+                let cover_key = ui_data
+                    .and_then(|u| u.cover_url)
+                    .filter(|u| !u.is_empty())
+                    .map(ManagedImageKey::HttpCover)
+                    .unwrap_or_else(|| ManagedImageKey::TrackFile(item.get_path().clone()));
+
+                (idx, is_playing, title, artist, cover_key)
+            })
+            .collect();
+
+        let theme = cx.global::<Theme>();
+        let poster_scroll = self.poster_wall_scroll.clone();
+        let current_lyric = self
+            .current_line
+            .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
+            .map(|l| l.text.clone())
+            .unwrap_or_default();
+
+        let cards: Vec<AnyElement> = item_infos
+            .into_iter()
+            .map(|(idx, is_playing_track, title, artist, cover_key)| {
+
+                // 不规则海报尺寸 (Bento Masonry Proportions: 对齐 647000305-...png)
+                let (w, h) = if is_playing_track {
+                    (px(320.0), px(340.0))
+                } else {
+                    match (idx + 1) % 5 {
+                        0 => (px(230.0), px(230.0)),
+                        1 => (px(170.0), px(240.0)),
+                        2 => (px(240.0), px(170.0)),
+                        3 => (px(160.0), px(160.0)),
+                        _ => (px(190.0), px(220.0)),
+                    }
+                };
+
+                let card = div()
+                    .id(("poster_tile", idx))
+                    .w(w)
+                    .h(h)
+                    .rounded(px(16.0))
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(if is_playing_track {
+                        theme.button_primary_border
+                    } else {
+                        Rgba::new(1.0, 1.0, 1.0, 0.12)
+                    })
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
+                    .overflow_hidden()
+                    .relative()
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(theme.button_primary))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.global::<PlaybackInterface>().jump(idx);
+                        this.stage_mode = ImmersiveStageMode::KineticLyrics;
+                        cx.notify();
+                    }))
+                    .child(
+                        managed_image(("poster_img", idx), cover_key)
+                            .thumb_max(512)
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .pt(px(24.0))
+                            .pb(px(10.0))
+                            .px(px(12.0))
+                            .bg(linear_gradient(
+                                0.0,
+                                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.88), 0.0),
+                                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                            ))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .when(is_playing_track, |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            div()
+                                                .size(px(6.0))
+                                                .rounded_full()
+                                                .bg(theme.button_primary),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.0))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(theme.button_primary)
+                                                .child("NOW PLAYING"),
+                                        ),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .text_size(if is_playing_track { px(15.0) } else { px(12.0) })
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                    .truncate()
+                                    .child(artist),
+                            )
+                            .when(is_playing_track && !current_lyric.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .text_size(px(11.0))
+                                        .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
+                                        .truncate()
+                                        .child(current_lyric.clone()),
+                                )
+                            }),
+                    );
+
+                card.into_any_element()
+            })
+            .collect();
+
+        div()
+            .id("stage-poster-wall")
+            .size_full()
+            .pt(px(60.0))
+            .pb(px(40.0))
+            .px(px(40.0))
+            .overflow_y_scroll()
+            .track_scroll(&poster_scroll)
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .justify_center()
+                    .items_center()
+                    .gap(px(18.0))
+                    .children(cards),
+            )
+            .into_any_element()
+    }
 }
 
 /// 沉浸播放卡自包含的进度条。它自己持有 30 Hz 的位置观察，所以进度 tick 只
@@ -1435,7 +1627,7 @@ impl Render for ImmersiveView {
 
         let primary_color = theme.button_primary;
         let primary_text_color = theme.button_primary_text;
-        let is_stage_mode = self.stage_mode == ImmersiveStageMode::Waterfall;
+        let current_stage_mode = self.stage_mode;
 
         let mode_switch_button = div()
             .id("stage-mode-toggle")
@@ -1459,10 +1651,10 @@ impl Render for ImmersiveView {
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
-                    .when(!is_stage_mode, move |el| {
+                    .when(current_stage_mode == ImmersiveStageMode::Classic, move |el| {
                         el.bg(primary_color).text_color(primary_text_color)
                     })
-                    .when(is_stage_mode, |el| {
+                    .when(current_stage_mode != ImmersiveStageMode::Classic, |el| {
                         el.text_color(text_secondary).hover(|s| s.text_color(text))
                     })
                     .child("经典")
@@ -1473,27 +1665,48 @@ impl Render for ImmersiveView {
             )
             .child(
                 div()
-                    .id("stage-toggle-waterfall")
+                    .id("stage-toggle-poster-wall")
                     .px(px(10.0))
                     .py(px(3.0))
                     .rounded_full()
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
-                    .when(is_stage_mode, move |el| {
+                    .when(current_stage_mode == ImmersiveStageMode::PosterWall, move |el| {
                         el.bg(primary_color).text_color(primary_text_color)
                     })
-                    .when(!is_stage_mode, |el| {
+                    .when(current_stage_mode != ImmersiveStageMode::PosterWall, |el| {
                         el.text_color(text_secondary).hover(|s| s.text_color(text))
                     })
-                    .child("瀑布流")
+                    .child("海报墙")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.stage_mode = ImmersiveStageMode::Waterfall;
+                        this.stage_mode = ImmersiveStageMode::PosterWall;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("stage-toggle-kinetic")
+                    .px(px(10.0))
+                    .py(px(3.0))
+                    .rounded_full()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .when(current_stage_mode == ImmersiveStageMode::KineticLyrics, move |el| {
+                        el.bg(primary_color).text_color(primary_text_color)
+                    })
+                    .when(current_stage_mode != ImmersiveStageMode::KineticLyrics, |el| {
+                        el.text_color(text_secondary).hover(|s| s.text_color(text))
+                    })
+                    .child("随意跳动")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stage_mode = ImmersiveStageMode::KineticLyrics;
                         cx.notify();
                     })),
             );
 
-        let stage_center_view = if is_stage_mode {
+        let stage_center_view = if current_stage_mode == ImmersiveStageMode::KineticLyrics {
             let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
             let dimmed_color = lerp_color(text, text_secondary, 0.45);
 
@@ -1907,10 +2120,20 @@ impl Render for ImmersiveView {
             .child(vertical_shade)
             .child(right_shade);
 
-        if let Some(stage_view) = stage_center_view {
-            root = root.child(stage_view);
-        } else {
-            root = root.child(left_column).child(right_column);
+        match self.stage_mode {
+            ImmersiveStageMode::Classic => {
+                root = root.child(left_column).child(right_column);
+            }
+            ImmersiveStageMode::PosterWall => {
+                root = root.child(self.render_poster_wall(cx));
+            }
+            ImmersiveStageMode::KineticLyrics => {
+                if let Some(stage_view) = stage_center_view {
+                    root = root.child(stage_view);
+                } else {
+                    root = root.child(left_column).child(right_column);
+                }
+            }
         }
 
         root.child(mode_switch_button).child(exit_button)

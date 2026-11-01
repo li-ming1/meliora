@@ -1189,11 +1189,18 @@ where
             .when_some(self.left.clone(), |div_outer, left| {
                 div_outer.child(match left {
                     FinderItemLeft::Text(text) => div()
-                        .child(text)
+                        .px(px(6.0))
+                        .py(px(1.5))
+                        .rounded_sm()
+                        .bg(theme.background_secondary)
+                        .border_1()
+                        .border_color(theme.border_color)
                         .text_ellipsis()
-                        .text_sm()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_secondary)
-                        .mr(px(4.0)),
+                        .mr(px(8.0))
+                        .child(text),
                     FinderItemLeft::Icon(icon_name) => {
                         use crate::ui::components::icons::icon;
                         div()
@@ -1224,11 +1231,14 @@ where
                 div_outer.child(
                     div()
                         .ml_auto()
-                        .pl(px(8.0))
-                        .flex_shrink(1.0)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_sm()
+                        .px(px(6.0))
+                        .py(px(1.5))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(theme.border_color)
+                        .bg(theme.background_secondary)
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_secondary)
                         .child(right),
                 )
