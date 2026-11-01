@@ -663,8 +663,8 @@ impl KugouRanksView {
             let is_center = d == 0;
             let (w, h, shadow_level, opacity_val) = match d.abs() {
                 0 => (px(260.0), px(260.0), true, 1.0f32),
-                1 => (px(200.0), px(200.0), false, 0.60f32),
-                _ => (px(150.0), px(150.0), false, 0.30f32),
+                1 => (px(205.0), px(205.0), true, 0.70f32),
+                _ => (px(160.0), px(160.0), false, 0.45f32),
             };
 
             let card = div()

@@ -613,14 +613,14 @@ impl StatsSettings {
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .bg(theme.background_secondary)
+                    .bg(theme.elevated_background)
                     .border_1()
                     .border_color(theme.elevated_border_color)
-                    .rounded(px(theme.radius_md))
-                    .shadow_sm()
-                    .hover(|s| s.bg(theme.elevated_background).border_color(theme.button_primary_border))
-                    .px(px(14.0))
-                    .py(px(12.0))
+                    .rounded(px(theme.radius_lg))
+                    .shadow_md()
+                    .hover(|s| s.border_color(theme.button_primary))
+                    .px(px(16.0))
+                    .py(px(14.0))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -630,7 +630,7 @@ impl StatsSettings {
                     )
                     .child(
                         div()
-                            .text_size(px(22.0))
+                            .text_size(px(24.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(theme.text)
                             .child(value),
@@ -961,23 +961,24 @@ impl StatsSettings {
         active: bool,
         theme: &Theme,
     ) -> Stateful<Div> {
-        let (bg, fg) = if active {
-            (theme.background_tertiary, theme.text)
+        let (bg, fg, border, fw) = if active {
+            (theme.button_primary, theme.button_primary_text, theme.button_primary_border, FontWeight::SEMIBOLD)
         } else {
-            (theme.background_secondary, theme.text_secondary)
+            (theme.elevated_background, theme.text_secondary, theme.elevated_border_color, FontWeight::MEDIUM)
         };
-        let hover_bg = theme.menu_item_hover;
         div()
             .id(id)
-            .px(px(10.0))
-            .py(px(3.0))
-            .rounded(px(theme.radius_sm))
+            .px(px(12.0))
+            .py(px(4.0))
+            .rounded_full()
             .bg(bg)
             .border_1()
-            .border_color(theme.border_color)
+            .border_color(border)
+            .shadow_sm()
             .text_size(px(11.0))
+            .font_weight(fw)
             .text_color(fg)
-            .hover(move |s| s.bg(hover_bg))
+            .hover(move |s| s.bg(theme.nav_button_hover).text_color(theme.text))
             .child(label)
     }
 }

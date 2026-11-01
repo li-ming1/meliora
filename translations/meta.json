@@ -2071,7 +2071,7 @@
   },
   "STATS_EMPTY": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1152",
+    "definedIn": "src/ui/settings/stats.rs:1153",
     "plural": false,
     "description": null
   },
@@ -2083,7 +2083,7 @@
   },
   "STATS_HOURS_TITLE": {
     "context": "stats.rs",
-    "definedIn": "src/ui/settings/stats.rs:1123",
+    "definedIn": "src/ui/settings/stats.rs:1124",
     "plural": false,
     "description": null
   },
