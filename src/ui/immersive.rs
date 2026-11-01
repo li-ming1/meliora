@@ -1682,13 +1682,12 @@ impl Render for ImmersiveView {
                 .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
                 .map_or(0, |l| l.time_ms);
 
-            // 换句时的全空间戏剧化大跳跃 (Dynamic Spatial Hop: 随着乐句在左侧巨幕空间中左跳右跳)
             let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 5 {
-                0 => (-80.0f32, -40.0f32), // 偏左上方
-                1 => (110.0f32, 30.0f32),  // 偏右侧
-                2 => (-20.0f32, -20.0f32), // 偏中上
-                3 => (70.0f32, -45.0f32),  // 偏右上
-                _ => (-110.0f32, 25.0f32), // 偏左下方
+                0 => (-35.0f32, -18.0f32),
+                1 => (40.0f32, 16.0f32),
+                2 => (-10.0f32, -10.0f32),
+                3 => (28.0f32, -22.0f32),
+                _ => (-45.0f32, 12.0f32),
             };
 
             let kinetic_lyric_elements: Vec<AnyElement> = if let Some(parsed) = &self.parsed {
@@ -1703,35 +1702,39 @@ impl Render for ImmersiveView {
                                 let progress = word_progress(word, position_ms);
                                 let color = lerp_color(dimmed_color, gold_glow, progress);
 
-                                // 每个字在 2D 空间内的随意散落 (Dynamic Kinetic Scatter)
+                                // 字级排版与音律起伏 (Kinetic Typography with Fluid Stature)
                                 let w_seed = (active_seed / 50) + w_idx as u64 * 43;
-                                let scatter_x = (w_seed as f32 * 0.47).sin() * 55.0;
-                                let scatter_y = (w_seed as f32 * 0.71).cos() * 38.0;
+                                let scatter_y = (w_seed as f32 * 0.71).cos() * 8.0;
 
-                                // 唱到时的 18px 强劲音律上弹 (Spring Bounce)
+                                // 唱到时的轻盈微弹升起 (Smooth Spring Pop)
                                 let bounce_y = if progress > 0.02 && progress < 0.98 {
-                                    -((progress * std::f32::consts::PI).sin() * 18.0)
+                                    -((progress * std::f32::consts::PI).sin() * 8.0)
                                 } else {
                                     0.0
                                 };
                                 let total_y = scatter_y + bounce_y;
+                                let is_active = progress > 0.05;
 
                                 div()
                                     .relative()
-                                    .ml(px((scatter_x + 8.0).max(0.0)))
                                     .mt(px(total_y))
-                                    .when(progress > 0.03, |el| {
+                                    .when(is_active, |el| {
                                         el.child(
                                             div()
                                                 .absolute()
-                                                .top(px(-3.0))
-                                                .left(px(-3.0))
-                                                .opacity(0.55 * progress)
-                                                .text_color(Rgba::new(1.0, 0.75, 0.35, 0.90))
+                                                .top(px(-2.0))
+                                                .left(px(-2.0))
+                                                .opacity(0.40 * progress)
+                                                .text_color(Rgba::new(1.0, 0.85, 0.45, 0.85))
                                                 .child(word.text.clone()),
                                         )
                                     })
-                                    .child(div().child(word.text.clone()).text_color(color))
+                                    .child(
+                                        div()
+                                            .child(word.text.clone())
+                                            .text_color(color)
+                                            .when(is_active, |s| s.font_weight(FontWeight::EXTRA_BOLD))
+                                    )
                                     .into_any_element()
                             })
                             .collect()
@@ -1741,11 +1744,9 @@ impl Render for ImmersiveView {
                             .enumerate()
                             .map(|(c_idx, ch)| {
                                 let c_seed = (active_seed / 50) + c_idx as u64 * 31;
-                                let scatter_x = (c_seed as f32 * 0.43).sin() * 40.0;
-                                let scatter_y = (c_seed as f32 * 0.67).cos() * 30.0;
+                                let scatter_y = (c_seed as f32 * 0.67).cos() * 6.0;
                                 div()
                                     .relative()
-                                    .ml(px((scatter_x + 4.0).max(0.0)))
                                     .mt(px(scatter_y))
                                     .text_color(gold_glow)
                                     .child(ch.to_string())
@@ -1755,13 +1756,28 @@ impl Render for ImmersiveView {
                     };
 
                     let mut elements = Vec::new();
-                    // 巨幕主歌词容器（64px 巨型字体，自由散落）
+                    // 上一句淡出行（伴随在上方，30% 不透明度）
+                    if active_idx > 0 && let Some(prev) = parsed.get(active_idx - 1) {
+                        elements.push(
+                            div()
+                                .mb(px(18.0))
+                                .text_left()
+                                .text_size(px(24.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .opacity(0.32)
+                                .text_color(dimmed_color)
+                                .child(prev.text.clone())
+                                .into_any_element(),
+                        );
+                    }
+
+                    // 巨幕主歌词容器（56px 磅礴典雅主字号，丝滑排版）
                     elements.push(
                         div()
                             .id("stage-kinetic-hero-line")
                             .w_full()
-                            .text_size(px(64.0))
-                            .line_height(relative(1.18))
+                            .text_size(px(56.0))
+                            .line_height(relative(1.22))
                             .font_weight(FontWeight::BOLD)
                             .cursor_pointer()
                             .on_click(move |_, _, cx| {
@@ -1777,7 +1793,7 @@ impl Render for ImmersiveView {
                                     .flex_wrap()
                                     .justify_start()
                                     .items_baseline()
-                                    .gap(px(6.0))
+                                    .gap(px(3.0))
                                     .children(words_elements),
                             )
                             .into_any_element(),
@@ -1789,22 +1805,24 @@ impl Render for ImmersiveView {
                             div()
                                 .mt(px(14.0))
                                 .text_left()
-                                .text_size(px(18.0))
-                                .text_color(text_secondary)
+                                .text_size(px(20.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(lerp_color(text_secondary, gold_glow, 0.4))
                                 .child(trans.clone())
                                 .into_any_element(),
                         );
                     }
 
-                    // 下一句微弱预读伴随行（18% 透明度，静静浮在下方）
+                    // 下一句微弱预读伴随行（38% 透明度，静静浮在下方引导视觉）
                     if let Some(next) = parsed.get(active_idx + 1) {
                         elements.push(
                             div()
-                                .mt(px(28.0))
+                                .mt(px(24.0))
                                 .text_left()
-                                .text_size(px(20.0))
-                                .opacity(0.18)
-                                .text_color(text_secondary)
+                                .text_size(px(26.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .opacity(0.38)
+                                .text_color(dimmed_color)
                                 .child(next.text.clone())
                                 .into_any_element(),
                         );
@@ -1818,7 +1836,7 @@ impl Render for ImmersiveView {
                 Vec::new()
             };
 
-            // 背景星轨几何罗盘装饰层
+            // 电影级多重空间与星轨极光几何罗盘装饰层
             let compass_canvas = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, _cx| {
@@ -1826,13 +1844,42 @@ impl Render for ImmersiveView {
                     let h = f32::from(bounds.size.height);
                     let center_x = w * 0.38;
                     let center_y = h * 0.50;
-                    let compass_color = Rgba::new(1.0, 1.0, 1.0, 0.045);
 
-                    // 同心星轨圆
-                    for r in [220.0f32, 360.0f32] {
+                    // 1. 动态极光流光弧 (Fluid Aurora Ribbons)
+                    let phase = (position_ms as f32 / 1000.0) * 0.4;
+                    for (ribbon_idx, (y_off, amp, freq, col)) in [
+                        (-60.0f32, 45.0f32, 0.0035f32, Rgba::new(0.35, 0.50, 0.95, 0.065)),
+                        (40.0f32, 55.0f32, 0.0028f32, Rgba::new(0.85, 0.40, 0.70, 0.055)),
+                        (140.0f32, 40.0f32, 0.0042f32, Rgba::new(1.0, 0.75, 0.30, 0.045)),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let mut ribbon = PathBuilder::stroke(px(2.5));
+                        let steps = 40;
+                        for i in 0..=steps {
+                            let x = (i as f32 / steps as f32) * w;
+                            let y = (center_y + y_off)
+                                + (x * freq + phase + (ribbon_idx as f32) * 1.5).sin() * amp
+                                + (x * (freq * 0.5) - phase * 0.7).cos() * (amp * 0.4);
+                            let pt = point(px(x), px(y));
+                            if i == 0 {
+                                ribbon.move_to(pt);
+                            } else {
+                                ribbon.line_to(pt);
+                            }
+                        }
+                        if let Ok(p) = ribbon.build() {
+                            window.paint_path(p, *col);
+                        }
+                    }
+
+                    // 2. 细腻同心星轨圆 (Concentric Celestial Circles)
+                    let compass_color = Rgba::new(1.0, 1.0, 1.0, 0.045);
+                    for r in [160.0f32, 280.0f32, 420.0f32] {
                         let mut circle = PathBuilder::stroke(px(1.0));
-                        for i in 0..=36 {
-                            let angle = (i as f32 / 36.0) * std::f32::consts::TAU;
+                        for i in 0..=48 {
+                            let angle = (i as f32 / 48.0) * std::f32::consts::TAU;
                             let pt = point(px(center_x + r * angle.cos()), px(center_y + r * angle.sin()));
                             if i == 0 {
                                 circle.move_to(pt);
@@ -1845,30 +1892,30 @@ impl Render for ImmersiveView {
                         }
                     }
 
-                    // 十字刻度线
+                    // 3. 极轴十字刻度线与角度微标
                     let mut axes = PathBuilder::stroke(px(1.0));
-                    axes.move_to(point(px(center_x - 420.0), px(center_y)));
-                    axes.line_to(point(px(center_x + 420.0), px(center_y)));
-                    axes.move_to(point(px(center_x), px(center_y - 280.0)));
-                    axes.line_to(point(px(center_x), px(center_y + 280.0)));
+                    axes.move_to(point(px(center_x - 480.0), px(center_y)));
+                    axes.line_to(point(px(center_x + 480.0), px(center_y)));
+                    axes.move_to(point(px(center_x), px(center_y - 320.0)));
+                    axes.line_to(point(px(center_x), px(center_y + 320.0)));
                     if let Ok(path) = axes.build() {
                         window.paint_path(path, compass_color);
                     }
 
-                    // 象限四角星芒微粒 (Cross Stars)
-                    for (sx, sy) in [
-                        (center_x + 280.0, center_y - 180.0),
-                        (center_x - 320.0, center_y + 190.0),
-                        (center_x + 340.0, center_y + 220.0),
-                        (center_x - 240.0, center_y - 220.0),
+                    // 4. 象限四角星芒微粒 (Cross Stars)
+                    for (sx, sy, star_color) in [
+                        (center_x + 280.0, center_y - 180.0, Rgba::new(1.0, 0.88, 0.65, 0.22)),
+                        (center_x - 320.0, center_y + 190.0, Rgba::new(0.65, 0.85, 1.0, 0.20)),
+                        (center_x + 380.0, center_y + 240.0, Rgba::new(1.0, 0.65, 0.85, 0.18)),
+                        (center_x - 240.0, center_y - 220.0, Rgba::new(0.85, 1.0, 0.85, 0.18)),
                     ] {
-                        let mut star = PathBuilder::stroke(px(1.0));
-                        star.move_to(point(px(sx - 7.0), px(sy)));
-                        star.line_to(point(px(sx + 7.0), px(sy)));
-                        star.move_to(point(px(sx), px(sy - 7.0)));
-                        star.line_to(point(px(sx), px(sy + 7.0)));
+                        let mut star = PathBuilder::stroke(px(1.2));
+                        star.move_to(point(px(sx - 8.0), px(sy)));
+                        star.line_to(point(px(sx + 8.0), px(sy)));
+                        star.move_to(point(px(sx), px(sy - 8.0)));
+                        star.line_to(point(px(sx), px(sy + 8.0)));
                         if let Ok(p) = star.build() {
-                            window.paint_path(p, Rgba::new(1.0, 1.0, 1.0, 0.08));
+                            window.paint_path(p, star_color);
                         }
                     }
                 },
