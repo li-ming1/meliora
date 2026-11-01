@@ -319,7 +319,7 @@
   },
   "CLOSE": {
     "context": "right_sidebar.rs",
-    "definedIn": "src/ui/right_sidebar.rs:177",
+    "definedIn": "src/ui/right_sidebar.rs:191",
     "plural": false,
     "description": null
   },
@@ -1327,7 +1327,7 @@
   },
   "LYRICS": {
     "context": "right_sidebar.rs",
-    "definedIn": "src/ui/right_sidebar.rs:169",
+    "definedIn": "src/ui/right_sidebar.rs:174",
     "plural": false,
     "description": null
   },

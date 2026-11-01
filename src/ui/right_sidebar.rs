@@ -137,29 +137,34 @@ impl RightSidebar {
                                                 div()
                                                     .flex()
                                                     .items_center()
-                                                    .gap(px(4.0))
-                                                    .p(px(2.0))
-                                                    .rounded(px(theme.radius_sm))
+                                                    .p(px(2.5))
+                                                    .rounded_full()
                                                     .bg(theme.elevated_background)
+                                                    .border_1()
+                                                    .border_color(theme.elevated_border_color)
+                                                    .shadow_sm()
                                                     .child(
                                                         div()
-                                                            .px(px(8.0))
-                                                            .py(px(2.0))
-                                                            .rounded(px(theme.radius_sm))
+                                                            .id("right-sidebar-queue-tab")
+                                                            .px(px(12.0))
+                                                            .py(px(3.5))
+                                                            .rounded_full()
                                                             .text_xs()
-                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .font_weight(FontWeight::SEMIBOLD)
                                                             .bg(theme.button_primary)
                                                             .text_color(theme.button_primary_text)
+                                                            .shadow_sm()
                                                             .cursor_pointer()
                                                             .child(tr!("QUEUE_TITLE")),
                                                     )
                                                     .child(
                                                         div()
                                                             .id("right-sidebar-lyrics-tab")
-                                                            .px(px(8.0))
-                                                            .py(px(2.0))
-                                                            .rounded(px(theme.radius_sm))
+                                                            .px(px(12.0))
+                                                            .py(px(3.5))
+                                                            .rounded_full()
                                                             .text_xs()
+                                                            .font_weight(FontWeight::MEDIUM)
                                                             .text_color(theme.text_secondary)
                                                             .cursor_pointer()
                                                             .hover(|s| s.text_color(theme.text))
@@ -170,11 +175,21 @@ impl RightSidebar {
                                                     ),
                                             )
                                             .child(
-                                                nav_button("close-sidebar", CROSS)
-                                                    .on_click(move |_, _, cx| {
-                                                        show_lyrics_model.update(cx, |v, _| *v = false);
-                                                    })
-                                                    .tooltip(build_tooltip(tr!("CLOSE", "Close"))),
+                                                div()
+                                                    .id("close-sidebar-wrap")
+                                                    .size(px(26.0))
+                                                    .rounded_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .hover(|s| s.bg(theme.nav_button_hover))
+                                                    .child(
+                                                        nav_button("close-sidebar", CROSS)
+                                                            .on_click(move |_, _, cx| {
+                                                                show_lyrics_model.update(cx, |v, _| *v = false);
+                                                            })
+                                                            .tooltip(build_tooltip(tr!("CLOSE", "Close"))),
+                                                    ),
                                             ),
                                     )
                                     .child(div().flex_1().h_full().overflow_hidden().child(queue_view)),

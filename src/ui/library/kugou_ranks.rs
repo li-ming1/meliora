@@ -10,9 +10,9 @@ use crate::ui::online_track_row::{error_line, muted_line};
 use cntp_i18n::tr;
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    ObjectFit, ParentElement, Render, ScrollHandle, ScrollWheelEvent, SharedString,
+    ObjectFit, ParentElement, Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, WeakEntity, Window, div,
-    prelude::FluentBuilder, px, uniform_list,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::{
@@ -669,21 +669,38 @@ impl KugouRanksView {
 
             let card = div()
                 .id(("stage_card_wrap", idx))
+                .relative()
                 .w(w)
                 .h(h)
-                .rounded(px(14.0))
+                .rounded(px(16.0))
                 .overflow_hidden()
                 .border_1()
                 .border_color(if is_center {
-                    theme.button_primary_border
+                    theme.button_primary
                 } else {
                     theme.border_color
                 })
                 .bg(theme.album_art_background)
                 .opacity(opacity_val)
                 .cursor_pointer()
-                .when(shadow_level, |s| s.shadow_lg())
-                .when(!shadow_level, |s| s.shadow_md())
+                .when(is_center, |s| {
+                    s.shadow_lg()
+                        .child(
+                            // 底部镜面倒影渐变遮罩 (Mirror Floor Reflection)
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(70.0))
+                                .bg(linear_gradient(
+                                    0.0,
+                                    linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.85), 0.0),
+                                    linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                                )),
+                        )
+                })
+                .when(!is_center && shadow_level, |s| s.shadow_md())
                 .child(
                     managed_image(
                         ("stage_card", idx),
@@ -734,98 +751,124 @@ impl KugouRanksView {
                     .w_full()
                     .children(cards),
             )
+            // 悬浮磨砂胶囊控制岛 (Floating Action Capsule Island)
             .child(
                 div()
+                    .id("stage-focus-island")
+                    .px(px(28.0))
+                    .py(px(16.0))
+                    .rounded(px(20.0))
+                    .bg(theme.elevated_background)
+                    .border_1()
+                    .border_color(theme.elevated_border_color)
+                    .shadow_lg()
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(22.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text)
-                            .child(focus_track.title.clone()),
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(3.0))
+                            .child(
+                                div()
+                                    .text_size(px(20.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme.text)
+                                    .child(focus_track.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_secondary)
+                                    .child(focus_track.artist.clone()),
+                            ),
                     )
                     .child(
                         div()
-                            .text_size(px(14.0))
-                            .text_color(theme.text_secondary)
-                            .child(focus_track.artist.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(16.0))
-                    .child(
-                        div()
-                            .id("stage-prev-btn")
-                            .size(px(32.0))
-                            .rounded_full()
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.nav_button_hover))
-                            .text_color(theme.text_secondary)
-                            .child("<")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.stage_focus_index = this.stage_focus_index.saturating_sub(1);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("stage-play-btn")
-                            .size(px(44.0))
-                            .rounded_full()
-                            .bg(theme.button_primary)
-                            .text_color(theme.button_primary_text)
-                            .shadow_md()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.button_primary_hover))
-                            .child(icon(PLAY).size(px(20.0)).text_color(theme.button_primary_text))
-                            .on_click(move |_, _, cx| {
-                                crate::ui::kugou::play_track_now(cx, &play_track);
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("stage-like-btn")
-                            .size(px(32.0))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.nav_button_hover))
-                            .child(icon(if liked { HEART_FILLED } else { HEART }).size(px(18.0)).text_color(if liked { theme.liked_song } else { theme.text_secondary }))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_like(&like_track, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("stage-next-btn")
-                            .size(px(32.0))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.nav_button_hover))
-                            .text_color(theme.text_secondary)
-                            .child(">")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let max = this.visible_tracks().len().saturating_sub(1);
-                                this.stage_focus_index = (this.stage_focus_index + 1).min(max);
-                                cx.notify();
-                            })),
+                            .gap(px(16.0))
+                            .child(
+                                div()
+                                    .id("stage-prev-btn")
+                                    .size(px(34.0))
+                                    .rounded_full()
+                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
+                                    .border_1()
+                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(theme.nav_button_hover))
+                                    .text_color(theme.text)
+                                    .child("‹")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.stage_focus_index = this.stage_focus_index.saturating_sub(1);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("stage-play-btn")
+                                    .size(px(46.0))
+                                    .rounded_full()
+                                    .bg(theme.button_primary)
+                                    .text_color(theme.button_primary_text)
+                                    .shadow_md()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(theme.button_primary_hover))
+                                    .child(icon(PLAY).size(px(22.0)).text_color(theme.button_primary_text))
+                                    .on_click(move |_, _, cx| {
+                                        crate::ui::kugou::play_track_now(cx, &play_track);
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id("stage-like-btn")
+                                    .size(px(34.0))
+                                    .rounded_full()
+                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
+                                    .border_1()
+                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(theme.nav_button_hover))
+                                    .child(icon(if liked { HEART_FILLED } else { HEART }).size(px(18.0)).text_color(if liked { theme.liked_song } else { theme.text_secondary }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_like(&like_track, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("stage-next-btn")
+                                    .size(px(34.0))
+                                    .rounded_full()
+                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.06))
+                                    .border_1()
+                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(theme.nav_button_hover))
+                                    .text_color(theme.text)
+                                    .child("›")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let max = this.visible_tracks().len().saturating_sub(1);
+                                        this.stage_focus_index = (this.stage_focus_index + 1).min(max);
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .into_any_element()
