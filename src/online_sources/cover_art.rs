@@ -201,3 +201,25 @@ mod tests {
         assert_eq!(rung_size("https://example.com/cover/art.png"), None);
     }
 }
+
+#[test]
+fn negative_cache_round_trip_and_cap_clears_everything() {
+    // 十五轮测试缺口矩阵中危档：负缓存把瞬态失败当 404 的回归面（背景
+    // 整会话糊掉）。语义：登记过才命中；上界整表清空而不是逐条 LRU。
+    let url_a = "http://cover/a/{size}.jpg";
+    let url_b = "http://cover/b/{size}.jpg";
+    assert!(!variant_missed(url_a));
+
+    note_variant_miss(url_a);
+    assert!(variant_missed(url_a));
+    assert!(!variant_missed(url_b), "未登记的 URL 不得误命中");
+
+    // 填满上界后再登记一条：整表清空语义——旧条目（含 url_a）全部释放
+    let fill = |base: usize| format!("http://cover/fill{base}/{{size}}.jpg");
+    for i in 0..VARIANT_MISSES_CAP {
+        note_variant_miss(&fill(i));
+    }
+    note_variant_miss(url_b);
+    assert!(variant_missed(url_b), "清空后登记的新条目必须在");
+    assert!(!variant_missed(url_a), "越界清空应释放旧条目");
+}

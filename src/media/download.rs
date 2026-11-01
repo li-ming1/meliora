@@ -228,3 +228,56 @@ mod tests {
         assert_eq!(sanitize_filename(""), "track");
     }
 }
+
+#[test]
+fn embed_tags_writes_all_fields_and_round_trips() {
+    // 十五轮测试缺口矩阵中危档：embed_tags 是下载链路的最后一跳（注释里
+    // 的两个事故形态——截断已下载文件、半成品入库——都在它上游的
+    // http_download_to_file，本测试钉住「写进去的标签能原样读回来」）。
+    use crate::test_support::audio_fixtures;
+    use lofty::tag::TagType;
+
+    let dir = crate::test_support::TestDir::new("download-embed-tags");
+    for (fixture, ext, tag_type) in [
+        ("fixture.mp3", "mp3", TagType::Id3v2),
+        ("fixture.flac", "flac", TagType::VorbisComments),
+    ] {
+        let path = dir.join(&format!("embed.{ext}"));
+        std::fs::write(&path, audio_fixtures::fixture(fixture)).unwrap();
+        let cover = audio_fixtures::cover_jpeg();
+        let lrc = "[00:01.00] 测试歌词行";
+
+        embed_tags(
+            path.as_path(),
+            "嵌入标题",
+            "嵌入歌手",
+            "嵌入专辑",
+            Some(&cover),
+            Some(lrc),
+        )
+        .unwrap_or_else(|e| panic!("{fixture}: embed failed: {e}"));
+
+        let tagged = lofty::read_from_path(&path).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+        use lofty::file::TaggedFileExt;
+        let tag = tagged
+            .tag(tag_type)
+            .unwrap_or_else(|| panic!("{fixture}: no tag"));
+        assert_eq!(tag.get_string(ItemKey::TrackTitle), Some("嵌入标题"));
+        assert_eq!(tag.get_string(ItemKey::TrackArtist), Some("嵌入歌手"));
+        assert_eq!(tag.get_string(ItemKey::AlbumTitle), Some("嵌入专辑"));
+        assert_eq!(
+            tag.get_string(ItemKey::UnsyncLyrics),
+            Some(lrc),
+            "{fixture} 歌词"
+        );
+        let pictures = tag.pictures();
+        assert_eq!(pictures.len(), 1, "{fixture} 封面");
+        assert_eq!(
+            pictures[0].mime_type(),
+            Some(&lofty::picture::MimeType::Jpeg)
+        );
+        // 每个容器一个 tag：保存是整体替换而非追加
+        assert_eq!(tagged.tags().len(), 1, "{fixture}");
+        assert_eq!(tag.tag_type(), tag_type);
+    }
+}

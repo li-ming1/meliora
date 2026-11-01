@@ -517,7 +517,13 @@ unsafe fn notify(
 
 fn write_tip(buf: &mut [u16; 128], text: &str) {
     let mut count = 0;
+    // take(127)：末位留给 NUL。非 BMP 字符（如 emoji）在 UTF-16 里是代理对，
+    // 第 127 位恰好是高代理时整对放下不——宁可少一个字也不留下拆半的孤立
+    // 代理（tooltip 会渲染成替换符）。
     for unit in text.encode_utf16().take(127) {
+        if count + 1 == 127 && (0xD800..0xDC00).contains(&unit) {
+            break;
+        }
         buf[count] = unit;
         count += 1;
     }
@@ -649,4 +655,38 @@ mod tests {
             .fold(Duration::ZERO, |acc, delay| acc + delay);
         assert_eq!(total.as_millis(), 562_400);
     }
+}
+
+#[test]
+fn write_tip_terminates_truncates_and_keeps_surrogate_pairs_whole() {
+    let mut buf = [7u16; 128];
+
+    // 短文本：NUL 紧随内容，其余缓冲原样
+    write_tip(&mut buf, "音乐");
+    assert_eq!(&buf[..5], &['音' as u16, '乐' as u16, 0, 7, 7]);
+
+    // 恰好 127 单元：NUL 落在末位
+    let text: String = "曲".repeat(127); // BMP 字符，每字 1 单元
+    write_tip(&mut buf, &text);
+    assert_eq!(buf[126], '曲' as u16);
+    assert_eq!(buf[127], 0);
+
+    // 长文本截断：UTF-16 单元数封顶 127 + NUL，不 panic
+    let long: String = "长".repeat(300);
+    write_tip(&mut buf, &long);
+    assert_eq!(buf[126], '长' as u16);
+    assert_eq!(buf[127], 0);
+
+    // 代理对完整性：第 127 位是高代理时整对放弃（🎶 是 2 单元的非 BMP 字符）
+    let mut buf2 = [0u16; 128];
+    let text = format!("{}🎶", "曲".repeat(126));
+    write_tip(&mut buf2, &text);
+    assert_eq!(buf2[125], '曲' as u16);
+    // 高代理不得出现在 126 位（那会把代理对拆半）
+    assert!(
+        !(0xD800..0xDC00).contains(&buf2[126]),
+        "代理对被拆半: {:#x}",
+        buf2[126]
+    );
+    assert_eq!(buf2[126], 0);
 }
