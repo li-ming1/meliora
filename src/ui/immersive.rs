@@ -56,7 +56,10 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, icon},
+            icons::{
+                CHEVRON_LEFT, CHEVRON_RIGHT, HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY,
+                PREV_TRACK, VOLUME, icon,
+            },
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
@@ -126,7 +129,6 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImmersiveStageMode {
-    Classic,
     #[default]
     PosterWall,
     KineticLyrics,
@@ -139,6 +141,8 @@ pub struct ImmersiveView {
     /// 沉浸模式下的舞台展示形态：Classic（经典双栏）、PosterWall（瀑布流海报墙）、KineticLyrics（随意跳动巨幕歌词）。
     stage_mode: ImmersiveStageMode,
     poster_wall_scroll: ScrollHandle,
+    /// 右侧中控卡片是否折叠收起。
+    console_collapsed: bool,
 
     position: Entity<u64>,
     volume: Entity<f64>,
@@ -359,6 +363,7 @@ impl ImmersiveView {
                 active: *immersive_flag.read(cx),
                 stage_mode: ImmersiveStageMode::PosterWall,
                 poster_wall_scroll: ScrollHandle::new(),
+                console_collapsed: false,
                 position: info.position.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
@@ -990,28 +995,27 @@ impl ImmersiveView {
             .map(|l| l.text.clone())
             .unwrap_or_default();
 
-        // 5 列流式瀑布流分流：每一列纵向紧密咬合，上下左右绝无任何窟窿空隙
-        const NUM_COLS: usize = 5;
+        // 6 列全屏自适应流式瀑布流：宽度完全铺满屏幕，上下紧密咬合，绝无窟窿空隙
+        const NUM_COLS: usize = 6;
         let mut column_cards: [Vec<AnyElement>; NUM_COLS] = Default::default();
 
         for (i, (idx, is_playing_track, title, artist, cover_key)) in item_infos.into_iter().enumerate() {
             let col_idx = i % NUM_COLS;
 
-            // 宽度统一为 230px，高度不规则错落交替 (180px, 240px, 290px, 210px, 320px)
             let h = if is_playing_track {
-                px(320.0) // 正在播放的高光大海报
+                px(340.0) // 正在播放的高光大海报
             } else {
                 match (idx + col_idx) % 4 {
-                    0 => px(230.0),
-                    1 => px(290.0),
+                    0 => px(210.0),
+                    1 => px(270.0),
                     2 => px(180.0),
-                    _ => px(250.0),
+                    _ => px(240.0),
                 }
             };
 
             let card = div()
                 .id(("poster_tile", idx))
-                .w(px(230.0))
+                .w_full()
                 .h(h)
                 .rounded(px(16.0))
                 .shadow_lg()
@@ -1111,10 +1115,11 @@ impl ImmersiveView {
             .map(|(c_idx, col_items)| {
                 div()
                     .id(("masonry_col", c_idx))
-                    .w(px(230.0))
+                    .flex_1()
+                    .min_w(px(180.0))
                     .flex()
                     .flex_col()
-                    .gap(px(16.0))
+                    .gap(px(14.0))
                     .children(col_items)
                     .into_any_element()
             })
@@ -1123,9 +1128,9 @@ impl ImmersiveView {
         div()
             .id("stage-poster-wall")
             .size_full()
-            .pt(px(60.0))
-            .pb(px(40.0))
-            .px(px(40.0))
+            .pt(px(20.0))
+            .pb(px(24.0))
+            .px(px(16.0))
             .overflow_y_scroll()
             .track_scroll(&poster_scroll)
             .child(
@@ -1133,8 +1138,8 @@ impl ImmersiveView {
                     .w_full()
                     .flex()
                     .flex_row()
-                    .justify_center()
-                    .gap(px(16.0))
+                    .justify_between()
+                    .gap(px(14.0))
                     .children(masonry_cols),
             )
             .into_any_element()
@@ -1486,7 +1491,7 @@ impl Render for ImmersiveView {
                     .child(volume_group),
             );
 
-        let left_column = div()
+        let _left_column = div()
             .absolute()
             .left_0()
             .top_0()
@@ -1614,7 +1619,7 @@ impl Render for ImmersiveView {
                 }
             }))
             .children(lyric_children.into_iter().flatten());
-        let right_column = div()
+        let _right_column = div()
             .absolute()
             .top_0()
             .bottom_0()
@@ -1640,67 +1645,36 @@ impl Render for ImmersiveView {
             .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
 
-        let primary_color = theme.button_primary;
-        let primary_text_color = theme.button_primary_text;
-        let current_stage_mode = self.stage_mode;
-
-        let mode_switch_button = div()
-            .id("stage-mode-toggle")
-            .absolute()
-            .top(px(14.0))
-            .right(px(54.0))
-            .flex()
-            .items_center()
-            .p(px(2.0))
-            .rounded_full()
-            .bg(Rgba::new(0.08, 0.09, 0.12, 0.75))
-            .border_1()
-            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.15))
-            .shadow_sm()
-            .child(
+        let return_to_wall_button = if self.stage_mode == ImmersiveStageMode::KineticLyrics {
+            Some(
                 div()
-                    .id("stage-toggle-classic")
-                    .px(px(12.0))
-                    .py(px(3.5))
+                    .id("stage-return-wall")
+                    .absolute()
+                    .top(px(14.0))
+                    .right(px(54.0))
+                    .px(px(14.0))
+                    .py(px(5.0))
                     .rounded_full()
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
+                    .border_1()
+                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.20))
+                    .shadow_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.button_primary).border_color(theme.button_primary_border))
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .when(current_stage_mode == ImmersiveStageMode::Classic, move |el| {
-                        el.bg(primary_color).text_color(primary_text_color)
-                    })
-                    .when(current_stage_mode != ImmersiveStageMode::Classic, |el| {
-                        el.text_color(text_secondary).hover(|s| s.text_color(text))
-                    })
-                    .child("经典")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.stage_mode = ImmersiveStageMode::Classic;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("stage-toggle-poster-wall")
-                    .px(px(12.0))
-                    .py(px(3.5))
-                    .rounded_full()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .when(current_stage_mode != ImmersiveStageMode::Classic, move |el| {
-                        el.bg(primary_color).text_color(primary_text_color)
-                    })
-                    .when(current_stage_mode == ImmersiveStageMode::Classic, |el| {
-                        el.text_color(text_secondary).hover(|s| s.text_color(text))
-                    })
+                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
                     .child("海报墙")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.stage_mode = ImmersiveStageMode::PosterWall;
                         cx.notify();
                     })),
-            );
+            )
+        } else {
+            None
+        };
 
-        let stage_center_view = if current_stage_mode == ImmersiveStageMode::KineticLyrics {
+        let stage_center_view = if self.stage_mode == ImmersiveStageMode::KineticLyrics {
             let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
             let dimmed_color = lerp_color(text, text_secondary, 0.45);
 
@@ -1900,170 +1874,219 @@ impl Render for ImmersiveView {
                 },
             );
 
-            // 右侧手机式精致中控卡片（Console Pod）
-            let right_console = div()
-                .id("stage-console-pod")
-                .w(px(310.0))
-                .h(px(520.0))
-                .rounded(px(22.0))
-                .shadow_lg()
-                .border_1()
-                .border_color(Rgba::new(1.0, 1.0, 1.0, 0.16))
-                .bg(Rgba::new(0.06, 0.07, 0.09, 0.88))
-                .backdrop_blur(px(24.0))
-                .p(px(20.0))
-                .flex()
-                .flex_col()
-                .justify_between()
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(270.0))
-                        .rounded(px(16.0))
-                        .shadow_md()
-                        .border_1()
-                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
-                        .overflow_hidden()
-                        .when_some(self.image_key.clone(), |el, key| {
-                            el.child(
-                                managed_image(("stage-console-art", image_gen), key)
-                                    .thumb_max(512)
-                                    .size_full()
-                                    .object_fit(ObjectFit::Cover),
+            // 右侧手机式精致中控卡片（Console Pod，支持折叠收起与展开）
+            let right_console = if self.console_collapsed {
+                div()
+                    .id("stage-console-expand")
+                    .cursor_pointer()
+                    .p(px(10.0))
+                    .rounded_l(px(16.0))
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.90))
+                    .border_1()
+                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.22))
+                    .shadow_lg()
+                    .hover(|s| s.bg(theme.button_primary))
+                    .child(icon(CHEVRON_LEFT).size(px(20.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                    .tooltip(build_tooltip("展开中控台"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.console_collapsed = false;
+                        cx.notify();
+                    }))
+            } else {
+                div()
+                    .id("stage-console-pod")
+                    .w(px(310.0))
+                    .h(px(520.0))
+                    .rounded(px(22.0))
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.16))
+                    .bg(Rgba::new(0.06, 0.07, 0.09, 0.88))
+                    .backdrop_blur(px(24.0))
+                    .p(px(20.0))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .h(px(270.0))
+                            .rounded(px(16.0))
+                            .shadow_md()
+                            .border_1()
+                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                            .overflow_hidden()
+                            .when_some(self.image_key.clone(), |el, key| {
+                                el.child(
+                                    managed_image(("stage-console-art", image_gen), key)
+                                        .thumb_max(512)
+                                        .size_full()
+                                        .object_fit(ObjectFit::Cover),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("stage-console-collapse")
+                                    .absolute()
+                                    .top(px(8.0))
+                                    .right(px(8.0))
+                                    .cursor_pointer()
+                                    .p(px(6.0))
+                                    .rounded_full()
+                                    .bg(Rgba::new(0.0, 0.0, 0.0, 0.50))
+                                    .hover(|s| s.bg(Rgba::new(0.0, 0.0, 0.0, 0.80)))
+                                    .child(icon(CHEVRON_RIGHT).size(px(16.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.90)))
+                                    .tooltip(build_tooltip("折叠中控台"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.console_collapsed = true;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(
+                                div()
+                                    .text_size(px(17.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(text)
+                                    .truncate()
+                                    .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
                             )
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(3.0))
-                        .child(
-                            div()
-                                .text_size(px(17.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(text)
-                                .truncate()
-                                .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(text_secondary)
-                                .truncate()
-                                .child(self.artist_name.clone().unwrap_or_default()),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(10.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    div()
-                                        .id("console-prev-btn")
-                                        .cursor_pointer()
-                                        .p(px(8.0))
-                                        .rounded_full()
-                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
-                                        .child(icon(PREV_TRACK).size(px(18.0)).text_color(text))
-                                        .on_click(|_, _, cx| {
-                                            cx.global::<PlaybackInterface>().previous();
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .id("console-play-btn")
-                                        .cursor_pointer()
-                                        .size(px(46.0))
-                                        .rounded_full()
-                                        .bg(theme.button_primary)
-                                        .text_color(theme.button_primary_text)
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .shadow_md()
-                                        .hover(|s| s.bg(theme.button_primary_hover))
-                                        .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
-                                        .on_click(|_, _, cx| {
-                                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                                            let interface = cx.global::<PlaybackInterface>();
-                                            if state == PlaybackState::Playing {
-                                                interface.pause();
-                                            } else {
-                                                interface.play();
-                                            }
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .id("console-next-btn")
-                                        .cursor_pointer()
-                                        .p(px(8.0))
-                                        .rounded_full()
-                                        .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.12)))
-                                        .child(icon(NEXT_TRACK).size(px(18.0)).text_color(text))
-                                        .on_click(|_, _, cx| {
-                                            cx.global::<PlaybackInterface>().next();
-                                        }),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .id("console-heart-btn")
-                                .cursor_pointer()
-                                .px(px(14.0))
-                                .py(px(8.0))
-                                .rounded(px(theme.radius_md))
-                                .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
-                                .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
-                                .shadow_sm()
-                                .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(icon(VOLUME).size(px(13.0)).text_color(text_secondary))
-                        .child(
-                            slider()
-                                .id("console-vol-slider")
-                                .w_full()
-                                .h(px(4.0))
-                                .rounded_full()
-                                .value(volume as f32)
-                                .on_change(move |v, _, cx| {
-                                    cx.global::<PlaybackInterface>().set_volume(v as f64);
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(text_secondary)
-                                .child(format!("{}%", (volume * 100.0).round() as i64)),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .text_xs()
-                        .text_color(text_secondary)
-                        .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000))
-                        .child("Ephemeral Bloom"),
-                );
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(text_secondary)
+                                    .truncate()
+                                    .child(self.artist_name.clone().unwrap_or_default()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .id("console-prev-btn")
+                                            .cursor_pointer()
+                                            .size(px(36.0))
+                                            .rounded_full()
+                                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
+                                            .border_1()
+                                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
+                                            .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(PREV_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                            .on_click(|_, _, cx| {
+                                                cx.global::<PlaybackInterface>().previous();
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("console-play-btn")
+                                            .cursor_pointer()
+                                            .size(px(46.0))
+                                            .rounded_full()
+                                            .bg(theme.button_primary)
+                                            .text_color(theme.button_primary_text)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .shadow_md()
+                                            .hover(|s| s.bg(theme.button_primary_hover))
+                                            .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
+                                            .on_click(|_, _, cx| {
+                                                let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                                let interface = cx.global::<PlaybackInterface>();
+                                                if state == PlaybackState::Playing {
+                                                    interface.pause();
+                                                } else {
+                                                    interface.play();
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("console-next-btn")
+                                            .cursor_pointer()
+                                            .size(px(36.0))
+                                            .rounded_full()
+                                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
+                                            .border_1()
+                                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
+                                            .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(NEXT_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                            .on_click(|_, _, cx| {
+                                                cx.global::<PlaybackInterface>().next();
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("console-heart-btn")
+                                    .cursor_pointer()
+                                    .px(px(14.0))
+                                    .py(px(8.0))
+                                    .rounded(px(theme.radius_md))
+                                    .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
+                                    .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
+                                    .shadow_sm()
+                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(icon(VOLUME).size(px(13.0)).text_color(text_secondary))
+                            .child(
+                                slider()
+                                    .id("console-vol-slider")
+                                    .w_full()
+                                    .h(px(4.0))
+                                    .rounded_full()
+                                    .value(volume as f32)
+                                    .on_change(move |v, _, cx| {
+                                        cx.global::<PlaybackInterface>().set_volume(v as f64);
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(text_secondary)
+                                    .child(format!("{}%", (volume * 100.0).round() as i64)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_xs()
+                            .text_color(text_secondary)
+                            .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
+                    )
+            };
 
             let lyrics_stream = div()
                 .flex_1()
@@ -2133,22 +2156,17 @@ impl Render for ImmersiveView {
             .child(right_shade);
 
         match self.stage_mode {
-            ImmersiveStageMode::Classic => {
-                root = root.child(left_column).child(right_column);
-            }
             ImmersiveStageMode::PosterWall => {
                 root = root.child(self.render_poster_wall(cx));
             }
-            ImmersiveStageMode::KineticLyrics => {
+            _ => {
                 if let Some(stage_view) = stage_center_view {
                     root = root.child(stage_view);
-                } else {
-                    root = root.child(left_column).child(right_column);
                 }
             }
         }
 
-        root.child(mode_switch_button).child(exit_button)
+        root.children(return_to_wall_button).child(exit_button)
     }
 }
 
