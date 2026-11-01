@@ -605,3 +605,39 @@ mod tests {
         assert!(matches!(rx.blocking_recv(), Some(ScanCommand::Scan)));
     }
 }
+
+#[test]
+fn probe_roots_classifies_lost_and_recoverable() {
+    // 十五轮测试缺口矩阵中危档收尾：probe_roots 是「网络盘恢复后监视器
+    // 装回去」的唯一入口——丢失/恢复的分类错了，自动扫描就静默失效。
+    let dir = crate::test_support::TestDir::new("probe-roots-test");
+    let alive = dir.join("alive");
+    std::fs::create_dir_all(&alive).unwrap();
+    let alive_path = camino::Utf8PathBuf::from_path_buf(alive.clone()).unwrap();
+
+    // 目录里放个文件让 canonicalize 稳定
+    std::fs::write(alive.join("marker.txt"), b"x").unwrap();
+
+    let gone_watch = camino::Utf8PathBuf::from_path_buf(dir.join("gone-watch")).unwrap();
+    let gone_unwatch = camino::Utf8PathBuf::from_path_buf(dir.join("gone-unwatch")).unwrap();
+    let alive_unwatch = camino::Utf8PathBuf::from_path_buf(dir.join("alive-unwatch")).unwrap();
+    std::fs::create_dir_all(&alive_unwatch).unwrap();
+
+    let watched = vec![alive_path.clone(), gone_watch.clone()];
+    let unwatched = vec![gone_unwatch.clone(), alive_unwatch.clone()];
+
+    let (lost, recoverable) = probe_roots(&watched, &unwatched);
+
+    // 丢失：watched 里的 gone_watch（磁盘上不存在）
+    assert_eq!(lost, vec![gone_watch.clone()]);
+
+    // 可恢复：unwatched 里的 alive_unwatch（磁盘上存在，canonicalize 成功）
+    assert_eq!(recoverable.len(), 1);
+    assert!(
+        recoverable[0].ends_with("alive-unwatch"),
+        "recoverable 应是 canonicalize 后的路径: {:?}",
+        recoverable
+    );
+    // gone_unwatch 不存在 → canonicalize 失败 → 不在 recoverable 里
+    assert!(!recoverable.iter().any(|r| r.ends_with("gone-unwatch")));
+}
