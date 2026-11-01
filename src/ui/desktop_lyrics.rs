@@ -352,6 +352,12 @@ fn persist_position(pos: [f64; 2], cx: &mut App) {
     });
 }
 
+/// 渲染期缓存的最后已知窗口位置。exit(70) 硬阀门路径在 RUNTIME worker 上
+/// 跑、拿不到 gpui 实体——这个 static 是它与视图之间唯一的桥：exit 路径
+/// 读它并直接补写 settings.json，让硬阀门重启后桌面歌词不回退到上一次
+/// persist 的旧位置（AGENTS.md 已知限制的修复）。
+static LAST_KNOWN_POS: std::sync::Mutex<Option<[f64; 2]>> = std::sync::Mutex::new(None);
+
 pub struct DesktopLyricsView {
     lyrics: Entity<Lyrics>,
     parsed: Option<Arc<Vec<LrcLine>>>,
@@ -486,7 +492,13 @@ impl Render for DesktopLyricsView {
         // 渲染期缓存窗口位置与自身句柄：on_release 持久化/清理的唯一数据
         // 源（机制见 persist_position 与 self_handle 注释）。
         self.last_bounds = match window.window_bounds() {
-            WindowBounds::Windowed(rect) => Some([rect.origin.x.to_f64(), rect.origin.y.to_f64()]),
+            WindowBounds::Windowed(rect) => {
+                let pos = [rect.origin.x.to_f64(), rect.origin.y.to_f64()];
+                if let Ok(mut last) = LAST_KNOWN_POS.lock() {
+                    *last = Some(pos);
+                }
+                Some(pos)
+            }
             _ => self.last_bounds,
         };
         if self.self_handle.is_none() {
@@ -612,4 +624,10 @@ impl Render for DesktopLyricsView {
                     .when(self.hovered, |pill| pill.child(close_button)),
             )
     }
+}
+
+/// exit(70) 硬阀门路径读取最后已知的桌面歌词位置（渲染期写入，
+/// 不依赖 gpui 实体访问）。None = 悬浮窗从未打开过。
+pub(crate) fn last_known_position() -> Option<[f64; 2]> {
+    LAST_KNOWN_POS.lock().ok().and_then(|guard| *guard)
 }

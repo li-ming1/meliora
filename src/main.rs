@@ -1005,6 +1005,25 @@ fn spawn_memory_probe() {
                     // 本会话内最后一次拖动会回退到上次落盘值（与 EQ 尾笔同类
                     // 缺口；修复需要 UI 线程钩子，非本路径能补）。
                     crate::settings::flush_pending_settings();
+                    // 桌面歌词位置补写：exit(70) 不走 gpui 退出路径，
+                    // view 的 on_release 与 persist_now 都不会执行——
+                    // 从渲染期 static 桥读最后已知位置并直接补写 settings.json，
+                    // 硬阀门重启后桌面歌词不回退到旧位置。
+                    if let Some(pos) = crate::ui::desktop_lyrics::last_known_position() {
+                        let settings_path =
+                            crate::paths::data_dir().map(|d| d.join("settings.json"));
+                        if let Some(settings_path) = settings_path
+                            && let Ok(contents) = std::fs::read_to_string(&settings_path)
+                            && let Ok(mut value) =
+                                serde_json::from_str::<serde_json::Value>(&contents)
+                        {
+                            value["interface"]["desktop_lyrics_pos"] =
+                                serde_json::json!([pos[0], pos[1]]);
+                            if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+                                let _ = std::fs::write(&settings_path, pretty);
+                            }
+                        }
+                    }
                     // 收听统计同补：exit(70) 不走 gpui 退出路径，on_app_quit
                     // 的排空不会执行（见 EXIT_STATS_FLUSH 注释）。照它的写法
                     // 取半行（on_state(Stopped)+take_pending）后直接在本任务

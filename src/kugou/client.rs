@@ -757,7 +757,6 @@ mod tests {
 
 #[test]
 fn assemble_params_injects_defaults_and_respects_clear() {
-    use serde_json::json;
     // 默认注入：dfid/mid/uuid/appid/clientver/clientver/token/userid 全在
     let p = KugouClient::assemble_params(
         false,
@@ -810,7 +809,6 @@ fn assemble_params_query_overrides_defaults() {
 
 #[test]
 fn assemble_params_need_key_adds_signature() {
-    use serde_json::json;
     // need_key=true：加了非空 key 且 key 来自 sign_key
     let query = BTreeMap::from([
         ("hash".to_string(), "testhash".to_string()),
