@@ -57,8 +57,7 @@ use crate::{
         app::Pool,
         components::{
             icons::{
-                CHEVRON_LEFT, CHEVRON_RIGHT, HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY,
-                PREV_TRACK, VOLUME, icon,
+                HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, icon,
             },
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
@@ -142,7 +141,8 @@ pub struct ImmersiveView {
     stage_mode: ImmersiveStageMode,
     poster_wall_scroll: ScrollHandle,
     /// 右侧中控卡片是否折叠收起。
-    console_collapsed: bool,
+    /// 鼠标是否靠近/悬停在右侧中控区（实现靠边自动显现、移开自动消失）
+    console_hovered: bool,
 
     position: Entity<u64>,
     volume: Entity<f64>,
@@ -363,7 +363,7 @@ impl ImmersiveView {
                 active: *immersive_flag.read(cx),
                 stage_mode: ImmersiveStageMode::PosterWall,
                 poster_wall_scroll: ScrollHandle::new(),
-                console_collapsed: false,
+                console_hovered: false,
                 position: info.position.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
@@ -1921,219 +1921,211 @@ impl Render for ImmersiveView {
                 },
             );
 
-            // 右侧手机式精致中控卡片（Console Pod，支持折叠收起与展开）
-            let right_console = if self.console_collapsed {
-                div()
-                    .id("stage-console-expand")
-                    .cursor_pointer()
-                    .p(px(10.0))
-                    .rounded_l(px(16.0))
-                    .bg(Rgba::new(0.08, 0.09, 0.12, 0.90))
-                    .border_1()
-                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.22))
-                    .shadow_lg()
-                    .hover(|s| s.bg(theme.button_primary))
-                    .child(icon(CHEVRON_LEFT).size(px(20.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
-                    .tooltip(build_tooltip("展开中控台"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.console_collapsed = false;
+            // 右侧中控感应区与手机式精致控制卡片（靠近右侧自动显现，移出自动隐藏）
+            let right_console = div()
+                .id("stage-right-hover-zone")
+                .h_full()
+                .w(px(380.0))
+                .flex()
+                .items_center()
+                .justify_end()
+                .pr(px(32.0))
+                .on_hover(cx.listener(|this, is_hovering: &bool, _, cx| {
+                    if this.console_hovered != *is_hovering {
+                        this.console_hovered = *is_hovering;
                         cx.notify();
-                    }))
-            } else {
-                div()
-                    .id("stage-console-pod")
-                    .w(px(310.0))
-                    .h(px(520.0))
-                    .rounded(px(22.0))
-                    .shadow_lg()
-                    .border_1()
-                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.16))
-                    .bg(Rgba::new(0.06, 0.07, 0.09, 0.88))
-                    .backdrop_blur(px(24.0))
-                    .p(px(20.0))
-                    .flex()
-                    .flex_col()
-                    .justify_between()
-                    .child(
+                    }
+                }))
+                .when(self.console_hovered, |zone| {
+                    zone.child(
                         div()
-                            .relative()
-                            .w_full()
-                            .h(px(270.0))
-                            .rounded(px(16.0))
-                            .shadow_md()
+                            .id("stage-console-pod")
+                            .w(px(310.0))
+                            .h(px(520.0))
+                            .rounded(px(22.0))
+                            .shadow_lg()
                             .border_1()
-                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
-                            .overflow_hidden()
-                            .when_some(self.image_key.clone(), |el, key| {
-                                el.child(
-                                    managed_image(("stage-console-art", image_gen), key)
-                                        .thumb_max(512)
-                                        .size_full()
-                                        .object_fit(ObjectFit::Cover),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .id("stage-console-collapse")
-                                    .absolute()
-                                    .top(px(8.0))
-                                    .right(px(8.0))
-                                    .cursor_pointer()
-                                    .p(px(6.0))
-                                    .rounded_full()
-                                    .bg(Rgba::new(0.0, 0.0, 0.0, 0.50))
-                                    .hover(|s| s.bg(Rgba::new(0.0, 0.0, 0.0, 0.80)))
-                                    .child(icon(CHEVRON_RIGHT).size(px(16.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.90)))
-                                    .tooltip(build_tooltip("折叠中控台"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.console_collapsed = true;
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
+                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.16))
+                            .bg(Rgba::new(0.06, 0.07, 0.09, 0.88))
+                            .backdrop_blur(px(24.0))
+                            .p(px(20.0))
                             .flex()
                             .flex_col()
-                            .gap(px(3.0))
-                            .child(
-                                div()
-                                    .text_size(px(17.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(text)
-                                    .truncate()
-                                    .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(text_secondary)
-                                    .truncate()
-                                    .child(self.artist_name.clone().unwrap_or_default()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
                             .justify_between()
-                            .gap(px(10.0))
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .id("console-prev-btn")
-                                            .cursor_pointer()
-                                            .size(px(36.0))
-                                            .rounded_full()
-                                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
-                                            .border_1()
-                                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
-                                            .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(icon(PREV_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
-                                            .on_click(|_, _, cx| {
-                                                cx.global::<PlaybackInterface>().previous();
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("console-play-btn")
-                                            .cursor_pointer()
-                                            .size(px(46.0))
-                                            .rounded_full()
-                                            .bg(theme.button_primary)
-                                            .text_color(theme.button_primary_text)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .shadow_md()
-                                            .hover(|s| s.bg(theme.button_primary_hover))
-                                            .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
-                                            .on_click(|_, _, cx| {
-                                                let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                                                let interface = cx.global::<PlaybackInterface>();
-                                                if state == PlaybackState::Playing {
-                                                    interface.pause();
-                                                } else {
-                                                    interface.play();
-                                                }
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("console-next-btn")
-                                            .cursor_pointer()
-                                            .size(px(36.0))
-                                            .rounded_full()
-                                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
-                                            .border_1()
-                                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
-                                            .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(icon(NEXT_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
-                                            .on_click(|_, _, cx| {
-                                                cx.global::<PlaybackInterface>().next();
-                                            }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("console-heart-btn")
-                                    .cursor_pointer()
-                                    .px(px(14.0))
-                                    .py(px(8.0))
-                                    .rounded(px(theme.radius_md))
-                                    .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
-                                    .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
-                                    .shadow_sm()
-                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(icon(VOLUME).size(px(13.0)).text_color(text_secondary))
-                            .child(
-                                slider()
-                                    .id("console-vol-slider")
+                                    .relative()
                                     .w_full()
-                                    .h(px(4.0))
-                                    .rounded_full()
-                                    .value(volume as f32)
-                                    .on_change(move |v, _, cx| {
-                                        cx.global::<PlaybackInterface>().set_volume(v as f64);
+                                    .h(px(270.0))
+                                    .rounded(px(16.0))
+                                    .shadow_md()
+                                    .border_1()
+                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                    .overflow_hidden()
+                                    .when_some(self.image_key.clone(), |el, key| {
+                                        el.child(
+                                            managed_image(("stage-console-art", image_gen), key)
+                                                .thumb_max(512)
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover),
+                                        )
                                     }),
                             )
                             .child(
                                 div()
-                                    .text_size(px(10.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(17.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(text)
+                                            .truncate()
+                                            .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(text_secondary)
+                                            .truncate()
+                                            .child(self.artist_name.clone().unwrap_or_default()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .id("console-prev-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
+                                                    .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon(PREV_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .on_click(|_, _, cx| {
+                                                        cx.global::<PlaybackInterface>().previous();
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("console-play-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(46.0))
+                                                    .rounded_full()
+                                                    .bg(theme.button_primary)
+                                                    .text_color(theme.button_primary_text)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .shadow_md()
+                                                    .hover(|s| s.bg(theme.button_primary_hover))
+                                                    .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
+                                                    .on_click(|_, _, cx| {
+                                                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                                        let interface = cx.global::<PlaybackInterface>();
+                                                        if state == PlaybackState::Playing {
+                                                            interface.pause();
+                                                        } else {
+                                                            interface.play();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("console-next-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
+                                                    .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon(NEXT_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .on_click(|_, _, cx| {
+                                                        cx.global::<PlaybackInterface>().next();
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("console-heart-btn")
+                                            .cursor_pointer()
+                                            .px(px(14.0))
+                                            .py(px(8.0))
+                                            .rounded(px(theme.radius_md))
+                                            .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
+                                            .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
+                                            .shadow_sm()
+                                            .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(icon(VOLUME).size(px(13.0)).text_color(text_secondary))
+                                    .child(
+                                        slider()
+                                            .id("console-vol-slider")
+                                            .w_full()
+                                            .h(px(4.0))
+                                            .rounded_full()
+                                            .value(volume as f32)
+                                            .on_change(move |v, _, cx| {
+                                                cx.global::<PlaybackInterface>().set_volume(v as f64);
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(text_secondary)
+                                            .child(format!("{}%", (volume * 100.0).round() as i64)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_xs()
                                     .text_color(text_secondary)
-                                    .child(format!("{}%", (volume * 100.0).round() as i64)),
+                                    .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
                             ),
                     )
-                    .child(
+                })
+                .when(!self.console_hovered, |zone| {
+                    zone.child(
                         div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(text_secondary)
-                            .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
+                            .id("stage-hover-indicator")
+                            .w(px(4.0))
+                            .h(px(64.0))
+                            .rounded_full()
+                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.18))
+                            .mr(px(8.0)),
                     )
-            };
+                });
 
             let lyrics_stream = div()
                 .flex_1()
