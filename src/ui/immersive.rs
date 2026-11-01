@@ -145,6 +145,7 @@ pub struct ImmersiveView {
     console_hovered: bool,
 
     position: Entity<u64>,
+    duration: Entity<u64>,
     volume: Entity<f64>,
     prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
@@ -365,6 +366,7 @@ impl ImmersiveView {
                 poster_wall_scroll: ScrollHandle::new(),
                 console_hovered: false,
                 position: info.position.clone(),
+                duration: info.duration.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
@@ -2236,6 +2238,59 @@ impl Render for ImmersiveView {
                         .children(kinetic_lyric_elements),
                 );
 
+            let duration_ms = *self.duration.read(cx);
+            let progress_fraction = if duration_ms > 0 {
+                (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let current_time_text = format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000);
+            let total_time_text = format!("{}:{:02}", duration_ms / 60000, (duration_ms % 60000) / 1000);
+
+            // 底部电影级极简悬浮光轨 (Minimal Floating Aurora Progress Bar)
+            let floating_progress = div()
+                .id("stage-floating-progress")
+                .absolute()
+                .bottom(px(24.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .id("stage-floating-bar-track")
+                        .relative()
+                        .w(px(320.0))
+                        .h(px(3.0))
+                        .rounded_full()
+                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(relative(progress_fraction))
+                                .rounded_full()
+                                .bg(Rgba::new(1.0, 0.85, 0.45, 0.85))
+                                .shadow_sm(),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(Rgba::new(1.0, 1.0, 1.0, 0.35))
+                        .child(current_time_text)
+                        .child("•")
+                        .child(total_time_text),
+                );
+
             Some(
                 div()
                     .absolute()
@@ -2250,7 +2305,8 @@ impl Render for ImmersiveView {
                             .pr(px(52.0))
                             .child(lyrics_stream)
                             .child(right_console),
-                    ),
+                    )
+                    .child(floating_progress),
             )
         } else {
             None

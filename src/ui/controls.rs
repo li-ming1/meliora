@@ -508,10 +508,8 @@ impl Render for Scrubber {
         let window_width = window.viewport_size().width;
 
         div()
-            .pl(px(13.0))
-            .pr(px(13.0))
-            .border_x(px(1.0))
-            .border_color(theme.border_color)
+            .pl(px(16.0))
+            .pr(px(16.0))
             .flex_grow(1.0)
             .flex()
             .flex_col()
@@ -528,18 +526,19 @@ impl Render for Scrubber {
                     .mb(px(6.0))
                     .child(
                         div()
-                            .mr(px(6.0))
+                            .mr(px(8.0))
                             .line_height(rems(1.0))
+                            .text_color(theme.text)
                             .child(position_text),
                     )
                     .when(window_width > px(900.0), |this| {
                         this.child(
                             div()
                                 .line_height(rems(1.0))
-                                .border_color(rgb(0x4b5563))
-                                .border_l(px(2.0))
-                                .pl(px(6.0))
-                                .text_color(rgb(0xcbd5e1))
+                                .pl(px(8.0))
+                                .border_l(px(1.0))
+                                .border_color(theme.border_color)
+                                .text_color(theme.text_secondary)
                                 .child(duration_text),
                         )
                     })

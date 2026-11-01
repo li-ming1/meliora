@@ -432,7 +432,11 @@ impl Render for QueueItem {
                         })
                         .when(
                             !is_selected && is_current && !item_state.is_being_dragged,
-                            |div| div.bg(theme.queue_item_current),
+                            |div| {
+                                div.bg(theme.queue_item_current)
+                                    .border_l(px(3.0))
+                                    .border_color(theme.button_primary)
+                            },
                         )
                         .when(is_available, |div| {
                             div.on_click(move |event: &ClickEvent, _, cx| {
@@ -603,21 +607,59 @@ impl Render for QueueItem {
                         ))
                         .child(
                             div()
-                                .id("album-art")
-                                .rounded(px(theme.radius_sm))
-                                .bg(theme.album_art_background)
-                                .shadow_sm()
+                                .relative()
                                 .w(px(36.0))
                                 .h(px(36.0))
                                 .flex_shrink_0()
-                                .when_some(image_key, |div, key| {
-                                    div.child(
-                                        managed_image(("queue-art", idx), key)
-                                            .w(px(36.0))
-                                            .h(px(36.0))
-                                            .object_fit(ObjectFit::Fill)
+                                .child(
+                                    div()
+                                        .id("album-art")
+                                        .rounded(px(theme.radius_sm))
+                                        .bg(theme.album_art_background)
+                                        .shadow_sm()
+                                        .size_full()
+                                        .when_some(image_key, |div, key| {
+                                            div.child(
+                                                managed_image(("queue-art", idx), key)
+                                                    .size_full()
+                                                    .object_fit(ObjectFit::Fill)
+                                                    .rounded(px(theme.radius_sm))
+                                                    .thumb(),
+                                            )
+                                        }),
+                                )
+                                .when(is_current, |container| {
+                                    container.child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
                                             .rounded(px(theme.radius_sm))
-                                            .thumb(),
+                                            .bg(Rgba::new(0.0, 0.0, 0.0, 0.45))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(2.0))
+                                            .child(
+                                                div()
+                                                    .w(px(2.5))
+                                                    .h(px(14.0))
+                                                    .rounded_full()
+                                                    .bg(theme.button_primary_text),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(2.5))
+                                                    .h(px(10.0))
+                                                    .rounded_full()
+                                                    .bg(theme.button_primary_text),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(2.5))
+                                                    .h(px(16.0))
+                                                    .rounded_full()
+                                                    .bg(theme.button_primary_text),
+                                            ),
                                     )
                                 }),
                         )
