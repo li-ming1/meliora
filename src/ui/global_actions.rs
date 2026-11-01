@@ -34,6 +34,9 @@ actions!(
     ]
 );
 actions!(scan, [ForceScan, Scan]);
+// 调试演示动作只在 debug 构建注册：keybinds.json 的 alt-shift-t 绑定在
+// release 下落到无处理器的动作名上（空操作），普通用户不再可能按出测试 toast
+#[cfg(debug_assertions)]
 actions!(debug, [TestToast]);
 actions!(meliora, [HideSelf, HideOthers, ShowAll]);
 actions!(help, [Issues]);
@@ -62,6 +65,7 @@ pub fn register_actions(cx: &mut App) {
     cx.on_action(open_log);
     cx.on_action(copy_troubleshooting_info);
     cx.on_action(open_theme_folder);
+    #[cfg(debug_assertions)]
     cx.on_action(test_toast);
 
     debug!("actions: {:?}", cx.all_action_names());
@@ -189,6 +193,7 @@ fn scan(_: &Scan, cx: &mut App) {
     scanner.scan();
 }
 
+#[cfg(debug_assertions)]
 fn test_toast(_: &TestToast, _cx: &mut App) {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
