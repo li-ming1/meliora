@@ -127,8 +127,8 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImmersiveStageMode {
     Classic,
-    PosterWall,
     #[default]
+    PosterWall,
     KineticLyrics,
 }
 
@@ -357,7 +357,7 @@ impl ImmersiveView {
             let mut this = Self {
                 focus_handle: cx.focus_handle(),
                 active: *immersive_flag.read(cx),
-                stage_mode: ImmersiveStageMode::KineticLyrics,
+                stage_mode: ImmersiveStageMode::PosterWall,
                 poster_wall_scroll: ScrollHandle::new(),
                 position: info.position.clone(),
                 volume: info.volume.clone(),
@@ -1716,121 +1716,139 @@ impl Render for ImmersiveView {
 
             // 换句时的全空间戏剧化大跳跃 (Dynamic Spatial Hop: 随着乐句在左侧巨幕空间中左跳右跳)
             let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 5 {
-                0 => (-60.0f32, -30.0f32), // 偏左上方
-                1 => (90.0f32, 25.0f32),   // 偏右侧
-                2 => (-10.0f32, -15.0f32), // 偏中上
-                3 => (50.0f32, -35.0f32),  // 偏右上
-                _ => (-90.0f32, 20.0f32),  // 偏左下方
+                0 => (-80.0f32, -40.0f32), // 偏左上方
+                1 => (110.0f32, 30.0f32),  // 偏右侧
+                2 => (-20.0f32, -20.0f32), // 偏中上
+                3 => (70.0f32, -45.0f32),  // 偏右上
+                _ => (-110.0f32, 25.0f32), // 偏左下方
             };
 
-            let waterfall_lines = self.parsed.as_ref().map(|parsed| {
-                let visual_line = self.visual_line;
-                let current_line = self.current_line;
-
-                lyric_window(visual_line, parsed.len(), current_line)
-                    .into_iter()
-                    .map(move |(index, _top, is_current)| {
-                        let line = &parsed[index];
-                        let distance = (index as f32 - visual_line).abs().round() as i64;
-                        let (font_size, opacity) = match distance {
-                            0 => (52.0f32, 1.0f32),
-                            1 => (22.0f32, 0.65f32),
-                            2 => (18.0f32, 0.35f32),
-                            _ => (15.0f32, 0.14f32),
-                        };
-                        let line_time_ms = line.time_ms;
-
-                        let text_child: AnyElement = if is_current && !line.words.is_empty() {
-                            let unsung = dimmed_color;
-                            let mut row = div().flex().flex_wrap().justify_start().items_baseline().gap(px(4.0));
-                            for (w_idx, word) in line.words.iter().enumerate() {
+            let kinetic_lyric_elements: Vec<AnyElement> = if let Some(parsed) = &self.parsed {
+                let active_idx = self.current_line.unwrap_or(0);
+                if let Some(line) = parsed.get(active_idx) {
+                    let line_time_ms = line.time_ms;
+                    let words_elements: Vec<AnyElement> = if !line.words.is_empty() {
+                        line.words
+                            .iter()
+                            .enumerate()
+                            .map(|(w_idx, word)| {
                                 let progress = word_progress(word, position_ms);
-                                let color = lerp_color(unsung, gold_glow, progress);
+                                let color = lerp_color(dimmed_color, gold_glow, progress);
 
-                                // 音律单字五线谱高低与横向错落散开 (Word Spread & Jitter)
-                                let pseudo_rand = ((w_idx as f32 * 12.9898 + (active_seed % 1000) as f32 * 78.233).sin() * 43758.5453).fract().abs();
-                                let word_jitter_x = (pseudo_rand - 0.5) * 20.0;
-                                let base_y_offset = match (w_idx + index) % 4 {
-                                    0 => 0.0f32,
-                                    1 => -8.0f32,
-                                    2 => 6.0f32,
-                                    _ => -3.0f32,
-                                };
-                                // 正在唱到的字触发向上的音律跳动 (Spring Bounce)
-                                let bounce_offset = if progress > 0.05 && progress < 0.95 {
-                                    -((progress * std::f32::consts::PI).sin() * 12.0)
+                                // 每个字在 2D 空间内的随意散落 (Dynamic Kinetic Scatter)
+                                let w_seed = (active_seed / 50) + w_idx as u64 * 43;
+                                let scatter_x = (w_seed as f32 * 0.47).sin() * 55.0;
+                                let scatter_y = (w_seed as f32 * 0.71).cos() * 38.0;
+
+                                // 唱到时的 18px 强劲音律上弹 (Spring Bounce)
+                                let bounce_y = if progress > 0.02 && progress < 0.98 {
+                                    -((progress * std::f32::consts::PI).sin() * 18.0)
                                 } else {
                                     0.0
                                 };
-                                let total_y_offset = base_y_offset + bounce_offset;
+                                let total_y = scatter_y + bounce_y;
 
-                                row = row.child(
-                                    div()
-                                        .relative()
-                                        .mt(px(total_y_offset))
-                                        .ml(px(word_jitter_x.max(0.0)))
-                                        .when(progress > 0.05, |el| {
-                                            el.child(
-                                                div()
-                                                    .absolute()
-                                                    .top(px(-2.0))
-                                                    .left(px(-2.0))
-                                                    .opacity(0.45 * progress)
-                                                    .text_color(Rgba::new(1.0, 0.72, 0.35, 0.85))
-                                                    .child(word.text.clone()),
-                                            )
-                                        })
-                                        .child(div().child(word.text.clone()).text_color(color)),
-                                );
-                            }
-                            row.into_any_element()
-                        } else {
-                            let color = if is_current { gold_glow } else { dimmed_color };
-                            let mut row = div().flex().flex_wrap().justify_start().items_baseline().gap(px(2.0));
-                            for (c_idx, ch) in line.text.chars().enumerate() {
-                                let base_y = match (c_idx + index) % 4 {
-                                    0 => 0.0f32,
-                                    1 => -6.0f32,
-                                    2 => 4.0f32,
-                                    _ => -2.0f32,
-                                };
-                                row = row.child(
-                                    div()
-                                        .mt(px(base_y))
-                                        .text_color(color)
-                                        .child(ch.to_string()),
-                                );
-                            }
-                            row.into_any_element()
-                        };
+                                div()
+                                    .relative()
+                                    .ml(px((scatter_x + 8.0).max(0.0)))
+                                    .mt(px(total_y))
+                                    .when(progress > 0.03, |el| {
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .top(px(-3.0))
+                                                .left(px(-3.0))
+                                                .opacity(0.55 * progress)
+                                                .text_color(Rgba::new(1.0, 0.75, 0.35, 0.90))
+                                                .child(word.text.clone()),
+                                        )
+                                    })
+                                    .child(div().child(word.text.clone()).text_color(color))
+                                    .into_any_element()
+                            })
+                            .collect()
+                    } else {
+                        line.text
+                            .chars()
+                            .enumerate()
+                            .map(|(c_idx, ch)| {
+                                let c_seed = (active_seed / 50) + c_idx as u64 * 31;
+                                let scatter_x = (c_seed as f32 * 0.43).sin() * 40.0;
+                                let scatter_y = (c_seed as f32 * 0.67).cos() * 30.0;
+                                div()
+                                    .relative()
+                                    .ml(px((scatter_x + 4.0).max(0.0)))
+                                    .mt(px(scatter_y))
+                                    .text_color(gold_glow)
+                                    .child(ch.to_string())
+                                    .into_any_element()
+                            })
+                            .collect()
+                    };
 
+                    let mut elements = Vec::new();
+                    // 巨幕主歌词容器（64px 巨型字体，自由散落）
+                    elements.push(
                         div()
-                            .id(("stage-bloom-line", index))
-                            .cursor_pointer()
+                            .id("stage-kinetic-hero-line")
                             .w_full()
-                            .opacity(opacity)
-                            .text_size(px(font_size))
-                            .line_height(relative(1.20))
-                            .font_weight(if is_current { FontWeight::BOLD } else { FontWeight::MEDIUM })
+                            .text_size(px(64.0))
+                            .line_height(relative(1.18))
+                            .font_weight(FontWeight::BOLD)
+                            .cursor_pointer()
                             .on_click(move |_, _, cx| {
                                 let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
                                 if state != PlaybackState::Stopped {
-                                    cx.global::<PlaybackInterface>().seek(line_time_ms as f64 / 1000.0);
+                                    cx.global::<PlaybackInterface>()
+                                        .seek(line_time_ms as f64 / 1000.0);
                                 }
                             })
-                            .child(text_child)
-                            .when(is_current && line.translation.is_some(), |el| {
-                                el.child(
-                                    div()
-                                        .mt(px(6.0))
-                                        .text_left()
-                                        .text_size(px(18.0))
-                                        .text_color(text_secondary)
-                                        .child(line.translation.clone().unwrap()),
-                                )
-                            })
-                    })
-            });
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .justify_start()
+                                    .items_baseline()
+                                    .gap(px(6.0))
+                                    .children(words_elements),
+                            )
+                            .into_any_element(),
+                    );
+
+                    // 伴随优雅译文
+                    if let Some(trans) = &line.translation {
+                        elements.push(
+                            div()
+                                .mt(px(14.0))
+                                .text_left()
+                                .text_size(px(18.0))
+                                .text_color(text_secondary)
+                                .child(trans.clone())
+                                .into_any_element(),
+                        );
+                    }
+
+                    // 下一句微弱预读伴随行（18% 透明度，静静浮在下方）
+                    if let Some(next) = parsed.get(active_idx + 1) {
+                        elements.push(
+                            div()
+                                .mt(px(28.0))
+                                .text_left()
+                                .text_size(px(20.0))
+                                .opacity(0.18)
+                                .text_color(text_secondary)
+                                .child(next.text.clone())
+                                .into_any_element(),
+                        );
+                    }
+
+                    elements
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
 
             // 背景星轨几何罗盘装饰层
             let compass_canvas = canvas(
@@ -2084,7 +2102,7 @@ impl Render for ImmersiveView {
                         .flex()
                         .flex_col()
                         .gap(px(18.0))
-                        .children(waterfall_lines.into_iter().flatten()),
+                        .children(kinetic_lyric_elements),
                 );
 
             Some(
