@@ -366,7 +366,8 @@ impl Render for FileRowItem {
 
         let row_content = div()
             .id(hash_id)
-            .px(px(4.0))
+            .px(px(6.0))
+            .rounded(px(radius_sm))
             .flex()
             .items_center()
             .w_full()

@@ -1315,7 +1315,7 @@
   },
   "LIKE_ALBUM": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:579",
+    "definedIn": "src/ui/library/release_view.rs:581",
     "plural": false,
     "description": null
   },
@@ -1585,13 +1585,13 @@
   },
   "RELEASED_DATE": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:679",
+    "definedIn": "src/ui/library/release_view.rs:681",
     "plural": false,
     "description": null
   },
   "RELEASED_YEAR": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:703",
+    "definedIn": "src/ui/library/release_view.rs:705",
     "plural": false,
     "description": null
   },
@@ -2389,7 +2389,7 @@
   },
   "UNLIKE_ALBUM": {
     "context": "release_view.rs",
-    "definedIn": "src/ui/library/release_view.rs:577",
+    "definedIn": "src/ui/library/release_view.rs:579",
     "plural": false,
     "description": null
   },
