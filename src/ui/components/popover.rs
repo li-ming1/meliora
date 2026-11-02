@@ -75,6 +75,7 @@ impl RenderOnce for Popover {
             .div
             .occlude()
             .bg(theme.elevated_background)
+            .backdrop_blur(px(16.0))
             .border_1()
             .border_color(theme.elevated_border_color)
             .rounded(px(theme.radius_md))

@@ -2159,10 +2159,13 @@ impl Render for ImmersiveView {
                                                     .px(px(14.0))
                                                     .py(px(8.0))
                                                     .rounded(px(theme.radius_md))
-                                                    .bg(Rgba::new(0.68, 0.10, 0.18, 0.90))
-                                                    .hover(|s| s.bg(Rgba::new(0.80, 0.12, 0.22, 1.0)))
-                                                    .shadow_sm()
-                                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.90, 0.92, 1.0))),
+                                                    .bg(Rgba::new(0.72, 0.12, 0.22, 0.95))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 0.40, 0.50, 0.35))
+                                                    .hover(|s| s.bg(Rgba::new(0.85, 0.14, 0.26, 1.0)).border_color(Rgba::new(1.0, 0.50, 0.60, 0.60)))
+                                                    .active(|s| s.bg(Rgba::new(0.60, 0.08, 0.16, 1.0)))
+                                                    .shadow_md()
+                                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.92, 0.95, 1.0))),
                                             ),
                                     ),
                             )
