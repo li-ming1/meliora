@@ -35,3 +35,6 @@ patches/
 
 # WorkBuddy agent workspace（记忆与过程文件，仅本机）
 .workbuddy-ai/
+
+# 临时工作文档与过程文件
+tmp/
