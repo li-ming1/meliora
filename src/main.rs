@@ -1010,10 +1010,8 @@ fn spawn_memory_probe() {
                     // 从渲染期 static 桥读最后已知位置并直接补写 settings.json，
                     // 硬阀门重启后桌面歌词不回退到旧位置。
                     if let Some(pos) = crate::ui::desktop_lyrics::last_known_position() {
-                        let settings_path =
-                            crate::paths::data_dir().map(|d| d.join("settings.json"));
-                        if let Some(settings_path) = settings_path
-                            && let Ok(contents) = std::fs::read_to_string(&settings_path)
+                        let settings_path = crate::paths::data_dir().join("settings.json");
+                        if let Ok(contents) = std::fs::read_to_string(&settings_path)
                             && let Ok(mut value) =
                                 serde_json::from_str::<serde_json::Value>(&contents)
                         {
