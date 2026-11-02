@@ -103,7 +103,7 @@ impl Render for SearchView {
                         tracing::debug!(%err, "search view gone on modal exit");
                     }
                 })
-                .child(div().w(px(550.0)).h(px(500.0)).child(self.search.clone()))
+                .child(div().w(px(580.0)).h(px(520.0)).child(self.search.clone()))
                 .into_any_element()
         } else {
             div().into_any_element()

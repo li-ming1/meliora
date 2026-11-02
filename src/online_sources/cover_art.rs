@@ -20,10 +20,10 @@ use tracing::{info, warn};
 
 /// 在原始 URL 之前从最大到最小尝试的酷狗 `stdmusic` 尺寸档位。主机按请求的档位即时缩放
 /// （2026-09-28 实测：480/1280/1920/2048/4096 都出真像素）——但不是每张封面都在服务端生成过
-/// 每个变体，所以梯队保留确实存在的最大变体。自 2026-09-29「背景必须与圆盘小封面同等清晰」
-/// 的指示起 4096 领衔梯队：4096 时背景的裁剪带以约 0.47× 重采样到 ~1920 设备像素，其平均
-/// 效应与 4× 缩采样的圆盘封面一致；缺失的变体只花一次 404 并按会话做负缓存。
-const KUGOU_SIZE_LADDER: [&str; 4] = ["4096", "2048", "1280", "480"];
+/// 每个变体，所以梯队保留确实存在的最大变体。
+/// 2048 档在 1080p/2K/4K 屏幕上进行高质渲染已超过 2x~4x 超采样，画质极其清晰细腻，
+/// 同时彻底避免了 4096 档导致的单图 67MB 巨大显存/堆分配暴涨。
+const KUGOU_SIZE_LADDER: [&str; 3] = ["2048", "1280", "480"];
 
 /// 本次会话里没返回过像素的展示变体 URL。一次 404 就是一次往返；没有这个集合的话，该封面
 /// 每次背景取图都会在抵达缓存里的赢家之前重复付每一档失败的代价。刻意按会话作用域：下次
@@ -152,12 +152,12 @@ mod tests {
         let url = "http://imge.kugou.com/stdmusic/256/20260306/20260306201650909877.jpg";
         assert_eq!(
             largest_variant(url),
-            "http://imge.kugou.com/stdmusic/4096/20260306/20260306201650909877.jpg"
+            "http://imge.kugou.com/stdmusic/2048/20260306/20260306201650909877.jpg"
         );
-        // 已经很大的 URL 仍然抬到顶档（2048 → 4096）。
+        // 已经很大的 URL 抬到 2048 最佳画质平衡档。
         assert_eq!(
-            largest_variant("https://imgessl.kugou.com/stdmusic/2048/20200101/abcdef.jpg"),
-            "https://imgessl.kugou.com/stdmusic/4096/20200101/abcdef.jpg"
+            largest_variant("https://imgessl.kugou.com/stdmusic/1280/20200101/abcdef.jpg"),
+            "https://imgessl.kugou.com/stdmusic/2048/20200101/abcdef.jpg"
         );
     }
 
@@ -168,7 +168,6 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
-                "http://imge.kugou.com/stdmusic/4096/20260306/x.jpg".to_string(),
                 "http://imge.kugou.com/stdmusic/2048/20260306/x.jpg".to_string(),
                 "http://imge.kugou.com/stdmusic/1280/20260306/x.jpg".to_string(),
                 "http://imge.kugou.com/stdmusic/480/20260306/x.jpg".to_string(),

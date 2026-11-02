@@ -43,10 +43,10 @@ use std::{
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ObjectFit, ParentElement, Render, Rgba, ScrollWheelEvent,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
-    linear_color_stop, linear_gradient, px, relative,
+    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba, ScrollHandle,
+    ScrollWheelEvent, SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, px, relative,
 };
 use tracing::warn;
 
@@ -56,7 +56,9 @@ use crate::{
     ui::{
         app::Pool,
         components::{
-            icons::{MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, icon},
+            icons::{
+                GRID, HEART_FILLED, MINIMIZE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, VOLUME, icon,
+            },
             managed_image::{
                 ImageCacheMode, ManagedImageKey, RENDER_CACHE_PRESSURE_KEEP,
                 backdrop_cache_contains, backdrop_cache_shrink, backdrop_decode_allowed,
@@ -78,17 +80,17 @@ use crate::{
 };
 
 /// 歌词行之间的垂直间距，单位 px。
-const LINE_PITCH_PX: f32 = 44.0;
+const LINE_PITCH_PX: f32 = 52.0;
 /// 歌词字号——只允许离散档位，保证字形图集安全。
-const CURRENT_LINE_SIZE: f32 = 22.0;
-const NEIGHBOR_LINE_SIZE: f32 = 18.0;
-const TRANSLATION_SIZE: f32 = 13.0;
-/// 活动行两侧各渲染多少行歌词（13 行窗口）。
-const LINE_WINDOW: i64 = 6;
-/// 歌词视口高度：十三个行距。
-const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 13.0;
+const CURRENT_LINE_SIZE: f32 = 28.0;
+const NEIGHBOR_LINE_SIZE: f32 = 20.0;
+const TRANSLATION_SIZE: f32 = 14.0;
+/// 活动行两侧各渲染多少行歌词（11 行窗口）。
+const LINE_WINDOW: i64 = 5;
+/// 歌词视口高度：十一个行距。
+const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 11.0;
 /// 按「与活动行的距离」给出的逐行不透明度（下标 = 距离）。
-const LINE_OPACITY: [f32; 7] = [1.0, 0.82, 0.64, 0.47, 0.33, 0.22, 0.14];
+const LINE_OPACITY: [f32; 7] = [1.0, 0.80, 0.60, 0.42, 0.28, 0.18, 0.10];
 const LINE_ANIMATION: Duration = Duration::from_millis(320);
 /// 圆盘直径占左栏高度的比例。
 const VINYL_SIZE_FRACTION: f32 = 0.34;
@@ -124,12 +126,26 @@ pub fn set_immersive(entering: bool, cx: &mut App) {
     cx.defer(move |cx| crate::ui::app::set_main_window_fullscreen(entering, cx));
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImmersiveStageMode {
+    #[default]
+    PosterWall,
+    KineticLyrics,
+}
+
 pub struct ImmersiveView {
     focus_handle: FocusHandle,
     /// 镜像 `Models::immersive`；守每次观察者的 `notify`。
     active: bool,
+    /// 沉浸模式下的舞台展示形态：Classic（经典双栏）、PosterWall（瀑布流海报墙）、KineticLyrics（随意跳动巨幕歌词）。
+    stage_mode: ImmersiveStageMode,
+    poster_wall_scroll: ScrollHandle,
+    /// 右侧中控卡片是否折叠收起。
+    /// 鼠标是否靠近/悬停在右侧中控区（实现靠边自动显现、移开自动消失）
+    console_hovered: bool,
 
     position: Entity<u64>,
+    duration: Entity<u64>,
     volume: Entity<f64>,
     prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
@@ -346,7 +362,11 @@ impl ImmersiveView {
             let mut this = Self {
                 focus_handle: cx.focus_handle(),
                 active: *immersive_flag.read(cx),
+                stage_mode: ImmersiveStageMode::PosterWall,
+                poster_wall_scroll: ScrollHandle::new(),
+                console_hovered: false,
                 position: info.position.clone(),
+                duration: info.duration.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
@@ -880,7 +900,9 @@ impl ImmersiveView {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.line_anim.is_some() || self.backdrop_fade_started.is_some()
+        self.line_anim.is_some()
+            || self.backdrop_fade_started.is_some()
+            || (self.active && self.stage_mode == ImmersiveStageMode::KineticLyrics)
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -921,6 +943,210 @@ impl ImmersiveView {
             self.schedule_frame(window, cx);
         }
         cx.notify();
+    }
+
+    fn render_poster_wall(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (current_pos, queue_items) = {
+            let q = self.queue.read(cx);
+            (q.position, q.data.read_recovered().clone())
+        };
+
+        if queue_items.is_empty() {
+            let theme = cx.global::<Theme>();
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .text_color(theme.text_secondary)
+                        .child("播放列表为空"),
+                )
+                .into_any_element();
+        }
+
+        let item_infos: Vec<(usize, bool, SharedString, SharedString, ManagedImageKey)> = queue_items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let is_playing = idx == current_pos;
+                let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
+                let title = ui_data
+                    .as_ref()
+                    .and_then(|u| u.name.clone())
+                    .unwrap_or_else(|| SharedString::from(format!("Track #{}", idx + 1)));
+                let artist = ui_data
+                    .as_ref()
+                    .and_then(|u| u.artist_name.clone())
+                    .unwrap_or_default();
+                let cover_key = ui_data
+                    .and_then(|u| u.cover_url)
+                    .filter(|u| !u.is_empty())
+                    .map(ManagedImageKey::HttpCover)
+                    .unwrap_or_else(|| ManagedImageKey::TrackFile(item.get_path().clone()));
+
+                (idx, is_playing, title, artist, cover_key)
+            })
+            .collect();
+
+        let theme = cx.global::<Theme>();
+        let poster_scroll = self.poster_wall_scroll.clone();
+        let current_lyric = self
+            .current_line
+            .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
+            .map(|l| l.text.clone())
+            .unwrap_or_default();
+
+        // 6 列全屏自适应流式瀑布流：宽度完全铺满屏幕，上下紧密咬合，绝无窟窿空隙
+        const NUM_COLS: usize = 6;
+        let mut column_cards: [Vec<AnyElement>; NUM_COLS] = Default::default();
+
+        for (i, (idx, is_playing_track, title, artist, cover_key)) in item_infos.into_iter().enumerate() {
+            let col_idx = i % NUM_COLS;
+
+            let h = if is_playing_track {
+                px(340.0) // 正在播放的高光大海报
+            } else {
+                match (idx + col_idx) % 4 {
+                    0 => px(210.0),
+                    1 => px(270.0),
+                    2 => px(180.0),
+                    _ => px(240.0),
+                }
+            };
+
+            let card = div()
+                .id(("poster_tile", idx))
+                .w_full()
+                .h(h)
+                .rounded(px(16.0))
+                .shadow_lg()
+                .border_1()
+                .border_color(if is_playing_track {
+                    theme.button_primary_border
+                } else {
+                    Rgba::new(1.0, 1.0, 1.0, 0.12)
+                })
+                .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
+                .overflow_hidden()
+                .relative()
+                .cursor_pointer()
+                .hover(|s| s.border_color(theme.button_primary))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.global::<PlaybackInterface>().jump(idx);
+                    this.stage_mode = ImmersiveStageMode::KineticLyrics;
+                    cx.notify();
+                }))
+                .child(
+                    managed_image(("poster_img", idx), cover_key)
+                        .thumb_max(512)
+                        .size_full()
+                        .object_fit(ObjectFit::Cover),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .pt(px(28.0))
+                        .pb(px(10.0))
+                        .px(px(12.0))
+                        .bg(linear_gradient(
+                            0.0,
+                            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.90), 0.0),
+                            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                        ))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .when(is_playing_track, |d| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .size(px(6.0))
+                                            .rounded_full()
+                                            .bg(theme.button_primary),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(theme.button_primary)
+                                            .child("NOW PLAYING"),
+                                    ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_size(if is_playing_track { px(15.0) } else { px(12.0) })
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
+                                .truncate()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                .truncate()
+                                .child(artist),
+                        )
+                        .when(is_playing_track && !current_lyric.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .mt(px(4.0))
+                                    .text_size(px(11.0))
+                                    .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
+                                    .truncate()
+                                    .child(current_lyric.clone()),
+                            )
+                        }),
+                );
+
+            column_cards[col_idx].push(card.into_any_element());
+        }
+
+        let masonry_cols: Vec<AnyElement> = column_cards
+            .into_iter()
+            .enumerate()
+            .map(|(c_idx, col_items)| {
+                div()
+                    .id(("masonry_col", c_idx))
+                    .flex_1()
+                    .min_w(px(180.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
+                    .children(col_items)
+                    .into_any_element()
+            })
+            .collect();
+
+        div()
+            .id("stage-poster-wall")
+            .size_full()
+            .pt(px(20.0))
+            .pb(px(24.0))
+            .px(px(16.0))
+            .overflow_y_scroll()
+            .track_scroll(&poster_scroll)
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .gap(px(14.0))
+                    .children(masonry_cols),
+            )
+            .into_any_element()
     }
 }
 
@@ -1038,12 +1264,6 @@ impl Render for ImmersiveView {
             }
         }
 
-        let theme = cx.global::<Theme>();
-        let text = theme.text;
-        let text_secondary = theme.text_secondary;
-        let accent = self.accent.unwrap_or(theme.text);
-        let image_gen = self.image_element_key;
-
         // 背景重采样目标 = 背景 inset_0 元素的设备像素尺寸（本机
         // 1920×1080@125% → 1920×1028）。长边超 2560 时等比缩界，把
         // 4K 屏的纹理驻留压回合理区间（放大交还 GPU，质量仍优于旧路径）。
@@ -1065,6 +1285,12 @@ impl Render for ImmersiveView {
                 self.arm_backdrop(cx);
             }
         }
+
+        let theme = cx.global::<Theme>();
+        let text = theme.text;
+        let text_secondary = theme.text_secondary;
+        let accent = self.accent.unwrap_or(theme.text);
+        let image_gen = self.image_element_key;
 
         // PlaybackInfo 的位置用毫秒。进度条在自己的实体（ImmersiveProgress）里
         // 读位置/时长。
@@ -1091,18 +1317,17 @@ impl Render for ImmersiveView {
                 (1.0 - fade_progress).clamp(0.0, 1.0),
             ))
             .child(self.backdrop_layer(self.backdrop_active, fade_progress.clamp(0.0, 1.0)));
-        // 整体权重：底部更重（卡片区）、顶部更轻
-        // （0deg = 朝上：0% 色标落在底边）。
+        // 整体暗度：全局底板遮罩深度提升，确保大图背景不抢戏
         let vertical_shade = div().absolute().inset_0().bg(linear_gradient(
             0.0,
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.42), 0.0),
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.12), 1.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.65), 0.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.35), 1.0),
         ));
-        // 右侧歌词区：压在封面上时透明、朝右边缘变暗（90deg = 朝右）。
+        // 右侧歌词阅读区专用渐变暗角（Vignette Scrim）：彻底保障白色与高光文字对比度
         let right_shade = div().absolute().inset_0().bg(linear_gradient(
             90.0,
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 0.30),
-            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.52), 1.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.35), 0.0),
+            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.82), 1.0),
         ));
 
         // ── 左栏：圆形封面、曲名、磨砂播放卡 ──────────────────────────
@@ -1121,7 +1346,10 @@ impl Render for ImmersiveView {
                         .thumb_max(LABEL_THUMB_PX)
                         .h(relative(VINYL_LABEL_FRACTION))
                         .aspect_square()
-                        .rounded_full()
+                        .rounded(px(16.0))
+                        .shadow_lg()
+                        .border_1()
+                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.14))
                         .object_fit(ObjectFit::Cover),
                 )
             })
@@ -1130,14 +1358,14 @@ impl Render for ImmersiveView {
                     div()
                         .h(relative(VINYL_LABEL_FRACTION))
                         .aspect_square()
-                        .rounded_full()
+                        .rounded(px(16.0))
                         .bg(Rgba::new(1.0, 1.0, 1.0, 0.06)),
                 )
             });
         let vinyl_disc = div()
             .absolute()
             .inset_0()
-            .rounded_full()
+            .rounded(px(16.0))
             .bg(Rgba::new(0.045, 0.045, 0.058, 1.0));
         let vinyl = div()
             .relative()
@@ -1267,7 +1495,7 @@ impl Render for ImmersiveView {
                     .child(volume_group),
             );
 
-        let left_column = div()
+        let _left_column = div()
             .absolute()
             .left_0()
             .top_0()
@@ -1395,7 +1623,7 @@ impl Render for ImmersiveView {
                 }
             }))
             .children(lyric_children.into_iter().flatten());
-        let right_column = div()
+        let _right_column = div()
             .absolute()
             .top_0()
             .bottom_0()
@@ -1421,7 +1649,673 @@ impl Render for ImmersiveView {
             .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
 
-        div()
+        let return_to_wall_button: Option<AnyElement> = None;
+
+        let stage_center_view = if self.stage_mode == ImmersiveStageMode::KineticLyrics {
+            let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
+            let dimmed_color = lerp_color(text, text_secondary, 0.45);
+
+            let active_seed = self.current_line
+                .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
+                .map_or(0, |l| l.time_ms);
+
+            // 自由空间位移（根据乐句种子产生平缓随风漂浮的梦幻位置）
+            let (space_hop_x, space_hop_y) = match (active_seed / 1000) % 6 {
+                0 => (-60.0f32, -28.0f32),
+                1 => (70.0f32, 20.0f32),
+                2 => (-20.0f32, -15.0f32),
+                3 => (48.0f32, -32.0f32),
+                4 => (-50.0f32, 24.0f32),
+                _ => (15.0f32, 8.0f32),
+            };
+
+            let kinetic_lyric_elements: Vec<AnyElement> = if let Some(parsed) = &self.parsed {
+                let active_idx = self.current_line.unwrap_or(0);
+                if let Some(line) = parsed.get(active_idx) {
+                    let line_time_ms = line.time_ms;
+                    let words_elements: Vec<AnyElement> = if !line.words.is_empty() {
+                        line.words
+                            .iter()
+                            .enumerate()
+                            .map(|(_w_idx, word)| {
+                                let progress = word_progress(word, position_ms);
+                                let color = lerp_color(dimmed_color, gold_glow, progress);
+
+                                // 梦幻逐字弹跳与浮动动画 (Dreamy Kinetic Pop-up)
+                                let (pop_y, scale_pt, halo_opacity) = if progress > 0.0 && progress < 1.0 {
+                                    // 正在唱：弹起并伴随柔和回落 (-16px 高度)
+                                    let curve = (progress * std::f32::consts::PI).sin();
+                                    (-curve * 16.0, 62.0f32, 0.70 * curve)
+                                } else if progress >= 1.0 {
+                                    // 已唱完：稳定高光与柔和微悬
+                                    (-2.0, 58.0f32, 0.25)
+                                } else {
+                                    // 未唱到：静静等待
+                                    (0.0, 56.0f32, 0.0)
+                                };
+
+                                let is_active = progress > 0.02;
+
+                                div()
+                                    .relative()
+                                    .mt(px(pop_y))
+                                    .when(halo_opacity > 0.05, |el| {
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .top(px(-3.0))
+                                                .left(px(-3.0))
+                                                .opacity(halo_opacity)
+                                                .text_size(px(scale_pt))
+                                                .text_color(Rgba::new(1.0, 0.85, 0.45, 0.85))
+                                                .child(word.text.clone()),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .child(word.text.clone())
+                                            .text_size(px(scale_pt))
+                                            .text_color(color)
+                                            .when(is_active, |s| s.font_weight(FontWeight::EXTRA_BOLD))
+                                    )
+                                    .into_any_element()
+                            })
+                            .collect()
+                    } else {
+                        line.text
+                            .chars()
+                            .enumerate()
+                            .map(|(c_idx, ch)| {
+                                let c_seed = (active_seed / 50) + c_idx as u64 * 31;
+                                let scatter_y = (c_seed as f32 * 0.67).cos() * 6.0;
+                                div()
+                                    .relative()
+                                    .mt(px(scatter_y))
+                                    .text_size(px(58.0))
+                                    .text_color(gold_glow)
+                                    .child(ch.to_string())
+                                    .into_any_element()
+                            })
+                            .collect()
+                    };
+
+                    let mut elements = Vec::new();
+                    // 上一句淡出行（伴随在上方，30% 不透明度）
+                    if active_idx > 0 && let Some(prev) = parsed.get(active_idx - 1) {
+                        elements.push(
+                            div()
+                                .mb(px(20.0))
+                                .text_left()
+                                .text_size(px(24.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .opacity(0.32)
+                                .text_color(dimmed_color)
+                                .child(prev.text.clone())
+                                .into_any_element(),
+                        );
+                    }
+
+                    // 统一而灵动优雅的主歌词容器（自然横排流动，字级梦幻弹跳）
+                    elements.push(
+                        div()
+                            .id("stage-kinetic-hero-line")
+                            .w_full()
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                if state != PlaybackState::Stopped {
+                                    cx.global::<PlaybackInterface>()
+                                        .seek(line_time_ms as f64 / 1000.0);
+                                }
+                            })
+                            .child(
+                                div()
+                                    .id("stage-kinetic-hero-horizontal")
+                                    .w_full()
+                                    .line_height(relative(1.22))
+                                    .font_weight(FontWeight::BOLD)
+                                    .flex()
+                                    .flex_wrap()
+                                    .justify_start()
+                                    .items_baseline()
+                                    .gap(px(4.0))
+                                    .children(words_elements),
+                            )
+                            .into_any_element(),
+                    );
+
+                    // 伴随优雅译文
+                    if let Some(trans) = &line.translation {
+                        elements.push(
+                            div()
+                                .mt(px(14.0))
+                                .text_left()
+                                .text_size(px(20.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(lerp_color(text_secondary, gold_glow, 0.4))
+                                .child(trans.clone())
+                                .into_any_element(),
+                        );
+                    }
+
+                    // 下一句微弱预读伴随行（38% 透明度，静静浮在下方引导视觉）
+                    if let Some(next) = parsed.get(active_idx + 1) {
+                        elements.push(
+                            div()
+                                .mt(px(24.0))
+                                .text_left()
+                                .text_size(px(26.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .opacity(0.38)
+                                .text_color(dimmed_color)
+                                .child(next.text.clone())
+                                .into_any_element(),
+                        );
+                    }
+
+                    elements
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            // 电影级多重空间几何罗盘、悬浮微粒与星轨极光装饰层
+            let compass_canvas = canvas(
+                move |bounds, _, _| bounds,
+                move |bounds, _, window, _cx| {
+                    let w = f32::from(bounds.size.width);
+                    let h = f32::from(bounds.size.height);
+                    let center_x = w * 0.38;
+                    let center_y = h * 0.50;
+
+                    let t_sec = position_ms as f32 / 1000.0;
+
+                    // 1. 悬浮几何多边形与旋转虚线框 (Floating Polygons & Geometric Shards)
+                    // 完美还原 Folia 心象/云阶经典深空悬浮图形元素
+                    for (i, (base_x, base_y, r, sides, rot_speed, col)) in [
+                        (w * 0.16, h * 0.28, 48.0f32, 4, 0.08f32, Rgba::new(0.35, 0.55, 0.90, 0.065)),
+                        (w * 0.54, h * 0.22, 58.0f32, 3, -0.06f32, Rgba::new(0.40, 0.60, 0.95, 0.075)),
+                        (w * 0.12, h * 0.72, 62.0f32, 4, 0.05f32, Rgba::new(0.50, 0.65, 0.98, 0.070)),
+                        (w * 0.46, h * 0.68, 72.0f32, 4, -0.04f32, Rgba::new(0.30, 0.50, 0.85, 0.060)),
+                        (w * 0.62, h * 0.52, 40.0f32, 3, 0.07f32, Rgba::new(0.45, 0.65, 1.0, 0.055)),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        // 柔和浮游呼吸
+                        let float_x = base_x + (t_sec * 0.5 + i as f32 * 2.1).sin() * 14.0;
+                        let float_y = base_y + (t_sec * 0.4 + i as f32 * 1.7).cos() * 12.0;
+                        let rot = t_sec * rot_speed;
+
+                        // 填充半透明色块
+                        let mut poly_fill = PathBuilder::fill();
+                        for step in 0..*sides {
+                            let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
+                            let pt = point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
+                            if step == 0 {
+                                poly_fill.move_to(pt);
+                            } else {
+                                poly_fill.line_to(pt);
+                            }
+                        }
+                        if let Ok(p) = poly_fill.build() {
+                            window.paint_path(p, *col);
+                        }
+
+                        // 轮廓描边
+                        let mut poly_stroke = PathBuilder::stroke(px(1.0));
+                        for step in 0..=*sides {
+                            let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
+                            let pt = point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
+                            if step == 0 {
+                                poly_stroke.move_to(pt);
+                            } else {
+                                poly_stroke.line_to(pt);
+                            }
+                        }
+                        let stroke_col = Rgba {
+                            alpha: (col.alpha * 1.8).min(1.0),
+                            ..*col
+                        };
+                        if let Ok(p) = poly_stroke.build() {
+                            window.paint_path(p, stroke_col);
+                        }
+                    }
+
+                    // 2. 空间律动十字十字星与悬浮方块微粒 (Cross Shards & Ambient Dust)
+                    for (i, (rel_x, rel_y, sz)) in [
+                        (0.24, 0.44, 16.0f32),
+                        (0.48, 0.32, 12.0f32),
+                        (0.28, 0.78, 20.0f32),
+                        (0.58, 0.82, 14.0f32),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let cross_x = w * rel_x + (t_sec * 0.3 + i as f32).cos() * 8.0;
+                        let cross_y = h * rel_y + (t_sec * 0.3 + i as f32).sin() * 8.0;
+                        let mut cross = PathBuilder::stroke(px(sz * 0.28));
+                        cross.move_to(point(px(cross_x - sz * 0.5), px(cross_y)));
+                        cross.line_to(point(px(cross_x + sz * 0.5), px(cross_y)));
+                        cross.move_to(point(px(cross_x), px(cross_y - sz * 0.5)));
+                        cross.line_to(point(px(cross_x), px(cross_y + sz * 0.5)));
+                        if let Ok(p) = cross.build() {
+                            window.paint_path(p, Rgba::new(0.35, 0.50, 0.85, 0.08));
+                        }
+                    }
+
+                    // 3. 动态极光流光弧 (Fluid Aurora Ribbons)
+                    let phase = t_sec * 0.4;
+                    for (ribbon_idx, (y_off, amp, freq, col)) in [
+                        (-60.0f32, 45.0f32, 0.0035f32, Rgba::new(0.35, 0.50, 0.95, 0.065)),
+                        (40.0f32, 55.0f32, 0.0028f32, Rgba::new(0.85, 0.40, 0.70, 0.055)),
+                        (140.0f32, 40.0f32, 0.0042f32, Rgba::new(1.0, 0.75, 0.30, 0.045)),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let mut ribbon = PathBuilder::stroke(px(2.5));
+                        let steps = 40;
+                        for i in 0..=steps {
+                            let x = (i as f32 / steps as f32) * w;
+                            let y = (center_y + y_off)
+                                + (x * freq + phase + (ribbon_idx as f32) * 1.5).sin() * amp
+                                + (x * (freq * 0.5) - phase * 0.7).cos() * (amp * 0.4);
+                            let pt = point(px(x), px(y));
+                            if i == 0 {
+                                ribbon.move_to(pt);
+                            } else {
+                                ribbon.line_to(pt);
+                            }
+                        }
+                        if let Ok(p) = ribbon.build() {
+                            window.paint_path(p, *col);
+                        }
+                    }
+
+                    // 4. 细腻同心星轨圆 (Concentric Celestial Circles)
+                    let compass_color = Rgba::new(1.0, 1.0, 1.0, 0.045);
+                    for r in [160.0f32, 280.0f32, 420.0f32] {
+                        let mut circle = PathBuilder::stroke(px(1.0));
+                        for i in 0..=48 {
+                            let angle = (i as f32 / 48.0) * std::f32::consts::TAU;
+                            let pt = point(px(center_x + r * angle.cos()), px(center_y + r * angle.sin()));
+                            if i == 0 {
+                                circle.move_to(pt);
+                            } else {
+                                circle.line_to(pt);
+                            }
+                        }
+                        if let Ok(path) = circle.build() {
+                            window.paint_path(path, compass_color);
+                        }
+                    }
+
+                    // 5. 极轴十字刻度线与坐标尺微标
+                    let mut axes = PathBuilder::stroke(px(1.0));
+                    axes.move_to(point(px(center_x - 480.0), px(center_y)));
+                    axes.line_to(point(px(center_x + 480.0), px(center_y)));
+                    axes.move_to(point(px(center_x), px(center_y - 320.0)));
+                    axes.line_to(point(px(center_x), px(center_y + 320.0)));
+                    if let Ok(path) = axes.build() {
+                        window.paint_path(path, compass_color);
+                    }
+
+                    // 6. 象限四角星芒与星辉 (Cross Stars)
+                    for (sx, sy, star_color) in [
+                        (center_x + 280.0, center_y - 180.0, Rgba::new(1.0, 0.88, 0.65, 0.26)),
+                        (center_x - 320.0, center_y + 190.0, Rgba::new(0.65, 0.85, 1.0, 0.24)),
+                        (center_x + 380.0, center_y + 240.0, Rgba::new(1.0, 0.65, 0.85, 0.20)),
+                        (center_x - 240.0, center_y - 220.0, Rgba::new(0.85, 1.0, 0.85, 0.20)),
+                    ] {
+                        let mut star = PathBuilder::stroke(px(1.2));
+                        star.move_to(point(px(sx - 8.0), px(sy)));
+                        star.line_to(point(px(sx + 8.0), px(sy)));
+                        star.move_to(point(px(sx), px(sy - 8.0)));
+                        star.line_to(point(px(sx), px(sy + 8.0)));
+                        if let Ok(p) = star.build() {
+                            window.paint_path(p, star_color);
+                        }
+                    }
+                },
+            );
+
+            // 右侧中控感应区与手机式精致控制卡片（靠近右侧自动显现，移出自动隐藏）
+            let right_console = div()
+                .id("stage-right-hover-zone")
+                .h_full()
+                .w(px(380.0))
+                .flex()
+                .items_center()
+                .justify_end()
+                .pr(px(32.0))
+                .on_hover(cx.listener(|this, is_hovering: &bool, _, cx| {
+                    if this.console_hovered != *is_hovering {
+                        this.console_hovered = *is_hovering;
+                        cx.notify();
+                    }
+                }))
+                .when(self.console_hovered, |zone| {
+                    zone.child(
+                        div()
+                            .id("stage-console-pod")
+                            .w(px(310.0))
+                            .h(px(520.0))
+                            .rounded(px(22.0))
+                            .shadow_lg()
+                            .border_1()
+                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.16))
+                            .bg(Rgba::new(0.06, 0.07, 0.09, 0.88))
+                            .backdrop_blur(px(24.0))
+                            .p(px(20.0))
+                            .flex()
+                            .flex_col()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h(px(270.0))
+                                    .rounded(px(16.0))
+                                    .shadow_md()
+                                    .border_1()
+                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                    .overflow_hidden()
+                                    .when_some(self.image_key.clone(), |el, key| {
+                                        el.child(
+                                            managed_image(("stage-console-art", image_gen), key)
+                                                .thumb_max(512)
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(17.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(text)
+                                            .truncate()
+                                            .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(text_secondary)
+                                            .truncate()
+                                            .child(self.artist_name.clone().unwrap_or_default()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .id("console-prev-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
+                                                    .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon(PREV_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .on_click(|_, _, cx| {
+                                                        cx.global::<PlaybackInterface>().previous();
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("console-play-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(46.0))
+                                                    .rounded_full()
+                                                    .bg(theme.button_primary)
+                                                    .text_color(theme.button_primary_text)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .shadow_md()
+                                                    .hover(|s| s.bg(theme.button_primary_hover))
+                                                    .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
+                                                    .on_click(|_, _, cx| {
+                                                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
+                                                        let interface = cx.global::<PlaybackInterface>();
+                                                        if state == PlaybackState::Playing {
+                                                            interface.pause();
+                                                        } else {
+                                                            interface.play();
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("console-next-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.15))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.25))
+                                                    .hover(|s| s.bg(Rgba::new(1.0, 1.0, 1.0, 0.30)))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon(NEXT_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .on_click(|_, _, cx| {
+                                                        cx.global::<PlaybackInterface>().next();
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .id("console-poster-wall-btn")
+                                                    .cursor_pointer()
+                                                    .size(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.22))
+                                                    .hover(|s| s.bg(theme.button_primary))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .shadow_sm()
+                                                    .child(icon(GRID).size(px(16.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .tooltip(build_tooltip("返回海报墙"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.stage_mode = ImmersiveStageMode::PosterWall;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("console-heart-btn")
+                                                    .cursor_pointer()
+                                                    .px(px(14.0))
+                                                    .py(px(8.0))
+                                                    .rounded(px(theme.radius_md))
+                                                    .bg(Rgba::new(0.72, 0.12, 0.22, 0.95))
+                                                    .border_1()
+                                                    .border_color(Rgba::new(1.0, 0.40, 0.50, 0.35))
+                                                    .hover(|s| s.bg(Rgba::new(0.85, 0.14, 0.26, 1.0)).border_color(Rgba::new(1.0, 0.50, 0.60, 0.60)))
+                                                    .active(|s| s.bg(Rgba::new(0.60, 0.08, 0.16, 1.0)))
+                                                    .shadow_md()
+                                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.92, 0.95, 1.0))),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(icon(VOLUME).size(px(13.0)).text_color(text_secondary))
+                                    .child(
+                                        slider()
+                                            .id("console-vol-slider")
+                                            .w_full()
+                                            .h(px(4.0))
+                                            .rounded_full()
+                                            .value(volume as f32)
+                                            .on_change(move |v, _, cx| {
+                                                cx.global::<PlaybackInterface>().set_volume(v as f64);
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(text_secondary)
+                                            .child(format!("{}%", (volume * 100.0).round() as i64)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(text_secondary)
+                                    .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
+                            ),
+                    )
+                });
+
+            let lyrics_stream = div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .pl(px((80.0f32 + space_hop_x).max(20.0)))
+                .mt(px(space_hop_y))
+                .pr(px(40.0))
+                .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                    if !this.active {
+                        return;
+                    }
+                    let dy = f32::from(ev.delta.pixel_delta(px(52.0)).y);
+                    this.scroll_accum -= dy / 52.0;
+                    let whole = this.scroll_accum as i64;
+                    if whole != 0 {
+                        this.scroll_accum -= whole as f32;
+                        this.browse_offset += whole;
+                        this.last_scroll = Some(Instant::now());
+                        this.sync_display_target(true);
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(920.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(18.0))
+                        .children(kinetic_lyric_elements),
+                );
+
+            let duration_ms = *self.duration.read(cx);
+            let progress_fraction = if duration_ms > 0 {
+                (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let current_time_text = format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000);
+            let total_time_text = format!("{}:{:02}", duration_ms / 60000, (duration_ms % 60000) / 1000);
+
+            // 底部电影级极简悬浮光轨 (Minimal Floating Aurora Progress Bar)
+            let floating_progress = div()
+                .id("stage-floating-progress")
+                .absolute()
+                .bottom(px(24.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .id("stage-floating-bar-track")
+                        .relative()
+                        .w(px(320.0))
+                        .h(px(3.0))
+                        .rounded_full()
+                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(relative(progress_fraction))
+                                .rounded_full()
+                                .bg(Rgba::new(1.0, 0.85, 0.45, 0.85))
+                                .shadow_sm(),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(Rgba::new(1.0, 1.0, 1.0, 0.35))
+                        .child(current_time_text)
+                        .child("•")
+                        .child(total_time_text),
+                );
+
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(compass_canvas)
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .pr(px(52.0))
+                            .child(lyrics_stream)
+                            .child(right_console),
+                    )
+                    .child(floating_progress),
+            )
+        } else {
+            None
+        };
+
+        let mut root = div()
             .id("immersive-view")
             .key_context("Immersive")
             .track_focus(&self.focus_handle)
@@ -1432,10 +2326,20 @@ impl Render for ImmersiveView {
             .bg(Rgba::new(0.02, 0.02, 0.03, 1.0))
             .child(backdrop)
             .child(vertical_shade)
-            .child(right_shade)
-            .child(left_column)
-            .child(right_column)
-            .child(exit_button)
+            .child(right_shade);
+
+        match self.stage_mode {
+            ImmersiveStageMode::PosterWall => {
+                root = root.child(self.render_poster_wall(cx));
+            }
+            _ => {
+                if let Some(stage_view) = stage_center_view {
+                    root = root.child(stage_view);
+                }
+            }
+        }
+
+        root.children(return_to_wall_button).child(exit_button)
     }
 }
 

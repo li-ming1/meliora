@@ -825,18 +825,26 @@ impl Render for ArtistDetailView {
                             .overflow_x_hidden()
                             .child(
                                 div()
-                                    .pt(px(52.0))
-                                    .px(px(18.0))
+                                    .pt(px(48.0))
+                                    .pb(px(20.0))
+                                    .px(px(22.0))
                                     .w_full()
                                     .relative()
+                                    .rounded_b(px(theme.radius_lg))
+                                    .bg(linear_gradient(
+                                        180.0,
+                                        linear_color_stop(Rgba::new(theme.button_primary.red, theme.button_primary.green, theme.button_primary.blue, 0.12), 0.0),
+                                        linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                                    ))
                                     .when(two_column, |this| {
                                         this.child(detail_close_button("artist_detail_close"))
                                     })
                                     .child(
                                         div()
                                             .font_weight(FontWeight::EXTRA_BOLD)
-                                            .text_size(rems(2.5))
-                                            .line_height(rems(2.75))
+                                            .text_size(rems(2.6))
+                                            .line_height(rems(2.85))
+                                            .text_color(theme.text)
                                             .overflow_x_hidden()
                                             .pb(px(10.0))
                                             .w_full()
@@ -846,7 +854,7 @@ impl Render for ArtistDetailView {
                                             }),
                                     )
                                     .when(!self.all_tracks.is_empty(), |this| {
-                                        this.child(div().pb(px(18.0)).child(playback_controls(
+                                        this.child(div().pb(px(8.0)).child(playback_controls(
                                             "artist",
                                             has_available_artist_tracks,
                                             current_track_in_artist,

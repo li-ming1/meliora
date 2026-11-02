@@ -10,7 +10,10 @@ use super::{
     },
 };
 use crate::ui::{
-    components::managed_image::{ManagedImageKey, managed_image},
+    components::{
+        icons::{DISC, icon},
+        managed_image::{ManagedImageKey, managed_image},
+    },
     theme::Theme,
 };
 
@@ -119,6 +122,9 @@ where
             .w_full()
             .flex_1()
             .rounded(px(theme.radius_md))
+            .shadow_md()
+            .border_1()
+            .border_color(theme.border_color)
             .bg(theme.album_art_background)
             .overflow_hidden();
 
@@ -132,16 +138,43 @@ where
                     .rounded(px(theme.radius_md))
                     .object_fit(ObjectFit::Fill),
             );
+        } else {
+            // 无封面或占位态：优雅的黑胶唱片浮雕与同心环光晕
+            img_container = img_container.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(Rgba::new(0.08, 0.09, 0.12, 1.0))
+                    .child(
+                        div()
+                            .size(px(72.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
+                            .bg(Rgba::new(1.0, 1.0, 1.0, 0.03))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                icon(DISC)
+                                    .size(px(32.0))
+                                    .text_color(Rgba::new(1.0, 1.0, 1.0, 0.22)),
+                            ),
+                    ),
+            );
         }
 
         let content = container
             .child(img_container)
             .child(
                 div()
-                    .mt(px(8.0))
+                    .mt(px(9.0))
                     .w_full()
                     .text_sm()
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
                     .text_ellipsis()
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -150,6 +183,7 @@ where
             .when_some(self.secondary_text.clone(), |this, secondary| {
                 this.child(
                     gpui::div()
+                        .mt(px(2.0))
                         .w_full()
                         .text_xs()
                         .text_color(theme.text_secondary)

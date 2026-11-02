@@ -191,14 +191,14 @@ impl Render for ToastLayer {
         let reduced_motion = reduced_motion_enabled(cx);
         // 整个图层只读一次：render_toast 是每条 toast 每帧都跑的（进度动画每帧
         // 重渲染），在那里仅为读一个 radius 就克隆整个 Theme 纯属浪费。
-        let radius_md = px(cx.global::<Theme>().radius_md);
+        let radius_lg = px(cx.global::<Theme>().radius_lg);
 
         let mut column = div().flex().flex_col().gap(px(8.0)).w(px(360.0));
         for toast in &self.toasts {
             // 逐 toast 查主题：借来的 &Theme 不能活得比这条语句更久，
             // 因为下面的 render_toast 会重新可变借用 cx。
             let colors = toast_colors(cx.global::<Theme>(), toast.toast.severity);
-            column = column.child(render_toast(toast, colors, reduced_motion, radius_md, cx));
+            column = column.child(render_toast(toast, colors, reduced_motion, radius_lg, cx));
         }
 
         anchored()
@@ -349,7 +349,7 @@ fn render_toast(
         .border_color(colors.border)
         .text_color(colors.text)
         .overflow_hidden()
-        .shadow_md()
+        .shadow_lg()
         .flex()
         .flex_col()
         .child(main_row)

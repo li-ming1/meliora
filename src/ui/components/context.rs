@@ -108,10 +108,11 @@ impl RenderOnce for ContextMenu {
                 anchored().position(pos).child(deferred(
                     menu.occlude()
                         .border_1()
-                        .shadow_sm()
+                        .shadow_lg()
                         .rounded(px(theme.radius_md))
                         .border_color(theme.elevated_border_color)
                         .bg(theme.elevated_background)
+                        .backdrop_blur(px(16.0))
                         .id("menu")
                         .track_focus(&focus_handle)
                         .role(gpui::Role::Menu)

@@ -255,9 +255,10 @@ impl RenderOnce for SidebarItem {
 
         let item = self
             .parent_div
+            .relative()
             .flex()
             .overflow_x_hidden()
-            .when(!self.collapsed, |this| this.w_full().px(px(9.0)))
+            .when(!self.collapsed, |this| this.w_full().px(px(11.0)))
             .when(self.collapsed, |this| {
                 this.w(px(36.0))
                     .h(px(34.0))
@@ -265,32 +266,44 @@ impl RenderOnce for SidebarItem {
                     .justify_center()
                     .flex_shrink_0()
             })
-            .bg(theme.background_primary)
             .text_sm()
-            .border_1()
-            // 你可能会问：把边框颜色设成这样到底有什么意义？
-            // 嗯，出于某个至今未知的原因，不设这一条、或者把它设成 transparent_black()，
-            // 都会让 hover 效果不能正常生效。
-            // 为什么？我也不知道，这实在完全没道理
-            //
-            // 承重的颜色。
-            .border_color(theme.background_primary)
-            .when(self.active, |div| {
-                div.bg(theme.nav_button_pressed)
-                    .border_color(theme.nav_button_pressed_border)
-            })
-            .rounded(px(theme.radius_sm))
-            .py(px(8.0))
+            .rounded(px(theme.radius_md))
+            .py(px(7.5))
             .line_height(px(18.0))
-            .gap(px(6.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .hover(|this| {
-                this.bg(theme.nav_button_hover)
-                    .border_color(theme.nav_button_hover_border)
-            })
-            .active(|this| {
+            .gap(px(10.0))
+            .font_weight(FontWeight::MEDIUM)
+            .when(self.active, |this| {
                 this.bg(theme.nav_button_active)
+                    .border_1()
                     .border_color(theme.nav_button_active_border)
+                    .text_color(theme.button_primary)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .shadow_sm()
+                    // 左侧精致发光微条（3px 品牌亮条）
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(2.0))
+                            .top(px(8.0))
+                            .bottom(px(8.0))
+                            .w(px(3.0))
+                            .rounded_full()
+                            .bg(theme.button_primary),
+                    )
+            })
+            .when(!self.active, |this| {
+                this.bg(theme.background_primary)
+                    .border_1()
+                    .border_color(theme.background_primary)
+                    .text_color(theme.text)
+                    .hover(|el| {
+                        el.bg(theme.nav_button_hover)
+                            .border_color(theme.nav_button_hover_border)
+                    })
+                    .active(|el| {
+                        el.bg(theme.nav_button_active)
+                            .border_color(theme.nav_button_active_border)
+                    })
             })
             // 占位块预留出图标本来会占的方格。
             .when_none(&self.icon, |this| {
@@ -336,16 +349,17 @@ impl RenderOnce for SidebarItem {
                             .absolute()
                             .left_full()
                             .top_0()
-                            .ml(px(4.0))
+                            .ml(px(8.0))
                             .bg(theme.elevated_background)
                             .border_1()
                             .border_color(theme.elevated_border_color)
-                            .rounded(px(theme.radius_sm))
-                            .shadow_sm()
+                            .rounded(px(theme.radius_md))
+                            .shadow_md()
                             .px(px(12.0))
-                            .pt(px(5.0))
+                            .pt(px(6.0))
                             .pb(px(6.0))
                             .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .whitespace_nowrap()
                             .child(label_text),

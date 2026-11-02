@@ -8,6 +8,7 @@ build.log
 # 本机工具链配置（含真实绝对路径，勿提交；模板见 .example）
 .cargo/config.toml
 build-release.cmd
+check-release.cmd
 
 # 本机代理工作约定（仅本机适用，勿提交）
 AGENTS.md

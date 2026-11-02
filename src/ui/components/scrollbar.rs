@@ -949,11 +949,11 @@ impl RenderOnce for FloatingScrollbar {
                 .occlude()
                 .child(
                     sb.slim(true)
-                        .w(px(10.0))
+                        .w(px(6.0))
                         .h_full()
                         .bg(theme.scrollbar_background)
                         .text_color(theme.scrollbar_foreground)
-                        .rounded(px(5.0)),
+                        .rounded(px(3.0)),
                 ),
             ScrollbarAxis::Horizontal => div()
                 .absolute()
@@ -964,11 +964,11 @@ impl RenderOnce for FloatingScrollbar {
                 .occlude()
                 .child(
                     sb.slim(true)
-                        .h(px(10.0))
+                        .h(px(6.0))
                         .w_full()
                         .bg(theme.scrollbar_background)
                         .text_color(theme.scrollbar_foreground)
-                        .rounded(px(5.0)),
+                        .rounded(px(3.0)),
                 ),
         }
     }

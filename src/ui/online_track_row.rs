@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::ui::{
     components::{
-        button::button,
+        button::{ButtonStyle, button},
         icons::{DOWNLOAD, STAR, STAR_FILLED, icon},
         managed_image::{ManagedImageKey, managed_image},
         tooltip::build_tooltip,
@@ -105,14 +105,13 @@ where
 
     div()
         .id((id_prefix, index))
+        .group("track_row")
         .flex()
         .items_center()
         .gap(px(12.0))
-        .px(px(4.0))
-        .py(px(8.0))
-        .pl(px(6.0))
-        .border_b_1()
-        .border_color(theme.border_color)
+        .px(px(8.0))
+        .py(px(6.5))
+        .rounded(px(theme.radius_md))
         .cursor_pointer()
         .hover(move |this| this.bg(theme.queue_item_hover))
         .on_click(move |event, window, cx| {
@@ -175,30 +174,42 @@ where
                 .child(format_duration(track.duration_secs(), pad_minutes)),
         )
         .child(
-            button()
-                // 复合 id 限定在本行 `.id((id_prefix, index))` 的作用域下
-                .id(("like", index))
-                .child(icon(if liked { STAR_FILLED } else { STAR }).size(ICON_SM))
-                .text_color(if liked {
-                    theme.liked_song
-                } else {
-                    theme.text_secondary
-                })
-                .on_click(move |event, window, cx| {
-                    cx.stop_propagation();
-                    on_like(event, window, cx);
-                }),
+            div()
+                .opacity(if liked { 1.0 } else { 0.45 })
+                .group_hover("track_row", |s| s.opacity(1.0))
+                .child(
+                    button()
+                        .style(ButtonStyle::Minimal)
+                        // 复合 id 限定在本行 `.id((id_prefix, index))` 的作用域下
+                        .id(("like", index))
+                        .child(icon(if liked { STAR_FILLED } else { STAR }).size(ICON_SM))
+                        .text_color(if liked {
+                            theme.liked_song
+                        } else {
+                            theme.text_secondary
+                        })
+                        .on_click(move |event, window, cx| {
+                            cx.stop_propagation();
+                            on_like(event, window, cx);
+                        }),
+                ),
         )
         .child(
-            button()
-                .id(("download", index))
-                .child(icon(DOWNLOAD).size(ICON_SM))
-                .text_color(theme.text_secondary)
-                .tooltip(build_tooltip(download_label))
-                .on_click(move |event, window, cx| {
-                    cx.stop_propagation();
-                    on_download(event, window, cx);
-                }),
+            div()
+                .opacity(0.35)
+                .group_hover("track_row", |s| s.opacity(1.0))
+                .child(
+                    button()
+                        .style(ButtonStyle::Minimal)
+                        .id(("download", index))
+                        .child(icon(DOWNLOAD).size(ICON_SM))
+                        .text_color(theme.text_secondary)
+                        .tooltip(build_tooltip(download_label))
+                        .on_click(move |event, window, cx| {
+                            cx.stop_propagation();
+                            on_download(event, window, cx);
+                        }),
+                ),
         )
 }
 

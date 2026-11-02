@@ -46,14 +46,15 @@ where
     ) -> NavButton {
         let table = table.clone();
         nav_button(id, if active { active_icon } else { inactive_icon })
+            .rounded_full()
             .on_click(move |_, _, cx| {
                 table.update(cx, |t, cx| {
                     t.set_view_mode(mode, cx);
                 });
             })
             .when(active, |this| {
-                this.bg(theme.nav_button_pressed)
-                    .border_color(theme.nav_button_pressed_border)
+                this.bg(theme.nav_button_active)
+                    .border_color(theme.nav_button_active_border)
             })
             .tooltip(build_tooltip(tooltip))
     }
@@ -75,7 +76,13 @@ where
             Some(
                 div()
                     .flex()
+                    .items_center()
                     .gap_1()
+                    .p(px(2.0))
+                    .rounded_full()
+                    .bg(theme.background_secondary)
+                    .border_1()
+                    .border_color(theme.border_color)
                     .child(Self::view_mode_button(
                         theme,
                         &table_ref,

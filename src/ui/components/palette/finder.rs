@@ -3,9 +3,9 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
 use cntp_i18n::{I18nString, trn};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Context, ElementId, Entity, EventEmitter, FontWeight,
-    InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, WeakEntity, Window, div, img, list, prelude::FluentBuilder,
-    px,
+    InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, Rgba,
+    SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, div, img, list,
+    prelude::FluentBuilder, px,
 };
 use nucleo::{
     Config, Matcher, Nucleo, Utf32String,
@@ -802,6 +802,9 @@ where
         // 删除集合与现状一致（同 table.rs 的 prune_gate）
         let prune_gate = Cell::new(false);
 
+        let total_items = extra_items.len() + display_list.len();
+        let query_text = self.query.clone();
+
         div()
             .w_full()
             .h_full()
@@ -809,54 +812,109 @@ where
             .id("finder")
             .flex()
             .p(px(4.0))
-            .child(
-                list(self.list_state.clone(), move |idx, _, cx| {
-                    if prune_gate.replace(true) {
-                        render_counter.update(cx, |m, _| *m = idx);
-                    } else {
-                        prune_views(&views_model, &render_counter, idx, cx);
-                    }
-
-                    let extras_len = extra_items.len();
-                    if idx < extras_len {
-                        render_extra_item(
-                            &extra_items[idx],
-                            idx,
-                            &views_model,
-                            &current_selection,
-                            &weak_finder,
-                            cx,
+            .when(total_items == 0, move |el| {
+                let theme = cx.global::<Theme>();
+                let is_searching = !query_text.trim().is_empty();
+                el.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(14.0))
+                        .py(px(40.0))
+                        .child(
+                            div()
+                                .size(px(52.0))
+                                .rounded_full()
+                                .bg(Rgba::new(1.0, 1.0, 1.0, 0.04))
+                                .border_1()
+                                .border_color(Rgba::new(1.0, 1.0, 1.0, 0.08))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    crate::ui::components::icons::icon(
+                                        crate::ui::components::icons::SEARCH,
+                                    )
+                                    .size(px(24.0))
+                                    .text_color(theme.text_secondary),
+                                ),
                         )
-                    } else {
-                        let display_idx = idx - extras_len;
-                        match display_list.get(display_idx) {
-                            Some(DisplayEntry::Header(header)) => render_header(header, cx),
-                            Some(DisplayEntry::Item(item)) => render_item(
-                                item,
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(if is_searching {
+                                    SharedString::from(format!("未找到与 \"{}\" 相关的结果", query_text))
+                                } else {
+                                    SharedString::from("键入歌曲名、专辑或歌手以搜索曲库与在线音乐")
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_secondary)
+                                .child(if is_searching {
+                                    SharedString::from("尝试缩短关键词，或检查是否有输入错误")
+                                } else {
+                                    SharedString::from("支持拼音首字母检索与全网即时匹配")
+                                }),
+                        ),
+                )
+            })
+            .when(total_items > 0, move |el| {
+                el.child(
+                    list(self.list_state.clone(), move |idx, _, cx| {
+                        if prune_gate.replace(true) {
+                            render_counter.update(cx, |m, _| *m = idx);
+                        } else {
+                            prune_views(&views_model, &render_counter, idx, cx);
+                        }
+
+                        let extras_len = extra_items.len();
+                        if idx < extras_len {
+                            render_extra_item(
+                                &extra_items[idx],
                                 idx,
                                 &views_model,
                                 &current_selection,
                                 &weak_finder,
                                 cx,
-                            ),
-                            Some(DisplayEntry::ShowMore(_, count)) => render_show_more(
-                                idx,
-                                *count,
-                                extras_len,
-                                &current_selection,
-                                &weak_finder,
-                                cx,
-                            ),
-                            None => div().into_any_element(),
+                            )
+                        } else {
+                            let display_idx = idx - extras_len;
+                            match display_list.get(display_idx) {
+                                Some(DisplayEntry::Header(header)) => render_header(header, cx),
+                                Some(DisplayEntry::Item(item)) => render_item(
+                                    item,
+                                    idx,
+                                    &views_model,
+                                    &current_selection,
+                                    &weak_finder,
+                                    cx,
+                                ),
+                                Some(DisplayEntry::ShowMore(_, count)) => render_show_more(
+                                    idx,
+                                    *count,
+                                    extras_len,
+                                    &current_selection,
+                                    &weak_finder,
+                                    cx,
+                                ),
+                                None => div().into_any_element(),
+                            }
                         }
-                    }
-                })
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .w_full()
-                .h_full(),
-            )
+                    })
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .w_full()
+                    .h_full(),
+                )
+            })
     }
 }
 
@@ -1189,11 +1247,18 @@ where
             .when_some(self.left.clone(), |div_outer, left| {
                 div_outer.child(match left {
                     FinderItemLeft::Text(text) => div()
-                        .child(text)
+                        .px(px(6.0))
+                        .py(px(1.5))
+                        .rounded_sm()
+                        .bg(theme.background_secondary)
+                        .border_1()
+                        .border_color(theme.border_color)
                         .text_ellipsis()
-                        .text_sm()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_secondary)
-                        .mr(px(4.0)),
+                        .mr(px(8.0))
+                        .child(text),
                     FinderItemLeft::Icon(icon_name) => {
                         use crate::ui::components::icons::icon;
                         div()
@@ -1224,11 +1289,15 @@ where
                 div_outer.child(
                     div()
                         .ml_auto()
-                        .pl(px(8.0))
-                        .flex_shrink(1.0)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_sm()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(theme.elevated_border_color)
+                        .bg(theme.elevated_background)
+                        .shadow_sm()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text_secondary)
                         .child(right),
                 )
