@@ -326,11 +326,16 @@ fn mimalloc_memory_mb() -> (u64, u64) {
 /// 式增长只是分配器尚未去提交的空闲页碎片（无害——这些页会被复用）；提交量在涨而
 /// 回收量约 0，说明实时分配正在累积、泄漏是真的。
 #[cfg(not(test))]
-fn mimalloc_force_collect_reclaim_mb(before: u64) -> u64 {
+pub fn mimalloc_force_collect_reclaim_mb(before: u64) -> u64 {
     // SAFETY: 统计相邻的维护调用；按 mimalloc 文档是安全的。
     unsafe { mi_collect(true) };
     let (after, _) = mimalloc_memory_mb();
     before.saturating_sub(after)
+}
+
+#[cfg(test)]
+pub fn mimalloc_force_collect_reclaim_mb(_before: u64) -> u64 {
+    0
 }
 
 /// 在一个具名的低频 UI 事件上采样并记录进程内存，好让后续 `[mem]` 的步进能归因到

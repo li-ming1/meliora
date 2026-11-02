@@ -468,6 +468,13 @@ impl ImmersiveView {
         // 重建，清空零行为差。
         self.parsed = None;
         backdrop_cache_shrink(1);
+        // 退出沉浸页时异步触发一次 mimalloc purge：大图卸载后的几十兆堆碎片立刻归还系统，
+        // 杜绝退出全屏后内存数字迟迟不降。
+        crate::RUNTIME.spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            let (before, _) = crate::mimalloc_memory_mb();
+            crate::mimalloc_force_collect_reclaim_mb(before);
+        });
     }
     /// 针对此刻正在播放的曲目重新解析封面/名称/取色。由 `SongChanged` 与
     /// `QueuePositionChanged` 双双触发；签名守卫让每次切歌的第二次触发变成
