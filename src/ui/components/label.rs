@@ -1,7 +1,7 @@
 use gpui::{
     AnyElement, App, ClickEvent, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder,
+    prelude::FluentBuilder, px,
 };
 use smallvec::SmallVec;
 
@@ -53,12 +53,20 @@ impl RenderOnce for Label {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.global::<Theme>();
 
+        let has_on_click = self.on_click.is_some();
         self.div
             .id(self.id)
             .flex()
             .overflow_hidden()
             .text_sm()
             .gap(SPACE_SM)
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(theme.radius_md))
+            .when(has_on_click, |this| {
+                this.hover(|s| s.bg(theme.nav_button_hover))
+                    .active(|s| s.bg(theme.nav_button_active))
+            })
             .child(
                 div()
                     .flex()
