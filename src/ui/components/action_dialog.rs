@@ -256,8 +256,10 @@ fn render_action(action: ActionDialogAction) -> impl IntoElement {
         .size(ButtonSize::Large)
         .intent(intent)
         .w_full()
-        .py(px(8.0))
-        .px(px(14.0))
+        .py(px(10.0))
+        .px(px(16.0))
+        .rounded(px(10.0))
+        .shadow_sm()
         .overflow_x_hidden()
         .child(
             div()
@@ -345,7 +347,7 @@ impl RenderOnce for ActionDialog {
         dialog.child(
             div()
                 .w(px(520.0))
-                .p(px(24.0))
+                .p(px(26.0))
                 .max_w_full()
                 .flex()
                 .flex_col()
@@ -361,21 +363,21 @@ impl RenderOnce for ActionDialog {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .w(px(56.0))
-                                .h(px(56.0))
-                                .rounded(px(28.0))
+                                .size(px(64.0))
+                                .rounded_full()
                                 .bg(circle_bg)
                                 .border_1()
                                 .border_color(circle_border)
+                                .shadow_md()
                                 .child(icon(resolved_icon).size(ICON_XL).text_color(icon_color)),
                         )
                         .child(
                             div()
                                 .w_full()
-                                .text_size(px(18.0))
+                                .text_size(px(19.0))
                                 .text_center()
                                 .font_weight(FontWeight::BOLD)
-                                .line_height(px(24.0))
+                                .line_height(px(26.0))
                                 .child(self.title),
                         ),
                 )
