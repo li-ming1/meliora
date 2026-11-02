@@ -16,11 +16,12 @@ pub fn tooltip_container(theme: &Theme) -> Div {
         .font_family("Inter")
         .border_color(theme.elevated_border_color)
         .bg(theme.elevated_background)
-        .text_color(theme.text_secondary)
-        .shadow_sm()
-        .px(px(8.0))
-        .pt(px(4.0))
-        .pb(px(5.0))
+        .backdrop_blur(px(12.0))
+        .text_color(theme.text)
+        .shadow_md()
+        .px(px(10.0))
+        .pt(px(4.5))
+        .pb(px(5.5))
 }
 
 /// 纯文本 tooltip 视图；由 [`build_tooltip`] 构建。
