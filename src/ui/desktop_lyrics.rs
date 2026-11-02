@@ -548,15 +548,18 @@ impl Render for DesktopLyricsView {
             })
             .cursor_pointer()
             .absolute()
-            .top(px(2.0))
-            .right(px(6.0))
-            .size(px(16.0))
+            .top(px(4.0))
+            .right(px(8.0))
+            .size(px(20.0))
             .rounded_full()
-            .bg(white().opacity(0.16))
+            .bg(white().opacity(0.18))
+            .border_1()
+            .border_color(white().opacity(0.24))
+            .hover(|s| s.bg(white().opacity(0.32)))
             .flex()
             .items_center()
             .justify_center()
-            .child(icon(CROSS).size(px(10.0)).text_color(white().opacity(0.9)));
+            .child(icon(CROSS).size(px(11.0)).text_color(white().opacity(0.95)));
 
         div()
             .size_full()
@@ -588,24 +591,22 @@ impl Render for DesktopLyricsView {
                     .on_hover(set_hovered)
                     .cursor_default()
                     .relative()
-                    .rounded(px(16.0))
-                    // 常态全透明与壁纸融为一体；悬停（含拖动全程——进入拖
-                    // 动前鼠标必然已悬停，且 OS 移动模态循环期间 hover 态
-                    // 不会被 mouse-move 清掉）才浮出药丸底 + 描边 + 关闭按
-                    // 钮。边框常驻（透明色）避免悬停时布局位移。
+                    .rounded(px(18.0))
+                    // 常态全透明与壁纸融为一体；悬停才浮出高透黑曜石底 + 柔和光晕描边 + 优雅关闭按钮
                     .border_1()
                     .border_color(if self.hovered {
-                        white().opacity(0.25)
+                        white().opacity(0.20)
                     } else {
                         transparent_black()
                     })
                     .bg(if self.hovered {
-                        black().opacity(0.42)
+                        black().opacity(0.62)
                     } else {
                         transparent_black()
                     })
-                    .px(px(24.0))
-                    .py(px(10.0))
+                    .when(self.hovered, |p| p.shadow_lg())
+                    .px(px(26.0))
+                    .py(px(11.0))
                     .max_w_full()
                     .overflow_hidden()
                     .child(content)
