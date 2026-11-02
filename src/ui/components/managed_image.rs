@@ -349,7 +349,7 @@ const RECLAIM_DELAY: Duration = Duration::from_secs(60);
 /// 窗口（400ms）加帧时序，并且必须始终大于 `BACKDROP_FADE`：crossfade 期间旧元素仍在淡出、
 /// 始终挂载。统一的 60s 门会把一连串切歌变成"背景不跟着换歌走"——积压的大图集会让新背景
 /// 解码最多等一分钟（`backdrop_decode_allowed`），正是 2026-09-29 的投诉。
-const RECLAIM_DELAY_LARGE: Duration = Duration::from_secs(3);
+const RECLAIM_DELAY_LARGE: Duration = Duration::from_millis(1000);
 
 /// 单张排队图像的回收年龄：背景级大图走短门，其余走保守的 60s 门。
 fn reclaim_delay_for(image: &RenderImage) -> Duration {
@@ -947,12 +947,9 @@ fn pack_backdrop_thumb(w: u32, h: u32) -> u32 {
     (w.min(0xFFFF) << 16) | h.min(0xFFFF)
 }
 
-/// 沉浸页背景专用 LRU（容量 3）：同一首歌切走再切回、退出沉浸页再进，
-/// 都命中同一份 `RenderImage`（同一 Arc → 同一批图集瓦片），零解码零重
-/// 传。容量 3 覆盖"当前 + 预取的下一首 + crossfade 中的旧层"三套并存
-/// （2026-09-29 预取优化：切歌瞬间整条链路零解码，详见沉浸页
-/// `prefetch_next_track_art`）。
-const BACKDROP_CACHE_CAP: usize = 3;
+/// 沉浸页背景专用 LRU（容量 2）：覆盖当前首与预取/过渡的下一首，
+/// 相比旧版容量 3 显著节省 ~16MB~35MB 堆内存与 GPU 纹理分配，切歌后废弃大图即时逐出漏斗。
+const BACKDROP_CACHE_CAP: usize = 2;
 
 static BACKDROP_CACHE: OnceLock<Mutex<RenderCache>> = OnceLock::new();
 
@@ -1059,7 +1056,7 @@ pub(crate) fn large_drops_pending() -> usize {
 /// 3s 大图短年龄门让积压在数秒内自行排空，而不是把切歌卡死整整一分钟。
 /// 阀门只拦"要新解码"的换图——缓存命中的换图经
 /// [`backdrop_cache_contains`] 绕过本阀门，预取成果不被排水拖住。
-const BACKDROP_QUEUE_HEADROOM: usize = 3;
+const BACKDROP_QUEUE_HEADROOM: usize = 2;
 
 pub(crate) fn backdrop_decode_allowed() -> bool {
     large_drops_pending() <= BACKDROP_QUEUE_HEADROOM
