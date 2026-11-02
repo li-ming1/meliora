@@ -59,15 +59,19 @@ pub fn load_default_keymap(cx: &mut App) {
         .bindings
         .into_iter()
         .filter(|e| e.platform.is_none_or(Platform::matches))
-        .map(|e| {
-            let action = cx
-                .build_action(&e.action, None)
-                .unwrap_or_else(|err| panic!("unknown action {}: {err}", e.action));
-            let context_predicate = e.context.as_deref().map(|ctx| {
-                Rc::new(
-                    KeyBindingContextPredicate::parse(ctx)
-                        .unwrap_or_else(|err| panic!("invalid context {:?}: {err}", ctx)),
-                )
+        .filter_map(|e| {
+            let action = match cx.build_action(&e.action, None) {
+                Ok(action) => action,
+                Err(err) => {
+                    tracing::debug!("skipping unbuilt keymap action {}: {err}", e.action);
+                    return None;
+                }
+            };
+            let context_predicate = e.context.as_deref().and_then(|ctx| {
+                KeyBindingContextPredicate::parse(ctx)
+                    .map(Rc::new)
+                    .map_err(|err| tracing::warn!("invalid context {:?}: {err}", ctx))
+                    .ok()
             });
             KeyBinding::load(
                 &e.key,
@@ -77,7 +81,8 @@ pub fn load_default_keymap(cx: &mut App) {
                 None,
                 &gpui::DummyKeyboardMapper,
             )
-            .unwrap_or_else(|err| panic!("invalid key {:?}: {err}", e.key))
+            .map_err(|err| tracing::warn!("invalid key {:?}: {err}", e.key))
+            .ok()
         })
         .collect();
 
