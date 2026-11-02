@@ -12,7 +12,7 @@ use crate::ui::{
 const TITLEBAR_HEIGHT: Pixels = px(37.0);
 
 /// 标题栏窗口按钮（关闭 / 最小化 / 最大化）的宽度。
-const WINDOW_BUTTON_WIDTH: Pixels = px(36.0);
+const WINDOW_BUTTON_WIDTH: Pixels = px(38.0);
 
 /// 标题栏左缘为 macOS 红绿灯按钮留出的空位。
 const MACOS_TRAFFIC_LIGHT_SPACER: Pixels = px(72.0);
@@ -138,31 +138,28 @@ impl RenderOnce for WindowButton {
         let theme = cx.global::<Theme>();
         let is_close = matches!(self, WindowButton::Close(_));
 
-        let (bg, hover, active) = if is_close {
-            (
-                theme.close_button,
-                theme.close_button_hover,
-                theme.close_button_active,
-            )
-        } else {
-            (
-                theme.window_button,
-                theme.window_button_hover,
-                theme.window_button_active,
-            )
-        };
-
         let (id, control_area, glyph) = match self {
-            WindowButton::Close(_) => ("close", WindowControlArea::Close, CROSS),
-            WindowButton::Minimize => ("minimize", WindowControlArea::Min, MINUS),
+            WindowButton::Close(_) => ("win-close", WindowControlArea::Close, CROSS),
+            WindowButton::Minimize => ("win-minimize", WindowControlArea::Min, MINUS),
             WindowButton::Maximize => {
                 let glyph = if window.is_maximized() {
                     MINIMIZE
                 } else {
                     MAXIMIZE
                 };
-                ("maximize", WindowControlArea::Max, glyph)
+                ("win-maximize", WindowControlArea::Max, glyph)
             }
+        };
+
+        let hover_bg = if is_close {
+            Rgba::new(0.85, 0.14, 0.22, 0.85)
+        } else {
+            theme.nav_button_hover
+        };
+        let active_bg = if is_close {
+            Rgba::new(0.70, 0.10, 0.18, 0.95)
+        } else {
+            theme.nav_button_active
         };
 
         div()
@@ -173,14 +170,12 @@ impl RenderOnce for WindowButton {
             .justify_center()
             .cursor_pointer()
             .id(id)
-            .bg(bg)
-            .hover(|this| this.bg(hover))
-            .active(|this| this.bg(active))
+            .hover(move |this| this.bg(hover_bg))
+            .active(move |this| this.bg(active_bg))
             .window_control_area(control_area)
             .text_size(px(12.0))
             .occlude()
-            .child(icon(glyph).size(ICON_SM))
-            .when(is_close, |this| this.rounded_tr(px(theme.radius_md)))
+            .child(icon(glyph).size(ICON_SM).text_color(if is_close { theme.text } else { theme.text_secondary }))
             .on_click(move |_, window, cx| match self {
                 WindowButton::Close(false) => window.remove_window(),
                 // 主窗 ✕：经托盘关闭决策（隐藏到托盘或退出），Alt+F4 的
