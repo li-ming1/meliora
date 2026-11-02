@@ -107,6 +107,7 @@ impl RenderOnce for Modal {
                 .w(size.width)
                 .h(size.height)
                 .bg(theme.modal_overlay_bg)
+                .backdrop_blur(px(14.0))
                 .id("modal-bg")
                 .map(|div| match decorations {
                     Decorations::Server => div,
