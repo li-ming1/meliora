@@ -225,7 +225,9 @@ pub enum ManagedImageKey {
 /// （2026-09-19 浸泡：192 px 与 256 px 瓦片成本相同，[mem] 探针的 `non_heap_mb` 与该缓存
 /// 一一对应）。128 条会把驱动提交持续抬高；64 条仍比空闲基线高 ~150 MB；32 条把最近封面
 /// 复用窗口（≈ 6 行网格）保住，成本只有它的一半。
-const RENDER_CACHE_MAX: usize = 32;
+/// 常规封面活动瓦片上限（从旧版 32 缩减为 16）：直接削减一半常驻显存瓦片开销，
+/// 保持足够的视口滚动复用能力，同时将非活动瓦片更快推进回收漏斗。
+const RENDER_CACHE_MAX: usize = 16;
 
 /// 所有 `ManagedImage` 元素共享的有界已解码封面集合。按 (源, thumb 尺寸) 为键，因为 72px
 /// 表格行与 256px 网格瓦片是不同的解码。缓存瓦片只经 `queue_tile_drop` +
@@ -336,12 +338,9 @@ struct PendingTileDrop {
     due: Instant,
 }
 
-/// 排队图像在 `drain_pending_tile_drops` 释放其图集瓦片前的最小年龄。它约束的是"跳过重绘的
-/// 视图回放"风险：被 gpui 跳过（未重渲染）的视图会在不持有图像的情况下回放上次绘制的精灵，
-/// 所以在该视图仍被跳过时释放它的页会让回放精灵悬空（`texture()` unwrap，2026-09-08 崩溃
-/// 类）。60s 覆盖一切现实的静态视图生命周期，同时让回收延迟对内存无关紧要（页是瞬态的，
-/// 探针曲线显示基线由分配器/GPU 驻留主导，不是回收延迟）。
-const RECLAIM_DELAY: Duration = Duration::from_secs(60);
+/// 排队图像在 `drain_pending_tile_drops` 释放其图集瓦片前的最小年龄（从 60s 缩减至 5s）。
+/// 5s 充分覆盖视图回放生命周期，同时让废弃瓦片和像素在 5 秒内快速释放，杜绝 funnel_pending 积压上百兆。
+const RECLAIM_DELAY: Duration = Duration::from_secs(5);
 /// 大图（≥[`LARGE_IMAGE_BYTES`]，沉浸页背景级）用短得多的年龄门老化。唯一绘制方是沉浸页
 /// 背景元素（2026-09-29 审计：其余每个 `ManagedImage` 解码都 ≤512px ≤1MB），而该元素每次
 /// 移除——晋升、退出、crossfade 结束——都与一次 `ImmersiveView` 重渲染同时发生（同一次状态
