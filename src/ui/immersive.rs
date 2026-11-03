@@ -2329,39 +2329,34 @@ impl Render for ImmersiveView {
                 );
 
             let duration_ms = *self.duration.read(cx);
-            let progress_fraction = if duration_ms > 0 {
-                (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
             let current_time_text = format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000);
             let total_time_text = format!("{}:{:02}", duration_ms / 60000, (duration_ms % 60000) / 1000);
 
-            // 动态音乐律动频谱声浪 (Dancing Audio Spectrum Bars - Dynamic Waves)
+            // 动态音乐律动频谱声浪 (Dancing Audio Spectrum Waves - Expanded Stage)
             let spectrum_bars = if let Some(spectrum) = &self.spectrum_data {
                 let post = spectrum.read(cx).post.clone();
-                let num_bars = 32;
+                let num_bars = 40;
                 let mut bars = Vec::with_capacity(num_bars);
                 for b in 0..num_bars {
                     let frac = b as f32 / (num_bars - 1) as f32;
-                    // 指数感知采样跨度：低中频与高频兼顾
-                    let sample_idx = ((frac.powf(1.35) * (post.len() as f32 - 1.0)).round() as usize)
+                    // 对数感知采样跨度：兼顾低音鼓点与高音细节
+                    let sample_idx = ((frac.powf(1.25) * (post.len() as f32 - 1.0)).round() as usize)
                         .min(post.len().saturating_sub(1));
                     let val_db = post.get(sample_idx).copied().unwrap_or(-60.0);
 
-                    // 高频感度补偿（高频物理衰减大，加入 14dB 斜率补偿使得高音区也能澎湃律动）
-                    let hf_boost = frac * 14.0;
+                    // 高频感度补偿（高频物理能量弱，加入 18dB 渐进斜率补偿让高频也能充分舞动）
+                    let hf_boost = frac * 18.0;
                     let compensated_db = val_db + hf_boost;
 
-                    // 展开动态范围（-44dB ~ -2dB 黄金响应窗）
-                    let norm = ((compensated_db + 44.0) / 42.0).clamp(0.0, 1.0);
-                    // 动力学非线性拉伸（低值柔和收敛，高值喷涌爆发）
-                    let dynamic = norm.powf(1.2);
-                    let bar_h = if playing { (dynamic * 46.0).max(2.5) } else { 2.0 };
+                    // 高灵敏度动态窗口（-36dB ~ 0dB 黄金可听区间）
+                    let norm = ((compensated_db + 36.0) / 36.0).clamp(0.0, 1.0);
+                    // 平方根开方动力学提拉：显著提升中低能量时的起伏表现（告别小圆点），强拍直接爆发
+                    let dynamic = norm.sqrt();
+                    let bar_h = if playing { (dynamic * 42.0).max(3.0) } else { 2.5 };
 
-                    let col = if b < 10 {
+                    let col = if b < 12 {
                         Rgba::new(1.0, 0.85, 0.40, 0.90) // 低频重低音：燃金色
-                    } else if b < 22 {
+                    } else if b < 28 {
                         Rgba::new(0.40, 0.85, 1.0, 0.85) // 中频人声旋律：荧光冰蓝
                     } else {
                         Rgba::new(0.85, 0.55, 1.0, 0.80) // 高频乐器泛音：梦幻紫
@@ -2369,11 +2364,11 @@ impl Render for ImmersiveView {
 
                     bars.push(
                         div()
-                            .w(px(3.0))
+                            .w(px(4.0))
                             .h(px(bar_h))
                             .rounded_full()
                             .bg(col)
-                            .when(bar_h > 12.0, |el| el.shadow_sm())
+                            .when(bar_h > 10.0, |el| el.shadow_sm())
                             .into_any_element(),
                     );
                 }
@@ -2382,55 +2377,55 @@ impl Render for ImmersiveView {
                         .flex()
                         .items_end()
                         .justify_center()
-                        .gap(px(4.0))
-                        .h(px(50.0))
-                        .mb(px(8.0))
+                        .gap(px(7.0))
+                        .h(px(48.0))
+                        .mb(px(10.0))
                         .children(bars),
                 )
             } else {
                 None
             };
 
-            // 底部电影级极简悬浮光轨 (Minimal Floating Aurora Progress Bar)
+            // 底部电影级极简悬浮光轨 (Minimal Floating Aurora Progress Bar - With Drag-seeking Slider)
             let floating_progress = div()
                 .id("stage-floating-progress")
                 .absolute()
-                .bottom(px(24.0))
+                .bottom(px(26.0))
                 .left_0()
                 .right_0()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(8.0))
                 .children(spectrum_bars)
                 .child(
                     div()
-                        .id("stage-floating-bar-track")
-                        .relative()
-                        .w(px(320.0))
-                        .h(px(3.0))
-                        .rounded_full()
-                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                        .w(px(480.0))
                         .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .bottom_0()
-                                .w(relative(progress_fraction))
+                            slider()
+                                .id("stage-floating-slider")
+                                .w_full()
+                                .h(px(5.0))
                                 .rounded_full()
-                                .bg(Rgba::new(1.0, 0.85, 0.45, 0.85))
-                                .shadow_sm(),
+                                .change_interval(SLIDER_CHANGE_INTERVAL)
+                                .value(if duration_ms > 0 {
+                                    (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+                                } else {
+                                    0.0
+                                })
+                                .on_change(move |v, _, cx| {
+                                    seek_to_fraction(v as f64, duration_ms, cx);
+                                }),
                         ),
                 )
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.0))
-                        .text_size(px(11.0))
+                        .gap(px(12.0))
+                        .text_size(px(12.0))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(Rgba::new(1.0, 1.0, 1.0, 0.35))
+                        .text_color(Rgba::new(1.0, 1.0, 1.0, 0.45))
                         .child(current_time_text)
                         .child("•")
                         .child(total_time_text),
