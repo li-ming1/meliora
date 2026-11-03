@@ -72,6 +72,7 @@ use crate::{
         queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
+        equalizer::spectrum::{SpectrumData, SpectrumState, ensure_analyzer},
         util::{
             CachedTimeText, extract_accent, format_duration, reduced_motion_enabled,
             seek_to_fraction, volume_toggle_target,
@@ -147,6 +148,8 @@ pub struct ImmersiveView {
     position: Entity<u64>,
     duration: Entity<u64>,
     sample_rate: Entity<u32>,
+    spectrum_data: Option<Entity<SpectrumData>>,
+    spectrum_viewers: Option<Arc<std::sync::atomic::AtomicUsize>>,
     volume: Entity<f64>,
     prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
@@ -360,6 +363,21 @@ impl ImmersiveView {
                 }
             });
 
+            ensure_analyzer(cx);
+            let (spectrum_data, spectrum_viewers) = if let Some(state) = cx.try_global::<SpectrumState>() {
+                (Some(state.data.clone()), Some(state.viewers.clone()))
+            } else {
+                (None, None)
+            };
+            if let Some(spectrum) = &spectrum_data {
+                cx.observe(spectrum, |this, _, cx| {
+                    if this.active && this.stage_mode == ImmersiveStageMode::KineticLyrics {
+                        cx.notify();
+                    }
+                })
+                .detach();
+            }
+
             let mut this = Self {
                 focus_handle: cx.focus_handle(),
                 active: *immersive_flag.read(cx),
@@ -369,6 +387,8 @@ impl ImmersiveView {
                 position: info.position.clone(),
                 duration: info.duration.clone(),
                 sample_rate: info.sample_rate.clone(),
+                spectrum_data,
+                spectrum_viewers,
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
@@ -441,9 +461,15 @@ impl ImmersiveView {
         self.sync_lyrics(cx);
         // 同首歌重进（resolve 早退）时 resolve 里的预取不会执行，这里补。
         self.prefetch_next_track_art(cx);
+        if let Some(viewers) = &self.spectrum_viewers {
+            viewers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     fn deactivate(&mut self) {
+        if let Some(viewers) = &self.spectrum_viewers {
+            viewers.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
         self.line_anim = None;
         // 退出沉浸页：取消解码任务并立即失显。已显示背景随元素 unmount
         // 推进回收漏斗，短年龄门（大图 3s）后像素与瓦片放行；背景缓存
@@ -2311,6 +2337,47 @@ impl Render for ImmersiveView {
             let current_time_text = format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000);
             let total_time_text = format!("{}:{:02}", duration_ms / 60000, (duration_ms % 60000) / 1000);
 
+            // 动态音乐律动频谱柱 (Dancing Audio Spectrum Bars)
+            let spectrum_bars = if let Some(spectrum) = &self.spectrum_data {
+                let post = spectrum.read(cx).post.clone();
+                let num_bars = 28;
+                let mut bars = Vec::with_capacity(num_bars);
+                for b in 0..num_bars {
+                    let sample_idx = (b * 7 + 4).min(post.len().saturating_sub(1));
+                    let val_db = post.get(sample_idx).copied().unwrap_or(-60.0);
+                    // 归一化 -60.0dB ~ 0.0dB 到 0.0 ~ 1.0 之间
+                    let norm = ((val_db + 60.0) / 60.0).clamp(0.0, 1.0);
+                    let bar_h = if playing { (norm * 18.0).max(2.0) } else { 2.0 };
+                    let col = if b < 8 {
+                        Rgba::new(1.0, 0.85, 0.45, 0.70) // 低频暖金
+                    } else if b < 18 {
+                        Rgba::new(0.65, 0.85, 1.0, 0.65) // 中频冰蓝
+                    } else {
+                        Rgba::new(0.85, 0.65, 1.0, 0.60) // 高频淡紫
+                    };
+                    bars.push(
+                        div()
+                            .w(px(2.5))
+                            .h(px(bar_h))
+                            .rounded_full()
+                            .bg(col)
+                            .into_any_element(),
+                    );
+                }
+                Some(
+                    div()
+                        .flex()
+                        .items_end()
+                        .justify_center()
+                        .gap(px(3.5))
+                        .h(px(20.0))
+                        .mb(px(4.0))
+                        .children(bars),
+                )
+            } else {
+                None
+            };
+
             // 底部电影级极简悬浮光轨 (Minimal Floating Aurora Progress Bar)
             let floating_progress = div()
                 .id("stage-floating-progress")
@@ -2322,6 +2389,7 @@ impl Render for ImmersiveView {
                 .flex_col()
                 .items_center()
                 .gap(px(6.0))
+                .children(spectrum_bars)
                 .child(
                     div()
                         .id("stage-floating-bar-track")
