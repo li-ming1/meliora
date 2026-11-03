@@ -427,15 +427,15 @@ pub fn open_http_media(
     let url = Url::parse(text).map_err(|e| anyhow::anyhow!("invalid track URL '{text}': {e}"))?;
     let ext = url_extension(&url);
 
+    // 触发后台异步整曲缓存任务（全速后台流式拉取并原子落地，数秒内生成本地完整缓存文件）
+    crate::media::audio_cache::spawn_background_cache_task(path, url.clone(), ext.clone());
+
     let source = HttpRangeSource::connect(url, refresh)
         .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
 
-    let sink =
-        crate::media::audio_cache::AudioCacheSink::try_new(path, source.total_len, ext.as_deref());
-
     // 后台填充 + 重连，让网络抖动绝不会把播放主循环按在一次同步读取上
-    // （见 prefetch.rs）。同时边播边写入本地磁盘 LRU 缓存。
-    let source = crate::media::prefetch::PrefetchSource::new_with_sink(source, sink);
+    // （见 prefetch.rs）。
+    let source = crate::media::prefetch::PrefetchSource::new(source);
 
     SymphoniaProvider
         .open_source(Box::new(source), ext.as_deref().map(OsStr::new))

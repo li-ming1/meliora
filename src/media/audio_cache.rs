@@ -1,12 +1,12 @@
 use std::{
-    fs::{self, File},
+    fs,
     hash::{DefaultHasher, Hash, Hasher},
-    io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, SystemTime},
 };
 
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -92,151 +92,113 @@ pub fn get_cached_audio_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 流式写入音频缓存并在完成后原子转正的写汇（Sink）。
-pub struct AudioCacheSink {
-    file: Option<File>,
-    tmp_path: PathBuf,
-    target_path: PathBuf,
-    written_bytes: u64,
-    expected_bytes: Option<u64>,
-    aborted: bool,
-}
+/// 在后台异步启动整曲流式缓存任务。
+/// 不阻塞播放，全速从头拉取完整音频并原子转正到本地磁盘。
+pub fn spawn_background_cache_task(path: &Path, url: Url, ext_hint: Option<String>) {
+    let key = match audio_cache_key_for_path(path) {
+        Some(k) => k,
+        None => return,
+    };
 
-impl AudioCacheSink {
-    /// 尝试为指定路径开启一个后台音频流缓存通道。
-    /// 若无法推导键或已存在缓存，则返回 `None`。
-    pub fn try_new(
-        path: &Path,
-        expected_bytes: Option<u64>,
-        ext_hint: Option<&str>,
-    ) -> Option<Self> {
-        let key = audio_cache_key_for_path(path)?;
-        let dir = audio_cache_dir();
-        if let Err(e) = fs::create_dir_all(&dir) {
-            warn!("Failed to create audio cache dir: {e}");
-            return None;
-        }
+    let dir = audio_cache_dir();
+    let ext = ext_hint.unwrap_or_else(|| "audio".to_string());
+    let target_path = dir.join(format!("{key}.{ext}"));
+    if target_path.exists() {
+        return;
+    }
 
-        let ext = ext_hint.unwrap_or("audio");
-        let target_path = dir.join(format!("{key}.{ext}"));
+    let tmp_path = dir.join(format!("{key}.tmp"));
+
+    crate::RUNTIME.spawn(async move {
         if target_path.exists() {
-            // 已存在完整缓存文件，无需重复写入
-            return None;
+            return;
         }
 
-        let tmp_path = dir.join(format!("{key}.tmp"));
-        let file = match File::create(&tmp_path) {
-            Ok(f) => f,
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            warn!("Failed to create audio cache dir: {e}");
+            return;
+        }
+
+        // 使用共享客户端发起请求
+        let mut response = match crate::media::http_source::shared_http_client()
+            .get(url.clone())
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => resp,
+            Ok(resp) => {
+                debug!(status = %resp.status(), "Audio cache download rejected by server");
+                return;
+            }
             Err(e) => {
-                warn!("Failed to create audio cache tmp file: {e}");
-                return None;
+                debug!(err = %e, "Audio cache download failed to connect");
+                return;
             }
         };
 
-        Some(Self {
-            file: Some(file),
-            tmp_path,
-            target_path,
-            written_bytes: 0,
-            expected_bytes,
-            aborted: false,
-        })
-    }
-
-    /// 追加写入数据块。
-    pub fn append_chunk(&mut self, chunk: &[u8]) {
-        if self.aborted || chunk.is_empty() {
-            return;
-        }
-
-        let Some(file) = &mut self.file else {
-            return;
+        let file = match tokio::fs::File::create(&tmp_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to create audio cache tmp file: {e}");
+                return;
+            }
         };
 
-        if let Err(e) = file.write_all(chunk) {
-            warn!("Failed to write chunk to audio cache: {e}");
-            self.abort_and_cleanup();
-            return;
+        let mut writer = tokio::io::BufWriter::new(file);
+        let mut total_written = 0u64;
+
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Err(e) = writer.write_all(&chunk).await {
+                        warn!("Audio cache write error: {e}");
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return;
+                    }
+                    total_written += chunk.len() as u64;
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    warn!("Audio cache stream error: {e}");
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return;
+                }
+            }
         }
-        self.written_bytes += chunk.len() as u64;
-    }
 
-    /// 标记发生非线性 Seek，丢弃当前缓存以防止保存半截/乱序文件。
-    pub fn abort_due_to_seek(&mut self) {
-        if !self.aborted {
-            debug!("Aborting audio cache due to seek operation");
-            self.abort_and_cleanup();
-        }
-    }
-
-    /// 流完全读到 EOF 时调用，校验完整性并原子转正。
-    pub fn finish_and_commit(mut self) {
-        if self.aborted {
-            return;
-        }
-
-        let mut file = match self.file.take() {
-            Some(f) => f,
-            None => return,
-        };
-
-        // 刷新文件缓冲并校验大小
-        if let Err(e) = file.flush() {
-            warn!("Failed to flush audio cache file: {e}");
-            self.abort_and_cleanup();
+        if let Err(e) = writer.flush().await {
+            warn!("Audio cache flush error: {e}");
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             return;
         }
 
-        if self.written_bytes < 1024 {
-            // 文件过小，可能是不完整流或错误页
-            self.abort_and_cleanup();
+        if let Err(e) = writer.shutdown().await {
+            warn!("Audio cache shutdown error: {e}");
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             return;
         }
 
-        if let Some(expected) = self.expected_bytes
-            && self.written_bytes != expected
-        {
-            warn!(
-                written = self.written_bytes,
-                expected, "Audio cache size mismatch, discarding cache"
-            );
-            self.abort_and_cleanup();
+        drop(writer);
+
+        if total_written < 1024 {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             return;
         }
 
-        // Drop file 释放 Windows 下的文件独占锁，确保 rename 顺利进行
-        drop(file);
-
-        if let Err(e) = fs::rename(&self.tmp_path, &self.target_path) {
-            warn!("Failed to commit audio cache file: {e}");
-            let _ = fs::remove_file(&self.tmp_path);
+        if let Err(e) = tokio::fs::rename(&tmp_path, &target_path).await {
+            warn!("Audio cache rename failed: {e}");
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             return;
         }
 
         info!(
-            path = %self.target_path.display(),
-            bytes = self.written_bytes,
-            "Successfully cached complete audio track to disk"
+            path = %target_path.display(),
+            bytes = total_written,
+            "Successfully cached complete online track in background"
         );
 
-        // 记一次写盘，必要时触发后台清扫
         record_audio_cache_write();
-    }
-
-    fn abort_and_cleanup(&mut self) {
-        self.aborted = true;
-        self.file = None;
-        let _ = fs::remove_file(&self.tmp_path);
-    }
-}
-
-impl Drop for AudioCacheSink {
-    fn drop(&mut self) {
-        self.file = None;
-        if !self.aborted && self.tmp_path.exists() {
-            let _ = fs::remove_file(&self.tmp_path);
-        }
-    }
+    });
 }
 
 /// 累计完成写盘，达到阈值后在后台线程执行一次有界 LRU 清理。
