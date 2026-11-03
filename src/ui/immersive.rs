@@ -2337,30 +2337,43 @@ impl Render for ImmersiveView {
             let current_time_text = format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000);
             let total_time_text = format!("{}:{:02}", duration_ms / 60000, (duration_ms % 60000) / 1000);
 
-            // 动态音乐律动频谱柱 (Dancing Audio Spectrum Bars)
+            // 动态音乐律动频谱声浪 (Dancing Audio Spectrum Bars - Dynamic Waves)
             let spectrum_bars = if let Some(spectrum) = &self.spectrum_data {
                 let post = spectrum.read(cx).post.clone();
-                let num_bars = 28;
+                let num_bars = 32;
                 let mut bars = Vec::with_capacity(num_bars);
                 for b in 0..num_bars {
-                    let sample_idx = (b * 7 + 4).min(post.len().saturating_sub(1));
+                    let frac = b as f32 / (num_bars - 1) as f32;
+                    // 指数感知采样跨度：低中频与高频兼顾
+                    let sample_idx = ((frac.powf(1.35) * (post.len() as f32 - 1.0)).round() as usize)
+                        .min(post.len().saturating_sub(1));
                     let val_db = post.get(sample_idx).copied().unwrap_or(-60.0);
-                    // 归一化 -60.0dB ~ 0.0dB 到 0.0 ~ 1.0 之间
-                    let norm = ((val_db + 60.0) / 60.0).clamp(0.0, 1.0);
-                    let bar_h = if playing { (norm * 18.0).max(2.0) } else { 2.0 };
-                    let col = if b < 8 {
-                        Rgba::new(1.0, 0.85, 0.45, 0.70) // 低频暖金
-                    } else if b < 18 {
-                        Rgba::new(0.65, 0.85, 1.0, 0.65) // 中频冰蓝
+
+                    // 高频感度补偿（高频物理衰减大，加入 14dB 斜率补偿使得高音区也能澎湃律动）
+                    let hf_boost = frac * 14.0;
+                    let compensated_db = val_db + hf_boost;
+
+                    // 展开动态范围（-44dB ~ -2dB 黄金响应窗）
+                    let norm = ((compensated_db + 44.0) / 42.0).clamp(0.0, 1.0);
+                    // 动力学非线性拉伸（低值柔和收敛，高值喷涌爆发）
+                    let dynamic = norm.powf(1.2);
+                    let bar_h = if playing { (dynamic * 46.0).max(2.5) } else { 2.0 };
+
+                    let col = if b < 10 {
+                        Rgba::new(1.0, 0.85, 0.40, 0.90) // 低频重低音：燃金色
+                    } else if b < 22 {
+                        Rgba::new(0.40, 0.85, 1.0, 0.85) // 中频人声旋律：荧光冰蓝
                     } else {
-                        Rgba::new(0.85, 0.65, 1.0, 0.60) // 高频淡紫
+                        Rgba::new(0.85, 0.55, 1.0, 0.80) // 高频乐器泛音：梦幻紫
                     };
+
                     bars.push(
                         div()
-                            .w(px(2.5))
+                            .w(px(3.0))
                             .h(px(bar_h))
                             .rounded_full()
                             .bg(col)
+                            .when(bar_h > 12.0, |el| el.shadow_sm())
                             .into_any_element(),
                     );
                 }
@@ -2369,9 +2382,9 @@ impl Render for ImmersiveView {
                         .flex()
                         .items_end()
                         .justify_center()
-                        .gap(px(3.5))
-                        .h(px(20.0))
-                        .mb(px(4.0))
+                        .gap(px(4.0))
+                        .h(px(50.0))
+                        .mb(px(8.0))
                         .children(bars),
                 )
             } else {
