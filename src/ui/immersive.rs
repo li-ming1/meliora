@@ -2628,10 +2628,10 @@ mod tests {
         let lines = lyric_window(10.0, 30, Some(10));
         assert_eq!(
             lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
-            (4..=16).collect::<Vec<_>>()
+            (5..=15).collect::<Vec<_>>()
         );
-        // 活动行位于中间槽（13 槽里的第 6 个）。
-        let (_, top, is_current) = lines[6];
+        // 活动行位于中间槽（11 槽里的第 6 个）。
+        let (_, top, is_current) = lines[5];
         assert!(is_current);
         assert_eq!(top, LINE_WINDOW as f32 * LINE_PITCH_PX);
     }
