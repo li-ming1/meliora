@@ -2,11 +2,15 @@ use std::{
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
 use tokio::io::AsyncWriteExt;
+use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -26,6 +30,9 @@ const AUDIO_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 static CACHE_WRITES_SINCE_PRUNE: AtomicUsize = AtomicUsize::new(0);
 /// 防止并发重入清扫的原子锁。
 static CACHE_PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 全局当前在途的后台音频缓存下载任务句柄（单槽位）。
+/// 切换新曲目时立即 abort 上一首未完成的下载，防止快速切歌时并发抢占网络带宽。
+static ACTIVE_DOWNLOAD_HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
 /// 获取音频缓存主目录路径。
 pub fn audio_cache_dir() -> PathBuf {
@@ -109,7 +116,18 @@ pub fn spawn_background_cache_task(path: &Path, url: Url, ext_hint: Option<Strin
 
     let tmp_path = dir.join(format!("{key}.tmp"));
 
-    crate::RUNTIME.spawn(async move {
+    // 1. 取消上一首尚未下载完成的在途任务，避免快速切歌时并发拉取
+    if let Ok(mut guard) = ACTIVE_DOWNLOAD_HANDLE.lock() {
+        if let Some(old_handle) = guard.take() {
+            old_handle.abort();
+        }
+    }
+
+    // 2. 启动新的下载任务，先经历开播防抖窗口
+    let task = crate::RUNTIME.spawn(async move {
+        // 开播 2.5 秒稳定防抖：快速切歌试听直接早退，不消耗网络与磁盘
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
         if target_path.exists() {
             return;
         }
@@ -199,6 +217,10 @@ pub fn spawn_background_cache_task(path: &Path, url: Url, ext_hint: Option<Strin
 
         record_audio_cache_write();
     });
+
+    if let Ok(mut guard) = ACTIVE_DOWNLOAD_HANDLE.lock() {
+        *guard = Some(task.abort_handle());
+    }
 }
 
 /// 累计完成写盘，达到阈值后在后台线程执行一次有界 LRU 清理。

@@ -59,9 +59,9 @@ pub async fn discover(
         .iter()
         .map(|p| canonicalize_or_keep(p))
         .collect();
-    let folded_index = {
+    let (folded_index, records_snapshot) = {
         let sr = scan_record.lock().await;
-        build_folded_index(&sr.records)
+        (build_folded_index(&sr.records), sr.records.clone())
     };
     let mut discovered_total: u64 = 0;
     let mut pending: FuturesUnordered<PendingDirectoryRead> = FuturesUnordered::new();
@@ -111,10 +111,7 @@ pub async fn discover(
 
             let mut rescan_ts = None;
             if let Some(timestamp) = entry.scan_timestamp {
-                let (action, stale) = {
-                    let sr = scan_record.lock().await;
-                    classify(&path, timestamp, &sr.records, &folded_index)
-                };
+                let (action, stale) = classify(&path, timestamp, &records_snapshot, &folded_index);
                 // 丢掉指向同一个文件的其他已记录路径
                 for (old, old_ts) in stale {
                     if same_file(&old, &path)
