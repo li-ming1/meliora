@@ -472,6 +472,7 @@ impl Render for InfoSection {
         let image_element_key = self.image_element_key;
         let theme = cx.global::<Theme>();
         let state = self.playback_info.playback_state.read(cx);
+        let sample_rate = *self.playback_info.sample_rate.read(cx);
         let album_navigation_track = self
             .can_navigate_to_album
             .then(|| self.current_library_track.clone())
@@ -502,6 +503,9 @@ impl Render for InfoSection {
                             .rounded(px(theme.radius_sm))
                             .bg(theme.album_art_background)
                             .shadow_sm()
+                            .when(*state == PlaybackState::Playing, |s| {
+                                s.shadow_md().border_1().border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                            })
                             .w(px(36.0))
                             .h(px(36.0))
                             .mb(px(6.0))
@@ -612,17 +616,64 @@ impl Render for InfoSection {
                                 )
                                 .child(
                                     div()
-                                        .id("info-section-artist-name")
-                                        .text_ellipsis()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
                                         .w_full()
-                                        .when_some(artist_navigation_track, |this, track| {
-                                            this.cursor_pointer().on_click(move |ev, _, cx| {
-                                                navigate_to_track_artist(cx, &track, ev.position());
-                                            })
-                                        })
-                                        .child(self.artist_name.clone().unwrap_or_else(|| {
-                                            tr!("UNKNOWN_ARTIST", "Unknown Artist").into()
-                                        })),
+                                        .overflow_x_hidden()
+                                        .child(
+                                            div()
+                                                .id("info-section-artist-name")
+                                                .text_ellipsis()
+                                                .flex_shrink(1.0)
+                                                .when_some(artist_navigation_track, |this, track| {
+                                                    this.cursor_pointer().on_click(move |ev, _, cx| {
+                                                        navigate_to_track_artist(cx, &track, ev.position());
+                                                    })
+                                                })
+                                                .child(self.artist_name.clone().unwrap_or_else(|| {
+                                                    tr!("UNKNOWN_ARTIST", "Unknown Artist").into()
+                                                })),
+                                        )
+                                        .when(sample_rate > 0, |container| {
+                                            let is_hires = sample_rate >= 88_200;
+                                            let rate_khz = sample_rate as f32 / 1000.0;
+                                            let badge_text = if is_hires {
+                                                format!("{rate_khz:.1}k Hi-Res")
+                                            } else if sample_rate % 1000 == 0 {
+                                                format!("{}k", sample_rate / 1000)
+                                            } else {
+                                                format!("{rate_khz:.1}k")
+                                            };
+                                            let (badge_bg, badge_border, badge_text_col) = if is_hires {
+                                                (
+                                                    Rgba::new(0.95, 0.75, 0.30, 0.14),
+                                                    Rgba::new(0.95, 0.75, 0.30, 0.32),
+                                                    Rgba::new(0.98, 0.82, 0.38, 1.0),
+                                                )
+                                            } else {
+                                                (
+                                                    theme.elevated_background,
+                                                    theme.elevated_border_color,
+                                                    theme.text_secondary,
+                                                )
+                                            };
+                                            container.child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .px(px(5.0))
+                                                    .py(px(1.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(badge_bg)
+                                                    .border_1()
+                                                    .border_color(badge_border)
+                                                    .shadow_sm()
+                                                    .text_size(px(10.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(badge_text_col)
+                                                    .child(badge_text),
+                                            )
+                                        }),
                                 ),
                         )
                         .when(has_track, |e| {

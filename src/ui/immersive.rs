@@ -146,6 +146,7 @@ pub struct ImmersiveView {
 
     position: Entity<u64>,
     duration: Entity<u64>,
+    sample_rate: Entity<u32>,
     volume: Entity<f64>,
     prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
@@ -367,6 +368,7 @@ impl ImmersiveView {
                 console_hovered: false,
                 position: info.position.clone(),
                 duration: info.duration.clone(),
+                sample_rate: info.sample_rate.clone(),
                 volume: info.volume.clone(),
                 prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
@@ -1307,6 +1309,7 @@ impl Render for ImmersiveView {
         // PlaybackInfo 的位置用毫秒。进度条在自己的实体（ImmersiveProgress）里
         // 读位置/时长。
         let position_ms = *self.position.read(cx);
+        let sample_rate = *self.sample_rate.read(cx);
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
         let volume = *self.volume.read(cx);
         let prev_volume = *self.prev_volume.read(cx);
@@ -2059,10 +2062,56 @@ impl Render for ImmersiveView {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(12.0))
-                                            .text_color(text_secondary)
-                                            .truncate()
-                                            .child(self.artist_name.clone().unwrap_or_default()),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .w_full()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .text_color(text_secondary)
+                                                    .truncate()
+                                                    .child(self.artist_name.clone().unwrap_or_default()),
+                                            )
+                                            .when(sample_rate > 0, |container| {
+                                                let is_hires = sample_rate >= 88_200;
+                                                let rate_khz = sample_rate as f32 / 1000.0;
+                                                let badge_text = if is_hires {
+                                                    format!("{rate_khz:.1}k Hi-Res")
+                                                } else if sample_rate % 1000 == 0 {
+                                                    format!("{}k", sample_rate / 1000)
+                                                } else {
+                                                    format!("{rate_khz:.1}k")
+                                                };
+                                                let (badge_bg, badge_border, badge_text_col) = if is_hires {
+                                                    (
+                                                        Rgba::new(0.95, 0.75, 0.30, 0.16),
+                                                        Rgba::new(0.95, 0.75, 0.30, 0.38),
+                                                        Rgba::new(1.0, 0.88, 0.45, 1.0),
+                                                    )
+                                                } else {
+                                                    (
+                                                        Rgba::new(1.0, 1.0, 1.0, 0.08),
+                                                        Rgba::new(1.0, 1.0, 1.0, 0.16),
+                                                        text_secondary,
+                                                    )
+                                                };
+                                                container.child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .px(px(6.0))
+                                                        .py(px(1.5))
+                                                        .rounded(px(4.0))
+                                                        .bg(badge_bg)
+                                                        .border_1()
+                                                        .border_color(badge_border)
+                                                        .shadow_sm()
+                                                        .text_size(px(10.0))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(badge_text_col)
+                                                        .child(badge_text),
+                                                )
+                                            }),
                                     ),
                             )
                             .child(

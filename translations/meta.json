@@ -283,7 +283,7 @@
   },
   "APP_NAME": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:569",
+    "definedIn": "src/ui/controls/info_section.rs:573",
     "plural": false,
     "description": "Use the english name everywhere unless this is strictly disagreeable.\n                                "
   },
@@ -673,7 +673,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1661",
+    "definedIn": "src/ui/immersive.rs:1664",
     "plural": false,
     "description": null
   },
@@ -2371,13 +2371,13 @@
   },
   "UNKNOWN_ARTIST": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:624",
+    "definedIn": "src/ui/controls/info_section.rs:635",
     "plural": false,
     "description": null
   },
   "UNKNOWN_TRACK": {
     "context": "info_section.rs",
-    "definedIn": "src/ui/controls/info_section.rs:610",
+    "definedIn": "src/ui/controls/info_section.rs:614",
     "plural": false,
     "description": null
   },
