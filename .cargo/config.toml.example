@@ -23,6 +23,11 @@ INCLUDE = "${VCToolsInstallDir}\\include;${WindowsSdkDir}\\Include\\${WindowsSDK
 LIB = "${VCToolsInstallDir}\\lib\\x64;${WindowsSdkDir}\\Lib\\${WindowsSDKVersion}\\ucrt\\x64;${WindowsSdkDir}\\Lib\\${WindowsSDKVersion}\\um\\x64"
 
 [target.x86_64-pc-windows-msvc]
+# 启用死代码剥离与相同 COMDAT 代码折叠，深度去除泛型单态化重复指令并缩小 .text 体积。
+rustflags = [
+    "-C", "link-arg=/OPT:REF",
+    "-C", "link-arg=/OPT:ICF=3",
+]
 # rustc 1.90 起此目标默认 rust-lld 链接，上面的 INCLUDE/LIB 供其取用；
 # link.exe 不再钉死。链接失败时取消下行注释回退（原值保留备查）。
 # linker = "${VCToolsInstallDir}\\bin\\Hostx64\\x64\\link.exe"

@@ -351,7 +351,7 @@ impl Render for TrackItem {
                                     )
                                     .child(
                                         div()
-                                            .font_weight(FontWeight::LIGHT)
+                                            .font_weight(FontWeight::NORMAL)
                                             .text_sm()
                                             .my_auto()
                                             .text_color(theme.text_secondary)

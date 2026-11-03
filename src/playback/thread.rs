@@ -67,6 +67,10 @@ fn no_progress_backoff(cycles: u32) -> std::time::Duration {
 /// 覆盖最慢的在线打开（签名 URL 刷新 + 连接 + 探测）。
 const PREPARE_LEAD_MS: u64 = 15_000;
 
+/// 开播稳定延时：当前曲目稳定播放超过此阈值后，提前为下一曲布防预取（秒播引擎），
+/// 兼顾防抖（快速连跳时不触发无谓预取）与任意时刻切歌的瞬时响应。
+const STABLE_PREPARE_DELAY_MS: u64 = 3_000;
+
 /// 队列条目的路径是否指向可播放的东西：仍存在的本地文件，或（启用酷狗 feature 时）
 /// 一个 HTTP(S) 流 URL。
 fn path_playable(path: &Path) -> bool {
@@ -666,10 +670,13 @@ impl PlaybackThread {
         Ok(())
     }
 
-    /// 当前曲目即将结束时预打开下一曲的媒体流，让 EOF 切换挂上的是就绪的流，而不是
-    /// 阻塞在连接+探测上（在线源听感上的切歌间隙就出在这里）。队列变更会使已预备的
-    /// 流失效。若下一条目是 HTTP 路径，预备会带上 URL 刷新钩子，于是过期的签名 URL
-    /// 在这个提前窗口内由预备线程自行救回（刷新 + 重开），而不是阻塞切换。
+    /// 预打开下一曲的媒体流，让 EOF 切换与中途主动切歌都能挂上就绪的流，而不是
+    /// 阻塞在网络连接+格式探测上（在线源听感上的切歌间隙就出在这里）。
+    /// 双门控唤醒：
+    /// 1. 当前曲稳定起播（>= 3s）：提前在后台预连并缓冲下一曲，实现任意时刻切歌秒播；
+    /// 2. 临近曲尾（<= 15s）：原有无缝 EOF 兜底门。
+    /// 队列变更会使已预备的流失效。若下一条目是 HTTP 路径，预备会带上 URL 刷新钩子，
+    /// 过期的签名 URL 在这个提前窗口内由预备线程自行救回（刷新 + 重开），不阻塞切换。
     fn maybe_prepare_next(&mut self) {
         if self.stop_after_current || self.playback_settings.consume {
             return;
@@ -677,10 +684,12 @@ impl PlaybackThread {
         let Some(duration) = self.duration_ms else {
             return;
         };
-        if duration.saturating_sub(self.last_timestamp) > PREPARE_LEAD_MS {
+        let near_eof = duration.saturating_sub(self.last_timestamp) <= PREPARE_LEAD_MS;
+        let stable_playback = self.last_timestamp >= STABLE_PREPARE_DELAY_MS;
+        if !near_eof && !stable_playback {
             return;
         }
-        // 在取队列锁并克隆 PathBuf 之前的廉价守卫：15s 提前窗口内每个解码周期都会
+        // 在取队列锁并克隆 PathBuf 之前的廉价守卫：预备窗口内每个解码周期都会
         // 走到这里，而下一流一旦已预备/已在途，之后的每次调用都是纯开销。
         if self.engine.is_next_prepared() {
             return;
@@ -1753,5 +1762,27 @@ mod tests {
         // （current_path 访问器是 online_sources 门控的，测试直接用另一首的路径）
         thread.engine.drop_prepared_unless_next(Some(&elsewhere));
         assert!(!thread.engine.is_next_prepared());
+    }
+
+    /// 稳定起播门控（秒播引擎）：即使距离 3 分钟曲尾还非常远，开播满 3 秒后即提前布防下一曲。
+    #[test]
+    fn stable_playback_prefetches_next_early() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-stable-prefetch", 3);
+        let (mut thread, _events_rx) = thread_with_queue(items);
+
+        thread.jump(0);
+        // 当前曲目总时长 180 秒（远离 15 秒曲尾）
+        thread.duration_ms = Some(180_000);
+
+        // 开播未满 3 秒（例如连跳中途）：不预取
+        thread.last_timestamp = 1_000;
+        thread.maybe_prepare_next();
+        assert!(!thread.engine.is_next_prepared());
+
+        // 稳定播放满 3 秒：即刻启动后台预备
+        thread.last_timestamp = 3_500;
+        thread.maybe_prepare_next();
+        assert!(thread.engine.is_next_prepared());
     }
 }
