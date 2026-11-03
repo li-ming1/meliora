@@ -260,7 +260,9 @@ impl Render for Sidebar {
             .max_h_full()
             .pt(px(8.0))
             .pb(px(4.0))
-            .when(!collapsed, |this| this.pl(px(7.0)).pr(px(8.0)).overflow_hidden())
+            .when(!collapsed, |this| {
+                this.pl(px(7.0)).pr(px(8.0)).overflow_hidden()
+            })
             .when(collapsed, |this| this.px(px(8.0)).items_center())
             .flex()
             .flex_col()

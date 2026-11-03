@@ -11,8 +11,8 @@ use crate::{
         components::{
             context::context,
             icons::{
-                LYRICS, MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK,
-                REPEAT, REPEAT_OFF, REPEAT_ONCE, SHUFFLE, icon,
+                LYRICS, MAXIMIZE, MENU, MICROPHONE, NEXT_TRACK, PAUSE, PLAY, PREV_TRACK, REPEAT,
+                REPEAT_OFF, REPEAT_ONCE, SHUFFLE, icon,
             },
             menu::{menu, menu_check_item, menu_item},
             resizable::{ResizeEdge, resizable},
@@ -301,12 +301,20 @@ impl Render for PlaybackSection {
                                         window.dispatch_action(Box::new(PlayPause), cx);
                                     })
                                     .when(*state == PlaybackState::Playing, |div| {
-                                        div.child(icon(PAUSE).size(ICON_SM).text_color(theme.button_primary_text))
-                                            .tooltip(build_tooltip(tr!("PAUSE")))
+                                        div.child(
+                                            icon(PAUSE)
+                                                .size(ICON_SM)
+                                                .text_color(theme.button_primary_text),
+                                        )
+                                        .tooltip(build_tooltip(tr!("PAUSE")))
                                     })
                                     .when(*state != PlaybackState::Playing, |div| {
-                                        div.child(icon(PLAY).size(ICON_SM).text_color(theme.button_primary_text))
-                                            .tooltip(build_tooltip(tr!("PLAY")))
+                                        div.child(
+                                            icon(PLAY)
+                                                .size(ICON_SM)
+                                                .text_color(theme.button_primary_text),
+                                        )
+                                        .tooltip(build_tooltip(tr!("PLAY")))
                                     })
                                     .when(stop_after_current, |this| {
                                         this.child(
@@ -557,6 +565,7 @@ impl Render for Scrubber {
                     .h(px(6.0))
                     .rounded(px(theme.radius_sm))
                     .id("scrubber-back")
+                    .time_preview(duration_ms)
                     .change_interval(SLIDER_CHANGE_INTERVAL)
                     .value(if duration_ms > 0 {
                         position_ms as f32 / duration_ms as f32

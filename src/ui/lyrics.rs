@@ -1241,7 +1241,9 @@ enum FollowTarget {
 
 /// 统一歌词解析：先按 LRC，再按 KRC 明文；无时间行返回 `None`。
 pub(crate) fn parse_lyrics(content: &str) -> Option<Vec<LrcLine>> {
-    parse_lrc(content).or_else(|| krc::parse_krc(content))
+    let mut lines = parse_lrc(content).or_else(|| krc::parse_krc(content))?;
+    lrc::interpolate_missing_words(&mut lines);
+    Some(lines)
 }
 
 fn lerp(start: f32, end: f32, progress: f32) -> f32 {

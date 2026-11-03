@@ -11,6 +11,7 @@ use crate::ui::theme::Theme;
 
 type ClickHandler = dyn FnMut(f32, &mut Window, &mut App);
 type DoubleClickHandler = dyn FnMut(&mut Window, &mut App);
+type PreviewFormatter = dyn Fn(f32) -> SharedString;
 
 /// 每个滑条的拖动记账，作为 keyed element state 保存。
 #[derive(Clone)]
@@ -21,6 +22,8 @@ struct SliderDragState {
     /// 拖动结束的时刻。在 prop（引擎回显）追上 `drag_value` 或这段宽限期过期之前，填充条继续
     /// 按 `drag_value` 绘制，因此回显缓慢的（在线）音源上滑块绝不会弹回过期位置。
     released_at: Option<Instant>,
+    hover_ratio: Option<f32>,
+    last_hover_emit: Instant,
 }
 
 impl SliderDragState {
@@ -30,6 +33,8 @@ impl SliderDragState {
             last_emit: Instant::now(),
             drag_value: 0.0,
             released_at: None,
+            hover_ratio: None,
+            last_hover_emit: Instant::now(),
         }
     }
 }
@@ -60,6 +65,7 @@ pub struct Slider {
     pub(self) on_change: Option<Rc<RefCell<ClickHandler>>>,
     pub(self) on_double_click: Option<Rc<RefCell<DoubleClickHandler>>>,
     pub(self) change_interval: Option<Duration>,
+    pub(self) preview_formatter: Option<Rc<PreviewFormatter>>,
 }
 
 impl Slider {
@@ -84,6 +90,32 @@ impl Slider {
     pub fn on_double_click(mut self, func: impl FnMut(&mut Window, &mut App) + 'static) -> Self {
         self.on_double_click = Some(Rc::new(RefCell::new(func)));
         self
+    }
+
+    pub fn preview_formatter(mut self, formatter: impl Fn(f32) -> SharedString + 'static) -> Self {
+        self.preview_formatter = Some(Rc::new(formatter));
+        self
+    }
+
+    /// 开启悬停时间预知气泡（展示格式例如 `02:35` 或 `1:05:12`）。
+    pub fn time_preview(self, duration_ms: u64) -> Self {
+        if duration_ms > 0 {
+            self.preview_formatter(move |ratio: f32| {
+                let ms = (ratio as f64 * duration_ms as f64) as u64;
+                let secs = ms / 1000;
+                let minutes = secs / 60;
+                let seconds = secs % 60;
+                if minutes >= 60 {
+                    let hours = minutes / 60;
+                    let mins = minutes % 60;
+                    format!("{hours}:{mins:02}:{seconds:02}").into()
+                } else {
+                    format!("{minutes:02}:{seconds:02}").into()
+                }
+            })
+        } else {
+            self
+        }
     }
 
     pub fn change_interval(mut self, interval: Duration) -> Self {
@@ -238,6 +270,81 @@ impl Element for Slider {
         };
         paint_fill(fill, window);
 
+        // 绘制悬停时间预知气泡与当前位置指示刻度针
+        let preview_ratio = if let Some(state_rc) = drag_entity.as_ref() {
+            let state = state_rc.read(cx);
+            if state.dragging {
+                Some(state.drag_value)
+            } else if hitbox.is_hovered(window) {
+                state.hover_ratio
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let (Some(ratio), Some(formatter)) = (preview_ratio, self.preview_formatter.as_ref()) {
+            let preview_text = formatter(ratio);
+            let font = window.text_style().font();
+            let text_color = hsla(0.6, 0.05, 0.98, 0.96);
+            let run = TextRun {
+                len: preview_text.len(),
+                font,
+                color: text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+                letter_spacing: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_line(preview_text, px(11.0), &[run], None);
+
+            let bubble_pad_h = px(8.0);
+            let bubble_w = shaped.width + bubble_pad_h * 2.0;
+            let bubble_h = px(21.0);
+            let cursor_x = bounds.origin.x + bounds.size.width * ratio;
+            let bubble_x = (cursor_x - bubble_w / 2.0)
+                .max(bounds.origin.x)
+                .min(bounds.origin.x + bounds.size.width - bubble_w);
+            let bubble_y = bounds.origin.y - bubble_h - px(6.0);
+
+            // 绘制微透暗色磨砂圆角胶囊
+            window.paint_quad(quad(
+                Bounds {
+                    origin: point(bubble_x, bubble_y),
+                    size: size(bubble_w, bubble_h),
+                },
+                Corners::all(px(6.0)),
+                Rgba::new(0.06, 0.06, 0.09, 0.94),
+                Edges::all(px(1.0)),
+                Rgba::new(1.0, 0.85, 0.45, 0.32),
+                BorderStyle::Solid,
+            ));
+
+            // 绘制气泡中的时间文本
+            let text_origin = point(bubble_x + bubble_pad_h, bubble_y + px(3.0));
+            let _ = shaped.paint(text_origin, px(15.0), TextAlign::Left, None, window, cx);
+
+            // 绘制轨道上的高亮指示刻度针
+            let tick_w = px(1.5);
+            let tick_x = (cursor_x - tick_w / 2.0)
+                .max(bounds.origin.x)
+                .min(bounds.origin.x + bounds.size.width - tick_w);
+            window.paint_quad(quad(
+                Bounds {
+                    origin: point(tick_x, bounds.origin.y - px(2.0)),
+                    size: size(tick_w, bounds.size.height + px(4.0)),
+                },
+                Corners::all(px(0.75)),
+                Rgba::new(1.0, 0.90, 0.50, 0.85),
+                Edges::all(px(0.0)),
+                rgb(0x000000),
+                BorderStyle::Solid,
+            ));
+        }
+
         debug_assert!(
             self.id.is_some() || (self.on_change.is_none() && self.on_double_click.is_none()),
             "Slider: on_change/on_double_click set without .id() — keyed drag state cannot \
@@ -258,7 +365,7 @@ impl Element for Slider {
         let min_interval = change_interval.unwrap_or(DEFAULT_CHANGE_INTERVAL);
 
         let drag_state_down = drag_entity.clone();
-        let hitbox = hitbox.clone();
+        let hitbox_down = hitbox.clone();
         let func_down = func.clone();
 
         window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
@@ -268,7 +375,7 @@ impl Element for Slider {
             if ev.button != MouseButton::Left {
                 return;
             }
-            if !hitbox.is_hovered(window) {
+            if !hitbox_down.is_hovered(window) {
                 return;
             }
 
@@ -296,25 +403,52 @@ impl Element for Slider {
 
         let drag_state_move = drag_entity.clone();
         let func_move = func.clone();
+        let has_preview = self.preview_formatter.is_some();
+        let hitbox_move = hitbox.clone();
 
         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
             if phase != gpui::DispatchPhase::Bubble {
                 return;
             }
-            let emit = drag_state_move.update(cx, |state, _| {
-                if !state.dragging {
-                    return None;
-                }
-
-                let value = normalized_value(ev.position, bounds);
-                state.drag_value = value;
-
+            let is_hovered = hitbox_move.is_hovered(window);
+            let emit = drag_state_move.update(cx, |state, cx_state| {
                 let now = Instant::now();
-                let due = now.duration_since(state.last_emit) >= min_interval;
-                if due {
-                    state.last_emit = now;
+                let mut emit_val = None;
+                let mut hover_changed = false;
+
+                if state.dragging {
+                    let value = normalized_value(ev.position, bounds);
+                    state.drag_value = value;
+                    state.hover_ratio = Some(value);
+
+                    let due = now.duration_since(state.last_emit) >= min_interval;
+                    if due {
+                        state.last_emit = now;
+                    }
+                    emit_val = due.then_some(value);
+                } else if has_preview {
+                    if is_hovered {
+                        let value = normalized_value(ev.position, bounds);
+                        let ratio_diff = state.hover_ratio.map_or(1.0, |old| (old - value).abs());
+                        if ratio_diff > 0.001
+                            && now.duration_since(state.last_hover_emit)
+                                >= Duration::from_millis(20)
+                        {
+                            state.hover_ratio = Some(value);
+                            state.last_hover_emit = now;
+                            hover_changed = true;
+                        }
+                    } else if state.hover_ratio.is_some() {
+                        state.hover_ratio = None;
+                        hover_changed = true;
+                    }
                 }
-                due.then_some(value)
+
+                if hover_changed {
+                    cx_state.notify();
+                }
+
+                emit_val
             });
 
             if let Some(value) = emit {
@@ -325,6 +459,7 @@ impl Element for Slider {
         let drag_state_up = drag_entity;
         let func_release = func.clone();
         let flush_on_release = change_interval.is_some();
+        let hitbox_up = hitbox.clone();
 
         window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, cx| {
             if phase != gpui::DispatchPhase::Bubble {
@@ -333,12 +468,16 @@ impl Element for Slider {
             if ev.button != MouseButton::Left {
                 return;
             }
-            let flushed = drag_state_up.update(cx, |state, _| {
+            let flushed = drag_state_up.update(cx, |state, cx_state| {
                 if !state.dragging {
                     return None;
                 }
                 state.released_at = Some(Instant::now());
                 state.dragging = false;
+                if !hitbox_up.is_hovered(window) {
+                    state.hover_ratio = None;
+                }
+                cx_state.notify();
                 Some(state.drag_value)
             });
 
@@ -357,5 +496,6 @@ pub fn slider() -> Slider {
         on_change: None,
         on_double_click: None,
         change_interval: None,
+        preview_formatter: None,
     }
 }

@@ -70,7 +70,8 @@ impl RightSidebar {
                     .when(show_queue && !show_lyrics, {
                         let queue_entity = queue_entity.clone();
                         move |d| {
-                            let queue_view = AnyView::from(queue_entity).cached(StyleRefinement::default().size_full());
+                            let queue_view = AnyView::from(queue_entity)
+                                .cached(StyleRefinement::default().size_full());
                             d.child(div().h_full().w_full().overflow_hidden().child(queue_view))
                         }
                     })
@@ -116,7 +117,8 @@ impl RightSidebar {
                         let show_lyrics_model = show_lyrics_model.clone();
                         move |d| {
                             // 两者同时开启时，默认呈现队列，并在顶部提供分段开关切换
-                            let queue_view = AnyView::from(queue_entity).cached(StyleRefinement::default().size_full());
+                            let queue_view = AnyView::from(queue_entity)
+                                .cached(StyleRefinement::default().size_full());
                             d.child(
                                 div()
                                     .h_full()
@@ -169,7 +171,8 @@ impl RightSidebar {
                                                             .cursor_pointer()
                                                             .hover(|s| s.text_color(theme.text))
                                                             .on_click(move |_, _, cx| {
-                                                                show_queue_model.update(cx, |v, _| *v = false);
+                                                                show_queue_model
+                                                                    .update(cx, |v, _| *v = false);
                                                             })
                                                             .child(tr!("LYRICS", "Lyrics")),
                                                     ),
@@ -186,13 +189,18 @@ impl RightSidebar {
                                                     .child(
                                                         nav_button("close-sidebar", CROSS)
                                                             .on_click(move |_, _, cx| {
-                                                                show_lyrics_model.update(cx, |v, _| *v = false);
+                                                                show_lyrics_model
+                                                                    .update(cx, |v, _| *v = false);
                                                             })
-                                                            .tooltip(build_tooltip(tr!("CLOSE", "Close"))),
+                                                            .tooltip(build_tooltip(tr!(
+                                                                "CLOSE", "Close"
+                                                            ))),
                                                     ),
                                             ),
                                     )
-                                    .child(div().flex_1().h_full().overflow_hidden().child(queue_view)),
+                                    .child(
+                                        div().flex_1().h_full().overflow_hidden().child(queue_view),
+                                    ),
                             )
                         }
                     }),

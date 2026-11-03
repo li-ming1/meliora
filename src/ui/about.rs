@@ -108,7 +108,11 @@ impl RenderOnce for AboutDialog {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(img("!bundled:images/logo.png").size(px(56.0)).rounded(px(theme.radius_md))),
+                        .child(
+                            img("!bundled:images/logo.png")
+                                .size(px(56.0))
+                                .rounded(px(theme.radius_md)),
+                        ),
                 )
                 .child(
                     div()

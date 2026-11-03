@@ -297,7 +297,7 @@ unsafe extern "C" {
 }
 
 #[cfg(not(test))]
-fn mimalloc_memory_mb() -> (u64, u64) {
+pub fn mimalloc_memory_mb() -> (u64, u64) {
     let mut elapsed: usize = 0;
     let mut user: usize = 0;
     let mut system: usize = 0;
@@ -320,6 +320,11 @@ fn mimalloc_memory_mb() -> (u64, u64) {
         );
     }
     (commit as u64 / (1024 * 1024), rss as u64 / (1024 * 1024))
+}
+
+#[cfg(test)]
+pub fn mimalloc_memory_mb() -> (u64, u64) {
+    (0, 0)
 }
 
 /// 强制做一次完整 purge，并报告它换回多少 MiB 已提交堆。大量回收说明每首歌的棘轮

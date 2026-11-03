@@ -833,7 +833,15 @@ impl Render for ArtistDetailView {
                                     .rounded_b(px(theme.radius_lg))
                                     .bg(linear_gradient(
                                         180.0,
-                                        linear_color_stop(Rgba::new(theme.button_primary.red, theme.button_primary.green, theme.button_primary.blue, 0.12), 0.0),
+                                        linear_color_stop(
+                                            Rgba::new(
+                                                theme.button_primary.red,
+                                                theme.button_primary.green,
+                                                theme.button_primary.blue,
+                                                0.12,
+                                            ),
+                                            0.0,
+                                        ),
                                         linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
                                     ))
                                     .when(two_column, |this| {

@@ -115,9 +115,145 @@ pub fn parse_lrc(content: &str) -> Option<Vec<LrcLine>> {
     Some(lines)
 }
 
+/// 判断字符是否为中日韩（CJK）统一表意文字或假名、韩文音节。
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{4e00}'..='\u{9fff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{3040}'..='\u{309f}'
+            | '\u{30a0}'..='\u{30ff}'
+            | '\u{ac00}'..='\u{d7af}'
+    )
+}
+
+/// 将单行歌词文本分词为拟合卡拉OK音节/词元。
+/// 中文字符每个字符独立成词；英文/拉丁字母按连续单词聚拢；标点符号附着在上一个词尾。
+fn tokenize_lyric_text(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current_word = String::new();
+
+    for ch in text.chars() {
+        if is_cjk_char(ch) {
+            if !current_word.is_empty() {
+                tokens.push(std::mem::take(&mut current_word));
+            }
+            tokens.push(ch.to_string());
+        } else if ch.is_alphanumeric() {
+            current_word.push(ch);
+        } else if ch == ' ' {
+            if !current_word.is_empty() {
+                current_word.push(ch);
+                tokens.push(std::mem::take(&mut current_word));
+            } else if let Some(last) = tokens.last_mut() {
+                last.push(ch);
+            } else {
+                tokens.push(ch.to_string());
+            }
+        } else if !current_word.is_empty() {
+            current_word.push(ch);
+            tokens.push(std::mem::take(&mut current_word));
+        } else if let Some(last) = tokens.last_mut() {
+            last.push(ch);
+        } else {
+            tokens.push(ch.to_string());
+        }
+    }
+
+    if !current_word.is_empty() {
+        tokens.push(current_word);
+    }
+
+    tokens
+}
+
+/// 为没有逐字时间的标准 LRC 歌词行，智能拟合生成平滑的卡拉OK逐字时间列表。
+pub fn interpolate_missing_words(lines: &mut [LrcLine]) {
+    let total_lines = lines.len();
+    if total_lines == 0 {
+        return;
+    }
+
+    for i in 0..total_lines {
+        // 如果当前行已有逐字数据（例如来自 KRC），则保留原始精细数据
+        if !lines[i].words.is_empty() || lines[i].text.trim().is_empty() {
+            continue;
+        }
+
+        let start_ms = lines[i].time_ms;
+        let tokens = tokenize_lyric_text(&lines[i].text);
+        if tokens.is_empty() {
+            continue;
+        }
+
+        // 估算行持续总时长
+        let duration_ms = if i + 1 < total_lines {
+            let next_start = lines[i + 1].time_ms;
+            if next_start > start_ms {
+                let delta = next_start - start_ms;
+                if delta <= 8000 {
+                    // 正常句间距：在下一句开始前留出约 250ms 的气口/呼吸位
+                    delta.saturating_sub(250).clamp(800, 7500)
+                } else {
+                    // 超过 8 秒通常有长间奏或伴奏，按字数估算合理时长（每词/字约 280ms）
+                    let est = (tokens.len() as u64 * 280).clamp(1500, 6000);
+                    est.min(delta.saturating_sub(500))
+                }
+            } else {
+                (tokens.len() as u64 * 280).clamp(1200, 5000)
+            }
+        } else {
+            // 最后一行按字数估算
+            (tokens.len() as u64 * 300).clamp(1500, 6000)
+        };
+
+        // 计算各词的相对权重
+        let count = tokens.len();
+        let weights: Vec<f32> = tokens
+            .iter()
+            .enumerate()
+            .map(|(idx, t)| {
+                let char_len = t.chars().count().max(1);
+                let mut w = (char_len as f32).sqrt().clamp(1.0, 3.5);
+                // 唱腔习惯：最后一个字/词通常有尾音拖长
+                if idx + 1 == count {
+                    w *= 1.35;
+                }
+                w
+            })
+            .collect();
+
+        let total_weight: f32 = weights.iter().sum();
+        let total_weight = if total_weight > 0.0 {
+            total_weight
+        } else {
+            1.0
+        };
+
+        let mut current_offset = start_ms;
+        let mut words = Vec::with_capacity(count);
+
+        for (idx, token) in tokens.into_iter().enumerate() {
+            let w = weights[idx];
+            let raw_dur = (duration_ms as f32 * (w / total_weight)).round() as u64;
+            let word_dur = raw_dur.max(60);
+
+            words.push(LrcWord {
+                time_ms: current_offset,
+                duration_ms: word_dur,
+                text: token.into(),
+            });
+
+            current_offset += word_dur;
+        }
+
+        lines[i].words = words;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_lrc, parse_lrc_line, parse_time_tag};
+    use super::{interpolate_missing_words, parse_lrc, parse_lrc_line, parse_time_tag};
 
     fn line_tuples(lines: Vec<super::LrcLine>) -> Vec<(u64, String)> {
         lines
@@ -186,5 +322,22 @@ mod tests {
                 (3_000, "Third".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn interpolate_missing_words_generates_smooth_syllables() {
+        let mut lines = parse_lrc("[00:01.00]我和我的祖国\n[00:04.00]一刻也不能分割").unwrap();
+        interpolate_missing_words(&mut lines);
+
+        let first = &lines[0];
+        assert_eq!(first.words.len(), 6);
+        assert_eq!(first.words[0].text.as_ref(), "我");
+        assert_eq!(first.words[0].time_ms, 1_000);
+        assert!(first.words.last().unwrap().time_ms > 1_000);
+        assert!(first.words.last().unwrap().time_ms < 4_000);
+
+        // 拼接后的字符必须还原原歌词
+        let reconstructed: String = first.words.iter().map(|w| w.text.as_ref()).collect();
+        assert_eq!(reconstructed, "我和我的祖国");
     }
 }

@@ -454,8 +454,16 @@ impl KugouRanksView {
                                 .child(
                                     button()
                                         .id("recommend-list-mode")
-                                        .style(if !is_stage { ButtonStyle::Regular } else { ButtonStyle::Minimal })
-                                        .intent(if !is_stage { ButtonIntent::Primary } else { ButtonIntent::Secondary })
+                                        .style(if !is_stage {
+                                            ButtonStyle::Regular
+                                        } else {
+                                            ButtonStyle::Minimal
+                                        })
+                                        .intent(if !is_stage {
+                                            ButtonIntent::Primary
+                                        } else {
+                                            ButtonIntent::Secondary
+                                        })
                                         .child("列表")
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.recommend_view_mode = RecommendViewMode::List;
@@ -465,8 +473,16 @@ impl KugouRanksView {
                                 .child(
                                     button()
                                         .id("recommend-stage-mode")
-                                        .style(if is_stage { ButtonStyle::Regular } else { ButtonStyle::Minimal })
-                                        .intent(if is_stage { ButtonIntent::Primary } else { ButtonIntent::Secondary })
+                                        .style(if is_stage {
+                                            ButtonStyle::Regular
+                                        } else {
+                                            ButtonStyle::Minimal
+                                        })
+                                        .intent(if is_stage {
+                                            ButtonIntent::Primary
+                                        } else {
+                                            ButtonIntent::Secondary
+                                        })
                                         .child("舞台")
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.recommend_view_mode = RecommendViewMode::Stage;
@@ -740,21 +756,20 @@ impl KugouRanksView {
                 .opacity(opacity_val)
                 .cursor_pointer()
                 .when(is_center, |s| {
-                    s.shadow_lg()
-                        .child(
-                            // 底部镜面倒影渐变遮罩 (Mirror Floor Reflection)
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .h(px(70.0))
-                                .bg(linear_gradient(
-                                    0.0,
-                                    linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.85), 0.0),
-                                    linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
-                                )),
-                        )
+                    s.shadow_lg().child(
+                        // 底部镜面倒影渐变遮罩 (Mirror Floor Reflection)
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(70.0))
+                            .bg(linear_gradient(
+                                0.0,
+                                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.85), 0.0),
+                                linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                            )),
+                    )
                 })
                 .when(!is_center && shadow_level, |s| s.shadow_md())
                 .child(
@@ -791,7 +806,8 @@ impl KugouRanksView {
                 let dy = f32::from(ev.delta.pixel_delta(px(1.0)).y);
                 if dy.abs() > 4.0 {
                     if dy < 0.0 {
-                        this.stage_focus_index = (this.stage_focus_index + 1).min(this.visible_tracks().len().saturating_sub(1));
+                        this.stage_focus_index = (this.stage_focus_index + 1)
+                            .min(this.visible_tracks().len().saturating_sub(1));
                     } else {
                         this.stage_focus_index = this.stage_focus_index.saturating_sub(1);
                     }
@@ -864,7 +880,8 @@ impl KugouRanksView {
                                     .text_color(theme.text)
                                     .child("‹")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.stage_focus_index = this.stage_focus_index.saturating_sub(1);
+                                        this.stage_focus_index =
+                                            this.stage_focus_index.saturating_sub(1);
                                         cx.notify();
                                     })),
                             )
@@ -881,7 +898,11 @@ impl KugouRanksView {
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(theme.button_primary_hover))
-                                    .child(icon(PLAY).size(px(22.0)).text_color(theme.button_primary_text))
+                                    .child(
+                                        icon(PLAY)
+                                            .size(px(22.0))
+                                            .text_color(theme.button_primary_text),
+                                    )
                                     .on_click(move |_, _, cx| {
                                         crate::ui::kugou::play_track_now(cx, &play_track);
                                     }),
@@ -899,7 +920,15 @@ impl KugouRanksView {
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(theme.nav_button_hover))
-                                    .child(icon(if liked { HEART_FILLED } else { HEART }).size(px(18.0)).text_color(if liked { theme.liked_song } else { theme.text_secondary }))
+                                    .child(
+                                        icon(if liked { HEART_FILLED } else { HEART })
+                                            .size(px(18.0))
+                                            .text_color(if liked {
+                                                theme.liked_song
+                                            } else {
+                                                theme.text_secondary
+                                            }),
+                                    )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.toggle_like(&like_track, cx);
                                     })),
@@ -921,7 +950,8 @@ impl KugouRanksView {
                                     .child("›")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let max = this.visible_tracks().len().saturating_sub(1);
-                                        this.stage_focus_index = (this.stage_focus_index + 1).min(max);
+                                        this.stage_focus_index =
+                                            (this.stage_focus_index + 1).min(max);
                                         cx.notify();
                                     })),
                             ),
@@ -992,7 +1022,9 @@ impl Render for KugouRanksView {
                     false,
                     title,
                     |view| view.visible_tracks(),
-                    |view, index, track, entity, cx| view.render_track_row(track, index, entity, cx),
+                    |view, index, track, entity, cx| {
+                        view.render_track_row(track, index, entity, cx)
+                    },
                     has_more_tracks.then(|| LoadMoreSpec {
                         id: "kugou-rank-load-more",
                         label: tr!("KUGOU_LOAD_MORE").into_any_element(),

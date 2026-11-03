@@ -792,7 +792,9 @@ impl Render for PlaylistList {
                 .child(
                     sidebar_item("new-playlist-btn")
                         .icon(PLUS)
-                        .when(collapsed, |this| this.collapsed().collapsed_label(new_pl_label.clone()))
+                        .when(collapsed, |this| {
+                            this.collapsed().collapsed_label(new_pl_label.clone())
+                        })
                         .when(!collapsed, |this| this.child(new_pl_label))
                         .on_mouse_down(
                             MouseButton::Left,

@@ -4,9 +4,9 @@ use std::time::Duration;
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate};
 use cntp_i18n::tr;
 use gpui::{
-    App, AppContext, Bounds, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    PathBuilder, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
-    canvas, div, fill, point, px, relative, size,
+    App, AppContext, Bounds, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, PathBuilder, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement,
+    Styled, Window, canvas, div, fill, point, px, relative, size,
 };
 
 use crate::{
@@ -962,9 +962,19 @@ impl StatsSettings {
         theme: &Theme,
     ) -> Stateful<Div> {
         let (bg, fg, border, fw) = if active {
-            (theme.button_primary, theme.button_primary_text, theme.button_primary_border, FontWeight::SEMIBOLD)
+            (
+                theme.button_primary,
+                theme.button_primary_text,
+                theme.button_primary_border,
+                FontWeight::SEMIBOLD,
+            )
         } else {
-            (theme.elevated_background, theme.text_secondary, theme.elevated_border_color, FontWeight::MEDIUM)
+            (
+                theme.elevated_background,
+                theme.text_secondary,
+                theme.elevated_border_color,
+                FontWeight::MEDIUM,
+            )
         };
         div()
             .id(id)

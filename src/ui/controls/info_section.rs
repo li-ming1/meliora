@@ -504,7 +504,9 @@ impl Render for InfoSection {
                             .bg(theme.album_art_background)
                             .shadow_sm()
                             .when(*state == PlaybackState::Playing, |s| {
-                                s.shadow_md().border_1().border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
+                                s.shadow_md()
+                                    .border_1()
+                                    .border_color(Rgba::new(1.0, 1.0, 1.0, 0.12))
                             })
                             .w(px(36.0))
                             .h(px(36.0))
@@ -626,14 +628,26 @@ impl Render for InfoSection {
                                                 .id("info-section-artist-name")
                                                 .text_ellipsis()
                                                 .flex_shrink(1.0)
-                                                .when_some(artist_navigation_track, |this, track| {
-                                                    this.cursor_pointer().on_click(move |ev, _, cx| {
-                                                        navigate_to_track_artist(cx, &track, ev.position());
-                                                    })
-                                                })
-                                                .child(self.artist_name.clone().unwrap_or_else(|| {
-                                                    tr!("UNKNOWN_ARTIST", "Unknown Artist").into()
-                                                })),
+                                                .when_some(
+                                                    artist_navigation_track,
+                                                    |this, track| {
+                                                        this.cursor_pointer().on_click(
+                                                            move |ev, _, cx| {
+                                                                navigate_to_track_artist(
+                                                                    cx,
+                                                                    &track,
+                                                                    ev.position(),
+                                                                );
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                                .child(self.artist_name.clone().unwrap_or_else(
+                                                    || {
+                                                        tr!("UNKNOWN_ARTIST", "Unknown Artist")
+                                                            .into()
+                                                    },
+                                                )),
                                         )
                                         .when(sample_rate > 0, |container| {
                                             let is_hires = sample_rate >= 88_200;
@@ -645,19 +659,20 @@ impl Render for InfoSection {
                                             } else {
                                                 format!("{rate_khz:.1}k")
                                             };
-                                            let (badge_bg, badge_border, badge_text_col) = if is_hires {
-                                                (
-                                                    Rgba::new(0.95, 0.75, 0.30, 0.14),
-                                                    Rgba::new(0.95, 0.75, 0.30, 0.32),
-                                                    Rgba::new(0.98, 0.82, 0.38, 1.0),
-                                                )
-                                            } else {
-                                                (
-                                                    theme.elevated_background,
-                                                    theme.elevated_border_color,
-                                                    theme.text_secondary,
-                                                )
-                                            };
+                                            let (badge_bg, badge_border, badge_text_col) =
+                                                if is_hires {
+                                                    (
+                                                        Rgba::new(0.95, 0.75, 0.30, 0.14),
+                                                        Rgba::new(0.95, 0.75, 0.30, 0.32),
+                                                        Rgba::new(0.98, 0.82, 0.38, 1.0),
+                                                    )
+                                                } else {
+                                                    (
+                                                        theme.elevated_background,
+                                                        theme.elevated_border_color,
+                                                        theme.text_secondary,
+                                                    )
+                                                };
                                             container.child(
                                                 div()
                                                     .flex_shrink_0()

@@ -175,7 +175,11 @@ impl RenderOnce for WindowButton {
             .window_control_area(control_area)
             .text_size(px(12.0))
             .occlude()
-            .child(icon(glyph).size(ICON_SM).text_color(if is_close { theme.text } else { theme.text_secondary }))
+            .child(icon(glyph).size(ICON_SM).text_color(if is_close {
+                theme.text
+            } else {
+                theme.text_secondary
+            }))
             .on_click(move |_, window, cx| match self {
                 WindowButton::Close(false) => window.remove_window(),
                 // 主窗 ✕：经托盘关闭决策（隐藏到托盘或退出），Alt+F4 的

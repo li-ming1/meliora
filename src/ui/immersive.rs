@@ -43,10 +43,11 @@ use std::{
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba, ScrollHandle,
-    ScrollWheelEvent, SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Task, Window,
-    canvas, div, linear_color_stop, linear_gradient, point, px, relative,
+    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
+    FontWeight, InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render,
+    Rgba, ScrollHandle, ScrollWheelEvent, SharedString, Stateful, StatefulInteractiveElement,
+    Styled, Subscription, Task, Window, canvas, div, linear_color_stop, linear_gradient, point, px,
+    relative,
 };
 use tracing::warn;
 
@@ -67,12 +68,12 @@ use crate::{
             slider::{SLIDER_CHANGE_INTERVAL, slider},
             tooltip::build_tooltip,
         },
+        equalizer::spectrum::{SpectrumData, SpectrumState, ensure_analyzer},
         lyrics::{Lyrics, lerp_color, word_progress},
         models::{CurrentTrack, Models, POSITION_DISPLAY_QUANTUM_MS, PlaybackInfo, Queue},
         queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
-        equalizer::spectrum::{SpectrumData, SpectrumState, ensure_analyzer},
         util::{
             CachedTimeText, extract_accent, format_duration, reduced_motion_enabled,
             seek_to_fraction, volume_toggle_target,
@@ -364,11 +365,12 @@ impl ImmersiveView {
             });
 
             ensure_analyzer(cx);
-            let (spectrum_data, spectrum_viewers) = if let Some(state) = cx.try_global::<SpectrumState>() {
-                (Some(state.data.clone()), Some(state.viewers.clone()))
-            } else {
-                (None, None)
-            };
+            let (spectrum_data, spectrum_viewers) =
+                if let Some(state) = cx.try_global::<SpectrumState>() {
+                    (Some(state.data.clone()), Some(state.viewers.clone()))
+                } else {
+                    (None, None)
+                };
             if let Some(spectrum) = &spectrum_data {
                 cx.observe(spectrum, |this, _, cx| {
                     if this.active && this.stage_mode == ImmersiveStageMode::KineticLyrics {
@@ -1007,29 +1009,30 @@ impl ImmersiveView {
                 .into_any_element();
         }
 
-        let item_infos: Vec<(usize, bool, SharedString, SharedString, ManagedImageKey)> = queue_items
-            .iter()
-            .enumerate()
-            .map(|(idx, item)| {
-                let is_playing = idx == current_pos;
-                let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
-                let title = ui_data
-                    .as_ref()
-                    .and_then(|u| u.name.clone())
-                    .unwrap_or_else(|| SharedString::from(format!("Track #{}", idx + 1)));
-                let artist = ui_data
-                    .as_ref()
-                    .and_then(|u| u.artist_name.clone())
-                    .unwrap_or_default();
-                let cover_key = ui_data
-                    .and_then(|u| u.cover_url)
-                    .filter(|u| !u.is_empty())
-                    .map(ManagedImageKey::HttpCover)
-                    .unwrap_or_else(|| ManagedImageKey::TrackFile(item.get_path().clone()));
+        let item_infos: Vec<(usize, bool, SharedString, SharedString, ManagedImageKey)> =
+            queue_items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    let is_playing = idx == current_pos;
+                    let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
+                    let title = ui_data
+                        .as_ref()
+                        .and_then(|u| u.name.clone())
+                        .unwrap_or_else(|| SharedString::from(format!("Track #{}", idx + 1)));
+                    let artist = ui_data
+                        .as_ref()
+                        .and_then(|u| u.artist_name.clone())
+                        .unwrap_or_default();
+                    let cover_key = ui_data
+                        .and_then(|u| u.cover_url)
+                        .filter(|u| !u.is_empty())
+                        .map(ManagedImageKey::HttpCover)
+                        .unwrap_or_else(|| ManagedImageKey::TrackFile(item.get_path().clone()));
 
-                (idx, is_playing, title, artist, cover_key)
-            })
-            .collect();
+                    (idx, is_playing, title, artist, cover_key)
+                })
+                .collect();
 
         let theme = cx.global::<Theme>();
         let poster_scroll = self.poster_wall_scroll.clone();
@@ -1043,7 +1046,9 @@ impl ImmersiveView {
         const NUM_COLS: usize = 6;
         let mut column_cards: [Vec<AnyElement>; NUM_COLS] = Default::default();
 
-        for (i, (idx, is_playing_track, title, artist, cover_key)) in item_infos.into_iter().enumerate() {
+        for (i, (idx, is_playing_track, title, artist, cover_key)) in
+            item_infos.into_iter().enumerate()
+        {
             let col_idx = i % NUM_COLS;
 
             let h = if is_playing_track {
@@ -1109,10 +1114,7 @@ impl ImmersiveView {
                                     .items_center()
                                     .gap(px(6.0))
                                     .child(
-                                        div()
-                                            .size(px(6.0))
-                                            .rounded_full()
-                                            .bg(theme.button_primary),
+                                        div().size(px(6.0)).rounded_full().bg(theme.button_primary),
                                     )
                                     .child(
                                         div()
@@ -1696,7 +1698,8 @@ impl Render for ImmersiveView {
             let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
             let dimmed_color = lerp_color(text, text_secondary, 0.45);
 
-            let active_seed = self.current_line
+            let active_seed = self
+                .current_line
                 .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
                 .map_or(0, |l| l.time_ms);
 
@@ -1723,17 +1726,18 @@ impl Render for ImmersiveView {
                                 let color = lerp_color(dimmed_color, gold_glow, progress);
 
                                 // 梦幻逐字弹跳与浮动动画 (Dreamy Kinetic Pop-up)
-                                let (pop_y, scale_pt, halo_opacity) = if progress > 0.0 && progress < 1.0 {
-                                    // 正在唱：弹起并伴随柔和回落 (-16px 高度)
-                                    let curve = (progress * std::f32::consts::PI).sin();
-                                    (-curve * 16.0, 62.0f32, 0.70 * curve)
-                                } else if progress >= 1.0 {
-                                    // 已唱完：稳定高光与柔和微悬
-                                    (-2.0, 58.0f32, 0.25)
-                                } else {
-                                    // 未唱到：静静等待
-                                    (0.0, 56.0f32, 0.0)
-                                };
+                                let (pop_y, scale_pt, halo_opacity) =
+                                    if progress > 0.0 && progress < 1.0 {
+                                        // 正在唱：弹起并伴随柔和回落 (-16px 高度)
+                                        let curve = (progress * std::f32::consts::PI).sin();
+                                        (-curve * 16.0, 62.0f32, 0.70 * curve)
+                                    } else if progress >= 1.0 {
+                                        // 已唱完：稳定高光与柔和微悬
+                                        (-2.0, 58.0f32, 0.25)
+                                    } else {
+                                        // 未唱到：静静等待
+                                        (0.0, 56.0f32, 0.0)
+                                    };
 
                                 let is_active = progress > 0.02;
 
@@ -1757,7 +1761,9 @@ impl Render for ImmersiveView {
                                             .child(word.text.clone())
                                             .text_size(px(scale_pt))
                                             .text_color(color)
-                                            .when(is_active, |s| s.font_weight(FontWeight::EXTRA_BOLD))
+                                            .when(is_active, |s| {
+                                                s.font_weight(FontWeight::EXTRA_BOLD)
+                                            }),
                                     )
                                     .into_any_element()
                             })
@@ -1782,7 +1788,9 @@ impl Render for ImmersiveView {
 
                     let mut elements = Vec::new();
                     // 上一句淡出行（伴随在上方，30% 不透明度）
-                    if active_idx > 0 && let Some(prev) = parsed.get(active_idx - 1) {
+                    if active_idx > 0
+                        && let Some(prev) = parsed.get(active_idx - 1)
+                    {
                         elements.push(
                             div()
                                 .mb(px(20.0))
@@ -1876,11 +1884,46 @@ impl Render for ImmersiveView {
                     // 1. 悬浮几何多边形与旋转虚线框 (Floating Polygons & Geometric Shards)
                     // 完美还原 Folia 心象/云阶经典深空悬浮图形元素
                     for (i, (base_x, base_y, r, sides, rot_speed, col)) in [
-                        (w * 0.16, h * 0.28, 48.0f32, 4, 0.08f32, Rgba::new(0.35, 0.55, 0.90, 0.065)),
-                        (w * 0.54, h * 0.22, 58.0f32, 3, -0.06f32, Rgba::new(0.40, 0.60, 0.95, 0.075)),
-                        (w * 0.12, h * 0.72, 62.0f32, 4, 0.05f32, Rgba::new(0.50, 0.65, 0.98, 0.070)),
-                        (w * 0.46, h * 0.68, 72.0f32, 4, -0.04f32, Rgba::new(0.30, 0.50, 0.85, 0.060)),
-                        (w * 0.62, h * 0.52, 40.0f32, 3, 0.07f32, Rgba::new(0.45, 0.65, 1.0, 0.055)),
+                        (
+                            w * 0.16,
+                            h * 0.28,
+                            48.0f32,
+                            4,
+                            0.08f32,
+                            Rgba::new(0.35, 0.55, 0.90, 0.065),
+                        ),
+                        (
+                            w * 0.54,
+                            h * 0.22,
+                            58.0f32,
+                            3,
+                            -0.06f32,
+                            Rgba::new(0.40, 0.60, 0.95, 0.075),
+                        ),
+                        (
+                            w * 0.12,
+                            h * 0.72,
+                            62.0f32,
+                            4,
+                            0.05f32,
+                            Rgba::new(0.50, 0.65, 0.98, 0.070),
+                        ),
+                        (
+                            w * 0.46,
+                            h * 0.68,
+                            72.0f32,
+                            4,
+                            -0.04f32,
+                            Rgba::new(0.30, 0.50, 0.85, 0.060),
+                        ),
+                        (
+                            w * 0.62,
+                            h * 0.52,
+                            40.0f32,
+                            3,
+                            0.07f32,
+                            Rgba::new(0.45, 0.65, 1.0, 0.055),
+                        ),
                     ]
                     .iter()
                     .enumerate()
@@ -1894,7 +1937,8 @@ impl Render for ImmersiveView {
                         let mut poly_fill = PathBuilder::fill();
                         for step in 0..*sides {
                             let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
-                            let pt = point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
+                            let pt =
+                                point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
                             if step == 0 {
                                 poly_fill.move_to(pt);
                             } else {
@@ -1909,7 +1953,8 @@ impl Render for ImmersiveView {
                         let mut poly_stroke = PathBuilder::stroke(px(1.0));
                         for step in 0..=*sides {
                             let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
-                            let pt = point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
+                            let pt =
+                                point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
                             if step == 0 {
                                 poly_stroke.move_to(pt);
                             } else {
@@ -1950,9 +1995,24 @@ impl Render for ImmersiveView {
                     // 3. 动态极光流光弧 (Fluid Aurora Ribbons)
                     let phase = t_sec * 0.4;
                     for (ribbon_idx, (y_off, amp, freq, col)) in [
-                        (-60.0f32, 45.0f32, 0.0035f32, Rgba::new(0.35, 0.50, 0.95, 0.065)),
-                        (40.0f32, 55.0f32, 0.0028f32, Rgba::new(0.85, 0.40, 0.70, 0.055)),
-                        (140.0f32, 40.0f32, 0.0042f32, Rgba::new(1.0, 0.75, 0.30, 0.045)),
+                        (
+                            -60.0f32,
+                            45.0f32,
+                            0.0035f32,
+                            Rgba::new(0.35, 0.50, 0.95, 0.065),
+                        ),
+                        (
+                            40.0f32,
+                            55.0f32,
+                            0.0028f32,
+                            Rgba::new(0.85, 0.40, 0.70, 0.055),
+                        ),
+                        (
+                            140.0f32,
+                            40.0f32,
+                            0.0042f32,
+                            Rgba::new(1.0, 0.75, 0.30, 0.045),
+                        ),
                     ]
                     .iter()
                     .enumerate()
@@ -1982,7 +2042,10 @@ impl Render for ImmersiveView {
                         let mut circle = PathBuilder::stroke(px(1.0));
                         for i in 0..=48 {
                             let angle = (i as f32 / 48.0) * std::f32::consts::TAU;
-                            let pt = point(px(center_x + r * angle.cos()), px(center_y + r * angle.sin()));
+                            let pt = point(
+                                px(center_x + r * angle.cos()),
+                                px(center_y + r * angle.sin()),
+                            );
                             if i == 0 {
                                 circle.move_to(pt);
                             } else {
@@ -2006,10 +2069,26 @@ impl Render for ImmersiveView {
 
                     // 6. 象限四角星芒与星辉 (Cross Stars)
                     for (sx, sy, star_color) in [
-                        (center_x + 280.0, center_y - 180.0, Rgba::new(1.0, 0.88, 0.65, 0.26)),
-                        (center_x - 320.0, center_y + 190.0, Rgba::new(0.65, 0.85, 1.0, 0.24)),
-                        (center_x + 380.0, center_y + 240.0, Rgba::new(1.0, 0.65, 0.85, 0.20)),
-                        (center_x - 240.0, center_y - 220.0, Rgba::new(0.85, 1.0, 0.85, 0.20)),
+                        (
+                            center_x + 280.0,
+                            center_y - 180.0,
+                            Rgba::new(1.0, 0.88, 0.65, 0.26),
+                        ),
+                        (
+                            center_x - 320.0,
+                            center_y + 190.0,
+                            Rgba::new(0.65, 0.85, 1.0, 0.24),
+                        ),
+                        (
+                            center_x + 380.0,
+                            center_y + 240.0,
+                            Rgba::new(1.0, 0.65, 0.85, 0.20),
+                        ),
+                        (
+                            center_x - 240.0,
+                            center_y - 220.0,
+                            Rgba::new(0.85, 1.0, 0.85, 0.20),
+                        ),
                     ] {
                         let mut star = PathBuilder::stroke(px(1.2));
                         star.move_to(point(px(sx - 8.0), px(sy)));
@@ -2084,7 +2163,11 @@ impl Render for ImmersiveView {
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(text)
                                             .truncate()
-                                            .child(self.track_name.clone().unwrap_or_else(|| tr!("APP_NAME").into())),
+                                            .child(
+                                                self.track_name
+                                                    .clone()
+                                                    .unwrap_or_else(|| tr!("APP_NAME").into()),
+                                            ),
                                     )
                                     .child(
                                         div()
@@ -2097,7 +2180,11 @@ impl Render for ImmersiveView {
                                                     .text_size(px(12.0))
                                                     .text_color(text_secondary)
                                                     .truncate()
-                                                    .child(self.artist_name.clone().unwrap_or_default()),
+                                                    .child(
+                                                        self.artist_name
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    ),
                                             )
                                             .when(sample_rate > 0, |container| {
                                                 let is_hires = sample_rate >= 88_200;
@@ -2109,19 +2196,20 @@ impl Render for ImmersiveView {
                                                 } else {
                                                     format!("{rate_khz:.1}k")
                                                 };
-                                                let (badge_bg, badge_border, badge_text_col) = if is_hires {
-                                                    (
-                                                        Rgba::new(0.95, 0.75, 0.30, 0.16),
-                                                        Rgba::new(0.95, 0.75, 0.30, 0.38),
-                                                        Rgba::new(1.0, 0.88, 0.45, 1.0),
-                                                    )
-                                                } else {
-                                                    (
-                                                        Rgba::new(1.0, 1.0, 1.0, 0.08),
-                                                        Rgba::new(1.0, 1.0, 1.0, 0.16),
-                                                        text_secondary,
-                                                    )
-                                                };
+                                                let (badge_bg, badge_border, badge_text_col) =
+                                                    if is_hires {
+                                                        (
+                                                            Rgba::new(0.95, 0.75, 0.30, 0.16),
+                                                            Rgba::new(0.95, 0.75, 0.30, 0.38),
+                                                            Rgba::new(1.0, 0.88, 0.45, 1.0),
+                                                        )
+                                                    } else {
+                                                        (
+                                                            Rgba::new(1.0, 1.0, 1.0, 0.08),
+                                                            Rgba::new(1.0, 1.0, 1.0, 0.16),
+                                                            text_secondary,
+                                                        )
+                                                    };
                                                 container.child(
                                                     div()
                                                         .flex_shrink_0()
@@ -2165,7 +2253,11 @@ impl Render for ImmersiveView {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .child(icon(PREV_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .child(
+                                                        icon(PREV_TRACK).size(px(18.0)).text_color(
+                                                            Rgba::new(1.0, 1.0, 1.0, 0.95),
+                                                        ),
+                                                    )
                                                     .on_click(|_, _, cx| {
                                                         cx.global::<PlaybackInterface>().previous();
                                                     }),
@@ -2183,10 +2275,18 @@ impl Render for ImmersiveView {
                                                     .justify_center()
                                                     .shadow_md()
                                                     .hover(|s| s.bg(theme.button_primary_hover))
-                                                    .child(icon(if playing { PAUSE } else { PLAY }).size(px(22.0)).text_color(theme.button_primary_text))
+                                                    .child(
+                                                        icon(if playing { PAUSE } else { PLAY })
+                                                            .size(px(22.0))
+                                                            .text_color(theme.button_primary_text),
+                                                    )
                                                     .on_click(|_, _, cx| {
-                                                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                                                        let interface = cx.global::<PlaybackInterface>();
+                                                        let state = *cx
+                                                            .global::<PlaybackInfo>()
+                                                            .playback_state
+                                                            .read(cx);
+                                                        let interface =
+                                                            cx.global::<PlaybackInterface>();
                                                         if state == PlaybackState::Playing {
                                                             interface.pause();
                                                         } else {
@@ -2207,7 +2307,11 @@ impl Render for ImmersiveView {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .child(icon(NEXT_TRACK).size(px(18.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .child(
+                                                        icon(NEXT_TRACK).size(px(18.0)).text_color(
+                                                            Rgba::new(1.0, 1.0, 1.0, 0.95),
+                                                        ),
+                                                    )
                                                     .on_click(|_, _, cx| {
                                                         cx.global::<PlaybackInterface>().next();
                                                     }),
@@ -2232,10 +2336,15 @@ impl Render for ImmersiveView {
                                                     .items_center()
                                                     .justify_center()
                                                     .shadow_sm()
-                                                    .child(icon(GRID).size(px(16.0)).text_color(Rgba::new(1.0, 1.0, 1.0, 0.95)))
+                                                    .child(
+                                                        icon(GRID).size(px(16.0)).text_color(
+                                                            Rgba::new(1.0, 1.0, 1.0, 0.95),
+                                                        ),
+                                                    )
                                                     .tooltip(build_tooltip("返回海报墙"))
                                                     .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.stage_mode = ImmersiveStageMode::PosterWall;
+                                                        this.stage_mode =
+                                                            ImmersiveStageMode::PosterWall;
                                                         cx.notify();
                                                     })),
                                             )
@@ -2249,10 +2358,23 @@ impl Render for ImmersiveView {
                                                     .bg(Rgba::new(0.72, 0.12, 0.22, 0.95))
                                                     .border_1()
                                                     .border_color(Rgba::new(1.0, 0.40, 0.50, 0.35))
-                                                    .hover(|s| s.bg(Rgba::new(0.85, 0.14, 0.26, 1.0)).border_color(Rgba::new(1.0, 0.50, 0.60, 0.60)))
-                                                    .active(|s| s.bg(Rgba::new(0.60, 0.08, 0.16, 1.0)))
+                                                    .hover(|s| {
+                                                        s.bg(Rgba::new(0.85, 0.14, 0.26, 1.0))
+                                                            .border_color(Rgba::new(
+                                                                1.0, 0.50, 0.60, 0.60,
+                                                            ))
+                                                    })
+                                                    .active(|s| {
+                                                        s.bg(Rgba::new(0.60, 0.08, 0.16, 1.0))
+                                                    })
                                                     .shadow_md()
-                                                    .child(icon(HEART_FILLED).size(px(16.0)).text_color(Rgba::new(1.0, 0.92, 0.95, 1.0))),
+                                                    .child(
+                                                        icon(HEART_FILLED)
+                                                            .size(px(16.0))
+                                                            .text_color(Rgba::new(
+                                                                1.0, 0.92, 0.95, 1.0,
+                                                            )),
+                                                    ),
                                             ),
                                     ),
                             )
@@ -2271,7 +2393,8 @@ impl Render for ImmersiveView {
                                             .rounded_full()
                                             .value(volume as f32)
                                             .on_change(move |v, _, cx| {
-                                                cx.global::<PlaybackInterface>().set_volume(v as f64);
+                                                cx.global::<PlaybackInterface>()
+                                                    .set_volume(v as f64);
                                             }),
                                     )
                                     .child(
@@ -2289,7 +2412,11 @@ impl Render for ImmersiveView {
                                     .justify_between()
                                     .text_xs()
                                     .text_color(text_secondary)
-                                    .child(format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000)),
+                                    .child(format!(
+                                        "{}:{:02}",
+                                        position_ms / 60000,
+                                        (position_ms % 60000) / 1000
+                                    )),
                             ),
                     )
                 });
@@ -2329,8 +2456,16 @@ impl Render for ImmersiveView {
                 );
 
             let duration_ms = *self.duration.read(cx);
-            let current_time_text = format!("{}:{:02}", position_ms / 60000, (position_ms % 60000) / 1000);
-            let total_time_text = format!("{}:{:02}", duration_ms / 60000, (duration_ms % 60000) / 1000);
+            let current_time_text = format!(
+                "{}:{:02}",
+                position_ms / 60000,
+                (position_ms % 60000) / 1000
+            );
+            let total_time_text = format!(
+                "{}:{:02}",
+                duration_ms / 60000,
+                (duration_ms % 60000) / 1000
+            );
 
             // 动态音乐律动频谱声浪 (Dancing Audio Spectrum Waves - Expanded Stage)
             let spectrum_bars = if let Some(spectrum) = &self.spectrum_data {
@@ -2340,7 +2475,8 @@ impl Render for ImmersiveView {
                 for b in 0..num_bars {
                     let frac = b as f32 / (num_bars - 1) as f32;
                     // 对数感知采样跨度：兼顾低音鼓点与高音细节
-                    let sample_idx = ((frac.powf(1.25) * (post.len() as f32 - 1.0)).round() as usize)
+                    let sample_idx = ((frac.powf(1.25) * (post.len() as f32 - 1.0)).round()
+                        as usize)
                         .min(post.len().saturating_sub(1));
                     let val_db = post.get(sample_idx).copied().unwrap_or(-60.0);
 
@@ -2352,7 +2488,11 @@ impl Render for ImmersiveView {
                     let norm = ((compensated_db + 36.0) / 36.0).clamp(0.0, 1.0);
                     // 平方根开方动力学提拉：显著提升中低能量时的起伏表现（告别小圆点），强拍直接爆发
                     let dynamic = norm.sqrt();
-                    let bar_h = if playing { (dynamic * 42.0).max(3.0) } else { 2.5 };
+                    let bar_h = if playing {
+                        (dynamic * 42.0).max(3.0)
+                    } else {
+                        2.5
+                    };
 
                     let col = if b < 12 {
                         Rgba::new(1.0, 0.85, 0.40, 0.90) // 低频重低音：燃金色
@@ -2399,24 +2539,23 @@ impl Render for ImmersiveView {
                 .gap(px(8.0))
                 .children(spectrum_bars)
                 .child(
-                    div()
-                        .w(px(480.0))
-                        .child(
-                            slider()
-                                .id("stage-floating-slider")
-                                .w_full()
-                                .h(px(5.0))
-                                .rounded_full()
-                                .change_interval(SLIDER_CHANGE_INTERVAL)
-                                .value(if duration_ms > 0 {
-                                    (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
-                                } else {
-                                    0.0
-                                })
-                                .on_change(move |v, _, cx| {
-                                    seek_to_fraction(v as f64, duration_ms, cx);
-                                }),
-                        ),
+                    div().w(px(480.0)).child(
+                        slider()
+                            .id("stage-floating-slider")
+                            .w_full()
+                            .h(px(5.0))
+                            .rounded_full()
+                            .time_preview(duration_ms)
+                            .change_interval(SLIDER_CHANGE_INTERVAL)
+                            .value(if duration_ms > 0 {
+                                (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            })
+                            .on_change(move |v, _, cx| {
+                                seek_to_fraction(v as f64, duration_ms, cx);
+                            }),
+                    ),
                 )
                 .child(
                     div()

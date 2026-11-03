@@ -848,21 +848,21 @@ where
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(if is_searching {
-                                    SharedString::from(format!("未找到与 \"{}\" 相关的结果", query_text))
+                                    SharedString::from(format!(
+                                        "未找到与 \"{}\" 相关的结果",
+                                        query_text
+                                    ))
                                 } else {
                                     SharedString::from("键入歌曲名、专辑或歌手以搜索曲库与在线音乐")
                                 }),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_secondary)
-                                .child(if is_searching {
-                                    SharedString::from("尝试缩短关键词，或检查是否有输入错误")
-                                } else {
-                                    SharedString::from("支持拼音首字母检索与全网即时匹配")
-                                }),
-                        ),
+                        .child(div().text_xs().text_color(theme.text_secondary).child(
+                            if is_searching {
+                                SharedString::from("尝试缩短关键词，或检查是否有输入错误")
+                            } else {
+                                SharedString::from("支持拼音首字母检索与全网即时匹配")
+                            },
+                        )),
                 )
             })
             .when(total_items > 0, move |el| {
