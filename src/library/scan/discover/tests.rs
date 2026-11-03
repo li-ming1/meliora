@@ -30,12 +30,39 @@ fn expect_relocate(
 }
 
 #[test]
-fn sidecar_lyrics_path_returns_lrc_next_to_track() {
-    let path = Utf8PathBuf::from("/music/album/song.flac");
+fn sidecar_lyrics_path_falls_back_to_lrc_next_to_track() {
+    let dir = TestDir::new("lrc-sidecar-preference-test");
+    std::fs::write(dir.join("song.lrc"), b"[00:00.00]").unwrap();
     assert_eq!(
-        sidecar_lyrics_path(&path),
-        Some(Utf8PathBuf::from("/music/album/song.lrc"))
+        sidecar_lyrics_path(&dir.utf8_join("song.flac")),
+        Some(dir.utf8_join("song.lrc"))
     );
+}
+
+#[test]
+fn sidecar_lyrics_path_prefers_krc_next_to_track() {
+    let dir = TestDir::new("krc-sidecar-preference-test");
+    std::fs::write(dir.join("song.krc"), b"[0,0]lyric").unwrap();
+    std::fs::write(dir.join("song.lrc"), b"[00:00.00]").unwrap();
+    assert_eq!(
+        sidecar_lyrics_path(&dir.utf8_join("song.flac")),
+        Some(dir.utf8_join("song.krc"))
+    );
+}
+
+#[test]
+fn directory_snapshot_marks_krc_sidecar_present() {
+    let dir = TestDir::new("krc-sidecar-discovery-test");
+    std::fs::write(dir.join("track.mp3"), b"").unwrap();
+    std::fs::write(dir.join("track.krc"), b"[0,0]lyric").unwrap();
+
+    let snapshot = read_scan_directory(&dir.utf8_path()).unwrap();
+    let entry = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.path == dir.utf8_join("track.mp3"))
+        .expect("track entry");
+    assert_eq!(entry.sidecar_lyrics, SidecarLyrics::Present);
 }
 
 #[test]

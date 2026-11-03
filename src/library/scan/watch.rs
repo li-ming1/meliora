@@ -16,7 +16,9 @@ use tokio::{sync::mpsc::WeakSender, task::spawn_blocking};
 use tracing::{error, info, warn};
 
 use crate::{
-    library::scan::{control::ScanCommand, decode::is_folder_art_name},
+    library::scan::{
+        control::ScanCommand, decode::is_folder_art_name, discover::is_lyrics_sidecar_name,
+    },
     media::{lookup_table::can_be_read, traits::MediaProviderFeatures},
     settings::scan::ScanSettings,
 };
@@ -251,9 +253,8 @@ fn affected_targets(paths: &[PathBuf]) -> (FxHashSet<Utf8PathBuf>, bool) {
             MediaProviderFeatures::PROVIDES_METADATA | MediaProviderFeatures::ALLOWS_INDEXING,
         )
         .unwrap_or(false);
-        let is_lyrics = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("lrc"));
+        // 监听端放宽大小写：多触发一次重扫无害，漏触发才会让 sidecar 变更不可见。
+        let is_lyrics = is_lyrics_sidecar_name(&path, true);
         let is_album_art = is_album_art(path.as_std_path());
 
         if is_media || is_lyrics || is_album_art {

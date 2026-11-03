@@ -133,13 +133,30 @@ pub(crate) fn schedule_directory_read(
     );
 }
 
+/// 曲目同名 sidecar 歌词：`.krc`（酷狗逐字，优先）存在时用它，否则回退 `.lrc`。
 pub fn sidecar_lyrics_path(path: &Utf8Path) -> Option<Utf8PathBuf> {
     let stem = path.file_stem()?;
     let parent = path.parent()?;
+    let krc_candidate = parent.join(format!("{}.krc", stem));
+    if krc_candidate.exists() {
+        return Some(krc_candidate);
+    }
     Some(parent.join(format!("{}.lrc", stem)))
 }
 
-/// 音频文件的修改时间；若其 .lrc sidecar 更新则取 sidecar 的。
+/// sidecar 歌词扩展名判断。大小写口径必须与 [`normalized_file_name`] 一致：
+/// 大小写敏感的文件系统上只认小写扩展名，否则 `lyrics_timestamps` 的键对不上，
+/// sidecar 会被静默判为 Absent（Windows/macOS 走大小写不敏感分支）。
+pub(crate) fn is_lyrics_sidecar_name(path: &Utf8Path, case_insensitive: bool) -> bool {
+    path.extension().is_some_and(|extension| {
+        extension == "lrc"
+            || extension == "krc"
+            || (case_insensitive
+                && (extension.eq_ignore_ascii_case("lrc") || extension.eq_ignore_ascii_case("krc")))
+    })
+}
+
+/// 音频文件的修改时间；若其 `.krc`/`.lrc` sidecar 更新则取更新的那个。
 fn file_scan_timestamp_from_metadata(
     metadata: &Metadata,
     lyrics_timestamp: Option<SystemTime>,
@@ -167,10 +184,18 @@ pub(crate) fn file_scan_timestamp(path: &Utf8Path) -> Option<SystemTime> {
     file_scan_timestamp_from_metadata(&metadata, sidecar_modified(path))
 }
 
+/// 两个候选都参与取最新：`.lrc` 被 `.krc` 优先规则遮蔽时，编辑它仍应触发重扫。
 fn sidecar_modified(path: &Utf8Path) -> Option<SystemTime> {
-    sidecar_lyrics_path(path)
-        .and_then(|lrc_path| std::fs::metadata(lrc_path).ok())
-        .and_then(|metadata| metadata.modified().ok())
+    let stem = path.file_stem()?;
+    let parent = path.parent()?;
+    ["krc", "lrc"]
+        .into_iter()
+        .filter_map(|extension| {
+            std::fs::metadata(parent.join(format!("{stem}.{extension}")))
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+        })
+        .max()
 }
 
 fn supported_scan_timestamp(
@@ -306,7 +331,7 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
 /// `read_scan_directory` 的物化映射里原样搬来，三分支的判据不变：符号链接的
 /// 目标可能在本目录之外，所以直接 stat 它的 sidecar 而不是信任本目录的列举；
 /// stat 失败并不能证明文件不存在，保留解码那一趟的探测；绝大多数目录没有
-/// `.lrc`，空表短路省去每文件三次堆分配。
+/// sidecar，空表短路省去每文件三次堆分配。
 fn materialize_scan_entry(
     entry: PendingDirectoryEntry,
     lyrics_timestamps: &FxHashMap<String, SystemTime>,
@@ -324,9 +349,15 @@ fn materialize_scan_entry(
     } else if lyrics_timestamps.is_empty() {
         (None, SidecarLyrics::Absent)
     } else {
-        let lyrics_timestamp = sidecar_lyrics_path(naming)
-            .and_then(|path| normalized_file_name(&path, case_insensitive))
-            .and_then(|name| lyrics_timestamps.get(&name).copied());
+        let stem = naming
+            .file_stem()
+            .and_then(|s| normalized_file_name(Utf8Path::new(s), case_insensitive));
+        let lyrics_timestamp = stem.as_deref().and_then(|s| {
+            lyrics_timestamps
+                .get(&format!("{s}.krc"))
+                .max(lyrics_timestamps.get(&format!("{s}.lrc")))
+                .copied()
+        });
         let sidecar_lyrics = if lyrics_timestamp.is_some() {
             SidecarLyrics::Present
         } else {
@@ -362,9 +393,7 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
 
         // sidecar/封面都按“链接名”就近查找：symlink 用 raw，普通文件即 path。
         let naming = entry.raw_path.as_deref().unwrap_or(&entry.path);
-        let is_lyrics = naming.extension().is_some_and(|extension| {
-            extension == "lrc" || (case_insensitive && extension.eq_ignore_ascii_case("lrc"))
-        });
+        let is_lyrics = is_lyrics_sidecar_name(naming, case_insensitive);
         if entry.metadata.is_file()
             && is_lyrics
             && let Some(name) = normalized_file_name(naming, case_insensitive)

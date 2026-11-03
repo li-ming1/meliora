@@ -341,11 +341,21 @@ impl Lyrics {
         path: std::path::PathBuf,
     ) -> (Option<String>, Option<Arc<Vec<LrcLine>>>) {
         if let Some(stem) = path.file_stem() {
-            let sidecar = path.with_file_name(format!("{}.krc", stem.to_string_lossy()));
-            if let Ok(krc) = tokio::fs::read_to_string(&sidecar).await
+            // 1. 优先探测同名 .krc（酷狗专用卡拉OK格式，含官方高精逐字数据）
+            let sidecar_krc = path.with_file_name(format!("{}.krc", stem.to_string_lossy()));
+            if let Ok(krc) = tokio::fs::read_to_string(&sidecar_krc).await
                 && let Some(parsed) = krc::parse_krc(&krc)
             {
                 return (Some(krc), Some(Arc::new(parsed)));
+            }
+
+            // 2. 紧接着探测同名 .lrc（全网通用外挂歌词，支持 GBK / Big5 / UTF-8 容错解码）
+            let sidecar_lrc = path.with_file_name(format!("{}.lrc", stem.to_string_lossy()));
+            if let Ok(bytes) = tokio::fs::read(&sidecar_lrc).await {
+                let lrc = String::from_utf8_lossy(&bytes).into_owned();
+                if let Some(parsed) = parse_lyrics(&lrc) {
+                    return (Some(lrc), Some(Arc::new(parsed)));
+                }
             }
         }
 

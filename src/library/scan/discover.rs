@@ -23,7 +23,7 @@ use crate::sync::RecoveredMutex;
 
 #[cfg(test)]
 pub(crate) use directory::read_scan_directory;
-pub(crate) use directory::{DirectoryReadPolicy, sidecar_lyrics_path};
+pub(crate) use directory::{DirectoryReadPolicy, is_lyrics_sidecar_name, sidecar_lyrics_path};
 pub use full::{cleanup_stale_tracks, discover};
 pub use targeted::{reconcile_rescan_paths, rescan_discover};
 
@@ -44,11 +44,11 @@ pub(crate) struct FolderArtCandidate {
     pub(crate) rank: u8,
 }
 
-/// 关于某曲目 `.lrc` sidecar 的目录列举知识，随事件一起携带，好让解码那一趟跳过
+/// 关于某曲目 `.krc`/`.lrc` sidecar 的目录列举知识，随事件一起携带，好让解码那一趟跳过
 /// 对列举已证明不存在的文件做探测。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SidecarLyrics {
-    /// 没有目录级的 lrc 知识支撑这个路径（定向扫描、直接传入的文件目标）——
+    /// 没有目录级的 sidecar 知识支撑这个路径（定向扫描、直接传入的文件目标）——
     /// 解码那一趟保留自己的探测。
     Unknown,
     /// 列举（或对符号链接的直接 stat）找到了这个 sidecar。
