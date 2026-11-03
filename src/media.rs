@@ -21,6 +21,9 @@ pub mod pipeline;
 // 远程音源与解码器之间的后台预取。
 #[cfg(feature = "online_sources")]
 pub mod prefetch;
+// 在线音源透明本地磁盘缓存。
+#[cfg(feature = "online_sources")]
+pub mod audio_cache;
 pub mod symphonia;
 pub mod text;
 pub mod traits;

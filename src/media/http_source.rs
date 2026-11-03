@@ -406,6 +406,20 @@ pub fn open_http_media(
     path: &Path,
     refresh: Option<MediaUrlRefresh>,
 ) -> anyhow::Result<Box<dyn MediaStream>> {
+    // 优先探测本地音频磁盘缓存：若已完整缓存，直接走本地文件毫秒级秒开（跳过网络连接、TLS 握手与流式等待）。
+    if let Some(cached_path) = crate::media::audio_cache::get_cached_audio_path(path) {
+        tracing::info!(
+            cached = %cached_path.display(),
+            path = %crate::media::redact_media_path(&path.to_string_lossy()),
+            "audio cache hit: opening local file directly"
+        );
+        let file = std::fs::File::open(&cached_path)?;
+        let ext = cached_path.extension();
+        return SymphoniaProvider
+            .open_source(Box::new(file), ext)
+            .map_err(|e| anyhow::anyhow!("failed to probe cached audio: {e}"));
+    }
+
     let text = path
         .as_os_str()
         .to_str()
@@ -416,9 +430,12 @@ pub fn open_http_media(
     let source = HttpRangeSource::connect(url, refresh)
         .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
 
+    let sink =
+        crate::media::audio_cache::AudioCacheSink::try_new(path, source.total_len, ext.as_deref());
+
     // 后台填充 + 重连，让网络抖动绝不会把播放主循环按在一次同步读取上
-    // （见 prefetch.rs）。
-    let source = crate::media::prefetch::PrefetchSource::new(source);
+    // （见 prefetch.rs）。同时边播边写入本地磁盘 LRU 缓存。
+    let source = crate::media::prefetch::PrefetchSource::new_with_sink(source, sink);
 
     SymphoniaProvider
         .open_source(Box::new(source), ext.as_deref().map(OsStr::new))

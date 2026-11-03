@@ -1275,9 +1275,11 @@ fn main_inner() -> anyhow::Result<()> {
 
     register_providers(vec![Box::new(LoftyProvider), Box::new(SymphoniaProvider)]);
 
-    // 即使本次会话还没写入过任何封面，也要把在线图片缓存约束到它的 30 天年龄窗口。
+    // 即使本次会话还没写入过任何封面或音频，也要把在线图片与音频缓存约束到它的 30 天年龄窗口。
     #[cfg(feature = "online_sources")]
     crate::media::http_source::prune_image_cache_background();
+    #[cfg(feature = "online_sources")]
+    crate::media::audio_cache::prune_audio_cache_background();
 
     crate::ui::app::run()
 }

@@ -95,7 +95,11 @@ struct Shared<S> {
 /// 预算，只在 consumer 一侧判定。自报已死的源（刷新也救不回来的被拒 URL）
 /// 立即结束重试循环：致命错误交给 consumer，让它在几秒内跳过该曲目，
 /// 而不是先播 30 秒静音。
-fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
+fn fill_loop<S: FillSource>(
+    shared: Arc<Shared<S>>,
+    retry_backoff: Duration,
+    mut cache_sink: Option<crate::media::audio_cache::AudioCacheSink>,
+) {
     // 在线流生产者线程与解码泵同登记 MMCSS：2026-10-21 在线播放实测单 run
     // 累计 5262 次 callback underrun（本地回放零欠载），网络填充是播放链条
     // 上唯一未登记的生产环节；登记失败静默降级（mmcss 模块契约：线程退出
@@ -121,6 +125,9 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
             }
         };
         if let Some(target) = seek_target {
+            if let Some(sink) = &mut cache_sink {
+                sink.abort_due_to_seek();
+            }
             let mut source = shared.source.lock_recovered();
             let _ = source.seek(SeekFrom::Start(target));
         }
@@ -137,6 +144,9 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                     st.eof = true;
                     shared.signal.notify_all();
                 }
+                if let Some(sink) = cache_sink.take() {
+                    sink.finish_and_commit();
+                }
             }
             Ok(n) => {
                 consecutive_errors = 0;
@@ -144,6 +154,9 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                 if st.epoch == my_epoch {
                     st.buf.extend_from_slice(&chunk[..n]);
                     shared.signal.notify_all();
+                    if let Some(sink) = &mut cache_sink {
+                        sink.append_chunk(&chunk[..n]);
+                    }
                 }
             }
             Err(e) => {
@@ -190,10 +203,26 @@ pub struct PrefetchSource<S> {
 
 impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
     pub fn new(source: S) -> Self {
-        Self::with_budget(source, STALL_BUDGET, RETRY_BACKOFF)
+        Self::with_budget_and_sink(source, STALL_BUDGET, RETRY_BACKOFF, None)
+    }
+
+    pub fn new_with_sink(
+        source: S,
+        cache_sink: Option<crate::media::audio_cache::AudioCacheSink>,
+    ) -> Self {
+        Self::with_budget_and_sink(source, STALL_BUDGET, RETRY_BACKOFF, cache_sink)
     }
 
     fn with_budget(source: S, stall_budget: Duration, retry_backoff: Duration) -> Self {
+        Self::with_budget_and_sink(source, stall_budget, retry_backoff, None)
+    }
+
+    fn with_budget_and_sink(
+        source: S,
+        stall_budget: Duration,
+        retry_backoff: Duration,
+        cache_sink: Option<crate::media::audio_cache::AudioCacheSink>,
+    ) -> Self {
         // 先取源的静态属性快照：symphonia 在 consumer 侧查询这些，
         // 而源本体住在填充线程那边。
         let byte_len = source.byte_len();
@@ -218,7 +247,7 @@ impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
         // 关停标志置位后，读取直通数据源，不再等一个永远没人填的缓冲。
         if thread::Builder::new()
             .name("media-prefetch".into())
-            .spawn(move || fill_loop(filler_shared, retry_backoff))
+            .spawn(move || fill_loop(filler_shared, retry_backoff, cache_sink))
             .is_err()
         {
             tracing::warn!("media prefetch thread spawn failed; reading remote stream unbuffered");
