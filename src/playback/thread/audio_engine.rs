@@ -21,7 +21,7 @@ use crate::{
     playback::{
         dsp::{equalizer::EqualizerProcessor, spectrum::SpectrumTap},
         events::PlaybackEvent,
-        thread::media_controller::{CompleteMetadata, PreparedMedia},
+        thread::media_controller::{CompleteMetadata, OpenPurpose, PreparedMedia},
     },
     settings::{equalizer::EqualizerSettings, playback::PlaybackSettings},
 };
@@ -304,31 +304,34 @@ impl AudioEngine {
             .spawn(move || {
                 // 过期的签名 URL：首次打开失败，钩子重新取一个新路径，并对它
                 // 重试打开一次。结果里上报最终路径，好让调用方把它回写给队列。
-                let (path, result) = match MediaController::open_stream(&path, source_refresh) {
-                    Ok(stream) => (path, Ok(stream)),
-                    Err(err) => {
-                        if cancel.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        match on_open_error {
-                            Some(hook) => match (hook.retry)() {
-                                Some(fresh) => {
-                                    if cancel.load(Ordering::Relaxed) {
-                                        return;
+                let (path, result) =
+                    match MediaController::open_stream(&path, source_refresh, OpenPurpose::Prepare)
+                    {
+                        Ok(stream) => (path, Ok(stream)),
+                        Err(err) => {
+                            if cancel.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            match on_open_error {
+                                Some(hook) => match (hook.retry)() {
+                                    Some(fresh) => {
+                                        if cancel.load(Ordering::Relaxed) {
+                                            return;
+                                        }
+                                        let result = MediaController::open_stream(
+                                            &fresh,
+                                            Some(Arc::clone(&hook.retry)),
+                                            OpenPurpose::Prepare,
+                                        )
+                                        .map_err(|e| e.to_string());
+                                        (fresh, result)
                                     }
-                                    let result = MediaController::open_stream(
-                                        &fresh,
-                                        Some(Arc::clone(&hook.retry)),
-                                    )
-                                    .map_err(|e| e.to_string());
-                                    (fresh, result)
-                                }
+                                    None => (path, Err(err.to_string())),
+                                },
                                 None => (path, Err(err.to_string())),
-                            },
-                            None => (path, Err(err.to_string())),
+                            }
                         }
-                    }
-                };
+                    };
                 let _ = tx.send(PrepareOutcome { path, result });
             });
         if spawned.is_err() {

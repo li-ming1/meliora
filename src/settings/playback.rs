@@ -9,6 +9,10 @@ fn default_keep_current_on_queue_clear() -> bool {
     true
 }
 
+fn default_audio_cache_enabled() -> bool {
+    true
+}
+
 /// 酷狗在线播放的格式/码率。更高的档位一般需要 VIP。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OnlineQuality {
@@ -84,6 +88,11 @@ pub struct PlaybackSettings {
     #[serde(default)]
     pub consume: bool,
 
+    /// 是否把在线曲目整曲缓存到磁盘（默认 true，保持既有行为）。
+    /// 关闭后不再命中已有缓存，也不启动新的后台下载；已落盘文件由设置页手动清除。
+    #[serde(default = "default_audio_cache_enabled")]
+    pub audio_cache_enabled: bool,
+
     /// 酷狗在线播放音质。默认标准 128 kbps。
     #[serde(default)]
     pub online_quality: OnlineQuality,
@@ -124,6 +133,7 @@ impl Default for PlaybackSettings {
             equalizer: EqualizerSettings::default(),
             prevent_idle: false,
             consume: false,
+            audio_cache_enabled: true,
             online_quality: OnlineQuality::default(),
             download_dir: None,
         }

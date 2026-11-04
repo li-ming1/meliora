@@ -10,7 +10,7 @@ use std::{
 };
 
 use tokio::io::AsyncWriteExt;
-use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -19,6 +19,9 @@ const AUDIO_CACHE_DIR: &str = "audio_cache";
 
 /// 磁盘音频缓存总上限：默认 1GB（1024 * 1024 * 1024 字节）。
 const AUDIO_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+/// 超限时逐出到 90% 低水位：满缓存（实测 49 首约 902MB）下若只删到刚好
+/// 1GB，几乎每次写盘都要重跑一遍全量目录扫描。
+const AUDIO_CACHE_LOW_WATERMARK_FACTOR: u64 = 9;
 
 /// 触发全量清扫的写盘计数阈值：每累计完成 10 首曲目缓存，触发一次后台淘汰。
 const AUDIO_CACHE_WRITES_BEFORE_PRUNE: usize = 10;
@@ -26,13 +29,57 @@ const AUDIO_CACHE_WRITES_BEFORE_PRUNE: usize = 10;
 /// 缓存条目保活期：30 天未访问的陈旧音频文件将被清除。
 const AUDIO_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// 运行时开关：设置页「启用音频缓存」直接推到这里，读写两侧都按它短路。
+static AUDIO_CACHE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 设置或 watcher 回读时调用；关掉的同时取消在途下载，避免继续占带宽写盘。
+pub fn set_audio_cache_enabled(enabled: bool) {
+    AUDIO_CACHE_ENABLED.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        abort_active_download();
+    }
+}
+
+pub fn audio_cache_enabled() -> bool {
+    AUDIO_CACHE_ENABLED.load(Ordering::Relaxed)
+}
+
 /// 距离上次清理后累计完成缓存的写盘计数。
 static CACHE_WRITES_SINCE_PRUNE: AtomicUsize = AtomicUsize::new(0);
 /// 防止并发重入清扫的原子锁。
 static CACHE_PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
-/// 全局当前在途的后台音频缓存下载任务句柄（单槽位）。
-/// 切换新曲目时立即 abort 上一首未完成的下载，防止快速切歌时并发抢占网络带宽。
-static ACTIVE_DOWNLOAD_HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
+
+/// 单槽在途下载：保存 `JoinHandle` 才能等 future 真正 drop 后再删 tmp——
+/// abort 本身不释放 tokio 文件句柄，Windows 上立即 `remove_file` 会失败。
+struct ActiveDownload {
+    handle: JoinHandle<()>,
+    tmp_path: PathBuf,
+}
+static ACTIVE_DOWNLOAD: Mutex<Option<ActiveDownload>> = Mutex::new(None);
+
+fn take_active_download() -> Option<ActiveDownload> {
+    let mut guard = ACTIVE_DOWNLOAD.lock().ok()?;
+    guard.take()
+}
+
+/// 切歌/关闭开关：abort 后在后台等句柄释放，再删掉半截 tmp。
+fn abort_active_download() {
+    let Some(active) = take_active_download() else {
+        return;
+    };
+    active.handle.abort();
+    crate::RUNTIME.spawn(async move {
+        let _ = active.handle.await;
+        let _ = tokio::fs::remove_file(&active.tmp_path).await;
+    });
+}
+
+/// 清除缓存：abort 并把句柄交回调用方，等 future drop 后再删目录。
+fn take_aborted_download() -> Option<JoinHandle<()>> {
+    let active = take_active_download()?;
+    active.handle.abort();
+    Some(active.handle)
+}
 
 /// 获取音频缓存主目录路径。
 pub fn audio_cache_dir() -> PathBuf {
@@ -72,20 +119,27 @@ pub fn audio_cache_key_for_path(path: &Path) -> Option<String> {
 /// 探测本地磁盘是否已经存在完整缓存的音频文件。
 /// 存在且大小合格（> 1024 字节）时返回 `Some(PathBuf)`。
 pub fn get_cached_audio_path(path: &Path) -> Option<PathBuf> {
+    if !audio_cache_enabled() {
+        return None;
+    }
     let key = audio_cache_key_for_path(path)?;
-    let dir = audio_cache_dir();
+    find_cached_audio_in(&audio_cache_dir(), &key)
+}
+
+/// 在给定目录里找该 key 的完整缓存文件（例如 "kugou_xxx.flac"）。前缀只在
+/// 循环外构造一次：满缓存下每次开曲都遍历约 50 个目录项，旧写法每项都
+/// 为同一个 key 分配一次 String。
+fn find_cached_audio_in(dir: &Path, key: &str) -> Option<PathBuf> {
     if !dir.exists() {
         return None;
     }
 
-    // 检查是否有匹配前缀的完整缓存文件（例如 "kugou_xxx.flac" 或 "kugou_xxx.audio"）
-    let entries = fs::read_dir(&dir).ok()?;
+    let entries = fs::read_dir(dir).ok()?;
+    let prefix = format!("{key}.");
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let name_str = file_name.to_string_lossy();
-        if (name_str == key || name_str.starts_with(&format!("{key}.")))
-            && !name_str.ends_with(".tmp")
-        {
+        if (name_str == key || name_str.starts_with(&prefix)) && !name_str.ends_with(".tmp") {
             let candidate = entry.path();
             if let Ok(meta) = candidate.metadata()
                 && meta.is_file()
@@ -101,32 +155,44 @@ pub fn get_cached_audio_path(path: &Path) -> Option<PathBuf> {
 
 /// 在后台异步启动整曲流式缓存任务。
 /// 不阻塞播放，全速从头拉取完整音频并原子转正到本地磁盘。
-pub fn spawn_background_cache_task(path: &Path, url: Url, ext_hint: Option<String>) {
+pub fn spawn_background_cache_task(
+    path: &Path,
+    url: Url,
+    ext_hint: Option<String>,
+    known_miss: bool,
+) {
+    if !audio_cache_enabled() {
+        return;
+    }
     let key = match audio_cache_key_for_path(path) {
         Some(k) => k,
         None => return,
     };
 
     let dir = audio_cache_dir();
-    let ext = ext_hint.unwrap_or_else(|| "audio".to_string());
-    let target_path = dir.join(format!("{key}.{ext}"));
-    if target_path.exists() {
+    // 起播路径刚在 `get_cached_audio_path` 里按 key 扫过目录（未命中），
+    // `known_miss` 让它跳过第二次 O(N) 扫描；预打开挂接路径没查过，仍需查。
+    // 按 key 认任意扩展名：只 stat `{key}.{ext}` 会让已缓存的曲目再下一整曲。
+    if !known_miss && find_cached_audio_in(&dir, &key).is_some() {
         return;
     }
+    let ext = ext_hint.unwrap_or_else(|| "audio".to_string());
+    let target_path = dir.join(format!("{key}.{ext}"));
 
     let tmp_path = dir.join(format!("{key}.tmp"));
+    let active_tmp_path = tmp_path.clone();
 
-    // 1. 取消上一首尚未下载完成的在途任务，避免快速切歌时并发拉取
-    if let Ok(mut guard) = ACTIVE_DOWNLOAD_HANDLE.lock() {
-        if let Some(old_handle) = guard.take() {
-            old_handle.abort();
-        }
-    }
+    // 1. 取消上一首尚未下载完成的在途任务，并回收它写了一半的 tmp
+    abort_active_download();
 
     // 2. 启动新的下载任务，先经历开播防抖窗口
     let task = crate::RUNTIME.spawn(async move {
         // 开播 2.5 秒稳定防抖：快速切歌试听直接早退，不消耗网络与磁盘
         tokio::time::sleep(Duration::from_millis(2500)).await;
+        // 防抖窗口里用户可能已经关掉了缓存：不再为它打开连接与 tmp。
+        if !audio_cache_enabled() {
+            return;
+        }
 
         if target_path.exists() {
             return;
@@ -168,6 +234,12 @@ pub fn spawn_background_cache_task(path: &Path, url: Url, ext_hint: Option<Strin
         loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
+                    // 下载途中关掉开关：立即停流并清掉半截文件，而不是把整曲拉完。
+                    if !audio_cache_enabled() {
+                        drop(writer);
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return;
+                    }
                     if let Err(e) = writer.write_all(&chunk).await {
                         warn!("Audio cache write error: {e}");
                         let _ = tokio::fs::remove_file(&tmp_path).await;
@@ -218,8 +290,11 @@ pub fn spawn_background_cache_task(path: &Path, url: Url, ext_hint: Option<Strin
         record_audio_cache_write();
     });
 
-    if let Ok(mut guard) = ACTIVE_DOWNLOAD_HANDLE.lock() {
-        *guard = Some(task.abort_handle());
+    if let Ok(mut guard) = ACTIVE_DOWNLOAD.lock() {
+        *guard = Some(ActiveDownload {
+            handle: task,
+            tmp_path: active_tmp_path,
+        });
     }
 }
 
@@ -248,10 +323,75 @@ pub fn prune_audio_cache_background() {
     });
 }
 
+/// 手动清除的结果：`failed` 多为 Windows 上仍被播放中的缓存文件，下次清扫接手。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClearOutcome {
+    pub files: usize,
+    pub bytes: u64,
+    pub failed: usize,
+}
+
+/// 取消在途下载、等它释放 tmp 句柄，再清空缓存目录（保留目录本身）。
+/// 由设置页在 `RUNTIME` 上调用；删除跑在 `spawn_blocking`，不占 UI 线程。
+pub async fn clear_audio_cache() -> ClearOutcome {
+    if let Some(handle) = take_aborted_download() {
+        let _ = handle.await;
+    }
+    crate::RUNTIME
+        .spawn_blocking(|| clear_files_in(&audio_cache_dir()))
+        .await
+        .unwrap_or_default()
+}
+
+fn clear_files_in(dir: &Path) -> ClearOutcome {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return ClearOutcome::default();
+    };
+    let mut outcome = ClearOutcome::default();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        match fs::remove_file(entry.path()) {
+            Ok(()) => {
+                outcome.files += 1;
+                outcome.bytes += meta.len();
+            }
+            Err(_) => outcome.failed += 1,
+        }
+    }
+    CACHE_WRITES_SINCE_PRUNE.store(0, Ordering::Relaxed);
+    outcome
+}
+
+/// 目录内文件总字节数（测试用）：清除结果本身已带删除量，UI 不必再读一次目录。
+#[cfg(test)]
+fn usage_bytes_in(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+        .sum()
+}
+
 /// 阻塞式音频缓存清扫函数（运行在 spawn_blocking）。
 fn prune_audio_cache() {
-    let dir = audio_cache_dir();
-    let entries = match fs::read_dir(&dir) {
+    prune_audio_cache_in(
+        &audio_cache_dir(),
+        AUDIO_CACHE_MAX_BYTES,
+        AUDIO_CACHE_MAX_AGE,
+        SystemTime::now(),
+    );
+}
+
+/// `dir`/`now` 可注入，让低水位逐出与 tmp 容量核算能用临时目录钉住。
+fn prune_audio_cache_in(dir: &Path, max_bytes: u64, max_age: Duration, now: SystemTime) {
+    let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -262,7 +402,6 @@ fn prune_audio_cache() {
         modified: SystemTime,
     }
 
-    let now = SystemTime::now();
     let mut items = Vec::new();
     let mut total_bytes = 0u64;
 
@@ -273,12 +412,16 @@ fn prune_audio_cache() {
             continue;
         }
 
-        // 清理残留的未完成临时文件（超过 1 小时即视为孤立）
+        // 孤立临时文件（超过 1 小时）直接删；在途下载正持有句柄，不能拿它
+        // 当 LRU 逐出候选，但它的体积必须计入总量，否则快速切歌留下的多份
+        // 半截文件不受 1GB 上限约束。
         if path.extension().is_some_and(|ext| ext == "tmp") {
-            if let Ok(mtime) = meta.modified()
-                && now.duration_since(mtime).unwrap_or_default() > Duration::from_secs(3600)
-            {
+            if meta.modified().is_ok_and(|mtime| {
+                now.duration_since(mtime).unwrap_or_default() > Duration::from_secs(3600)
+            }) {
                 let _ = fs::remove_file(&path);
+            } else {
+                total_bytes += meta.len();
             }
             continue;
         }
@@ -287,7 +430,7 @@ fn prune_audio_cache() {
         let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
         // 超过 30 天未访问的文件直接淘汰
-        if now.duration_since(modified).unwrap_or_default() > AUDIO_CACHE_MAX_AGE {
+        if now.duration_since(modified).unwrap_or_default() > max_age {
             let _ = fs::remove_file(&path);
             continue;
         }
@@ -300,11 +443,12 @@ fn prune_audio_cache() {
         });
     }
 
-    // 若总容量超过上限（默认 1GB），按最久未访问（mtime 升序）逐出
-    if total_bytes > AUDIO_CACHE_MAX_BYTES {
+    // 超限时按最久未访问（mtime 升序）逐出到低水位，而不是刚好压回上限。
+    let low_watermark = max_bytes / 10 * AUDIO_CACHE_LOW_WATERMARK_FACTOR;
+    if total_bytes > max_bytes {
         items.sort_by_key(|item| item.modified);
         for item in items {
-            if total_bytes <= AUDIO_CACHE_MAX_BYTES {
+            if total_bytes <= low_watermark {
                 break;
             }
             if fs::remove_file(&item.path).is_ok() {
@@ -317,6 +461,7 @@ fn prune_audio_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestDir;
 
     #[test]
     fn audio_cache_key_generation_is_stable() {
@@ -328,5 +473,109 @@ mod tests {
             key1, key2,
             "Stable URL hashing must ignore volatile query tokens"
         );
+    }
+
+    #[test]
+    fn find_cached_audio_ignores_tmp_and_other_keys() {
+        let dir = TestDir::new("audio-cache-lookup");
+        let complete = dir.join("kugou_a.flac");
+        fs::write(&complete, vec![0u8; 2048]).unwrap();
+        fs::write(dir.join("kugou_b.tmp"), vec![0u8; 2048]).unwrap();
+
+        let root = dir.utf8_path();
+        assert_eq!(
+            find_cached_audio_in(root.as_std_path(), "kugou_a"),
+            Some(complete)
+        );
+        assert_eq!(find_cached_audio_in(root.as_std_path(), "kugou_b"), None);
+        assert_eq!(find_cached_audio_in(root.as_std_path(), "missing"), None);
+    }
+
+    #[test]
+    fn prune_counts_active_tmp_and_evicts_to_low_watermark() {
+        let dir = TestDir::new("audio-cache-prune");
+        for name in ["a.flac", "b.flac", "c.flac"] {
+            fs::write(dir.join(name), vec![0u8; 100]).unwrap();
+        }
+        let tmp = dir.join("d.tmp");
+        fs::write(&tmp, vec![0u8; 50]).unwrap();
+
+        // max_bytes=250 → 低水位 225；三个 100B 音频 + 50B tmp = 350B。
+        // 不把 tmp 计入总量只会删一个文件，计入后必须删到 150B。
+        prune_audio_cache_in(
+            dir.utf8_path().as_std_path(),
+            250,
+            AUDIO_CACHE_MAX_AGE,
+            SystemTime::now(),
+        );
+
+        let remaining: Vec<_> = fs::read_dir(dir.utf8_path().as_std_path())
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(remaining.len(), 2, "{remaining:?}");
+        assert!(tmp.exists(), "在途 tmp 不能作为 LRU 逐出候选");
+    }
+
+    #[test]
+    fn prune_removes_orphan_tmp_without_touching_fresh_audio() {
+        let dir = TestDir::new("audio-cache-orphan");
+        let audio = dir.join("a.flac");
+        fs::write(&audio, vec![0u8; 100]).unwrap();
+        let tmp = dir.join("b.tmp");
+        fs::write(&tmp, vec![0u8; 50]).unwrap();
+
+        // 把 now 推到 2 小时后：tmp 越过 1 小时孤立阈值，音频仍在 30 天内。
+        let future = SystemTime::now() + Duration::from_secs(2 * 3600);
+        prune_audio_cache_in(
+            dir.utf8_path().as_std_path(),
+            250,
+            AUDIO_CACHE_MAX_AGE,
+            future,
+        );
+
+        assert!(!tmp.exists());
+        assert!(audio.exists());
+    }
+
+    #[test]
+    fn clear_files_removes_only_files_and_reports_bytes() {
+        let dir = TestDir::new("audio-cache-clear");
+        fs::write(dir.join("a.flac"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("b.tmp"), vec![0u8; 50]).unwrap();
+        fs::create_dir(dir.join("nested")).unwrap();
+
+        let root = dir.utf8_path();
+        assert_eq!(usage_bytes_in(root.as_std_path()), 150);
+        assert_eq!(
+            clear_files_in(root.as_std_path()),
+            ClearOutcome {
+                files: 2,
+                bytes: 150,
+                failed: 0,
+            }
+        );
+        assert_eq!(usage_bytes_in(root.as_std_path()), 0);
+        assert!(dir.join("nested").is_dir(), "只清文件，不动目录结构");
+    }
+
+    #[test]
+    fn clear_files_on_missing_dir_is_empty() {
+        let dir = TestDir::new("audio-cache-clear-missing");
+        let missing = dir.join("missing");
+        assert_eq!(clear_files_in(&missing), ClearOutcome::default());
+        assert_eq!(usage_bytes_in(&missing), 0);
+    }
+
+    #[test]
+    fn disabling_cache_short_circuits_lookup() {
+        set_audio_cache_enabled(false);
+        assert!(!audio_cache_enabled());
+        assert_eq!(
+            get_cached_audio_path(Path::new("http://example.com/a.flac")),
+            None
+        );
+        set_audio_cache_enabled(true);
+        assert!(audio_cache_enabled());
     }
 }

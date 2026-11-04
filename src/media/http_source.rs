@@ -9,10 +9,7 @@
 //! 因此队列/会话的序列化无需改动。
 
 use std::{
-    collections::{
-        HashMap,
-        hash_map::{DefaultHasher, Entry},
-    },
+    collections::{HashMap, hash_map::DefaultHasher},
     ffi::OsStr,
     hash::{Hash, Hasher},
     io::{self, Read, Seek, SeekFrom},
@@ -324,20 +321,20 @@ static INFLIGHT_COVERS: LazyLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
 /// "managed_image 中止取回 → 条目永久残留"的无界增长缺口）。
 fn inflight_cover_gate(url: &str) -> (Arc<AsyncMutex<()>>, Option<InflightCoverGuard>) {
     let mut inflight = INFLIGHT_COVERS.lock_recovered();
-    match inflight.entry(url.to_string()) {
-        Entry::Occupied(entry) => (entry.get().clone(), None),
-        Entry::Vacant(entry) => {
-            let gate = Arc::new(AsyncMutex::new(()));
-            entry.insert(gate.clone());
-            (
-                gate.clone(),
-                Some(InflightCoverGuard {
-                    url: url.to_string(),
-                    gate,
-                }),
-            )
-        }
+    // 同一封面的并发请求是滚动在线列表的常见形态：先用 &str 零分配查表，
+    // 只为真正的新建路径分配 String（HashMap<String, _> 支持 Borrow<str>）。
+    if let Some(gate) = inflight.get(url) {
+        return (gate.clone(), None);
     }
+    let gate = Arc::new(AsyncMutex::new(()));
+    inflight.insert(url.to_string(), gate.clone());
+    (
+        gate.clone(),
+        Some(InflightCoverGuard {
+            url: url.to_string(),
+            gate,
+        }),
+    )
 }
 
 /// 创建者的 RAII 守卫：Drop（作用域结束或任务被 abort）时按代际回收表
@@ -406,6 +403,37 @@ pub fn open_http_media(
     path: &Path,
     refresh: Option<MediaUrlRefresh>,
 ) -> anyhow::Result<Box<dyn MediaStream>> {
+    open_http_media_inner(path, refresh, true)
+}
+
+/// 无缝切歌的后台预打开：不布防整曲磁盘缓存。预打开在起播 3s 后就发生，
+/// 若也触发缓存，单槽下载任务会 abort 当前曲的在途缓存，并为一首还没播放
+/// 的曲目全速拉完整曲；真正起播时由 `MediaController::attach_prepared` 补上。
+pub fn open_http_media_without_cache(
+    path: &Path,
+    refresh: Option<MediaUrlRefresh>,
+) -> anyhow::Result<Box<dyn MediaStream>> {
+    open_http_media_inner(path, refresh, false)
+}
+
+/// 起播后按需布防整曲缓存。`known_miss` 表示调用方刚查过缓存且确认未命中，
+/// 好让 `spawn_background_cache_task` 跳过重复的目录扫描。
+pub fn spawn_audio_cache_for_path(path: &Path, known_miss: bool) {
+    let Some(text) = path.as_os_str().to_str() else {
+        return;
+    };
+    let Ok(url) = Url::parse(text) else {
+        return;
+    };
+    let ext = url_extension(&url);
+    crate::media::audio_cache::spawn_background_cache_task(path, url, ext, known_miss);
+}
+
+fn open_http_media_inner(
+    path: &Path,
+    refresh: Option<MediaUrlRefresh>,
+    populate_cache: bool,
+) -> anyhow::Result<Box<dyn MediaStream>> {
     // 优先探测本地音频磁盘缓存：若已完整缓存，直接走本地文件毫秒级秒开（跳过网络连接、TLS 握手与流式等待）。
     if let Some(cached_path) = crate::media::audio_cache::get_cached_audio_path(path) {
         tracing::info!(
@@ -427,11 +455,14 @@ pub fn open_http_media(
     let url = Url::parse(text).map_err(|e| anyhow::anyhow!("invalid track URL '{text}': {e}"))?;
     let ext = url_extension(&url);
 
-    // 触发后台异步整曲缓存任务（全速后台流式拉取并原子落地，数秒内生成本地完整缓存文件）
-    crate::media::audio_cache::spawn_background_cache_task(path, url.clone(), ext.clone());
-
     let source = HttpRangeSource::connect(url, refresh)
         .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
+
+    // 连接成功才布防：打不开的 URL 不再白付一整曲下载（全速后台 GET）。
+    if populate_cache {
+        // 上面的 `get_cached_audio_path` 已经按 key 扫过目录且未命中。
+        spawn_audio_cache_for_path(path, true);
+    }
 
     // 后台填充 + 重连，让网络抖动绝不会把播放主循环按在一次同步读取上
     // （见 prefetch.rs）。

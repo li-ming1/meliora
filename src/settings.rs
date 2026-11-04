@@ -225,6 +225,10 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
     let scan = cx.global::<ScanInterface>();
     scan.update_settings(settings.scanning.clone());
 
+    // 音频缓存开关不住在播放线程的消费路径里：设置一翻就要同时停掉在途下载。
+    #[cfg(feature = "online_sources")]
+    crate::media::audio_cache::set_audio_cache_enabled(settings.playback.audio_cache_enabled);
+
     let path = cx.global::<SettingsGlobal>().path.clone();
     let snapshot = Arc::new(settings.clone());
 
@@ -336,6 +340,12 @@ pub fn setup_settings_with_outcome(cx: &mut App, path: PathBuf, outcome: Setting
         SettingsLoadOutcome::Loaded(_) => None,
     };
     let settings = cx.new(|_| outcome.into_settings());
+    // 启动即按持久化的开关初始化媒体层，否则一份 `audio_cache_enabled=false`
+    // 的 settings.json 要到用户再次改动设置才生效。
+    #[cfg(feature = "online_sources")]
+    crate::media::audio_cache::set_audio_cache_enabled(
+        settings.read(cx).playback.audio_cache_enabled,
+    );
     let settings_model = settings.clone(); // 供 watcher 闭包使用
 
     // 创建并配置 settings.json 的文件 watcher
@@ -459,6 +469,16 @@ fn apply_settings_outcome(
                 let on = settings.interface.desktop_lyrics;
                 let pos = settings.interface.desktop_lyrics_pos;
                 crate::ui::desktop_lyrics::apply_enabled(cx, on, pos);
+            }
+            // 音频缓存开关同样不在播放线程的 SettingsChanged 消费路径里：
+            // 手编 settings.json 后必须自己推给媒体层，否则要等重启。
+            #[cfg(feature = "online_sources")]
+            {
+                if current.playback.audio_cache_enabled != settings.playback.audio_cache_enabled {
+                    crate::media::audio_cache::set_audio_cache_enabled(
+                        settings.playback.audio_cache_enabled,
+                    );
+                }
             }
             // 内容相同的 reload（我们自己保存的回声、notify 风暴）不得
             // 级联触发全应用的 refresh_windows 观察者

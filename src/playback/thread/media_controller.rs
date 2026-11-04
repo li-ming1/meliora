@@ -24,6 +24,13 @@ pub struct CompleteMetadata {
     pub album_art: Option<Arc<[u8]>>,
 }
 
+/// 打开流的目的：只有真正起播才允许产生「整曲磁盘缓存」这类副作用。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpenPurpose {
+    Playback,
+    Prepare,
+}
+
 /// 在播放线程之外打开好的媒体流，曲目切换时可立即挂上（无缝切歌前进）。
 pub struct PreparedMedia {
     pub(crate) path: PathBuf,
@@ -58,16 +65,25 @@ impl MediaController {
     pub(super) fn open_stream(
         path: &Path,
         refresh: Option<crate::media::http_source::MediaUrlRefresh>,
+        purpose: OpenPurpose,
     ) -> Result<(Box<dyn MediaStream>, Option<u64>), PlaybackStartError> {
         // 远端 HTTP(S) 流绕过基于文件的提供者查找
         #[cfg(feature = "online_sources")]
         let src = if crate::media::is_http_path(path) {
-            crate::media::http_source::open_http_media(path, refresh).map(Some)
+            match purpose {
+                OpenPurpose::Playback => {
+                    crate::media::http_source::open_http_media(path, refresh).map(Some)
+                }
+                OpenPurpose::Prepare => {
+                    crate::media::http_source::open_http_media_without_cache(path, refresh)
+                        .map(Some)
+                }
+            }
         } else {
             try_open_media(path, MediaProviderFeatures::PROVIDES_DECODER)
         };
         #[cfg(not(feature = "online_sources"))]
-        let _ = refresh;
+        let _ = (refresh, purpose);
         #[cfg(not(feature = "online_sources"))]
         let src = try_open_media(path, MediaProviderFeatures::PROVIDES_DECODER);
 
@@ -108,7 +124,7 @@ impl MediaController {
         // 先关掉已有的流
         self.close();
 
-        let (media_stream, duration_ms) = Self::open_stream(path, refresh)?;
+        let (media_stream, duration_ms) = Self::open_stream(path, refresh, OpenPurpose::Playback)?;
 
         self.media_stream = Some(media_stream);
         self.current_path = Some(path.to_path_buf());
@@ -136,6 +152,14 @@ impl MediaController {
 
         let duration_ms = prepared.duration_ms;
         self.media_stream = Some(prepared.stream);
+        // 预打开阶段刻意不带缓存副作用；流挂上时按最终路径补布防（缓存
+        // 已存在则 audio_cache 自行短路）。
+        #[cfg(feature = "online_sources")]
+        {
+            if crate::media::is_http_path(&prepared.path) {
+                crate::media::http_source::spawn_audio_cache_for_path(&prepared.path, false);
+            }
+        }
         self.current_path = Some(prepared.path);
         Ok(duration_ms)
     }

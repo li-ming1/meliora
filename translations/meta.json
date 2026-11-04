@@ -673,7 +673,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1692",
+    "definedIn": "src/ui/immersive.rs:1696",
     "plural": false,
     "description": null
   },
@@ -1417,25 +1417,85 @@
   },
   "PLAYBACK_ALWAYS_REPEAT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:82",
+    "definedIn": "src/ui/settings/playback.rs:208",
     "plural": false,
     "description": null
   },
   "PLAYBACK_ALWAYS_REPEAT_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:85",
+    "definedIn": "src/ui/settings/playback.rs:211",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEAR": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:136",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEARED": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:168",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEARING": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:129",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEAR_CONFIRM": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:132",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEAR_PARTIAL": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:163",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEAR_SUBTEXT": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:115",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_CLEAR_TITLE": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:112",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_ENABLED": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:96",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_ENABLED_SUBTEXT": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:101",
+    "plural": false,
+    "description": null
+  },
+  "PLAYBACK_AUDIO_CACHE_SECTION": {
+    "context": "playback.rs",
+    "definedIn": "src/ui/settings/playback.rs:88",
     "plural": false,
     "description": null
   },
   "PLAYBACK_CONSUME": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:130",
+    "definedIn": "src/ui/settings/playback.rs:256",
     "plural": false,
     "description": null
   },
   "PLAYBACK_CONSUME_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:133",
+    "definedIn": "src/ui/settings/playback.rs:259",
     "plural": false,
     "description": null
   },
@@ -1453,13 +1513,13 @@
   },
   "PLAYBACK_KEEP_CURRENT_ON_CLEAR": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:111",
+    "definedIn": "src/ui/settings/playback.rs:237",
     "plural": false,
     "description": null
   },
   "PLAYBACK_KEEP_CURRENT_ON_CLEAR_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:116",
+    "definedIn": "src/ui/settings/playback.rs:242",
     "plural": false,
     "description": null
   },
@@ -1477,31 +1537,31 @@
   },
   "PLAYBACK_PREVENT_IDLE": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:185",
+    "definedIn": "src/ui/settings/playback.rs:311",
     "plural": false,
     "description": null
   },
   "PLAYBACK_PREVENT_IDLE_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:188",
+    "definedIn": "src/ui/settings/playback.rs:314",
     "plural": false,
     "description": null
   },
   "PLAYBACK_PREVIOUS_JUMPS": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:98",
+    "definedIn": "src/ui/settings/playback.rs:224",
     "plural": false,
     "description": null
   },
   "PLAYBACK_RG_FALLBACK_PREAMP": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:145",
+    "definedIn": "src/ui/settings/playback.rs:271",
     "plural": false,
     "description": null
   },
   "PLAYBACK_RG_FALLBACK_PREAMP_SUBTEXT": {
     "context": "playback.rs",
-    "definedIn": "src/ui/settings/playback.rs:148",
+    "definedIn": "src/ui/settings/playback.rs:274",
     "plural": false,
     "description": null
   },

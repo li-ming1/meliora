@@ -1024,11 +1024,15 @@ impl ImmersiveView {
                         .as_ref()
                         .and_then(|u| u.artist_name.clone())
                         .unwrap_or_default();
+                    #[cfg(feature = "online_sources")]
                     let cover_key = ui_data
                         .and_then(|u| u.cover_url)
                         .filter(|u| !u.is_empty())
                         .map(ManagedImageKey::HttpCover)
                         .unwrap_or_else(|| ManagedImageKey::TrackFile(item.get_path().clone()));
+                    // 无在线音源时 `HttpCover` 变体不存在，封面只能按本地曲目路径取。
+                    #[cfg(not(feature = "online_sources"))]
+                    let cover_key = ManagedImageKey::TrackFile(item.get_path().clone());
 
                     (idx, is_playing, title, artist, cover_key)
                 })

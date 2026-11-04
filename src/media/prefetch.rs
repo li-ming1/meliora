@@ -32,6 +32,20 @@ use symphonia::core::io::MediaSource;
 const HIGH_WATER_BYTES: usize = 4 * 1024 * 1024;
 /// 单次填充步长，在任何锁之外取，因此卡停的读取永不阻塞 consumer。
 const FILL_CHUNK: usize = 16 * 1024;
+
+/// 缓冲最终稳定在高水位附近；一次性预留省掉起播阶段约 9 次 realloc——
+/// 每次都在 state 锁内搬运已缓冲字节，与 consumer 争锁。已知长度的短源
+/// 只按其长度预留，避免为几 KB 的流白占 4MB。
+fn initial_buffer_capacity(byte_len: Option<u64>) -> usize {
+    byte_len
+        .map(|len| {
+            usize::try_from(len)
+                .unwrap_or(usize::MAX)
+                .min(HIGH_WATER_BYTES + FILL_CHUNK)
+        })
+        .unwrap_or(HIGH_WATER_BYTES + FILL_CHUNK)
+        .max(FILL_CHUNK)
+}
 /// consumer 的一次读取在判定流卡停之前最多可等待多久（以 IO 错误浮出，
 /// 于是该曲目像任何其他解码失败一样被跳过）。重连发生在这个窗口之内；
 /// 可恢复的断连会无缝续上播放。
@@ -102,6 +116,9 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
     // 登记随之失效，逐曲目重建线程无泄漏）。
     crate::devices::mmcss::register_playback_thread();
     let mut consecutive_errors = 0u32;
+    // 每轮只取一个 chunk，栈缓冲提到循环外复用：省掉填充热路径上每 16KB
+    // 一次的零初始化。
+    let mut chunk = [0u8; FILL_CHUNK];
     loop {
         // 等待有活干：有待施加的 seek，或缓冲低于高水位。
         // my_epoch 给本轮填充打标签，早于更新的 seek 的结果会被丢弃。
@@ -125,7 +142,6 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
             let _ = source.seek(SeekFrom::Start(target));
         }
 
-        let mut chunk = [0u8; FILL_CHUNK];
         let read = {
             let mut source = shared.source.lock_recovered();
             source.read(&mut chunk)
@@ -201,7 +217,7 @@ impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
         let shared = Arc::new(Shared {
             source: Mutex::new(source),
             state: Mutex::new(FillState {
-                buf: Vec::new(),
+                buf: Vec::with_capacity(initial_buffer_capacity(byte_len)),
                 read_pos: 0,
                 epoch: 0,
                 pending_seek: None,
@@ -431,6 +447,26 @@ mod tests {
             assert!(n > 0, "premature EOF at {}/{}", out.len(), want);
             out.extend_from_slice(&chunk[..n]);
         }
+    }
+
+    #[test]
+    fn initial_capacity_tracks_source_length() {
+        assert_eq!(initial_buffer_capacity(Some(1024)), FILL_CHUNK);
+        assert_eq!(initial_buffer_capacity(Some(512 * 1024)), 512 * 1024);
+        assert_eq!(initial_buffer_capacity(None), HIGH_WATER_BYTES + FILL_CHUNK);
+        assert_eq!(
+            initial_buffer_capacity(Some(u64::MAX)),
+            HIGH_WATER_BYTES + FILL_CHUNK
+        );
+    }
+
+    #[test]
+    fn prefetch_buffer_is_preallocated_before_fill() {
+        let source = open(512 * 1024, Arc::new(AtomicUsize::new(0)));
+        assert!(
+            source.shared.state.lock_recovered().buf.capacity() >= 512 * 1024,
+            "起播阶段不应在 state 锁内反复扩容"
+        );
     }
 
     #[test]

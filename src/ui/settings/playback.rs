@@ -1,9 +1,3 @@
-use cntp_i18n::tr;
-use gpui::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, px,
-};
-
 use crate::{
     power::PowerManager,
     settings::{Settings, SettingsGlobal},
@@ -14,8 +8,19 @@ use crate::{
         section_header::section_header,
     },
 };
+use cntp_i18n::tr;
+use gpui::{
+    AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString,
+    Styled, Window, div, px,
+};
 
 use super::debounced_save::DebouncedSave;
+
+#[cfg(feature = "online_sources")]
+use crate::{
+    toasts::{Toast, emit_toast},
+    ui::components::button::{ButtonIntent, ButtonStyle, button},
+};
 
 /// 一个勾选行：点击标签即经 `update_playback_settings` 切换 `settings.playback` 的
 /// 一个 `bool` 字段。勾选框 id 显式传入，好让一行的两个 id 都可 grep。点击不只是
@@ -44,6 +49,11 @@ fn toggle_row(
 pub struct PlaybackSettings {
     settings: Entity<Settings>,
     save_debounce: DebouncedSave,
+    /// 清除缓存的两段式确认；分节切换会重建实体，确认态随之复位。
+    #[cfg(feature = "online_sources")]
+    clear_armed: bool,
+    #[cfg(feature = "online_sources")]
+    clearing: bool,
 }
 
 impl PlaybackSettings {
@@ -55,8 +65,124 @@ impl PlaybackSettings {
             Self {
                 settings,
                 save_debounce: DebouncedSave::new(),
+                #[cfg(feature = "online_sources")]
+                clear_armed: false,
+                #[cfg(feature = "online_sources")]
+                clearing: false,
             }
         })
+    }
+
+    /// 在线音频缓存设置节；非 `online_sources` 构建下该模块不存在，返回空元素。
+    #[cfg(feature = "online_sources")]
+    fn audio_cache_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.settings.read(cx).playback.audio_cache_enabled;
+        let clear_armed = self.clear_armed;
+        let clearing = self.clearing;
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(section_header(tr!(
+                "PLAYBACK_AUDIO_CACHE_SECTION",
+                "Online audio cache"
+            )))
+            .child(toggle_row(
+                cx,
+                "playback-audio-cache-enabled",
+                "playback-audio-cache-enabled-check",
+                tr!(
+                    "PLAYBACK_AUDIO_CACHE_ENABLED",
+                    "Cache online tracks to disk"
+                ),
+                Some(
+                    tr!(
+                        "PLAYBACK_AUDIO_CACHE_ENABLED_SUBTEXT",
+                        "Cached tracks open instantly and play without the network. Capped at 1 GB."
+                    )
+                    .into(),
+                ),
+                enabled,
+                |playback| playback.audio_cache_enabled = !playback.audio_cache_enabled,
+            ))
+            .child(
+                label(
+                    "playback-audio-cache-clear",
+                    tr!("PLAYBACK_AUDIO_CACHE_CLEAR_TITLE", "Clear cached audio"),
+                )
+                .subtext(tr!(
+                    "PLAYBACK_AUDIO_CACHE_CLEAR_SUBTEXT",
+                    "Removes all cached online tracks; they are downloaded again when played."
+                ))
+                .w_full()
+                .child(
+                    button()
+                        .id("playback-audio-cache-clear-button")
+                        .style(ButtonStyle::Regular)
+                        .intent(if clear_armed || clearing {
+                            ButtonIntent::Danger
+                        } else {
+                            ButtonIntent::Secondary
+                        })
+                        .child(if clearing {
+                            tr!("PLAYBACK_AUDIO_CACHE_CLEARING", "Clearing…")
+                        } else if clear_armed {
+                            tr!(
+                                "PLAYBACK_AUDIO_CACHE_CLEAR_CONFIRM",
+                                "Click again to confirm"
+                            )
+                        } else {
+                            tr!("PLAYBACK_AUDIO_CACHE_CLEAR", "Clear cache")
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.clearing {
+                                return;
+                            }
+                            if !this.clear_armed {
+                                this.clear_armed = true;
+                                cx.notify();
+                                return;
+                            }
+                            this.clear_armed = false;
+                            this.clearing = true;
+                            cx.notify();
+
+                            cx.spawn(async move |weak, cx| {
+                                let outcome = crate::RUNTIME
+                                    .spawn(crate::media::audio_cache::clear_audio_cache())
+                                    .await
+                                    .unwrap_or_default();
+                                weak.update(cx, |this, cx| {
+                                    this.clearing = false;
+                                    cx.notify();
+                                    let mb =
+                                        format!("{:.1}", outcome.bytes as f64 / (1024.0 * 1024.0));
+                                    if outcome.failed > 0 {
+                                        emit_toast(Toast::warning(tr!(
+                                            "PLAYBACK_AUDIO_CACHE_CLEAR_PARTIAL",
+                                            "Some cached files are in use and could not be removed."
+                                        )));
+                                    } else {
+                                        emit_toast(Toast::success(tr!(
+                                            "PLAYBACK_AUDIO_CACHE_CLEARED",
+                                            "Cleared {{mb}} MB of cached audio",
+                                            mb = mb
+                                        )));
+                                    }
+                                })
+                                .ok();
+                            })
+                            .detach();
+                        })),
+                ),
+            )
+            .into_any_element()
+    }
+
+    #[cfg(not(feature = "online_sources"))]
+    fn audio_cache_section(&self, _: &mut Context<Self>) -> AnyElement {
+        div().into_any_element()
     }
 }
 
@@ -200,5 +326,6 @@ impl Render for PlaybackSettings {
                 }))
                 .child(checkbox("playback-prevent-idle-check", prevent_idle)),
             )
+            .child(self.audio_cache_section(cx))
     }
 }
