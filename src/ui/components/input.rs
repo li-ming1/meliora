@@ -114,10 +114,30 @@ pub enum EnrichedInputAction {
 
 type EnrichedInputHandler = Box<dyn Fn(EnrichedInputAction, &mut Window, &mut App)>;
 
+/// 最近一次实际发给订阅者的内容。IME 组合期间输入框文本在变但不发事件，
+/// 提交时靠比对把最终文本补发一次；普通编辑的重复内容也不再重复发查询。
+struct LastEmittedContent(SharedString);
+
+impl LastEmittedContent {
+    fn new(content: &SharedString) -> Self {
+        Self(content.clone())
+    }
+
+    /// 内容相对上次事件有变化才返回要发出的文本，同时更新基线。
+    fn take_change(&mut self, content: &SharedString) -> Option<SharedString> {
+        if self.0 == *content {
+            return None;
+        }
+        self.0 = content.clone();
+        Some(content.clone())
+    }
+}
+
 pub struct TextInput {
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
     pub content: SharedString,
+    last_emitted: LastEmittedContent,
     placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
@@ -495,9 +515,20 @@ impl TextInput {
         word_range_for_offset(&self.content, offset)
     }
 
+    /// 只在内容相对上次事件变化时才发查询：普通编辑与 IME 提交共用，
+    /// 重复的提交路径不会再触发一次搜索。
+    fn emit_content_change(&mut self, cx: &mut Context<Self>) {
+        if let Some(content) = self.last_emitted.take_change(&self.content) {
+            cx.emit(content);
+        }
+    }
+
     /// 清空内容、选区、IME、拖拽与布局状态。
     pub fn reset(&mut self) {
         self.content = "".into();
+        // reset 由调用方自己清查询（Palette::reset），这里只把基线对齐到空串，
+        // 否则之后重新输入相同文本会被去重挡掉。
+        self.last_emitted = LastEmittedContent::new(&self.content);
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
@@ -542,6 +573,9 @@ impl TextInput {
     /// 替换内容并把光标移到新文本末尾。
     pub fn set_value(&mut self, cx: &mut Context<Self>, value: SharedString) {
         self.content = value;
+        // 程序化赋值沿用原语义（不发事件），但基线必须跟上，否则之后手工
+        // 输入同样内容会被去重挡掉。
+        self.last_emitted = LastEmittedContent::new(&self.content);
         // 旧的标记区间指的是上一版文本：留着它会让 prepaint 用新内容长度去减一个更大的 end
         // （下溢），还可能让 IME 组合态跨到新文本上存活。光标移动不能改用 `move_to`，
         // 因为它的"区间未变"守卫会在光标本来已在末尾时跳过重绘。
@@ -626,8 +660,10 @@ impl EntityInputHandler for TextInput {
             .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.marked_range = None;
+        // IME 提交：组合串此前只 notify、不发事件，这里补发最终文本。
+        self.emit_content_change(cx);
     }
 
     fn replace_text_in_range(
@@ -645,7 +681,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
 
-        cx.emit(self.content.clone());
+        self.emit_content_change(cx);
         cx.notify();
     }
 
@@ -951,22 +987,26 @@ impl TextInput {
         placeholder: Option<SharedString>,
         enriched_input_handler: Option<EnrichedInputHandler>,
     ) -> Entity<TextInput> {
-        cx.new(|_| TextInput {
-            focus_handle,
-            content: content.unwrap_or_else(|| "".into()),
-            placeholder: placeholder.unwrap_or_else(|| "".into()),
-            selected_range: 0..0,
-            selection_reversed: false,
-            marked_range: None,
-            last_layout: None,
-            last_bounds: None,
-            shaped_line: None,
-            is_selecting: false,
-            selection_drag_mode: SelectionDragMode::Char,
-            word_drag_anchor: 0,
-            word_drag_anchor_range: 0..0,
-            scroll_handle: ScrollHandle::new(),
-            enriched_input_handler,
+        cx.new(|_| {
+            let content = content.unwrap_or_else(|| "".into());
+            TextInput {
+                focus_handle,
+                last_emitted: LastEmittedContent::new(&content),
+                content,
+                placeholder: placeholder.unwrap_or_else(|| "".into()),
+                selected_range: 0..0,
+                selection_reversed: false,
+                marked_range: None,
+                last_layout: None,
+                last_bounds: None,
+                shaped_line: None,
+                is_selecting: false,
+                selection_drag_mode: SelectionDragMode::Char,
+                word_drag_anchor: 0,
+                word_drag_anchor_range: 0..0,
+                scroll_handle: ScrollHandle::new(),
+                enriched_input_handler,
+            }
         })
     }
 }
@@ -1035,6 +1075,37 @@ impl Focusable for TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn last_emitted(text: &str) -> LastEmittedContent {
+        let content: SharedString = text.into();
+        LastEmittedContent::new(&content)
+    }
+
+    fn emitted(last: &mut LastEmittedContent, text: &str) -> Option<String> {
+        let content: SharedString = text.into();
+        last.take_change(&content)
+            .map(|changed| changed.to_string())
+    }
+
+    #[test]
+    fn ime_commit_emits_final_text_once_and_dedups_repeated_edits() {
+        // 组合期间不发事件，基线仍为空；提交时补发最终中文。
+        let mut last = last_emitted("");
+        assert_eq!(emitted(&mut last, "周杰伦"), Some("周杰伦".to_string()));
+        // 某些 IME 提交后还会补一次 replace_text_in_range：内容未变，不再发查询。
+        assert_eq!(emitted(&mut last, "周杰伦"), None);
+        // 删除一字：内容变化，重新发。
+        assert_eq!(emitted(&mut last, "周杰"), Some("周杰".to_string()));
+    }
+
+    #[test]
+    fn programmatic_reset_rearms_emission_for_same_text() {
+        let mut last = last_emitted("");
+        assert_eq!(emitted(&mut last, "晴天"), Some("晴天".to_string()));
+        // reset / set_value 后基线回到目标值，再输入同样文本必须能再次发出。
+        last = last_emitted("");
+        assert_eq!(emitted(&mut last, "晴天"), Some("晴天".to_string()));
+    }
 
     #[test]
     fn ime_selection_rebases_within_replacement_text() {

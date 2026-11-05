@@ -1393,7 +1393,7 @@
   },
   "PALETTE_SHOW_MORE": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:1060",
+    "definedIn": "src/ui/components/palette/finder.rs:1076",
     "plural": true,
     "description": null
   },

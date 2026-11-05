@@ -538,6 +538,17 @@ where
     /// [`INJECTION_CHUNK`] 条推入，注入期间匹配结果逐步增长、轮询循环照常
     /// 刷新展示——用户看到列表填起来，而不是一次长卡顿。世代守卫保证更新的
     /// `set_items` 到达时在途注入立即作废。
+    /// 条目集变化后刷新展示列表。在线（易变）结果不进 nucleo 索引，纯在线
+    /// 更新不会触发 matcher 的 notify，轮询循环因此不会重建列表；只
+    /// `cx.notify()` 重绘会一直停在旧的空结果，直到下一次击键走 `set_query`。
+    fn refresh_matches(&mut self, cx: &mut Context<Self>) {
+        let matches = self.get_matches();
+        if !same_items(&matches, &self.last_match) {
+            self.rebuild_display_list(&matches, cx);
+            self.last_match = matches;
+        }
+    }
+
     fn set_items(
         &mut self,
         items: &[Arc<T>],
@@ -593,6 +604,7 @@ where
                 generation,
             });
             self.spawn_injection(cx);
+            self.refresh_matches(cx);
             return;
         }
 
@@ -604,6 +616,7 @@ where
             });
         }
         self.injected = stable;
+        self.refresh_matches(cx);
     }
 
     /// 启动分帧注入任务：每帧推一批（[`inject_chunk`]），推完或世代作废即退场。
@@ -689,9 +702,12 @@ where
         let pattern = self.matcher.pattern.column_pattern(0);
         let mut dynamic: Vec<(u32, Arc<T>)> = Vec::with_capacity(self.dynamic_items.len());
         for (item, text) in &self.dynamic_items {
-            if let Some(score) = pattern.score(text.slice(..), &mut self.dynamic_matcher) {
-                dynamic.push((score, item.clone()));
-            }
+            // 在线结果由服务端按关键词返回，客户端打分只用于排序、不能用于淘汰：
+            // fuzzy 对 CJK 完整词可能给出 None，把它们全过滤掉就是「搜晴天没结果」。
+            let score = pattern
+                .score(text.slice(..), &mut self.dynamic_matcher)
+                .unwrap_or(0);
+            dynamic.push((score, item.clone()));
         }
         // 稳定排序：分数相同时保持音源自带的结果顺序。
         dynamic.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
@@ -1350,6 +1366,12 @@ mod tests {
     use super::common_prefix;
     use std::sync::Arc;
 
+    use nucleo::{
+        Config, Matcher, Nucleo, Utf32String,
+        pattern::{CaseMatching, Normalization},
+    };
+    use tokio::sync::mpsc::channel;
+
     fn arcs(n: usize) -> Vec<Arc<u32>> {
         (0..n as u32).map(Arc::new).collect()
     }
@@ -1402,5 +1424,28 @@ mod tests {
         let injected: Vec<Arc<u32>> = Vec::new();
         let stable = arcs(3);
         assert_eq!(common_prefix(&injected, &stable), (0, true));
+    }
+
+    #[test]
+    fn cjk_full_word_scores_against_online_text() {
+        // 在线结果的匹配文本与生产路径一致（"歌名 歌手"）；若 nucleo 能匹配
+        // 完整中文词，则「长词空结果」只可能来自列表未刷新/结果被二次淘汰。
+        let (sender, _receiver) = channel(10);
+        let notify = Arc::new(move || {
+            let _ = sender.try_send(());
+        });
+        let mut nucleo: Nucleo<u32> = Nucleo::new(Config::DEFAULT, notify, None, 1);
+        nucleo
+            .pattern
+            .reparse(0, "晴天", CaseMatching::Smart, Normalization::Smart, false);
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let haystack = Utf32String::from("晴天 周杰伦");
+        assert!(
+            nucleo
+                .pattern
+                .column_pattern(0)
+                .score(haystack.slice(..), &mut matcher)
+                .is_some()
+        );
     }
 }
