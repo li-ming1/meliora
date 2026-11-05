@@ -108,7 +108,7 @@ const BACKDROP_THUMB_PX: u32 = 2048;
 /// 期间旧背景保持绘制，不出现黑底。
 const BACKDROP_RETRY: Duration = Duration::from_millis(500);
 /// 背景切换 crossfade 时长。必须严格小于 managed_image 的
-/// RECLAIM_DELAY_LARGE（3s）：淡出期间旧背景元素仍在绘制，其图集瓦片
+/// RECLAIM_DELAY_LARGE（1s）：淡出期间旧背景元素仍在绘制，其图集瓦片
 /// 靠那条短年龄门兜底（门到时淡出早已结束、旧元素已卸载）。
 const BACKDROP_FADE: Duration = Duration::from_millis(400);
 /// 滚轮浏览：超过这么久没有滚动，视图就滑回活动行（侧栏歌词面板用同一模式）。

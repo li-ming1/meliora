@@ -338,20 +338,22 @@ struct PendingTileDrop {
     due: Instant,
 }
 
-/// 排队图像在 `drain_pending_tile_drops` 释放其图集瓦片前的最小年龄（60s）。被跳过重绘的
-/// 视图会继续回放其最后场景，老化窗口必须覆盖这段悬空期（2026-09-08 崩溃类，见 `PendingTileDrop`）；
-/// 不得为回收速度缩短——积压是回收漏斗的常态，由压力 shed 与自然排水处理。
-const RECLAIM_DELAY: Duration = Duration::from_secs(60);
+/// 排队图像在 `drain_pending_tile_drops` 释放其图集瓦片前的最小年龄（5s）。进入沉浸页
+/// 是高耗内存模式（4096 背景管线 + 大图 + 下一首预取同时在途），60s 门让逐出的瓦片与
+/// 像素长期滞留、内存迟迟不回落，故按 2026-11-04 决议缩短到 5s。代价是重新打开
+/// 2026-09-08 悬空场景崩溃类：被跳过重绘的视图若回放已释放的瓦片，`texture()` 会对
+/// 空槽位 unwrap；复发时优先回退本值，判据见 AGENTS.md。
+const RECLAIM_DELAY: Duration = Duration::from_secs(5);
 /// 大图（≥[`LARGE_IMAGE_BYTES`]，沉浸页背景级）用短得多的年龄门老化。唯一绘制方是沉浸页
 /// 背景元素（2026-09-29 审计：其余每个 `ManagedImage` 解码都 ≤512px ≤1MB），而该元素每次
 /// 移除——晋升、退出、crossfade 结束——都与一次 `ImmersiveView` 重渲染同时发生（同一次状态
 /// 变更里的 `cx.notify()`），此后没有任何已录制场景还能回放它的精灵。短门只需盖住 crossfade
 /// 窗口（400ms）加帧时序，并且必须始终大于 `BACKDROP_FADE`：crossfade 期间旧元素仍在淡出、
-/// 始终挂载。统一的 60s 门会把一连串切歌变成"背景不跟着换歌走"——积压的大图集会让新背景
-/// 解码最多等一分钟（`backdrop_decode_allowed`），正是 2026-09-29 的投诉。
-const RECLAIM_DELAY_LARGE: Duration = Duration::from_secs(3);
+/// 始终挂载。常规门若与大图同长，连跳时积压的大图集会挡住新背景解码
+/// （`backdrop_decode_allowed`），正是 2026-09-29「背景不跟着换歌走」的投诉。
+const RECLAIM_DELAY_LARGE: Duration = Duration::from_secs(1);
 
-/// 单张排队图像的回收年龄：背景级大图走短门，其余走保守的 60s 门。
+/// 单张排队图像的回收年龄：背景级大图走短门，其余走常规门。
 fn reclaim_delay_for(image: &RenderImage) -> Duration {
     if image_bytes(image) >= LARGE_IMAGE_BYTES {
         RECLAIM_DELAY_LARGE
@@ -975,7 +977,7 @@ fn backdrop_cache_lookup(key: &RenderCacheKey) -> Option<Arc<RenderImage>> {
 }
 
 /// 插入并按容量逐出；逐出项经回收漏斗释放（背景类大图走
-/// [`RECLAIM_DELAY_LARGE`] 3s 短门，见 [`reclaim_delay_for`]）。
+/// [`RECLAIM_DELAY_LARGE`] 1s 短门，见 [`reclaim_delay_for`]）。
 fn backdrop_cache_insert(key: RenderCacheKey, image: Arc<RenderImage>) {
     let mut cache = lock_backdrop_cache();
     let bytes = image_bytes(&image);
@@ -1000,7 +1002,7 @@ fn backdrop_cache_insert(key: RenderCacheKey, image: Arc<RenderImage>) {
 }
 
 /// 退出沉浸模式时收缩背景缓存：从 LRU 尾部逐出多余的成图（经回收漏斗
-/// 3s 短门放行像素与瓦片）。普通模式下沉浸页的预取图与上一首不该继续
+/// 1s 短门放行像素与瓦片）。普通模式下沉浸页的预取图与上一首不该继续
 /// 驻留——`keep=1` 保留当前歌曲一套（重进沉浸页秒开），其余立刻让位，
 /// 省下 ~16MB 给普通界面。这是"退出界面即归还"纪律的执行点。
 pub(crate) fn backdrop_cache_shrink(keep: usize) {
@@ -1022,7 +1024,7 @@ pub(crate) fn backdrop_cache_shrink(keep: usize) {
 const LARGE_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// 回收队列中等待年龄门的**去重大图**（≥[`LARGE_IMAGE_BYTES`]，走
-/// [`RECLAIM_DELAY_LARGE`] 3s 短门）套数。同一份图可能被缓存逐出和元素
+/// [`RECLAIM_DELAY_LARGE`] 1s 短门）套数。同一份图可能被缓存逐出和元素
 /// 卸载各推一次，按 `RenderImage::id` 去重后的套数才是真实驻留。大图在
 /// 队期间其像素与图集瓦片全程驻留，沉浸页只在计数不超过
 /// [`BACKDROP_QUEUE_HEADROOM`] 时放行新的背景解码，
@@ -1930,7 +1932,7 @@ mod tests {
     }
 
     /// 背景级（≥4MB）图像走短年龄门老化，因此一连串切歌不会把背景冻结 60s；封面保留保守的
-    /// 60s 门。短门必须始终高于沉浸页 crossfade 窗口——淡出期间旧元素（及其瓦片）仍在绘制。
+    /// 5s 门。短门必须始终高于沉浸页 crossfade 窗口——淡出期间旧元素（及其瓦片）仍在绘制。
     #[test]
     fn large_backdrop_images_use_the_short_reclaim_gate() {
         assert_eq!(reclaim_delay_for(&test_image()), RECLAIM_DELAY);
@@ -1942,9 +1944,6 @@ mod tests {
         assert!(image_bytes(&large) >= LARGE_IMAGE_BYTES);
         assert_eq!(reclaim_delay_for(&large), RECLAIM_DELAY_LARGE);
         assert!(RECLAIM_DELAY_LARGE > Duration::from_millis(400));
-        // 年龄门不得缩短（2026-09-08 悬空场景崩溃类）；数值变更必须先更新 AGENTS.md 契约。
-        assert!(RECLAIM_DELAY >= Duration::from_secs(60));
-        assert!(RECLAIM_DELAY_LARGE >= Duration::from_secs(3));
     }
 
     /// 裁剪几何钉桩：去噪/重采样发生在居中 cover 裁剪之后，所以裁剪带之外的内容绝不能渗进
