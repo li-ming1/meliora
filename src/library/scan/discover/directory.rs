@@ -7,6 +7,7 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::{FutureExt, stream::FuturesUnordered};
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     task::spawn_blocking,
@@ -247,6 +248,26 @@ fn normalized_file_name(path: &Utf8Path, case_insensitive: bool) -> Option<Strin
     })
 }
 
+/// 与 [`normalized_file_name`] 同口径的零分配查表版：大小写敏感时直接借用
+/// 原 stem；否则把 lowercase 写进调用方的栈缓冲。短 stem（绝大多数曲目名）
+/// 不触碰堆，配合 `HashMap<String, _>::get(&str)` 的 Borrow<str> 零分配查询。
+fn normalized_stem<'a>(
+    stem: &'a str,
+    case_insensitive: bool,
+    buf: &'a mut SmallVec<[u8; 96]>,
+) -> &'a str {
+    if !case_insensitive {
+        return stem;
+    }
+    for ch in stem.chars() {
+        for lowered in ch.to_lowercase() {
+            let mut encoded = [0u8; 4];
+            buf.extend_from_slice(lowered.encode_utf8(&mut encoded).as_bytes());
+        }
+    }
+    std::str::from_utf8(&buf[..]).expect("lowercase of valid UTF-8 is valid UTF-8")
+}
+
 /// 列举出来的一条目录项 → `PendingDirectoryEntry`。原先七条"记录并跳过"的分支
 /// 摊在主循环里，占了 161 行函数体的 68 行；收成 `Option` 后循环只写一次
 /// `else { continue }`。每条 `error!` 的文案与判据逐字保留，失败即放弃这一条
@@ -373,10 +394,11 @@ fn materialize_scan_entry(
     } else if lyrics_timestamps.is_empty() {
         (None, SidecarLyrics::Absent)
     } else {
+        let mut stem_buf = SmallVec::<[u8; 96]>::new();
         let stem = naming
             .file_stem()
-            .and_then(|s| normalized_file_name(Utf8Path::new(s), case_insensitive));
-        let lyrics_timestamp = stem.as_deref().and_then(|s| {
+            .map(|s| normalized_stem(s, case_insensitive, &mut stem_buf));
+        let lyrics_timestamp = stem.and_then(|s| {
             lyrics_timestamps
                 .get(s)
                 .copied()
@@ -518,6 +540,36 @@ mod allocation_bench {
         }
         eprintln!("sidecar lookup allocations/{N}: legacy={old_counts:?} by-stem={new_counts:?}");
         assert!(old_counts.iter().all(|&n| n >= 2 * N as u64));
+        assert!(new_counts.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn stem_normalization_paired_allocation_bench() {
+        const N: usize = 1000;
+        let mut map: FxHashMap<String, SidecarTimes> = FxHashMap::default();
+        map.insert("晴天".into(), SidecarTimes::default());
+
+        let mut old_counts = Vec::new();
+        let mut new_counts = Vec::new();
+        for _ in 0..2 {
+            let (_, allocations) = count_allocations(|| {
+                for _ in 0..N {
+                    let key = normalized_file_name(Utf8Path::new("晴天"), true);
+                    std::hint::black_box(map.get(key.as_deref().unwrap()));
+                }
+            });
+            old_counts.push(allocations);
+            let (_, allocations) = count_allocations(|| {
+                for _ in 0..N {
+                    let mut buf = SmallVec::<[u8; 96]>::new();
+                    let key = normalized_stem("晴天", true, &mut buf);
+                    std::hint::black_box(map.get(key));
+                }
+            });
+            new_counts.push(allocations);
+        }
+        eprintln!("stem lookup allocations/{N}: legacy={old_counts:?} stack={new_counts:?}");
+        assert!(old_counts.iter().all(|&n| n >= N as u64));
         assert!(new_counts.iter().all(|&n| n == 0));
     }
 

@@ -116,6 +116,9 @@ pub struct Lyrics {
     last_user_interaction_at: Option<Instant>,
     line_emphasis_start_values: Vec<f32>,
     line_emphasis_target_values: Vec<f32>,
+    /// `start_line_emphasis_animation` 的复用缓冲：与 start_values 轮换，
+    /// 稳态行切换不再新建 Vec。
+    emphasis_scratch: Vec<f32>,
     line_emphasis_started_at: Option<Instant>,
     playback_state: Entity<PlaybackState>,
     /// 每首歌主题色（与沉浸页同一提取器，取自当前封面）：活动行高亮与逐字
@@ -305,6 +308,7 @@ impl Lyrics {
                 last_user_interaction_at: None,
                 line_emphasis_start_values: Vec::new(),
                 line_emphasis_target_values: Vec::new(),
+                emphasis_scratch: Vec::new(),
                 line_emphasis_started_at: None,
                 playback_state,
                 accent: None,
@@ -426,8 +430,11 @@ impl Lyrics {
         self.last_active_line = None;
         self.follow_pending = false;
         self.scroll_follow.cancel();
-        self.line_emphasis_start_values = vec![0.0; line_count];
-        self.line_emphasis_target_values = vec![0.0; line_count];
+        // clear + resize 复用容量：切歌时行数通常相近，稳态零分配。
+        self.line_emphasis_start_values.clear();
+        self.line_emphasis_target_values.clear();
+        self.line_emphasis_start_values.resize(line_count, 0.0);
+        self.line_emphasis_target_values.resize(line_count, 0.0);
         // 切歌等于一张新列表：用统一的高度提示重建，好让滚动条在首次绘制
         // 收敛它之前大致正确。`reset` 同时把视图送回顶部，这本就是原有的
         // 按曲目滚动行为。
@@ -472,10 +479,15 @@ impl Lyrics {
             None => None,
         };
         if hit.is_some() {
-            let key = key.to_path_buf();
-            if let Some(idx) = self.lyric_cache_order.iter().position(|k| *k == key) {
-                self.lyric_cache_order.remove(idx);
-                self.lyric_cache_order.push(key);
+            // 直接按 &Path 比对，命中时把原 PathBuf 从队列里摘下再挂回尾部，
+            // 不再为 LRU 续命克隆一份路径。
+            if let Some(idx) = self
+                .lyric_cache_order
+                .iter()
+                .position(|k| k.as_path() == key)
+            {
+                let path = self.lyric_cache_order.remove(idx);
+                self.lyric_cache_order.push(path);
             }
         }
         hit
@@ -1143,13 +1155,22 @@ impl Lyrics {
 
     fn start_line_emphasis_animation(&mut self, active_line: Option<usize>, reduced_motion: bool) {
         let line_count = self.parsed.as_ref().map_or(0, |parsed| parsed.len());
+        // 长度变化等价于旧版的 `vec![0.0; line_count]`（全零），但复用容量。
         if self.line_emphasis_target_values.len() != line_count {
-            self.line_emphasis_target_values = vec![0.0; line_count];
+            self.line_emphasis_target_values.clear();
+            self.line_emphasis_target_values.resize(line_count, 0.0);
         }
 
-        self.line_emphasis_start_values = (0..line_count)
-            .map(|idx| self.line_emphasis_for(idx))
-            .collect();
+        // 当前插值写进复用缓冲，再与 start_values 轮换：旧缓冲的容量留给
+        // 下一次行切换，整条路径不再新建 Vec。
+        let mut scratch = std::mem::take(&mut self.emphasis_scratch);
+        scratch.clear();
+        scratch.resize(line_count, 0.0);
+        for (idx, slot) in scratch.iter_mut().enumerate() {
+            *slot = self.line_emphasis_for(idx);
+        }
+        std::mem::swap(&mut scratch, &mut self.line_emphasis_start_values);
+        self.emphasis_scratch = scratch;
 
         self.line_emphasis_target_values.fill(0.0);
         if let Some(active_line) = active_line
@@ -1161,7 +1182,8 @@ impl Lyrics {
         let has_change = self.line_emphasis_has_change();
 
         if reduced_motion {
-            self.line_emphasis_start_values = self.line_emphasis_target_values.clone();
+            self.line_emphasis_start_values
+                .clone_from(&self.line_emphasis_target_values);
             self.line_emphasis_started_at = None;
         } else {
             self.line_emphasis_started_at = has_change.then(Instant::now);
@@ -1172,7 +1194,8 @@ impl Lyrics {
         if reduced_motion {
             let changed =
                 self.line_emphasis_has_change() || self.line_emphasis_started_at.is_some();
-            self.line_emphasis_start_values = self.line_emphasis_target_values.clone();
+            self.line_emphasis_start_values
+                .clone_from(&self.line_emphasis_target_values);
             self.line_emphasis_started_at = None;
             return changed;
         }
@@ -1185,7 +1208,8 @@ impl Lyrics {
             return true;
         }
 
-        self.line_emphasis_start_values = self.line_emphasis_target_values.clone();
+        self.line_emphasis_start_values
+            .clone_from(&self.line_emphasis_target_values);
         self.line_emphasis_started_at = None;
         true
     }
@@ -1278,4 +1302,101 @@ pub(crate) fn lerp_color(start: Rgba, end: Rgba, progress: f32) -> Rgba {
         lerp(start.blue, end.blue, progress),
         lerp(start.alpha, end.alpha, progress),
     )
+}
+
+#[cfg(test)]
+mod allocation_bench {
+    use std::path::{Path, PathBuf};
+
+    use crate::test_support::alloc_guard::count_allocations;
+
+    /// 生产路径的形状：clone_from + 轮换缓冲。
+    fn reused_step(start: &mut Vec<f32>, scratch: &mut Vec<f32>, target: &Vec<f32>, n: usize) {
+        start.clone_from(target);
+        scratch.clear();
+        scratch.resize(n, 0.0);
+        for slot in scratch.iter_mut() {
+            *slot = 1.0;
+        }
+        std::mem::swap(scratch, start);
+    }
+
+    /// 优化前的形状：每轮 collect 一个新 Vec，再 clone 一次 target。
+    fn legacy_step(start: &mut Vec<f32>, target: &Vec<f32>, n: usize) {
+        *start = (0..n).map(|_| 1.0).collect();
+        *start = target.clone();
+    }
+
+    fn lru_reused(order: &mut Vec<PathBuf>, key: &Path) {
+        if let Some(idx) = order.iter().position(|k| k.as_path() == key) {
+            let path = order.remove(idx);
+            order.push(path);
+        }
+    }
+
+    fn lru_legacy(order: &mut Vec<PathBuf>, key: &Path) {
+        let owned = key.to_path_buf();
+        if let Some(idx) = order.iter().position(|k| *k == owned) {
+            order.remove(idx);
+            order.push(owned);
+        }
+    }
+
+    #[test]
+    fn emphasis_buffer_reuse_paired_allocation_bench() {
+        const N: usize = 64;
+        const ROUNDS: usize = 100;
+        let target: Vec<f32> = vec![0.0; N];
+        let mut start = Vec::with_capacity(N);
+        let mut scratch = Vec::with_capacity(N);
+        let mut legacy_start = Vec::with_capacity(N);
+
+        let mut new_counts = Vec::new();
+        let mut old_counts = Vec::new();
+        for _ in 0..2 {
+            let (_, allocations) = count_allocations(|| {
+                for _ in 0..ROUNDS {
+                    reused_step(&mut start, &mut scratch, &target, N);
+                }
+            });
+            new_counts.push(allocations);
+            let (_, allocations) = count_allocations(|| {
+                for _ in 0..ROUNDS {
+                    legacy_step(&mut legacy_start, &target, N);
+                }
+            });
+            old_counts.push(allocations);
+        }
+        eprintln!(
+            "emphasis buffer allocations/{ROUNDS} rounds: reuse={new_counts:?} legacy={old_counts:?}"
+        );
+        assert!(new_counts.iter().all(|&n| n == 0));
+        assert!(old_counts.iter().all(|&n| n >= ROUNDS as u64));
+    }
+
+    #[test]
+    fn lru_touch_paired_allocation_bench() {
+        const ROUNDS: usize = 1000;
+        let key = PathBuf::from("song.flac");
+        let mut order: Vec<PathBuf> = (0..16)
+            .map(|i| PathBuf::from(format!("s{i}.flac")))
+            .collect();
+        order.push(key.clone());
+
+        let (_, legacy_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                lru_legacy(&mut order, &key);
+            }
+        });
+        let (_, reuse_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                lru_reused(&mut order, &key);
+            }
+        });
+        eprintln!(
+            "LRU touch allocations/{ROUNDS}: legacy={legacy_allocations} reuse={reuse_allocations}"
+        );
+        assert!(legacy_allocations >= ROUNDS as u64);
+        assert_eq!(reuse_allocations, 0);
+    }
 }
