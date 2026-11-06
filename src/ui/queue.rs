@@ -186,6 +186,8 @@ struct DragOthers {
 pub struct QueueItem {
     item: QueueItemData,
     current: usize,
+    /// 本行上次重绘时的选中状态：selection 观察者只在该状态真的翻转时 notify。
+    was_selected: bool,
     idx: usize,
     drag_drop_manager: Entity<DragDropListManager>,
     scroll_handle: UniformListScrollHandle,
@@ -272,8 +274,14 @@ impl QueueItem {
             })
             .detach();
 
-            cx.observe(&selection, |_, _, cx| {
-                cx.notify();
+            // 与上面 position 观察者同一套值守卫：一次选中变更只影响旧/新两行，
+            // 没有它时每个 keep-around 行都会跟着重绘（O(n) 扇出）。
+            cx.observe(&selection, |this: &mut QueueItem, selection, cx| {
+                let selected = selection.read(cx).contains(this.idx);
+                if selected != this.was_selected {
+                    this.was_selected = selected;
+                    cx.notify();
+                }
             })
             .detach();
 
@@ -284,10 +292,12 @@ impl QueueItem {
 
             subscribe_liked_updates(cx, |this: &QueueItem| this.track_id);
 
+            let was_selected = selection.read(cx).contains(idx);
             Self {
                 item,
                 idx,
                 current: queue.read(cx).position,
+                was_selected,
                 drag_drop_manager,
                 scroll_handle,
                 selection,
@@ -312,6 +322,9 @@ impl QueueItem {
     pub fn update_idx(&mut self, idx: usize, cx: &mut Context<Self>) {
         if self.idx != idx {
             self.idx = idx;
+            // 缓存行被复用到新槽位：守卫基线必须按新 idx 重算，否则下一次
+            // 选中变更会拿旧槽位的选中态比较，漏掉本行应有的重绘。
+            self.was_selected = self.selection.read(cx).contains(idx);
             cx.notify();
         }
     }
@@ -1918,6 +1931,54 @@ fn corrected_multi_drop_target(to: usize, additional: &[usize], bound: usize) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selection_gate_only_notifies_on_flips() {
+        let mut was_selected = false;
+        let mut notifies = 0;
+        for now in [false, false, true, true, false, true] {
+            if now != was_selected {
+                was_selected = now;
+                notifies += 1;
+            }
+        }
+        assert_eq!(notifies, 3, "重复值不得再次触发行重绘");
+    }
+
+    /// 扇出形状对照：无守卫时每次选中变更通知全部 keep-around 行；加值守卫
+    /// 后只有选中态真正翻转的两行受影响。这里模拟的是守卫逻辑本身，不是
+    /// 端到端 render 计数（后者由 `tally_render(QueueRow)` 在实机观察）。
+    #[test]
+    fn selection_gate_collapses_notify_fanout() {
+        const ROWS: usize = 128;
+        const CHANGES: usize = 1000;
+        let mut selected = vec![false; ROWS];
+        let mut was_selected = vec![false; ROWS];
+        let mut ungated = 0usize;
+        let mut gated = 0usize;
+
+        for change in 0..CHANGES {
+            let old = change % ROWS;
+            let new = (change + 1) % ROWS;
+            if old != new {
+                selected[old] = false;
+                selected[new] = true;
+            }
+            ungated += ROWS;
+            for row in 0..ROWS {
+                if selected[row] != was_selected[row] {
+                    was_selected[row] = selected[row];
+                    gated += 1;
+                }
+            }
+        }
+        eprintln!(
+            "selection notify fanout/{CHANGES} changes x {ROWS} rows: ungated={ungated} gated={gated}"
+        );
+        assert_eq!(ungated, ROWS * CHANGES);
+        assert!(gated <= 2 * CHANGES);
+        assert!(gated < ungated / 10);
+    }
+
     use super::{
         InternalDragFingerprints, QUEUE_LIST_ID, build_drag_fingerprints,
         corrected_multi_drop_target, resolve_internal_drag_core,

@@ -253,7 +253,7 @@
   },
   "ADD_N_TO_QUEUE": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:159",
+    "definedIn": "src/ui/library/files_view/file_row.rs:179",
     "plural": true,
     "description": null
   },
@@ -313,7 +313,7 @@
   },
   "CLEAR_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1413",
+    "definedIn": "src/ui/queue.rs:1426",
     "plural": false,
     "description": null
   },
@@ -637,13 +637,13 @@
   },
   "GO_TO_ALBUM": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:846",
+    "definedIn": "src/ui/queue.rs:859",
     "plural": false,
     "description": null
   },
   "GO_TO_ARTIST": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:865",
+    "definedIn": "src/ui/queue.rs:878",
     "plural": false,
     "description": null
   },
@@ -1603,7 +1603,7 @@
   },
   "PLAY_N_NOW": {
     "context": "file_row.rs",
-    "definedIn": "src/ui/library/files_view/file_row.rs:132",
+    "definedIn": "src/ui/library/files_view/file_row.rs:152",
     "plural": true,
     "description": null
   },
@@ -1615,19 +1615,19 @@
   },
   "QUEUE_REMOVE_CANCELLED_STALE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:963",
+    "definedIn": "src/ui/queue.rs:976",
     "plural": false,
     "description": null
   },
   "QUEUE_SUMMARY_TRACKS": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1334",
+    "definedIn": "src/ui/queue.rs:1347",
     "plural": true,
     "description": null
   },
   "QUEUE_TITLE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:1398",
+    "definedIn": "src/ui/queue.rs:1411",
     "plural": false,
     "description": null
   },
@@ -1663,7 +1663,7 @@
   },
   "REMOVE_FROM_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:922",
+    "definedIn": "src/ui/queue.rs:935",
     "plural": false,
     "description": null
   },
@@ -1675,7 +1675,7 @@
   },
   "REMOVE_N_FROM_QUEUE": {
     "context": "queue.rs",
-    "definedIn": "src/ui/queue.rs:795",
+    "definedIn": "src/ui/queue.rs:808",
     "plural": true,
     "description": null
   },

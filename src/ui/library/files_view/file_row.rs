@@ -59,6 +59,8 @@ pub struct FileRowItem {
     add_to: Option<Entity<AddToPlaylist>>,
     /// 行右键菜单的稳定元素 id 哈希；路径在一行视图的生命周期内永不变化。
     path_hash: usize,
+    /// 本行上次重绘时是否为「当前播放曲目」：切歌只让旧/新两行重绘。
+    was_current: bool,
 }
 
 fn path_hash(path: &Path) -> usize {
@@ -88,9 +90,26 @@ impl FileRowItem {
 
             let path_hash = path_hash(&flat_row.path);
 
+            let mut was_current = false;
             if flat_row.is_audio {
                 let current_track = cx.global::<PlaybackInfo>().current_track.clone();
-                cx.observe(&current_track, |_, _, cx| cx.notify()).detach();
+                was_current = current_track
+                    .read(cx)
+                    .as_ref()
+                    .is_some_and(|current| current.get_path() == &*flat_row.path);
+                // 切歌只改变旧/新两行的高亮；没有这道守卫，current_track 的
+                // 每次通知都会让 keep-around 带内所有行重绘。
+                cx.observe(&current_track, |this: &mut FileRowItem, track, cx| {
+                    let is_current = track
+                        .read(cx)
+                        .as_ref()
+                        .is_some_and(|current| current.get_path() == &*this.flat_row.path);
+                    if is_current != this.was_current {
+                        this.was_current = is_current;
+                        cx.notify();
+                    }
+                })
+                .detach();
             }
 
             Self {
@@ -100,6 +119,7 @@ impl FileRowItem {
                 show_add_to: cx.new(|_| false),
                 add_to: None,
                 path_hash,
+                was_current,
             }
         })
     }
