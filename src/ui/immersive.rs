@@ -1748,85 +1748,88 @@ impl Render for ImmersiveView {
                 _ => (15.0f32, 8.0f32),
             };
 
-            let kinetic_lyric_elements: Vec<AnyElement> = if let Some(parsed) = &self.parsed {
+            let kinetic_lyric_elements: smallvec::SmallVec<[AnyElement; 4]> = if let Some(parsed) =
+                &self.parsed
+            {
                 let active_idx = self.current_line.unwrap_or(0);
                 if let Some(line) = parsed.get(active_idx) {
                     let line_time_ms = line.time_ms;
-                    let words_elements: Vec<AnyElement> = if !line.words.is_empty() {
-                        line.words
-                            .iter()
-                            .enumerate()
-                            .map(|(_w_idx, word)| {
-                                let progress = word_progress(word, position_ms);
-                                let color = lerp_color(dimmed_color, gold_glow, progress);
+                    let words_elements: smallvec::SmallVec<[AnyElement; 16]> =
+                        if !line.words.is_empty() {
+                            line.words
+                                .iter()
+                                .enumerate()
+                                .map(|(_w_idx, word)| {
+                                    let progress = word_progress(word, position_ms);
+                                    let color = lerp_color(dimmed_color, gold_glow, progress);
 
-                                // 梦幻逐字弹跳与浮动动画 (Dreamy Kinetic Pop-up)
-                                let (pop_y, scale_pt, halo_opacity) =
-                                    if progress > 0.0 && progress < 1.0 {
-                                        // 正在唱：弹起并伴随柔和回落 (-16px 高度)
-                                        let curve = (progress * std::f32::consts::PI).sin();
-                                        (-curve * 16.0, 62.0f32, 0.70 * curve)
-                                    } else if progress >= 1.0 {
-                                        // 已唱完：稳定高光与柔和微悬
-                                        (-2.0, 58.0f32, 0.25)
-                                    } else {
-                                        // 未唱到：静静等待
-                                        (0.0, 56.0f32, 0.0)
-                                    };
+                                    // 梦幻逐字弹跳与浮动动画 (Dreamy Kinetic Pop-up)
+                                    let (pop_y, scale_pt, halo_opacity) =
+                                        if progress > 0.0 && progress < 1.0 {
+                                            // 正在唱：弹起并伴随柔和回落 (-16px 高度)
+                                            let curve = (progress * std::f32::consts::PI).sin();
+                                            (-curve * 16.0, 62.0f32, 0.70 * curve)
+                                        } else if progress >= 1.0 {
+                                            // 已唱完：稳定高光与柔和微悬
+                                            (-2.0, 58.0f32, 0.25)
+                                        } else {
+                                            // 未唱到：静静等待
+                                            (0.0, 56.0f32, 0.0)
+                                        };
 
-                                let is_active = progress > 0.02;
+                                    let is_active = progress > 0.02;
 
-                                div()
-                                    .relative()
-                                    .mt(px(pop_y))
-                                    .when(halo_opacity > 0.05, |el| {
-                                        el.child(
+                                    div()
+                                        .relative()
+                                        .mt(px(pop_y))
+                                        .when(halo_opacity > 0.05, |el| {
+                                            el.child(
+                                                div()
+                                                    .absolute()
+                                                    .top(px(-3.0))
+                                                    .left(px(-3.0))
+                                                    .opacity(halo_opacity)
+                                                    .text_size(px(scale_pt))
+                                                    .text_color(Rgba::new(1.0, 0.85, 0.45, 0.85))
+                                                    .child(word.text.clone()),
+                                            )
+                                        })
+                                        .child(
                                             div()
-                                                .absolute()
-                                                .top(px(-3.0))
-                                                .left(px(-3.0))
-                                                .opacity(halo_opacity)
+                                                .child(word.text.clone())
                                                 .text_size(px(scale_pt))
-                                                .text_color(Rgba::new(1.0, 0.85, 0.45, 0.85))
-                                                .child(word.text.clone()),
+                                                .text_color(color)
+                                                .when(is_active, |s| {
+                                                    s.font_weight(FontWeight::EXTRA_BOLD)
+                                                }),
                                         )
-                                    })
-                                    .child(
-                                        div()
-                                            .child(word.text.clone())
-                                            .text_size(px(scale_pt))
-                                            .text_color(color)
-                                            .when(is_active, |s| {
-                                                s.font_weight(FontWeight::EXTRA_BOLD)
-                                            }),
-                                    )
-                                    .into_any_element()
-                            })
-                            .collect()
-                    } else {
-                        line.text
-                            .chars()
-                            .enumerate()
-                            .map(|(c_idx, ch)| {
-                                let c_seed = (active_seed / 50) + c_idx as u64 * 31;
-                                let scatter_y = (c_seed as f32 * 0.67).cos() * 6.0;
-                                div()
-                                    .relative()
-                                    .mt(px(scatter_y))
-                                    .text_size(px(58.0))
-                                    .text_color(gold_glow)
-                                    .child({
-                                        // SmolStr 对 1–4 字节字符内联，免掉每帧每字的
-                                        // String 堆分配；SharedString::from(&mut str) 拥有副本。
-                                        let mut encoded = [0u8; 4];
-                                        SharedString::from(ch.encode_utf8(&mut encoded))
-                                    })
-                                    .into_any_element()
-                            })
-                            .collect()
-                    };
+                                        .into_any_element()
+                                })
+                                .collect()
+                        } else {
+                            line.text
+                                .chars()
+                                .enumerate()
+                                .map(|(c_idx, ch)| {
+                                    let c_seed = (active_seed / 50) + c_idx as u64 * 31;
+                                    let scatter_y = (c_seed as f32 * 0.67).cos() * 6.0;
+                                    div()
+                                        .relative()
+                                        .mt(px(scatter_y))
+                                        .text_size(px(58.0))
+                                        .text_color(gold_glow)
+                                        .child({
+                                            // SmolStr 对 1–4 字节字符内联，免掉每帧每字的
+                                            // String 堆分配；SharedString::from(&mut str) 拥有副本。
+                                            let mut encoded = [0u8; 4];
+                                            SharedString::from(ch.encode_utf8(&mut encoded))
+                                        })
+                                        .into_any_element()
+                                })
+                                .collect()
+                        };
 
-                    let mut elements = Vec::new();
+                    let mut elements = smallvec::SmallVec::<[AnyElement; 4]>::new();
                     // 上一句淡出行（伴随在上方，30% 不透明度）
                     if active_idx > 0
                         && let Some(prev) = parsed.get(active_idx - 1)
@@ -1904,10 +1907,10 @@ impl Render for ImmersiveView {
 
                     elements
                 } else {
-                    Vec::new()
+                    smallvec::SmallVec::new()
                 }
             } else {
-                Vec::new()
+                smallvec::SmallVec::new()
             };
 
             // 电影级多重空间几何罗盘、悬浮微粒与星轨极光装饰层
@@ -2747,6 +2750,34 @@ mod tests {
         );
         assert!(legacy_allocations >= 5 * ROUNDS as u64);
         assert_eq!(reuse_allocations, 0);
+    }
+
+    #[test]
+    fn kinetic_element_vectors_paired_allocation_bench() {
+        use crate::test_support::alloc_guard::count_allocations;
+
+        const ROUNDS: usize = 1000;
+        // 只量化容器这一层：AnyElement 自身的 Box 分配在生产路径里每个元素
+        // 仍然存在，这里对比的是 Vec 头/堆缓冲的每帧开销。
+        let (_, legacy_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                let words: Vec<u8> = (0..12_u8).collect();
+                let lines: Vec<u8> = (0..3_u8).collect();
+                std::hint::black_box((words, lines));
+            }
+        });
+        let (_, inline_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                let words: smallvec::SmallVec<[u8; 16]> = (0..12_u8).collect();
+                let lines: smallvec::SmallVec<[u8; 4]> = (0..3_u8).collect();
+                std::hint::black_box((words, lines));
+            }
+        });
+        eprintln!(
+            "kinetic element containers allocations/{ROUNDS} frames: Vec={legacy_allocations} SmallVec={inline_allocations}"
+        );
+        assert_eq!(legacy_allocations, 2 * ROUNDS as u64);
+        assert_eq!(inline_allocations, 0);
     }
 
     #[test]
