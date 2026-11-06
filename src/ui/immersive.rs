@@ -152,6 +152,13 @@ pub struct ImmersiveView {
     spectrum_data: Option<Entity<SpectrumData>>,
     spectrum_viewers: Option<Arc<std::sync::atomic::AtomicUsize>>,
     volume: Entity<f64>,
+    /// 全屏底栏整秒标签缓存（与 `ImmersiveProgress` 同一套 `CachedTimeText`）。
+    stage_time_labels: CachedTimeText<(SharedString, SharedString)>,
+    /// 音量百分比文本：只在整数百分比跨档时重建。
+    cached_volume_pct: i64,
+    cached_volume_text: SharedString,
+    /// 频谱柱元素的复用缓冲：每帧 clear 后保留容量。
+    spectrum_bar_buffer: Vec<AnyElement>,
     prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
     current_track: Entity<Option<CurrentTrack>>,
@@ -392,6 +399,10 @@ impl ImmersiveView {
                 spectrum_data,
                 spectrum_viewers,
                 volume: info.volume.clone(),
+                stage_time_labels: CachedTimeText::unseeded(),
+                cached_volume_pct: i64::MIN,
+                cached_volume_text: SharedString::default(),
+                spectrum_bar_buffer: Vec::new(),
                 prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
                 current_track: info.current_track.clone(),
@@ -1341,10 +1352,30 @@ impl Render for ImmersiveView {
         // PlaybackInfo 的位置用毫秒。进度条在自己的实体（ImmersiveProgress）里
         // 读位置/时长。
         let position_ms = *self.position.read(cx);
+        let duration_ms = *self.duration.read(cx);
         let sample_rate = *self.sample_rate.read(cx);
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
         let volume = *self.volume.read(cx);
         let prev_volume = *self.prev_volume.read(cx);
+
+        // 全屏底栏的时间/音量标签：整秒与整数百分比没跨档时复用已格式化的
+        // SharedString，30Hz 重绘里绝大多数帧的输出逐字节相同。
+        let (current_time_text, total_time_text) = self.stage_time_labels.resolve(
+            position_ms / 1000,
+            duration_ms / 1000,
+            |position_secs, duration_secs| {
+                (
+                    SharedString::from(format!("{}:{:02}", position_secs / 60, position_secs % 60)),
+                    SharedString::from(format!("{}:{:02}", duration_secs / 60, duration_secs % 60)),
+                )
+            },
+        );
+        let volume_pct = (volume * 100.0).round() as i64;
+        if self.cached_volume_pct != volume_pct {
+            self.cached_volume_pct = volume_pct;
+            self.cached_volume_text = SharedString::from(format!("{}%", volume_pct));
+        }
+        let volume_text = self.cached_volume_text.clone();
 
         // 背景：全清晰度解码、Cover 适配、绝不模糊——清晰度就是目的；下面的
         // 渐变划出阅读区。两个固定图层渲染的是 `backdrop_layers`（解码就绪的
@@ -2410,7 +2441,7 @@ impl Render for ImmersiveView {
                                         div()
                                             .text_size(px(10.0))
                                             .text_color(text_secondary)
-                                            .child(format!("{}%", (volume * 100.0).round() as i64)),
+                                            .child(volume_text.clone()),
                                     ),
                             )
                             .child(
@@ -2421,11 +2452,7 @@ impl Render for ImmersiveView {
                                     .justify_between()
                                     .text_xs()
                                     .text_color(text_secondary)
-                                    .child(format!(
-                                        "{}:{:02}",
-                                        position_ms / 60000,
-                                        (position_ms % 60000) / 1000
-                                    )),
+                                    .child(current_time_text.clone()),
                             ),
                     )
                 });
@@ -2464,23 +2491,13 @@ impl Render for ImmersiveView {
                         .children(kinetic_lyric_elements),
                 );
 
-            let duration_ms = *self.duration.read(cx);
-            let current_time_text = format!(
-                "{}:{:02}",
-                position_ms / 60000,
-                (position_ms % 60000) / 1000
-            );
-            let total_time_text = format!(
-                "{}:{:02}",
-                duration_ms / 60000,
-                (duration_ms % 60000) / 1000
-            );
-
             // 动态音乐律动频谱声浪 (Dancing Audio Spectrum Waves - Expanded Stage)
             let spectrum_bars = if let Some(spectrum) = &self.spectrum_data {
                 let post = spectrum.read(cx).post.clone();
                 let num_bars = 40;
-                let mut bars = Vec::with_capacity(num_bars);
+                // 复用上一帧的 Vec 容量：稳态每帧不再分配柱元素缓冲。
+                let mut bars = std::mem::take(&mut self.spectrum_bar_buffer);
+                bars.clear();
                 for b in 0..num_bars {
                     let frac = b as f32 / (num_bars - 1) as f32;
                     // 对数感知采样跨度：兼顾低音鼓点与高音细节
@@ -2521,16 +2538,16 @@ impl Render for ImmersiveView {
                             .into_any_element(),
                     );
                 }
-                Some(
-                    div()
-                        .flex()
-                        .items_end()
-                        .justify_center()
-                        .gap(px(7.0))
-                        .h(px(48.0))
-                        .mb(px(10.0))
-                        .children(bars),
-                )
+                let element = div()
+                    .flex()
+                    .items_end()
+                    .justify_center()
+                    .gap(px(7.0))
+                    .h(px(48.0))
+                    .mb(px(10.0))
+                    .children(bars.drain(..));
+                self.spectrum_bar_buffer = bars;
+                Some(element)
             } else {
                 None
             };
@@ -2654,6 +2671,82 @@ mod tests {
         );
         assert!(legacy_allocations >= ROUNDS as u64);
         assert_eq!(inline_allocations, 0);
+    }
+
+    #[test]
+    fn stage_labels_and_spectrum_buffer_paired_allocation_bench() {
+        use crate::test_support::alloc_guard::count_allocations;
+
+        const ROUNDS: usize = 1000;
+        let position_ms: u64 = 125_000;
+        let duration_ms: u64 = 240_000;
+        let volume = 0.63f64;
+
+        // 旧形状：每帧 4 次 format!（控制台时间、音量、底栏当前/总时长）
+        // + 一次 40 柱频谱 Vec 分配。
+        let (_, legacy_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                let console_time = format!(
+                    "{}:{:02}",
+                    position_ms / 60000,
+                    (position_ms % 60000) / 1000
+                );
+                let volume_text = format!("{}%", (volume * 100.0).round() as i64);
+                let current = format!(
+                    "{}:{:02}",
+                    position_ms / 60000,
+                    (position_ms % 60000) / 1000
+                );
+                let total = format!(
+                    "{}:{:02}",
+                    duration_ms / 60000,
+                    (duration_ms % 60000) / 1000
+                );
+                let bars: Vec<u8> = Vec::with_capacity(40);
+                std::hint::black_box((console_time, volume_text, current, total, bars));
+            }
+        });
+
+        // 新形状：整秒/整数百分比缓存 + 频谱 Vec 容量复用。先预热到稳态。
+        let mut labels: CachedTimeText<(SharedString, SharedString)> = CachedTimeText::unseeded();
+        let mut cached_pct = (volume * 100.0).round() as i64;
+        let mut cached_volume = SharedString::from(format!("{}%", cached_pct));
+        let mut bar_buffer: Vec<u8> = Vec::with_capacity(40);
+        labels.resolve(position_ms / 1000, duration_ms / 1000, |pos, dur| {
+            (
+                SharedString::from(format!("{}:{:02}", pos / 60, pos % 60)),
+                SharedString::from(format!("{}:{:02}", dur / 60, dur % 60)),
+            )
+        });
+        bar_buffer.extend(0..40_u8);
+
+        let (_, reuse_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                let (current, total) =
+                    labels.resolve(position_ms / 1000, duration_ms / 1000, |pos, dur| {
+                        (
+                            SharedString::from(format!("{}:{:02}", pos / 60, pos % 60)),
+                            SharedString::from(format!("{}:{:02}", dur / 60, dur % 60)),
+                        )
+                    });
+                let pct = (volume * 100.0).round() as i64;
+                if cached_pct != pct {
+                    cached_pct = pct;
+                    cached_volume = SharedString::from(format!("{}%", pct));
+                }
+                let volume_text = cached_volume.clone();
+                bar_buffer.clear();
+                for bar in 0..40_u8 {
+                    bar_buffer.push(bar);
+                }
+                std::hint::black_box((current, total, volume_text, &bar_buffer));
+            }
+        });
+        eprintln!(
+            "stage labels+spectrum allocations/{ROUNDS} frames: legacy={legacy_allocations} reuse={reuse_allocations}"
+        );
+        assert!(legacy_allocations >= 5 * ROUNDS as u64);
+        assert_eq!(reuse_allocations, 0);
     }
 
     #[test]
