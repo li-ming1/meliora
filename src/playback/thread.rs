@@ -132,11 +132,101 @@ pub struct PlaybackThread {
     /// 空闲等待挂起期间从通道取出的命令，交给下一次 `command_intake`，
     /// 因此唤醒它的那条命令绝不会丢。
     pending_command: Option<PlaybackCommand>,
+    /// 命令批次的复用缓冲：稳态与命令密集期都不再每周期新建两个 Vec。
+    command_batch: Vec<PlaybackCommand>,
     /// 启动后的首个在线打开是否要先刷新 URL：线程构造时置位（恢复出来的会话
     /// 里当前曲目是 HTTP 直链——签名 URL 跨进程必然过期）。见
     /// [`Self::open_with_resampler`] 的先行刷新分支。
     #[cfg(feature = "online_sources")]
     initial_online_open: bool,
+}
+
+/// 就地折叠连续 Next / Seek，只保留每串最后一个。用 swap 搬运，
+/// 不分配、不需要 Clone；容量由调用方的复用缓冲提供。
+fn collapse_commands(batch: &mut Vec<PlaybackCommand>) {
+    let mut write = 0usize;
+    for read in 0..batch.len() {
+        let repeats_last = write > 0
+            && matches!(
+                (&batch[read], &batch[write - 1]),
+                (PlaybackCommand::Next, PlaybackCommand::Next)
+                    | (PlaybackCommand::Seek(_), PlaybackCommand::Seek(_))
+            );
+        if repeats_last {
+            batch.swap(write - 1, read);
+        } else {
+            if write != read {
+                batch.swap(write, read);
+            }
+            write += 1;
+        }
+    }
+    batch.truncate(write);
+}
+
+#[cfg(test)]
+mod collapse_bench {
+    use super::*;
+    use crate::test_support::alloc_guard::count_allocations;
+
+    fn template() -> Vec<PlaybackCommand> {
+        let mut commands = Vec::new();
+        for i in 0..8 {
+            commands.push(PlaybackCommand::Play);
+            commands.push(PlaybackCommand::Next);
+            commands.push(PlaybackCommand::Next);
+            commands.push(PlaybackCommand::Seek(i as f64));
+            commands.push(PlaybackCommand::Seek(i as f64 + 0.5));
+            commands.push(PlaybackCommand::Pause);
+        }
+        commands
+    }
+
+    /// 优化前的形状：每周期新建两个 Vec。
+    fn legacy(commands: Vec<PlaybackCommand>) -> Vec<PlaybackCommand> {
+        let mut collapsed = Vec::with_capacity(commands.len());
+        for command in commands {
+            let repeats_last = matches!(
+                (&command, collapsed.last()),
+                (PlaybackCommand::Next, Some(PlaybackCommand::Next))
+                    | (PlaybackCommand::Seek(_), Some(PlaybackCommand::Seek(_)))
+            );
+            if repeats_last {
+                *collapsed.last_mut().expect("matched collapsed.last()") = command;
+            } else {
+                collapsed.push(command);
+            }
+        }
+        collapsed
+    }
+
+    #[test]
+    fn in_place_folding_is_allocation_free_and_equivalent() {
+        let source = template();
+        let expected = legacy(source.clone());
+
+        let mut batch = Vec::with_capacity(256);
+        let ((), reuse_allocations) = count_allocations(|| {
+            for _ in 0..2 {
+                batch.clear();
+                batch.extend_from_slice(&source);
+                collapse_commands(&mut batch);
+                std::hint::black_box(&batch);
+            }
+        });
+        let (_, legacy_allocations) = count_allocations(|| {
+            for _ in 0..2 {
+                std::hint::black_box(legacy(source.clone()));
+            }
+        });
+
+        eprintln!(
+            "command folding allocations/2 batches: reuse={reuse_allocations} legacy={legacy_allocations}"
+        );
+        assert_eq!(reuse_allocations, 0, "复用缓冲的折叠必须零分配");
+        assert!(legacy_allocations >= 4, "旧形状每批至少两个 Vec");
+        assert_eq!(batch, expected, "折叠语义必须与旧实现逐项一致");
+    }
 }
 
 impl PlaybackThread {
@@ -193,6 +283,7 @@ impl PlaybackThread {
                     stop_after_current: false,
                     no_progress_cycles: 0,
                     pending_command: None,
+                    command_batch: Vec::new(),
                     #[cfg(feature = "online_sources")]
                     initial_online_open,
                 };
@@ -302,33 +393,21 @@ impl PlaybackThread {
 
     /// 从命令通道读取进来的命令并处理。连续的 Next/Seek 串会先做折叠（见下文）。
     pub fn command_intake(&mut self) {
-        let mut commands: Vec<PlaybackCommand> = Vec::new();
+        let mut batch = std::mem::take(&mut self.command_batch);
+        batch.clear();
         // 唤醒挂起 idle_wait 的那条命令排在批次最前，这样跨越唤醒的
         // Next/Seek 串照常折叠。
         if let Some(command) = self.pending_command.take() {
-            commands.push(command);
+            batch.push(command);
         }
         while let Ok(command) = self.commands_rx.try_recv() {
-            commands.push(command);
+            batch.push(command);
         }
-        // 把连续的 Next（快速连点）与 Seek（进度条拖动约 30 Hz 发出）各自折叠成
-        // 该串的最后一个：每执行一次 Seek 都会重建音频流并重新锚定在线源，
-        // 中间位置纯属浪费。
-        let mut collapsed: Vec<PlaybackCommand> = Vec::with_capacity(commands.len());
-        for command in commands {
-            let repeats_last = matches!(
-                (&command, collapsed.last()),
-                (PlaybackCommand::Next, Some(PlaybackCommand::Next))
-                    | (PlaybackCommand::Seek(_), Some(PlaybackCommand::Seek(_)))
-            );
-            if repeats_last {
-                *collapsed.last_mut().expect("matched collapsed.last()") = command;
-            } else {
-                collapsed.push(command);
-            }
-        }
+        // 连续的 Next（快速连点）与 Seek（进度条拖动约 30 Hz 发出）只保留
+        // 每串最后一个：每执行一次 Seek 都会重建音频流并重新锚定在线源。
+        collapse_commands(&mut batch);
 
-        for command in collapsed {
+        for command in batch.drain(..) {
             match command {
                 PlaybackCommand::Play => self.play(),
                 PlaybackCommand::Pause => self.pause(),
@@ -368,7 +447,10 @@ impl PlaybackThread {
                 PlaybackCommand::StopAfterCurrent => self.toggle_stop_after_current(),
             }
         }
+        // drain 后容量仍在，归还给下一个周期继续复用。
+        self.command_batch = batch;
     }
+
     /// 取当前播放状态。
     fn state(&self) -> PlaybackState {
         self.engine.state().into()
@@ -1592,6 +1674,7 @@ mod tests {
             stop_after_current: false,
             no_progress_cycles: 0,
             pending_command: None,
+            command_batch: Vec::new(),
             #[cfg(feature = "online_sources")]
             initial_online_open: false,
         };

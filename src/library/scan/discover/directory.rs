@@ -260,27 +260,29 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
         }
     };
     let raw_std_path = entry.path();
-    let raw_path = match Utf8PathBuf::try_from(raw_std_path.clone()) {
-        Ok(path) => path,
-        Err(error) => {
-            error!(
-                "Failed to convert path {:?} to UTF-8: {:?}",
-                raw_std_path, error
-            );
-            return None;
-        }
-    };
+    // 先判类型：普通文件（占绝大多数）可以直接把 PathBuf 所有权交给
+    // from_path_buf，只有罕见的符号链接才需要为 canonicalize 保留一份克隆。
     let file_type = match entry.file_type() {
         Ok(file_type) => file_type,
         Err(error) => {
             error!(
                 "Failed to inspect directory entry {:?}: {:?}",
-                raw_path, error
+                raw_std_path, error
             );
             return None;
         }
     };
     let (path, raw_path, metadata) = if file_type.is_symlink() {
+        let raw_path = match Utf8PathBuf::try_from(raw_std_path.clone()) {
+            Ok(path) => path,
+            Err(error) => {
+                error!(
+                    "Failed to convert path {:?} to UTF-8: {:?}",
+                    raw_std_path, error
+                );
+                return None;
+            }
+        };
         let canonical = match raw_std_path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -307,6 +309,14 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
         };
         (path, Some(raw_path), metadata)
     } else {
+        // 10 万文件的库就省 10 万次整路径深拷贝；失败时 Err 会归还原 PathBuf 供日志使用。
+        let raw_path = match Utf8PathBuf::from_path_buf(raw_std_path) {
+            Ok(path) => path,
+            Err(path) => {
+                error!("Failed to convert path {:?} to UTF-8", path);
+                return None;
+            }
+        };
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -327,14 +337,28 @@ fn resolve_scan_entry(result: std::io::Result<std::fs::DirEntry>) -> Option<Pend
     })
 }
 
+/// 同名曲目的两种 sidecar 各自的 mtime。键按归一化 stem 存，查表一次哈希
+/// 取回两者，免去每文件 `format!("{stem}.krc")` / `.lrc` 两次堆分配。
+#[derive(Clone, Copy, Default)]
+struct SidecarTimes {
+    krc: Option<SystemTime>,
+    lrc: Option<SystemTime>,
+}
+
+impl SidecarTimes {
+    fn latest(self) -> Option<SystemTime> {
+        self.krc.max(self.lrc)
+    }
+}
+
 /// 把一条已解析的目录项落成快照条目（sidecar 歌词存在性 + 扫描时间戳）。从
 /// `read_scan_directory` 的物化映射里原样搬来，三分支的判据不变：符号链接的
 /// 目标可能在本目录之外，所以直接 stat 它的 sidecar 而不是信任本目录的列举；
 /// stat 失败并不能证明文件不存在，保留解码那一趟的探测；绝大多数目录没有
-/// sidecar，空表短路省去每文件三次堆分配。
+/// sidecar，空表短路连 stem 归一化都不做。
 fn materialize_scan_entry(
     entry: PendingDirectoryEntry,
-    lyrics_timestamps: &FxHashMap<String, SystemTime>,
+    lyrics_timestamps: &FxHashMap<String, SidecarTimes>,
     case_insensitive: bool,
 ) -> ScanDirectoryEntry {
     let naming = entry.raw_path.as_deref().unwrap_or(&entry.path);
@@ -354,9 +378,9 @@ fn materialize_scan_entry(
             .and_then(|s| normalized_file_name(Utf8Path::new(s), case_insensitive));
         let lyrics_timestamp = stem.as_deref().and_then(|s| {
             lyrics_timestamps
-                .get(&format!("{s}.krc"))
-                .max(lyrics_timestamps.get(&format!("{s}.lrc")))
+                .get(s)
                 .copied()
+                .and_then(SidecarTimes::latest)
         });
         let sidecar_lyrics = if lyrics_timestamp.is_some() {
             SidecarLyrics::Present
@@ -383,7 +407,7 @@ fn materialize_scan_entry(
 pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirectorySnapshot> {
     let case_insensitive = is_case_insensitive(dir);
     let mut pending = Vec::new();
-    let mut lyrics_timestamps = FxHashMap::default();
+    let mut lyrics_timestamps: FxHashMap<String, SidecarTimes> = FxHashMap::default();
     let mut folder_art: Option<FolderArtCandidate> = None;
 
     for result in std::fs::read_dir(dir)? {
@@ -396,10 +420,20 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
         let is_lyrics = is_lyrics_sidecar_name(naming, case_insensitive);
         if entry.metadata.is_file()
             && is_lyrics
-            && let Some(name) = normalized_file_name(naming, case_insensitive)
+            && let Some(stem) = naming.file_stem()
+            && let Some(key) = normalized_file_name(Utf8Path::new(stem), case_insensitive)
             && let Ok(modified) = entry.metadata.modified()
         {
-            lyrics_timestamps.insert(name, modified);
+            // 键只存归一化 stem：物化时不再为每个音频文件拼两次 "{stem}.{ext}"。
+            let slot = lyrics_timestamps.entry(key).or_default();
+            if naming
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("krc"))
+            {
+                slot.krc = Some(modified);
+            } else {
+                slot.lrc = Some(modified);
+            }
         }
 
         let art_rank = naming
@@ -433,4 +467,75 @@ pub(crate) fn read_scan_directory(dir: &Utf8Path) -> std::io::Result<ScanDirecto
         entries,
         folder_art,
     })
+}
+
+#[cfg(test)]
+mod allocation_bench {
+    use super::*;
+    use crate::test_support::{TestDir, alloc_guard::count_allocations};
+
+    /// 优化前的形状：每个音频文件拼两次 "{stem}.{ext}" 并查两次表。
+    fn legacy_lookup(stem: &str, map: &FxHashMap<String, SystemTime>) -> Option<SystemTime> {
+        map.get(&format!("{stem}.krc"))
+            .max(map.get(&format!("{stem}.lrc")))
+            .copied()
+    }
+
+    #[test]
+    fn sidecar_lookup_paired_allocation_bench() {
+        const N: usize = 1000;
+        let now = SystemTime::now();
+        let mut legacy: FxHashMap<String, SystemTime> = FxHashMap::default();
+        legacy.insert("song.krc".into(), now);
+        legacy.insert("song.lrc".into(), now);
+        let mut by_stem: FxHashMap<String, SidecarTimes> = FxHashMap::default();
+        by_stem.insert(
+            "song".into(),
+            SidecarTimes {
+                krc: Some(now),
+                lrc: Some(now),
+            },
+        );
+
+        // 同环境配对、重复两次报散布（§39）。
+        let mut old_counts = Vec::new();
+        let mut new_counts = Vec::new();
+        for _ in 0..2 {
+            let (_, allocations) = count_allocations(|| {
+                for _ in 0..N {
+                    std::hint::black_box(legacy_lookup("song", &legacy));
+                }
+            });
+            old_counts.push(allocations);
+            let (_, allocations) = count_allocations(|| {
+                for _ in 0..N {
+                    std::hint::black_box(
+                        by_stem.get("song").copied().and_then(SidecarTimes::latest),
+                    );
+                }
+            });
+            new_counts.push(allocations);
+        }
+        eprintln!("sidecar lookup allocations/{N}: legacy={old_counts:?} by-stem={new_counts:?}");
+        assert!(old_counts.iter().all(|&n| n >= 2 * N as u64));
+        assert!(new_counts.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn whole_directory_scan_records_allocation_baseline() {
+        let dir = TestDir::new("scan-alloc-baseline");
+        for i in 0..200 {
+            std::fs::write(dir.path().join(format!("track{i}.mp3")), b"").unwrap();
+            std::fs::write(dir.path().join(format!("track{i}.lrc")), b"").unwrap();
+        }
+        let root = dir.utf8_path();
+        // 预热：排除首次 read_dir / 分配器自身的冷启动开销。
+        let _ = read_scan_directory(&root).unwrap();
+        let (snapshot, allocations) = count_allocations(|| read_scan_directory(&root).unwrap());
+        eprintln!(
+            "read_scan_directory 200 audio + 200 sidecar: {allocations} allocations, {} entries",
+            snapshot.entries.len()
+        );
+        assert_eq!(snapshot.entries.len(), 400);
+    }
 }
