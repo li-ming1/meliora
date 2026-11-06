@@ -378,9 +378,7 @@ impl Render for QueueItem {
                         return Some(ManagedImageKey::HttpCover(cover));
                     }
                 }
-                Some(ManagedImageKey::TrackFile(
-                    self.item.get_path().to_path_buf(),
-                ))
+                Some(ManagedImageKey::track_file(self.item.get_path()))
             });
             let idx = self.idx;
             // 停止态下 queue.position 是 0 哨兵/残留旧值（is_current 同款守卫），

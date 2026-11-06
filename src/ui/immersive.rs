@@ -559,7 +559,7 @@ impl ImmersiveView {
                 cover_key = Some(ManagedImageKey::HttpCoverLarge(url));
             }
             if cover_key.is_none() {
-                cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
+                cover_key = Some(ManagedImageKey::track_file(item.get_path()));
             }
 
             // 句柄来自元数据旁表（P2-B 第 4 步）：同一 uid 恒给出同一实体，
@@ -669,7 +669,7 @@ impl ImmersiveView {
         {
             return Some(ManagedImageKey::HttpCoverLarge(url));
         }
-        Some(ManagedImageKey::TrackFile(slot.get_path().clone()))
+        Some(ManagedImageKey::track_file(slot.get_path()))
     }
 
     /// 预取下一首的 512 圆盘缩略图（RENDER_CACHE）与整幅背景
@@ -1029,10 +1029,10 @@ impl ImmersiveView {
                         .and_then(|u| u.cover_url)
                         .filter(|u| !u.is_empty())
                         .map(ManagedImageKey::HttpCover)
-                        .unwrap_or_else(|| ManagedImageKey::TrackFile(item.get_path().clone()));
+                        .unwrap_or_else(|| ManagedImageKey::track_file(item.get_path()));
                     // 无在线音源时 `HttpCover` 变体不存在，封面只能按本地曲目路径取。
                     #[cfg(not(feature = "online_sources"))]
-                    let cover_key = ManagedImageKey::TrackFile(item.get_path().clone());
+                    let cover_key = ManagedImageKey::track_file(item.get_path());
 
                     (idx, is_playing, title, artist, cover_key)
                 })
@@ -1784,7 +1784,12 @@ impl Render for ImmersiveView {
                                     .mt(px(scatter_y))
                                     .text_size(px(58.0))
                                     .text_color(gold_glow)
-                                    .child(ch.to_string())
+                                    .child({
+                                        // SmolStr 对 1–4 字节字符内联，免掉每帧每字的
+                                        // String 堆分配；SharedString::from(&mut str) 拥有副本。
+                                        let mut encoded = [0u8; 4];
+                                        SharedString::from(ch.encode_utf8(&mut encoded))
+                                    })
                                     .into_any_element()
                             })
                             .collect()
@@ -2626,6 +2631,30 @@ impl Render for ImmersiveView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinetic_char_text_paired_allocation_bench() {
+        use crate::test_support::alloc_guard::count_allocations;
+
+        const ROUNDS: usize = 1000;
+        let ch = '晴';
+        let (_, legacy_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                std::hint::black_box(ch.to_string());
+            }
+        });
+        let (_, inline_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                let mut encoded = [0u8; 4];
+                std::hint::black_box(SharedString::from(ch.encode_utf8(&mut encoded)));
+            }
+        });
+        eprintln!(
+            "kinetic char text allocations/{ROUNDS}: String={legacy_allocations} SharedString={inline_allocations}"
+        );
+        assert!(legacy_allocations >= ROUNDS as u64);
+        assert_eq!(inline_allocations, 0);
+    }
 
     #[test]
     fn lyric_window_centers_the_active_line() {

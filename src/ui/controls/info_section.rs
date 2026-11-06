@@ -467,7 +467,7 @@ impl Render for InfoSection {
             .or_else(|| {
                 self.current_track_path
                     .as_ref()
-                    .map(|p| ManagedImageKey::TrackFile(p.clone()))
+                    .map(|p| ManagedImageKey::track_file(p))
             });
         let image_element_key = self.image_element_key;
         let theme = cx.global::<Theme>();

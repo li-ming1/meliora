@@ -1,8 +1,8 @@
 use std::{
     collections::VecDeque,
-    path::{Path, PathBuf},
+    path::Path,
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -203,7 +203,9 @@ fn expand_rgb8_to_rgba8_in_place(buf: &mut Vec<u8>, w: u32, h: u32) {
 pub enum ManagedImageKey {
     Album(i64),
     Track(i64),
-    TrackFile(PathBuf),
+    /// 本地曲目路径。`Arc` 让 `request_layout` 每帧两次的键克隆退化为引用计数，
+    /// 不再深拷 PathBuf；Hash/Eq 仍按内容（Arc 委托给内层 Path）。
+    TrackFile(Arc<Path>),
     /// 经 HTTP 拉取的在线专辑封面（酷狗曲目封面 URL）。
     #[cfg(feature = "online_sources")]
     HttpCover(SharedString),
@@ -212,6 +214,20 @@ pub enum ManagedImageKey {
     /// `online_sources::cover_art`。
     #[cfg(feature = "online_sources")]
     HttpCoverLarge(SharedString),
+}
+
+impl ManagedImageKey {
+    /// 从曲目路径构造键：路径拷进 Arc 一次，此后所有克隆都是引用计数。
+    pub fn track_file(path: &Path) -> Self {
+        ManagedImageKey::TrackFile(Arc::from(path))
+    }
+
+    /// 孤儿瓦片哨兵：空路径配 `thumb = u32::MAX` 永不命中缓存。静态单例
+    /// 避免每次 orphan drop 为 `Arc::from(Path::new(""))` 新建控制块。
+    pub(crate) fn orphan() -> Self {
+        static EMPTY_PATH: LazyLock<Arc<Path>> = LazyLock::new(|| Arc::from(Path::new("")));
+        ManagedImageKey::TrackFile(EMPTY_PATH.clone())
+    }
 }
 
 /// 跨元素保活的已解码 `RenderImage` 数量上界。
@@ -472,7 +488,7 @@ pub(crate) fn memory_pressure() -> bool {
 pub(crate) fn queue_orphan_tile_drop(image: Arc<RenderImage>) {
     queue_tile_drop(
         RenderCacheKey {
-            key: ManagedImageKey::TrackFile(PathBuf::new()),
+            key: ManagedImageKey::orphan(),
             thumb: u32::MAX,
         },
         image,
@@ -1453,6 +1469,49 @@ pub fn managed_image(id: impl Into<ElementId>, key: ManagedImageKey) -> ManagedI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn track_file_key_clone_paired_allocation_bench() {
+        use crate::test_support::alloc_guard::count_allocations;
+
+        /// 优化前的形状：PathBuf payload 每次克隆都深拷。
+        #[derive(Clone)]
+        #[allow(dead_code)]
+        enum LegacyKey {
+            TrackFile(PathBuf),
+        }
+
+        const ROUNDS: usize = 1000;
+        let legacy = LegacyKey::TrackFile(PathBuf::from("D:/music/album/song.flac"));
+        let key = ManagedImageKey::track_file(Path::new("D:/music/album/song.flac"));
+
+        let (_, legacy_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                // request_layout 每帧的两次克隆
+                let a = legacy.clone();
+                let b = a.clone();
+                std::hint::black_box((a, b));
+            }
+        });
+        let (_, arc_allocations) = count_allocations(|| {
+            for _ in 0..ROUNDS {
+                let a = key.clone();
+                let b = a.clone();
+                std::hint::black_box((a, b));
+            }
+        });
+        eprintln!(
+            "cover key double-clone allocations/{ROUNDS} frames: legacy={legacy_allocations} arc={arc_allocations}"
+        );
+        assert!(legacy_allocations >= 2 * ROUNDS as u64);
+        assert_eq!(arc_allocations, 0);
+
+        // Hash/Eq 仍按内容：两条独立构造的相同路径必须相等。
+        let same = ManagedImageKey::track_file(Path::new("D:/music/album/song.flac"));
+        assert_eq!(key, same);
+    }
+
     // 背景管线段已原样拆入子模块 backdrop_pipeline：这里补齐测试引用的
     // 函数与常量名（测试体一律不动）。
     use super::backdrop_pipeline::*;
@@ -1849,7 +1908,7 @@ mod tests {
         drop(img);
 
         let orphan_key = RenderCacheKey {
-            key: ManagedImageKey::TrackFile(PathBuf::new()),
+            key: ManagedImageKey::orphan(),
             thumb: u32::MAX,
         };
         let plan = run_plan(

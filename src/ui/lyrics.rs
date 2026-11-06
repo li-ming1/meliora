@@ -579,7 +579,7 @@ impl Lyrics {
                 cover_key = Some(ManagedImageKey::HttpCover(url));
             }
             if cover_key.is_none() {
-                cover_key = Some(ManagedImageKey::TrackFile(item.get_path().clone()));
+                cover_key = Some(ManagedImageKey::track_file(item.get_path()));
             }
         }
         if self.accent_for.as_ref() == cover_key.as_ref() {
