@@ -171,7 +171,7 @@ fn schedule_row_prefetch(
         // 位置参数分块绑定，使任何单条语句都不超过后端的宿主参数上限。
         const SQL_BIND_CHUNK: usize = 900;
         for chunk in to_fetch.chunks(SQL_BIND_CHUNK) {
-            let placeholders = vec!["?"; chunk.len()].join(",");
+            let placeholders = crate::library::db::in_placeholders(chunk.len());
             let sql = format!(
                 include_str!("../../../queries/library/find_tracks_by_ids.sql"),
                 placeholders

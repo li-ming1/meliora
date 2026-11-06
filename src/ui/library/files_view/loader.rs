@@ -102,7 +102,7 @@ async fn lookup_tracks(locs: &[String], pool: &sqlx::SqlitePool) -> FxHashMap<St
 
     let mut track_map: FxHashMap<String, TrackRef> = FxHashMap::default();
     for chunk in locs.chunks(SQL_BIND_CHUNK) {
-        let placeholders = vec!["?"; chunk.len()].join(",");
+        let placeholders = crate::library::db::in_placeholders(chunk.len());
         let sql = format!(
             include_str!("../../../../queries/library/find_tracks_by_locations.sql"),
             placeholders

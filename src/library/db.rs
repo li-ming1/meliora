@@ -871,7 +871,16 @@ const PLAYLIST_IN_CHUNK: usize = 900;
 /// `?,?,?`——IN 子句 `n` 个参数的绑定槽列表。
 /// 与 `library/types/table.rs` 的分块行预取共用。
 pub(crate) fn in_placeholders(n: usize) -> String {
-    vec!["?"; n].join(",")
+    // 直接拼进结果 String：旧写法 vec!["?"; n].join(",") 要先付一个 Vec 再付
+    // 一个 String，两次分配；这里只付一次，且 n=900 时容量一次到位。
+    let mut slots = String::with_capacity(n.saturating_mul(2));
+    for index in 0..n {
+        if index > 0 {
+            slots.push(',');
+        }
+        slots.push('?');
+    }
+    slots
 }
 
 pub async fn playlist_contains_all_tracks(

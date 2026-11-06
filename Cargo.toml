@@ -264,7 +264,11 @@ strip = "symbols"
 # `cargo tree -e normal`——profile 的包名写错是**静默不生效**，而 cargo 只支持
 # "*" 这一种通配（没有 serde-* 前缀 glob），所以只能逐包具名。
 [profile.release.package."*"]
-opt-level = "s"
+# 2026-11-06 实测：冷路径依赖 "s" → "z"（minsize），同 features 下 exe
+# 33,064,960 → 32,687,616 B（−377,344 B / −1.14%），.text
+# 23,266,888 → 22,733,624 B。热路径包仍在下面逐名回 3，实时/帧/查询/
+# 搜索路径的编译档未变；冷路径运行时性能未做 A/B（证据缺口，见台账）。
+opt-level = "z"
 
 # 音频解码（symphonia 的实现分散在 core/common/各 codec/各 format/两个适配器里，
 # 只钉 `symphonia` 一个名字等于没钉）

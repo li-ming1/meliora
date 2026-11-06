@@ -1,5 +1,29 @@
 use super::*;
 
+#[test]
+fn in_placeholders_paired_allocation_bench() {
+    use crate::test_support::alloc_guard::count_allocations;
+
+    const N: usize = 900;
+    const ROUNDS: usize = 200;
+    let (_, legacy_allocations) = count_allocations(|| {
+        for _ in 0..ROUNDS {
+            std::hint::black_box(vec!["?"; N].join(","));
+        }
+    });
+    let (_, direct_allocations) = count_allocations(|| {
+        for _ in 0..ROUNDS {
+            std::hint::black_box(in_placeholders(N));
+        }
+    });
+    eprintln!(
+        "in_placeholders allocations/{ROUNDS}: vec+join={legacy_allocations} direct={direct_allocations}"
+    );
+    assert!(legacy_allocations >= 2 * ROUNDS as u64);
+    assert_eq!(direct_allocations, ROUNDS as u64);
+    assert_eq!(in_placeholders(3), "?,?,?");
+}
+
 /// 默认排序的语义契约：返回的行必须严格按 `playlist_item.position` 升序。
 /// 排序由 SQL 的 `ORDER BY pl.position` 保证（搬去 Rust 的尝试已回滚），
 /// 这条断言把契约钉住——position 与 track_id 刻意反序，任何"忘了排序"
