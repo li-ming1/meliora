@@ -187,8 +187,8 @@ windows = { version = "0.62", features = [
     # 桌面歌词悬浮窗关闭 DWM 自动装饰（NCRENDERING/BORDER_COLOR/CORNER，
     # desktop_lyrics.rs）——透明 PopUp 上 Win11 的 1px 描边+投影肉眼可见。
     "Win32_Graphics_Dwm",
-    # 零字面引用：本仓不直接用 COM（windows::core 无条件编译，BSTR/IUnknown
-    # 不需要 feature）；accesskit_windows / cpal / sysinfo 的统一化已启用它。
+    # DeviceIoControl（library/scan/disk.rs:197 磁盘序列号探测，2026-11-07
+    # 核实存在字面引用）的字面引用；IO 模块整体被 #[cfg(feature = "Win32_System_IO")] 门控。
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_SystemServices",
@@ -268,6 +268,14 @@ strip = "symbols"
 # 33,064,960 → 32,687,616 B（−377,344 B / −1.14%），.text
 # 23,266,888 → 22,733,624 B。热路径包仍在下面逐名回 3，实时/帧/查询/
 # 搜索路径的编译档未变；冷路径运行时性能未做 A/B（证据缺口，见台账）。
+#
+# 通配 z 会连带命中 -sys 包的 C 编译：cc 1.4.3 对 MSVC 把 opt-level z/s/1
+# 统统映射成 /O1；opusic-sys 的 CMake 构建则落到 MinSizeRel（2026-11-07
+# 实测 target/release/build/opusic-sys-c0dda5925a7ca1a2/out/build/
+# CMakeCache.txt 为 CMAKE_BUILD_TYPE=MinSizeRel）。全局分配器、SQLite
+# 查询引擎、解码核心与 TLS 密码本体不属冷路径；且 420/500 内存校准值测于
+# 2026-09-27——当时全图仍是 profile 默认 opt-level 3（依赖降档 2026-10-19
+# 与 z 档 2026-11-06 都在其后）——下面逐名回 3 同时是回到校准时的编译条件。
 opt-level = "z"
 
 # 音频解码（symphonia 的实现分散在 core/common/各 codec/各 format/两个适配器里，
@@ -288,6 +296,20 @@ symphonia-format-riff = { opt-level = 3 }
 symphonia-metadata = { opt-level = 3 }
 symphonia-adapter-fdk-aac = { opt-level = 3 }
 symphonia-adapter-libopus = { opt-level = 3 }
+# C 核心与解码链退出 z 档（2026-11-07 审计补，缘由见上面通配块注释）：全局
+# 分配器（libmimalloc-sys）、SQLite 查询引擎（libsqlite3-sys）、Opus/AAC
+# 解码 C 核心（opusic-sys / fdk-aac-sys）与 TLS 密码汇编（ring，rustls 链，
+# 仅在线封面/更新器下载路径）在 C/汇编侧，通配 z 把它们压到 /O1 或
+# MinSizeRel；回 3 同时回到 420/500 内存校准时的编译条件。
+libmimalloc-sys = { opt-level = 3 }
+opusic-sys = { opt-level = 3 }
+fdk-aac-sys = { opt-level = 3 }
+libsqlite3-sys = { opt-level = 3 }
+ring = { opt-level = 3 }
+# 标签解析（lofty 是本仓直接依赖）：全库扫描逐文件过它，是批 CPU 主项
+# （6 万曲全扫分钟级）；z 档运行时性能未测（通配块注释自认的证据缺口），
+# 先回标准档，paired 扫描计时 A/B 可后补坐实。
+lofty = { opt-level = 3 }
 # 音频输出路径（2026-10-20 审计补）：豁免集合原本只覆盖了解码侧，回调取数的
 # rtrb 环形缓冲、cpal 的 WASAPI 事件循环与 audioadapter 的缓冲搬运全在 "s" 里。
 # 回调体本身是本仓代码（根 crate 恒为 3），但它逐块调用的这三层不是——按
@@ -302,6 +324,11 @@ image = { opt-level = 3 }
 image-webp = { opt-level = 3 }
 zune-jpeg = { opt-level = 3 }
 png = { opt-level = 3 }
+# IDAT 解压与 CRC 校验本体在 fdeflate / crc32fast 里（Cargo.lock 并存 png
+# 0.17.16/0.18.1 两代，两代都直接依赖它们）——只钉 png 门面等于重演上面
+# "只钉门面"注释自述过的陷阱。simd-adler32 本轮不动：动它前需先 A/B。
+fdeflate = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
 palette = { opt-level = 3 }
 palette_math = { opt-level = 3 }
 # 重采样与 FFT（音频线程与均衡器分析）
