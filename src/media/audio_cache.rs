@@ -86,15 +86,49 @@ pub fn audio_cache_dir() -> PathBuf {
     crate::paths::data_dir().join(AUDIO_CACHE_DIR)
 }
 
+/// 酷狗流 URL 以 `_qu<档位>` 的形式内嵌音质档（真实实例：`_quflac_`、
+/// `_qu128_`），解析方式对齐 kugou.rs `mixsongid_in_url` 的 `_mx` 先例：
+/// 定位 `_qu` 后取连续字母数字段。无该段或段为空返回 `None`。
+fn kugou_quality_in_url(url: &str) -> Option<&str> {
+    let idx = url.find("_qu")?;
+    let rest = &url[idx + 3..];
+    rest.split(|c: char| !c.is_ascii_alphanumeric())
+        .next()
+        .filter(|s| !s.is_empty())
+}
+
+/// 酷狗键拼装：音质档折进键——有档 `kugou_{hash}_q{qu}`，无档维持
+/// `kugou_{hash}`。hit（`get_cached_audio_path`）与 write
+/// （`spawn_background_cache_task`）两侧同经 `audio_cache_key_for_path`
+/// 自动一致：改音质设置后旧档条目立即失配、按新档重下，旧键文件成孤儿由
+/// 30 天年龄清扫自然回收。拆成纯函数是为离线单测钉住格式——stream 注册表
+/// 只在真实播放路径登记，`audio_cache_key_for_path` 的酷狗分支在单测里
+/// 不可达（注入它得读写真实 APPDATA 的注册表落盘）。
+fn kugou_cache_key(hash: &str, quality: Option<&str>) -> String {
+    match quality {
+        Some(qu) => format!("kugou_{hash}_q{qu}"),
+        None => format!("kugou_{hash}"),
+    }
+}
+
 /// 根据音频路径（URL）推导唯一的稳定缓存键。
-/// 优先使用酷狗独有的内容 hash（即使 CDN 或签名变了依然稳稳命中）；
-/// 若无法提取 hash，则按 scheme + host + path 计算哈希。
+/// 优先使用酷狗独有的内容 hash（即使 CDN 或签名变了依然稳稳命中），并把
+/// URL 里的音质档折进键（见 [`kugou_cache_key`]）；若无法提取 hash，则按
+/// scheme + host + path 计算哈希。
+///
+/// VIP 试吃段维度刻意不折入键：`has_active_vip` 是 kugou Client 的方法
+/// （src/kugou/client.rs），media 层没有同步会话态读取通道，不为此新增跨层
+/// 依赖——订阅前缓存的试吃段会在订阅后继续播（至多 30 天年龄清扫自愈），
+/// 是有意接受的残余。
 pub fn audio_cache_key_for_path(path: &Path) -> Option<String> {
     #[cfg(feature = "online_sources")]
     if let Some(matched) = crate::online_sources::identify_path(path) {
         match matched.identity {
             crate::online_sources::OnlineIdentity::Kugou { hash, .. } if !hash.is_empty() => {
-                return Some(format!("kugou_{hash}"));
+                return Some(kugou_cache_key(
+                    &hash,
+                    path.to_str().and_then(kugou_quality_in_url),
+                ));
             }
             _ => {}
         }
@@ -122,8 +156,15 @@ pub fn get_cached_audio_path(path: &Path) -> Option<PathBuf> {
     if !audio_cache_enabled() {
         return None;
     }
+    get_cached_audio_path_in(&audio_cache_dir(), path)
+}
+
+/// [`get_cached_audio_path`] 的目录可注入形态（离线单测用 TestDir 钉住查找
+/// 与自愈路径，不碰真实数据目录）：无 enabled 门槛——运行时开关属于公开
+/// 入口的短路语义，测试不得与拨动全局开关的用例竞争。
+pub fn get_cached_audio_path_in(dir: &Path, path: &Path) -> Option<PathBuf> {
     let key = audio_cache_key_for_path(path)?;
-    find_cached_audio_in(&audio_cache_dir(), &key)
+    find_cached_audio_in(dir, &key)
 }
 
 /// 在给定目录里找该 key 的完整缓存文件（例如 "kugou_xxx.flac"）。前缀只在
@@ -145,6 +186,13 @@ fn find_cached_audio_in(dir: &Path, key: &str) -> Option<PathBuf> {
                 && meta.is_file()
                 && meta.len() > 1024
             {
+                // 命中即触碰 recency：文件 mtime 此前定格在下载完成的 rename
+                // 时刻、查找路径零 touch，按 mtime 升序逐出实为 FIFO——常听
+                // 曲目会先于一次性收听被逐出。开曲一次的写句柄不在音频回调/
+                // 渲染热路径；触碰失败（句柄竞争/权限）静默降级回旧 FIFO 行为。
+                if let Ok(handle) = fs::OpenOptions::new().write(true).open(&candidate) {
+                    let _ = handle.set_modified(SystemTime::now());
+                }
                 return Some(candidate);
             }
         }
@@ -264,6 +312,14 @@ pub fn spawn_background_cache_task(
 
         if let Err(e) = writer.shutdown().await {
             warn!("Audio cache shutdown error: {e}");
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return;
+        }
+
+        // rename 前落盘：写侧只校验 HTTP is_success，没有这一步时 rename 前
+        // 的崩溃会留下 OS 缓冲未及写回的截断条目，探不开还得等 30 天清扫。
+        if let Err(e) = writer.get_ref().sync_all().await {
+            warn!("Audio cache sync error: {e}");
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return;
         }
@@ -443,7 +499,9 @@ fn prune_audio_cache_in(dir: &Path, max_bytes: u64, max_age: Duration, now: Syst
         });
     }
 
-    // 超限时按最久未访问（mtime 升序）逐出到低水位，而不是刚好压回上限。
+    // 超限时按 mtime 升序逐出到低水位，而不是刚好压回上限。查找命中即触碰
+    // recency（find_cached_audio_in），这是真 LRU：常听曲目不再因下载时刻
+    // 老旧而先于一次性收听被逐出，30 天年龄清扫口径同理按 recency 生效。
     let low_watermark = max_bytes / 10 * AUDIO_CACHE_LOW_WATERMARK_FACTOR;
     if total_bytes > max_bytes {
         items.sort_by_key(|item| item.modified);
@@ -472,6 +530,71 @@ mod tests {
         assert_eq!(
             key1, key2,
             "Stable URL hashing must ignore volatile query tokens"
+        );
+
+        // 音质档折进酷狗键：同 hash 不同 qu 必须不同键（改音质设置后旧档条目
+        // 立即失配、按新档重下）；URL 无 qu 段则维持 kugou_{hash} 不变。经
+        // 纯函数钉格式：stream 注册表只在真实播放路径登记，identify_path 的
+        // 酷狗分支在单测里不可达（注入它得读写真实 APPDATA 的注册表落盘）。
+        assert_eq!(kugou_cache_key("samehash", None), "kugou_samehash");
+        assert_eq!(
+            kugou_cache_key("samehash", Some("128")),
+            "kugou_samehash_q128"
+        );
+        assert_ne!(
+            kugou_cache_key("samehash", Some("flac")),
+            kugou_cache_key("samehash", Some("128")),
+            "同 hash 不同音质档必须得到不同缓存键"
+        );
+        // 解析先例 mixsongid_in_url 的 `_mx` 同款：段内取连续字母数字。
+        assert_eq!(
+            kugou_quality_in_url(
+                "http://fs.youthandroid2.kugou.com/202610212019/9483acfe/v3/e3b2a274/yp/full/ap3116_us840978440_pi411_mx722192798_quflac_pa967177915_ct410100_s2016918262.flac",
+            ),
+            Some("flac")
+        );
+        assert_eq!(
+            kugou_quality_in_url("http://x/_pi2_mx29048099_qu128_.mp3"),
+            Some("128")
+        );
+        assert_eq!(kugou_quality_in_url("http://x/file_mx7.flac"), None);
+        assert_eq!(kugou_quality_in_url("http://x/file_qu_.flac"), None);
+    }
+
+    #[test]
+    fn find_cached_audio_touches_mtime_on_hit() {
+        let dir = TestDir::new("audio-cache-touch");
+        let hit = dir.join("kugou_old.flac");
+        let other = dir.join("kugou_fresh.flac");
+        fs::write(&hit, vec![0u8; 2048]).unwrap();
+        fs::write(&other, vec![0u8; 2048]).unwrap();
+
+        // 注入旧 mtime：若无命中触碰，这个条目会按下载时刻被判成最旧先逐出。
+        fs::File::options()
+            .write(true)
+            .open(&hit)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .unwrap();
+        let before = SystemTime::now();
+        let other_mtime_before = fs::metadata(&other).unwrap().modified().unwrap();
+
+        let root = dir.utf8_path();
+        assert_eq!(
+            find_cached_audio_in(root.as_std_path(), "kugou_old"),
+            Some(hit.clone())
+        );
+
+        let touched = fs::metadata(&hit).unwrap().modified().unwrap();
+        assert!(
+            touched >= before,
+            "命中条目的 mtime 必须刷新为当前时间（recency），实际 {touched:?}"
+        );
+        // 未被命中的条目 mtime 保持原值，证明触碰只发生在命中上。
+        let other_mtime_after = fs::metadata(&other).unwrap().modified().unwrap();
+        assert_eq!(
+            other_mtime_after, other_mtime_before,
+            "未命中条目不应被触碰"
         );
     }
 

@@ -435,17 +435,49 @@ fn open_http_media_inner(
     populate_cache: bool,
 ) -> anyhow::Result<Box<dyn MediaStream>> {
     // 优先探测本地音频磁盘缓存：若已完整缓存，直接走本地文件毫秒级秒开（跳过网络连接、TLS 握手与流式等待）。
-    if let Some(cached_path) = crate::media::audio_cache::get_cached_audio_path(path) {
+    let cached_path = crate::media::audio_cache::get_cached_audio_path(path);
+    open_http_media_with_cache(cached_path, path, refresh, populate_cache)
+}
+
+/// 命中探测结果可注入的展开形态：`cached_path` 是调用方按 key 探到的本地
+/// 条目（生产传 [`get_cached_audio_path`] 的结果，`None` 即未命中/开关关闭；
+/// 离线单测经目录可注入的 `get_cached_audio_path_in` 用 TestDir 植入条目，
+/// 钉住坏条目自愈路径而不碰真实数据目录）。
+fn open_http_media_with_cache(
+    cached_path: Option<PathBuf>,
+    path: &Path,
+    refresh: Option<MediaUrlRefresh>,
+    populate_cache: bool,
+) -> anyhow::Result<Box<dyn MediaStream>> {
+    if let Some(cached_path) = cached_path {
         tracing::info!(
             cached = %cached_path.display(),
             path = %crate::media::redact_media_path(&path.to_string_lossy()),
             "audio cache hit: opening local file directly"
         );
-        let file = std::fs::File::open(&cached_path)?;
-        let ext = cached_path.extension();
-        return SymphoniaProvider
-            .open_source(Box::new(file), ext)
-            .map_err(|e| anyhow::anyhow!("failed to probe cached audio: {e}"));
+        let opened = std::fs::File::open(&cached_path)
+            .map_err(|e| anyhow::anyhow!("failed to open cached audio: {e}"))
+            .and_then(|file| {
+                SymphoniaProvider
+                    .open_source(Box::new(file), cached_path.extension())
+                    .map_err(|e| anyhow::anyhow!("failed to probe cached audio: {e}"))
+            });
+        match opened {
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                // 坏条目自愈：写侧只校验 HTTP is_success，进程崩溃/磁盘异常会
+                // 留下探不开的条目。此前 Err 直接上抛，该曲目「永久打不开」
+                // 直至 30 天清扫/手动清空；现在删掉坏条目并落入下方网络路径——
+                // 坏条目从永久失败降级为一次重下载（瞬时失败同样判坏，对缓存
+                // 可接受，代价只是这一次多付一整曲）。
+                tracing::warn!(
+                    cached = %cached_path.display(),
+                    err = %err,
+                    "cached audio failed to open; deleting broken entry and falling back to the network"
+                );
+                let _ = std::fs::remove_file(&cached_path);
+            }
+        }
     }
 
     let text = path
@@ -806,5 +838,27 @@ mod tests {
         assert_eq!(content_range_total("bytes 0-/123456"), Some(123456));
         assert_eq!(content_range_total("bytes 0-0/*"), None);
         assert_eq!(content_range_total("garbage"), None);
+    }
+
+    #[test]
+    fn broken_cache_entry_falls_back_to_network_and_is_removed() {
+        let dir = crate::test_support::TestDir::new("http-source-broken-cache");
+        let url = "http://127.0.0.1:1/x.flac";
+        let key = crate::media::audio_cache::audio_cache_key_for_path(Path::new(url)).unwrap();
+        let garbage = dir.join(&format!("{key}.flac"));
+        std::fs::write(&garbage, vec![0u8; 4096]).unwrap();
+
+        // TestDir 植入 >1024B 垃圾条目并经目录可注入形态命中（gate-free：运行
+        // 时开关属于 get_cached_audio_path 的公开短路语义，不与拨动全局开关的
+        // 用例竞争）。populate_cache=false 让任何意外成功的连接也绝不向真实
+        // 缓存目录布防下载。
+        let hit = crate::media::audio_cache::get_cached_audio_path_in(dir.path(), Path::new(url));
+        assert!(hit.is_some(), "植入的垃圾条目必须被命中探测找到");
+        let result = open_http_media_with_cache(hit, Path::new(url), None, false);
+
+        // 开曲返回 Err：垃圾条目探不开被删，回落网络路径后 127.0.0.1:1（环回
+        // 保留端口）连接即刻被拒、无 DNS 等待。
+        assert!(result.is_err(), "回落网络路径后开曲必须失败");
+        assert!(!garbage.exists(), "探不开的坏条目必须被删除以自愈");
     }
 }
