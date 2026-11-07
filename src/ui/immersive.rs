@@ -956,7 +956,7 @@ impl ImmersiveView {
                 .enumerate()
                 .map(|(idx, item)| {
                     let is_playing = idx == current_pos;
-                    let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
+                    let ui_data = queue_metadata::queue_ui_data(cx, item).read(cx).clone();
                     let title = ui_data
                         .as_ref()
                         .and_then(|u| u.name.clone())
@@ -1307,8 +1307,7 @@ impl Render for ImmersiveView {
                         if !line.words.is_empty() {
                             line.words
                                 .iter()
-                                .enumerate()
-                                .map(|(_w_idx, word)| {
+                                .map(|word| {
                                     let progress = word_progress(word, position_ms);
                                     let color = lerp_color(dimmed_color, gold_glow, progress);
 
@@ -1783,7 +1782,7 @@ impl Render for ImmersiveView {
                                                 let rate_khz = sample_rate as f32 / 1000.0;
                                                 let badge_text = if is_hires {
                                                     format!("{rate_khz:.1}k Hi-Res")
-                                                } else if sample_rate % 1000 == 0 {
+                                                } else if sample_rate.is_multiple_of(1000) {
                                                     format!("{}k", sample_rate / 1000)
                                                 } else {
                                                     format!("{rate_khz:.1}k")

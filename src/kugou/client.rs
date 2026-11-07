@@ -430,6 +430,7 @@ impl KugouClient {
     /// 签名键。独立成纯函数以便单测——build_signed 的核心风险是参数序与内容错
     /// （任一算错 = 全部在线请求 403，十五轮测试缺口矩阵的高危第 1 项）。
     /// BTreeMap 保证键序稳定（签名计算依赖遍历序）。
+    #[allow(clippy::too_many_arguments)] // 8 个参数都是签名装配的真实输入，纯函数签名不打包
     fn assemble_params(
         clear_default_params: bool,
         dfid: &str,

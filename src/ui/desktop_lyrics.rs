@@ -629,6 +629,9 @@ impl Render for DesktopLyricsView {
 
 /// exit(70) 硬阀门路径读取最后已知的桌面歌词位置（渲染期写入，
 /// 不依赖 gpui 实体访问）。None = 悬浮窗从未打开过。
+// 唯一调用点在 spawn_memory_probe 的 exit(70) 补写路径里（cfg(not(test))），
+// 测试构建会把这条调用链编译掉，本函数随之报死代码——只在 test 配置下豁免。
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn last_known_position() -> Option<[f64; 2]> {
     LAST_KNOWN_POS.lock().ok().and_then(|guard| *guard)
 }

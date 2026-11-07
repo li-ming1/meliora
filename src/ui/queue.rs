@@ -1951,8 +1951,8 @@ mod tests {
     fn selection_gate_collapses_notify_fanout() {
         const ROWS: usize = 128;
         const CHANGES: usize = 1000;
-        let mut selected = vec![false; ROWS];
-        let mut was_selected = vec![false; ROWS];
+        let mut selected = [false; ROWS];
+        let mut was_selected = [false; ROWS];
         let mut ungated = 0usize;
         let mut gated = 0usize;
 

@@ -219,7 +219,6 @@ mod persist_tests {
             Some(b"v2".as_slice())
         );
         crate::RUNTIME.block_on(async {
-            let g = guard;
             let b = bad.clone();
             let j = b"v2".to_vec();
             guard.spawn_persist(b, j, |_| {});

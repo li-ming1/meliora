@@ -169,39 +169,40 @@ pub(super) async fn insert_track(
     let artists = encode_artist_list(&metadata.artists);
     let album_artist_keys = encode_artist_list(&metadata.album_artist_keys);
 
-    let result: Result<
-        (
-            i64,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ),
-        sqlx::Error,
-    > = sqlx::query_as(include_str!("../../../../queries/scan/create_track.sql"))
-        .bind(name)
-        .bind(name)
-        .bind(album_id)
-        .bind(metadata.track_current.map(|x| x as i32))
-        .bind(metadata.disc_current.map(|x| x as i32))
-        .bind(length as i32)
-        .bind(path.as_str())
-        .bind(&metadata.genre)
-        .bind(&metadata.artist)
-        .bind(parent.as_str())
-        .bind(metadata.replaygain_track_gain)
-        .bind(metadata.replaygain_track_peak)
-        .bind(metadata.replaygain_album_gain)
-        .bind(metadata.replaygain_album_peak)
-        .bind(&metadata.disc_subtitle)
-        .bind(artists)
-        .bind(&metadata.artist_sort)
-        .bind(album_artist_keys)
-        .bind(art_hash)
-        .bind(release_date)
-        .bind(date_precision)
-        .fetch_one(&mut *conn)
-        .await;
+    // create_track.sql 的 RETURNING 行型：track_id + 四列 artist 直通
+    // （pending_tracks 携带直通优化的载体，字段序与 TrackArtistRow 一一对应）。
+    type CreateTrackReturningRow = (
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let result: Result<CreateTrackReturningRow, sqlx::Error> =
+        sqlx::query_as(include_str!("../../../../queries/scan/create_track.sql"))
+            .bind(name)
+            .bind(name)
+            .bind(album_id)
+            .bind(metadata.track_current.map(|x| x as i32))
+            .bind(metadata.disc_current.map(|x| x as i32))
+            .bind(length as i32)
+            .bind(path.as_str())
+            .bind(&metadata.genre)
+            .bind(&metadata.artist)
+            .bind(parent.as_str())
+            .bind(metadata.replaygain_track_gain)
+            .bind(metadata.replaygain_track_peak)
+            .bind(metadata.replaygain_album_gain)
+            .bind(metadata.replaygain_album_peak)
+            .bind(&metadata.disc_subtitle)
+            .bind(artists)
+            .bind(&metadata.artist_sort)
+            .bind(album_artist_keys)
+            .bind(art_hash)
+            .bind(release_date)
+            .bind(date_precision)
+            .fetch_one(&mut *conn)
+            .await;
 
     match result {
         // RETURNING 连 artist 四列一起回：待处理集携带数据库亲手写下的行

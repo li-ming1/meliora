@@ -654,7 +654,7 @@ impl Render for InfoSection {
                                             let rate_khz = sample_rate as f32 / 1000.0;
                                             let badge_text = if is_hires {
                                                 format!("{rate_khz:.1}k Hi-Res")
-                                            } else if sample_rate % 1000 == 0 {
+                                            } else if sample_rate.is_multiple_of(1000) {
                                                 format!("{}k", sample_rate / 1000)
                                             } else {
                                                 format!("{rate_khz:.1}k")

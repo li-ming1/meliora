@@ -1322,9 +1322,9 @@ mod allocation_bench {
     }
 
     /// 优化前的形状：每轮 collect 一个新 Vec，再 clone 一次 target。
-    fn legacy_step(start: &mut Vec<f32>, target: &Vec<f32>, n: usize) {
+    fn legacy_step(start: &mut Vec<f32>, target: &[f32], n: usize) {
         *start = (0..n).map(|_| 1.0).collect();
-        *start = target.clone();
+        *start = target.to_owned();
     }
 
     fn lru_reused(order: &mut Vec<PathBuf>, key: &Path) {
