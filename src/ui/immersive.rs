@@ -148,6 +148,13 @@ pub struct ImmersiveView {
     /// 频谱柱元素的复用缓冲：每帧 clear 后保留容量。
     spectrum_bar_buffer: Vec<AnyElement>,
     playback_state: Entity<PlaybackState>,
+    /// 镜像 `*playback_state == Playing`，由 playback_state 观察者维护，
+    /// 是暂停态扫色泵停转（needs_animation_frame 第三子句）的判据。初值
+    /// false 靠 StateChanged 事后补正：启动次序下起播事件先经 playback
+    /// bridge 的通道排队，主窗口（含本视图）构造完成后才 drain（app.rs
+    /// PlaybackThread::start → start_broadcast → ensure_main_window 全在
+    /// 同一同步流程里），观察者必能接上。
+    playing: bool,
     current_track: Entity<Option<CurrentTrack>>,
     queue: Entity<Queue>,
     /// 侧栏的歌词模型——共享它，在线抓取才能复用。
@@ -273,6 +280,14 @@ impl ImmersiveView {
                 {
                     needs_repaint = true;
                 }
+                // 暂停态兜底：本观察者只在位置真实变化（update_ts 对时间戳
+                // 不变早退；PositionChanged 仅真实变化或 seek force）时触发，
+                // 暂停下的 seek 恒得单帧重绘——泵停转后行内 seek 落在末字
+                // 窗口之外（上面逐字判定为否）时再无其它重绘来源，不补就会
+                // 留下旧扫色。播放态不进此分支，判定仍由上面各条款负责。
+                if !needs_repaint && !this.playing {
+                    needs_repaint = true;
+                }
                 if needs_repaint {
                     cx.notify();
                 }
@@ -286,7 +301,10 @@ impl ImmersiveView {
             })
             .detach();
 
-            cx.observe(&info.playback_state, |this, _, cx| {
+            cx.observe(&info.playback_state, |this, state, cx| {
+                // 读值缓存无条件更新（视图隐藏期间也不能落伍，否则激活后
+                // 泵判据是陈值）；notify 行为保持原样。
+                this.playing = *state.read(cx) == PlaybackState::Playing;
                 if this.active {
                     cx.notify();
                 }
@@ -357,6 +375,7 @@ impl ImmersiveView {
                 cached_volume_text: SharedString::default(),
                 spectrum_bar_buffer: Vec::new(),
                 playback_state: info.playback_state.clone(),
+                playing: false,
                 current_track: info.current_track.clone(),
                 queue,
                 lyrics,
@@ -885,7 +904,12 @@ impl ImmersiveView {
     fn needs_animation_frame(&self) -> bool {
         self.line_anim.is_some()
             || self.backdrop_fade_started.is_some()
-            || (self.active && self.stage_mode == ImmersiveStageMode::KineticLyrics)
+            // 暂停态停转扫色泵：KineticLyrics 的逐字扫色由 render 按
+            // position_ms 现算（word_progress），无墙钟插值，暂停时位置
+            // 不动，advance_animations 的自续 schedule+notify 只是白付整
+            // 帧重绘。恢复播放经 playback_state 观察者 notify 自然重启。
+            // 前两条款是自终止动画（走完即 None），不受影响。
+            || (self.active && self.playing && self.stage_mode == ImmersiveStageMode::KineticLyrics)
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {

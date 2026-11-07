@@ -421,9 +421,17 @@ impl Lyrics {
         parsed: Option<Arc<Vec<LrcLine>>>,
         cx: &mut Context<Self>,
     ) {
-        // 全文在此一次转 SharedString（Arc<str>）：render 每帧克隆只是引用
-        // 计数 bump，滚动逐帧重绘不再对全文做两份 memcpy。
-        self.content = content.map(SharedString::from);
+        // 解析成功即丢弃全文（与 cache_lyrics 的裁剪同判据：content 私有
+        // 字段只有这里是写点，读点仅 render 的三态门控与纯文本回退分支，
+        // 后者只在 parsed 为 None 时可达）——保留只会让 LRC/DB 大文本随本
+        // 实体驻留整个会话。parsed 为 None 时才转 SharedString（Arc<str>）：
+        // render 每帧克隆只是引用计数 bump，滚动逐帧重绘不再对全文做两份
+        // memcpy。
+        self.content = if parsed.is_some() {
+            None
+        } else {
+            content.map(SharedString::from)
+        };
         self.parsed = parsed;
         self.parsed_generation += 1;
         let line_count = self.parsed.as_ref().map_or(0, |parsed| parsed.len());
@@ -630,7 +638,15 @@ impl Lyrics {
         cx: &mut Context<Self>,
     ) {
         self.reset_track_state();
-        self.apply_loaded_lyrics(loaded.0.clone(), loaded.1.clone(), cx);
+        // 主流（解析成功）不再克隆全文传给 apply——apply 端同判据丢弃，全文
+        // memcpy 白付；parsed 为 None 时仍克隆，缓存拿到的是原始 loaded
+        // （负缓存判定与"解析成功裁原文"由 cache_lyrics 自行处理）。
+        let content = if loaded.1.is_some() {
+            None
+        } else {
+            loaded.0.clone()
+        };
+        self.apply_loaded_lyrics(content, loaded.1.clone(), cx);
         if let Some(key) = expected.map(PathBuf::from) {
             self.cache_lyrics(key, loaded);
         }
