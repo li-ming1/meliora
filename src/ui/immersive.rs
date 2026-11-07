@@ -43,13 +43,11 @@ use std::{
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
-    FontWeight, InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render,
-    Rgba, ScrollHandle, ScrollWheelEvent, SharedString, Stateful, StatefulInteractiveElement,
-    Styled, Subscription, Task, Window, canvas, div, linear_color_stop, linear_gradient, point, px,
-    relative,
+    AnyElement, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba,
+    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, Window, canvas, div, linear_color_stop, linear_gradient, point, px, relative,
 };
-use tracing::warn;
 
 use crate::sync::RecoveredRwLock;
 use crate::{
@@ -70,35 +68,19 @@ use crate::{
         },
         equalizer::spectrum::{SpectrumData, SpectrumState, ensure_analyzer},
         lyrics::{Lyrics, lerp_color, word_progress},
-        models::{CurrentTrack, Models, POSITION_DISPLAY_QUANTUM_MS, PlaybackInfo, Queue},
+        models::{CurrentTrack, Models, PlaybackInfo, Queue},
         queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
-        util::{
-            CachedTimeText, extract_accent, format_duration, reduced_motion_enabled,
-            seek_to_fraction, volume_toggle_target,
-        },
+        util::{CachedTimeText, reduced_motion_enabled, seek_to_fraction},
     },
 };
 
 /// 歌词行之间的垂直间距，单位 px。
 const LINE_PITCH_PX: f32 = 52.0;
-/// 歌词字号——只允许离散档位，保证字形图集安全。
-const CURRENT_LINE_SIZE: f32 = 28.0;
-const NEIGHBOR_LINE_SIZE: f32 = 20.0;
-const TRANSLATION_SIZE: f32 = 14.0;
 /// 活动行两侧各渲染多少行歌词（11 行窗口）。
 const LINE_WINDOW: i64 = 5;
-/// 歌词视口高度：十一个行距。
-const LYRICS_VIEWPORT_HEIGHT: f32 = LINE_PITCH_PX * 11.0;
-/// 按「与活动行的距离」给出的逐行不透明度（下标 = 距离）。
-const LINE_OPACITY: [f32; 7] = [1.0, 0.80, 0.60, 0.42, 0.28, 0.18, 0.10];
 const LINE_ANIMATION: Duration = Duration::from_millis(320);
-/// 圆盘直径占左栏高度的比例。
-const VINYL_SIZE_FRACTION: f32 = 0.34;
-/// 封面占圆盘直径的比例——1.0：封面就是圆盘。（此前深色转盘会从小一圈的
-/// 标签四周露出来；2026-09-28 反馈：纹路去掉后那圈环看着像一道无意义的边框。）
-const VINYL_LABEL_FRACTION: f32 = 1.0;
 /// 圆盘标签封面的解码尺寸——小图，走渲染缓存。
 const LABEL_THUMB_PX: u32 = 512;
 /// 定长兜底路径（`Backdrop(None)`，见 `backdrop_layer`）的背景解码上限：
@@ -151,15 +133,20 @@ pub struct ImmersiveView {
     sample_rate: Entity<u32>,
     spectrum_data: Option<Entity<SpectrumData>>,
     spectrum_viewers: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// 本视图当前是否持有一个频谱观察者席位（want 状态记账）：want =
+    /// 激活且处于 KineticLyrics 舞台。SpectrumState.viewers 是与 EQ 视图
+    /// 共享的全局原子，各视图独立差值加减——席位增减只能按翻转
+    /// fetch_add/fetch_sub，绝不能绝对置位，翻转前的旧值靠本字段还原。
+    spectrum_viewers_registered: bool,
     volume: Entity<f64>,
-    /// 全屏底栏整秒标签缓存（与 `ImmersiveProgress` 同一套 `CachedTimeText`）。
+    /// 全屏底栏整秒标签缓存（`util::CachedTimeText`，与 controls.rs 的
+    /// Scrubber 同一套机制）。
     stage_time_labels: CachedTimeText<(SharedString, SharedString)>,
     /// 音量百分比文本：只在整数百分比跨档时重建。
     cached_volume_pct: i64,
     cached_volume_text: SharedString,
     /// 频谱柱元素的复用缓冲：每帧 clear 后保留容量。
     spectrum_bar_buffer: Vec<AnyElement>,
-    prev_volume: Entity<f64>,
     playback_state: Entity<PlaybackState>,
     current_track: Entity<Option<CurrentTrack>>,
     queue: Entity<Queue>,
@@ -206,18 +193,12 @@ pub struct ImmersiveView {
     track_name: Option<SharedString>,
     artist_name: Option<SharedString>,
     meta_subscription: Option<Subscription>,
-    accent: Option<Rgba>,
-    /// 待处理/现有的取色是从哪张封面提取的。
-    accent_for: Option<ManagedImageKey>,
     /// 上一次解析的 `(队列位置, 当前曲目路径)`；每次切歌两个触发器都会响，
     /// 第二个必须是空操作。
     resolved_signature: Option<(usize, Option<PathBuf>)>,
 
     // 歌词，从共享的 `Lyrics` 实体镜像而来。
     parsed: Option<Arc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
-    /// 卡拉OK扫色期间主视图以 ~30Hz 重绘而音量几乎不变：缓存取整百分比
-    /// 对应的文本，值未变时渲染零分配（SharedString 克隆只是引用计数）。
-    volume_text: (i64, SharedString),
     current_line: Option<usize>,
     /// 相对活动行的滚轮浏览偏移，单位是行。滚轮空闲超过
     /// [`SCROLL_RETURN_AFTER`] 后回到 0（由位置 tick 驱动这个检查，所以暂停
@@ -233,9 +214,6 @@ pub struct ImmersiveView {
     line_anim: Option<(f32, f32, Instant)>,
 
     frame_scheduled: bool,
-    /// 自包含的进度条；它自己观察位置/时长，所以 30 Hz 的 tick 只重绘这一
-    /// 子树，而不是整个全屏视图。
-    progress: Entity<ImmersiveProgress>,
 }
 
 impl Focusable for ImmersiveView {
@@ -276,10 +254,15 @@ impl ImmersiveView {
                     this.sync_display_target(true);
                     needs_repaint = true;
                 }
-                // 卡拉OK逐字色随 tick 扫动——但只在当前行最后一个字仍在途时。
-                // 纯行模式的歌词只在行移动时才重绘（track_lyric_line）。进度条
-                // 住在自己的实体里并自行观察位置，所以别处都不需要这条 30 Hz 路径。
+                // 卡拉OK逐字色随 tick 扫动——但只在 KineticLyrics 舞台且当前行
+                // 最后一个字仍在途时。舞台门控必须保留：parse_lyrics 会为所有
+                // LRC 行拟合逐字 words，任何带歌词曲目演唱期间该检查几乎恒真，
+                // 而 PosterWall 的 NOW PLAYING 卡只消费行文本（行粒度更新由
+                // track_lyric_line 覆盖），逐字 tick 不改变其任何像素，30Hz
+                // notify 只会徒劳触发每帧全队列克隆的海报墙重建。进度条住在
+                // 自己的实体里并自行观察位置。
                 if !needs_repaint
+                    && this.stage_mode == ImmersiveStageMode::KineticLyrics
                     && this.current_line.is_some_and(|i| {
                         this.parsed
                             .as_ref()
@@ -340,37 +323,6 @@ impl ImmersiveView {
             })
             .detach();
 
-            let progress = cx.new(|cx| {
-                // 进度条在每个位置 tick 都重绘，而它周围的全屏视图保持不动
-                // （见上面的位置观察者）。用沉浸旗标门控：该实体活满整个应用
-                // 生命周期，不加门控时全屏视图关闭期间也要付 30 次空 notify/s。
-                // 再叠加 250ms 的显示量化，就止住了播放中残余的 30fps 重绘泵
-                // （每个 tick 进度条只走亚像素）。
-                let immersive_flag = immersive_flag.clone();
-                cx.observe(
-                    &info.position,
-                    move |this: &mut ImmersiveProgress, pos, cx| {
-                        if !*immersive_flag.read(cx) {
-                            return;
-                        }
-                        let quantum = *pos.read(cx) / POSITION_DISPLAY_QUANTUM_MS;
-                        if quantum != this.drawn_position_quantum {
-                            this.drawn_position_quantum = quantum;
-                            cx.notify();
-                        }
-                    },
-                )
-                .detach();
-                cx.observe(&info.duration, |_, _, cx| cx.notify()).detach();
-                ImmersiveProgress {
-                    position: info.position.clone(),
-                    duration: info.duration.clone(),
-                    // 整秒键缓存：u64::MAX 种子永不匹配真实秒数，强制首建。
-                    time_labels: CachedTimeText::unseeded(),
-                    drawn_position_quantum: 0,
-                }
-            });
-
             ensure_analyzer(cx);
             let (spectrum_data, spectrum_viewers) =
                 if let Some(state) = cx.try_global::<SpectrumState>() {
@@ -398,12 +350,12 @@ impl ImmersiveView {
                 sample_rate: info.sample_rate.clone(),
                 spectrum_data,
                 spectrum_viewers,
+                spectrum_viewers_registered: false,
                 volume: info.volume.clone(),
                 stage_time_labels: CachedTimeText::unseeded(),
                 cached_volume_pct: i64::MIN,
                 cached_volume_text: SharedString::default(),
                 spectrum_bar_buffer: Vec::new(),
-                prev_volume: info.prev_volume.clone(),
                 playback_state: info.playback_state.clone(),
                 current_track: info.current_track.clone(),
                 queue,
@@ -414,11 +366,8 @@ impl ImmersiveView {
                 track_name: None,
                 artist_name: None,
                 meta_subscription: None,
-                accent: None,
-                accent_for: None,
                 resolved_signature: None,
                 parsed: None,
-                volume_text: (i64::MIN, SharedString::from("")),
                 current_line: None,
                 browse_offset: 0,
                 scroll_accum: 0.0,
@@ -436,7 +385,6 @@ impl ImmersiveView {
                 backdrop_task: None,
                 prefetched_art: None,
                 prefetch_task: None,
-                progress,
             };
             if this.active {
                 this.activate(cx);
@@ -460,12 +408,34 @@ impl ImmersiveView {
         cx.notify();
     }
 
+    /// 把频谱观察者席位对齐到 want 状态（激活且处于 KineticLyrics 舞台），
+    /// 按翻转对共享原子做差值加减。PosterWall 停留期间席位归零，分析器进
+    /// 1s 驻车档（~94 次 FFT/s 后台 CPU 与 30 次/s 主线程实体更新全部归
+    /// 零）；频谱 observer 的 notify 本就按舞台门控（见 new 里的观察者），
+    /// 这里管的是分析器与数据产出本身。
+    fn sync_spectrum_viewers(&mut self) {
+        let want = self.active && self.stage_mode == ImmersiveStageMode::KineticLyrics;
+        if want == self.spectrum_viewers_registered {
+            return;
+        }
+        self.spectrum_viewers_registered = want;
+        let Some(viewers) = &self.spectrum_viewers else {
+            return;
+        };
+        if want {
+            viewers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            viewers.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     fn activate(&mut self, cx: &mut Context<Self>) {
         // 进入重模式先让位：背景管线即将支付 ~105MB 瞬态（4096² 解码 +
         // 裁剪带，2026-10-02 硬上限重启复盘），普通界面的封面瓦片收缩到
-        // 半个近期窗口，驱动侧提交经回收漏斗 60s 年龄门分钟级归还。保留
-        // 的是 LRU 尾部——当前曲目封面大概率在内，沉浸页圆盘标签不受
-        // 影响；退出后浏览库视图时被逐出的封面按需重解码（磁盘缓存命中）。
+        // 半个近期窗口，驱动侧提交经回收漏斗年龄门（5s/1s，2026-11-04
+        // 决议）秒量级归还。保留的是 LRU 尾部——当前曲目封面大概率在
+        // 内，沉浸页圆盘标签不受影响；退出后浏览库视图时被逐出的封面按
+        // 需重解码（磁盘缓存命中）。
         render_cache_shrink(RENDER_CACHE_PRESSURE_KEEP);
         self.resolve_track_presentation(cx);
         // 重进沉浸页：resolve 可能因签名守卫早退（同一首歌），这里兜底
@@ -474,18 +444,15 @@ impl ImmersiveView {
         self.sync_lyrics(cx);
         // 同首歌重进（resolve 早退）时 resolve 里的预取不会执行，这里补。
         self.prefetch_next_track_art(cx);
-        if let Some(viewers) = &self.spectrum_viewers {
-            viewers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.sync_spectrum_viewers();
     }
 
     fn deactivate(&mut self) {
-        if let Some(viewers) = &self.spectrum_viewers {
-            viewers.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.sync_spectrum_viewers();
         self.line_anim = None;
         // 退出沉浸页：取消解码任务并立即失显。已显示背景随元素 unmount
-        // 推进回收漏斗，短年龄门（大图 3s）后像素与瓦片放行；背景缓存
+        // 推进回收漏斗，短年龄门（大图 1s，2026-11-04 决议）后像素与瓦片
+        // 放行；背景缓存
         // 收缩到仅当前歌曲一套（重进沉浸页秒开），预取图与上一首经漏斗
         // 归还——普通模式下不为看不见的背景驻留 ~16MB（"退出界面即归
         // 还"纪律的执行点）。预取记忆一并清除：收缩后记忆指向的条目可
@@ -601,50 +568,12 @@ impl ImmersiveView {
             }));
         }
         self.image_key = cover_key;
-        // 没有封面就没有取色来源：在这里清空，避免卡片与歌词高亮继续沿用
-        // 上一首的主题色。
-        if self.image_key.is_none() {
-            self.accent = None;
-            self.accent_for = None;
-        }
         // 完全停止（无 current_track）时沿用原行为照常布防；只有
         // "槽位与播放中曲目不一致" 的陈旧 resolve 才跳过。
         if resolved_slot_is_current || track_path.is_none() {
             self.arm_backdrop(cx);
         }
 
-        // 主题色：从标签的小图解码（走渲染缓存）提取，离线程分析。
-        if let Some(key) = self.image_key.clone()
-            && self.accent_for.as_ref() != Some(&key)
-        {
-            self.accent = None;
-            self.accent_for = Some(key.clone());
-            let pool = cx.global::<Pool>().0.clone();
-            let key_for_guard = key.clone();
-            cx.spawn(async move |this, cx| {
-                let accent = crate::RUNTIME
-                    .spawn(async move {
-                        key.retrieve(pool, LABEL_THUMB_PX, ImageCacheMode::RenderCache)
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|image| extract_accent(&image))
-                    })
-                    .await
-                    .unwrap_or_else(|error| {
-                        warn!(%error, "immersive: accent task failed");
-                        None
-                    });
-                this.update(cx, |this, cx| {
-                    if this.active && this.accent_for.as_ref() == Some(&key_for_guard) {
-                        this.accent = accent;
-                        cx.notify();
-                    }
-                })
-                .ok();
-            })
-            .detach();
-        }
         // 沉浸模式下切歌先收拢通用封面缓存：为大图解码留出充裕堆空间，
         // 消除连续切歌瞬间的双轨显存尖刺（峰值从 ~800MB 降至安全线以内）。
         if self.active {
@@ -738,9 +667,10 @@ impl ImmersiveView {
     /// 背景不进回收漏斗，零队列成本，§33/§34）；解码完成时若曲目仍是当
     /// 前这首才晋升交换。晋升即进入 400ms crossfade：旧背景降级为淡出
     /// 层继续绘制，新图在其上淡入，没有黑底间隙也没有硬切闪变。大图回
-    /// 收队列未放行（>3 套在队）时按 [`BACKDROP_RETRY`] 退避重试，是
-    /// "同时驻留大图套数"硬上界的执行点；大图 3s 短年龄门让积压在数秒
-    /// 内排空，普通切歌节奏下阀门不再成为"背景不跟歌"的来源。
+    /// 收队列未放行（>2 套在队）时按 [`BACKDROP_RETRY`] 退避重试，是
+    /// "同时驻留大图套数"硬上界的执行点；大图 1s 短年龄门（2026-11-04
+    /// 决议）让积压在秒级排空，普通切歌节奏下阀门不再成为"背景不跟歌"
+    /// 的来源。
     /// 这张背景图是否仍是本页正在显示的那张：必须是激活态且键与当前一致。
     /// `arm_backdrop` 的每一跳（重试退避后、解码完成后）都问这同一句，此前
     /// 三处逐字重复整条表达式。
@@ -774,8 +704,8 @@ impl ImmersiveView {
             let mut render_misses = 0u32;
             loop {
                 // 缓存命中（预取/回跳）不产生新解码，直接绕过背压阀门：
-                // 连跳时阀门按 3s/套排水，不能把已经渲染好的下一首也拖住
-                // （"换了歌还是之前的图"的主因）。
+                // 连跳时阀门按 1s/套排水（2026-11-04 决议），不能把已经渲
+                // 染好的下一首也拖住（"换了歌还是之前的图"的主因）。
                 let cached = backdrop_cache_contains(&key, target_w, target_h);
                 if !cached && !backdrop_decode_allowed() {
                     cx.background_executor().timer(BACKDROP_RETRY).await;
@@ -1097,6 +1027,7 @@ impl ImmersiveView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.global::<PlaybackInterface>().jump(idx);
                     this.stage_mode = ImmersiveStageMode::KineticLyrics;
+                    this.sync_spectrum_viewers();
                     cx.notify();
                 }))
                 .child(
@@ -1207,84 +1138,13 @@ impl ImmersiveView {
     }
 }
 
-/// 沉浸播放卡自包含的进度条。它自己持有 30 Hz 的位置观察，所以进度 tick 只
-/// 重绘这一小片子树——全屏视图自己的位置观察者被门控在歌词栏的真实变化上
-/// （行移动、滚轮浏览归位、卡拉OK扫色已在途）。时间标签共用整秒缓存
-/// （`util::CachedTimeText`，与 controls.rs 的 Scrubber 同一套机制）。
-struct ImmersiveProgress {
-    position: Entity<u64>,
-    duration: Entity<u64>,
-    time_labels: CachedTimeText<(SharedString, SharedString)>,
-    /// 上次触发重绘的 position 量化值（`POSITION_DISPLAY_QUANTUM_MS`
-    /// 粒度），跨档才 notify；语义与 Scrubber 同款。
-    drawn_position_quantum: u64,
-}
-
-impl Render for ImmersiveProgress {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _render = crate::tally_render(crate::RenderedView::ImmersiveProgress);
-        // PlaybackInfo 的位置与时长都用毫秒。
-        let position_ms = *self.position.read(cx);
-        let duration_ms = *self.duration.read(cx);
-        let position_secs = position_ms / 1000;
-        let duration_secs = duration_ms / 1000;
-        let progress = if duration_ms > 0 {
-            (position_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let text_secondary = cx.global::<Theme>().text_secondary;
-
-        // 整秒键未变即复用已格式化标签（30Hz 重渲染里绝大多数输出逐字节
-        // 相同）；pad_minutes=false（沉浸页 11px 紧凑风格）。
-        let (elapsed_text, total_text) = self.time_labels.resolve(
-            position_secs,
-            duration_secs,
-            |position_secs, duration_secs| {
-                (
-                    SharedString::from(format_duration(position_secs as i64, false)),
-                    SharedString::from(format_duration((duration_secs as i64).max(0), false)),
-                )
-            },
-        );
-
-        div()
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .w_full()
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(text_secondary)
-                    .child(elapsed_text),
-            )
-            .child(
-                slider()
-                    .id("immersive-progress")
-                    .flex_1()
-                    .h(px(6.0))
-                    .rounded_full()
-                    .change_interval(SLIDER_CHANGE_INTERVAL)
-                    .value(progress)
-                    .on_change(move |v, _, cx| {
-                        // 门控 + seek 共享实现（controls.rs Scrubber 同款）：
-                        // duration_ms > 0 且非 Stopped 才 seek。
-                        seek_to_fraction(v as f64, duration_ms, cx);
-                    }),
-            )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(text_secondary)
-                    .child(total_text),
-            )
-    }
-}
-
 /// 动画显示中心周围窗口内的歌词行：`(行号, 整像素顶部偏移, is_current)`。
 /// 写成纯函数以便给钳位与吸附数学做单元测试。高亮的那一行始终是真正在播的
 /// 行，即使用户用滚轮浏览到了别处。
+/// T07 死元素树删除后唯一生产读者（旧右栏 `lyric_children`）已不存在，函数
+/// 仅为上述单元测试保留（钳位/吸附数学的回归钉桩），非测试构建下豁免
+/// dead_code。
+#[cfg_attr(not(test), allow(dead_code))]
 fn lyric_window(
     visual_line: f32,
     parsed_len: usize,
@@ -1346,17 +1206,14 @@ impl Render for ImmersiveView {
         let theme = cx.global::<Theme>();
         let text = theme.text;
         let text_secondary = theme.text_secondary;
-        let accent = self.accent.unwrap_or(theme.text);
         let image_gen = self.image_element_key;
 
-        // PlaybackInfo 的位置用毫秒。进度条在自己的实体（ImmersiveProgress）里
-        // 读位置/时长。
+        // PlaybackInfo 的位置用毫秒。底栏时间标签与悬浮进度条在这里读取。
         let position_ms = *self.position.read(cx);
         let duration_ms = *self.duration.read(cx);
         let sample_rate = *self.sample_rate.read(cx);
         let playing = *self.playback_state.read(cx) == PlaybackState::Playing;
         let volume = *self.volume.read(cx);
-        let prev_volume = *self.prev_volume.read(cx);
 
         // 全屏底栏的时间/音量标签：整秒与整数百分比没跨档时复用已格式化的
         // SharedString，30Hz 重绘里绝大多数帧的输出逐字节相同。
@@ -1408,312 +1265,6 @@ impl Render for ImmersiveView {
             linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.82), 1.0),
         ));
 
-        // ── 左栏：圆形封面、曲名、磨砂播放卡 ──────────────────────────
-        // 封面填满整个圆盘（标签比例 1.0）；其下的深色层只在封面解码期间，
-        // 或曲目完全没有封面时才透出。为什么不转、纹路环与光泽弧为何移除，
-        // 见模块文档。
-        let vinyl_label = div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .when_some(self.image_key.clone(), |el, key| {
-                el.child(
-                    managed_image(("immersive-label", image_gen), key)
-                        .thumb_max(LABEL_THUMB_PX)
-                        .h(relative(VINYL_LABEL_FRACTION))
-                        .aspect_square()
-                        .rounded(px(16.0))
-                        .shadow_lg()
-                        .border_1()
-                        .border_color(Rgba::new(1.0, 1.0, 1.0, 0.14))
-                        .object_fit(ObjectFit::Cover),
-                )
-            })
-            .when_none(&self.image_key, |el| {
-                el.child(
-                    div()
-                        .h(relative(VINYL_LABEL_FRACTION))
-                        .aspect_square()
-                        .rounded(px(16.0))
-                        .bg(Rgba::new(1.0, 1.0, 1.0, 0.06)),
-                )
-            });
-        let vinyl_disc = div()
-            .absolute()
-            .inset_0()
-            .rounded(px(16.0))
-            .bg(Rgba::new(0.045, 0.045, 0.058, 1.0));
-        let vinyl = div()
-            .relative()
-            .h(relative(VINYL_SIZE_FRACTION))
-            .aspect_square()
-            .child(vinyl_disc)
-            .child(vinyl_label);
-
-        let track_info = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(5.0))
-            .children(self.track_name.clone().map(|name| {
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(px(26.0))
-                    .line_height(relative(1.15))
-                    .text_color(text)
-                    .text_center()
-                    .child(name)
-            }))
-            .children(self.artist_name.clone().map(|artist| {
-                div()
-                    .text_size(px(15.0))
-                    .text_color(text_secondary)
-                    .text_center()
-                    .child(artist)
-            }));
-
-        let transport_button =
-            |id: &'static str, icon_path: &'static str, size: f32| -> Stateful<Div> {
-                div()
-                    .id(id)
-                    .p(px(7.0))
-                    .rounded(px(9.0))
-                    .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
-                    .active(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.16)))
-                    .child(icon(icon_path).size(px(size)).text_color(text))
-            };
-        let transport_row = div()
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .child(
-                transport_button("immersive-prev", PREV_TRACK, 18.0).on_click(|_, _, cx| {
-                    cx.global::<PlaybackInterface>().previous();
-                }),
-            )
-            .child(
-                transport_button("immersive-play", if playing { PAUSE } else { PLAY }, 22.0)
-                    .p(px(10.0))
-                    .rounded_full()
-                    .on_click(|_, _, cx| {
-                        let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                        let interface = cx.global::<PlaybackInterface>();
-                        if state == PlaybackState::Playing {
-                            interface.pause();
-                        } else {
-                            interface.play();
-                        }
-                    }),
-            )
-            .child(
-                transport_button("immersive-next", NEXT_TRACK, 18.0).on_click(|_, _, cx| {
-                    cx.global::<PlaybackInterface>().next();
-                }),
-            );
-        // 静音切换的判定（图标 + 目标音量）与播放栏的次级控件共用；
-        // 按钮样式仍留在本地。
-        let (volume_target, volume_icon) = volume_toggle_target(volume, prev_volume);
-        let volume_group = div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .id("immersive-volume-btn")
-                    .p(px(4.0))
-                    .rounded(px(8.0))
-                    .hover(|el| el.bg(Rgba::new(1.0, 1.0, 1.0, 0.10)))
-                    .on_click(move |_, _, cx| {
-                        cx.global::<PlaybackInterface>().set_volume(volume_target);
-                    })
-                    .child(icon(volume_icon).size(px(16.0)).text_color(text_secondary)),
-            )
-            .child(
-                slider()
-                    .id("immersive-volume")
-                    .w(px(90.0))
-                    .h(px(6.0))
-                    .rounded_full()
-                    .change_interval(SLIDER_CHANGE_INTERVAL)
-                    .value(volume as f32)
-                    .on_change(move |v, _, cx| {
-                        cx.global::<PlaybackInterface>().set_volume(v as f64);
-                    }),
-            )
-            .child(div().text_size(px(11.0)).text_color(text_secondary).child({
-                // 音量几乎不变而扫色期间每帧重绘：按取整百分比缓存文本。
-                let volume_pct = (volume * 100.0).round() as i64;
-                if self.volume_text.0 != volume_pct {
-                    self.volume_text = (volume_pct, SharedString::from(format!("{volume_pct}%")));
-                }
-                self.volume_text.1.clone()
-            }));
-        let progress_row = self.progress.clone();
-        let player_card = div()
-            .w(relative(0.90))
-            .max_w(px(460.0))
-            .rounded(px(16.0))
-            .bg(Rgba::new(0.05, 0.05, 0.07, 0.62))
-            .backdrop_blur(px(14.0))
-            .border_1()
-            .border_color(Rgba::new(1.0, 1.0, 1.0, 0.10))
-            .p(px(18.0))
-            .flex()
-            .flex_col()
-            .gap(px(14.0))
-            .child(progress_row)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(transport_row)
-                    .child(volume_group),
-            );
-
-        let _left_column = div()
-            .absolute()
-            .left_0()
-            .top_0()
-            .bottom_0()
-            .w(relative(0.44))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(22.0))
-            .px(px(40.0))
-            .child(vinyl)
-            .child(track_info)
-            .child(player_card);
-
-        // ── 右栏：歌词 ────────────────────────────────────────────────
-        // 每一行都可点击定位；滚轮可离开活动行浏览（空闲窗口过后自动归位）；
-        // 活动行在曲目带逐字时间戳时按字渲染卡拉OK。只有颜色做 lerp——
-        // 字形几何绝不插值。
-        let lyric_children = self.parsed.as_ref().map(|parsed| {
-            let visual_line = self.visual_line;
-            let current_line = self.current_line;
-            // 邻居行色调恒定（卡拉OK扫色的起色同值）：提出行循环，12 个
-            // 邻居行 + 扫色行不再各自重算一遍混合。
-            let dimmed = lerp_color(text, text_secondary, 0.4);
-            lyric_window(visual_line, parsed.len(), current_line)
-                .into_iter()
-                .map(move |(index, top, is_current)| {
-                    let line = &parsed[index];
-                    let distance = (index as f32 - visual_line).abs().round() as i64;
-                    let opacity = LINE_OPACITY
-                        .get(distance as usize)
-                        .copied()
-                        .unwrap_or(*LINE_OPACITY.last().unwrap());
-                    let color = if is_current { accent } else { dimmed };
-                    let line_time_ms = line.time_ms;
-                    // 卡拉OK：未唱到的字停在暗化的邻行色调上，随着每个字的时间
-                    // 窗过去扫向主题色（当前行自身的颜色已经是主题色，所以它
-                    // 不能当扫色的起点）。字的颜色逐 tick 变化——字形几何保持不变。
-                    let text_child: Div = if is_current && !line.words.is_empty() {
-                        let unsung = dimmed;
-                        let mut row = div().flex().flex_wrap().items_baseline();
-                        for word in &line.words {
-                            let progress = word_progress(word, position_ms);
-                            row = row.child(
-                                div()
-                                    .child(word.text.clone())
-                                    .text_color(lerp_color(unsung, accent, progress)),
-                            );
-                        }
-                        row
-                    } else {
-                        div().child(line.text.clone())
-                    };
-                    div()
-                        .id(index)
-                        .cursor_pointer()
-                        .hover(move |el| el.opacity(opacity.max(0.9)))
-                        .on_click(move |_, _, cx| {
-                            // 直接用闭包的处理器（侧栏歌词行用同一形状）：点击只做
-                            // 定位——滚轮浏览会话经由位置 tick 的空闲归位自然解开。
-                            let state = *cx.global::<PlaybackInfo>().playback_state.read(cx);
-                            if state != PlaybackState::Stopped {
-                                cx.global::<PlaybackInterface>()
-                                    .seek(line_time_ms as f64 / 1000.0);
-                            }
-                        })
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(top))
-                        .h(px(LINE_PITCH_PX))
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .justify_center()
-                        .opacity(opacity)
-                        .text_color(color)
-                        .child(
-                            text_child
-                                .text_size(px(if is_current {
-                                    CURRENT_LINE_SIZE
-                                } else {
-                                    NEIGHBOR_LINE_SIZE
-                                }))
-                                .line_height(relative(1.05))
-                                .font_weight(if is_current {
-                                    FontWeight::BOLD
-                                } else {
-                                    FontWeight::MEDIUM
-                                })
-                                .text_left(),
-                        )
-                        .when(is_current && line.translation.is_some(), |el| {
-                            el.child(
-                                div()
-                                    .text_size(px(TRANSLATION_SIZE))
-                                    .line_height(relative(1.05))
-                                    .text_color(text_secondary)
-                                    .child(line.translation.clone().unwrap()),
-                            )
-                        })
-                })
-        });
-        let lyrics_viewport = div()
-            .relative()
-            .w_full()
-            .h(px(LYRICS_VIEWPORT_HEIGHT))
-            .overflow_hidden()
-            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                if !this.active {
-                    return;
-                }
-                let dy = f32::from(ev.delta.pixel_delta(px(LINE_PITCH_PX)).y);
-                // gpui 原样透传 Windows 滚轮符号：向下滚为负。歌词语义是
-                // "向下滚 = 前进到更晚的行"（browse_offset 增大），故取反。
-                this.scroll_accum -= dy / LINE_PITCH_PX;
-                let whole = this.scroll_accum as i64;
-                if whole != 0 {
-                    this.scroll_accum -= whole as f32;
-                    this.browse_offset += whole;
-                    this.last_scroll = Some(Instant::now());
-                    this.sync_display_target(true);
-                    cx.notify();
-                }
-            }))
-            .children(lyric_children.into_iter().flatten());
-        let _right_column = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left(relative(0.46))
-            .right_0()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .pl(px(24.0))
-            .pr(px(52.0))
-            .child(lyrics_viewport);
-
         let exit_button = div()
             .id("immersive-exit")
             .absolute()
@@ -1726,8 +1277,6 @@ impl Render for ImmersiveView {
             .on_click(|_: &ClickEvent, _, cx| set_immersive(false, cx))
             .tooltip(build_tooltip(tr!("IMMERSIVE_EXIT", "Exit Immersive Mode")))
             .child(icon(MINIMIZE).size(px(18.0)).text_color(text));
-
-        let return_to_wall_button: Option<AnyElement> = None;
 
         let stage_center_view = if self.stage_mode == ImmersiveStageMode::KineticLyrics {
             let gold_glow = Rgba::new(1.0, 0.88, 0.45, 1.0);
@@ -2388,6 +1937,7 @@ impl Render for ImmersiveView {
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.stage_mode =
                                                             ImmersiveStageMode::PosterWall;
+                                                        this.sync_spectrum_viewers();
                                                         cx.notify();
                                                     })),
                                             )
@@ -2644,7 +2194,7 @@ impl Render for ImmersiveView {
             }
         }
 
-        root.children(return_to_wall_button).child(exit_button)
+        root.child(exit_button)
     }
 }
 

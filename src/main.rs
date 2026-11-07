@@ -489,14 +489,13 @@ pub enum RenderedView {
     TableItem,
     GridItem,
     Immersive,
-    ImmersiveProgress,
     DesktopLyrics,
     Search,
     Equalizer,
 }
 
 impl RenderedView {
-    const LABELS: [&'static str; 19] = [
+    const LABELS: [&'static str; 18] = [
         "main",
         "library",
         "sidebar",
@@ -512,7 +511,6 @@ impl RenderedView {
         "table-item",
         "grid-item",
         "immersive",
-        "imm-progress",
         "desk-lyrics",
         "search",
         "eq",
@@ -909,9 +907,9 @@ fn spawn_memory_probe() {
             // 上升沿时让出通用图像缓存——render LRU 收到窗口的一半、backdrop LRU
             // 只留当前曲目——并置起压力旗标，让沉浸页停止预取下一首（省掉一整条
             // 4096 管线）。持续越线时每第 4 次采样（~2 分钟）再 shed 一次，以覆盖
-            // shed 之后的缓存回填。逐出走回收漏斗的正常年龄门（封面 60s / 大图 3s），
-            // 因此驱动侧的提交缓解在分钟量级落地——正是硬阀门要求的那种持续形态：
-            // 2026-10-02 那次重启的爬坡（沉浸切歌 3 分钟内 341→521 MB）会在首次越线
+            // shed 之后的缓存回填。逐出走回收漏斗的正常年龄门（封面 5s / 大图 1s，
+            // 2026-11-04 决议），因此驱动侧的提交缓解在秒量级落地——正是硬阀门要求
+            // 的那种持续形态：2026-10-02 那次重启的爬坡（沉浸切歌 3 分钟内 341→521 MB）会在首次越线
             // 时 shed 约 60 MB，比真正破线早两个采样。旗标只在 cap − margin 以下
             // 才清除（滞回）。
             if watchdog_purge {

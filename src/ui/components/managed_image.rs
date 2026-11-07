@@ -311,9 +311,9 @@ pub fn render_cache_entries() -> usize {
 /// 保住当前曲目的封面（几乎必然在 LRU 尾部）和最近几行网格；其余按需从磁盘缓存重解码。
 pub(crate) const RENDER_CACHE_PRESSURE_KEEP: usize = 12;
 
-/// 把已解码封面 LRU 收缩到最多 `keep` 条，从最旧端逐出进回收漏斗的正常年龄门（封面 60s /
-/// 大图 3s）——年龄门从不缩短；那是在赌 2026-09-08 悬空场景崩溃类，所以被逐出瓦片的驱动
-/// 提交要按分钟级才归还。两个调用方：[mem] 探针在 private commit 越过软顶时的压力 shed
+/// 把已解码封面 LRU 收缩到最多 `keep` 条，从最旧端逐出进回收漏斗的正常年龄门（封面 5s /
+/// 大图 1s）。取值以 2026-11-04 决议为准（5s/1s），复发判据见 AGENTS.md；被逐出瓦片的
+/// 驱动提交按秒量级归还。两个调用方：[mem] 探针在 private commit 越过软顶时的压力 shed
 /// （正是硬阀门度量的那个持续区间），以及沉浸页激活——背景管线马上要付出 ~105 MB 瞬态，
 /// 通用封面瓦片先让位。保留的是 LRU 尾部（最近使用）。
 pub(crate) fn render_cache_shrink(keep: usize) {
@@ -781,11 +781,20 @@ impl ManagedImageKey {
             (ImageCacheMode::Backdrop(None), _) => {
                 // 定长兜底路径与主路径同纪律：去噪+重采样是数十到百余 ms 级
                 // 同步 CPU，必须 spawn_blocking——内联会占住 RUNTIME 仅有的
-                // 2 个 async worker，拖慢 UI 线程 blocking_query 的排队
+                // 2 个 async worker，拖慢 UI 线程 blocking_query 的排队。
+                // gate permit 与主路径同款移入闭包（2026-10-31 契约 4）：
+                // 上面对 Backdrop(_) 两种变体都取了闸，帧在 await 点被
+                // abort 时不可取消的 enhance 须继续持闸跑完——permit 绑在
+                // 帧上会提前归还、闸门被取消旁路。本分支经 `backdrop_cached`
+                // （目标未知/为零兜底）结构可达，正常因 render 总先写非零
+                // 目标而不走，属活跃代码体上的潜伏风险，仍按同一契约封死。
                 let enhanced = crate::RUNTIME
                     .spawn_blocking({
                         let decoded = decoded.clone();
-                        move || enhance_render_image(&decoded).unwrap_or_else(|| decoded.clone())
+                        move || {
+                            let _backdrop_pipeline = backdrop_pipeline_gate;
+                            enhance_render_image(&decoded).unwrap_or_else(|| decoded.clone())
+                        }
                     })
                     .await
                     .unwrap_or_else(|_| decoded.clone());
@@ -1068,11 +1077,11 @@ pub(crate) fn large_drops_pending() -> usize {
         .unwrap_or(0)
 }
 
-/// 允许在队的大图套数（不含缓存与显示中的那套）：3 → 普通切歌与预取
+/// 允许在队的大图套数（不含缓存与显示中的那套）：2 → 普通切歌与预取
 /// 节奏（2-4s/首，每曲至多 1-2 套入队）下阀门永不关闭；极端连跳时最多
-/// 积压 3 套，加上缓存 3、显示 1、解码中 1 ≈ 8 套的瞬时上界（~63MB）。
-/// 3s 大图短年龄门让积压在数秒内自行排空，而不是把切歌卡死整整一分钟。
-/// 阀门只拦"要新解码"的换图——缓存命中的换图经
+/// 积压 2 套，加上缓存 2（41fadb0775 clamp）、显示 1、解码中 1 ≈ 6 套的
+/// 瞬时上界（~47MB）。1s 大图短年龄门（2026-11-04 决议）让积压在秒级
+/// 自行排空。阀门只拦"要新解码"的换图——缓存命中的换图经
 /// [`backdrop_cache_contains`] 绕过本阀门，预取成果不被排水拖住。
 const BACKDROP_QUEUE_HEADROOM: usize = 2;
 
@@ -1082,7 +1091,7 @@ pub(crate) fn backdrop_decode_allowed() -> bool {
 
 /// 背景缓存命中探测：命中说明目标图已渲染完成（预取/回跳），换图不产
 /// 生新解码——`arm_backdrop` 据此绕过背压阀门直接交换，连跳时阀门排水
-/// （3s/套）不再拖住已经就绪的下一首。
+/// （1s/套，2026-11-04 决议）不再拖住已经就绪的下一首。
 pub(crate) fn backdrop_cache_contains(key: &ManagedImageKey, w: u32, h: u32) -> bool {
     let cache_key = RenderCacheKey {
         key: key.clone(),
@@ -1281,7 +1290,9 @@ impl ManagedImage {
         self
     }
 
-    /// 沉浸页全屏背景专用：独立的容量 3 LRU（[`BACKDROP_CACHE_CAP`]），
+    /// 沉浸页全屏背景专用：独立的容量 2 LRU（[`BACKDROP_CACHE_CAP`]，
+    /// 41fadb0775 自容量 3 clamp 而来——只覆盖当前首与预取/过渡的下一首，
+    /// 切歌后废弃大图即时逐出漏斗，省 ~16-35MB 堆内存与 GPU 纹理分配），
     /// 解码后在入缓存前完成增强
     /// （`retrieve` 内部）。同一首歌切走再切回、重进沉浸页都命中同一份
     /// `RenderImage` 与图集瓦片——零解码零重传，交换只隔一帧。
@@ -1990,8 +2001,9 @@ mod tests {
         assert_eq!(dropped.len(), 2, "every released image reclaimed once");
     }
 
-    /// 背景级（≥4MB）图像走短年龄门老化，因此一连串切歌不会把背景冻结 60s；封面保留保守的
-    /// 5s 门。短门必须始终高于沉浸页 crossfade 窗口——淡出期间旧元素（及其瓦片）仍在绘制。
+    /// 背景级（≥4MB）图像走 1s 短年龄门老化（2026-11-04 决议），一连串切歌不会把背景拖住；
+    /// 封面走 5s 门。短门必须始终高于沉浸页 crossfade 窗口——淡出期间旧元素（及其瓦片）
+    /// 仍在绘制。
     #[test]
     fn large_backdrop_images_use_the_short_reclaim_gate() {
         assert_eq!(reclaim_delay_for(&test_image()), RECLAIM_DELAY);
