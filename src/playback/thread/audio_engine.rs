@@ -302,6 +302,12 @@ impl AudioEngine {
         let spawned = std::thread::Builder::new()
             .name("media-prepare".into())
             .spawn(move || {
+                // media-prepare 预备线程是播放链上最后一个未登记 MMCSS 的环节：
+                // 其执行阻塞在 HTTP+TLS+格式探测上，CPU 竞争下被拉长的预备时延
+                // 会侵蚀 3s 稳定门（STABLE_PREPARE_DELAY_MS）与 15s 曲尾门
+                // （PREPARE_LEAD_MS）的预备提前量。登记失败静默降级（mmcss
+                // 模块契约）；线程一次性、随结果发送退出，登记随之失效。
+                crate::devices::mmcss::register_playback_thread();
                 // 过期的签名 URL：首次打开失败，钩子重新取一个新路径，并对它
                 // 重试打开一次。结果里上报最终路径，好让调用方把它回写给队列。
                 let (path, result) =
