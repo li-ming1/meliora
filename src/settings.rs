@@ -9,6 +9,7 @@ pub mod update;
 use std::{
     fs,
     fs::File,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -175,12 +176,20 @@ struct PendingSettingsSave {
 }
 static PENDING_SETTINGS_SAVE: Mutex<Option<PendingSettingsSave>> = Mutex::new(None);
 
+/// 本进程最近一次成功落盘的 settings.json 字节。防抖（`""` tag）与退出
+/// flush（`"flush"` tag）两条通道唯一收口在 [`write_settings_file`]，
+/// rename 成功即单点登记；供 [`file_unchanged_since_registration`] 把
+/// 「登记基线之外只多出本进程自己的写盘」豁免为未动过。
+static SETTINGS_LAST_SELF_WRITE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
 /// 原子写盘：先写同目录临时文件再 rename 替换（同 session_io::save）——
 /// 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态还会把
 /// 正常会话误标为 Corrupt。tmp 名带 generation：防抖不保证上一次写盘已
 /// 结束，固定名会让两代写盘截断同一个 tmp 交错写。
 /// `tmp_tag` 区分写盘来源：防抖路径用 `""`，退出前的强制 flush 用 `"flush"`，
 /// 两条通道即使在同一个 generation 上也不会撞进同一个临时文件。
+/// 序列化先落 Vec 再 write_all：rename 成功后要把字节登记进
+/// [`SETTINGS_LAST_SELF_WRITE`]，两条写盘通道在同一个函数里完成登记。
 fn write_settings_file(
     snapshot: &Settings,
     path: &Path,
@@ -188,22 +197,45 @@ fn write_settings_file(
     tmp_tag: &str,
 ) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("json.tmp{tmp_tag}{generation}"));
+    let bytes = serde_json::to_vec_pretty(snapshot)?;
     File::create(&tmp)
-        .and_then(|file| serde_json::to_writer_pretty(file, snapshot).map_err(|e| e.into()))
+        .and_then(|mut file| file.write_all(&bytes))
         .and_then(|()| fs::rename(&tmp, path))
         // 旧文件原样保留，只清理残留临时文件
         .inspect_err(|_| {
             let _ = fs::remove_file(&tmp);
         })
+        // rename 成功才登记自写字节；两通道单点覆盖
+        .inspect(|_| {
+            if let Ok(mut last) = SETTINGS_LAST_SELF_WRITE.lock() {
+                *last = Some(bytes);
+            }
+        })
 }
 
-/// 写盘前校验：登记以来 settings.json 的字节没被动过。None（不存在/读
-/// 不了）与登记时一致同样算"未动过"。比对字节而不是看 watcher 是否装载
-/// 过：watcher 轮询最长 1s，还没轮到装载的手编同样必须拦下；而本进程自
-/// 己的写盘不会落在这个窗口里（更早 generation 的防抖任务醒来即退，
-/// flush 只在退出路径），窗口内字节变化只能来自外部。
+/// 写盘前校验：登记以来 settings.json 的字节没被动过。磁盘字节与登记基线
+/// 一致算未动过；None（不存在/读不了）与登记时一致同样算"未动过"。比对
+/// 字节而不是看 watcher 是否装载过：watcher 轮询最长 1s，还没轮到装载的
+/// 手编同样必须拦下。基线不等时再看是否恰为本进程最近一次落盘的内容
+/// （[`SETTINGS_LAST_SELF_WRITE`]）：上一代写盘可能在本代登记之后才 rename
+/// 完成——防抖任务通过 generation 一次性检查后进入 spawn_blocking，写盘
+/// 期间不再复查，本代登记读到的还是旧字节；AV 实时扫描会把该窗口放大到
+/// 100ms+。没有这份豁免会把本代写盘误判为手编而弃写（第二次改动静默
+/// 丢失 + UI 回跳）；真正的手编（字节既非基线亦非自写）仍拦下。锁毒化
+/// 时豁免失效，按外部改动保守弃写。
 fn file_unchanged_since_registration(path: &Path, baseline: &Option<Vec<u8>>) -> bool {
-    &fs::read(path).ok() == baseline
+    let current = fs::read(path).ok();
+    if current == *baseline {
+        return true;
+    }
+    // 比较须在 guard 借用域内完成：guard 指向的字节不能带出闭包
+    SETTINGS_LAST_SELF_WRITE
+        .lock()
+        .map(|last| {
+            last.as_deref()
+                .is_some_and(|bytes| current.as_deref() == Some(bytes))
+        })
+        .unwrap_or(false)
 }
 
 /// 摘除指定 generation 的 pending 登记（可能已被更新的 generation 覆盖，
@@ -763,5 +795,89 @@ mod tests {
         assert!(path.exists(), "文件未动时退出 flush 必须补写");
         let written = create_settings(&path).into_settings();
         assert_eq!(written, Settings::default());
+    }
+
+    /// 跨代基线竞态的回归钉（自写字节豁免）：gen1 落盘在本代（gen2）登记
+    /// 之后才 rename 完成——gen2 登记读到的还是 gen1 写盘前的旧字节，校验
+    /// 时磁盘上摆的已是 gen1 的落盘内容。修复前判为外部改动而整笔弃写
+    /// （第二次改动静默丢失 + UI 回跳）；修复后经 SETTINGS_LAST_SELF_WRITE
+    /// 豁免照常补写。
+    #[test]
+    fn flush_pending_settings_passes_when_disk_only_holds_self_write() {
+        let _guard = SETTINGS_STATICS_LOCK.lock().unwrap();
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        // gen1 写盘前的磁盘内容 = gen2 登记时的基线
+        let stale_bytes = b"{\"scanning\": {}}".to_vec();
+        fs::write(&path, &stale_bytes).unwrap();
+
+        // gen1 落盘成功（与防抖通道同一个收口）：磁盘字节随之改变
+        let mut gen1 = Settings::default();
+        gen1.playback.always_repeat = true;
+        super::write_settings_file(&gen1, &path, 21, "").unwrap();
+        assert_ne!(
+            fs::read(&path).unwrap(),
+            stale_bytes,
+            "gen1 落盘必须改变磁盘字节"
+        );
+
+        // gen2 在 gen1 的写盘窗口内登记，基线仍是 rename 前的旧字节
+        super::SETTINGS_SAVE_GENERATION.store(22, std::sync::atomic::Ordering::Relaxed);
+        super::SETTINGS_WRITTEN_GENERATION.store(0, std::sync::atomic::Ordering::Relaxed);
+        let mut gen2 = Settings::default();
+        gen2.interface.reduced_motion = true;
+        *super::PENDING_SETTINGS_SAVE.lock().unwrap() = Some(super::PendingSettingsSave {
+            generation: 22,
+            baseline: Some(stale_bytes),
+            snapshot: std::sync::Arc::new(gen2),
+            path: path.clone(),
+        });
+
+        super::flush_pending_settings();
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("\"reduced_motion\": true"),
+            "gen2 写盘必须经自写豁免通过校验"
+        );
+        assert!(
+            on_disk.contains("\"always_repeat\": false"),
+            "gen2 落盘应覆盖 gen1 的 always_repeat=true"
+        );
+    }
+
+    /// 第三方手编的字节（既非登记基线亦非本进程自写）仍必须弃写：自写
+    /// 豁免不得把真正的手编放行。
+    #[test]
+    fn flush_pending_settings_still_drops_on_third_party_bytes() {
+        let _guard = SETTINGS_STATICS_LOCK.lock().unwrap();
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+
+        // 先让本进程成功落盘一次，SETTINGS_LAST_SELF_WRITE 持有自写字节
+        let mut self_written = Settings::default();
+        self_written.playback.always_repeat = true;
+        super::write_settings_file(&self_written, &path, 31, "").unwrap();
+
+        // 第三方手编：单行 JSON，与 pretty 序列化的自写字节必然不同
+        let hand_edited = "{\"playback\": {\"prev_track_jump_first\": true}}";
+        fs::write(&path, hand_edited).unwrap();
+
+        super::SETTINGS_SAVE_GENERATION.store(32, std::sync::atomic::Ordering::Relaxed);
+        super::SETTINGS_WRITTEN_GENERATION.store(0, std::sync::atomic::Ordering::Relaxed);
+        *super::PENDING_SETTINGS_SAVE.lock().unwrap() = Some(super::PendingSettingsSave {
+            generation: 32,
+            baseline: Some(b"{\"scanning\": {}}".to_vec()),
+            snapshot: std::sync::Arc::new(Settings::default()),
+            path: path.clone(),
+        });
+
+        super::flush_pending_settings();
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("prev_track_jump_first"),
+            "第三方手编不得被旧快照覆盖"
+        );
     }
 }
