@@ -100,12 +100,19 @@ impl FolderArtLoader {
         let permits = Arc::clone(&self.permits);
         let reads = Arc::clone(&self.reads);
         async move {
-            let _permit = permits.acquire_owned().await.ok()?;
+            let permit = permits.acquire_owned().await.ok()?;
             reads.fetch_add(1, Ordering::Relaxed);
-            spawn_blocking(move || std::fs::read(path).ok().map(Arc::new))
-                .await
-                .ok()
-                .flatten()
+            spawn_blocking(move || {
+                // 取消安全（2026-10-31 契约 4）：permit 移入 spawn_blocking
+                // 闭包内持有——async 帧被 abort 时名额跟着不可取消的阻塞任务
+                // 走，并发闸不被取消旁路（managed_image.rs
+                // run_blocking_with_permit 同款定型）。
+                let _permit = permit;
+                std::fs::read(path).ok().map(Arc::new)
+            })
+            .await
+            .ok()
+            .flatten()
         }
         .boxed()
         .shared()
@@ -190,14 +197,18 @@ impl ArtworkProcessor {
             Entry::Vacant(entry) => {
                 let permits = Arc::clone(&self.permits);
                 let result = async move {
-                    let _permit = permits.acquire_owned().await.ok()?;
-                    spawn_blocking(move || process_owned_album_art(raw))
-                        .await
-                        .map_err(|e| warn!("Artwork processing task failed: {:?}", e))
-                        .ok()?
-                        .map(|(image, thumb)| Arc::new(ProcessedArt { image, thumb }))
-                        .map_err(|e| warn!("Failed to process album art: {:?}", e))
-                        .ok()
+                    let permit = permits.acquire_owned().await.ok()?;
+                    spawn_blocking(move || {
+                        // 同上：permit 随闭包走，取消不旁路解码并发闸。
+                        let _permit = permit;
+                        process_owned_album_art(raw)
+                    })
+                    .await
+                    .map_err(|e| warn!("Artwork processing task failed: {:?}", e))
+                    .ok()?
+                    .map(|(image, thumb)| Arc::new(ProcessedArt { image, thumb }))
+                    .map_err(|e| warn!("Failed to process album art: {:?}", e))
+                    .ok()
                 }
                 .boxed()
                 .shared();

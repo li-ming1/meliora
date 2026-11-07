@@ -93,15 +93,24 @@ impl DirectoryReadPolicy {
         &self,
         directory: Utf8PathBuf,
     ) -> std::io::Result<ScanDirectorySnapshot> {
-        let _permit = self.permit_for(&directory).await;
-        spawn_blocking(move || read_scan_directory(&directory))
-            .await
-            .expect("directory read task panicked")
+        let permit = self.permit_for(&directory).await;
+        spawn_blocking(move || {
+            // 取消安全（2026-10-31 契约 4）：permit 移入 spawn_blocking
+            // 闭包内持有——async 帧被 abort 时名额跟着不可取消的阻塞任务
+            // 走，通道闸不被取消旁路（managed_image.rs
+            // run_blocking_with_permit 同款定型）。
+            let _permit = permit;
+            read_scan_directory(&directory)
+        })
+        .await
+        .expect("directory read task panicked")
     }
 
     pub(super) async fn inspect(&self, path: Utf8PathBuf) -> std::io::Result<PathInspection> {
-        let _permit = self.permit_for(&path).await;
+        let permit = self.permit_for(&path).await;
         spawn_blocking(move || {
+            // 同上：permit 随闭包走，取消不旁路通道闸。
+            let _permit = permit;
             let metadata = std::fs::metadata(&path)?;
             let scan_timestamp = metadata
                 .is_file()
