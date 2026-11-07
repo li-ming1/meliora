@@ -2,7 +2,7 @@
 //! 纯 HTTP + JSON；这里不涉及任何酷狗签名。
 //! 思路与端点都对照 `KuGou.Net/ExternalPlaylists/*`。
 
-use std::{sync::OnceLock, time::Duration};
+use std::sync::OnceLock;
 
 use cntp_i18n::tr;
 use serde_json::Value;
@@ -23,10 +23,10 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 static IMPORT_HTTP: OnceLock<Client> = OnceLock::new();
 fn http() -> &'static Client {
+    // 网关超时（连接 10s / 总计 30s）单点维护在 session_io；build 失败的
+    // 兜底是本调用方自己的策略（kugou client 是 panic，这里是无参 Client）。
     IMPORT_HTTP.get_or_init(|| {
-        Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+        crate::session_io::gateway_http_builder()
             .build()
             .unwrap_or_else(|_| Client::new())
     })

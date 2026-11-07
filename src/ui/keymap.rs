@@ -67,12 +67,18 @@ pub fn load_default_keymap(cx: &mut App) {
                     return None;
                 }
             };
-            let context_predicate = e.context.as_deref().and_then(|ctx| {
-                KeyBindingContextPredicate::parse(ctx)
-                    .map(Rc::new)
-                    .map_err(|err| tracing::warn!("invalid context {:?}: {err}", ctx))
-                    .ok()
-            });
+            // context 解析失败丢弃整个绑定（与上面 action 分支的 Err→None 同向）：
+            // None 谓词等于「所有上下文都匹配」，留着会把视图限定键放大成全局热键。
+            let context_predicate = match e.context.as_deref() {
+                None => None,
+                Some(ctx) => match KeyBindingContextPredicate::parse(ctx) {
+                    Ok(predicate) => Some(Rc::new(predicate)),
+                    Err(err) => {
+                        tracing::warn!("invalid context {:?}: {err}", ctx);
+                        return None;
+                    }
+                },
+            };
             KeyBinding::load(
                 &e.key,
                 action,

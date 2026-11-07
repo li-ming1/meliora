@@ -137,6 +137,9 @@ struct FftScratch {
     step_oct: f32,
     input: Vec<f32>,
     bins: Vec<Complex32>,
+    /// realfft 的临时缓冲，构造时用 `make_scratch_vec` 一次性预分配；
+    /// 默认 `process` 每次调用都在内部重新分配。
+    scratch: Vec<Complex32>,
     bins_db: Vec<f32>,
 }
 
@@ -149,7 +152,9 @@ impl FftScratch {
         for (sample, hann) in self.input.iter_mut().zip(&self.hann) {
             *sample *= hann;
         }
-        self.fft.process(&mut self.input, &mut self.bins).ok();
+        self.fft
+            .process_with_scratch(&mut self.input, &mut self.bins, &mut self.scratch)
+            .ok();
 
         // Hann 的相干增益是 0.5，所以满量程正弦落在 0 dB
         let norm = 4.0 / FFT_SIZE as f32;
@@ -226,6 +231,7 @@ impl Analyzer {
             scratch: FftScratch {
                 input: fft.make_input_vec(),
                 bins: fft.make_output_vec(),
+                scratch: fft.make_scratch_vec(),
                 bins_db: vec![SPECTRUM_MIN_DB; FFT_SIZE / 2 + 1],
                 fft,
                 hann,
