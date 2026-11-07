@@ -112,9 +112,9 @@ struct Shared<S> {
 fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
     // 在线流生产者线程与解码泵同登记 MMCSS：2026-10-21 在线播放实测单 run
     // 累计 5262 次 callback underrun（本地回放零欠载），网络填充是播放链条
-    // 上唯一未登记的生产环节；登记失败静默降级（mmcss 模块契约：线程退出
-    // 登记随之失效，逐曲目重建线程无泄漏）。
-    crate::devices::mmcss::register_playback_thread();
+    // 上唯一未登记的生产环节；登记失败静默降级。守卫绑定本函数存活期——
+    // 线程逐曲目重建，退出时 Drop 成对归还登记句柄（mmcss 模块契约）。
+    let _mmcss_registration = crate::devices::mmcss::register_playback_thread();
     let mut consecutive_errors = 0u32;
     // 每轮只取一个 chunk，栈缓冲提到循环外复用：省掉填充热路径上每 16KB
     // 一次的零初始化。

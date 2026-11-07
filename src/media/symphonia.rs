@@ -427,7 +427,9 @@ impl MediaStream for SymphoniaStream {
         let frame_capacity = audio_params.max_frames_per_packet.unwrap_or(8192) as usize;
         // 首次解码之前先报出最坏 packet 大小：管线按 `frame_duration()`
         // （见 setup_pipeline）来定解码环的尺寸，于是一个完整的大 packet 装得下。
-        // 第一个被解码的 packet 会用解码器的真实容量覆盖这个值。
+        // 申报值只作初值（FLAC 的 demuxer 根本不申报，unwrap_or 落 8192，而
+        // block_len_max 合法到 65535）；解码器构造后会按流内真实参数修订
+        // codec_params，下面立即用修订值覆盖。
         self.current_duration = frame_capacity as u64;
 
         self.conversion_buffer = (0..channel_count)
@@ -452,6 +454,21 @@ impl MediaStream for SymphoniaStream {
                 .make_audio_decoder(audio_params, &dec_opts)
                 .map_err(|_| PlaybackStartError::Undecodable)?
         });
+
+        // 开流即定容：FlacDecoder 构造时以 StreamInfo.block_len_max 修订
+        // max_frames_per_packet（申报值恒 8192 的大块 FLAC 在这里被抬到真实
+        // 块长）。setup_pipeline 在流打开之后才读 frame_duration()，拿到的是
+        // 修订值——大块 FLAC 从第一个大包起就能整体写入解码环，零首包损失、
+        // 零 Rebuild。
+        if let Some(decoder) = self.decoder.as_mut()
+            && let Some(max_frames) = decoder.codec_params().max_frames_per_packet
+        {
+            let actual = max_frames as usize;
+            self.current_duration = actual as u64;
+            self.conversion_buffer = (0..channel_count)
+                .map(|_| Vec::with_capacity(actual))
+                .collect();
+        }
 
         Ok(())
     }

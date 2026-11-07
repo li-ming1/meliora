@@ -62,6 +62,10 @@ const DEVICE_RECREATE_BACKOFF_MAX: std::time::Duration = std::time::Duration::fr
 #[derive(Debug, Clone, Default)]
 struct PipelineOverrides {
     source_spec: Option<ChannelSpec>,
+    /// 解码环形缓冲的帧容量（Some 时取代媒体流申报的 `frame_duration()`）：
+    /// 申报容量偏小的流（大块 FLAC）在写环节丢音频，按解码器报告的真实块长
+    /// 重建。见 `process_decode_resample` 的纵深防御臂。
+    buffer_frames: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +153,9 @@ pub struct AudioEngine {
     /// 已在途预备线程的取消旗标：预备失效时（队列变更、停止）置位，让被丢弃的
     /// 预备不再为一个没人会读的结果继续付提供者刷新调用与第二次完整打开。
     prepare_cancel: Option<Arc<AtomicBool>>,
+    /// Unknown 解码错误的「每曲一次」日志旗标（open 复位）：持续性写失败
+    /// （例如解码环装不下大块 FLAC）逐包复现，不限频就是日志风暴。
+    unknown_decode_logged: bool,
 }
 
 /// 队列变更使预备失效后，同一首下一曲重新预备要推迟多久
@@ -211,6 +218,7 @@ impl AudioEngine {
             dropped_prepare: None,
             failed_prepare: None,
             prepare_cancel: None,
+            unknown_decode_logged: false,
         }
     }
 
@@ -276,6 +284,31 @@ impl AudioEngine {
         self.prepare_blocked(path)
     }
 
+    /// 预备失败冷却是否仍在生效（路径无关）：上一次后台预备失败后的
+    /// [`PREPARE_FAILURE_COOLDOWN`] 内为真。供 `maybe_prepare_next` 在取队列锁与
+    /// 逐槽 stat 之前就地早退——冷却期内每次 prepare 尝试都注定被
+    /// `prepare_rejected` 拒掉，先取锁只付纯开销（冷却键之外的路径逐槽 stat 扫描
+    /// 还要持队列读锁，冻住 UI 写者）。
+    pub fn prepare_failure_cooldown_active(&self) -> bool {
+        self.failed_prepare
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < PREPARE_FAILURE_COOLDOWN)
+    }
+
+    /// 清除预备失败冷却：next 身份变化的失效源（换曲 open、QueueUpdated、循环/
+    /// 随机切换、预备落地回写 replace_next_path）调用后，新下一曲当轮即可重新
+    /// 布防。只动 `failed_prepare`；`dropped_prepare` 的编辑风暴冷却原样保留。
+    pub fn clear_prepare_failure_cooldown(&mut self) {
+        self.failed_prepare = None;
+    }
+
+    /// 测试注入：把失败冷却置为刚失败，让 thread 层能在不真跑一次注定失败的
+    /// 后台预备的前提下断言冷却门的行为。
+    #[cfg(test)]
+    pub fn force_prepare_failure_cooldown(&mut self) {
+        self.failed_prepare = Some((PathBuf::new(), std::time::Instant::now()));
+    }
+
     /// 在后台线程预打开 `path` 的媒体流，让曲终时的换曲不必等待连接+探测（在线源）。
     /// `on_open_error` 给预备装上一枚一次性的 URL 刷新重试：打开失败时（过期的签名
     /// URL），钩子取一个新路径并对它再跑一次打开——全程在预备线程上，因此自救发生
@@ -306,8 +339,9 @@ impl AudioEngine {
                 // 其执行阻塞在 HTTP+TLS+格式探测上，CPU 竞争下被拉长的预备时延
                 // 会侵蚀 3s 稳定门（STABLE_PREPARE_DELAY_MS）与 15s 曲尾门
                 // （PREPARE_LEAD_MS）的预备提前量。登记失败静默降级（mmcss
-                // 模块契约）；线程一次性、随结果发送退出，登记随之失效。
-                crate::devices::mmcss::register_playback_thread();
+                // 模块契约）；线程一次性、随结果发送退出，守卫 Drop 成对归还
+                // 登记句柄。
+                let _mmcss_registration = crate::devices::mmcss::register_playback_thread();
                 // 过期的签名 URL：首次打开失败，钩子重新取一个新路径，并对它
                 // 重试打开一次。结果里上报最终路径，好让调用方把它回写给队列。
                 let (path, result) =
@@ -459,6 +493,11 @@ impl AudioEngine {
 
         self.drain = DrainState::Inactive;
         self.rebuild_attempts = 0;
+        // 换曲 = next 身份失效：上一曲期间记下的预备失败冷却对新下一曲没有
+        // 意义，清掉让它当轮即可重新布防。Unknown 解码错误的日志限频同样
+        // 按曲计，一并复位。
+        self.failed_prepare = None;
+        self.unknown_decode_logged = false;
 
         if !preserve_resampler {
             self.reset_resampler();
@@ -1144,12 +1183,16 @@ impl AudioEngine {
         // （例如大块 24-bit/96 kHz FLAC）否则会每个包都丢音频，因为同线程的重采样器
         // 无法在写入中途排空，而非阻塞的包写入会丢掉放不下的一部分。普通流保持
         // 默认尺寸不变。
-        let buffer_frames = self
-            .media
-            .frame_duration()
-            .map(|d| d as usize)
-            .unwrap_or(DEFAULT_BUFFER_FRAMES)
-            .max(DEFAULT_BUFFER_FRAMES);
+        let buffer_frames = match overrides.buffer_frames {
+            // 纵深防御臂按解码器报告的真实块长重建，不再信申报值。
+            Some(actual) => actual.max(DEFAULT_BUFFER_FRAMES),
+            None => self
+                .media
+                .frame_duration()
+                .map(|d| d as usize)
+                .unwrap_or(DEFAULT_BUFFER_FRAMES)
+                .max(DEFAULT_BUFFER_FRAMES),
+        };
 
         let pipeline = AudioPipeline::new(
             source_channel_count,
@@ -1239,7 +1282,24 @@ impl AudioEngine {
         let decode_result = match self.media.decode_into(&mut p.decoder_output) {
             Ok(result) => result,
             Err(e) => {
-                return Self::handle_decode_error(e);
+                // 纵深防御：开流定容（symphonia start_playback 按解码器修订值定容）
+                // 之外的残余面——codec_params 未反映解码器修订、或未来 demuxer 申报
+                // 出错——落到这里时，症状是「pipeline write failed」的 Unknown：
+                // 包写入解码环放不下，非阻塞写把超容部分整体丢弃。失败包的 decode
+                // 已把真实块长写进 frame_duration()（symphonia decode_into 的
+                // current_duration 赋值先于写环节），比当前环大就按真值重建。
+                // 与 ChannelCountChanged 走同一条 Rebuild 通道，MAX_REBUILD_ATTEMPTS
+                // 封顶。
+                if let crate::media::errors::PlaybackReadError::Unknown(_) = e
+                    && let Some(actual) = self.media.frame_duration().ok().map(|d| d as usize)
+                    && actual > p.decoder_buffer_frames
+                {
+                    return Ok(DecodeStepResult::Rebuild(PipelineOverrides {
+                        buffer_frames: Some(actual),
+                        ..Default::default()
+                    }));
+                }
+                return Self::handle_decode_error(e, &mut self.unknown_decode_logged);
             }
         };
 
@@ -1464,9 +1524,11 @@ impl AudioEngine {
         output.write_slices(&slices)
     }
 
-    /// 统一处理解码错误
+    /// 统一处理解码错误。`unknown_logged` 是 Unknown 错误的「每曲一次」日志
+    /// 限频旗标（open 复位）：真坏文件的 Unknown 仍逐包发生，日志只记首次。
     fn handle_decode_error(
         e: crate::media::errors::PlaybackReadError,
+        unknown_logged: &mut bool,
     ) -> Result<DecodeStepResult, EngineError> {
         use crate::media::errors::PlaybackReadError;
 
@@ -1491,11 +1553,15 @@ impl AudioEngine {
                 warn!("decoded channel count changed to {count}; rebuilding pipeline");
                 Ok(DecodeStepResult::Rebuild(PipelineOverrides {
                     source_spec: Some(ChannelSpec::Count(count.min(usize::from(u16::MAX)) as u16)),
+                    ..Default::default()
                 }))
             }
             PlaybackReadError::Unknown(s) => {
-                error!("Unknown decode error: {}", s);
-                warn!("Samples may be skipped");
+                if !*unknown_logged {
+                    error!("Unknown decode error: {}", s);
+                    warn!("Samples may be skipped");
+                    *unknown_logged = true;
+                }
                 Ok(DecodeStepResult::Continue)
             }
             PlaybackReadError::DecodeFatal(s) => {
@@ -1546,6 +1612,28 @@ mod tests {
             .iter()
             .flat_map(|p| p.iter())
             .fold(0.0_f64, |peak, &s| peak.max(s.abs()))
+    }
+
+    fn idle_engine() -> AudioEngine {
+        let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        AudioEngine::new(events_tx, spectrum_tap().0)
+    }
+
+    /// 预备失败冷却的查询/清除语义：新引擎无冷却；force 置位后路径无关地生效；
+    /// clear 清空后失效。thread 层经 force_prepare_failure_cooldown 注入。
+    #[test]
+    fn prepare_failure_cooldown_query_and_clear() {
+        let mut engine = idle_engine();
+        assert!(!engine.prepare_failure_cooldown_active());
+
+        engine.force_prepare_failure_cooldown();
+        assert!(engine.prepare_failure_cooldown_active());
+        // 冷却路径无关：键上的路径不参与判定（maybe_prepare_next 拿不到键——
+        // 它是引擎私有状态——所以门必须是布尔语义）。
+        assert!(!engine.prepare_rejected(Path::new("/definitely-not-the-key")));
+
+        engine.clear_prepare_failure_cooldown();
+        assert!(!engine.prepare_failure_cooldown_active());
     }
 
     #[test]

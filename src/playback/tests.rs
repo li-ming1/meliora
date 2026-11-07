@@ -3,5 +3,5 @@ mod bit_transparency;
 mod device_drift;
 mod eof_drain;
 mod error_handling;
-mod harness;
+pub(crate) mod harness;
 mod round_trip;

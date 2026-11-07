@@ -249,7 +249,8 @@ impl PlaybackThread {
                 // 解码泵的 MMCSS 登记（"Playback" 任务类）：CPU 竞争场景
                 // 下保住环形缓冲的生产者——2026-10-04 的 696 次 underrun
                 // 就是泵线程被后台构建饿穿（见 devices::mmcss 模块文档）。
-                crate::devices::mmcss::register_playback_thread();
+                // 守卫绑定线程闭包：泵线程与进程同寿，Drop 实际不会发生。
+                let _mmcss_registration = crate::devices::mmcss::register_playback_thread();
                 // 恢复出来的会话里当前曲目若是在线直链，其签名 URL 跨进程
                 // 必然过期：首个打开前先刷新，省掉一轮注定 403 的陈旧打开
                 // （见 open_with_resampler 的先行刷新分支）。
@@ -775,6 +776,13 @@ impl PlaybackThread {
         // 在取队列锁并克隆 PathBuf 之前的廉价守卫：预备窗口内每个解码周期都会
         // 走到这里，而下一流一旦已预备/已在途，之后的每次调用都是纯开销。
         if self.engine.is_next_prepared() {
+            return;
+        }
+        // 失败冷却门（路径无关）：30s 失败冷却窗内每次尝试都注定被
+        // prepare_rejected 拒掉，先 peek 只是白付——纯缺失尾部的逐周期
+        // O(tail) stat 扫描还要持队列 RwLock 读守卫（UI 写者全程等待）。
+        // 冷却键是引擎私有状态，拿不到键值比对，布尔门是唯一形态。
+        if self.engine.prepare_failure_cooldown_active() {
             return;
         }
         let Some(next_path) = self.queue.peek_next_path() else {
@@ -1474,6 +1482,10 @@ impl PlaybackThread {
             return;
         }
         self.toggle_shuffle();
+        // 重排改写 next 身份：旧 next 上的预备失败冷却对洗牌后的新 next 没有
+        // 意义（UI 开关走的 toggle_shuffle 经 QueueUpdated 钩子清除，本入口
+        // 同步语义）。
+        self.engine.clear_prepare_failure_cooldown();
     }
 
     /// 设置播放流的音量。
@@ -1489,6 +1501,10 @@ impl PlaybackThread {
     fn set_repeat(&mut self, state: RepeatState) {
         self.queue.set_repeat(state);
         self.engine.set_looping(state == RepeatState::RepeatingOne);
+        // 循环模式改写 next 身份（列表循环回绕、单曲循环指向当前曲）：旧 next
+        // 上的预备失败冷却对新 next 没有意义。RepeatChanged 不触发 send_event
+        // 的 QueueUpdated 分支，这里显式清。
+        self.engine.clear_prepare_failure_cooldown();
 
         self.send_event(PlaybackEvent::RepeatChanged(self.queue.repeat_state()));
     }
@@ -1586,6 +1602,11 @@ impl PlaybackThread {
         if report.path != report.requested {
             self.queue
                 .replace_next_path(&report.requested, report.path.clone());
+            // 失败冷却以*被请求的*路径为键（引擎侧 failed_prepare 记录的是
+            // requested）；这次成功之后队列条目已被直改（replace_next_path
+            // 不发任何事件），回写前若是失败的旧 next，冷却会无差别门禁新
+            // next ≤30s——回写即身份落地，一并清。
+            self.engine.clear_prepare_failure_cooldown();
         }
         let still_next = self
             .queue
@@ -1605,6 +1626,12 @@ impl PlaybackThread {
             let next = self.queue.peek_next_path();
             self.engine.drop_prepared_unless_next(next.as_deref());
         }
+        // 队列变更同时使预备失败冷却过期：冷却键记在旧 next 身份上，broken-next
+        // 场景（预备失败 + 无预备流）上面的守卫块恒不进入，clear 必须独立判定，
+        // 否则新 next 会被无差别门禁整个 30s 冷却窗。
+        if matches!(event, PlaybackEvent::QueueUpdated) {
+            self.engine.clear_prepare_failure_cooldown();
+        }
         // Err 只代表 UI（连同它的接收端）已经没了
         let _ = self.events_tx.send(event);
     }
@@ -1613,33 +1640,8 @@ impl PlaybackThread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::playback::tests::harness::write_wav_i16;
     use crate::test_support::{TestDir, register_test_media_providers};
-
-    /// 写一个最小的有效 PCM wav（全零样本）：足以被 symphonia/lofty 打开探测。
-    /// 引擎不 initialize 设备，open 只走媒体级（无设备流 → 不搭管线）。
-    fn write_wav_i16(path: &Path, rate: u32, channels: u16, frames: usize) {
-        let samples = frames * usize::from(channels);
-        let data = vec![0_u8; samples * 2];
-        let block_align = channels * 16 / 8;
-        let byte_rate = rate * u32::from(block_align);
-        let riff_len = 4 + 24 + 8 + data.len() as u32;
-        let mut out = Vec::with_capacity(riff_len as usize + 8);
-        out.extend_from_slice(b"RIFF");
-        out.extend_from_slice(&riff_len.to_le_bytes());
-        out.extend_from_slice(b"WAVE");
-        out.extend_from_slice(b"fmt ");
-        out.extend_from_slice(&16u32.to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        out.extend_from_slice(&channels.to_le_bytes());
-        out.extend_from_slice(&rate.to_le_bytes());
-        out.extend_from_slice(&byte_rate.to_le_bytes());
-        out.extend_from_slice(&block_align.to_le_bytes());
-        out.extend_from_slice(&16u16.to_le_bytes());
-        out.extend_from_slice(b"data");
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(&data);
-        std::fs::write(path, out).expect("failed to write test WAV");
-    }
 
     /// 组装一个真实的 PlaybackThread（真实通道 + QueueManager + 引擎），引擎
     /// 保持 Idle（不 initialize 设备）：open 只走媒体级。按 thread.rs 构造形态
@@ -1689,7 +1691,7 @@ mod tests {
         let items = (0..count)
             .map(|i| {
                 let path = dir.join(&format!("t{i}.wav"));
-                write_wav_i16(&path, 44_100, 2, 1_024);
+                write_wav_i16(&path, 44_100, 2, &[0_i16; 1_024 * 2]);
                 QueueItemData::new(path, None, None)
             })
             .collect();
@@ -1866,6 +1868,42 @@ mod tests {
 
         // 稳定播放满 3 秒：即刻启动后台预备
         thread.last_timestamp = 3_500;
+        thread.maybe_prepare_next();
+        assert!(thread.engine.is_next_prepared());
+    }
+
+    /// 预备失败冷却门（路径无关布尔门）：冷却期内 maybe_prepare_next 在取队列
+    /// 锁之前就地早退，不为注定被拒的路径扫描注册表；next 身份失效源清除冷却
+    /// 后当轮即可重新布防。这里钉 QueueUpdated 钩子与 set_repeat 两个失效源；
+    /// 换曲 open 在引擎侧直清、落地回写在 handle_prepared_report 直清。
+    #[test]
+    fn prepare_failure_cooldown_gates_maybe_prepare_next() {
+        register_test_media_providers();
+        let (_dir, items) = wav_dir_items("hb-thread-prepare-cooldown", 3);
+        let (mut thread, _events_rx) = thread_with_queue(items);
+
+        thread.jump(0);
+        thread.duration_ms = Some(180_000);
+        thread.last_timestamp = 3_500;
+
+        // 注入失败冷却（不走真实失败路径）：稳定门满足也不发起预备。
+        thread.engine.force_prepare_failure_cooldown();
+        thread.maybe_prepare_next();
+        assert!(!thread.engine.is_next_prepared());
+
+        // 失效源 1：QueueUpdated——send_event 的 clear 是独立判定，broken-next
+        // 场景（无预备流）上面的 is_next_prepared 守卫块不进入，清除必须仍发生。
+        thread.send_event(PlaybackEvent::QueueUpdated);
+        assert!(!thread.engine.prepare_failure_cooldown_active());
+
+        // 失效源 2：set_repeat——RepeatChanged 不触发 QueueUpdated 分支，靠显式清。
+        thread.engine.force_prepare_failure_cooldown();
+        thread.set_repeat(RepeatState::Repeating);
+        assert!(!thread.engine.prepare_failure_cooldown_active());
+
+        // 引擎级 clear（换曲 open / replace_next_path 回写走的同一个入口）之后
+        // 当轮即可重新布防。
+        thread.engine.clear_prepare_failure_cooldown();
         thread.maybe_prepare_next();
         assert!(thread.engine.is_next_prepared());
     }
