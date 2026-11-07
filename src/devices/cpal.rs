@@ -10,7 +10,8 @@ use crate::{
         util::{AtomicF64, DitherLsb, GainRamp, Scale, soft_limit, tpdf},
     },
     media::pipeline::{
-        ChannelConsumers, DEFAULT_BUFFER_FRAMES, read_available, write_bounded_planar,
+        ChannelConsumers, DEFAULT_BUFFER_FRAMES, RING_WRITE_DEADLINE, read_available,
+        write_bounded_planar,
     },
 };
 use cpal::{
@@ -171,6 +172,22 @@ fn cpal_config_from_info(format: &FormatInfo) -> Result<cpal::StreamConfig, ()> 
 
 fn frames_for_duration(sample_rate: u32, duration: Duration) -> u32 {
     ((u64::from(sample_rate) * duration.as_micros() as u64) / 1_000_000).max(1) as u32
+}
+
+/// 设备环提交量的钳位公式（AUDIO-2 修订）：
+/// 提交帧数 = min(管线可给量, 交织容量, 环空闲帧 + 半窗排空视野)。
+///
+/// 环空闲帧是「此刻就能写下」的量；半窗排空视野给满环情形留出边排边写的
+/// 窗口。独立成纯函数是为了让公式边界可被表驱动测试钉住。
+fn clamp_submission_frames(
+    potential: usize,
+    capacity_frames: usize,
+    free_frames: usize,
+    drain_view_frames: usize,
+) -> usize {
+    potential
+        .min(capacity_frames)
+        .min(free_frames + drain_view_frames)
 }
 
 trait CpalSample: SizedSample + Default + Send + Sized + 'static + Scale {}
@@ -499,8 +516,28 @@ where
 
         self.report_underruns();
 
-        let capacity_frames = self.interleave_buffer.capacity() / input.channel_count().max(1);
-        let available = input.potentially_available().min(capacity_frames);
+        // 声道数已由 FormatMismatch 守卫强制与 config.channels 相等；环内样本按
+        // 它交织排列，回帧数统一用它（max(1) 防 0 除）。
+        let channels = input.channel_count().max(1);
+        let capacity_frames = self.interleave_buffer.capacity() / channels;
+        // 提交量按「环空闲帧 + 半窗排空视野」钳位（AUDIO-2 修订）。固定上限 8192
+        // 帧与设备环的排空视野脱节：环只装 RING_BUFFER_TARGET(250ms) 的帧数，低
+        // 速率上报端点（<32kHz，16k 环仅 4000 帧）产速快于实时是常态，满环提交
+        // 8192 帧时瞬时可写为 0，250ms 内回调最多排空一个环容量 → 必然
+        // Err(WriteTimeout) 假故障循环，触发引擎重建退避。视野取半窗（125ms）
+        // 而非全窗：贴 250ms 边界的完成时间会被 1ms park 粒度（RING_WRITE_PARK）
+        // 与回调抖动打穿，半窗留一倍余量。满环（free=0）不早退：钳位 = 半窗排空
+        // 量，125ms 内排完即写入成功；真设备故障时 free 恒 0 且无排空，写入仍满
+        // 250ms 超时——WriteTimeout 语义还原为真设备故障。触发面：dummy 输出不
+        // 走 rtrb 环，产不出该超时，真实触发面是低速上报端点。健康流代价：环近
+        // 满时（free < 8192 - 半窗排空量）提交被切成多周期小份，吞吐不变，余量
+        // 留在有界 device_input 由引擎侧既有 throttle 自调节。
+        let available = clamp_submission_frames(
+            input.potentially_available(),
+            capacity_frames,
+            self.ring_buf.slots() / channels,
+            frames_for_duration(self.config.sample_rate, RING_WRITE_DEADLINE / 2) as usize,
+        );
         if available == 0 {
             self.idle_since.get_or_insert_with(Instant::now);
             return Ok(0);
@@ -618,5 +655,40 @@ mod tests {
         assert_silent::<i32>();
         assert_silent::<f32>();
         assert_silent::<f64>();
+    }
+
+    /// 提交钳位公式的边界（AUDIO-2 修订）。以 16kHz 流钉半窗换算
+    /// （RING_WRITE_DEADLINE 半窗 = 125ms → 2000 帧），再表驱动钉公式四端：
+    /// 满环、空环、8192 满量直通与钳位取端。
+    #[test]
+    fn submission_clamp_formula_boundaries() {
+        assert_eq!(
+            frames_for_duration(16_000, RING_WRITE_DEADLINE / 2),
+            2000,
+            "half-window drain view at 16kHz must be 2000 frames"
+        );
+
+        // (说明, potential, capacity_frames, free_frames, drain_view, expected)
+        let cases: &[(&str, usize, usize, usize, usize, usize)] = &[
+            // 满环（free=0）：不早退为 0，钳位 = 半窗排空量，125ms 内排完即写入成功
+            ("full ring", 8192, 8192, 0, 2000, 2000),
+            // 空环（free=满）：16k 环仅 4000 帧，free+视野 咬合，余量下一周期续交
+            ("empty low-rate ring", 8192, 8192, 4000, 2000, 6000),
+            // 健康流（48k：环 12000 帧、视野 6000）：8192 满量直通，钳位不咬合
+            ("healthy stream", 8192, 8192, 12000, 6000, 8192),
+            // 钳位取端：管线可给量压住一切
+            ("pipeline limited", 1234, 8192, 0, 2000, 1234),
+            // 钳位取端：交织容量压住
+            ("capacity limited", 8192, 1000, 4000, 2000, 1000),
+            // 管线空：available=0，走既有 idle 分支
+            ("no input", 0, 8192, 0, 2000, 0),
+        ];
+        for &(name, potential, capacity, free, view, expected) in cases {
+            assert_eq!(
+                clamp_submission_frames(potential, capacity, free, view),
+                expected,
+                "case {name}"
+            );
+        }
     }
 }

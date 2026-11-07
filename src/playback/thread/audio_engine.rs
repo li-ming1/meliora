@@ -1050,7 +1050,9 @@ impl AudioEngine {
             // WriteTimeout 每个周期都复现的设备，靠重建永远收敛不了；用一个逐步
             // 变大的推迟窗口给重建定拍，而不是每周期翻弄这条流。上面那次 consume
             // 尝试仍每周期执行，所以它的超时继续给循环定拍，而持续到窗口之后的
-            // 一次干净 consume 会清掉退避。
+            // 一次干净 consume 会清掉退避。低速率环的提交量已按「空闲槽位 + 半窗
+            // 排空视野」钳位（CpalStream::consume_from），这里的 WriteTimeout 即
+            // 真设备故障。
             let now = std::time::Instant::now();
             if let Some((next_recreate, _)) = self.device_recreate_defer
                 && now < next_recreate

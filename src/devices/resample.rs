@@ -179,10 +179,25 @@ impl Resampler {
         Ok(Resampler {
             resampler,
             duration,
-            // 容量按一个周期能喂进来的最大读取量再加一块未排空的分片来定，
-            // 因此稳态处理过程中永不扩容
+            // 容量不变量：稳态下占用 ≤ 单周期最大读取量（调用方传
+            // decoder_buffer_frames，须 ≤ max(DEFAULT_BUFFER_FRAMES, duration)）+
+            // 上轮未排空的 <duration 残余，故稳态处理过程永不扩容。
+            // 跨批依赖（B6 先于 B2 施工的原因）：B2 把大块 FLAC 的
+            // decoder_buffer_frames 抬到 65535 后，占用上界 dbf + duration - 1 =
+            // 131070 > 旧容量 8192 + 65536 = 73728；本公式 65536 + 65536 = 131072
+            // 密闭。残余边角：跨曲目复用经 matches_params 刻意不比 duration
+            // （见下），新曲 duration 更大时输入缓冲仍可能一次扩容——VecDeque
+            // 扩容非正确性问题；要绝对密闭可给 Resampler::new 增收 max_read 参数
+            // （调用点 p.decoder_buffer_frames 在手），本轮不取，最小 diff。
             input_buffer: (0..channels_usize)
-                .map(|_| VecDeque::with_capacity(DEFAULT_BUFFER_FRAMES + duration as usize))
+                .map(|_| {
+                    // duration 在 usize 域参与运算（with_capacity 收 usize）：
+                    // duration + max(DEFAULT, duration)
+                    VecDeque::with_capacity(
+                        (duration as usize)
+                            .saturating_add(DEFAULT_BUFFER_FRAMES.max(duration as usize)),
+                    )
+                })
                 .collect(),
             temp_input: (0..channels_usize)
                 .map(|_| Vec::with_capacity(duration as usize))
@@ -507,5 +522,54 @@ mod tests {
         let mut out = vec![Vec::new(), Vec::new()];
         assert_eq!(resampler.flush_into(&mut out), 0);
         assert!(out[0].is_empty());
+    }
+
+    /// AUDIO-4：大分块解码器（duration > DEFAULT_BUFFER_FRAMES）稳态处理不得
+    /// 触发输入缓冲扩容——容量 = duration + max(DEFAULT, duration)，密闭「单周期
+    /// 最大读取 + <duration 残余」上界。feed_constant 的 8192 环会压住读取，
+    /// 复现不了生产配置（调用点 max_input = decoder_buffer_frames），故按生产
+    /// 形态自建 32768 环、16384 帧的 process_into。
+    #[test]
+    fn large_chunk_steady_state_does_not_grow_input_buffers() {
+        let duration = 16_384usize;
+        let max_input = 16_384usize;
+        let mut resampler = Resampler::new(44_100, 48_000, duration as u64, 2).unwrap();
+
+        let expected_cap = duration + DEFAULT_BUFFER_FRAMES.max(duration);
+        let cap_before: Vec<usize> = resampler
+            .input_buffer
+            .iter()
+            .map(|b| b.capacity())
+            .collect();
+        assert_eq!(
+            cap_before,
+            vec![expected_cap; 2],
+            "capacity must equal duration + max(DEFAULT_BUFFER_FRAMES, duration)"
+        );
+
+        let (mut producers, mut consumers) = ChannelBuffers::new(2, 32_768).split();
+        let mut out = vec![Vec::new(), Vec::new()];
+
+        // 每轮喂 duration + 3616 帧：读取被 max_input 钳在 duration，泵干后留
+        // 残余跨轮——残余与下一轮读取在容量上界附近反复叠加。
+        for _ in 0..4 {
+            let piece = max_input + 3616;
+            let planes = vec![vec![0.5f64; piece], vec![0.5f64; piece]];
+            producers.write_vecs_nonblocking(&planes).unwrap();
+            while resampler.process_into(&mut consumers, &mut out, max_input) > 0 {}
+        }
+        // 排干环形缓冲里剩下的部分
+        while resampler.process_into(&mut consumers, &mut out, max_input) > 0 {}
+
+        let cap_after: Vec<usize> = resampler
+            .input_buffer
+            .iter()
+            .map(|b| b.capacity())
+            .collect();
+        assert_eq!(
+            cap_after, cap_before,
+            "steady-state processing reallocated input buffers"
+        );
+        assert!(!out[0].is_empty(), "resampler produced no output");
     }
 }
