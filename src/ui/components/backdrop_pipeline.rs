@@ -254,3 +254,247 @@ pub(super) fn denoise_rgba(image: &mut image::RgbaImage) {
         }
     }
 }
+
+#[cfg(test)]
+mod bench {
+    //! 沉浸页背景管线的段级耗时探针：CPU-1（去噪核替换）的出数载体，同时
+    //! 给出 backdrop_sharp_fill 各段占比与端到端交叉核对。
+    //!
+    //! 两种源口径各测一遍（对应 backdrop_sharp_fill :103-105 的去噪分支），
+    //! 目标统一 1920×1080（"对齐 1920 宽全屏"的代表档）：
+    //! - 4096² 源：band 4096×2304，band_long 4096 ≥ 2×1920 → **跳过中值**
+    //!   （0.47× 缩采样，重采样平均效应接管 JPEG 块伤）；
+    //! - 2048² 源：band 2048×1152，band_long 2048 < 2×1920 → **走中值去噪**
+    //!   （1.07× 近 1:1 搬运，块伤会原样上屏）。
+    //! 去噪分支与滤波器都按 backdrop_sharp_fill 的同一条件式在运行时取，不
+    //! 写死——口径漂移会直接体现在输出行里。
+    //!
+    //! CPU-1 判读（阈值写死备查，裁决时可修订）：去噪段占端到端 <15% 直接
+    //! 否决换核（换核 2× 提速也只省端到端 <8%）；15-30% 灰区，需换核预期
+    //! 提速 ≥2×；≥30% 明确标的。去噪占比 × 换核提速倍数 = 端到端可省上限。
+    //! 4096 口径去噪占比恒为 0（已跳过），它的读数价值在重采样段与"≥2× 跳
+    //! 过去噪省一半"的实证。
+    //!
+    //! 交叉核对：裁剪带搬运（纯 memcpy）单列一段，四段之和应≈端到端 mean；
+    //! 残差（RenderImage::new/Arc 等小开销）>10% 说明分段口径与端到端脱节，
+    //! 先查口径再信占比。端到端产出即弃（含输出分配与释放），生产里产出进
+    //! 缓存驻留——交叉核本是同口径对比，无碍。
+    //!
+    //! A/B 纪律（sharpen_rgba_with 文档的教训）：对照必须同环境、同序列、
+    //! 同进程，跨进程 bench 序列不可直接比。合成数据为固定种子噪声——三段
+    //! 都是全像素规则遍历，成本与像素值基本无关，噪声即代表性输入。
+    //!
+    //! 已从常规测试运行中排除——耗时依赖环境，只作为给人读的报告才有意义：
+    //!
+    //! ```text
+    //! cargo test --release --features kugou bench_backdrop_segments -- --ignored --nocapture
+    //! ```
+
+    use std::hint::black_box;
+
+    use super::*;
+
+    /// 端到端目标：1920×1080 全屏设备像素（数值恰为 ENHANCE_TARGET_PX，但
+    /// 语义是窗口目标尺寸的代表档，二者只是巧合同值）。
+    const TARGET_W: u32 = 1920;
+    const TARGET_H: u32 = 1080;
+
+    /// 重量级计时点（去噪/重采样/锐化/端到端，单轮估 40-300ms）：2 轮预热
+    /// + 6 轮计时，单点累计 240ms-2.4s，稳过 200ms 稳定性下限；9 个计时点合
+    /// 计墙钟 ~8s。
+    const HEAVY_WARMUP: usize = 2;
+    const HEAVY_RUNS: usize = 6;
+    /// 裁剪带搬运（纯 memcpy + band 分配，估 3-15ms/轮）的轮数：30 轮补足
+    /// 累计时长；它只服务交叉核对，不参与占比裁决。
+    const LIGHT_WARMUP: usize = 4;
+    const LIGHT_RUNS: usize = 30;
+    /// 交叉核对残差的可接受上限（占端到端的百分比）。
+    const CROSSCHECK_RESIDUAL_MAX_PCT: f64 = 10.0;
+
+    /// 固定种子（任意常数，只求跨运行逐字节一致；禁止运行时随机）。
+    const SEED: u64 = 0x4D45_4C49_4F52_4100;
+
+    /// 固定种子 LCG（Knuth MMIX 常数）填充的 RGBA 噪声图。
+    fn synthetic_rgba(w: u32, h: u32, seed: u64) -> image::RgbaImage {
+        let mut state = seed;
+        let bytes: Vec<u8> = (0..w as usize * h as usize * 4)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect();
+        image::RgbaImage::from_raw(w, h, bytes).unwrap()
+    }
+
+    /// backdrop_sharp_fill 裁剪带搬运段（:82-93）的同式复刻：cover 居中裁剪
+    /// 逐行 `copy_from_slice`，含 band 的分配（生产同款 `RgbaImage::new`）。
+    fn crop_band(src: &image::RgbaImage, crop_w: u32, crop_h: u32) -> image::RgbaImage {
+        let (sw, sh) = src.dimensions();
+        let stride = sw as usize * 4;
+        let x0 = ((sw - crop_w) / 2) as usize;
+        let y0 = ((sh - crop_h) / 2) as usize;
+        let bytes = src.as_raw();
+        let mut band = image::RgbaImage::new(crop_w, crop_h);
+        let row_bytes = crop_w as usize * 4;
+        for (row, dst) in band.chunks_exact_mut(row_bytes).enumerate() {
+            let sy = y0 + row;
+            dst.copy_from_slice(&bytes[sy * stride + x0 * 4..][..row_bytes]);
+        }
+        band
+    }
+
+    /// 段级计时：`warmup` 轮免计时后计 `runs` 轮，打印与
+    /// `test_support::bench_summarize_n` 同形的摘要并返回 mean（ms）。返回
+    /// 值是"分段之和 vs 端到端"交叉核对所必需（bench_summarize_n 不回传样
+    /// 本）；格式刻意对齐，两处输出可同表判读。
+    fn bench_segment(name: &str, warmup: usize, runs: usize, mut f: impl FnMut()) -> f64 {
+        for _ in 0..warmup {
+            f();
+        }
+        let mut samples = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            let start = std::time::Instant::now();
+            f();
+            samples.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+        samples.sort_by(|a, b| a.total_cmp(b));
+        let mean = samples.iter().sum::<f64>() / runs as f64;
+        if runs >= 10 {
+            println!(
+                "{name:<40} min={:>8.1}ms  p50={:>8.1}ms  p90={:>8.1}ms  mean={:>8.1}ms  ({runs} runs)",
+                samples[0],
+                samples[runs / 2],
+                samples[runs * 9 / 10],
+                mean,
+            );
+        } else {
+            println!(
+                "{name:<40} min={:>8.1}ms  mean={:>8.1}ms  ({runs} runs)",
+                samples[0], mean,
+            );
+        }
+        mean
+    }
+
+    #[test]
+    #[ignore = "timing report, run with --ignored --nocapture"]
+    fn bench_backdrop_segments() {
+        for (src_long, label) in [(4096u32, "4096"), (2048, "2048")] {
+            // cover 居中裁剪（backdrop_sharp_fill :74-79 同式）得出的 band 尺寸
+            let crop_w = (f64::from(src_long)
+                .min(f64::from(src_long) * f64::from(TARGET_W) / f64::from(TARGET_H)))
+            .round()
+            .max(1.0) as u32;
+            let crop_h = (f64::from(src_long)
+                .min(f64::from(src_long) * f64::from(TARGET_H) / f64::from(TARGET_W)))
+            .round()
+            .max(1.0) as u32;
+            let band_long = crop_w.max(crop_h);
+            // :103 的同一去噪分支条件
+            let denoise_active = band_long < 2 * TARGET_W.max(TARGET_H);
+            // :110-114 的同一滤波器条件
+            let filter = if band_long >= TARGET_W.max(TARGET_H) {
+                image::imageops::FilterType::CatmullRom
+            } else {
+                image::imageops::FilterType::Lanczos3
+            };
+
+            let rgba = synthetic_rgba(src_long, src_long, SEED);
+            println!(
+                "== {label}² 源 → {TARGET_W}×{TARGET_H}，band {crop_w}×{crop_h}，去噪{}，滤波 {filter:?} ==",
+                if denoise_active { "开" } else { "跳过" },
+            );
+
+            // 段：裁剪带搬运（生产里每次进管线都从零分配 + 搬运，故每轮重建）
+            let crop_mean = bench_segment(
+                &format!("{label} crop_copy band {crop_w}x{crop_h}"),
+                LIGHT_WARMUP,
+                LIGHT_RUNS,
+                || {
+                    let band = crop_band(&rgba, crop_w, crop_h);
+                    black_box(band);
+                },
+            );
+
+            // 段：3×3 中值去噪（denoise_rgba 原地；成本与像素值无关，同一缓
+            // 冲重复跑不漂移计量）。先让缓冲指针经 black_box 不透明逃逸，段
+            // 内写入不可被"结果未使用"整体折叠。
+            let mut band = crop_band(&rgba, crop_w, crop_h);
+            black_box(&band);
+            let denoise_mean = if denoise_active {
+                Some(bench_segment(
+                    &format!("{label} denoise_rgba band {crop_w}x{crop_h}"),
+                    HEAVY_WARMUP,
+                    HEAVY_RUNS,
+                    || denoise_rgba(&mut band),
+                ))
+            } else {
+                println!("{label} denoise_rgba: skipped（band_long {band_long} ≥ 2×target_long）");
+                None
+            };
+
+            // 段：重采样——按管线数据流吃的是去噪后的同一 band（成本与像素
+            // 值无关）；每轮输出经 black_box 消费防折叠。
+            let resize_mean = bench_segment(
+                &format!("{label} resize -> {TARGET_W}x{TARGET_H} {filter:?}"),
+                HEAVY_WARMUP,
+                HEAVY_RUNS,
+                || {
+                    let out = image::imageops::resize(&band, TARGET_W, TARGET_H, filter);
+                    black_box(out);
+                },
+            );
+
+            // 段：阈值 unsharp 锐化（:118-123 的同一分支——两口径源长边均 ≥
+            // 目标长边，取非放大档 0.5/σ1.0；放大档 0.6/σ1.5 属另一口径，本
+            // 载体未覆盖）。原地跑，重复执行只会让值继续过冲，成本不变。
+            let (amount, sigma) = if TARGET_W.max(TARGET_H) > src_long {
+                (0.6f32, ENHANCE_SHARPEN_SIGMA)
+            } else {
+                (0.5f32, 1.0f32)
+            };
+            let mut sharpened = image::RgbaImage::new(TARGET_W, TARGET_H);
+            black_box(&sharpened);
+            let sharpen_mean = bench_segment(
+                &format!("{label} sharpen {amount}/σ{sigma:.1} {TARGET_W}x{TARGET_H}"),
+                HEAVY_WARMUP,
+                HEAVY_RUNS,
+                || sharpen_rgba_with(&mut sharpened, amount, sigma),
+            );
+
+            // 段：端到端（真实函数；Arc::clone 进、源消费与产出即弃都在计时
+            // 段内，与生产"产出进缓存驻留"的差异见上面交叉核对的口径说明）
+            let src = Arc::new(RenderImage::new(smallvec![Frame::new(rgba)]));
+            let e2e_mean = bench_segment(
+                &format!("{label} end_to_end backdrop_sharp_fill"),
+                HEAVY_WARMUP,
+                HEAVY_RUNS,
+                || {
+                    let _ = backdrop_sharp_fill(Arc::clone(&src), TARGET_W, TARGET_H);
+                },
+            );
+
+            // 交叉核对 + CPU-1 占比读数
+            let denoise_ms = denoise_mean.unwrap_or(0.0);
+            let seg_sum = crop_mean + denoise_ms + resize_mean + sharpen_mean;
+            let residual = e2e_mean - seg_sum;
+            println!(
+                "cross-check: 四段之和 {seg_sum:.1}ms vs 端到端 {e2e_mean:.1}ms，残差 {residual:.1}ms（{:.1}%）",
+                residual / e2e_mean * 100.0,
+            );
+            if residual.abs() > e2e_mean * CROSSCHECK_RESIDUAL_MAX_PCT / 100.0 {
+                println!(
+                    "WARNING: 残差超 {CROSSCHECK_RESIDUAL_MAX_PCT:.0}%——分段口径与端到端已脱节，先查口径再信占比"
+                );
+            }
+            if let Some(d) = denoise_mean {
+                println!(
+                    "CPU-1 读数：{label} 口径去噪段占端到端 {:.1}%",
+                    d / e2e_mean * 100.0,
+                );
+            }
+        }
+    }
+}

@@ -270,8 +270,9 @@ impl SourceImage {
     }
 }
 
-/// 超过这个边长的全尺寸封面会被重缩放，更小的原样保留。
-const MAX_ART_DIMENSION: u32 = 1024;
+/// 超过这个边长的全尺寸封面会被重缩放，更小的原样保留。`pub(crate)` 供
+/// decode_bench 镜像同一缩放目标（纯可见性放宽，对生产二进制零影响）。
+pub(crate) const MAX_ART_DIMENSION: u32 = 1024;
 /// 与全尺寸图一并生成的方形 BMP 缩略图边长。
 const THUMBNAIL_SIZE: u32 = 70;
 /// 重缩放后全尺寸图的 JPEG 质量（仅在图被缩小时用到）。

@@ -64,3 +64,8 @@ pub fn start_scanner(
 #[cfg(test)]
 #[path = "scan/tests.rs"]
 mod tests;
+
+// 扫描热环耗时探针（png 解码缩放 / checkpoint zlib / xxh3 去重键），用法见
+// 文件头；与 library.rs 的 row_build_bench 同一接线风格。
+#[cfg(test)]
+mod decode_bench;
