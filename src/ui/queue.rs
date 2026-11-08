@@ -243,10 +243,17 @@ impl QueueItem {
             let queue = cx.global::<Models>().queue.clone();
             cx.observe(&queue, |this: &mut QueueItem, queue, cx| {
                 let position = queue.read(cx).position;
-                // 只有「当前曲目高亮」真正移动过的行才重绘；没有这道守卫，
-                // 每次队列通知都会重画全部 n 行（每次切歌 O(n) 扇出）。
-                if this.current != position {
-                    this.current = position;
+                // 行级精准守卫：只有本行「是否当前曲目」翻转才重绘（本行槽位
+                // 与前后 position 比较）。旧写法缓存全局 position 再整体比较
+                // !=，position 一变所有活行都满足条件而全量 notify（扇出 =
+                // 活行数），与注释宣称的高亮移动精度不符——2026-11-08 改为
+                // 谓词翻转判定，切歌的重绘从 ~viewport 行降到高亮移出的 2 行。
+                // 播放态半边谓词由下方 playback_state 观察者覆盖；内容-only
+                // 通知（position 不动）在此依旧零重绘。
+                let was_current = this.current == this.idx;
+                let is_current_now = position == this.idx;
+                this.current = position;
+                if was_current != is_current_now {
                     cx.notify();
                 }
             })
@@ -957,10 +964,12 @@ impl Render for QueueItem {
                 .into_any_element()
         } else {
             // 元数据仍在加载：用普通方块保住该行的形状，列表不跳动；
-            // 数据到位后条目会自行重绘。
+            // 数据到位后条目会自行重绘。分隔线画在底边，与已加载行
+            // （border_b）同口径——顶边会与队头标题的 border_b 叠成 2px，
+            // 且与下一行交界处漏线。
             div()
                 .h(px(QUEUE_ITEM_HEIGHT))
-                .border_t(px(1.0))
+                .border_b(px(1.0))
                 .border_color(theme.border_color)
                 .w_full()
                 .id(ElementId::View(cx.entity_id()))
@@ -1323,10 +1332,16 @@ impl Render for Queue {
             let mut i = 0;
             while i < self.pending_durations.len() {
                 let idx = self.pending_durations[i];
-                match queue
-                    .get(idx)
-                    .and_then(|item| queue_metadata::queue_loaded_duration(cx, item))
-                {
+                // 实体读取保持响应式依赖（元数据落地即刷新摘要）；但行被滚动
+                // 修剪后 on_release 会清空仍在线条目的实体内容，而加载器早已
+                // 同帧写过原子 known_duration——只看实体会让 pending 永不收
+                // 敛、摘要在下次内容变化 rescan 前少计该曲时长。实体空时退回
+                // 原子兜底（loader 同帧写两侧，不会双计）。
+                let secs = queue.get(idx).and_then(|item| {
+                    queue_metadata::queue_loaded_duration(cx, item)
+                        .or_else(|| item.known_duration())
+                });
+                match secs {
                     Some(secs) => {
                         self.summary_total += secs;
                         self.pending_durations.swap_remove(i);

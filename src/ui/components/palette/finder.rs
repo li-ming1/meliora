@@ -721,6 +721,12 @@ where
     /// 二次 snapshot+collect。
     pub fn regenerate_list_state(&mut self, cx: &mut Context<Self>) {
         let matches = self.get_matches();
+        // 回写 last_match：display_list 必须是 last_match 的函数，否则
+        // expand_category（按 last_match 重建）会把列表回退到陈旧匹配集，
+        // 直到 25ms 轮询对账自愈。此前不回写时唯一调用点
+        // register_extra_provider 在面板构造期，窗口近乎不可达，属潜伏
+        // 一致性缺口。
+        self.last_match = matches.clone();
         self.rebuild_display_list(&matches, cx);
     }
 
