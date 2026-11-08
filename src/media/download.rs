@@ -7,6 +7,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -133,10 +134,25 @@ pub async fn http_download_to_file(
     Ok(total)
 }
 
-/// 半成品路径：与目标同目录的 `.part` 后缀，保证 rename 在同一卷内完成。
+/// 半成品路径计数器：`.part` 文件名的进程内唯一后缀。唯一性靠计数不靠时序，
+/// Relaxed 足够（不同调用拿到不同的 n 就是全部所需，不存在先后关系）。
+static PART_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 半成品路径：与目标同目录的 `.{n}.part` 后缀，保证 rename 在同一卷内完成，
+/// 且进程内**每次调用唯一**。
+///
+/// 唯一性是正确性而非风格：两路并发下载可能撞上同一个 dest（同名曲目的
+/// artist+title 逐字相同、hash 不同，调用方按 hash 的去重挡不住），共享的
+/// 确定性 `.part` 会被第二句柄成功 truncate（Rust 默认 share mode 允许并发
+/// 写），交错写 + 先完成者 rename 后旧句柄仍持有被改名文件继续写，直接污染
+/// dest；损坏曲目经合法扩展名被扫描器静默入库。唯一临时路径从结构上排除
+/// 该冲突。
 fn partial_path(dest: &Path) -> PathBuf {
     let mut path = dest.as_os_str().to_owned();
-    path.push(".part");
+    path.push(format!(
+        ".{}.part",
+        PART_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     PathBuf::from(path)
 }
 
@@ -226,6 +242,112 @@ mod tests {
         assert_eq!(sanitize_filename("my.CON"), "my.CON");
         assert_eq!(sanitize_filename("a<b:c"), "a_b_c");
         assert_eq!(sanitize_filename(""), "track");
+    }
+
+    #[test]
+    fn partial_path_is_unique_per_call_for_same_dest() {
+        let dir = crate::test_support::TestDir::new("download-part-unique");
+        let dest = dir.path().join("song.mp3");
+        let a = partial_path(&dest);
+        let b = partial_path(&dest);
+        assert_ne!(a, b, "同一 dest 连续两次取半成品路径必须不同");
+        assert!(a.to_string_lossy().ends_with(".part"));
+        assert!(b.to_string_lossy().ends_with(".part"));
+        // 与 dest 同目录：rename 的同卷约束保持
+        assert_eq!(a.parent(), dest.parent());
+        assert_eq!(b.parent(), dest.parent());
+    }
+
+    /// 并发下载撞同一 dest 的回归测试：临时路径唯一化后两路各写各的 `.part`，
+    /// rename 后 dest 恰为两份载荷之一（字节级完整），目录里不残留半成品。
+    /// 修复前共享的确定性 `.part` 会让两路交错写、先完成者 rename 后旧句柄
+    /// 继续写污染 dest——本测试在该形态下会读到两份载荷的混合字节。
+    #[test]
+    fn concurrent_downloads_to_same_dest_stay_intact() {
+        use std::sync::mpsc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = crate::test_support::TestDir::new("download-part-concurrent");
+        let dest = dir.path().join("artist - title.mp3");
+        // 等长但逐字节不同的两份载荷：任何交错都会产出混合字节，断言必失败
+        let body_a = vec![0xAAu8; 4096];
+        let body_b = vec![0xBBu8; 4096];
+
+        let (port_tx, port_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        // 任务侧副本：dest 与两份载荷要被 async move 搬走，测试线程随后还要
+        // 用它们做断言，故克隆出任务专用的独立所有权。
+        let dest_task = dest.clone();
+        let body_a_task = body_a.clone();
+        let body_b_task = body_b.clone();
+        crate::RUNTIME.spawn(async move {
+            let dest = dest_task;
+            let body_a = body_a_task;
+            let body_b = body_b_task;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            port_tx.send(port).unwrap();
+
+            // 服务端臂：顺序 accept 两条连接（先到先得），各自回一份完整载荷；
+            // 每条响应 Connection: close，两个客户端各开各的连接。
+            let server = async {
+                for body in [&body_a, &body_b] {
+                    let (mut sock, _) = listener.accept().await.unwrap();
+                    // 读到请求头结束再回（不解析内容），防半开时序
+                    let mut buf = Vec::new();
+                    let mut piece = [0u8; 1024];
+                    loop {
+                        let n = sock.read(&mut piece).await.unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&piece[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    sock.write_all(head.as_bytes()).await.unwrap();
+                    sock.write_all(&body[..]).await.unwrap();
+                    sock.shutdown().await.unwrap();
+                }
+            };
+
+            let url = format!("http://127.0.0.1:{port}/audio.mp3");
+            let (ra, rb, ()) = tokio::join!(
+                http_download_to_file(&url, &dest, &[]),
+                http_download_to_file(&url, &dest, &[]),
+                server,
+            );
+            done_tx.send((ra, rb)).unwrap();
+        });
+
+        // 端口先回来 = 服务端已 bind；随后等两路下载的整体结果
+        let _port = port_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("test http server did not bind");
+        let (ra, rb) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("concurrent downloads did not finish");
+        assert!(ra.is_ok(), "下载 A 失败: {ra:?}");
+        assert!(rb.is_ok(), "下载 B 失败: {rb:?}");
+
+        // dest 恰为两份载荷之一（字节级完整，无交错）
+        let final_bytes = std::fs::read(&dest).unwrap();
+        assert!(
+            final_bytes == body_a || final_bytes == body_b,
+            "dest 内容既不是载荷 A 也不是载荷 B（疑似交错损坏）"
+        );
+        // 无残留半成品
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留半成品: {leftovers:?}");
     }
 }
 
