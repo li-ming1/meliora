@@ -190,6 +190,69 @@ fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
     }
 }
 
+/// 3×3 中值选择核：Smith（XILINX XCELL vol.23）型 median-of-9 选择网络，
+/// 19 次 compare-exchange 从 9 个 u8 直接收敛出第 5 序统计量，不做全排序。
+/// 经 N. Devillard 1998 的 `opt_med9` 广泛转引（原文标注该约束下
+/// "cannot go faster without assumptions on the signal"）；本仓不沿用转引
+/// 信任，正确性由 `tests` 模块穷举钉死。全部比较写成 `u8::min`/`u8::max`
+/// ——LLVM 归约为无分支的 min/max 指令（标量 cmov，宽展开下可映射
+/// pminub/pmaxub），省去 sort 的分支判定与多余交换写回。
+///
+/// 契约：返回值与 `sort_unstable(...)` 后取 `[4]` 逐位一致（bit-exact）。
+/// `tests::median9_matches_sort_reference` 以 0..8 全排列穷举（362880 组，
+/// Heap 算法）+ 固定种子随机窗（全值域/重复密集两族）+ 常数/极值窗钉死；
+/// compare-exchange 是逐值单调映射（min/max 与任意非降函数可交换），故
+/// 不同值域上成立即覆盖任意含重复值的输入。
+// 选择网络的固有形态：compare-exchange 持续把败者信道留在原地，向 p4 收敛
+// 的路径上败者信道的末次赋值定义上无人读取——这是"只选不排"的代价，不是
+// 代码脏；压掉它换取 19 次无分支比较对 25+ 次全排序的净胜。
+#[allow(unused_assignments)]
+#[inline]
+fn median9(w: [u8; 9]) -> u8 {
+    let [
+        mut p0,
+        mut p1,
+        mut p2,
+        mut p3,
+        mut p4,
+        mut p5,
+        mut p6,
+        mut p7,
+        mut p8,
+    ] = w;
+    // compare-exchange：第一位拿 min，第二位拿 max（位次约定与 Devillard
+    // 原文 PIX_SORT(a,b) 一致，也与其后 tests 穷举逐算子同表）。
+    #[inline(always)]
+    fn ce(a: u8, b: u8) -> (u8, u8) {
+        (a.min(b), a.max(b))
+    }
+    // 第 1-9 步：三行（0-2 / 3-5 / 6-8）各自 sort3——(1,2)(0,1)(1,2) 是
+    // 合法的 3 元素排序网络，得 p0≤p1≤p2、p3≤p4≤p5、p6≤p7≤p8。
+    (p1, p2) = ce(p1, p2);
+    (p4, p5) = ce(p4, p5);
+    (p7, p8) = ce(p7, p8);
+    (p0, p1) = ce(p0, p1);
+    (p3, p4) = ce(p3, p4);
+    (p6, p7) = ce(p6, p7);
+    (p1, p2) = ce(p1, p2);
+    (p4, p5) = ce(p4, p5);
+    (p7, p8) = ce(p7, p8);
+    // 第 10-19 步：裁剪段——把不可能是第 5 序统计量的极值沿列/对角驱赶
+    // 到边缘位置，中心 p4 收敛为中值，末步 p4=min(p4,p2)。网络整体的
+    // 正确性不靠手工推导，由 tests 的 9! 穷举保证。
+    (p0, p3) = ce(p0, p3);
+    (p5, p8) = ce(p5, p8);
+    (p4, p7) = ce(p4, p7);
+    (p3, p6) = ce(p3, p6);
+    (p1, p4) = ce(p1, p4);
+    (p2, p5) = ce(p2, p5);
+    (p4, p7) = ce(p4, p7);
+    (p4, p2) = ce(p4, p2);
+    (p6, p4) = ce(p6, p4);
+    (p4, p2) = ce(p4, p2);
+    p4
+}
+
 /// 对 RGB 原地做 3×3 中值滤波：每个输出通道取其 3×3 邻域的中值（边缘钳位到最近像素）。
 /// 中值会化掉 JPEG 的 8×8 块阶与平坦区噪声，同时保持真实边缘完整——它替换掉的 unsharp 段
 /// 做的正相反（把那些块边直接放大成"黑框框"网格）。
@@ -198,8 +261,20 @@ fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
 /// （next 行只从写指针之后的未写行装载，prev/cur 靠 swap 轮转），输出与
 /// "先整图快照再采样"逐字节一致。x 的边缘 clamp 每像素算一次
 /// （saturating_sub ≡ clamp(x−1)，min(x+1,last) ≡ clamp(x+1)），y 的每行
-/// 算一次；采样集合、sort_unstable 取 [4]、遍历顺序与原实现相同，alpha
-/// 字节不写即保持原值。
+/// 算一次；采样集合、中值序统计量（与排序取 [4] bit-exact，见 `median9`
+/// 契约与 `tests` 模块）、遍历顺序与原实现相同，alpha 字节不写即保持原值。
+///
+/// 中值核来历（2026-11-08 CPU-1 换核）：核原为 `sort_unstable([u8;9])[4]`，
+/// 段级基准实测 2048×1152 band 去噪 580ms（≈82ns/像素·通道），占同口径
+/// 端到端的 39.7%——越过预申报的 ≥30% 阈值，按段级归因数据批准换为
+/// `median9` 选择网络（19 次 compare-exchange，全 min/max）。对任何再动
+/// 此核的人，两条硬约束继续生效：**与排序参考逐位一致（bit-exact）**、
+/// **段级基准在位出数**（`bench_backdrop_segments`）；"无独立收益证据不动
+/// 函数体"的总纲见 GPUI_HARDCORE_PERFORMANCE.md §39。与 2026-10 那次
+/// `select_nth_unstable` + `fast_blur` 混测回退的区别：那轮是两处改动
+/// 合并测得整管线变慢、无单点归因（教训原文见 `sharpen_rgba_with` 文档，
+/// 保留不动）；本轮是 bit-exact 单核替换、去噪段单列计时，恰是当初想要的
+/// 证据形态。
 pub(super) fn denoise_rgba(image: &mut image::RgbaImage) {
     let (width, height) = image.dimensions();
     if width == 0 || height == 0 {
@@ -228,7 +303,7 @@ pub(super) fn denoise_rgba(image: &mut image::RgbaImage) {
             let xc = x * 4;
             let xp = (x + 1).min(last_x) * 4;
             for (c, out_cell) in out_row[xc..xc + 3].iter_mut().enumerate() {
-                let mut window = [
+                let window = [
                     prev_row[xm + c],
                     prev_row[xc + c],
                     prev_row[xp + c],
@@ -239,18 +314,204 @@ pub(super) fn denoise_rgba(image: &mut image::RgbaImage) {
                     next_row[xc + c],
                     next_row[xp + c],
                 ];
-                window.sort_unstable();
-                // 保持全排序写法：换成 `select_nth_unstable(4)` 与上面的
-                // `fast_blur` 是**同一轮**改的、也是同一轮合并测得变慢，
-                // 没有单独归因过这一处；在没有独立收益证据的前提下，
-                // 不动一个已被实测拖累的函数体（§39）。
-                *out_cell = window[4];
+                // 中值核（2026-11-08 CPU-1 换核）：`median9` 排序网络直接
+                // 收敛第 5 序统计量，与 sort_unstable 取 [4] bit-exact
+                // （tests 模块钉死）。换核依据、"再动此核"的两条硬约束、
+                // 以及与 2026-10 select_nth_unstable + fast_blur 混测回退的
+                // 区别，见本函数文档；教训原文在 sharpen_rgba_with 文档。
+                *out_cell = median9(window);
             }
         }
         if y + 1 < h {
             std::mem::swap(&mut prev_row, &mut cur_row);
             std::mem::swap(&mut cur_row, &mut next_row);
             copy_row(&mut next_row, bytes, (y + 2).clamp(0, last_y), stride);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 中值核 bit-exact 契约的测试。bench 模块是计时报告载体（`--ignore`，
+    //! 只作给人读的报告），正确性断言必须随常规测试运行，故独立成模块；
+    //! 生产代码里只有 `median9` 这一份网络实现，参考实现（排序取 [4]）只在
+    //! 测试内存在。
+
+    use super::*;
+
+    /// 固定种子 LCG（Knuth MMIX 常数，与 bench 模块同式；禁止运行时随机）。
+    fn lcg_next(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state
+    }
+
+    /// bit-exact 契约的对照面：全排序取第 5 序统计量。
+    fn median9_reference(win: [u8; 9]) -> u8 {
+        let mut wins = win;
+        wins.sort_unstable();
+        wins[4]
+    }
+
+    /// Heap 算法逐个枚举 9! 排列（含初始排列），逐个回调；返回访问总数
+    /// （调用方钉死 362880，防生成器漏排列导致测试面静默缩水）。
+    fn heap_permutations(arr: &mut [u8; 9], f: &mut impl FnMut(&[u8; 9])) -> usize {
+        let n = arr.len();
+        let mut c = [0usize; 9];
+        f(arr);
+        let mut visited = 1usize;
+        let mut i = 1;
+        while i < n {
+            if c[i] < i {
+                let from = if i % 2 == 0 { 0 } else { c[i] };
+                arr.swap(from, i);
+                f(arr);
+                visited += 1;
+                c[i] += 1;
+                i = 1;
+            } else {
+                c[i] = 0;
+                i += 1;
+            }
+        }
+        visited
+    }
+
+    /// 性质测试：网络核 == 排序参考。覆盖常数窗、极值窗、固定种子 LCG
+    /// 随机窗两族（全值域均匀 / 重复值密集），以及 0..8 全排列穷举——
+    /// 穷举族 + compare-exchange 的逐值单调性 ⇒ 任意含重复值的 u8 输入
+    /// 逐位一致（秩替换论证，见 `median9` 契约）。
+    #[test]
+    fn median9_matches_sort_reference() {
+        for &v in [0u8, 1, 42, 127, 128, 254, 255].iter() {
+            let win = [v; 9];
+            assert_eq!(median9(win), median9_reference(win), "常数窗 v={v}");
+        }
+        let extreme_windows: [[u8; 9]; 8] = [
+            [0, 255, 0, 255, 0, 255, 0, 255, 0],
+            [255, 0, 255, 0, 255, 0, 255, 0, 255],
+            [0, 0, 0, 0, 0, 0, 0, 0, 255],
+            [255, 255, 255, 255, 255, 255, 255, 255, 0],
+            [0, 255, 255, 255, 255, 255, 255, 255, 255],
+            [255, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 255, 0, 0, 0, 0],
+            [255, 255, 255, 255, 0, 255, 255, 255, 255],
+        ];
+        for win in extreme_windows.iter() {
+            assert_eq!(median9(*win), median9_reference(*win), "极值窗 {win:?}");
+        }
+        let mut state = 0x5EED_2026_1108_C0DEu64;
+        for _ in 0..8192 {
+            let win: [u8; 9] = std::array::from_fn(|_| (lcg_next(&mut state) >> 33) as u8);
+            assert_eq!(median9(win), median9_reference(win), "全值域随机窗 {win:?}");
+        }
+        for _ in 0..8192 {
+            let win: [u8; 9] = std::array::from_fn(|_| (lcg_next(&mut state) >> 33) as u8 % 4);
+            assert_eq!(
+                median9(win),
+                median9_reference(win),
+                "重复密集随机窗 {win:?}"
+            );
+        }
+        let mut perm = [0u8, 1, 2, 3, 4, 5, 6, 7, 8];
+        let visited = heap_permutations(&mut perm, &mut |p| {
+            assert_eq!(median9(*p), median9_reference(*p), "排列 {p:?}");
+        });
+        assert_eq!(visited, 362880, "0..8 全排列生成器必须完备（9! 全覆盖）");
+    }
+
+    /// 参考去噪（整图语义）：整图快照上取 3×3 钳位窗、排序取 [4]，只写
+    /// RGB 三通道、alpha 原值保留——与生产 `denoise_rgba`（行缓冲滑窗）
+    /// 应逐字节一致。
+    fn denoise_reference(src: &image::RgbaImage) -> image::RgbaImage {
+        let (w, h) = src.dimensions();
+        let (w, h) = (w as usize, h as usize);
+        let snap = src.as_raw().clone();
+        let mut out = src.clone();
+        {
+            let out_bytes: &mut [u8] = &mut out;
+            let last_x = w - 1;
+            let last_y = h - 1;
+            for y in 0..h {
+                let ym = y.saturating_sub(1);
+                let yp = (y + 1).min(last_y);
+                for x in 0..w {
+                    let xm = x.saturating_sub(1);
+                    let xp = (x + 1).min(last_x);
+                    for c in 0..3 {
+                        let px = |xx: usize, yy: usize| snap[(yy * w + xx) * 4 + c];
+                        let mut wins = [
+                            px(xm, ym),
+                            px(x, ym),
+                            px(xp, ym),
+                            px(xm, y),
+                            px(x, y),
+                            px(xp, y),
+                            px(xm, yp),
+                            px(x, yp),
+                            px(xp, yp),
+                        ];
+                        wins.sort_unstable();
+                        out_bytes[(y * w + x) * 4 + c] = wins[4];
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 断言辅助：以给定字节构造图，生产 `denoise_rgba` 输出与排序参考逐
+    /// 字节相等。
+    fn assert_full_image(w: u32, h: u32, bytes: Vec<u8>, label: &str) {
+        let mut img = image::RgbaImage::from_raw(w, h, bytes).unwrap();
+        let expected = denoise_reference(&img);
+        denoise_rgba(&mut img);
+        assert_eq!(img.as_raw(), expected.as_raw(), "{w}×{h} {label}");
+    }
+
+    /// 整图级性质测试：小尺寸已知噪声图（固定种子 LCG 全值域 / 重复密集 /
+    /// 常数 / 8px 分块结构图案）过生产核，与测试内排序参考逐字节相等；
+    /// 尺寸刻意覆盖边界退化（1×1、单行、单列、2×2、3×3）。
+    #[test]
+    fn denoise_rgba_matches_sort_reference() {
+        for (w, h) in [
+            (1u32, 1u32),
+            (1, 9),
+            (9, 1),
+            (2, 2),
+            (3, 3),
+            (7, 5),
+            (16, 12),
+        ] {
+            let len = w as usize * h as usize * 4;
+            let mut state = 0xC0FF_EE12_3456_789Au64;
+            let bytes: Vec<u8> = (0..len)
+                .map(|_| (lcg_next(&mut state) >> 33) as u8)
+                .collect();
+            assert_full_image(w, h, bytes, "全值域噪声");
+            let bytes: Vec<u8> = (0..len)
+                .map(|_| (lcg_next(&mut state) >> 33) as u8 % 4)
+                .collect();
+            assert_full_image(w, h, bytes, "重复密集噪声");
+            assert_full_image(w, h, vec![77u8; len], "常数图");
+            // 8px 分块明暗 + 稀疏椒盐点：JPEG 块伤类相关结构（非独立同分布）。
+            let mut bytes = Vec::with_capacity(len);
+            for y in 0..h {
+                for x in 0..w {
+                    for c in 0..4u32 {
+                        let v = if c == 3 {
+                            255u8
+                        } else {
+                            let block = ((x / 8 + y / 8) % 2) as u8;
+                            let speck = (((x * 7 + y * 13 + c * 29) % 31) == 0) as u8;
+                            (if block == 0 { 24 } else { 216 }) + speck * 15
+                        };
+                        bytes.push(v);
+                    }
+                }
+            }
+            assert_full_image(w, h, bytes, "分块结构图案");
         }
     }
 }
