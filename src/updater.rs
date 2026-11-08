@@ -30,9 +30,10 @@ const GITHUB_LATEST_RELEASE_API: &str =
 /// 元数据 + 校验和的抓取都很小；设硬上限能把不可达的 API 变成一个 `Failed` 状态，
 /// 而不是一次挂死的检查。
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
-/// 裸二进制有几十 MB，且可能走一条很慢的链路；这个上限只防流卡住，不管正常下载
-/// 耗时。
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// 单次网络事件（响应头、一个 body 块）的空闲上限：停滞 30s 即视为流卡死报错，
+/// **总时长不设死线**——与 `media/download.rs` 同一结论：几十 MB 的裸二进制在
+/// 慢速链路下，固定总超时必然误杀正常下载。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 更新提示 toast 的存活时长——相比默认 5 s，更新提示很容易错过，而让它多留一会儿
@@ -48,7 +49,8 @@ const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(8);
 static UPDATE_CLIENT: LazyLock<zed_reqwest::Client> = LazyLock::new(|| {
     zed_reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        // 不设客户端级超时：下载要流式跑几分钟。每个请求各自设自己的上限。
+        // 不设客户端级超时：下载要流式跑几分钟。检查类请求各自设总上限，
+        // 二进制下载按单次网络事件限时（STREAM_IDLE_TIMEOUT），总时长不设死线。
         .user_agent(concat!("Meliora/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| zed_reqwest::Client::new())
@@ -516,7 +518,6 @@ async fn download_and_swap(
 
     let response = UPDATE_CLIENT
         .get(&binary_url)
-        .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
         .map_err(|error| {
@@ -555,12 +556,21 @@ async fn download_and_swap(
     } else {
         1024 * 1024
     };
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        UpdateFailure::new(
-            UpdateFailureStage::Download,
-            format!("download interrupted: {error}"),
-        )
-    })? {
+    while let Some(chunk) = tokio::time::timeout(STREAM_IDLE_TIMEOUT, response.chunk())
+        .await
+        .map_err(|_| {
+            UpdateFailure::new(
+                UpdateFailureStage::Download,
+                format!("download stalled: no data for {STREAM_IDLE_TIMEOUT:?}"),
+            )
+        })?
+        .map_err(|error| {
+            UpdateFailure::new(
+                UpdateFailureStage::Download,
+                format!("download interrupted: {error}"),
+            )
+        })?
+    {
         hasher.update(&chunk);
         file.write_all(&chunk).await.map_err(|error| {
             UpdateFailure::new(
@@ -867,5 +877,130 @@ mod tests {
             b"old-binary"
         );
         assert_eq!(std::fs::read(&exe).unwrap(), b"new-binary");
+    }
+
+    /// 分块缓慢但持续流动的下载不被误杀：三段载荷、段间 150ms 空闲（远小于
+    /// [`STREAM_IDLE_TIMEOUT`]），download_and_swap 应完整走完校验与交换。
+    /// 失败侧（停滞超过 30s 触发空闲报错）需要真实等待 30s，不进常规测试，
+    /// 由实现与 media/download.rs 的同型模式背书。
+    #[test]
+    fn flowing_download_with_inter_chunk_pauses_is_not_killed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = crate::test_support::TestDir::new("updater-slow-download");
+        let exe = dir.path().join("meliora.exe");
+        let staged = append_suffix(&exe, ".new");
+        std::fs::write(&exe, b"running-binary").unwrap();
+
+        let body = vec![0x5Au8; 6000];
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        let body_for_server = body.clone();
+        let hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let asset_name = "meliora-test.exe";
+        let manifest = format!("{hex}  {asset_name}\n");
+
+        let (port_tx, port_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        crate::RUNTIME.spawn(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            port_tx.send(port).unwrap();
+
+            // 两条连接按 download_and_swap 的次序到来：先是 checksums.txt，再是裸二进制。
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                // 读到请求头结束再回（不解析内容），防半开时序
+                let mut buf = Vec::new();
+                let mut piece = [0u8; 1024];
+                loop {
+                    let n = sock.read(&mut piece).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&piece[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                if path.ends_with("checksums.txt") {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        manifest.len(),
+                        manifest
+                    );
+                    sock.write_all(resp.as_bytes()).await.unwrap();
+                } else {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body_for_server.len()
+                    );
+                    sock.write_all(head.as_bytes()).await.unwrap();
+                    // 三段发送、段间 150ms：总空闲远小于 30s 空闲上限——本测试
+                    // 钉住的是按事件限时的新形态不误杀持续流动的慢流。
+                    let third = body_for_server.len() / 3;
+                    for (index, range) in
+                        [0..third, third..2 * third, 2 * third..body_for_server.len()]
+                            .into_iter()
+                            .enumerate()
+                    {
+                        if index > 0 {
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                        }
+                        sock.write_all(&body_for_server[range]).await.unwrap();
+                    }
+                }
+                sock.shutdown().await.unwrap();
+            }
+        });
+
+        let port = port_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("test http server did not bind");
+        let binary_url = format!("http://127.0.0.1:{port}/{asset_name}");
+        let checksums_url = format!("http://127.0.0.1:{port}/checksums.txt");
+
+        let (progress_tx, _progress_rx) = tokio::sync::watch::channel((0u64, 0u64));
+        let exe_task = exe.clone();
+        let staged_task = staged.clone();
+        crate::RUNTIME.spawn(async move {
+            let result = download_and_swap(
+                binary_url,
+                Some(checksums_url),
+                exe_task,
+                staged_task,
+                progress_tx,
+            )
+            .await;
+            done_tx.send(result).unwrap();
+        });
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("download_and_swap did not finish");
+        match result {
+            Ok(()) => {}
+            Err(failure) => {
+                panic!(
+                    "download_and_swap failed: {} ({:?})",
+                    failure.message, failure.stage
+                )
+            }
+        }
+
+        // 交换完成：exe 恰为载荷内容，备份保留旧镜像，暂存文件已不在
+        assert_eq!(std::fs::read(&exe).unwrap(), body);
+        assert_eq!(
+            std::fs::read(append_suffix(&exe, ".old")).unwrap(),
+            b"running-binary"
+        );
+        assert!(!staged.exists());
     }
 }

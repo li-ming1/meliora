@@ -2497,7 +2497,7 @@
   },
   "UPDATE_AVAILABLE_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:269",
+    "definedIn": "src/updater.rs:271",
     "plural": false,
     "description": null
   },
@@ -2545,13 +2545,13 @@
   },
   "UPDATE_READY_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:393",
+    "definedIn": "src/updater.rs:395",
     "plural": false,
     "description": null
   },
   "UPDATE_RESTART_FAILED_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:427",
+    "definedIn": "src/updater.rs:429",
     "plural": false,
     "description": null
   },
