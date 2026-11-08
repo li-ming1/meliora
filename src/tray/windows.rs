@@ -18,7 +18,7 @@
 use crate::sync::RecoveredMutex;
 use std::sync::{
     Mutex, OnceLock,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::Sender,
 };
 use std::time::{Duration, Instant};
@@ -56,6 +56,20 @@ static TRAY_TX: OnceLock<Sender<TrayCommand>> = OnceLock::new();
 
 /// 主窗口 HWND（供菜单标签判断显隐）。显隐/轮询命令经 gpui 路径刷新。
 static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
+
+/// 右键菜单是否已打开。`TrackPopupMenu` 在 WndProc 内跑嵌套模态消息循环，
+/// 菜单开着时再次右键会经 `WM_APP_CALLBACK` 重入 `open_menu`——用它在入口
+/// 吞掉重入（第二张菜单不再弹）。WndProc 单线程，该旗标只为把「理论可重
+/// 入」钉死为结构不可重入。
+static MENU_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// `open_menu` 的重入守卫：Drop 复位 `MENU_OPEN`，覆盖全部早退路径。
+struct MenuOpenGuard;
+impl Drop for MenuOpenGuard {
+    fn drop(&mut self) {
+        MENU_OPEN.store(false, Ordering::Release);
+    }
+}
 
 /// explorer 重启时广播的 `TaskbarCreated` 消息 id。message-only 窗口收不到广播，
 /// 登记它只是窗口类型若变更时的保险。
@@ -576,6 +590,15 @@ unsafe extern "system" fn tray_wndproc(
 /// 右键菜单：`TPM_RETURNCMD` 同步返回选中项 id（免去 WM_COMMAND 与消息
 /// 循环时序问题），配合前台舞蹈保证菜单点击窗外能正确消失。
 unsafe fn open_menu(hwnd: HWND) {
+    // 菜单开着时的再次右键不弹第二张（TrackPopupMenu 嵌套模态循环重入面，
+    // 见 MENU_OPEN）。
+    if MENU_OPEN
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let _menu_guard = MenuOpenGuard;
     let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
         return;
     };
