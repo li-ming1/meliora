@@ -516,10 +516,18 @@ async fn download_and_swap(
         )
     })?;
 
-    let response = UPDATE_CLIENT
-        .get(&binary_url)
-        .send()
+    // 响应头阶段与 chunk 同受单事件空闲上限：connect_timeout 只盖 TCP 握手，
+    // "已连上但不回头"（CDN/代理吞连接）曾经 600s 总死线兜底，撤掉后若不补
+    // 这里就是无界等待——更新页永久卡在 Downloading 0%（media/download.rs
+    // 的同型模式是 send 与 chunk 两处都包）。
+    let response = tokio::time::timeout(STREAM_IDLE_TIMEOUT, UPDATE_CLIENT.get(&binary_url).send())
         .await
+        .map_err(|_| {
+            UpdateFailure::new(
+                UpdateFailureStage::Download,
+                format!("download stalled: no response for {STREAM_IDLE_TIMEOUT:?}"),
+            )
+        })?
         .map_err(|error| {
             UpdateFailure::new(
                 UpdateFailureStage::Download,
