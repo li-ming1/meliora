@@ -156,6 +156,39 @@ fn partial_path(dest: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// 清扫下载目录里滞留的 `.part` 残骸（进程崩溃 / 硬阀门 exit(70) 打断下载的
+/// 遗留）。计数化命名（partial_path）后残骸不再被同 dest 的下次下载截断复用
+/// ——旧确定性命名时每个 dest 至多一个孤儿且自愈，现在跨崩溃无界累积，需主
+/// 动清扫。只认 `part` 扩展名且 mtime 超过 `older_than` 才删（阈值留给调用方
+/// 与测试），避免动到别的进程正在写的临时文件；返回删除数。
+pub fn sweep_stale_part_files(dir: &Path, older_than: Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "part") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|mtime| mtime.elapsed().ok())
+            .is_some_and(|age| age >= older_than);
+        if stale && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// 把 标题/歌手/专辑、歌词与封面写入已下载的文件。
 /// 调用方自行从各自的曲目类型里拆出字段（本模块不认识 provider 的结构体）。
 pub fn embed_tags(
@@ -348,6 +381,26 @@ mod tests {
             .filter(|entry| entry.path().to_string_lossy().ends_with(".part"))
             .collect();
         assert!(leftovers.is_empty(), "残留半成品: {leftovers:?}");
+    }
+
+    #[test]
+    fn sweep_removes_only_stale_part_files() {
+        let dir = crate::test_support::TestDir::new("download-part-sweep");
+        std::fs::write(dir.path().join("a.0.part"), b"x").unwrap();
+        // 旧版确定性命名 `dest.part`（崩溃残骸迁移面）同样纳入清扫
+        std::fs::write(dir.path().join("a.part"), b"x").unwrap();
+        std::fs::write(dir.path().join("keep.mp3"), b"x").unwrap();
+        // 阈值 0：所有 .part 都算滞留；非 part 不动
+        assert_eq!(sweep_stale_part_files(dir.path(), Duration::ZERO), 2);
+        assert!(dir.path().join("keep.mp3").exists());
+        assert!(!dir.path().join("a.part").exists());
+        // 巨大阈值：刚写的文件不算滞留（生产传 24h，防误删他方在写的临时文件）
+        std::fs::write(dir.path().join("fresh.part"), b"x").unwrap();
+        assert_eq!(
+            sweep_stale_part_files(dir.path(), Duration::from_secs(24 * 3600)),
+            0
+        );
+        assert!(dir.path().join("fresh.part").exists());
     }
 }
 

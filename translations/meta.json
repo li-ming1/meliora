@@ -835,25 +835,25 @@
   },
   "KUGOU_DOWNLOADED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:275",
+    "definedIn": "src/ui/kugou/download.rs:290",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_FAILED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:280",
+    "definedIn": "src/ui/kugou/download.rs:295",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_IN_PROGRESS": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:236",
+    "definedIn": "src/ui/kugou/download.rs:251",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_NO_URL": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:65",
+    "definedIn": "src/ui/kugou/download.rs:66",
     "plural": false,
     "description": null
   },
@@ -2383,7 +2383,7 @@
   },
   "TRAY_HIDE": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:587",
+    "definedIn": "src/tray/windows.rs:610",
     "plural": false,
     "description": null
   },
@@ -2419,7 +2419,7 @@
   },
   "TRAY_SHOW": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:589",
+    "definedIn": "src/tray/windows.rs:612",
     "plural": false,
     "description": null
   },

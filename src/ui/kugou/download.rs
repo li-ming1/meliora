@@ -5,6 +5,7 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{LazyLock, OnceLock, RwLock},
+    time::Duration,
 };
 
 use cntp_i18n::tr;
@@ -13,7 +14,7 @@ use crate::sync::RecoveredRwLock;
 use crate::{
     kugou::KugouClient,
     media::{
-        download::{embed_tags, http_download_to_file, sanitize_filename},
+        download::{embed_tags, http_download_to_file, sanitize_filename, sweep_stale_part_files},
         http_source::http_cover_bytes,
     },
     toasts::{Toast, emit_toast},
@@ -107,6 +108,20 @@ pub async fn download_track(
     dir: &Path,
     permit: tokio::sync::SemaphorePermit<'static>,
 ) -> Result<PathBuf, String> {
+    // 会话首次下载时清扫历史 `.part` 残骸（崩溃/硬阀门中断遗留；计数化命名
+    // 后残骸不再被复用截断，跨崩溃无界累积）。每进程至多一次，read_dir 代价
+    // 可忽略；24h 阈值避开他方正在写的临时文件。
+    static PART_SWEEP_DONE: OnceLock<()> = OnceLock::new();
+    if PART_SWEEP_DONE.get().is_none() {
+        let dir_owned = dir.to_path_buf();
+        let _ = PART_SWEEP_DONE.set(());
+        tokio::task::spawn_blocking(move || {
+            sweep_stale_part_files(&dir_owned, Duration::from_secs(24 * 3600))
+        })
+        .await
+        .unwrap_or(0);
+    }
+
     let (url, quality) = resolve_best_url(client, track).await?;
     let ext = if quality == "flac" { "flac" } else { "mp3" };
 
