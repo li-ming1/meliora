@@ -233,12 +233,62 @@ pub(crate) fn box_kernel(_x: f32) -> f32 {
 // ```image``` is not necessarily Rgba and the order of channels is passed through.
 //
 // Note: if an empty image is passed in, panics unless the image is truly empty.
+//
+// （MELIORA LOCAL PATCH，2026-11-08）本体只是对 [`horizontal_sample_rows`]
+// 全区间行核心的一次薄封装：分配 + 色彩空间拷贝留在本函数，逐像素运算全部
+// 在行核心里。拆分动机见 [`resize_parallel`]，拆分是纯机械搬运，行为逐位不变。
 fn horizontal_sample<P, S>(
     image: &Rgba32FImage,
     new_width: u32,
     filter: &mut Filter,
 ) -> ImageBuffer<P, Vec<S>>
 where
+    P: Pixel<Subpixel = S> + 'static,
+    S: Primitive + 'static,
+{
+    let height = image.height();
+
+    let mut out = ImageBuffer::new(new_width, height);
+    out.copy_color_space_from(image);
+    horizontal_sample_rows::<P, S>(
+        image,
+        new_width,
+        filter,
+        0,
+        height,
+        out.as_flat_samples_mut().samples,
+    );
+    out
+}
+
+// [`horizontal_sample`] 的行区间核心：只计算输出行 `[row_start, row_end)`，
+// 写入 `out`。`out` 覆盖且仅覆盖该行区间的样本，行内布局与 `ImageBuffer`
+// 一致（行主序、每像素 CHANNEL_COUNT 个子字节连续），行号按
+// `outy - row_start` 相对索引；全区间调用时相对索引即绝对索引。
+//
+// 每个 输出像素 的计算是"该列固定权重序列上的固定顺序 f32 累加 + 出口
+// clamp/round/NumCast"，像素之间零数据依赖——按行区间分块不改变任何单个
+// 像素内部的运算序列，这是 `resize_parallel` bit-exact 的构造性依据。
+//
+// 权重 `ws` 仍按输出列 `outx` 逐列现算（与顺序版逐字相同）。多线程下每
+// 线程对自己覆盖的行全量跑一遍 `0..new_width`，权重计算（每列 taps 次
+// kernel 求值）相对像素累加（每列 行数×taps×4 通道）的冗余只有 ~1/行数
+// 量级——换来核心自包含与顺序路径的最小 diff，见 [`resize_parallel`]。
+//
+// 输出写入用切片直写代替 `put_pixel`：`ImageBuffer` 的样本布局即
+// `(y * width + x) * CHANNEL_COUNT` 起连续 CHANNEL_COUNT 个子字节（见
+// `get_pixel_mut_checked` 的索引式与 `from_slice_mut`），逐通道直写与
+// `put_pixel(from_channels(..))` 逐位等价。
+//
+// Note: if an empty image is passed in, panics unless the image is truly empty.
+fn horizontal_sample_rows<P, S>(
+    image: &Rgba32FImage,
+    new_width: u32,
+    filter: &mut Filter,
+    row_start: u32,
+    row_end: u32,
+    out: &mut [S],
+) where
     P: Pixel<Subpixel = S> + 'static,
     S: Primitive + 'static,
 {
@@ -249,16 +299,21 @@ where
         width != 0 || height == 0,
         "Unexpected prior allocation size. This case should have been handled by the caller"
     );
-
-    let mut out = ImageBuffer::new(new_width, height);
-    out.copy_color_space_from(image);
-    let mut ws = Vec::new();
+    if row_start == row_end {
+        return;
+    }
+    debug_assert_eq!(
+        (row_end - row_start) as usize * new_width as usize * <P as Pixel>::CHANNEL_COUNT as usize,
+        out.len(),
+        "行区间与样本切片长度不匹配"
+    );
 
     let max: f32 = NumCast::from(S::DEFAULT_MAX_VALUE).unwrap();
     let min: f32 = NumCast::from(S::DEFAULT_MIN_VALUE).unwrap();
     let ratio = width as f32 / new_width as f32;
     let sratio = if ratio < 1.0 { 1.0 } else { ratio };
     let src_support = filter.support * sratio;
+    let mut ws = Vec::new();
 
     for outx in 0..new_width {
         // Find the point in the input image corresponding to the centre
@@ -296,7 +351,7 @@ where
             *w /= sum;
         }
 
-        for y in 0..height {
+        for y in row_start..row_end {
             let mut t = (0.0, 0.0, 0.0, 0.0);
 
             for (i, w) in ws.iter().enumerate() {
@@ -312,18 +367,25 @@ where
             }
 
             #[allow(deprecated)]
-            let t = Pixel::from_channels(
+            // 行核心版本改为切片直写后失去 put_pixel 的类型锚点，显式标注
+            // 累加结果为 P（与原版推断一致）。
+            let t: P = Pixel::from_channels(
                 NumCast::from(FloatNearest(clamp(t.0, min, max))).unwrap(),
                 NumCast::from(FloatNearest(clamp(t.1, min, max))).unwrap(),
                 NumCast::from(FloatNearest(clamp(t.2, min, max))).unwrap(),
                 NumCast::from(FloatNearest(clamp(t.3, min, max))).unwrap(),
             );
 
-            out.put_pixel(outx, y, t);
+            // 切片直写：与 put_pixel(outx, y, t) 逐位等价（布局见函数注释）。
+            // 像素偏移用 usize 计算——put_pixel 的索引式是 usize 乘加，u32
+            // 中间量在超大面积（w*h > 2^32）下会先溢出。
+            let base = ((y - row_start) as usize * new_width as usize + outx as usize)
+                * <P as Pixel>::CHANNEL_COUNT as usize;
+            for (c, ch) in t.channels().iter().enumerate() {
+                out[base + c] = *ch;
+            }
         }
     }
-
-    out
 }
 
 /// Linearly sample from an image using coordinates in [0, 1].
@@ -487,14 +549,56 @@ pub fn interpolate_bilinear<P: Pixel>(
 // preserved.
 //
 // Note: if an empty image is passed in, panics unless the image is truly empty.
+//
+// （MELIORA LOCAL PATCH，2026-11-08）本体只是对 [`vertical_sample_rows`]
+// 全区间行核心的一次薄封装：分配 + 色彩空间拷贝留在本函数，逐像素运算全部
+// 在行核心里。拆分动机见 [`resize_parallel`]，拆分是纯机械搬运，行为逐位不变。
 fn vertical_sample<I, P, S>(image: &I, new_height: u32, filter: &mut Filter) -> Rgba32FImage
 where
     I: GenericImageView<Pixel = P>,
     P: Pixel<Subpixel = S> + 'static,
     S: Primitive + 'static,
 {
-    let (width, height) = image.dimensions();
+    let (width, _) = image.dimensions();
 
+    let mut out = ImageBuffer::new(width, new_height);
+    out.copy_color_space_from(&image.buffer_with_dimensions(0, 0));
+    vertical_sample_rows(
+        image,
+        new_height,
+        filter,
+        0,
+        new_height,
+        out.as_flat_samples_mut().samples,
+    );
+    out
+}
+
+// [`vertical_sample`] 的行区间核心：只计算输出行 `[row_start, row_end)`，
+// 写入 `out`。`out` 覆盖且仅覆盖该行区间的样本，行内布局与 `Rgba32FImage`
+// 一致（行主序、每像素 4 个 f32 连续），行号按 `outy - row_start` 相对索引；
+// 全区间调用时相对索引即绝对索引。
+//
+// 每个 输出像素 的计算是"该行固定权重序列上的固定顺序 f32 累加"，权重
+// 每输出行现算（`ws` 是循环内局部变量，无跨行可变状态），像素之间零数据
+// 依赖、出口无 clamp（f32 原值写入）——按行区间分块不改变任何单个像素
+// 内部的运算序列，这是 `resize_parallel` bit-exact 的构造性依据。输出
+// 写入用切片直写代替 `put_pixel`，等价性论证同 [`horizontal_sample_rows`]。
+//
+// Note: if an empty image is passed in, panics unless the image is truly empty.
+fn vertical_sample_rows<I, P, S>(
+    image: &I,
+    new_height: u32,
+    filter: &mut Filter,
+    row_start: u32,
+    row_end: u32,
+    out: &mut [f32],
+) where
+    I: GenericImageView<Pixel = P>,
+    P: Pixel<Subpixel = S> + 'static,
+    S: Primitive + 'static,
+{
+    let (width, height) = image.dimensions();
     // This is protection against a regression in memory usage such as #2340. Since the strategy to
     // deal with it depends on the caller it is a precondition of this function.
     assert!(
@@ -502,16 +606,21 @@ where
         height != 0 || width == 0,
         "Unexpected prior allocation size. This case should have been handled by the caller"
     );
-
-    let mut out = ImageBuffer::new(width, new_height);
-    out.copy_color_space_from(&image.buffer_with_dimensions(0, 0));
-    let mut ws = Vec::new();
+    if row_start == row_end {
+        return;
+    }
+    debug_assert_eq!(
+        (row_end - row_start) as usize * width as usize * 4,
+        out.len(),
+        "行区间与样本切片长度不匹配"
+    );
 
     let ratio = height as f32 / new_height as f32;
     let sratio = if ratio < 1.0 { 1.0 } else { ratio };
     let src_support = filter.support * sratio;
+    let mut ws = Vec::new();
 
-    for outy in 0..new_height {
+    for outy in row_start..row_end {
         // For an explanation of this algorithm, see the comments
         // in horizontal_sample.
         let inputy = (outy as f32 + 0.5) * ratio;
@@ -560,15 +669,16 @@ where
                 t.3 += vec.3 * w;
             }
 
-            #[allow(deprecated)]
-            // This is not necessarily Rgba.
-            let t = Pixel::from_channels(t.0, t.1, t.2, t.3);
-
-            out.put_pixel(x, outy, t);
+            // 输出像素类型恒为 Rgba<f32>（Rgba32FImage）：from_channels 的
+            // 4 个 f32 按 (y * width + x) * 4 直写与 put_pixel 逐位等价；
+            // 偏移用 usize 计算，理由同 horizontal_sample_rows。
+            let base = (outy - row_start) as usize * width as usize * 4 + x as usize * 4;
+            out[base] = t.0;
+            out[base + 1] = t.1;
+            out[base + 2] = t.2;
+            out[base + 3] = t.3;
         }
     }
-
-    out
 }
 
 /// Local struct for keeping track of pixel sums for fast thumbnail averaging
@@ -1014,6 +1124,194 @@ where
     // Note: tmp is not necessarily actually Rgba
     let tmp: Rgba32FImage = vertical_sample(image, nheight, &mut method);
     horizontal_sample(&tmp, nwidth, &mut method)
+}
+
+/// 由 [`FilterType`] 构造 [`Filter`]。kernel 都是纯静态函数（纯函数、无
+/// 捕获），跨线程求值行为一致；构造只是两次 Box 分配。与 `resize` 内联
+/// 的同一张表逐字相同——`resize` 本体刻意一行不动（MELIORA LOCAL PATCH
+/// 只加不改），故此处独立成 helper 供 [`resize_parallel`] 按线程各构造。
+fn build_filter(filter: FilterType) -> Filter<'static> {
+    match filter {
+        FilterType::Nearest => Filter {
+            kernel: Box::new(box_kernel),
+            support: 0.0,
+        },
+        FilterType::Triangle => Filter {
+            kernel: Box::new(triangle_kernel),
+            support: 1.0,
+        },
+        FilterType::CatmullRom => Filter {
+            kernel: Box::new(catmullrom_kernel),
+            support: 2.0,
+        },
+        FilterType::Gaussian => Filter {
+            kernel: Box::new(gaussian_kernel),
+            support: 3.0,
+        },
+        FilterType::Lanczos3 => Filter {
+            kernel: Box::new(lanczos3_kernel),
+            support: 3.0,
+        },
+    }
+}
+
+/// 把 `total` 行均分成 `parts` 个连续区间 `[start, end)`：前
+/// `total % parts` 个区间各多一行，区间数恰为 `parts`、并集恰为 `0..total`、
+/// 顺序无缝衔接（`split_at_mut` 链的行边界）。调用方保证 `parts >= 1`；
+/// `total` 为 0 时返回单个空区间。
+fn split_row_ranges(total: u32, parts: usize) -> Vec<(u32, u32)> {
+    debug_assert!(parts >= 1, "并行度必须 >= 1");
+    let parts = parts as u32;
+    let base = total / parts;
+    let rem = total % parts;
+    let mut ranges = Vec::with_capacity(parts as usize);
+    let mut start = 0;
+    for i in 0..parts {
+        let len = base + if i < rem { 1 } else { 0 };
+        ranges.push((start, start + len));
+        start += len;
+    }
+    ranges
+}
+
+/// [`resize`] 的多线程等价实现：垂直/水平两个采样阶段各自按**输出行区间**
+/// 分块，用 `std::thread::scope` 并行计算，结果与顺序版 [`resize`]
+/// **逐位相同**（bit-exact）。
+///
+/// # Bit-exact 论证（按构造成立，另有测试矩阵兜底）
+///
+/// 两个阶段中每个输出像素都是"固定权重序列上的固定顺序 f32 累加"：
+/// 权重只由 kernel 与该输出像素坐标决定（[`vertical_sample_rows`] 每
+/// 输出行现算 `ws`、无跨行可变状态；[`horizontal_sample_rows`] 每输出列
+/// 现算 `ws`、逐像素独立），像素与像素之间零数据依赖，clamp/round/NumCast
+/// 只发生在累加出口。f32 加法不满足结合律，但**分块不改变任何单个像素
+/// 内部的运算序列**——每线程对分配到的行跑与顺序版逐字相同的权重计算与
+/// 累加；两阶段之间以整幅中间图为屏障（先 scope 全收齐、后开第二个
+/// scope）。因此输出按构造逐位相同。
+///
+/// # 线程策略
+///
+/// * `Filter.kernel` 是 `Box<dyn Fn>` 非 `Send`：每线程各自构造一份
+///   [`Filter`]（kernel 为纯静态函数，见 [`build_filter`]），不共享。
+/// * 水平阶段权重 `ws` 是 per-outx 的，这里选**每线程自算**而非预计算
+///   共享表：权重成本占像素累加的 ~1/行数量级（见核心注释），自算的
+///   冗余可忽略；换来行核心与顺序版逐字同构（顺序路径 diff 最小、
+///   bit-exact 由代码结构直接可见）且无需为共享表引入新类型与跨线程
+///   只读约定。
+/// * 调用线程参与最后一个行区间；`threads` 为 0 按 1 处理，超过输出
+///   行数的部分退化为空区间（多起的线程空转返回）。调用方建议传
+///   `available_parallelism().min(输出行数)` 量级的值。
+///
+/// # Panics
+///
+/// 与 [`resize`] 相同的前置分支与断言（空图返回空 buffer、同尺寸退化为
+/// 拷贝、#2340 尺寸断言）；`I` 不满足 `Sync`（或子字节类型不满足 `Send`）
+/// 时编译失败而非运行时问题。
+///
+/// ```no_run
+/// use image::imageops::{resize_parallel, FilterType};
+///
+/// # let image = image::RgbaImage::new(1920, 1080);
+/// let threads = std::thread::available_parallelism()
+///     .map(usize::from)
+///     .unwrap_or(1)
+///     .min(1080)
+///     .min(8);
+/// let scaled = resize_parallel(&image, 640, 360, FilterType::Lanczos3, threads);
+/// ```
+pub fn resize_parallel<I>(
+    image: &I,
+    nwidth: u32,
+    nheight: u32,
+    filter: FilterType,
+    threads: usize,
+) -> ImageBuffer<I::Pixel, Vec<<I::Pixel as Pixel>::Subpixel>>
+where
+    I: GenericImageView + Sync,
+    I::Pixel: 'static,
+    <I::Pixel as Pixel>::Subpixel: Send + 'static,
+{
+    // 与 resize 相同的前置分支：空图直接返回空 buffer，同尺寸退化为拷贝
+    // （判空在前——与 resize 同序，空输入 + 同尺寸目标也走空分支）。
+    let is_empty = {
+        let (width, height) = image.dimensions();
+        width == 0 || height == 0
+    };
+    if is_empty {
+        return image.buffer_with_dimensions(nwidth, nheight);
+    }
+    if (nwidth, nheight) == image.dimensions() {
+        let mut tmp = image.buffer_like();
+        tmp.copy_from(image, 0, 0).unwrap();
+        return tmp;
+    }
+
+    // 行区间划分：两个阶段的输出行数都是 new_height（水平阶段保行高，
+    // 中间图行与输出行一一对应），同一组分块可复用于两阶段并保持"同行带
+    // 对齐"——阶段 2 的输入行与输出行按同一行号对应，无需换算。
+    let threads = threads.max(1);
+    let ranges = split_row_ranges(nheight, threads.min(nheight.max(1) as usize));
+
+    // 阶段 1：输入 → 整幅 Rgba32F 中间图（分配与顺序版同尺寸），按输出
+    // 行分块写入；线程各持互斥的样本切片（split_at_mut 链）。
+    let (width, _) = image.dimensions();
+    let mut intermediate = ImageBuffer::new(width, nheight);
+    intermediate.copy_color_space_from(&image.buffer_with_dimensions(0, 0));
+    let row_samples = width as usize * 4;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = intermediate.as_flat_samples_mut().samples;
+        for &(row_start, row_end) in &ranges[..ranges.len() - 1] {
+            let (head, tail) = rest.split_at_mut((row_end - row_start) as usize * row_samples);
+            rest = tail;
+            scope.spawn(move || {
+                let mut filter = build_filter(filter);
+                vertical_sample_rows(image, nheight, &mut filter, row_start, row_end, head);
+            });
+        }
+        // 最后一个区间在调用线程执行（省一次线程往返）。
+        let (row_start, row_end) = ranges[ranges.len() - 1];
+        let mut filter = build_filter(filter);
+        vertical_sample_rows(image, nheight, &mut filter, row_start, row_end, rest);
+    });
+
+    // 阶段 2：中间图 → 输出（行 y 一一对应），同样按行分块；整幅屏障由
+    // 两个 scope 的先后完成保证。中间图只读共享（Rgba32FImage: Sync）——
+    // 先取一个共享引用绑定再进 move 闭包（move 会按值捕获体内引用的
+    // 路径，直接写 `&intermediate` 会把整个 ImageBuffer move 进首个闭包）。
+    let mut out = ImageBuffer::new(nwidth, nheight);
+    out.copy_color_space_from(&intermediate);
+    let row_samples = nwidth as usize * <I::Pixel as Pixel>::CHANNEL_COUNT as usize;
+    let shared: &Rgba32FImage = &intermediate;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [<I::Pixel as Pixel>::Subpixel] = out.as_flat_samples_mut().samples;
+        for &(row_start, row_end) in &ranges[..ranges.len() - 1] {
+            let (head, tail) = rest.split_at_mut((row_end - row_start) as usize * row_samples);
+            rest = tail;
+            scope.spawn(move || {
+                let mut filter = build_filter(filter);
+                horizontal_sample_rows::<I::Pixel, _>(
+                    shared,
+                    nwidth,
+                    &mut filter,
+                    row_start,
+                    row_end,
+                    head,
+                );
+            });
+        }
+        let (row_start, row_end) = ranges[ranges.len() - 1];
+        let mut filter = build_filter(filter);
+        horizontal_sample_rows::<I::Pixel, _>(
+            shared,
+            nwidth,
+            &mut filter,
+            row_start,
+            row_end,
+            rest,
+        );
+    });
+
+    out
 }
 
 /// Performs a Gaussian blur on the supplied image.

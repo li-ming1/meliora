@@ -23,6 +23,18 @@ const ENHANCE_SHARPEN_SIGMA: f32 = 1.5;
 /// 通道差低于此值（0-255）不做 unsharp，因此 Lanczos 振铃与传感器噪声不会被推成光晕。
 const ENHANCE_SHARPEN_THRESHOLD: f32 = 3.0;
 
+/// [`image::imageops::resize_parallel`] 的线程数策略：`min(可用并行度,
+/// 输出行数, 8)`。输出行数是并行度的天然上限（再多只会分到空区间）；
+/// 封顶 8 是既定方案值——背景重管线已由 `BACKDROP_PIPELINE_GATE` 端到端
+/// 串行化，单管线内部 8 路已足够覆盖 1920 行级的输出，同时给音频流与
+/// 封面下载的 worker 留出余地（与 DECODE_PERMITS 的克制口径一致）。
+fn backdrop_resize_threads(nheight: u32) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    available.min(nheight as usize).min(8).max(1)
+}
+
 /// 沉浸页背景目标尺寸渲染（2026-09-29 第四版·清晰裁剪带）：解码全尺寸
 /// 原图 → cover 居中裁剪到目标纵横比 → 3×3 中值去噪（拆掉 JPEG 块边与
 /// 椒盐噪声）→ Lanczos3 重采样到精确 `(w, h)` 设备像素 → 阈值 unsharp
@@ -103,15 +115,20 @@ pub(super) fn backdrop_sharp_fill(
     if band_long < 2 * target_long {
         denoise_rgba(&mut band);
     }
-    let mut out = image::imageops::resize(
+    // 重采样走行级并行（2026-11-08）：与顺序 resize 逐位相同（bit-exact
+    // 契约见 imageops::resize_parallel 文档与本文件 tests 模块），只换执行
+    // 形态——滤波分支条件与原 if 表达式同式，仅提出变量。
+    let resize_filter = if band_long >= target_long {
+        image::imageops::FilterType::CatmullRom
+    } else {
+        image::imageops::FilterType::Lanczos3
+    };
+    let mut out = image::imageops::resize_parallel(
         &band,
         target_w,
         target_h,
-        if band_long >= target_long {
-            image::imageops::FilterType::CatmullRom
-        } else {
-            image::imageops::FilterType::Lanczos3
-        },
+        resize_filter,
+        backdrop_resize_threads(target_h),
     );
     // 阈值 unsharp 补回重采样损失的锐度：缩小轻量档（0.5/σ1.0），放大
     // 档随倍数走（0.6/σ1.5）。阈值 3 以下不动，避免把残余噪声推成 halo。
@@ -145,11 +162,12 @@ pub(super) fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<Rende
     let scale = f64::from(ENHANCE_TARGET_PX) / f64::from(long_side);
     let new_width = ((f64::from(rgba.width()) * scale) as u32).max(1);
     let new_height = ((f64::from(rgba.height()) * scale) as u32).max(1);
-    rgba = image::imageops::resize(
+    rgba = image::imageops::resize_parallel(
         &rgba,
         new_width,
         new_height,
         image::imageops::FilterType::Lanczos3,
+        backdrop_resize_threads(new_height),
     );
     sharpen_rgba(&mut rgba);
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
@@ -332,12 +350,15 @@ pub(super) fn denoise_rgba(image: &mut image::RgbaImage) {
 
 #[cfg(test)]
 mod tests {
-    //! 中值核 bit-exact 契约的测试。bench 模块是计时报告载体（`--ignore`，
-    //! 只作给人读的报告），正确性断言必须随常规测试运行，故独立成模块；
-    //! 生产代码里只有 `median9` 这一份网络实现，参考实现（排序取 [4]）只在
-    //! 测试内存在。
+    //! bit-exact 契约的测试：中值核与 resize 行级并行化（2026-11-08）。
+    //! bench 模块是计时报告载体（`--ignore`，只作给人读的报告），正确性
+    //! 断言必须随常规测试运行，故独立成模块；生产代码里只有 `median9`
+    //! 这一份网络实现，参考实现（排序取 [4]）只在测试内存在。resize 部分
+    //! 的被测对象是 vendor 替身里的 `imageops::resize_parallel`，矩阵断言
+    //! 钉"并行==顺序"、金标准哈希钉顺序路径本身（见各测试文档）。
 
     use super::*;
+    use xxhash_rust::xxh3::xxh3_64;
 
     /// 固定种子 LCG（Knuth MMIX 常数，与 bench 模块同式；禁止运行时随机）。
     fn lcg_next(state: &mut u64) -> u64 {
@@ -514,6 +535,186 @@ mod tests {
             assert_full_image(w, h, bytes, "分块结构图案");
         }
     }
+
+    // ===== resize 行级并行化（2026-11-08）的 bit-exact 契约 =====
+    //
+    // 被测对象是 vendor/image-trim 的 `imageops::resize_parallel`（本地
+    // [patch.crates-io] 替身）。并行路径的 bit-exact 论证见其 /// 文档；
+    // 这里用"平行 vs 顺序逐字节相等 + 金标准哈希"两头钉死：前者证明并行
+    // 不漂移，后者在 vendor 顺序路径被未来重构动到位级行为时报警。
+
+    /// resize 契约测试的固定种子（任意常数，禁止运行时随机）。
+    const RESIZE_SEED: u64 = 0x5253_5A5F_3230_3236;
+
+    /// 契约对照图：LCG 噪声与位置渐变混合，含非均匀 alpha 与 0/255 极值
+    /// （极值点确保 horizontal 阶段出口的 clamp/round 边界分支被踩到；
+    /// 非均匀 alpha 确保四通道各自独立累加而非常数捷径）。
+    fn resize_test_source(w: u32, h: u32, seed: u64) -> image::RgbaImage {
+        let mut state = seed;
+        let mut img = image::RgbaImage::new(w, h);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            let noise = (lcg_next(&mut state) >> 33) as u8;
+            let gradient = (x.wrapping_mul(255) + y.wrapping_mul(64)) as u8;
+            let v = match (x + y) % 16 {
+                0 => 0u8,
+                1 => 255u8,
+                _ => noise.wrapping_add(gradient),
+            };
+            let a = match (x.wrapping_mul(3) + y.wrapping_mul(5)) % 11 {
+                0 => 0u8,
+                1 => 255u8,
+                2 => 128u8,
+                _ => noise ^ gradient,
+            };
+            *p = image::Rgba([v, gradient, noise, a]);
+        }
+        img
+    }
+
+    /// 平行与顺序 `imageops::resize` 必须逐字节相等：小源全矩阵 × 四滤波
+    /// （191×107 为放大档、31×17/1×1/1×17/17×1 为缩小与退化档），2048 大源
+    /// 只配 191×107 一个目标（缩小路径 + 最大 tap 窗口形态，避免常规套件
+    /// 跑 30s）。
+    #[test]
+    fn resize_parallel_matches_sequential_byte_exact() {
+        let filters = [
+            image::imageops::FilterType::CatmullRom,
+            image::imageops::FilterType::Lanczos3,
+            image::imageops::FilterType::Triangle,
+            image::imageops::FilterType::Nearest,
+        ];
+        let sources = [(333u32, 217u32), (97u32, 61u32)];
+        let targets = [
+            (191u32, 107u32),
+            (31u32, 17u32),
+            (1u32, 1u32),
+            (1u32, 17u32),
+            (17u32, 1u32),
+        ];
+        for &(sw, sh) in &sources {
+            let src = resize_test_source(sw, sh, RESIZE_SEED);
+            for &(tw, th) in &targets {
+                for &filter in &filters {
+                    let sequential = image::imageops::resize(&src, tw, th, filter);
+                    let parallel = image::imageops::resize_parallel(&src, tw, th, filter, 8);
+                    assert_eq!(
+                        sequential.as_raw(),
+                        parallel.as_raw(),
+                        "{filter:?} {sw}x{sh} → {tw}x{th}"
+                    );
+                }
+            }
+        }
+        let big = resize_test_source(2048, 1152, RESIZE_SEED);
+        for &filter in &filters[..2] {
+            let sequential = image::imageops::resize(&big, 191, 107, filter);
+            let parallel = image::imageops::resize_parallel(&big, 191, 107, filter, 8);
+            assert_eq!(
+                sequential.as_raw(),
+                parallel.as_raw(),
+                "{filter:?} 2048x1152 → 191x107"
+            );
+        }
+    }
+
+    /// 输出与线程数无关：N=1（单区间即顺序执行形态）到超出行数的 N=64
+    /// （空区间分支）全部逐字节一致；Lanczos3 与 CatmullRom 双滤波。
+    #[test]
+    fn resize_parallel_output_independent_of_thread_count() {
+        let src = resize_test_source(97, 61, RESIZE_SEED);
+        for &filter in &[
+            image::imageops::FilterType::Lanczos3,
+            image::imageops::FilterType::CatmullRom,
+        ] {
+            let baseline = image::imageops::resize_parallel(&src, 191, 107, filter, 1);
+            for &threads in &[2usize, 3, 7, 64] {
+                let out = image::imageops::resize_parallel(&src, 191, 107, filter, threads);
+                assert_eq!(
+                    baseline.as_raw(),
+                    out.as_raw(),
+                    "{filter:?} threads={threads}"
+                );
+            }
+        }
+    }
+
+    /// 退化分支与顺序版逐字节一致：空图三形态（走 resize 的空 buffer 分支，
+    /// 不触采样）、同尺寸（copy 分支，且输出必须等于源）、1px 高/宽源
+    /// （行区间只剩 1 行真实区间 + 空区间尾部）。
+    #[test]
+    fn resize_parallel_degenerate_branches_match_sequential() {
+        let filters = [
+            image::imageops::FilterType::Lanczos3,
+            image::imageops::FilterType::Nearest,
+        ];
+        for (w, h) in [(0u32, 0u32), (5u32, 0u32), (0u32, 5u32)] {
+            let empty = image::RgbaImage::new(w, h);
+            for &filter in &filters {
+                let sequential = image::imageops::resize(&empty, 3, 7, filter);
+                let parallel = image::imageops::resize_parallel(&empty, 3, 7, filter, 8);
+                assert_eq!(
+                    sequential.dimensions(),
+                    parallel.dimensions(),
+                    "dims {w}x{h}"
+                );
+                assert_eq!(
+                    sequential.as_raw(),
+                    parallel.as_raw(),
+                    "empty {w}x{h} {filter:?}"
+                );
+            }
+        }
+        let src = resize_test_source(31, 17, RESIZE_SEED);
+        let same = image::imageops::resize_parallel(
+            &src,
+            31,
+            17,
+            image::imageops::FilterType::Lanczos3,
+            8,
+        );
+        assert_eq!(same.as_raw(), src.as_raw(), "同尺寸必须走 copy 分支");
+        let row = resize_test_source(17, 1, RESIZE_SEED);
+        let col = resize_test_source(1, 17, RESIZE_SEED);
+        for (src, dims) in [(&row, (17u32, 1u32)), (&col, (1u32, 17u32))] {
+            for &(tw, th) in &[(9u32, 5u32), (5u32, 9u32), (31u32, 3u32), (3u32, 31u32)] {
+                for &filter in &filters {
+                    let sequential = image::imageops::resize(src, tw, th, filter);
+                    let parallel = image::imageops::resize_parallel(src, tw, th, filter, 8);
+                    assert_eq!(
+                        sequential.as_raw(),
+                        parallel.as_raw(),
+                        "{filter:?} {}x{} → {tw}x{th}",
+                        dims.0,
+                        dims.1
+                    );
+                }
+            }
+        }
+    }
+
+    /// 金标准：固定小图固定滤波的**顺序** resize 输出 xxh3 落死值。vendor
+    /// 的顺序采样路径一旦被重构动到位级行为（权重序列、累加次序、clamp/
+    /// round/NumCast 出口），哈希即报警；Triangle/Nearest 全程纯算术 f32
+    /// 运算（无超越函数），值由独立复算程序（算法逐字转写 + xxhash-rust
+    /// 0.8.18 原源码，官方空输入校验向量过闸）逐位复核后写死。并行路径
+    /// 另有与顺序版逐字节相等的矩阵断言兜底。
+    #[test]
+    fn resize_sequential_golden_hash() {
+        let src = resize_test_source(17, 13, RESIZE_SEED);
+        let out = image::imageops::resize(&src, 31, 23, image::imageops::FilterType::Triangle);
+        assert_eq!(
+            xxh3_64(out.as_raw()),
+            0x3C18_6CE2_43A8_D248,
+            "顺序 resize（Triangle 17x13→31x23）输出漂移——vendor 采样路径被改动"
+        );
+        let out_nearest =
+            image::imageops::resize(&src, 31, 23, image::imageops::FilterType::Nearest);
+        assert_eq!(
+            xxh3_64(out_nearest.as_raw()),
+            0x0F86_562E_7C2C_6CBD,
+            "顺序 resize（Nearest 17x13→31x23）输出漂移——vendor 采样路径被改动"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -560,9 +761,9 @@ mod bench {
     const TARGET_W: u32 = 1920;
     const TARGET_H: u32 = 1080;
 
-    /// 重量级计时点（去噪/重采样/锐化/端到端，单轮估 40-300ms）：2 轮预热
-    /// + 6 轮计时，单点累计 240ms-2.4s，稳过 200ms 稳定性下限；9 个计时点合
-    /// 计墙钟 ~8s。
+    /// 重量级计时点（去噪/重采样/并行重采样/锐化/端到端，单轮估
+    /// 40-300ms）：2 轮预热 + 6 轮计时，单点累计 240ms-2.4s，稳过 200ms
+    /// 稳定性下限；11 个计时点合计墙钟 ~10s。
     const HEAVY_WARMUP: usize = 2;
     const HEAVY_RUNS: usize = 6;
     /// 裁剪带搬运（纯 memcpy + band 分配，估 3-15ms/轮）的轮数：30 轮补足
@@ -696,14 +897,31 @@ mod bench {
                 None
             };
 
-            // 段：重采样——按管线数据流吃的是去噪后的同一 band（成本与像素
-            // 值无关）；每轮输出经 black_box 消费防折叠。
+            // 段：重采样（顺序基线）——按管线数据流吃的是去噪后的同一 band
+            // （成本与像素值无关）；每轮输出经 black_box 消费防折叠。生产
+            // 已切并行（下一段），本段保留作并行收益的 A/B 对照面。
             let resize_mean = bench_segment(
                 &format!("{label} resize -> {TARGET_W}x{TARGET_H} {filter:?}"),
                 HEAVY_WARMUP,
                 HEAVY_RUNS,
                 || {
                     let out = image::imageops::resize(&band, TARGET_W, TARGET_H, filter);
+                    black_box(out);
+                },
+            );
+
+            // 段：重采样（行级并行，2026-11-08 引入）——与上段同 band 同
+            // 滤波的 A/B 对比，N=8 固定封顶（与生产 backdrop_resize_threads
+            // 在本机 16 核下的取值一致）。bit-exact 由 tests 模块钉死，本段
+            // 只看收益。生产口径已是并行，故交叉核对的 seg_sum 吃本段均值；
+            // 顺序段均值仅供对照，不参与求和。
+            let parallel_resize_mean = bench_segment(
+                &format!("{label} resize_parallel N=8 -> {TARGET_W}x{TARGET_H} {filter:?}"),
+                HEAVY_WARMUP,
+                HEAVY_RUNS,
+                || {
+                    let out =
+                        image::imageops::resize_parallel(&band, TARGET_W, TARGET_H, filter, 8);
                     black_box(out);
                 },
             );
@@ -737,9 +955,14 @@ mod bench {
                 },
             );
 
-            // 交叉核对 + CPU-1 占比读数
+            // 交叉核对 + CPU-1 占比读数（seg_sum 吃并行重采样——生产口径；
+            // 顺序 resize_mean 只是 A/B 对照，不参与求和）
             let denoise_ms = denoise_mean.unwrap_or(0.0);
-            let seg_sum = crop_mean + denoise_ms + resize_mean + sharpen_mean;
+            let seg_sum = crop_mean + denoise_ms + parallel_resize_mean + sharpen_mean;
+            println!(
+                "A/B 重采样：顺序 {resize_mean:.1}ms vs 并行 {parallel_resize_mean:.1}ms（{:+.1}%，负值为并行更快）",
+                (parallel_resize_mean - resize_mean) / resize_mean * 100.0,
+            );
             let residual = e2e_mean - seg_sum;
             println!(
                 "cross-check: 四段之和 {seg_sum:.1}ms vs 端到端 {e2e_mean:.1}ms，残差 {residual:.1}ms（{:.1}%）",

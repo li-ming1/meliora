@@ -1919,21 +1919,27 @@
     "plural": false,
     "description": null
   },
-  "SCAN_FAILED_FILES": {
+  "SCAN_FAILED_ARTIST_RECOMPUTE": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:99",
+    "definedIn": "src/library/scan/execution.rs:111",
     "plural": false,
     "description": null
   },
-  "SCAN_FAILED_TRANSACTION": {
+  "SCAN_FAILED_FILES": {
     "context": "execution.rs",
     "definedIn": "src/library/scan/execution.rs:105",
     "plural": false,
     "description": null
   },
+  "SCAN_FAILED_TRANSACTION": {
+    "context": "execution.rs",
+    "definedIn": "src/library/scan/execution.rs:117",
+    "plural": false,
+    "description": null
+  },
   "SCAN_FAILED_WORKER": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:93",
+    "definedIn": "src/library/scan/execution.rs:99",
     "plural": false,
     "description": null
   },
