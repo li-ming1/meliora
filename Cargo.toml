@@ -276,7 +276,11 @@ strip = "symbols"
 # 2026-11-06 实测：冷路径依赖 "s" → "z"（minsize），同 features 下 exe
 # 33,064,960 → 32,687,616 B（−377,344 B / −1.14%），.text
 # 23,266,888 → 22,733,624 B。热路径包仍在下面逐名回 3，实时/帧/查询/
-# 搜索路径的编译档未变；冷路径运行时性能未做 A/B（证据缺口，见台账）。
+# 搜索路径的编译档未变。冷路径运行时 A/B 部分闭合（2026-11-08，decode_bench
+# 载体）：校验和/去重五候选（simd-adler32、strength_reduce、transpose、
+# xxhash-rust、zune-core）整批回 3 对 PNG 解码 / checkpoint zlib / xxh3
+# 三热环零可测收益，已回 z 并在 fdeflate 钉位注释处留负结果档案；其余
+# 冷路径包的运行时敏感性仍未测（证据缺口收窄，未闭合）。
 #
 # 通配 z 会连带命中 -sys 包的 C 编译：cc 1.4.3 对 MSVC 把 opt-level z/s/1
 # 统统映射成 /O1；opusic-sys 的 CMake 构建则落到 MinSizeRel（2026-11-07
@@ -335,7 +339,10 @@ zune-jpeg = { opt-level = 3 }
 png = { opt-level = 3 }
 # IDAT 解压与 CRC 校验本体在 fdeflate / crc32fast 里（Cargo.lock 并存 png
 # 0.17.16/0.18.1 两代，两代都直接依赖它们）——只钉 png 门面等于重演上面
-# "只钉门面"注释自述过的陷阱。simd-adler32 本轮不动：动它前需先 A/B。
+# "只钉门面"注释自述过的陷阱。simd-adler32 已 A/B（2026-11-08，decode_bench
+# 载体，与 strength_reduce/transpose/xxhash-rust/zune-core 五包同批回 3 实测）：
+# PNG 解码+缩放 103.1/108.4ms → 104.2/111.3ms，零可测收益——fdeflate 本体已
+# 在 3 档，校验和占解码壁钟 <5%，留在 z 档（负结果档案，别再重测同一批）。
 fdeflate = { opt-level = 3 }
 crc32fast = { opt-level = 3 }
 palette = { opt-level = 3 }
