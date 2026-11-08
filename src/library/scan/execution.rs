@@ -65,16 +65,22 @@ struct ScanFailures {
     worker_panic: u64,
     /// 因为开不出事务而被丢弃的单个文件数。
     file: u64,
+    /// 最终重试后仍留在 pending 里的歌手重算项（专辑 + 曲目）：这些条目本扫描
+    /// 写入的歌手链接缺失，要等文件下次变更触发重扫才能补上。
+    artist_recompute: u64,
 }
 
 impl ScanFailures {
     fn is_empty(&self) -> bool {
-        self.transaction == 0 && self.worker_panic == 0 && self.file == 0
+        self.transaction == 0
+            && self.worker_panic == 0
+            && self.file == 0
+            && self.artist_recompute == 0
     }
 
     /// 每次扫描只弹一条 toast，信息量最大的类别优先：工作线程 panic 意味着扫描不完整，
-    /// 文件计数说明丢了多少，事务计数只在什么都没丢下时（光一次 `COMMIT` 失败）兜底。
-    /// 完整拆分留在日志里。
+    /// 文件计数说明丢了多少，歌手重算计数说明多少条目已入库但署名链接缺失，事务计数
+    /// 只在以上都没命中时（光一次 `COMMIT` 失败）兜底。完整拆分留在日志里。
     fn report(&self) {
         if self.is_empty() {
             return;
@@ -82,8 +88,8 @@ impl ScanFailures {
 
         error!(
             "Scan finished degraded: {} panicked workers, {} files dropped, \
-             {} transaction failures",
-            self.worker_panic, self.file, self.transaction
+             {} transaction failures, {} artist recompute failures",
+            self.worker_panic, self.file, self.transaction, self.artist_recompute
         );
 
         // 占位符刻意不叫 `count`——`tr!` 把这个名字留给单复数选择，
@@ -99,6 +105,12 @@ impl ScanFailures {
                 "SCAN_FAILED_FILES",
                 "Library scan could not index {{failed}} files. Please scan again.",
                 failed = self.file
+            )));
+        } else if self.artist_recompute > 0 {
+            emit_toast(Toast::error(tr!(
+                "SCAN_FAILED_ARTIST_RECOMPUTE",
+                "Library scan could not rebuild artist links for {{failed}} items. Please scan again.",
+                failed = self.artist_recompute
             )));
         } else {
             emit_toast(Toast::error(tr!(
@@ -715,6 +727,11 @@ impl<'a> ScanExecution<'a> {
             .context
             .event_tx
             .send(self.context.mode.completion_event(watching));
+        // 最终重试（最后一次 commit_batch 的 run_retry）之后仍留在 pending 里的
+        // 才是本扫描真正丢掉的歌手重算：中途批次失败但最终重试成功的项不重复计入。
+        self.failures.artist_recompute += (self.active.caches.pending_albums.len()
+            + self.active.caches.pending_tracks.len())
+            as u64;
         self.failures.report();
     }
 }

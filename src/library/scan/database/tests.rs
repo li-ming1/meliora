@@ -158,6 +158,9 @@ async fn update_metadata_rejects_mixed_folder_for_same_album_disc() {
     let path1 = track_path(&dir, "disc1a", "track.flac");
     let path2 = track_path(&dir, "disc1b", "track.flac");
 
+    // 旧文件夹在磁盘上仍有音频文件：重复副本语义按磁盘存在性判定
+    std::fs::write(&path1, b"").unwrap();
+
     let meta = track_metadata("Album", "Artist", "Track", 1);
     insert_metadata(&mut conn, &meta, &path1).await.unwrap();
     insert_metadata(&mut conn, &meta, &path2).await.unwrap();
@@ -678,6 +681,10 @@ async fn update_metadata_rejects_genuine_duplicate_folder() {
     let path_a = track_path(&dir, "a", "track1.flac");
     let path_b = track_path(&dir, "b", "track1.flac");
 
+    // 两个文件夹在磁盘上都有音频文件：真重复副本
+    std::fs::write(&path_a, b"").unwrap();
+    std::fs::write(&path_b, b"").unwrap();
+
     let meta = track_metadata("Album", "Artist", "Track 1", 1);
     insert_metadata(&mut conn, &meta, &path_a).await.unwrap();
 
@@ -700,6 +707,8 @@ async fn update_metadata_populated_check_matches_case_variant_claim() {
     let mut conn = pool.acquire().await.unwrap();
 
     let path_a = track_path(&dir, "Claimed", "track1.flac");
+    // 认领文件夹在磁盘上仍有音频文件（大小写不敏感卷上 lower 指向同一目录）
+    std::fs::write(&path_a, b"").unwrap();
 
     let meta = track_metadata("Album", "Artist", "Track 1", 1);
     insert_metadata(&mut conn, &meta, &path_a).await.unwrap();
@@ -720,6 +729,44 @@ async fn update_metadata_populated_check_matches_case_variant_claim() {
     assert_eq!(outcome, TrackWriteOutcome::SkippedDuplicateFolder);
     assert_eq!(count_rows(&pool, "track").await, 1);
     assert_eq!(sole_claim(&mut conn).await, lower.as_str());
+}
+
+/// 认领的文件夹在磁盘上已拿不出音频文件（从未监视位置移入的专辑：源行没有任何
+/// 事件清理）时，认领让给新位置而不是拒绝——按 DB 行拒绝会被写进扫描记录，目标
+/// 文件从此被所有扫描跳过，专辑静默永久丢失。
+#[tokio::test]
+async fn update_metadata_reclaims_album_path_when_claimed_folder_lost_its_files() {
+    let (dir, pool) = create_test_pool("db-stale-claim-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    // 目录 F：真文件入库，随后物理删除文件——DB 行与认领仍在（没有事件清理它）
+    let path_a = track_path(&dir, "a", "track1.flac");
+    std::fs::write(&path_a, b"").unwrap();
+
+    let meta1 = track_metadata("Album", "Artist", "Track 1", 1);
+    insert_metadata(&mut conn, &meta1, &path_a).await.unwrap();
+
+    std::fs::remove_file(&path_a).unwrap();
+
+    let mut caches = WriteCaches::default();
+
+    // 同元数据出现在目录 G：磁盘探测判定 F 是陈旧认领，让位给 G
+    let path_b1 = track_path(&dir, "b", "track1.flac");
+    let outcome = write(&mut conn, &meta1, &path_b1, &mut caches).await;
+    assert!(matches!(outcome, TrackWriteOutcome::Written));
+
+    // 同一次扫描里 G 的第二个文件经由缓存看到修复后的认领
+    let path_b2 = track_path(&dir, "b", "track2.flac");
+    let meta2 = track_metadata("Album", "Artist", "Track 2", 2);
+    let outcome = write(&mut conn, &meta2, &path_b2, &mut caches).await;
+    assert!(matches!(outcome, TrackWriteOutcome::Written));
+
+    assert_eq!(
+        sole_claim(&mut conn).await,
+        path_b1.parent().unwrap().as_str()
+    );
+    // F 的陈旧行仍在（清理由全量扫描负责），G 的两行已入库
+    assert_eq!(count_rows(&pool, "track").await, 3);
 }
 
 #[tokio::test]

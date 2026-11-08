@@ -343,6 +343,7 @@
   "SCANNING_WATCH_CHANGES": "Watch for Changes",
   "SCANNING_WATCH_CHANGES_SUBTEXT": "Automatically update your library when files change on disk.",
   "SCAN_CRASHED": "The library scanner stopped unexpectedly. See the log for details.",
+  "SCAN_FAILED_ARTIST_RECOMPUTE": "Library scan could not rebuild artist links for {{failed}} items. Please scan again.",
   "SCAN_FAILED_FILES": "Library scan could not index {{failed}} files. Please scan again.",
   "SCAN_FAILED_TRANSACTION": "Library scan hit {{failed}} database errors. Some files were not indexed — see the log for details.",
   "SCAN_FAILED_WORKER": "Library scan stopped early — {{failed}} scan workers failed. Please scan again.",

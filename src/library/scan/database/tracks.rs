@@ -4,7 +4,10 @@ use sqlx::SqliteConnection;
 use tracing::warn;
 
 use super::{albums::bind_release_date, artists::TrackArtistRow, artists::encode_artist_list};
-use crate::{library::scan::fs_case::paths_equal, media::metadata::Metadata};
+use crate::{
+    library::scan::fs_case::paths_equal,
+    media::{SUPPORTED_EXTENSIONS, metadata::Metadata},
+};
 
 /// 每次扫描的专辑路径缓存的键：`(album id, disc 号)`。
 pub type AlbumPathCacheKey = (i64, i64);
@@ -12,7 +15,7 @@ pub type AlbumPathCacheKey = (i64, i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackWriteOutcome {
     Written,
-    /// 跳过——专辑在另一个文件夹里已有一份有效副本。
+    /// 跳过——专辑在另一个文件夹里已有一份磁盘上仍然存在的有效副本。
     SkippedDuplicateFolder,
 }
 
@@ -77,7 +80,61 @@ pub(super) async fn delete_lyrics(
     Ok(())
 }
 
-/// 文件夹不匹配时：旧文件夹已空则更新认领，否则按重复副本拒绝这一条。
+/// 判定 claimed 文件夹在磁盘上是否还能拿出一层之内的受支持音频文件。
+///
+/// 只 stat 一层不深扫：claimed 文件夹本来就是曲目行的直接父目录，专辑自己的
+/// 文件应当就在这一层。语义：
+/// - 目录 stat 不到（NotFound）或位置已被文件占据 → `false`（文件夹已不在）；
+/// - 目录还在但一层之内没有任何受支持扩展名的条目 → `false`；
+/// - 其余任何 IO 失败（权限、读目录抖动、读不出条目名）→ `true`，按「目录仍在」
+///   保守处理，不因探测抖动把真重复副本误判成陈旧认领。
+///
+/// 同步 IO 只发生在 mismatch 路径（罕见），成本可接受。
+fn claimed_folder_holds_audio(claimed: &Utf8Path) -> bool {
+    match std::fs::metadata(claimed) {
+        // 目录不存在 = 认领指向的位置已消失，行是陈旧的
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+        // 其余 stat 失败（权限、挂载抖动等）按「目录仍在」保守处理
+        Err(_) => return true,
+        // 位置被文件占据 = 原文件夹已不在
+        Ok(meta) if !meta.is_dir() => return false,
+        Ok(_) => {}
+    }
+    let Ok(entries) = std::fs::read_dir(claimed) else {
+        // 读目录失败同样保守处理
+        return true;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        // file_name() 返回所有权 OsString，先绑定再借用其字符串视图，
+        // 否则临时值在本语句末即释放。
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            return true;
+        };
+        let is_audio = Utf8Path::new(name).extension().is_some_and(|extension| {
+            SUPPORTED_EXTENSIONS
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported))
+        });
+        if is_audio {
+            return true;
+        }
+    }
+    false
+}
+
+/// 文件夹不匹配时：旧文件夹在磁盘上已拿不出音频文件则更新认领，否则按重复副本
+/// 拒绝这一条。
+///
+/// 「已拿不出」以磁盘为准而不是 DB 行：`album_path_still_populated` 只能证明还有
+/// 行指向旧文件夹，而从未监视位置移入的专辑其源行没有任何事件去清（watcher 只对
+/// 目标目录发 RescanPaths，full 清理要等下一次全量扫描），按行拒绝会把拒绝写进
+/// 扫描记录，目标位置的文件从此被所有扫描跳过——专辑静默永久丢失。行存在时用
+/// [`claimed_folder_holds_audio`] 探测磁盘，探测说旧文件夹仍在且有音频文件才维持
+/// 真重复副本的拒绝。
 async fn handle_folder_mismatch(
     conn: &mut SqliteConnection,
     album_path_cache: &mut FxHashMap<AlbumPathCacheKey, Utf8PathBuf>,
@@ -87,11 +144,17 @@ async fn handle_folder_mismatch(
 ) -> anyhow::Result<bool> {
     let (album_id, disc_num) = album_path_key;
     if album_path_still_populated(conn, album_id, disc_num, claimed).await? {
+        if claimed_folder_holds_audio(claimed) {
+            warn!(
+                "Rejecting track in {:?}: album id {} disc {} is claimed by {:?} (duplicate copy of the album?)",
+                parent, album_id, disc_num, claimed
+            );
+            return Ok(false);
+        }
         warn!(
-            "Rejecting track in {:?}: album id {} disc {} is claimed by {:?} (duplicate copy of the album?)",
-            parent, album_id, disc_num, claimed
+            "Album id {} disc {} claim on {:?} is stale (folder no longer holds audio files); re-claiming to {:?}",
+            album_id, disc_num, claimed, parent
         );
-        return Ok(false);
     }
 
     repair_album_path(conn, album_id, disc_num, parent).await?;
@@ -102,8 +165,8 @@ async fn handle_folder_mismatch(
 
 /// 插入一条扫描到的曲目行，返回新的曲目 id。
 ///
-/// 先解析专辑-文件夹认领：文件夹不匹配要么修好这个认领（旧文件夹已无曲目），
-/// 要么把该曲目当作专辑的重复副本拒绝掉，后者给出 `Ok(None)`。
+/// 先解析专辑-文件夹认领：文件夹不匹配要么修好这个认领（旧文件夹在磁盘上已
+/// 拿不出音频文件），要么把该曲目当作专辑的重复副本拒绝掉，后者给出 `Ok(None)`。
 pub(super) async fn insert_track(
     conn: &mut SqliteConnection,
     metadata: &Metadata,
