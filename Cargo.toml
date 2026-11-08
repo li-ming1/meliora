@@ -237,11 +237,15 @@ opt-level = "s"
 [profile.release]
 # Speed over size: the decode/resample/image paths are realtime-adjacent and
 # measurably slower under "s" (opt for size). Binary stays stripped below.
-# codegen-units stays at the default 16: measured against this exact tree
-# (decode/checkpoint benches, 2026-09-13), codegen-units=1 regressed the
-# large-array paths by 54-106% (3000px cover downscale 149->307ms, 100k
-# checkpoint zlib 265->523ms) for a 10.5% smaller binary and 2.3x slower
-# builds. Do not enable it without re-running those benches.
+# codegen-units 保持默认 16（本文件不显式设置）：2026-09-13 在本树上实测
+# codegen-units=1 使大数组路径回归 54-106%（3000px 封面缩放 149->307ms、
+# 100k checkpoint zlib 265->523ms），换来 10.5% 更小的二进制与 2.3x 更慢的
+# 构建。当时的测量载体 decode/checkpoint benches 是临时脚本、从未入仓，
+# 复测不要去找它们——用仓内实际可跑的载体：`cargo test --release
+# row_build_bench -- --ignored --nocapture`（src/library/row_build_bench.rs，
+# 文件头自带用法注释，配 src/test_support.rs 的 bench_summarize）与
+# tools/bench_track_sort_indexes*.py（DB 侧索引 A/B）；扫描 paired 全扫计时
+# 与 [db]/[mem] 探针也是可用口径。动 codegen-units 前必须用这些载体重新实测。
 # panic=abort: no unwind landing pads across the whole graph. The app never
 # catches panics (the 2026-09-16 atlas catch_unwind guard was removed) and a
 # panic in any thread is fatal anyway; cargo forces unwind back for test

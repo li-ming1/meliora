@@ -9,7 +9,7 @@ use sqlx::{
         SqliteSynchronous,
     },
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track};
 
@@ -98,6 +98,17 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
         };
         if !recoverable {
             return Err(e.into());
+        }
+
+        // 临时方案触发打点：走到这里的库都真实踩中了名单内版本的行尾校验和
+        // 不匹配，记录触发版本供摘除决策。摘除时点按日志观察期定——若干版本
+        // 无本行日志后再立独立摘除批（删 SQL + include 点 + 本分支，全量编译
+        // 验证）。名单第 14 项 20261020120000 是 2026-10-20 新加的非历史条目
+        // （ee4559a7c2），勿按 queries/windows_fix_checksums.sql 头部 TODO 字样
+        // 直接删除：「旧库已绝迹」前提不成立，旧库可经 paths.rs 的旧数据目录
+        // 整树迁移复活。
+        if let sqlx::migrate::MigrateError::VersionMismatch(v) = &e {
+            info!(version = *v, "windows checksum shim fired");
         }
 
         let fix_query = include_str!("../../queries/windows_fix_checksums.sql");
