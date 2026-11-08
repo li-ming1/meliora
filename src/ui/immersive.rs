@@ -4,7 +4,7 @@
 //! 阶梯现以 4096 打头，让缩采样像圆盘小封面那样平均掉噪声；一道竖向 + 一道
 //! 横向渐变划出阅读区），左侧静止的圆盘尺寸圆形封面（「黑胶」已不再旋转——
 //! 见下面的动画纪律）压在曲名之上，配一张磨砂玻璃播放卡（可拖动进度、走带、
-//! 音量），右半是歌词栏，带逐字卡拉OK计时、滚轮浏览与点击定位。
+//! 音量），右半是歌词栏，带逐字卡拉OK计时与点击定位。
 //!
 //! 歌词从侧栏的 [`Lyrics`] 实体镜像而来而不是二次加载：该实体持有
 //! sidecar/DB/在线抓取管线（含酷狗）、它的有界缓存与扫描重置逻辑。
@@ -16,10 +16,9 @@
 //!
 //! 动画纪律（见 `GPUI_HARDCORE_PERFORMANCE.md` 与 `scroll_follow.rs` 里的
 //! 2026-09-27 图集泄漏教训）：
-//! - 每一帧要么数据驱动（位置广播）、要么过渡驱动（行滑动），一旦没有东西在
-//!   动就立刻停掉帧循环；
-//! - 歌词字形几何绝不插值：字号取自离散集合、行偏移吸附到整像素，只有颜色做
-//!   lerp（含卡拉OK逐字色）；
+//! - 每一帧要么数据驱动（位置广播）、要么过渡驱动（背景 crossfade），一旦没
+//!   有东西在动就立刻停掉帧循环；
+//! - 歌词字形几何绝不插值：字号取自离散集合，只有颜色做 lerp（含卡拉OK逐字色）；
 //! - 「黑胶」现在只是圆盘尺寸的圆形封面图：深色转盘、纹路环与光泽弧在
 //!   2026-09-28 的反馈里全部去掉（旋转光泽弧经 `Svg::with_transformation` 在
 //!   DirectX 上会渲染成位移/超尺寸，而露出的转盘环看着像给封面加了道无意义
@@ -45,8 +44,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ObjectFit, ParentElement, PathBuilder, Render, Rgba,
-    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    Task, Window, canvas, div, linear_color_stop, linear_gradient, point, px, relative,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, px, relative,
 };
 
 use crate::sync::RecoveredRwLock;
@@ -76,11 +75,6 @@ use crate::{
     },
 };
 
-/// 歌词行之间的垂直间距，单位 px。
-const LINE_PITCH_PX: f32 = 52.0;
-/// 活动行两侧各渲染多少行歌词（11 行窗口）。
-const LINE_WINDOW: i64 = 5;
-const LINE_ANIMATION: Duration = Duration::from_millis(320);
 /// 圆盘标签封面的解码尺寸——小图，走渲染缓存。
 const LABEL_THUMB_PX: u32 = 512;
 /// 定长兜底路径（`Backdrop(None)`，见 `backdrop_layer`）的背景解码上限：
@@ -93,8 +87,6 @@ const BACKDROP_RETRY: Duration = Duration::from_millis(500);
 /// RECLAIM_DELAY_LARGE（1s）：淡出期间旧背景元素仍在绘制，其图集瓦片
 /// 靠那条短年龄门兜底（门到时淡出早已结束、旧元素已卸载）。
 const BACKDROP_FADE: Duration = Duration::from_millis(400);
-/// 滚轮浏览：超过这么久没有滚动，视图就滑回活动行（侧栏歌词面板用同一模式）。
-const SCROLL_RETURN_AFTER: Duration = Duration::from_secs(2);
 
 /// 进入或离开沉浸模式：翻转 [`Models::immersive`] 并同步切换主窗口的 OS 全屏
 /// 状态。所有入口（快捷键、侧栏开关、信息区双击、退出按钮）都汇入这里。
@@ -207,18 +199,6 @@ pub struct ImmersiveView {
     // 歌词，从共享的 `Lyrics` 实体镜像而来。
     parsed: Option<Arc<Vec<crate::ui::lyrics::lrc::LrcLine>>>,
     current_line: Option<usize>,
-    /// 相对活动行的滚轮浏览偏移，单位是行。滚轮空闲超过
-    /// [`SCROLL_RETURN_AFTER`] 后回到 0（由位置 tick 驱动这个检查，所以暂停
-    /// 播放永远不会重置浏览位置）。
-    browse_offset: i64,
-    /// 亚行级的滚轮累计量（两次吸附之间的小数行）。
-    scroll_accum: f32,
-    /// 最后一次滚轮交互；浏览偏移归零后为 `None`。
-    last_scroll: Option<Instant>,
-    /// 动画显示的中心行 = 活动行 + 浏览偏移，两者任一移动就滑动过渡。
-    /// 渲染时按整行吸附到整像素。
-    visual_line: f32,
-    line_anim: Option<(f32, f32, Instant)>,
 
     frame_scheduled: bool,
 }
@@ -249,18 +229,6 @@ impl ImmersiveView {
                 }
                 let pos_ms = *pos.read(cx);
                 let mut needs_repaint = this.track_lyric_line(pos_ms);
-                // 空闲窗口过后滚轮浏览会回到活动行；由位置 tick 驱动这个检查，
-                // 所以暂停播放永不重置浏览位置。
-                if this.browse_offset != 0
-                    && this
-                        .last_scroll
-                        .is_some_and(|at| at.elapsed() >= SCROLL_RETURN_AFTER)
-                {
-                    this.browse_offset = 0;
-                    this.last_scroll = None;
-                    this.sync_display_target(true);
-                    needs_repaint = true;
-                }
                 // 卡拉OK逐字色随 tick 扫动——但只在 KineticLyrics 舞台且当前行
                 // 最后一个字仍在途时。舞台门控必须保留：parse_lyrics 会为所有
                 // LRC 行拟合逐字 words，任何带歌词曲目演唱期间该检查几乎恒真，
@@ -388,11 +356,6 @@ impl ImmersiveView {
                 resolved_signature: None,
                 parsed: None,
                 current_line: None,
-                browse_offset: 0,
-                scroll_accum: 0.0,
-                last_scroll: None,
-                visual_line: -1.0,
-                line_anim: None,
                 frame_scheduled: false,
                 backdrop_key: None,
                 backdrop_layers: [None, None],
@@ -468,7 +431,6 @@ impl ImmersiveView {
 
     fn deactivate(&mut self) {
         self.sync_spectrum_viewers();
-        self.line_anim = None;
         // 退出沉浸页：取消解码任务并立即失显。已显示背景随元素 unmount
         // 推进回收漏斗，短年龄门（大图 1s，2026-11-04 决议）后像素与瓦片
         // 放行；背景缓存
@@ -528,9 +490,6 @@ impl ImmersiveView {
         self.image_element_key += 1;
         self.track_name = None;
         self.artist_name = None;
-        // 新曲目会终结任何滚轮浏览会话。
-        self.browse_offset = 0;
-        self.last_scroll = None;
         drop(self.meta_subscription.take());
 
         let mut cover_key = None;
@@ -853,12 +812,10 @@ impl ImmersiveView {
         self.parsed = self.lyrics.read(cx).parsed_lines();
         let pos_ms = *self.position.read(cx);
         self.current_line = None;
-        self.line_anim = None;
         if let Some(parsed) = &self.parsed {
             let idx = parsed.partition_point(|line| line.time_ms <= pos_ms);
             self.current_line = if idx == 0 { None } else { Some(idx - 1) };
         }
-        self.sync_display_target(false);
     }
 
     /// 返回活动行是否移动了（即歌词栏发生变化、需要重绘）。
@@ -871,44 +828,17 @@ impl ImmersiveView {
         if new_line == self.current_line {
             return false;
         }
-        // 跨越一行以上是定位（点击定位、拖动进度条、上/下一曲）：滚轮浏览会话
-        // 就此结束，窗口重新对准用户跳到的那一行。自然播放只前进一行。
-        if let (Some(new), Some(old)) = (new_line, self.current_line)
-            && new.abs_diff(old) > 1
-        {
-            self.browse_offset = 0;
-            self.last_scroll = None;
-        }
         self.current_line = new_line;
-        self.sync_display_target(true);
         true
     }
 
-    /// 把歌词窗口重新对准「活动行 + 滚轮浏览偏移」，目标移动时滑动过渡。
-    fn sync_display_target(&mut self, animate: bool) {
-        let len = self.parsed.as_ref().map_or(0, |parsed| parsed.len() as i64);
-        let base = self.current_line.map_or(-1, |line| line as i64);
-        let min = -LINE_WINDOW - base;
-        let max = len - 1 + LINE_WINDOW - base;
-        self.browse_offset = self.browse_offset.clamp(min, max);
-        let target = (base + self.browse_offset) as f32;
-        if !animate || (target - self.visual_line).abs() < 0.01 {
-            // 已在目标上，或调用方要求直接落位：不滑动并清掉进行中的动画。
-            self.visual_line = target;
-            self.line_anim = None;
-        } else {
-            self.line_anim = Some((self.visual_line, target, Instant::now()));
-        }
-    }
-
     fn needs_animation_frame(&self) -> bool {
-        self.line_anim.is_some()
-            || self.backdrop_fade_started.is_some()
+        self.backdrop_fade_started.is_some()
             // 暂停态停转扫色泵：KineticLyrics 的逐字扫色由 render 按
             // position_ms 现算（word_progress），无墙钟插值，暂停时位置
             // 不动，advance_animations 的自续 schedule+notify 只是白付整
             // 帧重绘。恢复播放经 playback_state 观察者 notify 自然重启。
-            // 前两条款是自终止动画（走完即 None），不受影响。
+            // 前一条款是自终止动画（走完即 None），不受影响。
             || (self.active && self.playing && self.stage_mode == ImmersiveStageMode::KineticLyrics)
     }
 
@@ -924,21 +854,6 @@ impl ImmersiveView {
     }
 
     fn advance_animations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let reduced_motion = reduced_motion_enabled(cx);
-        if let Some((from, target, started_at)) = self.line_anim {
-            if reduced_motion {
-                self.visual_line = target;
-                self.line_anim = None;
-            } else {
-                let progress = (started_at.elapsed().as_secs_f32() / LINE_ANIMATION.as_secs_f32())
-                    .clamp(0.0, 1.0);
-                self.visual_line = from + (target - from) * ease_out_cubic(progress);
-                if progress >= 1.0 {
-                    self.visual_line = target;
-                    self.line_anim = None;
-                }
-            }
-        }
         // crossfade 走完：清空淡出槽，旧背景的瓦片随后经回收漏斗放行。
         if let Some(started) = self.backdrop_fade_started
             && started.elapsed() >= BACKDROP_FADE
@@ -1160,34 +1075,6 @@ impl ImmersiveView {
             )
             .into_any_element()
     }
-}
-
-/// 动画显示中心周围窗口内的歌词行：`(行号, 整像素顶部偏移, is_current)`。
-/// 写成纯函数以便给钳位与吸附数学做单元测试。高亮的那一行始终是真正在播的
-/// 行，即使用户用滚轮浏览到了别处。
-/// T07 死元素树删除后唯一生产读者（旧右栏 `lyric_children`）已不存在，函数
-/// 仅为上述单元测试保留（钳位/吸附数学的回归钉桩），非测试构建下豁免
-/// dead_code。
-#[cfg_attr(not(test), allow(dead_code))]
-fn lyric_window(
-    visual_line: f32,
-    parsed_len: usize,
-    current_line: Option<usize>,
-) -> smallvec::SmallVec<[(usize, f32, bool); 16]> {
-    let center = visual_line.round();
-    let len = parsed_len as i64;
-    (-LINE_WINDOW..=LINE_WINDOW)
-        .filter_map(move |offset| {
-            let offset = offset as f32;
-            let index = center + offset;
-            if index < 0.0 || index >= len as f32 {
-                return None;
-            }
-            let index = index as usize;
-            let top = ((index as f32 - visual_line) + LINE_WINDOW as f32) * LINE_PITCH_PX;
-            Some((index, top.round(), Some(index) == current_line))
-        })
-        .collect()
 }
 
 impl Render for ImmersiveView {
@@ -2042,21 +1929,6 @@ impl Render for ImmersiveView {
                 .pl(px((80.0f32 + space_hop_x).max(20.0)))
                 .mt(px(space_hop_y))
                 .pr(px(40.0))
-                .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                    if !this.active {
-                        return;
-                    }
-                    let dy = f32::from(ev.delta.pixel_delta(px(52.0)).y);
-                    this.scroll_accum -= dy / 52.0;
-                    let whole = this.scroll_accum as i64;
-                    if whole != 0 {
-                        this.scroll_accum -= whole as f32;
-                        this.browse_offset += whole;
-                        this.last_scroll = Some(Instant::now());
-                        this.sync_display_target(true);
-                        cx.notify();
-                    }
-                }))
                 .child(
                     div()
                         .w_full()
@@ -2351,53 +2223,5 @@ mod tests {
         );
         assert_eq!(legacy_allocations, 2 * ROUNDS as u64);
         assert_eq!(inline_allocations, 0);
-    }
-
-    #[test]
-    fn lyric_window_centers_the_active_line() {
-        let lines = lyric_window(10.0, 30, Some(10));
-        assert_eq!(
-            lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
-            (5..=15).collect::<Vec<_>>()
-        );
-        // 活动行位于中间槽（11 槽里的第 6 个）。
-        let (_, top, is_current) = lines[5];
-        assert!(is_current);
-        assert_eq!(top, LINE_WINDOW as f32 * LINE_PITCH_PX);
-    }
-
-    #[test]
-    fn lyric_window_clamps_to_parsed_range() {
-        let lines = lyric_window(1.0, 3, Some(1));
-        assert_eq!(
-            lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
-        // 第一行之前，窗口仍从钳位处开始。
-        let lines = lyric_window(-1.0, 3, None);
-        assert_eq!(
-            lines.iter().map(|(index, _, _)| *index).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
-        // 浏览到别处时：即使窗口中心落在别处，高亮仍留在正在播放的那一行。
-        let lines = lyric_window(4.0, 30, Some(1));
-        assert!(
-            lines
-                .iter()
-                .any(|(index, _, current)| *index == 1 && *current)
-        );
-        assert!(
-            !lines
-                .iter()
-                .any(|(index, _, current)| *index == 4 && *current)
-        );
-    }
-
-    #[test]
-    fn lyric_window_offsets_snap_to_whole_pixels() {
-        for line in lyric_window(3.37, 30, Some(3)) {
-            let (_, top, _) = line;
-            assert_eq!(top, top.round());
-        }
     }
 }
