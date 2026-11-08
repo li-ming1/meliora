@@ -97,10 +97,15 @@ async fn fetch_lyrics(
 }
 
 /// 把 `track` 下载到 `dir` 并返回保存下来的音频文件路径。
+///
+/// `permit` 是调用方从 [`DOWNLOAD_PERMITS`] 取到的并发名额，覆盖本函数全程：
+/// 两段 spawn_blocking 期间名额随闭包进出（取消安全，2026-10-31 契约 4），
+/// async 帧被 abort 时在途阻塞工作仍持票，下载并发上限不被取消旁路。
 pub async fn download_track(
     client: &KugouClient,
     track: &KugouTrackInfo,
     dir: &Path,
+    permit: tokio::sync::SemaphorePermit<'static>,
 ) -> Result<PathBuf, String> {
     let (url, quality) = resolve_best_url(client, track).await?;
     let ext = if quality == "flac" { "flac" } else { "mp3" };
@@ -139,7 +144,10 @@ pub async fn download_track(
     let sidecar_dir = dir.to_path_buf();
     // spawn_blocking 要 'static：曲目引用跨不过闭包，所以先把 hash 克隆出来。
     let sidecar_hash = track.hash.clone();
-    if let Err(err) = crate::RUNTIME
+    // 取消安全（2026-10-31 契约 4）：名额随阻塞闭包进出——async 帧在本 await
+    // 上被 abort 时，在途 sidecar 写盘仍持有名额，下载并发上限不被取消旁路；
+    // 闭包正常返回时名额随元组回到帧上，交给下一段嵌入闭包。
+    let (permit, ()) = match crate::RUNTIME
         .spawn_blocking(move || {
             if let Some(krc) = &krc
                 && let Err(err) = std::fs::write(sidecar_dir.join(format!("{stem}.krc")), krc)
@@ -151,11 +159,20 @@ pub async fn download_track(
             {
                 tracing::warn!(hash = %sidecar_hash, error = %err, "kugou download: failed to write .lrc lyrics sidecar");
             }
+            (permit, ())
         })
         .await
     {
-        tracing::warn!(hash = %track.hash, error = %err, "kugou download: lyrics sidecar task did not complete");
-    }
+        Ok(pair) => pair,
+        Err(err) => {
+            // 阻塞任务没能把名额带回来（任务未跑或 panic 时，名额都已随闭包
+            // drop 归还信号量），本函数名下已无票可持；嵌入段若继续跑就成了
+            // 无票阻塞工作，故连同封面获取一并放弃——音频文件此时已落盘，
+            // 与 sidecar 同属尽力而为路径。
+            tracing::warn!(hash = %track.hash, error = %err, "kugou download: lyrics sidecar task did not complete");
+            return Ok(audio_path);
+        }
+    };
     let cover = if track.cover_url.is_empty() {
         None
     } else {
@@ -173,21 +190,25 @@ pub async fn download_track(
     let tag_title = track.title.to_string();
     let tag_artist = track.artist.to_string();
     let tag_album = track.album.to_string();
+    // 取消安全（2026-10-31 契约 4）：末段嵌入同样随闭包持票——async 帧在本
+    // await 上被 abort 时，在途嵌入仍持有名额；闭包返回后名额随元组回帧，
+    // 函数收尾即还票。
     match crate::RUNTIME
         .spawn_blocking(move || {
-            embed_tags(
+            let ret = embed_tags(
                 &tag_path,
                 &tag_title,
                 &tag_artist,
                 &tag_album,
                 cover.as_deref(),
                 tag_lrc.as_deref(),
-            )
+            );
+            (permit, ret)
         })
         .await
     {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
+        Ok((_, Ok(()))) => {}
+        Ok((_, Err(err))) => {
             tracing::warn!(hash = %track.hash, error = %err, "kugou download: failed to embed tags/cover into audio file");
         }
         Err(err) => {
@@ -228,12 +249,14 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
         let client = crate::kugou::shared_client();
         let joined = crate::RUNTIME
             .spawn(async move {
-                // 排队等待许可也在 RUNTIME 上，不占下载线程。
-                let _permit = DOWNLOAD_PERMITS
+                // 排队等待许可也在 RUNTIME 上，不占下载线程；名额作参数随
+                // download_track 全程持有，两段阻塞闭包期间随闭包进出
+                // （取消安全，2026-10-31 契约 4）。
+                let permit = DOWNLOAD_PERMITS
                     .acquire()
                     .await
                     .expect("semaphore is never closed");
-                download_track(&client, &track, &dir).await
+                download_track(&client, &track, &dir, permit).await
             })
             .await;
         // 把业务错误（HTTP 状态、空文件…）与真正 panic 的任务区分开；两者过去被
@@ -261,4 +284,62 @@ pub fn download_track_ui(cx: &mut gpui::App, track: KugouTrackInfo) {
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
+
+    /// 复刻 `download_track_ui` → `download_track` 的持票链：名额先在 async
+    /// 帧上 acquire，再随 spawn_blocking 闭包进出。外层 await 被 abort 后，
+    /// 在途闭包必须继续持有名额——绑在 async 帧上的旧形态此刻已把名额还回
+    /// 信号量，下载并发上限被取消旁路（取消安全，2026-10-31 契约 4；同型
+    /// 回归测试：managed_image::aborting_waiter_does_not_release_running_decode_permit）。
+    #[test]
+    fn aborting_download_frame_does_not_release_running_permit() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+
+        let first = crate::RUNTIME.spawn({
+            let semaphore = semaphore.clone();
+            async move {
+                // 借用版 acquire() 的名额借本帧局部 Arc，跨不过 spawn_blocking
+                // 的 'static 边界；acquire_owned 取自有名额（内部自带 Arc 引用），
+                // 与 download_track 的 SemaphorePermit<'static> 参数同型。
+                let permit = semaphore.acquire_owned().await.unwrap();
+                let _ = crate::RUNTIME
+                    .spawn_blocking(move || {
+                        first_started_tx.send(()).unwrap();
+                        release_first_rx.recv().unwrap();
+                        (permit, ())
+                    })
+                    .await;
+            }
+        });
+        first_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first blocking task did not start");
+
+        // abort 只取消外层 async 帧；此刻名额在在途闭包手里，不得提前还票。
+        first.abort();
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "abort 后在途阻塞闭包必须继续持有名额"
+        );
+
+        // 闭包完成后名额随返回值交还（JoinHandle 已随帧取消被丢弃，输出
+        // 随之 drop 还票）。
+        release_first_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while semaphore.available_permits() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "permit was not returned after the blocking closure finished"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }

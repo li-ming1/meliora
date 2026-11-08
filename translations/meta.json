@@ -835,19 +835,19 @@
   },
   "KUGOU_DOWNLOADED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:252",
+    "definedIn": "src/ui/kugou/download.rs:275",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_FAILED": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:257",
+    "definedIn": "src/ui/kugou/download.rs:280",
     "plural": false,
     "description": null
   },
   "KUGOU_DOWNLOAD_IN_PROGRESS": {
     "context": "download.rs",
-    "definedIn": "src/ui/kugou/download.rs:215",
+    "definedIn": "src/ui/kugou/download.rs:236",
     "plural": false,
     "description": null
   },
