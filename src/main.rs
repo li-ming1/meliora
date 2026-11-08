@@ -1015,20 +1015,13 @@ fn spawn_memory_probe() {
                     crate::settings::flush_pending_settings();
                     // 桌面歌词位置补写：exit(70) 不走 gpui 退出路径，
                     // view 的 on_release 与 persist_now 都不会执行——
-                    // 从渲染期 static 桥读最后已知位置并直接补写 settings.json，
-                    // 硬阀门重启后桌面歌词不回退到旧位置。
+                    // 从渲染期 static 桥读最后已知位置补写 settings.json
+                    // （tmp+rename + rename 前推进写盘代纪，收口在
+                    // settings::patch_desktop_lyrics_pos_on_exit），硬阀门
+                    // 重启后桌面歌词不回退到旧位置。
                     if let Some(pos) = crate::ui::desktop_lyrics::last_known_position() {
                         let settings_path = crate::paths::data_dir().join("settings.json");
-                        if let Ok(contents) = std::fs::read_to_string(&settings_path)
-                            && let Ok(mut value) =
-                                serde_json::from_str::<serde_json::Value>(&contents)
-                        {
-                            value["interface"]["desktop_lyrics_pos"] =
-                                serde_json::json!([pos[0], pos[1]]);
-                            if let Ok(pretty) = serde_json::to_string_pretty(&value) {
-                                let _ = std::fs::write(&settings_path, pretty);
-                            }
-                        }
+                        crate::settings::patch_desktop_lyrics_pos_on_exit(&settings_path, pos);
                     }
                     // 收听统计同补：exit(70) 不走 gpui 退出路径，on_app_quit
                     // 的排空不会执行（见 EXIT_STATS_FLUSH 注释）。照它的写法

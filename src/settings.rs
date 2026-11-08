@@ -182,6 +182,16 @@ static PENDING_SETTINGS_SAVE: Mutex<Option<PendingSettingsSave>> = Mutex::new(No
 /// 「登记基线之外只多出本进程自己的写盘」豁免为未动过。
 static SETTINGS_LAST_SELF_WRITE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
+/// 进程内写盘互斥：防抖的「校验 + 代纪复查 + rename + 自写登记」收口在
+/// [`commit_if_current`]、退出 flush 的写盘段收口在 [`flush_pending_settings`]，
+/// 两处共用本锁。此前防抖经 spawn_blocking 写盘期间不再复查——慢写盘
+/// （AV 实时扫描可放大到 100ms+）期间新代登记后，旧代写盘仍会把旧快照
+/// rename 上去并覆盖 [`SETTINGS_LAST_SELF_WRITE`]；锁内代纪复查使「后到代
+/// 必后 rename」成立。锁序单向：本锁 → [`SETTINGS_LAST_SELF_WRITE`]（后者的
+/// 两个加锁点都不再引其它锁），无死锁。防抖写盘走 spawn_blocking 冷路径，
+/// 无热路径影响。
+pub(crate) static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 /// 原子写盘：先写同目录临时文件再 rename 替换（同 session_io::save）——
 /// 原地截断+重写会在进程中途死亡时留下截断文件，watcher 回读竞态还会把
 /// 正常会话误标为 Corrupt。tmp 名带 generation：防抖不保证上一次写盘已
@@ -238,6 +248,35 @@ fn file_unchanged_since_registration(path: &Path, baseline: &Option<Vec<u8>>) ->
         .unwrap_or(false)
 }
 
+/// 防抖写盘的收口：持 [`SETTINGS_WRITE_LOCK`] 依次做
+/// [`file_unchanged_since_registration`] 校验与代纪复查（
+/// [`SETTINGS_SAVE_GENERATION`] 已被新代推进即弃写，写盘归新代），两关都过
+/// 才 [`write_settings_file`]。校验与写盘刻意放同一临界区——评审确认锁内外
+/// 皆安全，同临界区让读序一目了然，且代纪复查到 rename 之间不再有缝隙
+/// （check-to-rename 原子化，防抖-vs-防抖确定性后到代胜出）。
+/// 返回 Ok(false) = 弃写（原因已在此记录），Ok(Err) = 写盘 IO 失败。
+fn commit_if_current(
+    generation: u64,
+    baseline: &Option<Vec<u8>>,
+    snapshot: &Settings,
+    path: &Path,
+    tmp_tag: &str,
+) -> std::io::Result<bool> {
+    let Ok(_guard) = SETTINGS_WRITE_LOCK.lock() else {
+        warn!("settings debounce drop: write lock poisoned");
+        return Ok(false);
+    };
+    if !file_unchanged_since_registration(path, baseline) {
+        info!("settings debounce drop: file changed externally during window");
+        return Ok(false);
+    }
+    if SETTINGS_SAVE_GENERATION.load(Ordering::Relaxed) != generation {
+        info!("settings debounce drop: newer generation holds the write");
+        return Ok(false);
+    }
+    write_settings_file(snapshot, path, generation, tmp_tag).map(|()| true)
+}
+
 /// 摘除指定 generation 的 pending 登记（可能已被更新的 generation 覆盖，
 /// 那笔归它自己的任务处理，只在相等时摘）。
 fn take_pending_registration(generation: u64) {
@@ -287,15 +326,13 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
             return;
         }
         let result = tokio::task::spawn_blocking(move || {
-            // 写盘前校验：登记以来文件被手编动过就弃写。丢弃语义：磁盘上
-            // 后写的文件是用户意图，内存为准（watcher 已把/会把装载刷进
-            // 内存），这笔旧快照落盘只会把手编覆盖掉、再被回声把内存回
-            // 滚，手编静默丢失。登记刻意保留：退出 flush 会带着同一校验
-            // 再试（文件恢复原样则照常补写，仍是手编则同样弃写）。
-            if !file_unchanged_since_registration(&path, &baseline) {
-                return Ok(false);
-            }
-            write_settings_file(&snapshot, &path, generation, "").map(|()| true)
+            // 写盘收口：校验 + 代纪复查 + rename 在写盘互斥锁内一次完成，
+            // 「后到代必后 rename」。丢弃语义不变：磁盘上后写的文件是用户
+            // 意图，内存为准（watcher 已把/会把装载刷进内存），这笔旧快照
+            // 落盘只会把手编覆盖掉、再被回声把内存回滚，手编静默丢失。
+            // 登记刻意保留：退出 flush 会带着同一校验再试（文件恢复原样则
+            // 照常补写，仍是手编则同样弃写）。
+            commit_if_current(generation, &baseline, &snapshot, &path, "")
         })
         .await;
         match result {
@@ -305,9 +342,9 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
                 // 相等时摘）。
                 take_pending_registration(generation);
             }
-            Ok(Ok(false)) => {
-                info!("settings debounce drop: file changed externally during window");
-            }
+            // 弃写原因（外部改动 / 新代持有写盘 / 锁毒化）已由
+            // commit_if_current 记录。
+            Ok(Ok(false)) => {}
             Ok(Err(e)) => warn!("Failed to save settings file: {e:?}"),
             Err(e) => warn!("settings save task failed: {e}"),
         }
@@ -316,8 +353,9 @@ pub fn save_settings(cx: &mut App, settings: &Settings) {
 
 /// 进程退出路径的兜底：防抖窗口内最后一笔还没落盘时（runtime drop 会取
 /// 消 sleep 中的防抖任务），同步补写。挂在主窗口 on_release（先于进程退
-/// 出）与硬 cap 阀门的 exit(70) 前。flush 与防抖任务并发写同一内容时用
-/// 不同 tmp 名（flush 后缀），rename 各自原子、字节一致，不会互相截断。
+/// 出）与硬 cap 阀门的 exit(70) 前。写盘段与防抖收口同锁串行
+/// （[`SETTINGS_WRITE_LOCK`]）；与防抖并发写同一内容时仍用不同 tmp 名
+/// （flush 后缀），rename 各自原子、字节一致，不会互相截断。
 /// 同时是两处退出路径的收听统计收口：先把 stats 模块在途的异步 flush
 /// 排空再继续（见 stats::drain_inflight_flushes_for_exit）。
 pub fn flush_pending_settings() {
@@ -332,6 +370,13 @@ pub fn flush_pending_settings() {
     if SETTINGS_WRITTEN_GENERATION.load(Ordering::Relaxed) >= pending.generation {
         return;
     }
+    let Ok(_guard) = SETTINGS_WRITE_LOCK.lock() else {
+        warn!("settings write lock poisoned; skipping exit flush");
+        return;
+    };
+    // 有意不做代纪复查：pending 本就是最新登记的快照（退出路径没有更新的
+    // 代可登记）；旧代防抖其后进锁，会被 commit_if_current 的锁内代纪复查
+    // 弃写，写盘归本 flush。
     // 与防抖任务同一丢弃语义：登记以来文件被手编动过就不覆盖——磁盘上
     // 后写的文件是用户意图，内存为准。
     if !file_unchanged_since_registration(&pending.path, &pending.baseline) {
@@ -345,6 +390,38 @@ pub fn flush_pending_settings() {
     } else if let Err(e) = result {
         warn!("settings flush on exit failed: {e:?}");
     }
+}
+
+/// 硬 cap 阀门 exit(70) 前的桌面歌词位置补写（main.rs 探针消费）：读当前
+/// settings.json，只改 `interface.desktop_lyrics_pos` 后 tmp+rename 原子替换。
+/// 不经 [`write_settings_file`]——那是整份快照的通道；tmp 名以 `"probe"`
+/// tag 区分，与防抖 `""` / flush `"flush"` 不撞。返回是否成功替换。
+/// rename 前先推进 [`SETTINGS_SAVE_GENERATION`]：尚未进入写盘临界区的在途
+/// 防抖会在 [`commit_if_current`] 的锁内代纪复查处弃写（写盘归本补写）；
+/// 已过复查的在途防抖与本补写的残余竞态退化为一次性位置回退（与 main.rs
+/// 阀门注释里「桌面歌词位置不随 exit(70) 落盘」的已接受缺口同级）。
+pub(crate) fn patch_desktop_lyrics_pos_on_exit(path: &Path, pos: [f64; 2]) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    value["interface"]["desktop_lyrics_pos"] = serde_json::json!([pos[0], pos[1]]);
+    let Ok(pretty) = serde_json::to_string_pretty(&value) else {
+        return false;
+    };
+    // 代纪推进即补写身份：其后进锁的防抖一律视为过代弃写
+    let generation = SETTINGS_SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    let tmp = path.with_extension(format!("json.tmpprobe{generation}"));
+    File::create(&tmp)
+        .and_then(|mut file| file.write_all(pretty.as_bytes()))
+        .and_then(|()| fs::rename(&tmp, path))
+        // 目标文件原样保留，只清理残留临时文件
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
+        .is_ok()
 }
 
 pub struct SettingsGlobal {
@@ -878,6 +955,72 @@ mod tests {
         assert!(
             on_disk.contains("prev_track_jump_first"),
             "第三方手编不得被旧快照覆盖"
+        );
+    }
+
+    /// 防抖-vs-防抖在途窗的回归钉：新代（gen 2）已登记并落盘后，旧代
+    /// （gen 1）的慢写盘才进写盘临界区——锁内代纪复查必须弃写，磁盘保持
+    /// 新生代字节、SETTINGS_LAST_SELF_WRITE 不被旧代覆盖。修复前防抖经
+    /// spawn_blocking 写盘期间不再复查，旧代会把旧快照 rename 上去并覆盖
+    /// 自写登记（第二次改动静默丢失）。
+    #[test]
+    fn commit_if_current_drops_stale_generation_and_keeps_new_generation_bytes() {
+        let _guard = SETTINGS_STATICS_LOCK.lock().unwrap();
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+
+        // 新代 gen 2 落盘成功（write_settings_file 同时登记自写字节）
+        let mut newer = Settings::default();
+        newer.playback.always_repeat = true;
+        super::write_settings_file(&newer, &path, 2, "").unwrap();
+        super::SETTINGS_SAVE_GENERATION.store(2, std::sync::atomic::Ordering::Relaxed);
+
+        // 旧代 gen 1 的写盘此刻才进临界区：文件校验经自写豁免通过（磁盘
+        // 上是新代自写字节，基线是它登记时的旧字节），随后被锁内代纪复查
+        // 拦下
+        let stale_bytes = b"{\"scanning\": {}}".to_vec();
+        let committed =
+            super::commit_if_current(1, &Some(stale_bytes), &Settings::default(), &path, "")
+                .unwrap();
+        assert!(!committed, "旧代写盘必须被锁内代纪复查弃写");
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("\"always_repeat\": true"),
+            "磁盘必须仍是新生代字节"
+        );
+        let last_self_write = super::SETTINGS_LAST_SELF_WRITE.lock().unwrap().clone();
+        assert_eq!(
+            last_self_write,
+            Some(serde_json::to_vec_pretty(&newer).unwrap()),
+            "SETTINGS_LAST_SELF_WRITE 不得被旧代覆盖"
+        );
+    }
+
+    /// 补写（probe 通道）tmp 阶段失败的原子性钉：tmp 路径被目录占住时
+    /// File::create 失败，rename 不得发生，目标文件保持原字节
+    /// （仿 session_io.rs 的 save_never_leaves_a_half_written_target）。
+    #[test]
+    fn probe_patch_leaves_target_intact_when_tmp_stage_fails() {
+        let _guard = SETTINGS_STATICS_LOCK.lock().unwrap();
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        fs::write(&path, r#"{"interface": {}}"#).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        // tmp 名含 fetch_add 后的 generation：先钉住代纪再占住 tmp 路径
+        super::SETTINGS_SAVE_GENERATION.store(40, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension("json.tmpprobe41");
+        fs::create_dir(&tmp).unwrap();
+
+        assert!(
+            !super::patch_desktop_lyrics_pos_on_exit(&path, [7.0, 8.0]),
+            "tmp 阶段失败必须报未替换"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "tmp 阶段失败目标文件必须原样"
         );
     }
 }
