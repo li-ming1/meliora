@@ -244,8 +244,10 @@ impl Element for Slider {
         ));
 
         // 拖动状态，在本次绘制阶段（填充位置）与下面的鼠标处理器之间共享。以滑条 id 为键。
-        // 这里什么都不 notify：拖动期间的重绘与松开后的宽限窗口由 `on_change` 回调的副作用
-        // （引擎回显、设置写入）驱动，不靠任何观察者。
+        // 重绘双驱动：拖动/按下期间由鼠标事件路径自 notify（值变化才发，gpui 按帧合并，
+        // knob 以显示刷新率跟手——上层的位置量子守卫不拦指针路径），松开后的宽限窗口仍由
+        // `on_change` 回调的副作用（引擎回显、设置写入）驱动。空闲播放节奏不受影响：
+        // 不拖动时这里零 notify，不重建任何帧泵。
         let drag_entity = self
             .id
             .clone()
@@ -393,11 +395,14 @@ impl Element for Slider {
             let value = normalized_value(ev.position, bounds);
 
             (func_down.borrow_mut())(value, window, cx);
-            drag_state_down.update(cx, |state, _| {
+            drag_state_down.update(cx, |state, cx_state| {
                 state.dragging = true;
                 state.released_at = None;
                 state.last_emit = Instant::now();
                 state.drag_value = value;
+                // 同档内点跳：emit 已发出 seek，但回显要跨过上层量子档才回 notify——
+                // 不补这一下，填充在 250ms 内停在旧位置（2026-11-08 修）。
+                cx_state.notify();
             });
         });
 
@@ -418,6 +423,7 @@ impl Element for Slider {
 
                 if state.dragging {
                     let value = normalized_value(ev.position, bounds);
+                    let value_changed = state.drag_value != value;
                     state.drag_value = value;
                     state.hover_ratio = Some(value);
 
@@ -426,6 +432,12 @@ impl Element for Slider {
                         state.last_emit = now;
                     }
                     emit_val = due.then_some(value);
+                    // 拖动期自供帧：不依赖引擎回显穿透上层位置守卫（慢拖/微调时回显
+                    // 被量子档吞掉，knob 会冻结成 4Hz 跳步）。值变化才 notify，纯纵向
+                    // 移动零开销；gpui 按帧合并，无事件风暴。
+                    if value_changed {
+                        cx_state.notify();
+                    }
                 } else if has_preview {
                     if is_hovered {
                         let value = normalized_value(ev.position, bounds);
