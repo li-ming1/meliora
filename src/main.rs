@@ -1008,10 +1008,6 @@ fn spawn_memory_probe() {
                 if spawn_replacement() {
                     // 阀门重启依赖会话/设置随改随存：防抖窗口内的最后一笔
                     // 同步补写后再退出，替换进程才能读到完整状态。
-                    // 已知限制：桌面歌词位置不在此列——它只在 view on_release
-                    // 与 persist_now（gpui 退出路径）落盘，exit(70) 不经两者，
-                    // 本会话内最后一次拖动会回退到上次落盘值（与 EQ 尾笔同类
-                    // 缺口；修复需要 UI 线程钩子，非本路径能补）。
                     crate::settings::flush_pending_settings();
                     // 桌面歌词位置补写：exit(70) 不走 gpui 退出路径，
                     // view 的 on_release 与 persist_now 都不会执行——
@@ -1040,6 +1036,10 @@ fn spawn_memory_probe() {
                         if !pending_rows.is_empty() {
                             crate::stats::queries::write_rows(pool, pending_rows).await;
                         }
+                        // 统计写完立即确定性释放数据库文件句柄：子进程只等
+                        // 单实例互斥量，内核句柄拆解顺序不保证，SQLite 连接
+                        // 可能晚于互斥量释放（见 close_pool_for_exit）。
+                        crate::library::db::close_pool_for_exit(pool).await;
                     }
                     std::process::exit(70);
                 }
@@ -1140,7 +1140,7 @@ fn init_windows_restart() -> anyhow::Result<()> {
 /// 都不是为两个写入者设计的。进程崩溃时内核会回收该互斥量，所以残留锁永远不会挡住
 /// 下次启动。
 #[cfg(target_os = "windows")]
-fn enforce_single_instance() -> anyhow::Result<()> {
+fn enforce_single_instance() -> anyhow::Result<Option<std::time::Duration>> {
     use windows::{
         Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError},
         Win32::System::Threading::CreateMutexW,
@@ -1152,7 +1152,8 @@ fn enforce_single_instance() -> anyhow::Result<()> {
     // 200ms，析构函数还要再花时间，所以子进程走到这里时互斥量可能仍被持有。
     // 有界等待一会儿，而不是去激活那个垂死的父实例然后退出。
     let handoff = std::env::var_os(RESTART_HANDOFF_ENV).is_some();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let wait_started = std::time::Instant::now();
+    let deadline = wait_started + std::time::Duration::from_secs(5);
     loop {
         let mutex = unsafe { CreateMutexW(None, false, w!("Local\\MelioraSingleInstance"))? };
         if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
@@ -1160,7 +1161,8 @@ fn enforce_single_instance() -> anyhow::Result<()> {
             // 互斥量在整个进程生命周期内一直被持有。内核会在退出时回收它
             // （崩溃也不会留下残留锁）。
             let _ = mutex;
-            return Ok(());
+            // 交接等待时长留给 logging 初始化后记录（见 main_inner）。
+            return Ok(handoff.then(|| wait_started.elapsed()));
         }
         let _ = unsafe { CloseHandle(mutex) };
         if !handoff || std::time::Instant::now() >= deadline {
@@ -1225,7 +1227,7 @@ fn show_fatal_error(message: &str) {
 
 fn main_inner() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
-    enforce_single_instance()?;
+    let handoff_wait = enforce_single_instance()?;
 
     // RegisterApplicationRestart 在受策略限制/较旧的构建上可能失败；这只是一个
     // 锦上添花的 OS 集成，绝不是拒绝启动的理由。logger 还没起来，所以先把错误
@@ -1260,6 +1262,16 @@ fn main_inner() -> anyhow::Result<()> {
     }
 
     tracing::info!("version {VERSION_STRING}");
+
+    // 交接等待发生在 logging 初始化之前，时长带到这里记录：这段等待过去是
+    // 不可见的（5s 上限命中也只表现为"没重启成功"），现在有直接读数。
+    #[cfg(target_os = "windows")]
+    if let Some(wait) = handoff_wait {
+        tracing::info!(
+            wait_ms = wait.as_millis() as u64,
+            "restart handoff: single-instance mutex acquired"
+        );
+    }
 
     #[cfg(not(test))]
     spawn_memory_probe();

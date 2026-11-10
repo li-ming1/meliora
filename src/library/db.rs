@@ -1,4 +1,9 @@
-use std::{collections::HashSet, path::Path, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -9,7 +14,7 @@ use sqlx::{
         SqliteSynchronous,
     },
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::types::{Album, Artist, ArtistWithCounts, Playlist, PlaylistItem, Track};
 
@@ -38,8 +43,85 @@ fn windows_line_ending_recovery_versions() -> &'static [i64] {
     ]
 }
 
+/// 启动建池对瞬态 SQLite I/O / 锁错误做有界重试。
+///
+/// 触发场景是进程重启交接：硬阀门 `exit(70)` 与更新器「重启以应用」都会在旧进程
+/// 尚未释放数据库文件句柄时拉起替换进程（2026-11-10 实测硬阀门重启后建池撞上
+/// `SQLITE_IOERR_TRUNCATE` = 1546，弹启动失败对话框，重进一次即恢复）。
+/// BUSY(5) / LOCKED(6) / IOERR(10) 家族都是瞬态，窗口内旧进程必然已经退出；
+/// 其它错误（库损坏、路径不可写）立即返回，不掩盖真正的问题。
 pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
-    debug!("Creating database pool at {:?}", path.as_ref());
+    let path = path.as_ref();
+    let started = Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match create_pool_once(path).await {
+            Ok(pool) => {
+                if attempt > 1 {
+                    info!(
+                        attempt,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "database pool created after transient-error retry"
+                    );
+                }
+                return Ok(pool);
+            }
+            Err(error)
+                if is_transient_pool_error(&error) && started.elapsed() < POOL_RETRY_WINDOW =>
+            {
+                // 首个尝试与之后每 1s 留一行：窗口内最多 ~7 行，够定位又不刷屏。
+                if attempt == 1 || attempt % 10 == 0 {
+                    warn!(
+                        attempt,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        error = ?error,
+                        "database pool creation hit a transient SQLite error; retrying"
+                    );
+                }
+                tokio::time::sleep(POOL_RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// 重试窗口覆盖旧进程在重负载下迟迟退出的尾段（交接等待另有 5s 上限）；
+/// 再等不到就是真故障，交给启动失败对话框。
+const POOL_RETRY_WINDOW: Duration = Duration::from_secs(6);
+const POOL_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+
+/// SQLite 主结果码（扩展码低 8 位）：BUSY / LOCKED / IOERR。
+fn retryable_sqlite_code(code: &str) -> bool {
+    code.parse::<i32>()
+        .is_ok_and(|code| matches!(code & 0xFF, 5 | 6 | 10))
+}
+
+fn is_transient_pool_error(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(db) => db.code().as_deref().is_some_and(retryable_sqlite_code),
+        sqlx::Error::Io(_) => true,
+        _ => false,
+    }
+}
+
+/// 退出前确定性释放 SQLite 文件句柄。
+///
+/// 硬阀门 `exit(70)` 与更新重启都会在旧进程退出后拉起新进程；内核句柄拆解
+/// 顺序不保证，单实例互斥量可能先于 SQLite 连接释放，子进程随即建池就会撞
+/// `SQLITE_IOERR_TRUNCATE`(1546)（2026-11-10 实证）。有界等待（1s）：连接被
+/// 长查询占用时不让退出无限期挂起，超时后交给子进程侧的瞬态重试兜底。
+pub async fn close_pool_for_exit(pool: &SqlitePool) {
+    let closed = tokio::time::timeout(EXIT_POOL_CLOSE_TIMEOUT, pool.clone().close()).await;
+    if closed.is_err() {
+        warn!("database pool close timed out on exit; child process will retry");
+    }
+}
+
+const EXIT_POOL_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+async fn create_pool_once(path: &Path) -> sqlx::Result<SqlitePool> {
+    debug!("Creating database pool at {:?}", path);
     let options = SqliteConnectOptions::new()
         .filename(path)
         .optimize_on_close(true, None)
