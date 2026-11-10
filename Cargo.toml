@@ -260,7 +260,7 @@ lto = "thin"
 panic = "abort"
 strip = "symbols"
 
-# 体积策略：依赖默认降到 "s"，只有实测在实时/帧/查询/搜索路径上的包点名回 3。
+# 体积策略：依赖默认降到 "z"（minsize），只有实测在实时/帧/查询/搜索路径上的包点名回 3。
 #
 # 为什么这样切：`.text` 占 exe 的 67%（24,773,928 / 35,309,568），嵌入资源只占
 # 8.6%，所以体积只能从机器码拿。上一版按包点名 20 个"明显非实时"的包降档，实测
@@ -279,16 +279,22 @@ strip = "symbols"
 # 搜索路径的编译档未变。冷路径运行时 A/B 部分闭合（2026-11-08，decode_bench
 # 载体）：校验和/去重五候选（simd-adler32、strength_reduce、transpose、
 # xxhash-rust、zune-core）整批回 3 对 PNG 解码 / checkpoint zlib / xxh3
-# 三热环零可测收益，已回 z 并在 fdeflate 钉位注释处留负结果档案；其余
+# 三热环零可测收益，已回 z，负结果档案见下方 fdeflate 段；其余
 # 冷路径包的运行时敏感性仍未测（证据缺口收窄，未闭合）。
 #
 # 通配 z 会连带命中 -sys 包的 C 编译：cc 1.4.3 对 MSVC 把 opt-level z/s/1
 # 统统映射成 /O1；opusic-sys 的 CMake 构建则落到 MinSizeRel（2026-11-07
 # 实测 target/release/build/opusic-sys-c0dda5925a7ca1a2/out/build/
-# CMakeCache.txt 为 CMAKE_BUILD_TYPE=MinSizeRel）。全局分配器、SQLite
-# 查询引擎、解码核心与 TLS 密码本体不属冷路径；且 420/500 内存校准值测于
-# 2026-09-27——当时全图仍是 profile 默认 opt-level 3（依赖降档 2026-10-19
-# 与 z 档 2026-11-06 都在其后）——下面逐名回 3 同时是回到校准时的编译条件。
+# CMakeCache.txt 为 CMAKE_BUILD_TYPE=MinSizeRel）。
+#
+# 2026-11-10 定案（体积优先，用户拍板）：全局分配器（libmimalloc-sys）、
+# SQLite 查询引擎（libsqlite3-sys）、Opus/AAC C 核（opusic-sys /
+# fdk-aac-sys）、TLS 密码本体（ring）、标签解析（lofty）与 PNG 解压链
+# （fdeflate / crc32fast）不单列回 3 档，随通配 z 编译。这批包的运行时
+# 敏感性未做完整 A/B（唯一实测是 PNG 解码三热环上校验和/去重五候选回 3
+# 无收益，档案见下方 fdeflate 段）；若日后出现可感知的扫描/查询/解码延迟，
+# 回本段逐包加回 3 档做 paired A/B，别整批回滚。420/500 内存校准值测于
+# 2026-09-27（当时全图 opt-level 3）；z 档只让代码与堆更小，阈值仍成立。
 opt-level = "z"
 
 # 音频解码（symphonia 的实现分散在 core/common/各 codec/各 format/两个适配器里，
@@ -309,20 +315,6 @@ symphonia-format-riff = { opt-level = 3 }
 symphonia-metadata = { opt-level = 3 }
 symphonia-adapter-fdk-aac = { opt-level = 3 }
 symphonia-adapter-libopus = { opt-level = 3 }
-# C 核心与解码链退出 z 档（2026-11-07 审计补，缘由见上面通配块注释）：全局
-# 分配器（libmimalloc-sys）、SQLite 查询引擎（libsqlite3-sys）、Opus/AAC
-# 解码 C 核心（opusic-sys / fdk-aac-sys）与 TLS 密码汇编（ring，rustls 链，
-# 仅在线封面/更新器下载路径）在 C/汇编侧，通配 z 把它们压到 /O1 或
-# MinSizeRel；回 3 同时回到 420/500 内存校准时的编译条件。
-libmimalloc-sys = { opt-level = 3 }
-opusic-sys = { opt-level = 3 }
-fdk-aac-sys = { opt-level = 3 }
-libsqlite3-sys = { opt-level = 3 }
-ring = { opt-level = 3 }
-# 标签解析（lofty 是本仓直接依赖）：全库扫描逐文件过它，是批 CPU 主项
-# （6 万曲全扫分钟级）；z 档运行时性能未测（通配块注释自认的证据缺口），
-# 先回标准档，paired 扫描计时 A/B 可后补坐实。
-lofty = { opt-level = 3 }
 # 音频输出路径（2026-10-20 审计补）：豁免集合原本只覆盖了解码侧，回调取数的
 # rtrb 环形缓冲、cpal 的 WASAPI 事件循环与 audioadapter 的缓冲搬运全在 "s" 里。
 # 回调体本身是本仓代码（根 crate 恒为 3），但它逐块调用的这三层不是——按
@@ -337,14 +329,12 @@ image = { opt-level = 3 }
 image-webp = { opt-level = 3 }
 zune-jpeg = { opt-level = 3 }
 png = { opt-level = 3 }
-# IDAT 解压与 CRC 校验本体在 fdeflate / crc32fast 里（Cargo.lock 并存 png
-# 0.17.16/0.18.1 两代，两代都直接依赖它们）——只钉 png 门面等于重演上面
-# "只钉门面"注释自述过的陷阱。simd-adler32 已 A/B（2026-11-08，decode_bench
-# 载体，与 strength_reduce/transpose/xxhash-rust/zune-core 五包同批回 3 实测）：
-# PNG 解码+缩放 103.1/108.4ms → 104.2/111.3ms，零可测收益——fdeflate 本体已
-# 在 3 档，校验和占解码壁钟 <5%，留在 z 档（负结果档案，别再重测同一批）。
-fdeflate = { opt-level = 3 }
-crc32fast = { opt-level = 3 }
+# fdeflate / crc32fast（PNG IDAT 解压与 CRC 本体，Cargo.lock 并存 png
+# 0.17.16/0.18.1 两代）随通配 z 编译。负结果档案（别再重测同一批）：
+# 2026-11-08 decode_bench 载体上，simd-adler32 / strength_reduce / transpose /
+# xxhash-rust / zune-core 五包整批回 3 对 PNG 解码+缩放、checkpoint zlib、
+# xxh3 三热环零可测收益（103.1/108.4ms → 104.2/111.3ms），校验和占解码
+# 壁钟 <5%。
 palette = { opt-level = 3 }
 palette_math = { opt-level = 3 }
 # 重采样与 FFT（音频线程与均衡器分析）
