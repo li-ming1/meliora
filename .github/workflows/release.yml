@@ -3,6 +3,12 @@ name: Build & Release
 on:
   push:
     tags: ['v*']
+  # 每周在 main 上预热 release 缓存（不创建 Release、不上传 artifact）。
+  # GitHub 缓存按 ref 隔离：tag 构建自己写的缓存下一次 tag 读不到，只会
+  # 挤占 10GB 配额；tag 只能读 main 作用域的缓存。把缓存生产挪到 main，
+  # 6 平台冷构建（~20min）才会退化成增量链接（~8-10min）。
+  schedule:
+    - cron: '0 3 * * 0'
   # 手动触发：验证单个平台修复时只编目标平台，避免全量重编已成功的平台
   workflow_dispatch:
     inputs:
@@ -12,7 +18,12 @@ on:
         default: all
 
 permissions:
-  contents: write
+  contents: read
+
+# 同一 ref 的构建排队而不是互相取消；写权限只给 release job。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +46,7 @@ jobs:
           - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu, name: linux-arm64, exe: meliora, cflags: "" }
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -65,17 +77,26 @@ jobs:
             libxkbcommon-x11-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
+      # key 必须带 target：Windows x64/arm64 与 macOS x64/arm64 跑在同架构
+      # runner 上，默认 key 不含 --target，两个 job 会抢同一个缓存 key
+      # （缓存 key 不可覆盖，先完成的赢，另一个永远冷构建）。
+      # save-if 只放 main：tag 构建的缓存下次 tag 读不到（ref 隔离），只会
+      # 挤占配额；Linux 不写——冷构建 8-9min 不是墙钟长尾，配额留给
+      # Windows/macOS（冷 17-19min，暖 5-10min）。
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.name != 'linux-x64' && matrix.name != 'linux-arm64' }}
 
       - name: Build release
-        if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
         env:
           # fdk-aac-sys 在 Windows ARM64 编译需要 __x86__ 宏 hack（与本地 .cargo/config.toml 一致）
           CFLAGS_aarch64_pc_windows_msvc: ${{ matrix.cflags }}
         run: cargo build --release --locked --target ${{ matrix.target }} --features kugou
 
       - name: Package Windows (zip)
-        if: ${{ runner.os == 'Windows' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
+        if: ${{ github.event_name != 'schedule' && runner.os == 'Windows' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         shell: pwsh
         run: |
           $STAGE = "dist/meliora-${{ matrix.name }}"
@@ -87,7 +108,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.exe"
 
       - name: Package macOS (.app tar.gz)
-        if: ${{ runner.os == 'macOS' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
+        if: ${{ github.event_name != 'schedule' && runner.os == 'macOS' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
@@ -116,7 +137,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.bin"
 
       - name: Package Linux (tar.gz)
-        if: ${{ runner.os == 'Linux' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
+        if: ${{ github.event_name != 'schedule' && runner.os == 'Linux' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         run: |
           set -euo pipefail
           STAGE="dist/meliora-${{ matrix.name }}"
@@ -128,12 +149,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.bin"
 
       - name: Upload artifact
-        if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name) }}
+        if: ${{ github.event_name != 'schedule' && (github.event_name == 'push' || inputs.platforms == 'all' || contains(inputs.platforms, matrix.name)) }}
         uses: actions/upload-artifact@v4
         with:
           name: meliora-${{ github.ref_name }}-${{ matrix.name }}
           path: dist/meliora-${{ github.ref_name }}-${{ matrix.name }}.*
           if-no-files-found: error
+          # 中间产物只给同一次运行的 release job 用，1 天足够。
+          retention-days: 1
 
   # Tag 推送时创建 GitHub Release：等全部平台完成后再发一次，
   # 避免多 job 并行抢建同一 Release 引发 "Too many retries"
@@ -141,6 +164,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:

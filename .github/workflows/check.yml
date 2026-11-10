@@ -7,8 +7,17 @@ name: Check
 on:
   push:
     branches: [main]
+    # 纯文档/补丁档案提交不跑四目标编译门禁；混合提交仍会触发。
+    paths-ignore:
+      - '**.md'
+      - 'patches/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'patches/**'
+      - 'LICENSE'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,6 +25,11 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # CI 从缓存恢复后增量状态没有复用价值；关掉可显著缩小 check 缓存
+  # （每目标 1.1-1.3GiB，是 10GB 配额的最大占用方）。
+  CARGO_INCREMENTAL: 0
 
 jobs:
   check:
@@ -30,6 +44,7 @@ jobs:
           - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu }
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +74,13 @@ jobs:
             libxkbcommon-x11-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
+      # 同 release.yml：key 带 target（macOS 两个目标共用同架构 runner，
+      # 默认 key 不含 --target 会互相顶掉）；只允许 main 写——PR 的缓存
+      # ref 隔离且同样占 10GB 配额。
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo check
         run: cargo check --locked --target ${{ matrix.target }} --features kugou
