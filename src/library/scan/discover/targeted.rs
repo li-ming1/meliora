@@ -24,7 +24,7 @@ use crate::library::scan::{
         canonicalize_or_keep, classify, delete_tracks, fold_excluded_roots, is_missing,
         is_under_excluded, missing_paths, schedule_directory_read,
     },
-    fs_case::{fold_key, fold_path, folded_starts_with, same_file},
+    fs_case::{fold_key, fold_path, folded_starts_with_byte, same_file},
     record::ScanRecord,
 };
 
@@ -69,7 +69,7 @@ fn index_records_under(
         // 每个键只折叠一次，而不是每个目标折一次
         let folded_key = fold_key(key);
         for target in folded_targets {
-            if folded_starts_with(&folded_key, target.as_str()) {
+            if folded_starts_with_byte(&folded_key, target.as_str()) {
                 index
                     .entry(fold_path(key))
                     .or_default()

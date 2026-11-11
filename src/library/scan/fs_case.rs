@@ -140,8 +140,11 @@ pub fn fold_key(path: &Utf8Path) -> String {
     strip_verbatim(path.as_str()).to_lowercase()
 }
 
+/// [`folded_starts_with_byte`] 的字符级原实现。生产路径已换字节级变体
+/// （F053），此实现仅作为 bench 对照计时与谓词等价性测试的基准保留。
 /// 已经由 [`fold_key`] 折叠过的 key 与同样折叠过的前缀做前缀匹配——调用方因此
 /// 可以折一次就与多个前缀比对。
+#[cfg(test)]
 pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
     let mut key_chars = folded_key.chars();
     for expected in folded_prefix.chars() {
@@ -151,6 +154,25 @@ pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
     }
     // 前缀必须恰好在路径分量边界处结束
     key_chars.next().is_none_or(|c| c == '/' || c == '\\')
+}
+
+/// [`folded_starts_with`] 的字节级等价实现，用于已折叠的输入（两侧都是
+/// `to_lowercase` 的产物，所有调用方都如此产出）。前缀测试用
+/// `[u8]::starts_with` 做 memcmp；分量边界检查直接测前缀之后的那个原始字节
+/// ——`/` 与 `\` 是纯 ASCII，而 UTF-8 多字节序列只含 >= 0x80 的字节，因此
+/// 该字节恰好就是「下一个字符是路径分隔符」的分量检查。
+///
+/// 等价性论证与运行时交叉校验见 `bench` 模块（F053）：已折叠输入是合法
+/// UTF-8 且匹配从字符边界开始，UTF-8 编码唯一，故相等的字节前缀蕴含相等
+/// 的字符前缀（反之亦然）。热调用方是
+/// `discover/targeted.rs::index_records_under` 的 (记录×目标) 循环。
+pub fn folded_starts_with_byte(folded_key: &str, folded_prefix: &str) -> bool {
+    let key = folded_key.as_bytes();
+    if !key.starts_with(folded_prefix.as_bytes()) {
+        return false;
+    }
+    key.get(folded_prefix.len())
+        .is_none_or(|&b| b == b'/' || b == b'\\')
 }
 
 /// 构造比较用的 key——剥 \\?\，并在大小写不敏感的卷上折叠大小写。
@@ -317,9 +339,9 @@ mod bench {
     //! 审计发现 F053 的耗时探针：[`folded_starts_with`] 走两个逐字符迭代器，而
     //! `discover/targeted.rs::index_records_under` 在每条记录只做一次 `fold_key`
     //! 之后，对每个 (记录, 目标) 组合都调它一次——在六位数的记录表上做定向重扫，
-    //! 要付约 1e8 次逐字符比较外加每条记录一次 `to_lowercase` 分配。本 bench 就在
-    //! 这个确切的循环形态下把当前实现与一个字节级等价实现对比计时，并顺带量出每条
-    //! 记录的 `fold_key` 那一遍的大小。
+    //! 要付约 1e8 次逐字符比较外加每条记录一次 `to_lowercase` 分配。生产路径已
+    //! 换用字节级等价的 [`folded_starts_with_byte`]；本 bench 在这个确切的循环
+    //! 形态下保留原实现作对照计时，并顺带量出每条记录的 `fold_key` 那一遍的大小。
     //!
     //! 为什么字节变体是同一个谓词（审计论证，下面在运行时对计时扫描要跑的每一对
     //! 输入都做了校验）：两侧都已由 `fold_key` / `fold_path` 折叠过，即合法 UTF-8
@@ -338,7 +360,7 @@ mod bench {
 
     use camino::Utf8Path;
 
-    use super::{fold_key, folded_starts_with};
+    use super::{fold_key, folded_starts_with, folded_starts_with_byte};
 
     /// 模拟的 `scan_record` 条目数
     const KEYS: usize = 100_000;
@@ -349,19 +371,6 @@ mod bench {
     /// 每隔 N 条记录的 key 带 CJK 路径段（多字节 UTF-8）
     const MULTIBYTE_STRIDE: usize = 20;
     const MEASURED_RUNS: usize = 3;
-
-    /// [`folded_starts_with`] 的字节级等价实现，用于已折叠的输入（两侧都是
-    /// `to_lowercase` 的产物，所有调用方都如此产出）。前缀测试是用
-    /// `[u8]::starts_with` 做的 memcmp；分量边界检查直接测前缀之后的那个原始字节，
-    /// 这是精确的，因为等于 `/` 或 `\` 的字节绝不可能出现在 UTF-8 多字节序列内部。
-    fn folded_starts_with_byte(folded_key: &str, folded_prefix: &str) -> bool {
-        let key = folded_key.as_bytes();
-        if !key.starts_with(folded_prefix.as_bytes()) {
-            return false;
-        }
-        key.get(folded_prefix.len())
-            .is_none_or(|&b| b == b'/' || b == b'\\')
-    }
 
     /// Windows 风格的录制路径，带扫描器实际存下的 verbatim 前缀；每隔
     /// `MULTIBYTE_STRIDE` 条用一次 CJK 段，让多字节 UTF-8 同时出现在命中与未命中
