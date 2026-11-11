@@ -34,7 +34,9 @@
 //!   降级，而不是静默把 256px 缩略图铺满整屏。
 
 use std::{
+    cell::Cell,
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -77,9 +79,6 @@ use crate::{
 
 /// 圆盘标签封面的解码尺寸——小图，走渲染缓存。
 const LABEL_THUMB_PX: u32 = 512;
-/// 定长兜底路径（`Backdrop(None)`，见 `backdrop_layer`）的背景解码上限：
-/// 仅在设备像素目标尺寸未知时取用。
-const BACKDROP_THUMB_PX: u32 = 2048;
 /// 大图回收队列未放行时的退避重试间隔：重试只是一次廉价的队列计数检查，
 /// 期间旧背景保持绘制，不出现黑底。
 const BACKDROP_RETRY: Duration = Duration::from_millis(500);
@@ -109,6 +108,136 @@ pub enum ImmersiveStageMode {
     KineticLyrics,
 }
 
+/// crossfade 槽位内容：`(封面键, 元素 id 代数, 该图解码时的设备像素目标尺寸)`。
+type BackdropLayer = (ManagedImageKey, u64, (u32, u32));
+
+/// 海报墙列数与卡片间距（逻辑像素）。
+const POSTER_COLUMNS: usize = 6;
+const POSTER_GAP: f32 = 14.0;
+/// 海报墙左右内边距合计（`px(16)` × 2）。
+const POSTER_PADDING: f32 = 32.0;
+/// 海报墙上下内边距合计（`pt(20)` + `pb(24)`）：滚动内容高 = 最高列 + 它。
+const POSTER_PADDING_V: f32 = 44.0;
+/// 海报墙视口外上下各多实体化的缓冲高度：滚动事件同步 notify 本视图按新
+/// offset 重算窗口，缓冲盖住快速滚动的帧间空档。
+const POSTER_OVERSCAN: f32 = 640.0;
+
+/// 海报卡片的解码尺寸：按 6 列布局的实际设备像素宽度取整到 64 的倍数，
+/// 夹在 [256, 512]。固定 512 在 1080p@125% 下把 ~300 设备像素的卡片解码成
+/// 512²（1MB/张，图集每页只放 4 张）；按显示尺寸解码后同样 1:1 上屏，
+/// 每张像素少 ~60%，50 首队列的堆与图集页各降一半。512 仍是质量上限
+/// （4K/高 DPR 与旧行为一致），256 是离线缩略图下限。
+fn poster_thumb_size(viewport_width_device: f32) -> u32 {
+    let card_width = ((viewport_width_device - POSTER_PADDING)
+        - POSTER_GAP * (POSTER_COLUMNS - 1) as f32)
+        / POSTER_COLUMNS as f32;
+    (card_width.max(1.0).ceil() as u32)
+        .next_multiple_of(64)
+        .clamp(256, 512)
+}
+
+/// 海报墙单张卡片的高度。正在播放的高光大海报固定 340，其余按
+/// `(列内序号 + 列号)` 在四档里轮换（瀑布流的错落感）。
+fn poster_card_height(idx: usize, col_idx: usize, is_playing: bool) -> f32 {
+    if is_playing {
+        return 340.0;
+    }
+    match (idx + col_idx) % 4 {
+        0 => 210.0,
+        1 => 270.0,
+        2 => 180.0,
+        _ => 240.0,
+    }
+}
+
+/// 计算海报墙某一列在当前滚动窗口内要实体化的卡片位置 `(队列下标, 顶部 y,
+/// 高度)`，同时返回该列总高度（含间距）。窗口外的卡片不构建元素，因此不会
+/// 被 `ManagedImage` 解码；但高度照常累加，滚动范围与整队列渲染完全一致。
+fn poster_column_layout(
+    queue_len: usize,
+    col_idx: usize,
+    current_pos: usize,
+    window_top: f32,
+    window_bottom: f32,
+) -> (Vec<(usize, f32, f32)>, f32) {
+    let mut slots = Vec::new();
+    let mut y = 0.0f32;
+    for idx in (col_idx..queue_len).step_by(POSTER_COLUMNS) {
+        let h = poster_card_height(idx, col_idx, idx == current_pos);
+        if y + h >= window_top && y <= window_bottom {
+            slots.push((idx, y, h));
+        }
+        y += h + POSTER_GAP;
+    }
+    (slots, (y - POSTER_GAP).max(0.0))
+}
+
+/// 某一列的总高度（含卡片间距、不含容器上下内边距）。与
+/// [`poster_column_layout`] 返回的第二元同值，但只做累加、不收集槽位，
+/// 供渲染时先算出滚动内容高。
+fn poster_column_height(queue_len: usize, col_idx: usize, current_pos: usize) -> f32 {
+    let mut y = 0.0f32;
+    for idx in (col_idx..queue_len).step_by(POSTER_COLUMNS) {
+        y += poster_card_height(idx, col_idx, idx == current_pos) + POSTER_GAP;
+    }
+    (y - POSTER_GAP).max(0.0)
+}
+
+/// 海报墙滚动内容高 = 最高列 + 上下内边距，即 gpui 用来算滚动范围的那个值。
+fn poster_content_height(queue_len: usize, current_pos: usize) -> f32 {
+    (0..POSTER_COLUMNS)
+        .map(|col| poster_column_height(queue_len, col, current_pos))
+        .fold(0.0f32, f32::max)
+        + POSTER_PADDING_V
+}
+
+/// 把滚动句柄里的原始偏移折算成内容坐标下的可见顶部，并钳到
+/// `[0, 内容高 - 视口高]`。
+///
+/// 必须自己钳：`render` 早于 layout，gpui 的钳位（`Div::layout_scroll_offset`，
+/// div.rs 里的 `scroll_offset.y.clamp(-scroll_max, 0)`）要到 layout 才发生，
+/// 而句柄里的原始偏移可以越界——滚到底后继续滚（句柄继续累加）或滚过之后窗口
+/// 变高（全屏化把内容高/视口高的差压小）都会留下它。用未钳位的偏移算窗口，
+/// 那一帧算出的可见区比实际绘制位置更靠下，视口顶部就露出一条没被实体化的
+/// 空白带；滚动停下后若没有新的 notify，空白带会一直留在屏幕上
+/// （2026-11-10 实测：越界 ~865px，顶部落空带 ~225px，且恰好只吞掉首卡
+/// 高 180 的奇数列、留下高 210 的偶数列）。UniformGrid 在 prepaint 里做的是
+/// 同一件事（uniform_grid.rs「把 offset 保持在 [content_height - viewport, 0]
+/// 内」）。
+fn poster_scroll_top(handle_offset_y: f32, content_height: f32, viewport_height: f32) -> f32 {
+    let max_scroll = (content_height - viewport_height).max(0.0);
+    (-handle_offset_y).max(0.0).min(max_scroll)
+}
+
+/// render↔paint 滚动偏移探针（2026-11-11 诊断）。render 用句柄里的原始偏移
+/// 算窗口化，而 gpui 要到 layout 阶段才把偏移钳进 `[0, 内容高-视口]` 并据此
+/// 绘制——两侧可能错位，且滚动停止后没有后续帧自愈，空洞就留在屏幕上。
+/// 探针随海报墙内容放一个 canvas：它的 prepaint 在容器的钳位**之后**执行，
+/// 读到的句柄偏移就是本帧 paint 实际使用的值。与 render 用的值比对：
+/// 错位时打 `[poster]` 日志并 notify 一帧按真实偏移重算（自愈）；
+/// 数值不变后静默，防止 max 口径分歧时陷入每帧 notify 死循环。
+struct PosterScrollProbe {
+    /// 本帧 render 用于窗口计算的 scroll_top。
+    render_top: Cell<f32>,
+    /// 上一次自愈时的 `(render_top 桶, 偏差桶)`；相同则不再 notify。
+    healed: Cell<(i32, i32)>,
+    /// 上一次日志的桶，抑制重复行。
+    logged: Cell<(i32, i32)>,
+}
+
+/// 自愈判定：偏差超过 1px 且 `(render_top 桶, 偏差桶)` 与上次自愈不同才给
+/// 出新桶。桶宽 48px——同一数值的重复偏差不重复自愈，偏差演进时逐帧跟进。
+fn poster_scroll_should_heal(
+    render_top: f32,
+    paint_top: f32,
+    last_healed: (i32, i32),
+) -> Option<(i32, i32)> {
+    let bucket = |v: f32| (v / 48.0) as i32;
+    let diff = paint_top - render_top;
+    let key = (bucket(render_top), bucket(diff));
+    (diff.abs() > 1.0 && key != last_healed).then_some(key)
+}
+
 pub struct ImmersiveView {
     focus_handle: FocusHandle,
     /// 镜像 `Models::immersive`；守每次观察者的 `notify`。
@@ -116,6 +245,8 @@ pub struct ImmersiveView {
     /// 沉浸模式下的舞台展示形态：Classic（经典双栏）、PosterWall（瀑布流海报墙）、KineticLyrics（随意跳动巨幕歌词）。
     stage_mode: ImmersiveStageMode,
     poster_wall_scroll: ScrollHandle,
+    /// render↔paint 滚动偏移探针（见 [`PosterScrollProbe`]）。
+    poster_scroll_probe: Rc<PosterScrollProbe>,
     /// 右侧中控卡片是否折叠收起。
     /// 鼠标是否靠近/悬停在右侧中控区（实现靠边自动显现、移开自动消失）
     console_hovered: bool,
@@ -163,8 +294,10 @@ pub struct ImmersiveView {
     /// crossfade 双槽位：两个带显式 id 的固定图层（index 0/1）交替充当
     /// "当前背景"与"淡出层"。晋升时新图进入空闲槽，旧图原地不动——
     /// 其 ManagedImage 元素 id 与祖先路径全程不变，keyed state 不重建、
-    /// 不重解码，淡出结束才清槽并把瓦片推进回收漏斗。
-    backdrop_layers: [Option<(ManagedImageKey, u64)>; 2],
+    /// 不重解码，淡出结束才清槽并把瓦片推进回收漏斗。第三元是该图解码时
+    /// 的设备像素目标尺寸：图层按自己的尺寸绘制，不随 `backdrop_target`
+    /// 漂移。
+    backdrop_layers: [Option<BackdropLayer>; 2],
     /// 当前背景所在的槽位 index（0/1），每次晋升翻转。
     backdrop_active: usize,
     /// 背景元素 id 代数：仅在晋升时递增（新图进入槽位时取下一代号）。
@@ -330,6 +463,11 @@ impl ImmersiveView {
                 active: *immersive_flag.read(cx),
                 stage_mode: ImmersiveStageMode::PosterWall,
                 poster_wall_scroll: ScrollHandle::new(),
+                poster_scroll_probe: Rc::new(PosterScrollProbe {
+                    render_top: Cell::new(0.0),
+                    healed: Cell::new((i32::MIN, i32::MIN)),
+                    logged: Cell::new((i32::MIN, i32::MIN)),
+                }),
                 console_hovered: false,
                 position: info.position.clone(),
                 duration: info.duration.clone(),
@@ -761,7 +899,8 @@ impl ImmersiveView {
                         this.backdrop_fade_started = Some(Instant::now());
                     }
                     this.backdrop_gen += 1;
-                    this.backdrop_layers[incoming] = Some((key.clone(), this.backdrop_gen));
+                    this.backdrop_layers[incoming] =
+                        Some((key.clone(), this.backdrop_gen, (target_w, target_h)));
                     this.backdrop_key = Some(key);
                     cx.notify();
                 })
@@ -774,27 +913,23 @@ impl ImmersiveView {
     /// 渲染一个背景槽位图层：显式 id 让元素祖先路径跨帧稳定（槽位是否
     /// 有图、图是否更换都不影响另一个槽位的 keyed state）；opacity 由
     /// wrapper div 的 `opacity()` 设置，gpui 的 element_opacity 栈在绘制
-    /// 时乘进子 `ManagedImage` 的精灵。纹理按 `backdrop_target` 设备尺寸
+    /// 时乘进子 `ManagedImage` 的精灵。纹理按该层晋升时的设备像素尺寸
     /// 精确重采样，绘制时 GPU 1:1 取样。
     fn backdrop_layer(&self, index: usize, opacity: f32) -> impl IntoElement {
         let layer = self.backdrop_layers[index].clone();
-        let target = self.backdrop_target;
         div()
             .id(("immersive-bg-layer", index as u64))
             .absolute()
             .inset_0()
             .opacity(opacity)
-            .when_some(layer, move |el, (key, gen_id)| {
-                let image = match target {
-                    Some((w, h)) if w > 0 && h > 0 => {
-                        managed_image(("immersive-bg", gen_id), key).backdrop_cached_target(w, h)
-                    }
-                    // 定长兜底（Backdrop(None)）：目标尺寸未知/为零时退回
-                    // 2048 上限解码（render 总会先写入非零目标，正常不走）。
-                    _ => managed_image(("immersive-bg", gen_id), key)
-                        .thumb_max(BACKDROP_THUMB_PX)
-                        .backdrop_cached(),
-                };
+            .when_some(layer, move |el, (key, gen_id, (w, h))| {
+                // 用层自己的目标尺寸，而不是当前 `backdrop_target`：后者在
+                // 进入 OS 全屏的头几帧会从窗口尺寸跳到全屏尺寸，元素的
+                // 缓存键随之变化会重启一整条解码管线（2026-11-10 实测同一
+                // 首歌连续两次 2048 源解码、各带一套图集纹理）。旧图由 GPU
+                // 双线性拉伸几个百分点，代价远小于再来一条 ~25MB 瞬态管线。
+                let image =
+                    managed_image(("immersive-bg", gen_id), key).backdrop_cached_target(w, h);
                 el.child(image.w_full().h_full().object_fit(ObjectFit::Cover))
             })
     }
@@ -867,13 +1002,25 @@ impl ImmersiveView {
         cx.notify();
     }
 
-    fn render_poster_wall(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (current_pos, queue_items) = {
+    /// 海报墙只实体化滚动窗口内（含缓冲）的卡片。`ManagedImage` 的
+    /// `request_layout` 会立刻发起解码；整队列渲染意味着队列里每张封面都会
+    /// 被解码、上传图集并在元素状态里驻留（2026-11-10 日志实测：50 首队列
+    /// 进入沉浸页 8 秒内 private 418→822MB 触发硬上限重启，退场时回收漏斗
+    /// 积压 50MB）。卡片位置完全由高度序列决定，故用显式列高 + 绝对定位做
+    /// 窗口化，滚动范围与瀑布流视觉不变。O(队列长度) 扫描是纯算术，比构建
+    /// 元素便宜两个数量级。
+    fn render_poster_wall(
+        &self,
+        viewport_height: f32,
+        viewport_width_device: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (current_pos, queue_len) = {
             let q = self.queue.read(cx);
-            (q.position, q.data.read_recovered().clone())
+            (q.position, q.data.read_recovered().len())
         };
 
-        if queue_items.is_empty() {
+        if queue_len == 0 {
             let theme = cx.global::<Theme>();
             return div()
                 .size_full()
@@ -889,13 +1036,39 @@ impl ImmersiveView {
                 .into_any_element();
         }
 
-        let item_infos: Vec<(usize, bool, SharedString, SharedString, ManagedImageKey)> =
-            queue_items
-                .iter()
-                .enumerate()
-                .map(|(idx, item)| {
-                    let is_playing = idx == current_pos;
-                    let ui_data = queue_metadata::queue_ui_data(cx, item).read(cx).clone();
+        // 循环里要经 `cx.listener` 拿可变借用，主题值先拷出来（Theme: Clone，
+        // 字段都是小值），否则与全局的不可变借用冲突。
+        let theme = cx.global::<Theme>().clone();
+        let poster_scroll = self.poster_wall_scroll.clone();
+        let current_lyric = self
+            .current_line
+            .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
+            .map(|l| l.text.clone())
+            .unwrap_or_default();
+
+        // 6 列全屏自适应流式瀑布流：宽度完全铺满屏幕，上下紧密咬合，绝无窟窿空隙
+        let raw_offset_y = self.poster_wall_scroll.offset().y.as_f32();
+        let content_height = poster_content_height(queue_len, current_pos);
+        let scroll_top = poster_scroll_top(raw_offset_y, content_height, viewport_height);
+        self.poster_scroll_probe.render_top.set(scroll_top);
+        let window_top = scroll_top - POSTER_OVERSCAN;
+        let window_bottom = scroll_top + viewport_height.max(1.0) + POSTER_OVERSCAN;
+        let poster_thumb = poster_thumb_size(viewport_width_device);
+
+        let mut column_cards: [Vec<AnyElement>; POSTER_COLUMNS] = Default::default();
+        let mut column_heights = [0.0f32; POSTER_COLUMNS];
+        let mut materialized = 0usize;
+
+        for (col_idx, column) in column_cards.iter_mut().enumerate() {
+            let (slots, column_height) =
+                poster_column_layout(queue_len, col_idx, current_pos, window_top, window_bottom);
+            column_heights[col_idx] = column_height;
+            for (idx, y, h) in slots {
+                materialized += 1;
+                let is_playing_track = idx == current_pos;
+                let item = { self.queue.read(cx).data.read_recovered().get(idx).cloned() };
+                if let Some(item) = item {
+                    let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
                     let title = ui_data
                         .as_ref()
                         .and_then(|u| u.name.clone())
@@ -914,147 +1087,176 @@ impl ImmersiveView {
                     #[cfg(not(feature = "online_sources"))]
                     let cover_key = ManagedImageKey::track_file(item.get_path());
 
-                    (idx, is_playing, title, artist, cover_key)
-                })
-                .collect();
-
-        let theme = cx.global::<Theme>();
-        let poster_scroll = self.poster_wall_scroll.clone();
-        let current_lyric = self
-            .current_line
-            .and_then(|idx| self.parsed.as_ref().and_then(|p| p.get(idx)))
-            .map(|l| l.text.clone())
-            .unwrap_or_default();
-
-        // 6 列全屏自适应流式瀑布流：宽度完全铺满屏幕，上下紧密咬合，绝无窟窿空隙
-        const NUM_COLS: usize = 6;
-        let mut column_cards: [Vec<AnyElement>; NUM_COLS] = Default::default();
-
-        for (i, (idx, is_playing_track, title, artist, cover_key)) in
-            item_infos.into_iter().enumerate()
-        {
-            let col_idx = i % NUM_COLS;
-
-            let h = if is_playing_track {
-                px(340.0) // 正在播放的高光大海报
-            } else {
-                match (idx + col_idx) % 4 {
-                    0 => px(210.0),
-                    1 => px(270.0),
-                    2 => px(180.0),
-                    _ => px(240.0),
-                }
-            };
-
-            let card = div()
-                .id(("poster_tile", idx))
-                .w_full()
-                .h(h)
-                .rounded(px(16.0))
-                .shadow_lg()
-                .border_1()
-                .border_color(if is_playing_track {
-                    theme.button_primary_border
-                } else {
-                    Rgba::new(1.0, 1.0, 1.0, 0.12)
-                })
-                .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
-                .overflow_hidden()
-                .relative()
-                .cursor_pointer()
-                .hover(|s| s.border_color(theme.button_primary))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.global::<PlaybackInterface>().jump(idx);
-                    this.stage_mode = ImmersiveStageMode::KineticLyrics;
-                    this.sync_spectrum_viewers();
-                    cx.notify();
-                }))
-                .child(
-                    managed_image(("poster_img", idx), cover_key)
-                        .thumb_max(512)
-                        .size_full()
-                        .object_fit(ObjectFit::Cover),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .pt(px(28.0))
-                        .pb(px(10.0))
-                        .px(px(12.0))
-                        .bg(linear_gradient(
-                            0.0,
-                            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.90), 0.0),
-                            linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
-                        ))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .when(is_playing_track, |d| {
-                            d.child(
+                    column.push(
+                        div()
+                            .id(("poster_tile", idx))
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(y))
+                            .h(px(h))
+                            .rounded(px(16.0))
+                            .shadow_lg()
+                            .border_1()
+                            .border_color(if is_playing_track {
+                                theme.button_primary_border
+                            } else {
+                                Rgba::new(1.0, 1.0, 1.0, 0.12)
+                            })
+                            .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
+                            .overflow_hidden()
+                            // 这里绝不能再链 .relative()：两者都写 style.position，
+                            // 后者覆盖前者——2026-11-11 实测卡片因此退回流式布局，
+                            // top(y) 变成相对偏移，整墙下坠出黑带且尾部卡片滚不到。
+                            // absolute 本身就是内部标签层（absolute bottom_0）的
+                            // 定位锚，不需要 relative。
+                            .cursor_pointer()
+                            .hover(|s| s.border_color(theme.button_primary))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.global::<PlaybackInterface>().jump(idx);
+                                this.stage_mode = ImmersiveStageMode::KineticLyrics;
+                                this.sync_spectrum_viewers();
+                                cx.notify();
+                            }))
+                            .child(
+                                managed_image(("poster_img", idx), cover_key)
+                                    .thumb_max(poster_thumb)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover),
+                            )
+                            .child(
                                 div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .pt(px(28.0))
+                                    .pb(px(10.0))
+                                    .px(px(12.0))
+                                    .bg(linear_gradient(
+                                        0.0,
+                                        linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.90), 0.0),
+                                        linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                                    ))
                                     .flex()
-                                    .items_center()
-                                    .gap(px(6.0))
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .when(is_playing_track, |d| {
+                                        d.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.0))
+                                                .child(
+                                                    div()
+                                                        .size(px(6.0))
+                                                        .rounded_full()
+                                                        .bg(theme.button_primary),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(10.0))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(theme.button_primary)
+                                                        .child("NOW PLAYING"),
+                                                ),
+                                        )
+                                    })
                                     .child(
-                                        div().size(px(6.0)).rounded_full().bg(theme.button_primary),
+                                        div()
+                                            .text_size(if is_playing_track {
+                                                px(15.0)
+                                            } else {
+                                                px(12.0)
+                                            })
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
+                                            .truncate()
+                                            .child(title),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(10.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(theme.button_primary)
-                                            .child("NOW PLAYING"),
-                                    ),
+                                            .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                            .truncate()
+                                            .child(artist),
+                                    )
+                                    .when(is_playing_track && !current_lyric.is_empty(), |d| {
+                                        d.child(
+                                            div()
+                                                .mt(px(4.0))
+                                                .text_size(px(11.0))
+                                                .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
+                                                .truncate()
+                                                .child(current_lyric.clone()),
+                                        )
+                                    }),
                             )
-                        })
-                        .child(
-                            div()
-                                .text_size(if is_playing_track { px(15.0) } else { px(12.0) })
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
-                                .truncate()
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
-                                .truncate()
-                                .child(artist),
-                        )
-                        .when(is_playing_track && !current_lyric.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .mt(px(4.0))
-                                    .text_size(px(11.0))
-                                    .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
-                                    .truncate()
-                                    .child(current_lyric.clone()),
-                            )
-                        }),
-                );
-
-            column_cards[col_idx].push(card.into_any_element());
+                            .into_any_element(),
+                    );
+                }
+            }
         }
 
         let masonry_cols: Vec<AnyElement> = column_cards
             .into_iter()
+            .zip(column_heights)
             .enumerate()
-            .map(|(c_idx, col_items)| {
+            .map(|(c_idx, (col_items, col_height))| {
                 div()
                     .id(("masonry_col", c_idx))
+                    .relative()
                     .flex_1()
                     .min_w(px(180.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(14.0))
+                    .h(px(col_height))
                     .children(col_items)
                     .into_any_element()
             })
             .collect();
+
+        // render↔paint 偏移探针（见 [`PosterScrollProbe`]）：canvas 的 prepaint
+        // 在滚动容器钳位之后执行，读到的就是 paint 实际使用的偏移。
+        let probe = self.poster_scroll_probe.clone();
+        let scroll_handle = self.poster_wall_scroll.clone();
+        let entity_id = cx.entity().entity_id();
+        let (probe_raw, probe_content, probe_viewport, probe_queue, probe_pos, probe_cards) = (
+            raw_offset_y,
+            content_height,
+            viewport_height,
+            queue_len,
+            current_pos,
+            materialized,
+        );
+        let probe_canvas = canvas(
+            move |_, _, cx| {
+                let paint_top = (-scroll_handle.offset().y.as_f32()).max(0.0);
+                let render_top = probe.render_top.get();
+                let diff = paint_top - render_top;
+                let bucket = |v: f32| (v / 48.0) as i32;
+                let key = (bucket(render_top), bucket(diff));
+                if key != probe.logged.get() {
+                    probe.logged.set(key);
+                    tracing::info!(
+                        target: "poster",
+                        "scroll render_top={render_top:.0} paint_top={paint_top:.0} \
+                         diff={diff:.0} raw={probe_raw:.0} content={probe_content:.0} \
+                         viewport={probe_viewport:.0} queue_len={probe_queue} \
+                         pos={probe_pos} cards={probe_cards}"
+                    );
+                }
+                if let Some(healed) = poster_scroll_should_heal(render_top, paint_top, probe.healed.get())
+                {
+                    probe.healed.set(healed);
+                    tracing::warn!(
+                        target: "poster",
+                        "scroll divergence self-heal render_top={render_top:.0} paint_top={paint_top:.0}"
+                    );
+                    cx.notify(entity_id);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute();
 
         div()
             .id("stage-poster-wall")
@@ -1071,7 +1273,8 @@ impl ImmersiveView {
                     .flex_row()
                     .justify_between()
                     .gap(px(14.0))
-                    .children(masonry_cols),
+                    .children(masonry_cols)
+                    .child(probe_canvas),
             )
             .into_any_element()
     }
@@ -2080,7 +2283,11 @@ impl Render for ImmersiveView {
 
         match self.stage_mode {
             ImmersiveStageMode::PosterWall => {
-                root = root.child(self.render_poster_wall(cx));
+                let viewport = window.viewport_size();
+                let viewport_height = viewport.height.as_f32();
+                let viewport_width_device = viewport.width.as_f32() * window.scale_factor();
+                root =
+                    root.child(self.render_poster_wall(viewport_height, viewport_width_device, cx));
             }
             _ => {
                 if let Some(stage_view) = stage_center_view {
@@ -2096,6 +2303,127 @@ impl Render for ImmersiveView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 卡片解码尺寸跟随实际设备像素宽度：1080p 用 320（而不是旧的固定 512），
+    /// 4K 仍封顶 512，低分辨率不低于缩略图下限 256。
+    #[test]
+    fn poster_thumb_tracks_card_device_width() {
+        assert_eq!(poster_thumb_size(1920.0), 320);
+        assert_eq!(poster_thumb_size(1280.0), 256);
+        assert_eq!(poster_thumb_size(3840.0), 512);
+    }
+
+    /// 越界偏移必须被钳到内容底部，且钳位后视口内不出现"没被实体化的空白带"……
+    /// 这正是 2026-11-10 截图里顶部约 225px 空洞的成因（句柄偏移越界 ~865px，
+    /// render 按越界值算窗口，而 gpui 到 layout 才钳、实际绘制在钳位后的位置）。
+    #[test]
+    fn poster_scroll_clamp_keeps_viewport_covered() {
+        const LEN: usize = 60;
+        const VIEWPORT: f32 = 1080.0;
+        let content = poster_content_height(LEN, 0);
+        let max_scroll = content - VIEWPORT;
+        assert!(max_scroll > 0.0);
+
+        // 范围内原样通过；越界一律钳到 [0, max_scroll]。
+        assert_eq!(poster_scroll_top(-300.0, content, VIEWPORT), 300.0);
+        assert_eq!(poster_scroll_top(0.0, content, VIEWPORT), 0.0);
+        assert_eq!(
+            poster_scroll_top(-(content + 5000.0), content, VIEWPORT),
+            max_scroll
+        );
+        assert_eq!(
+            poster_scroll_top(-100.0, VIEWPORT - 10.0, VIEWPORT),
+            0.0,
+            "内容比视口矮时只能停在顶部"
+        );
+
+        // 钳位后的窗口必须覆盖视口内每一张卡；用越界偏移直接算窗口则会漏卡。
+        let covering = |top: f32| -> Vec<(usize, usize)> {
+            (0..POSTER_COLUMNS)
+                .flat_map(|col| {
+                    poster_column_layout(
+                        LEN,
+                        col,
+                        0,
+                        top - POSTER_OVERSCAN,
+                        top + VIEWPORT + POSTER_OVERSCAN,
+                    )
+                    .0
+                    .into_iter()
+                    .map(move |(idx, _, _)| (col, idx))
+                })
+                .collect()
+        };
+        let clamped = covering(poster_scroll_top(-(content + 5000.0), content, VIEWPORT));
+        let raw = covering(content + 5000.0);
+        let mut missing = 0;
+        for col in 0..POSTER_COLUMNS {
+            for (idx, y, h) in poster_column_layout(LEN, col, 0, f32::NEG_INFINITY, f32::INFINITY).0
+            {
+                if y + h >= max_scroll && y <= max_scroll + VIEWPORT {
+                    assert!(
+                        clamped.contains(&(col, idx)),
+                        "col={col} idx={idx} 未被实体化"
+                    );
+                    if !raw.contains(&(col, idx)) {
+                        missing += 1;
+                    }
+                }
+            }
+        }
+        assert!(missing > 0, "越界偏移本应漏掉视口内的卡片，测试失去意义");
+    }
+
+    /// 自愈判定：首次大偏差触发一次；同一数值重复出现不再触发（防死循环）；
+    /// 收敛（|diff|≤1px）永不触发；偏差演进后再次触发。
+    #[test]
+    fn poster_scroll_probe_heals_once_per_divergence() {
+        let none = (i32::MIN, i32::MIN);
+        let first = poster_scroll_should_heal(1000.0, 500.0, none).unwrap();
+        assert_eq!(poster_scroll_should_heal(1000.0, 500.0, first), None);
+        assert_eq!(poster_scroll_should_heal(500.0, 500.0, first), None);
+        assert!(poster_scroll_should_heal(2000.0, 500.0, first).is_some());
+    }
+
+    /// 海报墙窗口化的三条不变量：任意滚动位置只实体化近邻卡片（内存上界）、
+    /// 每列总高与整队列渲染一致（滚动范围不变）、所有下标都能在某个滚动位置
+    /// 进入窗口（不会永久隐形）。
+    #[test]
+    fn poster_wall_window_materializes_bounded_slots() {
+        const LEN: usize = 600;
+        const VIEWPORT: f32 = 1080.0;
+        let column_total =
+            |col: usize| poster_column_layout(LEN, col, 0, f32::NEG_INFINITY, f32::INFINITY).1;
+        let full_total = (0..POSTER_COLUMNS).map(column_total).fold(0.0f32, f32::max);
+        assert!(full_total > 0.0);
+
+        let mut seen = vec![false; LEN];
+        let mut scroll_top = 0.0f32;
+        while scroll_top <= full_total {
+            let top = scroll_top - POSTER_OVERSCAN;
+            let bottom = scroll_top + VIEWPORT + POSTER_OVERSCAN;
+            let mut materialized = 0usize;
+            for col in 0..POSTER_COLUMNS {
+                let (slots, total) = poster_column_layout(LEN, col, 0, top, bottom);
+                assert!((total - column_total(col)).abs() < 0.01);
+                for (idx, y, h) in slots {
+                    assert_eq!(idx % POSTER_COLUMNS, col);
+                    assert!(y + h >= top && y <= bottom);
+                    seen[idx] = true;
+                    materialized += 1;
+                }
+            }
+            assert!(
+                materialized > 0 && materialized < LEN / 2,
+                "scroll_top={scroll_top} materialized={materialized} must be bounded"
+            );
+            scroll_top += 512.0;
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "every queue slot must enter the window"
+        );
+    }
 
     #[test]
     fn kinetic_char_text_paired_allocation_bench() {
