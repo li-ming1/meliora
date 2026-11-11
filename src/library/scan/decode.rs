@@ -238,12 +238,12 @@ fn resolve_lyrics(
         SidecarLyrics::Absent => None,
         SidecarLyrics::Unknown | SidecarLyrics::Present => sidecar_lyrics_path(path)
             .and_then(|lrc_path| {
-                // 非 UTF-8 外部文本（GBK .lrc 在中文曲库常见）：lossy 转换而非
-                // 整文件拒读——M3U 侧车同款纪律（f309e4b9ec），拒读的后果是
-                // 歌词静默不入库且每次重扫重复失败；坏字节替换为 U+FFFD
+                // 非 UTF-8 外部文本（GBK .lrc 在中文曲库常见）：先试 UTF-8、再按
+                // GBK 解、最后 lossy 兜底——整文件拒读的后果是歌词静默不入库且
+                // 每次重扫重复失败
                 std::fs::read(lrc_path)
                     .ok()
-                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .map(|bytes| crate::media::text::decode_sidecar_text(&bytes))
             })
             .filter(|content| !content.trim().is_empty()),
     };
@@ -279,10 +279,9 @@ const THUMBNAIL_SIZE: u32 = 70;
 const RESIZED_JPEG_QUALITY: u8 = 70;
 
 fn process_source_image(image: SourceImage) -> anyhow::Result<(ProcessedImage, Vec<u8>)> {
-    let decoded = image::ImageReader::new(Cursor::new(image.bytes()))
-        .with_guessed_format()?
-        .decode()?
-        .into_rgb8();
+    let mut reader = image::ImageReader::new(Cursor::new(image.bytes())).with_guessed_format()?;
+    reader.limits(crate::media::image_decode_limits());
+    let decoded = reader.decode()?.into_rgb8();
 
     let thumb_rgb = imageops::thumbnail(&decoded, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
 

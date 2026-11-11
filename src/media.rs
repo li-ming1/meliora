@@ -35,6 +35,33 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "ogg", "oga", "aac", "flac", "wav", "mp3", "m4a", "aiff", "opus",
 ];
 
+/// 图像解码的维度上限（最长边）。4 倍于 4096 源档的余量，正常封面/背景/artwork
+/// 远达不到。
+const IMAGE_MAX_DIMENSION: u32 = 16384;
+/// 图像解码的分配上限。盖住 4096² RGBA（67MB）的 3.8 倍余量；`ImageReader` 默认
+/// 是 `no_limits`（vendor/image-trim/src/io/image_reader_type.rs:133），几十 KB
+/// 畸形 PNG 声称 65535² 会触发 ~17GB 分配直接 abort（panic=abort 下内存看门狗/
+/// 硬上限阀门全部失效）。
+const IMAGE_MAX_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+
+/// 不可信字节（CDN 封面、外挂 artwork、内嵌封面）的统一解码上限。
+/// `Limits` 是 `#[non_exhaustive]`，只能从默认值改字段。
+pub fn image_decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(IMAGE_MAX_DIMENSION);
+    limits.max_image_height = Some(IMAGE_MAX_DIMENSION);
+    limits.max_alloc = Some(IMAGE_MAX_ALLOC_BYTES);
+    limits
+}
+
+/// 带维度/分配上限的图像解码，语义同 `image::load_from_memory`；不可信字节的
+/// 解码入口一律走这里而不是裸 `load_from_memory`。
+pub fn decode_image_limited(data: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()?;
+    reader.limits(image_decode_limits());
+    reader.decode()
+}
+
 /// `path` 承载的是 HTTP(S) URL 而非文件系统位置。
 /// 无条件可用：队列元数据与可用性检查都会查它，与编译进哪个在线音源
 /// feature 无关。

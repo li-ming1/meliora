@@ -101,7 +101,7 @@ const STORED_THUMB_PX: u32 = 72;
 /// 解码 `data`，在转 RGBA 前先缩到最长边不超过 `bound` 的方形。在解码阶段缩放可让瞬态 RGBA
 /// 缓冲（以及任何持有它的东西）被 UI 实际绘制尺寸约束住。
 fn decode_to_render_image_scaled(data: &[u8], bound: u32) -> anyhow::Result<Arc<RenderImage>> {
-    let image = image::load_from_memory(data)?;
+    let image = crate::media::decode_image_limited(data)?;
     decode_rgba_to_render_image(dynamic_to_rgba_scaled(image, bound))
 }
 
@@ -866,10 +866,10 @@ impl ManagedImageKey {
                         // 注册表加一个解码器实例，每次切歌白折腾一遍堆。
 
                         let decoded = if let Ok(Some(data)) = stream.read_image() {
-                            Some(image::load_from_memory(&data)?)
+                            Some(crate::media::decode_image_limited(&data)?)
                         } else if let Some(cover_path) = find_art_file_for_path(&path) {
                             let data = std::fs::read(&*cover_path)?;
-                            Some(image::load_from_memory(&data)?)
+                            Some(crate::media::decode_image_limited(&data)?)
                         } else {
                             None
                         };
