@@ -218,6 +218,12 @@ impl Resampler {
         self.channels
     }
 
+    /// 目标（设备侧）采样率。管线重建后比对：设备率漂移时旧尾巴按旧率冲刷
+    /// 进新管线会变调，速率不符的尾巴必须弃掉。
+    pub fn target_rate(&self) -> u32 {
+        self.target_rate
+    }
+
     /// 重采样器的延迟，以输出帧计。
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn output_delay(&self) -> usize {

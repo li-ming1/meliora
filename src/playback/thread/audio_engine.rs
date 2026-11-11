@@ -835,6 +835,11 @@ impl AudioEngine {
         self.device.create_stream(channels).map(|_| ())?;
         self.rebuild_pipeline_if_device_format_drifted();
         self.sync_eq_format();
+        // 重建后的流必须显式 play：cpal 不会自动启动回调，而管线重建/同步期间
+        // 不该有回调来拉空 device_input，所以放在最后。漏掉它时表现为
+        // 「WriteTimeout 后重建收敛不了」的静音挂死——新流无回调 → 应用环恒满
+        // → 每周期再 WriteTimeout → 无限重建。play 对已在播的流幂等。
+        self.device.play()?;
         Ok(())
     }
 
@@ -1473,6 +1478,17 @@ impl AudioEngine {
         eq: &mut EqualizerProcessor,
         tap: &mut SpectrumTap,
     ) {
+        // 设备率在两曲间漂移（重建流格式漂移、系统切默认率）时，旧尾巴按旧
+        // target 率冲刷进新率管线会变调——只校验声道数不够，速率不符直接弃尾。
+        if old.target_rate() != p.target_rate {
+            warn!(
+                "dropping resampler tail: target sample rate changed ({} -> {})",
+                old.target_rate(),
+                p.target_rate
+            );
+            return;
+        }
+
         if old.channels() != p.source_channel_count {
             warn!(
                 "dropping resampler tail: channel count changed ({} -> {})",
