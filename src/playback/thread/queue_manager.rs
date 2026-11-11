@@ -1017,12 +1017,6 @@ impl QueueManager {
             *queue = kept;
         }
 
-        let mut removed_original_items: SmallVec<[(usize, QueueItemData); 1]> = SmallVec::new();
-        if self.shuffle {
-            removed_original_items =
-                Self::take_from_original_matching(&mut self.original_queue, &removed_queue_items);
-        }
-
         let current = self.queue_next.checked_sub(1);
         let removed_current = current.is_some_and(|c| indices.binary_search(&c).is_ok());
         let items_before_current = current
@@ -1030,6 +1024,14 @@ impl QueueManager {
             .unwrap_or(0);
         let post = Arc::clone(&queue);
         drop(queue);
+
+        // shuffle 回绕重建只碰 self.original_queue（self 独占字段，与写锁无关），
+        // 放锁外：这把写锁是 UI 队列面板/歌词面板每帧读取的同一把（见上）。
+        let mut removed_original_items: SmallVec<[(usize, QueueItemData); 1]> = SmallVec::new();
+        if self.shuffle {
+            removed_original_items =
+                Self::take_from_original_matching(&mut self.original_queue, &removed_queue_items);
+        }
 
         let res = if removed_current {
             let current = current.expect("removed_current implies current is Some");
