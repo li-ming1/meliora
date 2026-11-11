@@ -35,7 +35,7 @@ mod macos;
 mod windows;
 
 use cntp_i18n::tr;
-use gpui::{App, Entity, Window};
+use gpui::{AnyWindowHandle, App, Entity, Window};
 
 use crate::{
     media::metadata::Metadata,
@@ -235,10 +235,20 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-/// 关闭请求的统一决策（✕ 按钮与 OS 关闭都走这里）。返回 `false` = 吞掉
-/// 本次关闭（`on_window_should_close` 语义：阻止默认处理；显隐或 quit 都
-/// 由我们自己做）。
-///
+/// 键盘关闭入口：主窗收敛到 [`handle_close_request`] 同一决策（隐藏到托盘或
+/// 退出），与 ✕ / Alt+F4 同路径；次级窗无拦截语义直接移除。原先 Ctrl+W 直接
+/// `remove_window` 会绕过托盘决策真销毁主窗（close_to_tray 开启时）。
+pub fn close_for_shortcut(window: &mut Window, cx: &mut App) {
+    let is_main = crate::ui::app::find_main_window(cx).is_some_and(|handle| {
+        AnyWindowHandle::from(handle).window_id() == window.window_handle().window_id()
+    });
+    if is_main {
+        handle_close_request(window, cx);
+    } else {
+        window.remove_window();
+    }
+}
+
 /// `window` 是触发关闭的那个窗口，**必须直接用它显隐**：关闭流程进行中
 /// 再去 `find_main_window` + `entity.update` 不可靠（窗口可能已被平台移出
 /// `cx.windows()`，查找返回 None → 隐藏静默失效，表现为"点关闭没反应"）。

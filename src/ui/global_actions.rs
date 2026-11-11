@@ -140,8 +140,10 @@ fn close_window(_: &CloseWindow, cx: &mut App) {
             warn!("No active window to close");
             return;
         };
-        _ = cx.update_window(window_id, |_, window, _| {
-            window.remove_window();
+        _ = cx.update_window(window_id, |_, window, cx| {
+            // 主窗走托盘关闭决策（close_to_tray 隐藏/退出），与 ✕ / Alt+F4
+            // 收敛同一决策；直接 remove_window 会绕过它真销毁主窗。
+            crate::tray::close_for_shortcut(window, cx);
         })
     });
 }
