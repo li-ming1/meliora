@@ -43,6 +43,13 @@ async fn assign_track_art(
                 id
             }
         };
+        // 哈希无 artwork 行（如 retag 换上的损坏封面，解码失败只剩 hash）时
+        // 拿到 None：跳过而不是覆盖——bind NULL 会清空曲目现有封面，与
+        // finalize「NULL 覆盖会清空封面，保留现有」的策略相悖；缓存里的
+        // None 记忆化让同 pass 的其它专辑同样跳过。
+        let Some(desired) = desired else {
+            continue;
+        };
         changed += sqlx::query(include_str!(
             "../../../../queries/scan/assign_track_art_hash.sql"
         ))

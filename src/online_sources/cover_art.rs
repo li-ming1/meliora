@@ -111,7 +111,14 @@ pub async fn fetch_display_cover_bytes_capped(
                 }
                 return Ok(Some(bytes));
             }
-            Ok(None) => note_variant_miss(&rung),
+            Ok(None) => {
+                // 只有变体档入会话负缓存：原始 URL 档的 404 可能是 CDN 边缘
+                // 抖动（瞬态），拉黑它会让该封面整会话背景+圆盘全空白，仅
+                // 重启自愈。原始档持续 404 的代价只是每次解析多一发请求。
+                if rung != url {
+                    note_variant_miss(&rung);
+                }
+            }
             Err(error) => {
                 // 瞬态失败（超时/DNS/TLS）不该把这一档整个会话拉黑：只有「服务端说没有像素」
                 // （Ok(None)）才是真落空。
