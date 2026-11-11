@@ -71,7 +71,7 @@ pub async fn create_pool(path: impl AsRef<Path>) -> sqlx::Result<SqlitePool> {
                 if is_transient_pool_error(&error) && started.elapsed() < POOL_RETRY_WINDOW =>
             {
                 // 首个尝试与之后每 1s 留一行：窗口内最多 ~7 行，够定位又不刷屏。
-                if attempt == 1 || attempt % 10 == 0 {
+                if attempt == 1 || attempt.is_multiple_of(10) {
                     warn!(
                         attempt,
                         elapsed_ms = started.elapsed().as_millis() as u64,

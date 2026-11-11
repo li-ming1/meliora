@@ -32,7 +32,7 @@ fn backdrop_resize_threads(nheight: u32) -> usize {
     let available = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
-    available.min(nheight as usize).min(8).max(1)
+    available.min(nheight as usize).clamp(1, 8)
 }
 
 /// 沉浸页背景目标尺寸渲染（2026-09-29 第四版·清晰裁剪带）：解码全尺寸
