@@ -208,8 +208,10 @@ fn write_settings_file(
 ) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("json.tmp{tmp_tag}{generation}"));
     let bytes = serde_json::to_vec_pretty(snapshot)?;
+    // rename 前先 sync_all：断电时 NTFS 可能 rename 元数据已落而数据未刷，
+    // settings.json 会截断损坏（同 storage.rs / updater.rs 的原子写标准）。
     File::create(&tmp)
-        .and_then(|mut file| file.write_all(&bytes))
+        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
         .and_then(|()| fs::rename(&tmp, path))
         // 旧文件原样保留，只清理残留临时文件
         .inspect_err(|_| {
