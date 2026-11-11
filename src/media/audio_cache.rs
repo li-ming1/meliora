@@ -14,6 +14,8 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use url::Url;
 
+use super::download::STREAM_IO_TIMEOUT;
+
 /// 音频缓存目录名，位于 `%APPDATA%\meliora\data\audio_cache\`。
 const AUDIO_CACHE_DIR: &str = "audio_cache";
 
@@ -251,19 +253,28 @@ pub fn spawn_background_cache_task(
             return;
         }
 
-        // 使用共享客户端发起请求
-        let mut response = match crate::media::http_source::shared_http_client()
-            .get(url.clone())
-            .send()
-            .await
+        // 使用共享客户端发起请求；send/chunk 都包 STREAM_IO_TIMEOUT——停滞的
+        // CDN 连接会永久挂死任务，单槽 ACTIVE_DOWNLOAD 被占住到下次切歌 abort
+        //（与 download.rs / http_source.rs 的超时纪律一致）。
+        let mut response = match tokio::time::timeout(
+            STREAM_IO_TIMEOUT,
+            crate::media::http_source::shared_http_client()
+                .get(url.clone())
+                .send(),
+        )
+        .await
         {
-            Ok(resp) if resp.status().is_success() => resp,
-            Ok(resp) => {
+            Ok(Ok(resp)) if resp.status().is_success() => resp,
+            Ok(Ok(resp)) => {
                 debug!(status = %resp.status(), "Audio cache download rejected by server");
                 return;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 debug!(err = %e, "Audio cache download failed to connect");
+                return;
+            }
+            Err(_) => {
+                debug!("Audio cache download stalled: no response within {STREAM_IO_TIMEOUT:?}");
                 return;
             }
         };
@@ -280,28 +291,32 @@ pub fn spawn_background_cache_task(
         let mut total_written = 0u64;
 
         loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) => {
-                    // 下载途中关掉开关：立即停流并清掉半截文件，而不是把整曲拉完。
-                    if !audio_cache_enabled() {
-                        drop(writer);
-                        let _ = tokio::fs::remove_file(&tmp_path).await;
-                        return;
-                    }
-                    if let Err(e) = writer.write_all(&chunk).await {
-                        warn!("Audio cache write error: {e}");
-                        let _ = tokio::fs::remove_file(&tmp_path).await;
-                        return;
-                    }
-                    total_written += chunk.len() as u64;
-                }
-                Ok(None) => break,
-                Err(e) => {
+            let chunk = match tokio::time::timeout(STREAM_IO_TIMEOUT, response.chunk()).await {
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
                     warn!("Audio cache stream error: {e}");
                     let _ = tokio::fs::remove_file(&tmp_path).await;
                     return;
                 }
+                Err(_) => {
+                    warn!("Audio cache download stalled: no data for {STREAM_IO_TIMEOUT:?}");
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return;
+                }
+            };
+            // 下载途中关掉开关：立即停流并清掉半截文件，而不是把整曲拉完。
+            if !audio_cache_enabled() {
+                drop(writer);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return;
             }
+            if let Err(e) = writer.write_all(&chunk).await {
+                warn!("Audio cache write error: {e}");
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return;
+            }
+            total_written += chunk.len() as u64;
         }
 
         if let Err(e) = writer.flush().await {
