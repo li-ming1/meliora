@@ -34,9 +34,7 @@
 //!   降级，而不是静默把 256px 缩略图铺满整屏。
 
 use std::{
-    cell::Cell,
     path::PathBuf,
-    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -196,46 +194,16 @@ fn poster_content_height(queue_len: usize, current_pos: usize) -> f32 {
 ///
 /// 必须自己钳：`render` 早于 layout，gpui 的钳位（`Div::layout_scroll_offset`，
 /// div.rs 里的 `scroll_offset.y.clamp(-scroll_max, 0)`）要到 layout 才发生，
-/// 而句柄里的原始偏移可以越界——滚到底后继续滚（句柄继续累加）或滚过之后窗口
-/// 变高（全屏化把内容高/视口高的差压小）都会留下它。用未钳位的偏移算窗口，
-/// 那一帧算出的可见区比实际绘制位置更靠下，视口顶部就露出一条没被实体化的
-/// 空白带；滚动停下后若没有新的 notify，空白带会一直留在屏幕上
-/// （2026-11-10 实测：越界 ~865px，顶部落空带 ~225px，且恰好只吞掉首卡
-/// 高 180 的奇数列、留下高 210 的偶数列）。UniformGrid 在 prepaint 里做的是
-/// 同一件事（uniform_grid.rs「把 offset 保持在 [content_height - viewport, 0]
-/// 内」）。
+/// 而句柄里的原始偏移可以越界——滚到底后继续滚（句柄在两帧之间继续累加）。
+/// 用未钳位的偏移算窗口，那一帧的可见区比 paint 实际位置更靠下，顶部门限
+/// 就会漏卡。此处钳位公式与 gpui 的 layout 钳位完全一致（内容高口径见
+/// [`poster_content_height`]），2026-11-11 会话级实证：~100 个采样（含底部
+/// 越界 -1066）render 与 paint 偏移逐帧相等。UniformGrid 在 prepaint 里做
+/// 的是同一件事（uniform_grid.rs「把 offset 保持在 [content_height - viewport,
+/// 0] 内」）。
 fn poster_scroll_top(handle_offset_y: f32, content_height: f32, viewport_height: f32) -> f32 {
     let max_scroll = (content_height - viewport_height).max(0.0);
     (-handle_offset_y).max(0.0).min(max_scroll)
-}
-
-/// render↔paint 滚动偏移探针（2026-11-11 诊断）。render 用句柄里的原始偏移
-/// 算窗口化，而 gpui 要到 layout 阶段才把偏移钳进 `[0, 内容高-视口]` 并据此
-/// 绘制——两侧可能错位，且滚动停止后没有后续帧自愈，空洞就留在屏幕上。
-/// 探针随海报墙内容放一个 canvas：它的 prepaint 在容器的钳位**之后**执行，
-/// 读到的句柄偏移就是本帧 paint 实际使用的值。与 render 用的值比对：
-/// 错位时打 `[poster]` 日志并 notify 一帧按真实偏移重算（自愈）；
-/// 数值不变后静默，防止 max 口径分歧时陷入每帧 notify 死循环。
-struct PosterScrollProbe {
-    /// 本帧 render 用于窗口计算的 scroll_top。
-    render_top: Cell<f32>,
-    /// 上一次自愈时的 `(render_top 桶, 偏差桶)`；相同则不再 notify。
-    healed: Cell<(i32, i32)>,
-    /// 上一次日志的桶，抑制重复行。
-    logged: Cell<(i32, i32)>,
-}
-
-/// 自愈判定：偏差超过 1px 且 `(render_top 桶, 偏差桶)` 与上次自愈不同才给
-/// 出新桶。桶宽 48px——同一数值的重复偏差不重复自愈，偏差演进时逐帧跟进。
-fn poster_scroll_should_heal(
-    render_top: f32,
-    paint_top: f32,
-    last_healed: (i32, i32),
-) -> Option<(i32, i32)> {
-    let bucket = |v: f32| (v / 48.0) as i32;
-    let diff = paint_top - render_top;
-    let key = (bucket(render_top), bucket(diff));
-    (diff.abs() > 1.0 && key != last_healed).then_some(key)
 }
 
 pub struct ImmersiveView {
@@ -245,8 +213,6 @@ pub struct ImmersiveView {
     /// 沉浸模式下的舞台展示形态：Classic（经典双栏）、PosterWall（瀑布流海报墙）、KineticLyrics（随意跳动巨幕歌词）。
     stage_mode: ImmersiveStageMode,
     poster_wall_scroll: ScrollHandle,
-    /// render↔paint 滚动偏移探针（见 [`PosterScrollProbe`]）。
-    poster_scroll_probe: Rc<PosterScrollProbe>,
     /// 右侧中控卡片是否折叠收起。
     /// 鼠标是否靠近/悬停在右侧中控区（实现靠边自动显现、移开自动消失）
     console_hovered: bool,
@@ -464,11 +430,6 @@ impl ImmersiveView {
                 active: *immersive_flag.read(cx),
                 stage_mode: ImmersiveStageMode::PosterWall,
                 poster_wall_scroll: ScrollHandle::new(),
-                poster_scroll_probe: Rc::new(PosterScrollProbe {
-                    render_top: Cell::new(0.0),
-                    healed: Cell::new((i32::MIN, i32::MIN)),
-                    logged: Cell::new((i32::MIN, i32::MIN)),
-                }),
                 console_hovered: false,
                 position: info.position.clone(),
                 duration: info.duration.clone(),
@@ -1068,21 +1029,18 @@ impl ImmersiveView {
         let raw_offset_y = self.poster_wall_scroll.offset().y.as_f32();
         let content_height = poster_content_height(queue_len, current_pos);
         let scroll_top = poster_scroll_top(raw_offset_y, content_height, viewport_height);
-        self.poster_scroll_probe.render_top.set(scroll_top);
         let window_top = scroll_top - POSTER_OVERSCAN;
         let window_bottom = scroll_top + viewport_height.max(1.0) + POSTER_OVERSCAN;
         let poster_thumb = poster_thumb_size(viewport_width_device);
 
         let mut column_cards: [Vec<AnyElement>; POSTER_COLUMNS] = Default::default();
         let mut column_heights = [0.0f32; POSTER_COLUMNS];
-        let mut materialized = 0usize;
 
         for (col_idx, column) in column_cards.iter_mut().enumerate() {
             let (slots, column_height) =
                 poster_column_layout(queue_len, col_idx, current_pos, window_top, window_bottom);
             column_heights[col_idx] = column_height;
             for (idx, y, h) in slots {
-                materialized += 1;
                 let is_playing_track = idx == current_pos;
                 let item = { self.queue.read(cx).data.read_recovered().get(idx).cloned() };
                 if let Some(item) = item {
@@ -1232,50 +1190,6 @@ impl ImmersiveView {
             })
             .collect();
 
-        // render↔paint 偏移探针（见 [`PosterScrollProbe`]）：canvas 的 prepaint
-        // 在滚动容器钳位之后执行，读到的就是 paint 实际使用的偏移。
-        let probe = self.poster_scroll_probe.clone();
-        let scroll_handle = self.poster_wall_scroll.clone();
-        let entity_id = cx.entity().entity_id();
-        let (probe_raw, probe_content, probe_viewport, probe_queue, probe_pos, probe_cards) = (
-            raw_offset_y,
-            content_height,
-            viewport_height,
-            queue_len,
-            current_pos,
-            materialized,
-        );
-        let probe_canvas = canvas(
-            move |_, _, cx| {
-                let paint_top = (-scroll_handle.offset().y.as_f32()).max(0.0);
-                let render_top = probe.render_top.get();
-                let diff = paint_top - render_top;
-                let bucket = |v: f32| (v / 48.0) as i32;
-                let key = (bucket(render_top), bucket(diff));
-                if key != probe.logged.get() {
-                    probe.logged.set(key);
-                    tracing::info!(
-                        target: "poster",
-                        "scroll render_top={render_top:.0} paint_top={paint_top:.0} \
-                         diff={diff:.0} raw={probe_raw:.0} content={probe_content:.0} \
-                         viewport={probe_viewport:.0} queue_len={probe_queue} \
-                         pos={probe_pos} cards={probe_cards}"
-                    );
-                }
-                if let Some(healed) = poster_scroll_should_heal(render_top, paint_top, probe.healed.get())
-                {
-                    probe.healed.set(healed);
-                    tracing::warn!(
-                        target: "poster",
-                        "scroll divergence self-heal render_top={render_top:.0} paint_top={paint_top:.0}"
-                    );
-                    cx.notify(entity_id);
-                }
-            },
-            |_, _, _, _| {},
-        )
-        .absolute();
-
         div()
             .id("stage-poster-wall")
             .size_full()
@@ -1291,8 +1205,7 @@ impl ImmersiveView {
                     .flex_row()
                     .justify_between()
                     .gap(px(14.0))
-                    .children(masonry_cols)
-                    .child(probe_canvas),
+                    .children(masonry_cols),
             )
             .into_any_element()
     }
@@ -2390,17 +2303,6 @@ mod tests {
             }
         }
         assert!(missing > 0, "越界偏移本应漏掉视口内的卡片，测试失去意义");
-    }
-
-    /// 自愈判定：首次大偏差触发一次；同一数值重复出现不再触发（防死循环）；
-    /// 收敛（|diff|≤1px）永不触发；偏差演进后再次触发。
-    #[test]
-    fn poster_scroll_probe_heals_once_per_divergence() {
-        let none = (i32::MIN, i32::MIN);
-        let first = poster_scroll_should_heal(1000.0, 500.0, none).unwrap();
-        assert_eq!(poster_scroll_should_heal(1000.0, 500.0, first), None);
-        assert_eq!(poster_scroll_should_heal(500.0, 500.0, first), None);
-        assert!(poster_scroll_should_heal(2000.0, 500.0, first).is_some());
     }
 
     /// 海报墙窗口化的三条不变量：任意滚动位置只实体化近邻卡片（内存上界）、
