@@ -311,9 +311,10 @@ pub struct ImmersiveView {
     backdrop_pending_arm: bool,
     /// crossfade 起点；`None` 表示没有过渡在进行。
     backdrop_fade_started: Option<Instant>,
-    /// 背景解码任务（未 detach：切歌/退出即取消；从未显示的背景不进
-    /// 回收漏斗，零队列成本）。
-    backdrop_task: Option<Task<()>>,
+    /// 背景解码任务及其布防键（未 detach：切歌/退出即取消；从未显示的
+    /// 背景不进回收漏斗，零队列成本）。键随任务原子绑定，供同键在途
+    /// 守卫判别"这条管线是为哪首歌布防的"。
+    backdrop_task: Option<(ManagedImageKey, Task<()>)>,
     /// 已预取的下一首封面记忆 `(键, 目标宽, 目标高)`：同键同尺寸只预取
     /// 一次，重复 resolve / activate 直接跳过。
     prefetched_art: Option<(ManagedImageKey, u32, u32)>,
@@ -806,6 +807,19 @@ impl ImmersiveView {
         if self.backdrop_key == key && key.is_some() {
             return; // 已在显示
         }
+        // 同键管线在途：等它晋升，绝不重付一次解码。2026-11-10 实测从最
+        // 大化窗口进入沉浸时视口 1020→1080 跳变，resolve 恰落在"解码完
+        // 成→晋升"的窗口里，取消刚解码完的任务、再按新目标重付整条管线
+        // （~25MB 瞬态 + ~1s CPU，各带一套图集纹理）。在途图晋升后按其
+        // 自己的目标尺寸绘制，GPU 双线性拉伸几个百分点即可接受。
+        if key.is_some()
+            && self
+                .backdrop_task
+                .as_ref()
+                .is_some_and(|(armed, _)| Some(armed) == key.as_ref())
+        {
+            return;
+        }
         // 未 detach 的 Task 在替换/置空时即取消（equalizer 防抖同款语义）。
         self.backdrop_task = None;
         let Some(key) = key else {
@@ -816,98 +830,102 @@ impl ImmersiveView {
             return;
         };
         let pool = cx.global::<Pool>().0.clone();
-        self.backdrop_task = Some(cx.spawn(async move |this, cx| {
-            let mut render_misses = 0u32;
-            loop {
-                // 缓存命中（预取/回跳）不产生新解码，直接绕过背压阀门：
-                // 连跳时阀门按 1s/套排水（2026-11-04 决议），不能把已经渲
-                // 染好的下一首也拖住（"换了歌还是之前的图"的主因）。
-                let cached = backdrop_cache_contains(&key, target_w, target_h);
-                if !cached && !backdrop_decode_allowed() {
-                    cx.background_executor().timer(BACKDROP_RETRY).await;
-                    let still = this
-                        .update(cx, |this, _| this.is_showing(&key))
-                        .unwrap_or(false);
-                    if !still {
-                        return;
-                    }
-                    continue;
-                }
-                let decoded = crate::RUNTIME
-                    .spawn({
-                        let key = key.clone();
-                        let pool = pool.clone();
-                        // 解码 bound 给目标长边 25% 余量：KuGou 2048 源不被
-                        // 压缩（2048 < 2400），超大本地图先 box 压到界内，
-                        // 之后只做一次 Lanczos 裁剪重采样。
-                        let bound = (target_w.max(target_h) * 5 / 4).clamp(2048, 3200);
-                        async move {
-                            key.retrieve(
-                                pool,
-                                bound,
-                                ImageCacheMode::Backdrop(Some((target_w, target_h))),
-                            )
-                            .await
-                            .ok()
-                            .flatten()
+        let armed_key = key.clone();
+        self.backdrop_task = Some((
+            armed_key,
+            cx.spawn(async move |this, cx| {
+                let mut render_misses = 0u32;
+                loop {
+                    // 缓存命中（预取/回跳）不产生新解码，直接绕过背压阀门：
+                    // 连跳时阀门按 1s/套排水（2026-11-04 决议），不能把已经渲
+                    // 染好的下一首也拖住（"换了歌还是之前的图"的主因）。
+                    let cached = backdrop_cache_contains(&key, target_w, target_h);
+                    if !cached && !backdrop_decode_allowed() {
+                        cx.background_executor().timer(BACKDROP_RETRY).await;
+                        let still = this
+                            .update(cx, |this, _| this.is_showing(&key))
+                            .unwrap_or(false);
+                        if !still {
+                            return;
                         }
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-                // 解码/渲染失败（网络抖动、临时离线）：有限次退避重试，
-                // 期间旧背景保持绘制；曲目已变则放弃（成果留缓存）。
-                // 不重试会让旧图一直挂到下一次手动操作。像素本身由背景
-                // 缓存持有，晋升时元素按同键取回，这里只做存在性检查。
-                let Some(_) = decoded else {
-                    render_misses += 1;
-                    if render_misses > 3 {
-                        return;
+                        continue;
                     }
-                    cx.background_executor().timer(BACKDROP_RETRY).await;
-                    let still = this
+                    let decoded = crate::RUNTIME
+                        .spawn({
+                            let key = key.clone();
+                            let pool = pool.clone();
+                            // 解码 bound 给目标长边 25% 余量：KuGou 2048 源不被
+                            // 压缩（2048 < 2400），超大本地图先 box 压到界内，
+                            // 之后只做一次 Lanczos 裁剪重采样。
+                            let bound = (target_w.max(target_h) * 5 / 4).clamp(2048, 3200);
+                            async move {
+                                key.retrieve(
+                                    pool,
+                                    bound,
+                                    ImageCacheMode::Backdrop(Some((target_w, target_h))),
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                            }
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                    // 解码/渲染失败（网络抖动、临时离线）：有限次退避重试，
+                    // 期间旧背景保持绘制；曲目已变则放弃（成果留缓存）。
+                    // 不重试会让旧图一直挂到下一次手动操作。像素本身由背景
+                    // 缓存持有，晋升时元素按同键取回，这里只做存在性检查。
+                    let Some(_) = decoded else {
+                        render_misses += 1;
+                        if render_misses > 3 {
+                            return;
+                        }
+                        cx.background_executor().timer(BACKDROP_RETRY).await;
+                        let still = this
+                            .update(cx, |this, _| this.is_showing(&key))
+                            .unwrap_or(false);
+                        if !still {
+                            return;
+                        }
+                        continue;
+                    };
+                    // 解码完成：曲目已又变则放弃晋升（成果留在背景缓存里，
+                    // 回跳零成本）。
+                    let promote = this
                         .update(cx, |this, _| this.is_showing(&key))
                         .unwrap_or(false);
-                    if !still {
+                    if !promote {
                         return;
                     }
-                    continue;
-                };
-                // 解码完成：曲目已又变则放弃晋升（成果留在背景缓存里，
-                // 回跳零成本）。
-                let promote = this
-                    .update(cx, |this, _| this.is_showing(&key))
-                    .unwrap_or(false);
-                if !promote {
+                    this.update(cx, |this, cx| {
+                        if this.image_key.as_ref() != Some(&key) {
+                            return;
+                        }
+                        let reduced_motion = reduced_motion_enabled(cx);
+                        // 新图进入空闲槽（槽位翻转），旧图原地留作淡出层——
+                        // 元素 id 与祖先路径全程不变，keyed state 不重建、不
+                        // 重解码。被覆盖的槽若有残留（上一次过渡被打断的图），
+                        // 其元素就地卸载进回收漏斗。reduced_motion 硬切。
+                        let incoming = 1 - this.backdrop_active;
+                        this.backdrop_active = incoming;
+                        if reduced_motion {
+                            this.backdrop_layers[1 - incoming] = None;
+                            this.backdrop_fade_started = None;
+                        } else {
+                            this.backdrop_fade_started = Some(Instant::now());
+                        }
+                        this.backdrop_gen += 1;
+                        this.backdrop_layers[incoming] =
+                            Some((key.clone(), this.backdrop_gen, (target_w, target_h)));
+                        this.backdrop_key = Some(key);
+                        cx.notify();
+                    })
+                    .ok();
                     return;
                 }
-                this.update(cx, |this, cx| {
-                    if this.image_key.as_ref() != Some(&key) {
-                        return;
-                    }
-                    let reduced_motion = reduced_motion_enabled(cx);
-                    // 新图进入空闲槽（槽位翻转），旧图原地留作淡出层——
-                    // 元素 id 与祖先路径全程不变，keyed state 不重建、不
-                    // 重解码。被覆盖的槽若有残留（上一次过渡被打断的图），
-                    // 其元素就地卸载进回收漏斗。reduced_motion 硬切。
-                    let incoming = 1 - this.backdrop_active;
-                    this.backdrop_active = incoming;
-                    if reduced_motion {
-                        this.backdrop_layers[1 - incoming] = None;
-                        this.backdrop_fade_started = None;
-                    } else {
-                        this.backdrop_fade_started = Some(Instant::now());
-                    }
-                    this.backdrop_gen += 1;
-                    this.backdrop_layers[incoming] =
-                        Some((key.clone(), this.backdrop_gen, (target_w, target_h)));
-                    this.backdrop_key = Some(key);
-                    cx.notify();
-                })
-                .ok();
-                return;
-            }
-        }));
+            }),
+        ));
     }
 
     /// 渲染一个背景槽位图层：显式 id 让元素祖先路径跨帧稳定（槽位是否
