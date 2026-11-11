@@ -1036,141 +1036,145 @@ impl ImmersiveView {
         let mut column_cards: [Vec<AnyElement>; POSTER_COLUMNS] = Default::default();
         let mut column_heights = [0.0f32; POSTER_COLUMNS];
 
+        // 整墙快照一次：循环内逐卡 `read` + 深拷的话，滚动时每帧 30-60 张可见卡
+        // 各付一次锁与堆分配；这里克隆的只是外层 Arc。
+        let queue_items = self.queue.read(cx).data.read_recovered().clone();
+
         for (col_idx, column) in column_cards.iter_mut().enumerate() {
             let (slots, column_height) =
                 poster_column_layout(queue_len, col_idx, current_pos, window_top, window_bottom);
             column_heights[col_idx] = column_height;
             for (idx, y, h) in slots {
                 let is_playing_track = idx == current_pos;
-                let item = { self.queue.read(cx).data.read_recovered().get(idx).cloned() };
-                if let Some(item) = item {
-                    let ui_data = queue_metadata::queue_ui_data(cx, &item).read(cx).clone();
-                    let title = ui_data
-                        .as_ref()
-                        .and_then(|u| u.name.clone())
-                        .unwrap_or_else(|| SharedString::from(format!("Track #{}", idx + 1)));
-                    let artist = ui_data
-                        .as_ref()
-                        .and_then(|u| u.artist_name.clone())
-                        .unwrap_or_default();
-                    #[cfg(feature = "online_sources")]
-                    let cover_key = ui_data
-                        .and_then(|u| u.cover_url)
-                        .filter(|u| !u.is_empty())
-                        .map(ManagedImageKey::HttpCover)
-                        .unwrap_or_else(|| ManagedImageKey::track_file(item.get_path()));
-                    // 无在线音源时 `HttpCover` 变体不存在，封面只能按本地曲目路径取。
-                    #[cfg(not(feature = "online_sources"))]
-                    let cover_key = ManagedImageKey::track_file(item.get_path());
+                let Some(item) = queue_items.get(idx) else {
+                    continue;
+                };
+                let ui_data = queue_metadata::queue_ui_data(cx, item).read(cx).clone();
+                let title = ui_data
+                    .as_ref()
+                    .and_then(|u| u.name.clone())
+                    .unwrap_or_else(|| SharedString::from(format!("Track #{}", idx + 1)));
+                let artist = ui_data
+                    .as_ref()
+                    .and_then(|u| u.artist_name.clone())
+                    .unwrap_or_default();
+                #[cfg(feature = "online_sources")]
+                let cover_key = ui_data
+                    .and_then(|u| u.cover_url)
+                    .filter(|u| !u.is_empty())
+                    .map(ManagedImageKey::HttpCover)
+                    .unwrap_or_else(|| ManagedImageKey::track_file(item.get_path()));
+                // 无在线音源时 `HttpCover` 变体不存在，封面只能按本地曲目路径取。
+                #[cfg(not(feature = "online_sources"))]
+                let cover_key = ManagedImageKey::track_file(item.get_path());
 
-                    column.push(
-                        div()
-                            .id(("poster_tile", idx))
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px(y))
-                            .h(px(h))
-                            .rounded(px(16.0))
-                            .shadow_lg()
-                            .border_1()
-                            .border_color(if is_playing_track {
-                                theme.button_primary_border
-                            } else {
-                                Rgba::new(1.0, 1.0, 1.0, 0.12)
-                            })
-                            .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
-                            .overflow_hidden()
-                            // 这里绝不能再链 .relative()：两者都写 style.position，
-                            // 后者覆盖前者——2026-11-11 实测卡片因此退回流式布局，
-                            // top(y) 变成相对偏移，整墙下坠出黑带且尾部卡片滚不到。
-                            // absolute 本身就是内部标签层（absolute bottom_0）的
-                            // 定位锚，不需要 relative。
-                            .cursor_pointer()
-                            .hover(|s| s.border_color(theme.button_primary))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.global::<PlaybackInterface>().jump(idx);
-                                this.stage_mode = ImmersiveStageMode::KineticLyrics;
-                                this.sync_spectrum_viewers();
-                                cx.notify();
-                            }))
-                            .child(
-                                managed_image(("poster_img", idx), cover_key)
-                                    .thumb_max(poster_thumb)
-                                    .size_full()
-                                    .object_fit(ObjectFit::Cover),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .right_0()
-                                    .bottom_0()
-                                    .pt(px(28.0))
-                                    .pb(px(10.0))
-                                    .px(px(12.0))
-                                    .bg(linear_gradient(
-                                        0.0,
-                                        linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.90), 0.0),
-                                        linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
-                                    ))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .when(is_playing_track, |d| {
-                                        d.child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(6.0))
-                                                .child(
-                                                    div()
-                                                        .size(px(6.0))
-                                                        .rounded_full()
-                                                        .bg(theme.button_primary),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(10.0))
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .text_color(theme.button_primary)
-                                                        .child("NOW PLAYING"),
-                                                ),
-                                        )
-                                    })
-                                    .child(
+                column.push(
+                    div()
+                        .id(("poster_tile", idx))
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(y))
+                        .h(px(h))
+                        .rounded(px(16.0))
+                        .shadow_lg()
+                        .border_1()
+                        .border_color(if is_playing_track {
+                            theme.button_primary_border
+                        } else {
+                            Rgba::new(1.0, 1.0, 1.0, 0.12)
+                        })
+                        .bg(Rgba::new(0.08, 0.09, 0.12, 0.85))
+                        .overflow_hidden()
+                        // 这里绝不能再链 .relative()：两者都写 style.position，
+                        // 后者覆盖前者——2026-11-11 实测卡片因此退回流式布局，
+                        // top(y) 变成相对偏移，整墙下坠出黑带且尾部卡片滚不到。
+                        // absolute 本身就是内部标签层（absolute bottom_0）的
+                        // 定位锚，不需要 relative。
+                        .cursor_pointer()
+                        .hover(|s| s.border_color(theme.button_primary))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.global::<PlaybackInterface>().jump(idx);
+                            this.stage_mode = ImmersiveStageMode::KineticLyrics;
+                            this.sync_spectrum_viewers();
+                            cx.notify();
+                        }))
+                        .child(
+                            managed_image(("poster_img", idx), cover_key)
+                                .thumb_max(poster_thumb)
+                                .size_full()
+                                .object_fit(ObjectFit::Cover),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .pt(px(28.0))
+                                .pb(px(10.0))
+                                .px(px(12.0))
+                                .bg(linear_gradient(
+                                    0.0,
+                                    linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.90), 0.0),
+                                    linear_color_stop(Rgba::new(0.0, 0.0, 0.0, 0.0), 1.0),
+                                ))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .when(is_playing_track, |d| {
+                                    d.child(
                                         div()
-                                            .text_size(if is_playing_track {
-                                                px(15.0)
-                                            } else {
-                                                px(12.0)
-                                            })
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
-                                            .truncate()
-                                            .child(title),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                div()
+                                                    .size(px(6.0))
+                                                    .rounded_full()
+                                                    .bg(theme.button_primary),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(theme.button_primary)
+                                                    .child("NOW PLAYING"),
+                                            ),
                                     )
-                                    .child(
+                                })
+                                .child(
+                                    div()
+                                        .text_size(if is_playing_track {
+                                            px(15.0)
+                                        } else {
+                                            px(12.0)
+                                        })
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(Rgba::new(1.0, 1.0, 1.0, 0.95))
+                                        .truncate()
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                        .truncate()
+                                        .child(artist),
+                                )
+                                .when(is_playing_track && !current_lyric.is_empty(), |d| {
+                                    d.child(
                                         div()
-                                            .text_size(px(10.0))
-                                            .text_color(Rgba::new(1.0, 1.0, 1.0, 0.60))
+                                            .mt(px(4.0))
+                                            .text_size(px(11.0))
+                                            .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
                                             .truncate()
-                                            .child(artist),
+                                            .child(current_lyric.clone()),
                                     )
-                                    .when(is_playing_track && !current_lyric.is_empty(), |d| {
-                                        d.child(
-                                            div()
-                                                .mt(px(4.0))
-                                                .text_size(px(11.0))
-                                                .text_color(Rgba::new(1.0, 0.85, 0.42, 0.95))
-                                                .truncate()
-                                                .child(current_lyric.clone()),
-                                        )
-                                    }),
-                            )
-                            .into_any_element(),
-                    );
-                }
+                                }),
+                        )
+                        .into_any_element(),
+                );
             }
         }
 
