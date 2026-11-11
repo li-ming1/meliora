@@ -1147,6 +1147,7 @@ impl Render for HoursChart {
 
 impl Render for StatsSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render = crate::tally_render(crate::RenderedView::Stats);
         let theme = cx.global::<Theme>().clone();
 
         if self.loaded && !self.has_data {

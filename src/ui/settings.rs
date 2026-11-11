@@ -183,6 +183,35 @@ impl SettingsSectionKind {
         }
     }
 
+    /// `[frame] section=` 字段用的稳定序号（与 [`SETTINGS_ACTIVE_SECTION_INDEX`]
+    /// 的取值口径一致；kugou 缺席时 5 号空缺，不重排后续分区）。
+    fn index(self) -> u8 {
+        match self {
+            Self::Interface => 0,
+            Self::Library => 1,
+            Self::Playback => 2,
+            Self::Equalizer => 3,
+            Self::Stats => 4,
+            #[cfg(feature = "kugou")]
+            Self::Kugou => 5,
+            Self::About => 6,
+        }
+    }
+
+    fn from_index(index: u8) -> Option<Self> {
+        match index {
+            0 => Some(Self::Interface),
+            1 => Some(Self::Library),
+            2 => Some(Self::Playback),
+            3 => Some(Self::Equalizer),
+            4 => Some(Self::Stats),
+            #[cfg(feature = "kugou")]
+            5 => Some(Self::Kugou),
+            6 => Some(Self::About),
+            _ => None,
+        }
+    }
+
     // 在竖直方向填满内容区、而不是滚动的那些分区
     fn fills_height(self) -> bool {
         matches!(self, Self::Equalizer)
@@ -199,6 +228,20 @@ enum SettingsSection {
     #[cfg(feature = "kugou")]
     Kugou(Entity<KugouSettings>),
     About(Entity<AboutSettings>),
+}
+
+/// 当前激活的设置分区序号：`[frame] periodic win=settings` 行 `section=`
+/// 字段的数据源。设置窗一次只渲染一个分区，窗口级 draw 成本落在哪个分区
+/// 上靠这个字段归因（2026-11-11 分页帧归因探针）。多窗并存时以后开/后切
+/// 者为准；窗关闭后值保持，但该窗不再产帧、不会被读到。
+static SETTINGS_ACTIVE_SECTION_INDEX: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+/// 供 main.rs 的 `[frame]` 探针读取：当前激活分区的稳定 id（interface /
+/// library / playback / equalizer / stats / kugou / about）。
+pub(crate) fn settings_active_section_label() -> &'static str {
+    let index = SETTINGS_ACTIVE_SECTION_INDEX.load(std::sync::atomic::Ordering::Relaxed);
+    SettingsSectionKind::from_index(index).map_or("closed", |kind| kind.id())
 }
 
 impl SettingsSection {
@@ -254,6 +297,10 @@ impl SettingsWindow {
     fn new(initial_section: SettingsSectionKind, cx: &mut App) -> gpui::Entity<Self> {
         let focus_handle = cx.focus_handle();
         let active = SettingsSection::new(initial_section, cx);
+        SETTINGS_ACTIVE_SECTION_INDEX.store(
+            initial_section.index(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         cx.new(|_| Self {
             active,
             scroll_handle: ScrollHandle::new(),
@@ -268,7 +315,16 @@ impl SettingsWindow {
             return;
         }
 
+        let from = self.active.kind();
         self.active = SettingsSection::new(section, cx);
+        SETTINGS_ACTIVE_SECTION_INDEX.store(section.index(), std::sync::atomic::Ordering::Relaxed);
+        // 分页帧归因的关联锚点：30s 聚合窗若跨了切换，靠这行把每段 draw
+        // 成本对回当时的分区。
+        tracing::info!(
+            from = from.id(),
+            to = section.id(),
+            "settings section switch"
+        );
         self.scroll_handle.scroll_to_top_of_item(0);
         cx.notify();
 

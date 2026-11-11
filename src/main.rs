@@ -492,10 +492,11 @@ pub enum RenderedView {
     DesktopLyrics,
     Search,
     Equalizer,
+    Stats,
 }
 
 impl RenderedView {
-    const LABELS: [&'static str; 18] = [
+    const LABELS: [&'static str; 19] = [
         "main",
         "library",
         "sidebar",
@@ -514,10 +515,11 @@ impl RenderedView {
         "desk-lyrics",
         "search",
         "eq",
+        "stats",
     ];
 }
 
-const _: () = assert!(RenderedView::Equalizer as usize + 1 == RenderedView::LABELS.len());
+const _: () = assert!(RenderedView::Stats as usize + 1 == RenderedView::LABELS.len());
 
 static RENDER_TALLY: [std::sync::atomic::AtomicU64; RenderedView::LABELS.len()] =
     [const { std::sync::atomic::AtomicU64::new(0) }; RenderedView::LABELS.len()];
@@ -678,21 +680,43 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
             })
             .unwrap_or(0);
         let occluded_gap = dirty_to_draw_max_us > SLOW_DRAW_GAP_US && frames_in_gap == 0;
-        tracing::info!(
-            win = %win,
-            frames = n,
-            draw_p50_us = draws_us[n / 2],
-            draw_p99_us = draws_us[((n * 99) / 100).min(n - 1)],
-            draw_max_us = draws_us[n - 1],
-            over_8ms = over(8_000),
-            over_16ms = over(16_000),
-            over_33ms = over(33_000),
-            dirty_to_draw_max_us,
-            frames_in_gap,
-            invalidations_max,
-            occluded_gap,
-            "[frame] periodic"
-        );
+        // 设置窗的分页归因：窗口级 draw 成本落在哪个分区，由设置窗维护的
+        // 激活分区序号回答（一次只渲染一个分区，见 settings.rs 的
+        // SETTINGS_ACTIVE_SECTION_INDEX）。其余窗口没有该维度，不输出字段。
+        if win == "settings" {
+            tracing::info!(
+                win = %win,
+                section = crate::ui::settings::settings_active_section_label(),
+                frames = n,
+                draw_p50_us = draws_us[n / 2],
+                draw_p99_us = draws_us[((n * 99) / 100).min(n - 1)],
+                draw_max_us = draws_us[n - 1],
+                over_8ms = over(8_000),
+                over_16ms = over(16_000),
+                over_33ms = over(33_000),
+                dirty_to_draw_max_us,
+                frames_in_gap,
+                invalidations_max,
+                occluded_gap,
+                "[frame] periodic"
+            );
+        } else {
+            tracing::info!(
+                win = %win,
+                frames = n,
+                draw_p50_us = draws_us[n / 2],
+                draw_p99_us = draws_us[((n * 99) / 100).min(n - 1)],
+                draw_max_us = draws_us[n - 1],
+                over_8ms = over(8_000),
+                over_16ms = over(16_000),
+                over_33ms = over(33_000),
+                dirty_to_draw_max_us,
+                frames_in_gap,
+                invalidations_max,
+                occluded_gap,
+                "[frame] periodic"
+            );
+        }
     }
 
     // 登记过、本窗口内零帧的标签：显式 frames=0，按标签排序保持日志可读顺序。
