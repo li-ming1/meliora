@@ -4352,6 +4352,7 @@ dependencies = [
  "directories",
  "dotenvy",
  "embed-resource",
+ "encoding_rs",
  "file-rotate",
  "flate2",
  "futures",

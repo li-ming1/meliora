@@ -24,25 +24,31 @@ pub struct LrcLine {
     pub words: Vec<LrcWord>,
 }
 
-/// 解析形如 `mm:ss.xx` 或 `mm:ss.xxx` 的 LRC 时间标签。
+/// 解析形如 `mm:ss.xx` / `mm:ss.xxx`，以及旧版 LRC 常见的无小数秒 `mm:ss`
+/// 的时间标签（无小数部分按 0ms 接受——曾因整行被拒导致整首降级纯文本）。
 /// 返回毫秒时间；格式非法时返回 `None`。
 fn parse_time_tag(tag: &str) -> Option<u64> {
-    let colon = tag.find(':')?;
-    let minutes: u64 = tag[..colon].trim().parse().ok()?;
-    let after_colon = &tag[colon + 1..];
-    let dot = after_colon.find('.')?;
-    let seconds: u64 = after_colon[..dot].trim().parse().ok()?;
-    let frac_str = after_colon[dot + 1..].trim();
+    let (minutes_str, after_colon) = tag.split_once(':')?;
+    let minutes: u64 = minutes_str.trim().parse().ok()?;
+    let (seconds_str, frac_str) = after_colon.split_once('.').unwrap_or((after_colon, ""));
+    let seconds: u64 = seconds_str.trim().parse().ok()?;
 
     // 归一化成毫秒
     let frac_ms = match frac_str.len() {
+        0 => 0,
         1 => frac_str.parse::<u64>().ok()? * 100,
         2 => frac_str.parse::<u64>().ok()? * 10,
         3 => frac_str.parse::<u64>().ok()?,
         _ => return None,
     };
 
-    Some(minutes * 60_000 + seconds * 1_000 + frac_ms)
+    // 畸形大数值在 release 下会回绕出错误时间，饱和而不是回绕
+    Some(
+        minutes
+            .saturating_mul(60_000)
+            .saturating_add(seconds.saturating_mul(1_000))
+            .saturating_add(frac_ms),
+    )
 }
 
 /// 尝试解析 LRC 文件的一行。行上有多个时间标签时返回带对应数量条目的
@@ -87,6 +93,9 @@ fn parse_lrc_line(line: &str) -> Option<Vec<LrcLine>> {
 /// 至少找到一条带时间的行时，返回按时间戳排好序的 `Some(lines)`。
 /// 完全没有时间标签时返回 `None`（纯文本）。
 pub fn parse_lrc(content: &str) -> Option<Vec<LrcLine>> {
+    // UTF-8 BOM（Windows 记事本默认）不在 trim 的空白集合里，留着会让首行的
+    // starts_with('[') 失败被当元数据丢掉。
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let mut lines: Vec<LrcLine> = Vec::new();
 
     for line in content.lines() {
@@ -270,13 +279,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_lrc_strips_utf8_bom_from_first_line() {
+        // Windows 记事本的 BOM 曾让首行 starts_with('[') 失败被当元数据丢弃
+        let parsed = parse_lrc("\u{feff}[00:01.00]Hello\n[00:02.00]World").unwrap();
+        assert_eq!(
+            line_tuples(parsed),
+            vec![(1_000, "Hello".to_string()), (2_000, "World".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_time_tag_accepts_missing_fraction() {
+        // 旧版 LRC 常见无小数秒标签：曾整行被拒导致整首降级纯文本
+        assert_eq!(parse_time_tag("01:02"), Some(62_000));
+        assert_eq!(parse_time_tag("01:02."), Some(62_000));
+    }
+
+    #[test]
     fn parse_time_tag_rejects_invalid_tags() {
-        assert_eq!(parse_time_tag("01:02"), None);
         assert_eq!(parse_time_tag("01.02.34"), None);
         assert_eq!(parse_time_tag("aa:02.34"), None);
         assert_eq!(parse_time_tag("01:bb.34"), None);
         assert_eq!(parse_time_tag("01:02.xx"), None);
-        assert_eq!(parse_time_tag("01:02."), None);
+        assert_eq!(parse_time_tag("01:02.1234"), None);
     }
 
     #[test]

@@ -49,6 +49,9 @@ cpal = { version = "0.18.2", features = ["pipewire"] }
 dateparser = "0.3"
 derive_more = { version = "2", features = ["debug"] }
 directories = "6"
+# 外部歌词侧车解码：中文曲库的旧 .lrc 常为 GBK。本就在依赖图里（传递依赖），
+# 直接提为显式依赖不增加编译面。
+encoding_rs = "0.8"
 file-rotate = "0.8.0"
 flate2 = "1"
 futures = "0.3"

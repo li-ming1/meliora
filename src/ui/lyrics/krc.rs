@@ -205,7 +205,7 @@ fn parse_words(raw: &str, line_start: u64) -> (String, Vec<LrcWord>) {
         let word_text = tail.split('<').next().unwrap_or("");
         text.push_str(word_text);
         words.push(LrcWord {
-            time_ms: line_start + offset,
+            time_ms: line_start.saturating_add(offset),
             duration_ms: duration,
             text: word_text.into(),
         });

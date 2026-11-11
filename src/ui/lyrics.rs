@@ -353,10 +353,10 @@ impl Lyrics {
                 return (Some(krc), Some(Arc::new(parsed)));
             }
 
-            // 2. 紧接着探测同名 .lrc（全网通用外挂歌词，支持 GBK / Big5 / UTF-8 容错解码）
+            // 2. 紧接着探测同名 .lrc（全网通用外挂歌词；UTF-8 优先、GBK 回退）
             let sidecar_lrc = path.with_file_name(format!("{}.lrc", stem.to_string_lossy()));
             if let Ok(bytes) = tokio::fs::read(&sidecar_lrc).await {
-                let lrc = String::from_utf8_lossy(&bytes).into_owned();
+                let lrc = crate::media::text::decode_sidecar_text(&bytes);
                 if let Some(parsed) = parse_lyrics(&lrc) {
                     return (Some(lrc), Some(Arc::new(parsed)));
                 }
@@ -569,8 +569,13 @@ impl Lyrics {
         let queue = cx.global::<Models>().queue.clone();
         let item = {
             let queue = queue.read(cx);
-            let position = queue.position;
-            queue.data.read_recovered().get(position).cloned()
+            // queue.position 的 0 是双义值（停止哨兵 vs 队头在播）：停止态取队头
+            // 封面取色会把「没在播」错当首曲，按契约加播放态守卫。
+            if *self.playback_state.read(cx) == PlaybackState::Stopped {
+                None
+            } else {
+                queue.data.read_recovered().get(queue.position).cloned()
+            }
         };
         let mut cover_key = None;
         if let Some(item) = &item {
@@ -754,7 +759,9 @@ impl Lyrics {
             let (parsed, content) = crate::RUNTIME
                 .spawn(async move {
                     let parsed = match &lyric {
-                        Some(OnlineLyric::Lrc(lrc)) => parse_lrc(lrc),
+                        // 在线 LRC 与本地走同一入口：绕过 parse_lyrics 会跳过
+                        // interpolate_missing_words，同一首歌在线有词无扫色。
+                        Some(OnlineLyric::Lrc(lrc)) => parse_lyrics(lrc),
                         Some(OnlineLyric::Krc(krc)) => krc::parse_krc(krc),
                         None => None,
                     }
@@ -1304,7 +1311,7 @@ fn lerp(start: f32, end: f32, progress: f32) -> f32 {
 pub(crate) fn word_progress(word: &LrcWord, pos_ms: u64) -> f32 {
     if pos_ms <= word.time_ms {
         0.0
-    } else if pos_ms >= word.time_ms + word.duration_ms {
+    } else if pos_ms >= word.time_ms.saturating_add(word.duration_ms) {
         1.0
     } else {
         (pos_ms - word.time_ms) as f32 / word.duration_ms.max(1) as f32
