@@ -265,3 +265,59 @@ pub(super) async fn resolve_missing_folder_action(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_event_reports_changes_accurately() {
+        let full = ScanMode::Full { is_force: false };
+        let targeted = ScanMode::Targeted {
+            paths: Vec::new(),
+            respect_record: true,
+            recursive: false,
+        };
+
+        assert!(
+            !full
+                .completion_event(false, false)
+                .is_complete_with_changes()
+        );
+        assert!(
+            !full
+                .completion_event(true, false)
+                .is_complete_with_changes()
+        );
+        assert!(
+            !targeted
+                .completion_event(false, false)
+                .is_complete_with_changes()
+        );
+
+        assert!(
+            full.completion_event(false, true)
+                .is_complete_with_changes()
+        );
+        assert!(full.completion_event(true, true).is_complete_with_changes());
+        assert!(
+            targeted
+                .completion_event(false, true)
+                .is_complete_with_changes()
+        );
+        assert!(
+            targeted
+                .completion_event(true, true)
+                .is_complete_with_changes()
+        );
+
+        assert!(!ScanEvent::Cleaning.is_complete_with_changes());
+        assert!(
+            !ScanEvent::ScanProgress {
+                current: 1,
+                total: 2
+            }
+            .is_complete_with_changes()
+        );
+    }
+}

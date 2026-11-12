@@ -237,4 +237,25 @@ mod persist_tests {
             "写失败后基线回滚，重试放行"
         );
     }
+
+    #[test]
+    fn persist_serialized_writes_deduped_json_bytes() {
+        let guard: &'static StreamMapPersistence = Box::leak(Box::new(StreamMapPersistence::new()));
+        let dir = TestDir::new("stream-persist-serialized");
+        let path = dir.join("map.json");
+
+        guard.persist_serialized(path.clone(), b"[1,2]".to_vec(), "test");
+        crate::RUNTIME.block_on(async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), b"[1,2]");
+
+        // 相同字节必须跳写（删除文件后再次发送同字节不应重建）。
+        std::fs::remove_file(&path).unwrap();
+        guard.persist_serialized(path.clone(), b"[1,2]".to_vec(), "test");
+        crate::RUNTIME.block_on(async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        assert!(!path.exists(), "相同序列化字节不应重复落盘");
+    }
 }
