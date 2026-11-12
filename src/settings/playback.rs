@@ -94,7 +94,7 @@ pub struct PlaybackSettings {
     pub audio_cache_enabled: bool,
 
     /// 酷狗在线播放音质。默认标准 128 kbps。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::settings::deserialize_lenient")]
     pub online_quality: OnlineQuality,
 
     /// 在线（酷狗）下载写入的目录。`None` 表示用平台的默认 Downloads 文件夹。

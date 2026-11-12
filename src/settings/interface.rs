@@ -49,7 +49,7 @@ pub struct InterfaceSettings {
     pub full_width_library: bool,
     #[serde(default)]
     pub two_column_library: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::settings::deserialize_lenient")]
     pub startup_library_view: StartupLibraryView,
     #[serde(default = "default_grid_min_item_width")]
     pub grid_min_item_width: f32,

@@ -22,6 +22,7 @@ pub enum ReplayGainAutoHint {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ReplayGainSettings {
+    #[serde(deserialize_with = "crate::settings::deserialize_lenient")]
     pub mode: ReplayGainMode,
     /// 前置增益，单位 dB，叠加在 RG 增益之上。范围：-6.0 到 +6.0
     pub preamp_db: f64,

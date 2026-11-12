@@ -137,10 +137,10 @@ pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
     };
 
     let has_theme_setting = has_stored_theme_setting(&value);
-    let mut settings: Settings = match serde_json::from_value(value) {
-        Ok(settings) => settings,
-        Err(e) => {
-            warn!("Failed to deserialize settings file ({e}), scanner will wait for recovery");
+    let mut settings: Settings = match settings_from_value(&value) {
+        Some(settings) => settings,
+        None => {
+            warn!("Settings file is not a JSON object, scanner will wait for recovery");
             return SettingsLoadOutcome::Corrupt {
                 settings: fallback_settings(path, has_theme_setting),
                 path: path.to_path_buf(),
@@ -151,6 +151,46 @@ pub fn create_settings(path: &Path) -> SettingsLoadOutcome {
     apply_legacy_theme_selection(path, &mut settings, has_theme_setting);
     settings.sanitize();
     SettingsLoadOutcome::Loaded(settings)
+}
+
+/// 按顶层 section 独立解析：某个段结构不符（字段类型变化、旧版本读到新版写入的
+/// 值）只回退该段，其余段原样保留——整份判 Corrupt 会把扫描路径、EQ、托盘设置
+/// 一起丢掉。返回 `None` 仅当顶层不是 JSON object（整体不可判读）。
+fn settings_from_value(value: &serde_json::Value) -> Option<Settings> {
+    let object = value.as_object()?;
+    // `scanning` 是唯一能改动音乐库的段：它解析失败仍按整体损坏处理，保住
+    // 「扫描器暂停、等用户处理后恢复」的既有契约。
+    let scanning = match object.get("scanning") {
+        Some(value) => serde_json::from_value(value.clone()).ok()?,
+        None => scan::ScanSettings::default(),
+    };
+    Some(Settings {
+        scanning,
+        playback: section_or_default(object, "playback"),
+        interface: section_or_default(object, "interface"),
+        update: section_or_default(object, "update"),
+    })
+}
+
+fn section_or_default<T: serde::de::DeserializeOwned + Default>(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> T {
+    object
+        .get(key)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// 单个字段级容错反序列化（`#[serde(deserialize_with = ...)]`）：未知枚举变体、
+/// 类型变化等只让该字段回默认值，而不是把整个 section 判损坏。用于那些会随版本
+/// 新增变体的枚举——降级运行/换便携包读到新版写入的值时，其余设置必须保住。
+pub(crate) fn deserialize_lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    Ok(T::deserialize(deserializer).unwrap_or_default())
 }
 
 /// 磁盘写的尾沿防抖，每次写盘经 spawn_blocking 离开 UI 线程。滑条拖动经
@@ -276,7 +316,28 @@ fn commit_if_current(
         info!("settings debounce drop: newer generation holds the write");
         return Ok(false);
     }
+    backup_unparseable_settings(path);
     write_settings_file(snapshot, path, generation, tmp_tag).map(|()| true)
+}
+
+/// 覆盖前留档无法解析的旧文件：损坏态下内存里是 fallback 默认值，任何一次保存
+/// 都会把手改坏但可修复的文件抹掉。备份名不以 `settings.json` 结尾，watcher 的
+/// `ends_with` 过滤不会把它当成设置文件重载。
+fn backup_unparseable_settings(path: &Path) {
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    if serde_json::from_slice::<serde_json::Value>(&bytes).is_ok() {
+        return;
+    }
+    let backup = path.with_extension("json.corrupt.bak");
+    match fs::rename(path, &backup) {
+        Ok(()) => warn!(
+            path = %backup.display(),
+            "settings: backed up unparseable settings file before overwrite"
+        ),
+        Err(error) => warn!(%error, "settings: failed to back up unparseable settings file"),
+    }
 }
 
 /// 摘除指定 generation 的 pending 登记（可能已被更新的 generation 覆盖，
@@ -714,16 +775,76 @@ mod tests {
         }
     }
 
+    /// 段级回退：坏掉的段回默认值，其余段原样保留——整份判 Corrupt 会连带丢掉
+    /// 扫描路径、EQ、托盘设置。
     #[test]
-    fn create_settings_type_mismatch_reports_corrupt() {
+    fn create_settings_type_mismatch_falls_back_per_section() {
         let dir = create_test_dir();
         let path = settings_path(&dir);
-        fs::write(&path, r#"{"playback": "not an object"}"#).unwrap();
+        fs::write(
+            &path,
+            r#"{"playback": "not an object", "interface": {"full_width_library": true}}"#,
+        )
+        .unwrap();
 
-        assert!(matches!(
-            create_settings(&path),
-            SettingsLoadOutcome::Corrupt { .. }
-        ));
+        let settings = create_settings(&path).into_settings();
+        assert_eq!(
+            settings.playback,
+            super::playback::PlaybackSettings::default()
+        );
+        assert!(settings.interface.full_width_library);
+    }
+
+    /// 未知枚举变体（旧版本读到新版本写入的值）只回退该字段：其余设置必须保住。
+    #[test]
+    fn create_settings_tolerates_unknown_enum_variant() {
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        fs::write(
+            &path,
+            r#"{"playback": {"online_quality": "Ultra", "always_repeat": true},
+                "interface": {"startup_library_view": "Nowhere", "full_width_library": true}}"#,
+        )
+        .unwrap();
+
+        let settings = create_settings(&path).into_settings();
+        assert_eq!(
+            settings.playback.online_quality,
+            super::playback::OnlineQuality::Standard
+        );
+        assert!(settings.playback.always_repeat, "同段的其它字段必须保住");
+        assert!(settings.interface.full_width_library, "其它段必须保住");
+        assert_eq!(
+            settings.interface.startup_library_view,
+            super::interface::StartupLibraryView::default()
+        );
+    }
+
+    /// 覆盖前把无法解析的旧文件留档：损坏态下内存是默认值，直接写会把可修复的
+    /// 手改文件抹掉。
+    #[test]
+    fn backup_unparseable_settings_preserves_broken_file() {
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        fs::write(&path, "{broken").unwrap();
+
+        super::backup_unparseable_settings(&path);
+
+        assert!(!path.exists(), "损坏文件应被移走而不是原地被覆盖");
+        let backup = dir.path().join("settings.json.corrupt.bak");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn backup_unparseable_settings_keeps_valid_file() {
+        let dir = create_test_dir();
+        let path = settings_path(&dir);
+        fs::write(&path, r#"{"interface":{}}"#).unwrap();
+
+        super::backup_unparseable_settings(&path);
+
+        assert!(path.exists());
+        assert!(!dir.path().join("settings.json.corrupt.bak").exists());
     }
 
     #[test]

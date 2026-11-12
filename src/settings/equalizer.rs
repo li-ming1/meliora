@@ -39,6 +39,7 @@ impl EqBandKind {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EqBandSettings {
+    #[serde(deserialize_with = "crate::settings::deserialize_lenient")]
     pub kind: EqBandKind,
     /// 中心/转折频率，单位 Hz。
     pub frequency: f64,
