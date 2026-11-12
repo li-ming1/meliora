@@ -214,6 +214,23 @@ pub fn extract_song_url(body: &Value) -> Option<String> {
 /// 标准 128 kbps 片段的音质档位——请求档位不可用时的兜底（例如没有 VIP）。
 const FALLBACK_QUALITY: &str = "128";
 
+/// 音质档位从低到高排列。`[`quality_ladder`]` 返回前缀，调用方按 `.rev()`
+/// 逐级降档。
+const QUALITY_ORDER: [&str; 4] = ["128", "320", "flac", "high"];
+
+/// 从 `requested` 降到 128 的档位路径（升序存放，含两端）：调用方用
+/// `.iter().rev()` 从请求档开始逐级尝试。未知档位只返回 128 这一段。
+///
+/// 播放取流与下载共用同一顺序（`ui::kugou::download` 引用它），避免两侧梯队
+/// 漂移成"播放掉 128、下载却是 flac→320→128"。
+pub fn quality_ladder(requested: &str) -> &'static [&'static str] {
+    let highest = QUALITY_ORDER
+        .iter()
+        .position(|quality| *quality == requested)
+        .unwrap_or(0);
+    &QUALITY_ORDER[..=highest]
+}
+
 /// 实时播放路径的单请求时限档位。播放侧钩子给整个刷新 6s 总预算
 /// （playback/thread.rs 的 `STREAM_REFRESH_TIMEOUT`），而网关 client 单请求 30s、
 /// 失败再打一次 128k 兜底——最坏 60s：慢网下外层总在 6s 超时返回 `None`，内层
@@ -259,12 +276,17 @@ pub async fn fetch_stream_url(
     quality: &str,
     per_request_timeout: Option<Duration>,
 ) -> Option<String> {
+    let mut ladder = quality_ladder(quality).iter().rev();
+    let Some(requested) = ladder.next().copied() else {
+        return None;
+    };
+
     match song_url_bounded(
         client,
         hash,
         mix_song_id,
         album_id,
-        quality,
+        requested,
         per_request_timeout,
     )
     .await
@@ -273,43 +295,75 @@ pub async fn fetch_stream_url(
             if let Some(url) = extract_song_url(&resp.body) {
                 return Some(url);
             }
-            tracing::debug!(hash, quality, "kugou: response carried no playable URL");
+            // 该档位存在但没给 URL（多数曲目没有 flac/high 变体）：顺降一档
+            tracing::debug!(
+                hash,
+                quality = requested,
+                "kugou: response carried no playable URL"
+            );
         }
         Err(error) => {
-            tracing::debug!(%error, hash, quality, "kugou: URL request failed");
+            // 网络/超时失败不逐档重试（最坏会放大到 4×超时），直接落 128 判终
+            tracing::debug!(%error, hash, quality = requested, "kugou: URL request failed");
+            if requested == FALLBACK_QUALITY {
+                return None;
+            }
+            return match song_url_bounded(
+                client,
+                hash,
+                mix_song_id,
+                album_id,
+                FALLBACK_QUALITY,
+                per_request_timeout,
+            )
+            .await
+            {
+                Ok(resp) => extract_song_url(&resp.body),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        hash,
+                        quality = FALLBACK_QUALITY,
+                        "kugou: fallback URL request failed"
+                    );
+                    None
+                }
+            };
         }
     }
-    if quality != FALLBACK_QUALITY {
-        let resp = match song_url_bounded(
+
+    for candidate in ladder {
+        match song_url_bounded(
             client,
             hash,
             mix_song_id,
             album_id,
-            FALLBACK_QUALITY,
+            candidate,
             per_request_timeout,
         )
         .await
         {
-            Ok(resp) => resp,
+            Ok(resp) => {
+                if let Some(url) = extract_song_url(&resp.body) {
+                    tracing::debug!(
+                        hash,
+                        requested = quality,
+                        quality = candidate,
+                        "kugou: fell back to a lower quality"
+                    );
+                    return Some(url);
+                }
+            }
             Err(error) => {
                 tracing::warn!(
                     %error,
                     hash,
-                    quality = FALLBACK_QUALITY,
-                    "kugou: fallback URL request failed"
+                    quality = candidate,
+                    "kugou: URL request failed during fallback"
                 );
                 return None;
             }
-        };
-        let url = extract_song_url(&resp.body);
-        if url.is_some() {
-            tracing::debug!(
-                hash,
-                requested = quality,
-                "kugou: fell back to the standard quality"
-            );
         }
-        return url;
     }
     None
 }

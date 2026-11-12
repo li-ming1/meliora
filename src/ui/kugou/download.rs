@@ -38,16 +38,17 @@ fn pending_downloads() -> &'static RwLock<HashSet<String>> {
 /// 与签名客户端相同的 Android user agent；用 reqwest 默认 UA 时 CDN 返回 403。
 const KUGOU_UA: &str = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi";
 
-/// 按顺序尝试的音质梯队；第一个拿到可播放 URL 的档位胜出。
-const QUALITY_LADDER: [&str; 3] = ["flac", "320", "128"];
-
-/// `track` 的最高音质可播放 URL（flac -> 320 -> 128），并请求完整曲目
-/// （`free_part = false`），这样下载绝不会存下那条约 60 秒的试听片段。
+/// `track` 的最高音质可播放 URL（flac -> 320 -> 128，与播放侧共用同一梯队），
+/// 并请求完整曲目（`free_part = false`），这样下载绝不会存下那条约 60 秒的
+/// 试听片段。顺带取出服务端申报的文件字节数（缺失为 `None`），供落盘后校验截断。
 async fn resolve_best_url(
     client: &KugouClient,
     track: &KugouTrackInfo,
-) -> Result<(String, &'static str), String> {
-    for quality in QUALITY_LADDER {
+) -> Result<(String, &'static str, Option<u64>), String> {
+    for quality in crate::online_sources::kugou::quality_ladder("flac")
+        .iter()
+        .rev()
+    {
         if let Ok(resp) = client
             .song_url(
                 &track.hash,
@@ -59,7 +60,12 @@ async fn resolve_best_url(
             .await
             && let Some(url) = extract_song_url(&resp.body)
         {
-            return Ok((url, quality));
+            let expected_size = resp
+                .body
+                .get("fileSize")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|size| *size > 0);
+            return Ok((url, quality, expected_size));
         }
     }
     Err(tr!(
@@ -67,6 +73,86 @@ async fn resolve_best_url(
         "No full-track URL for this song (lossless usually needs VIP)"
     )
     .to_string())
+}
+
+/// 读文件头 4 字节（文件不足 4 字节返回 `None`）。
+async fn read_audio_head(path: &Path) -> Option<[u8; 4]> {
+    use tokio::io::AsyncReadExt as _;
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut head = [0u8; 4];
+    file.read_exact(&mut head).await.ok()?;
+    Some(head)
+}
+
+/// 文件头是否是目标音频格式：FLAC 魔数 / ID3 标签 / MPEG 帧同步（`0xFFEx`）。
+/// CDN 的「200 + HTML 错误页」与非音频内容都过不了这一关。
+fn audio_magic_matches(ext: &str, head: [u8; 4]) -> bool {
+    match ext {
+        "flac" => &head == b"fLaC",
+        _ => head.starts_with(b"ID3") || (head[0] == 0xFF && head[1] & 0xE0 == 0xE0),
+    }
+}
+
+/// 选落盘用的文件名主干：目标已存在且体积合规（或魔数合法）时视为已下载——
+/// 幂等跳过并复用，否则追加 ` (2)`、` (3)`… 递增序号。下载目录常被设成音乐库，
+/// 覆盖会静默毁掉用户已有的同名文件。
+async fn unique_stem(
+    dir: &Path,
+    stem: &str,
+    ext: &str,
+    expected_size: Option<u64>,
+) -> (String, bool) {
+    let mut candidate = stem.to_string();
+    let mut index = 2u32;
+    loop {
+        let path = dir.join(format!("{candidate}.{ext}"));
+        let Ok(meta) = tokio::fs::metadata(&path).await else {
+            return (candidate, false);
+        };
+        let already_present = match expected_size {
+            Some(expected) => {
+                let tolerance = expected as f64 * 0.01;
+                (meta.len() as f64 - expected as f64).abs() <= tolerance
+            }
+            None => read_audio_head(&path)
+                .await
+                .is_some_and(|head| audio_magic_matches(ext, head)),
+        };
+        if already_present {
+            return (candidate, true);
+        }
+        candidate = format!("{stem} ({index})");
+        index += 1;
+    }
+}
+
+/// 落盘后的内容校验：魔数为主（错误页一击命中），fileSize 为辅（仅在服务端
+/// 申报时比对，1% 容差吸收容器口径差异，避免试听段之外误杀）。
+async fn verify_downloaded_audio(
+    path: &Path,
+    ext: &str,
+    expected_size: Option<u64>,
+) -> Result<(), String> {
+    let Some(head) = read_audio_head(path).await else {
+        return Err("downloaded file is too short to be audio".to_string());
+    };
+    if !audio_magic_matches(ext, head) {
+        return Err(format!(
+            "downloaded file is not a valid {ext} stream (the server may have returned an error page)"
+        ));
+    }
+    if let Some(expected) = expected_size {
+        let actual = tokio::fs::metadata(path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        if (actual as f64 - expected as f64).abs() > expected as f64 * 0.01 {
+            return Err(format!(
+                "downloaded file size mismatch: got {actual} bytes, expected {expected}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 从同一个搜索候选项取 `track` 的两种格式歌词：按行带时间的纯 `.lrc` 文本，与解密后的
@@ -122,10 +208,10 @@ pub async fn download_track(
         .unwrap_or(0);
     }
 
-    let (url, quality) = resolve_best_url(client, track).await?;
+    let (url, quality, expected_size) = resolve_best_url(client, track).await?;
     let ext = if quality == "flac" { "flac" } else { "mp3" };
 
-    let stem = sanitize_filename(&format!(
+    let stem_base = sanitize_filename(&format!(
         "{}{}",
         if track.artist.is_empty() {
             String::new()
@@ -138,14 +224,32 @@ pub async fn download_track(
             track.title.to_string()
         }
     ));
-    let audio_path = dir.join(format!("{stem}.{ext}"));
 
     // 建目录与音频落盘都走 tokio::fs（内部在阻塞池执行，不占 RUNTIME 仅有的
     // 2 个 worker）；音频边下边写，整首曲子不再整份驻留内存。
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|err| format!("create download dir: {err}"))?;
+
+    // 同名文件已存在且体积/魔数合规 = 之前已下载过：幂等跳过，不重下也不覆盖。
+    let (stem, already_downloaded) = unique_stem(dir, &stem_base, ext, expected_size).await;
+    let audio_path = dir.join(format!("{stem}.{ext}"));
+    if already_downloaded {
+        tracing::info!(
+            hash = %track.hash,
+            path = %audio_path.display(),
+            "kugou download: file already present; skipping"
+        );
+        return Ok(audio_path);
+    }
+
     http_download_to_file(&url, &audio_path, &[("User-Agent", KUGOU_UA.to_string())]).await?;
+
+    // 内容校验：200 的 HTML 错误页、半截流不能以音频名义留下（会经扫描器入库）
+    if let Err(err) = verify_downloaded_audio(&audio_path, ext, expected_size).await {
+        let _ = tokio::fs::remove_file(&audio_path).await;
+        return Err(err);
+    }
 
     // 歌词 sidecar 与标签/封面都是尽力而为：音频文件此时已经存好了。
     let (lrc, krc) = match fetch_lyrics(client, track).await {
@@ -306,11 +410,23 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::{Duration, Instant};
 
+    use super::audio_magic_matches;
+
     /// 复刻 `download_track_ui` → `download_track` 的持票链：名额先在 async
     /// 帧上 acquire，再随 spawn_blocking 闭包进出。外层 await 被 abort 后，
     /// 在途闭包必须继续持有名额——绑在 async 帧上的旧形态此刻已把名额还回
     /// 信号量，下载并发上限被取消旁路（取消安全，2026-10-31 契约 4；同型
     /// 回归测试：managed_image::aborting_waiter_does_not_release_running_decode_permit）。
+    #[test]
+    fn audio_magic_rejects_html_and_accepts_audio_headers() {
+        assert!(audio_magic_matches("flac", *b"fLaC"));
+        assert!(audio_magic_matches("mp3", *b"ID3\x04"));
+        assert!(audio_magic_matches("mp3", [0xFF, 0xFB, 0x90, 0x64]));
+        assert!(!audio_magic_matches("mp3", *b"<htm"));
+        assert!(!audio_magic_matches("flac", *b"ID3\x04"));
+        assert!(!audio_magic_matches("mp3", [0x00, 0x00, 0x00, 0x00]));
+    }
+
     #[test]
     fn aborting_download_frame_does_not_release_running_permit() {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
