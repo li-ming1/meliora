@@ -305,7 +305,16 @@ impl ArtistDetailView {
 
                 let (artist, album_ids, all_tracks, liked_tracks, standalone_tracks) = loaded;
                 this.artist_name = artist.and_then(|a| a.name.clone());
+                // 网格瓦片实体按索引缓存、构造时绑死专辑 id：专辑集合变了还沿用
+                // 旧实体就会显示/导航到旧专辑。Table 在 reload 后 clear_row_views
+                // 是同一守卫。
+                let albums_changed = *this.album_ids != album_ids;
                 this.album_ids = Arc::new(album_ids);
+                if albums_changed {
+                    this.grid_views.update(cx, |views, _| views.clear());
+                    this.grid_render_counter
+                        .update(cx, |counter, _| *counter = 0);
+                }
                 this.all_tracks = all_tracks;
                 this.all_tracks_available = availability_map(cx, &this.all_tracks);
                 // 在本轮整视图加载在途期间启动的散曲目排序重载才拥有散曲目列表：
