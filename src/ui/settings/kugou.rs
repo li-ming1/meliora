@@ -155,10 +155,8 @@ impl QrLoginHost for KugouSettings {
                 QrStatus::Waiting => QrPoll::Waiting,
                 QrStatus::Scanned => QrPoll::Scanned,
                 QrStatus::Expired => QrPoll::Expired,
-                QrStatus::Success { token, userid } => {
-                    kugou::shared_client().store_login(token, userid);
-                    QrPoll::Success
-                }
+                // 凭据原样返回，由驱动方在世代检查之后 commit_login 落盘（见 QrPoll）
+                QrStatus::Success { token, userid } => QrPoll::Success { token, userid },
             })
         }
     }
@@ -169,6 +167,10 @@ impl QrLoginHost for KugouSettings {
             "Failed to generate QR code: {{err}}",
             err = err
         ))
+    }
+
+    fn commit_login(token: String, userid: i64) {
+        kugou::shared_client().store_login(token, userid);
     }
 
     fn phase_label(phase: QrPhase) -> SharedString {

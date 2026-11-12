@@ -41,12 +41,14 @@ pub(crate) enum QrPhase {
     Expired,
 }
 
-/// 归一化后的登录状态轮询结果；provider 在返回 `Success` 之前先持久化自己的会话。
+/// 归一化后的登录状态轮询结果。凭据只作为数据返回，持久化由驱动方在世代检查
+/// **之后**经 [`QrLoginHost::commit_login`] 执行——放在网络层里持久化的话，用户
+/// 取消/关窗后在途的那次轮询仍会把账号写进会话，界面显示未登录却已换号。
 pub(crate) enum QrPoll {
     Waiting,
     Scanned,
     Expired,
-    Success,
+    Success { token: String, userid: i64 },
 }
 
 /// 共享的扫码登录状态：模态框内容，外加一个代号计数——关闭模态框或重新生成时，
@@ -143,7 +145,11 @@ pub(crate) trait QrLoginHost: 'static + Sized {
     fn failed_toast(err: String) -> Toast;
     /// 当前扫码阶段的文案。
     fn phase_label(phase: QrPhase) -> SharedString;
-    /// 登录成功之后的 UI 跟进动作；会话已经持久化，模态框由驱动方自己关闭。
+    /// 持久化登录凭据。只在轮询结果通过了世代检查（模态框仍在、用户没取消）
+    /// 之后调用，避免「取消登录却换了账号」。
+    fn commit_login(token: String, userid: i64);
+    /// 登录成功之后的 UI 跟进动作；凭据已由 [`QrLoginHost::commit_login`] 落盘，
+    /// 模态框由驱动方自己关闭。
     fn on_login(&mut self, cx: &mut Context<Self>);
 
     /// 该页持有的扫码状态。
@@ -265,7 +271,9 @@ fn spawn_login<H: QrLoginHost>(cx: &mut Context<H>) {
                             cx.notify();
                             return false;
                         }
-                        Ok(QrPoll::Success) => {
+                        Ok(QrPoll::Success { token, userid }) => {
+                            // 世代检查已通过：现在才落盘凭据
+                            H::commit_login(token, userid);
                             this.qr_login().close();
                             this.on_login(cx);
                             cx.notify();
