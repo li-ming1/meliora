@@ -35,17 +35,28 @@ impl DebouncedSave {
     pub fn schedule<T: 'static>(&self, settings: &Entity<Settings>, cx: &mut Context<T>) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let generation_counter = Arc::clone(&self.generation);
-        let settings = settings.clone();
-        cx.spawn(async move |_this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(300))
-                .await;
-            // 有更新的编辑顶掉了这次 tick；最新的那个任务拥有这次保存。
-            if generation_counter.load(Ordering::Relaxed) != generation {
-                return;
-            }
-            settings.update(cx, |settings, cx| save_settings(cx, settings));
-        })
-        .detach();
+        // 定时任务挂在设置实体（应用生命周期）上而不是页面实体上：页面被 drop
+        // （切分区/关窗）会取消挂在它上面的任务，最后一笔值就此永远到不了
+        // save_settings（模型里有值，磁盘没有）。
+        settings.update(cx, |_, cx| {
+            cx.spawn(async move |settings, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                // 有更新的编辑顶掉了这次 tick；最新的那个任务拥有这次保存。
+                if generation_counter.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                settings
+                    .update(cx, |settings, cx| {
+                        save_settings(cx, settings);
+                        // 通知设置观察者（主窗按内容 diff 刷新）：否则网格宽度这类
+                        // 只在设置页即时生效的值，主窗要等无关失效才拾取
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+        });
     }
 }
