@@ -34,11 +34,20 @@ impl RenderOnce for Icon {
     }
 }
 
-pub fn icon(icon: impl Into<SharedString>) -> Icon {
+/// 图标路径一律是编译期常量（见本模块的 `*` 常量名单）。收 `&'static str` 并用
+/// [`SharedString::new_static`]：这些路径全部超过 SharedString 的内联容量，
+/// 走 `From<&str>` 会让每个图标每次重绘都付一次堆分配。
+pub fn icon(icon: &'static str) -> Icon {
     Icon {
         svg: svg(),
-        icon: icon.into(),
+        icon: SharedString::new_static(icon),
     }
+}
+
+/// 已经是 `SharedString` 的图标路径（菜单项等动态来源）：克隆只加引用计数，
+/// 不再重新分配。
+pub fn icon_shared(icon: SharedString) -> Icon {
+    Icon { svg: svg(), icon }
 }
 
 pub const ADJUSTMENTS: &str = "!bundled:icons/adjustments.svg";

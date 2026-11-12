@@ -8,7 +8,7 @@ use gpui::{
 use smallvec::SmallVec;
 
 use crate::ui::{
-    components::{icons::icon, tooltip::build_tooltip},
+    components::{icons::icon_shared, tooltip::build_tooltip},
     theme::Theme,
 };
 
@@ -136,7 +136,11 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
                         theme.text_secondary
                     };
                     segment
-                        .child(icon(path.clone()).size(ICON_MD).text_color(text_color))
+                        .child(
+                            icon_shared(path.clone())
+                                .size(ICON_MD)
+                                .text_color(text_color),
+                        )
                         .tooltip(build_tooltip(tooltip.clone()))
                 }
             };

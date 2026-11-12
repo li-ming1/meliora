@@ -1282,9 +1282,9 @@ where
                         .mr(px(8.0))
                         .child(text),
                     FinderItemLeft::Icon(icon_name) => {
-                        use crate::ui::components::icons::icon;
+                        use crate::ui::components::icons::icon_shared;
                         div()
-                            .child(icon(icon_name).w(px(16.0)).h(px(16.0)))
+                            .child(icon_shared(icon_name).w(px(16.0)).h(px(16.0)))
                             .mr(px(8.0))
                     }
                     FinderItemLeft::Image(image_path) => div()

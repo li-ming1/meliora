@@ -3,7 +3,7 @@ use gpui::{prelude::FluentBuilder, *};
 
 use crate::ui::{
     components::{
-        icons::{CHECK, LOCK, icon},
+        icons::{CHECK, LOCK, icon, icon_shared},
         tooltip::build_tooltip,
     },
     theme::Theme,
@@ -186,7 +186,7 @@ impl RenderOnce for MenuItem {
                 self.icon_color.unwrap_or(theme.text_secondary)
             };
             let icon = icon_container().when_some(self.icon_path, |this, icon_path| {
-                this.child(icon(icon_path).size(ICON_MD).text_color(icon_color))
+                this.child(icon_shared(icon_path).size(ICON_MD).text_color(icon_color))
             });
 
             self.base.render(theme, icon, None)
