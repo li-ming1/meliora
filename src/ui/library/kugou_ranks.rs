@@ -334,9 +334,13 @@ impl KugouRanksView {
                                 .and_then(serde_json::Value::as_i64)
                                 .unwrap_or(0);
                             let page_tracks = parse_rank_tracks(&response.body);
+                            // 空页即到底：total 可能虚高、末页也可能解析不足，
+                            // 只看 tracks.len() < total 会让「加载更多」永远追页
+                            let page_empty = page_tracks.is_empty();
                             this.tracks.extend(page_tracks.into_iter().map(Arc::new));
                             this.track_page = page;
-                            this.has_more_tracks = this.tracks.len() < total as usize;
+                            this.has_more_tracks =
+                                !page_empty && this.tracks.len() < total as usize;
                             this.tracks_state = TracksState::Idle;
                         }
                         Ok(Ok(_)) => {}
