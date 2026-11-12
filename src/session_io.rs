@@ -69,8 +69,10 @@ pub fn save<T: serde::Serialize + ?Sized>(value: &T, path: &Path, provider: &str
         use std::io::Write as _;
         // rename 前 sync：掉电时 NTFS 可能 rename 已落而数据未刷，会话文件
         // （含 token）会以空/截断形态被下一次启动读到并静默重置
-        std::fs::File::create(&tmp)
-            .and_then(|mut file| file.write_all(json.as_bytes()).and_then(|()| file.sync_all()))
+        std::fs::File::create(&tmp).and_then(|mut file| {
+            file.write_all(json.as_bytes())
+                .and_then(|()| file.sync_all())
+        })
     };
     if let Err(err) = written {
         tracing::warn!(%err, "failed to write {provider} session temp file");
