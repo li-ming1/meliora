@@ -422,6 +422,14 @@ pub fn start_download(cx: &mut App) {
 /// 仍然执行。
 pub fn restart_to_apply(cx: &mut App) {
     if crate::spawn_replacement() {
+        // 与硬上限阀门同一收口：先确定性关池再退出，子进程建池不会撞
+        // SQLITE_IOERR_TRUNCATE(1546)（见 db.rs close_pool_for_exit）。
+        let pool = cx
+            .try_global::<crate::ui::app::Pool>()
+            .map(|pool| pool.0.clone());
+        if let Some(pool) = pool {
+            crate::RUNTIME.block_on(crate::library::db::close_pool_for_exit(&pool));
+        }
         cx.quit();
     } else {
         emit_toast(
