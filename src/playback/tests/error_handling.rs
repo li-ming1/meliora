@@ -53,24 +53,49 @@ fn seek_while_playing_flushes_and_continues() {
     let _guard = engine_lock();
     let rate = 44_100;
     configure_dummy_device(rate, "S16", CHANNELS);
+    // 无界 dummy 每次 consume 排空全部、管线不积压，复现冲刷缺陷必须背压
+    configure_bounded_device(4096, 512);
 
     let dir = TestDir::new("hb-robustness-seek");
-    let frames = 40_000;
+    // 前半正值、后半负值：跳转前后来源不同，才能从设备侧样本判读冲刷是否发生
+    let mut samples = constant_signal(100_000, 8_000);
+    samples.extend_from_slice(&constant_signal(400_000, -8_000));
     let path = dir.join("a.wav");
-    write_wav_i16(&path, rate, CHANNELS, &constant_signal(frames, 8_000));
+    write_wav_i16(&path, rate, CHANNELS, &samples);
 
     let mut engine = engine_playing(&path);
-
-    // 先播放一段，让缓冲区里确实有待冲刷的音频。
-    for _ in 0..50 {
+    // 播放中跳进后半负值区，跑若干周期让管线与设备环积满跳转前的负值帧
+    engine.seek(5.0).expect("seek into tail failed");
+    for _ in 0..30 {
         engine.process_cycle();
     }
 
-    // 播放中跳转定位必须冲刷设备与管线缓冲并继续播到 EOF，
-    // 而不是推迟复位或挂住。
+    // 从此刻起记录：播放中 seek 回开头必须冲刷旧缓冲，边界附近只允许前半
+    // （正值）帧；修复前旧负值帧会先流出约一圈（4096 帧级）
+    let capture = dummy::install_capture();
+    let l0 = {
+        let planes = capture.lock().unwrap();
+        planes.first().map_or(0, |plane| plane.len())
+    };
     engine.seek(0.0).expect("seek while playing failed");
     run_to_eof(&mut engine, MAX_CYCLES);
     engine.stop();
+    dummy::uninstall_capture();
+
+    let planes = capture.lock().unwrap();
+    let window_end = (l0 + 4096 + 1024).min(planes[0].len());
+    assert!(
+        window_end > l0,
+        "device captured no frames after the seek — playback stalled"
+    );
+    for (ch, plane) in planes.iter().enumerate() {
+        assert!(
+            plane[l0..window_end].iter().all(|s| *s > 0.0),
+            "channel {ch}: stale pre-seek frames replayed after seek — first {} samples \
+             after the seek boundary contain non-positive samples",
+            window_end - l0
+        );
+    }
 }
 
 #[test]

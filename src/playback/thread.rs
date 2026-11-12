@@ -1640,7 +1640,7 @@ impl PlaybackThread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::playback::tests::harness::write_wav_i16;
+    use crate::playback::tests::harness::{configure_dummy_device, write_wav_i16};
     use crate::test_support::{TestDir, register_test_media_providers};
 
     /// 组装一个真实的 PlaybackThread（真实通道 + QueueManager + 引擎），引擎
@@ -1760,6 +1760,52 @@ mod tests {
             song < position,
             "SongChanged must precede QueuePositionChanged"
         );
+    }
+
+    /// F4 线程侧契约：设备抖动故障（persistent fault）期间主循环必须把无进展
+    /// 计数清零并按退避轮询，不得累积到 MAX_NO_PROGRESS_CYCLES 把曲子跳掉。
+    /// 引擎侧 `DeviceBackoff` 返回值已由 error_handling 的引擎测试钉住，这里钉
+    /// 的是线程消费侧的处理分支。
+    #[test]
+    fn device_backoff_cycles_do_not_advance_queue() {
+        register_test_media_providers();
+        configure_dummy_device(44_100, "S16", 2);
+        // 硬故障 knob（open_device 时读取）：每个 consume 周期都失败
+        unsafe {
+            std::env::set_var("HB_DUMMY_PERSISTENT_FAULT", "1");
+        }
+        let (_dir, items) = wav_dir_items("hb-thread-device-backoff", 2);
+        let (mut thread, _events_rx) = thread_with_queue(items);
+        thread
+            .engine
+            .initialize()
+            .expect("engine initialization failed");
+        thread.play();
+        assert_eq!(thread.queue.current_position(), Some(0));
+
+        // 先绕过线程、直接给引擎一个周期：首次 consume 失败返回 FatalError 并
+        // 立起重建退避窗（走线程路径的话 FatalError 按旧语义跳曲，那是另一条
+        // 契约，不在这里测）。
+        let _ = thread.engine.process_cycle();
+        // 把无进展计数预置到接近上限：退避周期必须把它清零而不是继续累加，
+        // 否则 50 周期后会把曲子跳掉。
+        thread.no_progress_cycles = MAX_NO_PROGRESS_CYCLES - 2;
+
+        thread.main_loop();
+        unsafe {
+            std::env::remove_var("HB_DUMMY_PERSISTENT_FAULT");
+        }
+
+        assert_eq!(
+            thread.no_progress_cycles, 0,
+            "device backoff must not accumulate the no-progress counter"
+        );
+        assert_eq!(
+            thread.queue.current_position(),
+            Some(0),
+            "device backoff must not advance the queue"
+        );
+        thread.engine.stop();
     }
 
     /// 导航（jump）丢弃为旧"下一曲"布防的预备（L-prepared 爪1），且不阻塞
