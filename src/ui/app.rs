@@ -914,6 +914,23 @@ pub fn run() -> anyhow::Result<()> {
         #[cfg(feature = "online")]
         crate::updater::schedule_startup_check(cx);
 
+        // app_data 的周期性自动落盘：正常退出只覆盖干净退出这一条路径，
+        // 硬上限阀门（exit(70)）、崩溃与强杀都会丢音量/窗口尺寸等（音量只存在
+        // 这个文件）。5 分钟一笔 ~2KB，读的是同一组实体，代价可忽略。
+        {
+            let storage = storage.clone();
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(300))
+                        .await;
+                    let data = cx.update(|cx| StorageData::new(cx));
+                    storage.save(&data);
+                }
+            })
+            .detach();
+        }
+
         // 退出应用时更新 `StorageData` 并把它保存到文件系统。
         cx.on_app_quit({
             move |cx| {
