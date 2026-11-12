@@ -3,6 +3,8 @@
 //! 这里放一份实现，让各音源在视觉上齐步走（就是音源胶水模块里那条
 //! 「②步收编」的 re-export 注释所指的事）。
 
+use std::sync::OnceLock;
+
 use cntp_i18n::{I18nString, tr};
 use gpui::{
     App, ClickEvent, Div, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -31,6 +33,17 @@ pub(crate) trait OnlineTrackDisplay {
     /// 本地化的「下载」标签。按音源各留一份，i18n 生成器才会一直看到互不相同的
     /// `KUGOU_DOWNLOAD` 键。
     fn download_label() -> I18nString;
+
+    /// 预计算的「艺人 · 专辑」标签；艺人或专辑缺失时返回 `None`，由行渲染器按本地化
+    /// 回退文本拼接。
+    fn artist_album_label(&self) -> Option<&SharedString> {
+        None
+    }
+
+    /// 预计算的时长文本；默认回退到实时格式化。
+    fn duration_label(&self, pad_minutes: bool) -> SharedString {
+        format_duration(self.duration_secs(), pad_minutes).into()
+    }
 
     /// 列表里右侧使用的标签：「艺人 · m:ss」。
     fn detail_label(&self) -> SharedString {
@@ -64,6 +77,30 @@ impl<T: OnlineTrackDisplay> OnlineTrackDisplay for std::sync::Arc<T> {
     fn download_label() -> I18nString {
         T::download_label()
     }
+    fn artist_album_label(&self) -> Option<&SharedString> {
+        (**self).artist_album_label()
+    }
+    fn duration_label(&self, pad_minutes: bool) -> SharedString {
+        (**self).duration_label(pad_minutes)
+    }
+    fn detail_label(&self) -> SharedString {
+        (**self).detail_label()
+    }
+}
+
+/// 常见列表前 512 行的 1 基序号缓存，避免每次滚动重绘都做 `(index + 1).to_string()` 堆分配。
+fn row_number_label(index: usize) -> SharedString {
+    static LABELS: OnceLock<Vec<SharedString>> = OnceLock::new();
+    let labels = LABELS.get_or_init(|| {
+        (1..=512)
+            .map(|n| SharedString::from(n.to_string()))
+            .collect()
+    });
+    if let Some(label) = labels.get(index) {
+        label.clone()
+    } else {
+        (index + 1).to_string().into()
+    }
 }
 
 /// 在线歌单与发现页（榜单 / 每日推荐）共用的在线曲目行。回调携带逐视图的
@@ -91,15 +128,19 @@ where
     } else {
         track.title().clone()
     };
-    let artist: SharedString = if track.artist().is_empty() {
-        tr!("UNKNOWN_ARTIST").into()
+    let detail: SharedString = if let Some(cached) = track.artist_album_label() {
+        cached.clone()
     } else {
-        track.artist().clone()
-    };
-    let detail: SharedString = if track.album().is_empty() {
-        artist
-    } else {
-        SharedString::from(format!("{artist} · {}", track.album()))
+        let artist: SharedString = if track.artist().is_empty() {
+            tr!("UNKNOWN_ARTIST").into()
+        } else {
+            track.artist().clone()
+        };
+        if track.album().is_empty() {
+            artist
+        } else {
+            SharedString::from(format!("{artist} · {}", track.album()))
+        }
     };
     let download_label = T::download_label();
 
@@ -128,7 +169,7 @@ where
                 .text_color(theme.text_secondary)
                 .w(px(28.0))
                 .flex_shrink(0.0)
-                .child((index + 1).to_string()),
+                .child(row_number_label(index)),
         )
         .when(show_cover, |this| {
             this.child(
@@ -171,7 +212,7 @@ where
                 .text_color(theme.text_secondary)
                 .ml_auto()
                 .flex_shrink(0.0)
-                .child(format_duration(track.duration_secs(), pad_minutes)),
+                .child(track.duration_label(pad_minutes)),
         )
         .child(
             div()
@@ -287,4 +328,92 @@ pub(crate) fn error_line(message: impl IntoElement, theme: &Theme) -> Div {
         .text_color(theme.status_error)
         .py(px(12.0))
         .child(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_number_label_covers_static_cache_and_fallback() {
+        assert_eq!(row_number_label(0).as_ref(), "1");
+        assert_eq!(row_number_label(511).as_ref(), "512");
+        assert_eq!(row_number_label(512).as_ref(), "513");
+    }
+
+    #[cfg(feature = "kugou")]
+    #[test]
+    fn arc_kugou_track_forwards_precomputed_display_labels() {
+        let track = std::sync::Arc::new(crate::online_sources::kugou::KugouTrackInfo::new(
+            "标题".into(),
+            "歌手".into(),
+            "专辑".into(),
+            125,
+            "HASH".into(),
+            10,
+            20,
+            "".into(),
+        ));
+        assert_eq!(
+            track.artist_album_label().map(|s| s.as_ref()),
+            Some("歌手 · 专辑")
+        );
+        assert_eq!(track.duration_label(false).as_ref(), "2:05");
+        assert_eq!(track.duration_label(true).as_ref(), "02:05");
+        assert_eq!(track.detail_label().as_ref(), "歌手 · 2:05");
+    }
+
+    #[cfg(feature = "kugou")]
+    #[test]
+    fn precomputed_online_track_labels_are_zero_allocation_per_frame() {
+        let tracks: Vec<_> = (0..100)
+            .map(|i| {
+                std::sync::Arc::new(crate::online_sources::kugou::KugouTrackInfo::new(
+                    format!("歌名 {i}").into(),
+                    "歌手".into(),
+                    "专辑".into(),
+                    180 + i,
+                    format!("HASH{i}"),
+                    i + 1,
+                    10,
+                    "".into(),
+                ))
+            })
+            .collect();
+        // 预热静态序号缓存，模拟稳态重绘帧
+        let _ = row_number_label(0);
+
+        let (_, precomputed_allocs) = crate::test_support::alloc_guard::count_allocations(|| {
+            let mut total_bytes = 0usize;
+            for (idx, track) in tracks.iter().enumerate() {
+                let title = track.title().clone();
+                let detail = track.artist_album_label().unwrap().clone();
+                let dur = track.duration_label(true);
+                let num = row_number_label(idx);
+                total_bytes += title.len() + detail.len() + dur.len() + num.len();
+            }
+            total_bytes
+        });
+
+        let (_, legacy_allocs) = crate::test_support::alloc_guard::count_allocations(|| {
+            let mut total_bytes = 0usize;
+            for (idx, track) in tracks.iter().enumerate() {
+                let detail: SharedString =
+                    SharedString::from(format!("{} · {}", track.artist(), track.album()));
+                let dur = format_duration(track.duration_secs(), true);
+                let num = (idx + 1).to_string();
+                total_bytes += track.title().len() + detail.len() + dur.len() + num.len();
+            }
+            total_bytes
+        });
+
+        assert_eq!(
+            precomputed_allocs, 0,
+            "稳态渲染每行展示标签应零堆分配，实际={precomputed_allocs}"
+        );
+        assert!(
+            legacy_allocs >= 300,
+            "旧路径 100 行至少应产生 300 次格式化堆分配，实际={legacy_allocs}"
+        );
+    }
 }

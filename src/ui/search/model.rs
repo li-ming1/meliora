@@ -355,7 +355,10 @@ impl SearchModel {
             }
 
             let request = crate::RUNTIME
-                .spawn(async move { P::fetch(query).await })
+                .spawn(async move {
+                    let body = P::fetch(query).await?;
+                    Ok::<_, P::Error>(P::parse_items(&body))
+                })
                 .await;
 
             this.update(cx, |this, cx| {
@@ -364,8 +367,8 @@ impl SearchModel {
                 }
 
                 match request {
-                    Ok(Ok(response)) => {
-                        P::store_items(this, P::parse_items(&response));
+                    Ok(Ok(items)) => {
+                        P::store_items(this, items);
                         this.emit_merged_items(cx);
                     }
                     // 搜索失败时保留上一次的结果：把它们清空会让面板在网络瞬时

@@ -347,16 +347,16 @@ pub fn parse_tracks(body: &Value, list_pointer: &str) -> Vec<KugouTrackInfo> {
         if hash.is_empty() {
             return None;
         }
-        Some(KugouTrackInfo {
-            title: SharedString::from(title_field(item)),
-            artist: SharedString::from(artist_field(item)),
-            album: SharedString::from(album_field(item)),
-            duration: duration_field(item),
+        Some(KugouTrackInfo::new(
+            SharedString::from(title_field(item)),
+            SharedString::from(artist_field(item)),
+            SharedString::from(album_field(item)),
+            duration_field(item),
             hash,
-            mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
-            album_id: i64_field(item, ALBUM_ID_KEYS),
-            cover_url: cover_url_field(item),
-        })
+            i64_field(item, MIX_SONG_ID_KEYS),
+            i64_field(item, ALBUM_ID_KEYS),
+            cover_url_field(item),
+        ))
     })
 }
 
@@ -425,20 +425,20 @@ fn parse_track(item: &Value) -> KugouTrackInfo {
                 .unwrap_or_default()
         }
     };
-    KugouTrackInfo {
-        title: SharedString::from(title_field(item)),
-        artist: SharedString::from(artist),
-        album: SharedString::from(album_field(item)),
+    KugouTrackInfo::new(
+        SharedString::from(title_field(item)),
+        SharedString::from(artist),
+        SharedString::from(album_field(item)),
         duration,
-        hash: string_field(audio, &["FileHash", "hash"]),
-        mix_song_id: i64_field(item, MIX_SONG_ID_KEYS),
-        album_id: i64_field(item, ALBUM_ID_KEYS),
-        cover_url: if album_cover.is_empty() {
+        string_field(audio, &["FileHash", "hash"]),
+        i64_field(item, MIX_SONG_ID_KEYS),
+        i64_field(item, ALBUM_ID_KEYS),
+        if album_cover.is_empty() {
             cover_url_field(audio)
         } else {
             album_cover
         },
-    }
+    )
 }
 
 /// 解析单个榜单的歌曲（`/data/songlist`）。
@@ -876,6 +876,15 @@ impl OnlineTrackDisplay for KugouTrackInfo {
     }
     fn download_label() -> cntp_i18n::I18nString {
         download_label()
+    }
+    fn artist_album_label(&self) -> Option<&SharedString> {
+        self.cached_artist_album_label()
+    }
+    fn duration_label(&self, pad_minutes: bool) -> SharedString {
+        self.cached_duration_label(pad_minutes).clone()
+    }
+    fn detail_label(&self) -> SharedString {
+        self.cached_detail_label().clone()
     }
 }
 

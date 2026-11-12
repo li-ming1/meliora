@@ -281,7 +281,10 @@ impl KugouPlaylistsView {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let request = crate::RUNTIME
-                .spawn(async move { client.user_playlists(1, PLAYLISTS_PER_PAGE).await })
+                .spawn(async move {
+                    let response = client.user_playlists(1, PLAYLISTS_PER_PAGE).await?;
+                    Ok::<_, kugou::KugouError>(parse_playlists(&response.body))
+                })
                 .await;
 
             let _ = this
@@ -290,8 +293,7 @@ impl KugouPlaylistsView {
                         return;
                     }
                     this.playlists = match request {
-                        Ok(Ok(response)) => {
-                            let playlists = parse_playlists(&response.body);
+                        Ok(Ok(playlists)) => {
                             store_root(&CACHED_PLAYLISTS, playlists.clone());
                             PlaylistsState::Ready(playlists)
                         }
@@ -378,7 +380,10 @@ impl KugouPlaylistsView {
                         let response = client
                             .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
                             .await?;
-                        Ok::<_, kugou::KugouError>((response, total_pages))
+                        let mut page_tracks = parse_tracks(&response.body, "/data/info");
+                        page_tracks.reverse();
+                        let page_tracks: Vec<_> = page_tracks.into_iter().map(Arc::new).collect();
+                        Ok::<_, kugou::KugouError>((page_tracks, total_pages))
                     } else {
                         let probe = client.playlist_tracks(listid, 1, TRACKS_PER_PAGE).await?;
                         let count = probe
@@ -395,7 +400,10 @@ impl KugouPlaylistsView {
                                 .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
                                 .await?
                         };
-                        Ok((response, total_pages))
+                        let mut page_tracks = parse_tracks(&response.body, "/data/info");
+                        page_tracks.reverse();
+                        let page_tracks: Vec<_> = page_tracks.into_iter().map(Arc::new).collect();
+                        Ok((page_tracks, total_pages))
                     }
                 })
                 .await;
@@ -410,10 +418,8 @@ impl KugouPlaylistsView {
                         }) && this.track_generation == generation;
 
                     match request {
-                        Ok(Ok((response, total_pages))) if still_current => {
-                            let mut page_tracks = parse_tracks(&response.body, "/data/info");
-                            page_tracks.reverse();
-                            this.tracks = page_tracks.into_iter().map(Arc::new).collect();
+                        Ok(Ok((page_tracks, total_pages))) if still_current => {
+                            this.tracks = page_tracks;
                             this.track_page = total_pages;
                             this.has_more_tracks = total_pages > 1;
                             this.tracks_state = TracksState::Idle;
@@ -447,7 +453,15 @@ impl KugouPlaylistsView {
             let client = kugou::shared_client();
             let listid = selected.listid;
             let request = crate::RUNTIME
-                .spawn(async move { client.playlist_tracks(listid, page, TRACKS_PER_PAGE).await })
+                .spawn(async move {
+                    let response = client
+                        .playlist_tracks(listid, page, TRACKS_PER_PAGE)
+                        .await?;
+                    let mut page_tracks = parse_tracks(&response.body, "/data/info");
+                    page_tracks.reverse();
+                    let page_tracks: Vec<_> = page_tracks.into_iter().map(Arc::new).collect();
+                    Ok::<_, kugou::KugouError>(page_tracks)
+                })
                 .await;
 
             let _ = this
@@ -460,13 +474,11 @@ impl KugouPlaylistsView {
                         }) && this.track_generation == generation;
 
                     match request {
-                        Ok(Ok(response)) if still_current => {
-                            let mut page_tracks = parse_tracks(&response.body, "/data/info");
-                            page_tracks.reverse();
+                        Ok(Ok(page_tracks)) if still_current => {
                             if append {
-                                this.tracks.extend(page_tracks.into_iter().map(Arc::new));
+                                this.tracks.extend(page_tracks);
                             } else {
-                                this.tracks = page_tracks.into_iter().map(Arc::new).collect();
+                                this.tracks = page_tracks;
                             }
                             this.track_page = page;
                             this.has_more_tracks = page > 1;

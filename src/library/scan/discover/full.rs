@@ -22,8 +22,8 @@ use crate::{
         discover::{
             DirectoryReadPolicy, DiscoverAction, DiscoveredPath, FoldedIndex,
             FolderArtObservations, PendingDirectoryRead, Relocation, apply_relocation,
-            canonicalize_or_keep, classify, delete_tracks, fold_excluded_roots, is_under_excluded,
-            missing_paths, schedule_directory_read,
+            canonicalize_or_keep, classify_from_folded, delete_tracks, fold_excluded_roots,
+            is_under_excluded, missing_paths, schedule_directory_read,
         },
         fs_case::{fold_path, same_file},
         record::ScanRecord,
@@ -32,7 +32,7 @@ use crate::{
 };
 
 fn build_folded_index(records: &FxHashMap<Utf8PathBuf, SystemTime>) -> FoldedIndex {
-    let mut index = FoldedIndex::default();
+    let mut index = FoldedIndex::with_capacity_and_hasher(records.len(), Default::default());
     for (key, ts) in records {
         index
             .entry(fold_path(key))
@@ -59,9 +59,9 @@ pub async fn discover(
         .iter()
         .map(|p| canonicalize_or_keep(p))
         .collect();
-    let (folded_index, records_snapshot) = {
+    let folded_index = {
         let sr = scan_record.lock().await;
-        (build_folded_index(&sr.records), sr.records.clone())
+        build_folded_index(&sr.records)
     };
     let mut discovered_total: u64 = 0;
     let mut pending: FuturesUnordered<PendingDirectoryRead> = FuturesUnordered::new();
@@ -111,7 +111,7 @@ pub async fn discover(
 
             let mut rescan_ts = None;
             if let Some(timestamp) = entry.scan_timestamp {
-                let (action, stale) = classify(&path, timestamp, &records_snapshot, &folded_index);
+                let (action, stale) = classify_from_folded(&path, timestamp, &folded_index);
                 // 丢掉指向同一个文件的其他已记录路径
                 for (old, old_ts) in stale {
                     if same_file(&old, &path)
@@ -311,7 +311,7 @@ mod tests {
 
     use super::*;
     use crate::library::scan::{
-        discover::{file_scan_timestamp, helpers::*},
+        discover::{classify, file_scan_timestamp, helpers::*},
         fs_case::is_case_insensitive,
     };
 

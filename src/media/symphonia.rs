@@ -733,13 +733,10 @@ impl MediaStream for SymphoniaStream {
                         ($v:ident, $convert:expr) => {{
                             for ch in 0..channel_count {
                                 if let Some(plane) = $v.plane(ch) {
-                                    self.conversion_buffer[ch].extend(
-                                        plane
-                                            .iter()
-                                            .skip(start_offset)
-                                            .take(max_samples)
-                                            .map($convert),
-                                    );
+                                    let start = start_offset.min(plane.len());
+                                    let end = start.saturating_add(max_samples).min(plane.len());
+                                    self.conversion_buffer[ch]
+                                        .extend(plane[start..end].iter().map($convert));
                                 }
                             }
                         }};
@@ -763,7 +760,10 @@ impl MediaStream for SymphoniaStream {
                             let counts: SmallVec<[&[f64]; 8]> = (0..channel_count)
                                 .filter_map(|ch| {
                                     v.plane(ch).map(|plane| {
-                                        &plane[start_offset..start_offset + max_samples]
+                                        let start = start_offset.min(plane.len());
+                                        let end =
+                                            start.saturating_add(max_samples).min(plane.len());
+                                        &plane[start..end]
                                     })
                                 })
                                 .collect();
@@ -902,5 +902,82 @@ mod tests {
         let dir = TestDir::new("symphonia-fixture-test");
         assert!(!open_fixture(&dir, "fixture.wav").metadata_updated());
         assert!(open_fixture(&dir, "fixture.flac").metadata_updated());
+    }
+
+    #[test]
+    fn decode_into_decodes_pcm_fixtures_and_preserves_sample_values() {
+        use crate::media::pipeline::{ChannelBuffers, DecodeResult};
+
+        let dir = TestDir::new("symphonia-decode-into-test");
+        for fixture in ["fixture.wav", "fixture.aiff"] {
+            let mut stream = open_fixture(&dir, fixture);
+            stream.start_playback().unwrap();
+            let channels = usize::from(stream.channels().unwrap().count());
+            let (mut producers, mut consumers) = ChannelBuffers::new(channels, 65_536).split();
+
+            let mut total_frames = 0usize;
+            let mut total_drained = 0usize;
+            while let DecodeResult::Decoded { frames, .. } =
+                stream.decode_into(&mut producers).unwrap()
+            {
+                total_frames += frames;
+                let read = consumers.try_read_to_staging(frames);
+                assert_eq!(read, frames);
+                total_drained += read;
+                for plane in consumers.staging() {
+                    assert!(
+                        plane
+                            .iter()
+                            .all(|s| s.is_finite() && (-1.0..=1.0).contains(s))
+                    );
+                }
+            }
+            assert!(
+                total_frames > 0 && total_drained == total_frames,
+                "{fixture} should decode and drain all frames: {total_drained}/{total_frames}"
+            );
+            stream.close();
+        }
+
+        // 构造含已知 S16 非零采样的 WAV（左 0.5 / 右 -0.5），验证切片转换后的精确数值
+        let path = dir.join("known_samples.wav");
+        let frames_per_ch = 8u32;
+        let data_bytes = frames_per_ch * 4;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&44_100u32.to_le_bytes());
+        wav.extend_from_slice(&176_400u32.to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        for _ in 0..frames_per_ch {
+            wav.extend_from_slice(&16_384i16.to_le_bytes()); // +0.5
+            wav.extend_from_slice(&(-16_384i16).to_le_bytes()); // -0.5
+        }
+        std::fs::write(&path, wav).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut stream = SymphoniaProvider.open(file, path.extension()).unwrap();
+        stream.start_playback().unwrap();
+        let (mut producers, mut consumers) = ChannelBuffers::new(2, 1024).split();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        while let DecodeResult::Decoded { frames, .. } = stream.decode_into(&mut producers).unwrap()
+        {
+            let read = consumers.try_read_to_staging(frames);
+            assert_eq!(read, frames);
+            left.extend_from_slice(&consumers.staging()[0][..read]);
+            right.extend_from_slice(&consumers.staging()[1][..read]);
+        }
+        assert_eq!(left.len(), frames_per_ch as usize);
+        assert_eq!(right.len(), frames_per_ch as usize);
+        assert!(left.iter().all(|&s| (s - 0.5).abs() < 1e-4));
+        assert!(right.iter().all(|&s| (s + 0.5).abs() < 1e-4));
+        stream.close();
     }
 }

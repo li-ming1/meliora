@@ -2,11 +2,14 @@ use crate::sync::RecoveredMutex;
 use std::{
     borrow::Cow,
     collections::VecDeque,
+    io::Cursor,
     sync::{Mutex, OnceLock},
 };
 
 use anyhow::anyhow;
-use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
+use image::{
+    ExtendedColorType, ImageEncoder, ImageReader, Rgba, RgbaImage, codecs::png::PngEncoder,
+};
 use rustc_hash::FxHashMap;
 use sqlx::SqlitePool;
 use url::Url;
@@ -217,8 +220,17 @@ fn shrink_thumb_cached(table: &'static str, id: i64, data: &[u8]) -> Option<Vec<
 /// 尽力把缩略图资产降到最大 128×128。任何（意料之外的）编码失败都返回 `None`，
 /// 让调用方保留原始字节而不是把封面渲染弄坏。
 fn shrink_thumb(data: &[u8]) -> Option<Vec<u8>> {
+    // 先仅读图像头尺寸：70×70 当代扫描器产物在 128 上限下无需完整像素解码与分配。
+    let (width, height) = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if width <= THUMB_MAX_PX && height <= THUMB_MAX_PX {
+        return Some(data.to_vec());
+    }
     let image = image::load_from_memory(data).ok()?;
-    // 源已经不大于显示上限时**原样返回**，不再重编码。
+    // 若像素解码后的尺寸仍不大于上限（兜底），同样原样返回，不再重编码。
     //
     // 为什么这是净赢而不是省事（实测，他库 20 张真实 thumb，`bench_thumb_miss_costs`）：
     // `image::thumbnail` 只做缩小，70×70 当代产物在 128 上限下几何运算是恒等；
@@ -274,6 +286,47 @@ mod tests {
         assert!(
             decoded.width() <= THUMB_MAX_PX && decoded.height() <= THUMB_MAX_PX,
             "缩放结果不得超过显示上限"
+        );
+
+        assert!(shrink_thumb(b"").is_none(), "空字节应安全返回 None");
+        assert!(
+            shrink_thumb(b"not-an-image-header").is_none(),
+            "损坏字节应安全返回 None"
+        );
+    }
+
+    /// 测量 70×70 BMP 在加了文件头尺寸闸门之后（`shrink_thumb`）与旧路径
+    /// （`image::load_from_memory` 全像素解码）的单次 miss 耗时对照。
+    #[test]
+    #[ignore = "microbench: measures header-only shrink_thumb vs full pixel decode"]
+    fn report_shrink_thumb_header_gate_speedup() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            70,
+            70,
+            image::Rgb([10, 120, 200]),
+        ));
+        let mut bmp = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .unwrap();
+
+        const ROUNDS: usize = 1000;
+        let t_gate = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            let out = shrink_thumb(&bmp).unwrap();
+            std::hint::black_box(out.len());
+        }
+        let gate_us = t_gate.elapsed().as_micros();
+
+        let t_full = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            let decoded = image::load_from_memory(&bmp).unwrap();
+            std::hint::black_box((decoded.width(), decoded.height(), bmp.to_vec().len()));
+        }
+        let full_us = t_full.elapsed().as_micros();
+        println!(
+            "shrink_thumb 70x70 BMP x{ROUNDS}: header_gate={gate_us}us ({:.2}us/miss) vs full_decode={full_us}us ({:.2}us/miss)",
+            gate_us as f64 / ROUNDS as f64,
+            full_us as f64 / ROUNDS as f64
         );
     }
 

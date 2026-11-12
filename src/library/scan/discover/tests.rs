@@ -238,3 +238,159 @@ fn classify_reports_stale_spellings_on_exact_hit() {
         _ => panic!("expected skip with a stale spelling"),
     }
 }
+
+#[test]
+fn classify_from_folded_matches_classify_across_states() {
+    let dir = TestDir::new("classify-from-folded-test");
+    if !is_case_insensitive(&dir.utf8_path()) {
+        return;
+    }
+
+    let ts = SystemTime::now();
+    let exact = dir.utf8_join("exact.flac");
+    let stale_upper = dir.utf8_join("DUP.FLAC");
+    let stale_lower = dir.utf8_join("dup.flac");
+    let changed = dir.utf8_join("changed.flac");
+    let relocate_old = dir.utf8_join("RENAME.FLAC");
+    let relocate_new = dir.utf8_join("rename.flac");
+    let fresh = dir.utf8_join("fresh.flac");
+
+    let records = FxHashMap::from_iter([
+        (exact.clone(), ts),
+        (stale_lower.clone(), ts),
+        (stale_upper.clone(), ts),
+        (changed.clone(), UNIX_EPOCH),
+        (relocate_old.clone(), ts),
+    ]);
+    let index = folded_index(&records);
+
+    // 精确命中且无碰撞：Skip + 空 stale
+    assert!(matches!(
+        classify_from_folded(&exact, ts, &index),
+        (DiscoverAction::Skip, stale) if stale.is_empty()
+    ));
+
+    // 精确命中且同折叠键下存在旧拼写：Skip + 返回旧拼写
+    match classify_from_folded(&stale_lower, ts, &index) {
+        (DiscoverAction::Skip, stale) => assert_eq!(stale, vec![(stale_upper, ts)]),
+        _ => panic!("expected skip with stale spelling"),
+    }
+
+    // 时间戳变化：Scan(ts)
+    assert!(matches!(
+        classify_from_folded(&changed, ts, &index),
+        (DiscoverAction::Scan(got), stale) if got == ts && stale.is_empty()
+    ));
+
+    // 仅大小写变体命中：Relocate
+    let (candidates, got_ts) = expect_relocate(classify_from_folded(&relocate_new, ts, &index));
+    assert_eq!(candidates, vec![(relocate_old, ts)]);
+    assert_eq!(got_ts, ts);
+
+    // 完全未记录：Scan(ts)
+    assert!(matches!(
+        classify_from_folded(&fresh, ts, &index),
+        (DiscoverAction::Scan(got), stale) if got == ts && stale.is_empty()
+    ));
+
+    // 时间戳变化且同桶内有旧拼写：必须返回 (Scan(ts), stale)，与 classify 完全一致
+    let mut mixed_records = records.clone();
+    let stale_changed_upper = dir.utf8_join("MIX.FLAC");
+    let stale_changed_lower = dir.utf8_join("mix.flac");
+    mixed_records.insert(stale_changed_lower.clone(), UNIX_EPOCH);
+    mixed_records.insert(stale_changed_upper.clone(), UNIX_EPOCH);
+    let mixed_index = folded_index(&mixed_records);
+    match (
+        classify(&stale_changed_lower, ts, &mixed_records, &mixed_index),
+        classify_from_folded(&stale_changed_lower, ts, &mixed_index),
+    ) {
+        ((DiscoverAction::Scan(a_ts), a_stale), (DiscoverAction::Scan(b_ts), b_stale)) => {
+            assert_eq!(a_ts, ts);
+            assert_eq!(b_ts, ts);
+            assert_eq!(a_stale, vec![(stale_changed_upper.clone(), UNIX_EPOCH)]);
+            assert_eq!(b_stale, a_stale);
+        }
+        _ => panic!("expected matching Scan with stale spellings"),
+    }
+
+    // 多个搬迁候选中，优先把时间戳一致的排在最前
+    let multi_upper = dir.utf8_join("MULTI.FLAC");
+    let multi_mixed = dir.utf8_join("Multi.flac");
+    let multi_target = dir.utf8_join("multi.flac");
+    let multi_records =
+        FxHashMap::from_iter([(multi_upper.clone(), UNIX_EPOCH), (multi_mixed.clone(), ts)]);
+    let multi_index = folded_index(&multi_records);
+    let (got_candidates, _) =
+        expect_relocate(classify_from_folded(&multi_target, ts, &multi_index));
+    assert_eq!(
+        got_candidates,
+        vec![(multi_mixed, ts), (multi_upper, UNIX_EPOCH)]
+    );
+}
+
+#[test]
+#[ignore = "microbench: measures single-table classify_from_folded vs cloned records + classify"]
+fn report_classify_from_folded_vs_legacy_two_table_cost() {
+    let dir = TestDir::new("discover-bench-dir");
+    let _ = is_case_insensitive(&dir.utf8_path());
+    let ts = SystemTime::now();
+    let count = 10_000usize;
+    let paths: Vec<Utf8PathBuf> = (0..count)
+        .map(|i| dir.utf8_join(&format!("Track-{i:05}.flac")))
+        .collect();
+    let records: FxHashMap<Utf8PathBuf, SystemTime> =
+        paths.iter().map(|p| (p.clone(), ts)).collect();
+
+    let ((legacy_us, legacy_hits), legacy_allocs) =
+        crate::test_support::alloc_guard::count_allocations(|| {
+            let t_legacy = std::time::Instant::now();
+            let legacy_snapshot = records.clone();
+            let mut legacy_index: FxHashMap<Utf8PathBuf, Vec<(Utf8PathBuf, SystemTime)>> =
+                FxHashMap::default();
+            for (k, v) in &records {
+                legacy_index
+                    .entry(fold_path(k))
+                    .or_default()
+                    .push((k.clone(), *v));
+            }
+            let mut hits = 0usize;
+            for p in &paths {
+                let exact = legacy_snapshot.get(p).copied();
+                let stale_lookup = legacy_index.get(&fold_path(p));
+                if exact == Some(ts) && stale_lookup.is_some_and(|v| v.len() == 1) {
+                    hits += 1;
+                }
+            }
+            (t_legacy.elapsed().as_micros(), hits)
+        });
+
+    let ((new_us, new_hits), new_allocs) =
+        crate::test_support::alloc_guard::count_allocations(|| {
+            let t_new = std::time::Instant::now();
+            let mut new_index =
+                FoldedIndex::with_capacity_and_hasher(records.len(), Default::default());
+            for (k, v) in &records {
+                new_index
+                    .entry(fold_path(k))
+                    .or_default()
+                    .push((k.clone(), *v));
+            }
+            let mut hits = 0usize;
+            for p in &paths {
+                if matches!(
+                    classify_from_folded(p, ts, &new_index),
+                    (DiscoverAction::Skip, s) if s.is_empty()
+                ) {
+                    hits += 1;
+                }
+            }
+            (t_new.elapsed().as_micros(), hits)
+        });
+
+    assert_eq!(legacy_hits, count);
+    assert_eq!(new_hits, count);
+    assert!(new_allocs < legacy_allocs);
+    println!(
+        "discover 10k paths (setup+classify): legacy_two_table={legacy_us}us ({legacy_allocs} allocs) vs single_folded_smallvec={new_us}us ({new_allocs} allocs)"
+    );
+}

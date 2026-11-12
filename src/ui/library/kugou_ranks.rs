@@ -200,7 +200,10 @@ impl KugouRanksView {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let request = crate::RUNTIME
-                .spawn(async move { client.rank_list().await })
+                .spawn(async move {
+                    let response = client.rank_list().await?;
+                    Ok::<_, kugou::KugouError>(parse_ranks(&response.body))
+                })
                 .await;
 
             let _ = this
@@ -209,8 +212,7 @@ impl KugouRanksView {
                         return;
                     }
                     this.ranks = match request {
-                        Ok(Ok(response)) => {
-                            let ranks = parse_ranks(&response.body);
+                        Ok(Ok(ranks)) => {
                             if ranks.is_empty() {
                                 RanksState::Failed(tr!("KUGOU_NO_RANKS", "No ranks found").into())
                             } else {
@@ -257,7 +259,14 @@ impl KugouRanksView {
         cx.spawn(async move |this, cx| {
             let client = kugou::shared_client();
             let request = crate::RUNTIME
-                .spawn(async move { client.everyday_recommend().await })
+                .spawn(async move {
+                    let response = client.everyday_recommend().await?;
+                    let tracks: Vec<_> = parse_recommend_tracks(&response.body)
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
+                    Ok::<_, kugou::KugouError>(tracks)
+                })
                 .await;
 
             let _ = this
@@ -266,14 +275,12 @@ impl KugouRanksView {
                         return;
                     }
                     this.recommend = match request {
-                        Ok(Ok(response)) => {
-                            let tracks = parse_recommend_tracks(&response.body);
+                        Ok(Ok(tracks)) => {
                             if tracks.is_empty() {
                                 RecommendState::Failed(
                                     tr!("KUGOU_NO_RECOMMEND", "No recommendations today").into(),
                                 )
                             } else {
-                                let tracks: Vec<_> = tracks.into_iter().map(Arc::new).collect();
                                 store_root(&CACHED_RECOMMEND, tracks.clone());
                                 RecommendState::Ready(tracks)
                             }
@@ -314,7 +321,19 @@ impl KugouRanksView {
             let client = kugou::shared_client();
             let rankid = rank.rankid;
             let request = crate::RUNTIME
-                .spawn(async move { client.rank_audio(rankid, page, TRACKS_PER_PAGE).await })
+                .spawn(async move {
+                    let response = client.rank_audio(rankid, page, TRACKS_PER_PAGE).await?;
+                    let total = response
+                        .body
+                        .pointer("/data/total")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0);
+                    let page_tracks: Vec<_> = parse_rank_tracks(&response.body)
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
+                    Ok::<_, kugou::KugouError>((total, page_tracks))
+                })
                 .await;
 
             let _ = this
@@ -327,17 +346,11 @@ impl KugouRanksView {
                         && this.track_generation == generation;
 
                     match request {
-                        Ok(Ok(response)) if still_current => {
-                            let total = response
-                                .body
-                                .pointer("/data/total")
-                                .and_then(serde_json::Value::as_i64)
-                                .unwrap_or(0);
-                            let page_tracks = parse_rank_tracks(&response.body);
+                        Ok(Ok((total, page_tracks))) if still_current => {
                             // 空页即到底：total 可能虚高、末页也可能解析不足，
                             // 只看 tracks.len() < total 会让「加载更多」永远追页
                             let page_empty = page_tracks.is_empty();
-                            this.tracks.extend(page_tracks.into_iter().map(Arc::new));
+                            this.tracks.extend(page_tracks);
                             this.track_page = page;
                             this.has_more_tracks =
                                 !page_empty && this.tracks.len() < total as usize;

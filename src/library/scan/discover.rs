@@ -16,6 +16,7 @@ use std::{
 
 use camino::{Utf8Path, Utf8PathBuf};
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use tokio::sync::mpsc::Sender;
 
 use crate::library::scan::fs_case::{fold_path, same_file};
@@ -88,7 +89,7 @@ impl FolderArtObservations {
     }
 }
 
-pub(super) type FoldedIndex = FxHashMap<Utf8PathBuf, Vec<(Utf8PathBuf, SystemTime)>>;
+pub(super) type FoldedIndex = FxHashMap<Utf8PathBuf, SmallVec<[(Utf8PathBuf, SystemTime); 1]>>;
 
 pub(super) enum DiscoverAction {
     Skip,
@@ -98,6 +99,51 @@ pub(super) enum DiscoverAction {
         candidates: Vec<(Utf8PathBuf, SystemTime)>,
         ts: SystemTime,
     },
+}
+
+/// 仅凭完整构建的 `folded_index` 完成分类：在全量扫描中省掉对整张 `ScanRecord.records`
+/// 的二次全表克隆，且热路径（无碰撞精确命中）只需一次折叠表查询、零分配。
+pub(super) fn classify_from_folded(
+    path: &Utf8Path,
+    timestamp: SystemTime,
+    folded_index: &FoldedIndex,
+) -> (DiscoverAction, Vec<(Utf8PathBuf, SystemTime)>) {
+    let Some(bucket) = folded_index.get(&fold_path(path)) else {
+        return (DiscoverAction::Scan(timestamp), Vec::new());
+    };
+
+    if let Some((_, last_scan)) = bucket.iter().find(|(key, _)| key.as_path() == path) {
+        let action = if *last_scan == timestamp {
+            DiscoverAction::Skip
+        } else {
+            DiscoverAction::Scan(timestamp)
+        };
+        let stale = if bucket.len() == 1 {
+            Vec::new()
+        } else {
+            bucket
+                .iter()
+                .filter(|(key, _)| key.as_path() != path)
+                .cloned()
+                .collect()
+        };
+        return (action, stale);
+    }
+
+    if !bucket.is_empty() {
+        let mut candidates: Vec<(Utf8PathBuf, SystemTime)> = bucket.iter().cloned().collect();
+        // 优先时间戳相同的候选——搬迁这类候选可以跳过一次元数据重读
+        candidates.sort_by_key(|(_, old_timestamp)| *old_timestamp != timestamp);
+        return (
+            DiscoverAction::Relocate {
+                candidates,
+                ts: timestamp,
+            },
+            Vec::new(),
+        );
+    }
+
+    (DiscoverAction::Scan(timestamp), Vec::new())
 }
 
 pub(super) fn classify(

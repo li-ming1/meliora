@@ -19,8 +19,60 @@ use super::stream_registry::{STREAM_MAP_CAP, StreamMapPersistence};
 use crate::kugou;
 use crate::sync::RecoveredRwLock;
 
+/// 把秒数格式化为 "m:ss" / "mm:ss" / "h:mm:ss"，与 `ui::util::format_duration` 一致。
+/// `online_sources` 禁止反向依赖 `crate::ui`，故此处保留纯格式化逻辑。
+fn format_duration_text(secs: i64, pad_minutes: bool) -> String {
+    let secs = secs.max(0);
+    let hours = secs / 3_600;
+    let minutes = (secs % 3_600) / 60;
+    let seconds = secs % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else if pad_minutes {
+        format!("{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// 在后台解析或构造 `KugouTrackInfo` 时一次性算好的列表展示文本，避免渲染热路径
+/// 每帧为每个可见行重复 `format!` 分配。
+#[derive(Clone, Debug)]
+struct PrecomputedTrackDisplay {
+    artist_album: Option<SharedString>,
+    duration_compact: SharedString,
+    duration_padded: SharedString,
+    detail: SharedString,
+}
+
+impl PrecomputedTrackDisplay {
+    fn new(artist: &SharedString, album: &SharedString, duration: i64) -> Self {
+        let secs = duration.max(0);
+        let duration_compact: SharedString = format_duration_text(secs, false).into();
+        // 达到 1 小时或分钟已占两位时补零版与紧凑版完全相同，直接复用同一个 SharedString。
+        let duration_padded = if secs >= 600 {
+            duration_compact.clone()
+        } else {
+            format_duration_text(secs, true).into()
+        };
+        let artist_album = (!artist.is_empty() && !album.is_empty())
+            .then(|| SharedString::from(format!("{artist} · {album}")));
+        let detail = if artist.is_empty() {
+            duration_compact.clone()
+        } else {
+            SharedString::from(format!("{artist} · {duration_compact}"))
+        };
+        Self {
+            artist_album,
+            duration_compact,
+            duration_padded,
+            detail,
+        }
+    }
+}
+
 /// 搜索结果与歌单里展示的一条在线曲目。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct KugouTrackInfo {
     pub title: SharedString,
     pub artist: SharedString,
@@ -32,6 +84,63 @@ pub struct KugouTrackInfo {
     pub album_id: i64,
     /// API 给的专辑封面绝对 URL（`{size}` 占位符已替换成固定像素宽度）。API 没给则为空。
     pub cover_url: SharedString,
+    display: PrecomputedTrackDisplay,
+}
+
+impl PartialEq for KugouTrackInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.title == other.title
+            && self.artist == other.artist
+            && self.album == other.album
+            && self.duration == other.duration
+            && self.hash == other.hash
+            && self.mix_song_id == other.mix_song_id
+            && self.album_id == other.album_id
+            && self.cover_url == other.cover_url
+    }
+}
+
+impl KugouTrackInfo {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        title: SharedString,
+        artist: SharedString,
+        album: SharedString,
+        duration: i64,
+        hash: String,
+        mix_song_id: i64,
+        album_id: i64,
+        cover_url: SharedString,
+    ) -> Self {
+        let display = PrecomputedTrackDisplay::new(&artist, &album, duration);
+        Self {
+            title,
+            artist,
+            album,
+            duration,
+            hash,
+            mix_song_id,
+            album_id,
+            cover_url,
+            display,
+        }
+    }
+
+    pub fn cached_artist_album_label(&self) -> Option<&SharedString> {
+        self.display.artist_album.as_ref()
+    }
+
+    pub fn cached_duration_label(&self, pad_minutes: bool) -> &SharedString {
+        if pad_minutes {
+            &self.display.duration_padded
+        } else {
+            &self.display.duration_compact
+        }
+    }
+
+    pub fn cached_detail_label(&self) -> &SharedString {
+        &self.display.detail
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -82,16 +191,16 @@ impl From<(String, KugouTrackInfo)> for StreamMapEntry {
 
 impl StreamMapEntry {
     fn to_track(&self) -> KugouTrackInfo {
-        KugouTrackInfo {
-            title: SharedString::from(self.title.clone()),
-            artist: SharedString::from(self.artist.clone()),
-            album: SharedString::from(self.album.clone()),
-            duration: self.duration,
-            hash: self.hash.clone(),
-            mix_song_id: self.mix_song_id,
-            album_id: self.album_id,
-            cover_url: SharedString::from(self.cover_url.clone()),
-        }
+        KugouTrackInfo::new(
+            SharedString::from(self.title.clone()),
+            SharedString::from(self.artist.clone()),
+            SharedString::from(self.album.clone()),
+            self.duration,
+            self.hash.clone(),
+            self.mix_song_id,
+            self.album_id,
+            SharedString::from(self.cover_url.clone()),
+        )
     }
 }
 
@@ -606,27 +715,26 @@ impl super::OnlineSourceProvider for KugouSource {
             .unwrap_or_default();
         remember_online_track(
             url.clone(),
-            KugouTrackInfo {
-                title: name
-                    .or_else(|| previous.as_ref().map(|e| e.title.clone()))
+            KugouTrackInfo::new(
+                name.or_else(|| previous.as_ref().map(|e| e.title.clone()))
                     .unwrap_or_default()
                     .into(),
-                artist: artist
+                artist
                     .or_else(|| previous.as_ref().map(|e| e.artist.clone()))
                     .unwrap_or_default()
                     .into(),
                 album,
-                duration: duration
+                duration
                     .or(previous.as_ref().map(|e| e.duration))
                     .unwrap_or(0),
                 hash,
                 mix_song_id,
                 album_id,
-                cover_url: cover
+                cover
                     .or_else(|| previous.as_ref().map(|e| e.cover_url.clone()))
                     .unwrap_or_default()
                     .into(),
-            },
+            ),
         );
         Some(url)
     }
@@ -705,5 +813,103 @@ mod url_parse_tests {
         // 无标记、标记后无数字
         assert_eq!(mixsongid_in_url("http://x/file.mp3"), None);
         assert_eq!(mixsongid_in_url("http://x/_mx"), None);
+    }
+
+    #[test]
+    fn kugou_track_info_precomputes_display_labels() {
+        let short = KugouTrackInfo::new(
+            "歌名".into(),
+            "歌手".into(),
+            "专辑".into(),
+            185,
+            "H1".into(),
+            1,
+            2,
+            "".into(),
+        );
+        assert_eq!(
+            short.cached_artist_album_label().map(|s| s.as_ref()),
+            Some("歌手 · 专辑")
+        );
+        assert_eq!(short.cached_duration_label(false).as_ref(), "3:05");
+        assert_eq!(short.cached_duration_label(true).as_ref(), "03:05");
+        assert_eq!(short.cached_detail_label().as_ref(), "歌手 · 3:05");
+
+        let long_no_artist = KugouTrackInfo::new(
+            "长曲".into(),
+            "".into(),
+            "专辑".into(),
+            3665,
+            "H2".into(),
+            2,
+            3,
+            "".into(),
+        );
+        assert!(long_no_artist.cached_artist_album_label().is_none());
+        assert_eq!(
+            long_no_artist.cached_duration_label(false).as_ref(),
+            "1:01:05"
+        );
+        assert_eq!(
+            long_no_artist.cached_duration_label(true).as_ref(),
+            "1:01:05"
+        );
+        assert_eq!(long_no_artist.cached_detail_label().as_ref(), "1:01:05");
+
+        // 负时长钳位到 0；599s 仍需补零，600s 起两版共享同一串
+        let neg = KugouTrackInfo::new(
+            "负".into(),
+            "歌手".into(),
+            "".into(),
+            -5,
+            "H3".into(),
+            3,
+            0,
+            "".into(),
+        );
+        assert!(neg.cached_artist_album_label().is_none());
+        assert_eq!(neg.cached_duration_label(false).as_ref(), "0:00");
+        assert_eq!(neg.cached_duration_label(true).as_ref(), "00:00");
+        assert_eq!(neg.cached_detail_label().as_ref(), "歌手 · 0:00");
+
+        let border_599 = KugouTrackInfo::new(
+            "A".into(),
+            "B".into(),
+            "C".into(),
+            599,
+            "H4".into(),
+            4,
+            0,
+            "".into(),
+        );
+        assert_eq!(border_599.cached_duration_label(false).as_ref(), "9:59");
+        assert_eq!(border_599.cached_duration_label(true).as_ref(), "09:59");
+
+        let border_600 = KugouTrackInfo::new(
+            "A".into(),
+            "B".into(),
+            "C".into(),
+            600,
+            "H4".into(),
+            4,
+            0,
+            "".into(),
+        );
+        assert_eq!(border_600.cached_duration_label(false).as_ref(), "10:00");
+        assert_eq!(border_600.cached_duration_label(true).as_ref(), "10:00");
+        assert_ne!(border_599, border_600);
+        assert_eq!(
+            border_600,
+            KugouTrackInfo::new(
+                "A".into(),
+                "B".into(),
+                "C".into(),
+                600,
+                "H4".into(),
+                4,
+                0,
+                "".into(),
+            )
+        );
     }
 }
