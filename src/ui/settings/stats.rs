@@ -304,7 +304,8 @@ impl StatsSettings {
 
     /// 页面打开期间的实时刷新：播放时收听时间以 60 秒为单位落库，所以 30 秒重载
     /// 能让每个视图与真实值最多差一批（并在零点把 "today"/连续天数滚过去）。统计
-    /// 分区实体只在本分区激活时存在——切走即 drop，这个循环也随之结束。
+    /// 分区实体随设置窗存续（2026-11-12 分区缓存），循环常开；设置窗关闭时实体
+    /// 释放，循环在下一次 update 失败后退出。
     fn spawn_refresh(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {

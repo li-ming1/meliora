@@ -13,6 +13,8 @@ mod library;
 mod playback;
 mod stats;
 
+use std::collections::HashMap;
+
 use cntp_i18n::tr;
 use gpui::{
     Action, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
@@ -216,6 +218,13 @@ impl SettingsSectionKind {
     fn fills_height(self) -> bool {
         matches!(self, Self::Equalizer)
     }
+
+    /// 分区实体能否跨切换缓存。均衡器例外：频谱抽头按视图生命周期门控
+    /// （`equalizer/view.rs` 的 `on_release` 递减 `spectrum_viewers`），常驻会让
+    /// FFT 抽头在整个会话保持开启，所以它每次切回都新建。
+    fn cacheable(self) -> bool {
+        !matches!(self, Self::Equalizer)
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -287,6 +296,10 @@ impl SettingsSection {
 
 struct SettingsWindow {
     active: SettingsSection,
+    /// 已创建过的分区实体（键 = [`SettingsSectionKind::index`]）。切走的分区不再
+    /// 随渲染销毁：扫码轮询、未提交的下载目录输入、统计页 30s 刷新循环都必须跨
+    /// 切换存活。均衡器不入缓存，见 [`SettingsSectionKind::cacheable`]。
+    cache: HashMap<u8, SettingsSection>,
     scroll_handle: ScrollHandle,
     focus_handle: FocusHandle,
     first_render: bool,
@@ -297,17 +310,37 @@ impl SettingsWindow {
     fn new(initial_section: SettingsSectionKind, cx: &mut App) -> gpui::Entity<Self> {
         let focus_handle = cx.focus_handle();
         let active = SettingsSection::new(initial_section, cx);
+        let mut cache = HashMap::new();
+        if initial_section.cacheable() {
+            cache.insert(initial_section.index(), active.clone());
+        }
         SETTINGS_ACTIVE_SECTION_INDEX.store(
             initial_section.index(),
             std::sync::atomic::Ordering::Relaxed,
         );
         cx.new(|_| Self {
             active,
+            cache,
             scroll_handle: ScrollHandle::new(),
             first_render: true,
             focus_handle,
             redraw: false,
         })
+    }
+
+    /// 取分区实体：缓存命中直接复用，未命中才创建并入缓存。
+    fn cached_section(
+        &mut self,
+        section: SettingsSectionKind,
+        cx: &mut Context<Self>,
+    ) -> SettingsSection {
+        if !section.cacheable() {
+            return SettingsSection::new(section, cx);
+        }
+        self.cache
+            .entry(section.index())
+            .or_insert_with(|| SettingsSection::new(section, cx))
+            .clone()
     }
 
     fn switch_section(&mut self, section: SettingsSectionKind, cx: &mut Context<Self>) {
@@ -316,7 +349,7 @@ impl SettingsWindow {
         }
 
         let from = self.active.kind();
-        self.active = SettingsSection::new(section, cx);
+        self.active = self.cached_section(section, cx);
         SETTINGS_ACTIVE_SECTION_INDEX.store(section.index(), std::sync::atomic::Ordering::Relaxed);
         // 分页帧归因的关联锚点：30s 聚合窗若跨了切换，靠这行把每段 draw
         // 成本对回当时的分区。

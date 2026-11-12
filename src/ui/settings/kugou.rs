@@ -48,6 +48,30 @@ impl KugouSettings {
         cx.new(|cx| {
             cx.observe(&settings, |_, _, cx| cx.notify()).detach();
 
+            // 分区实体自 2026-11-12 起跨切换缓存（settings.rs 的 cache），本页会活过
+            // 账号身份变化：以登录用户为键的挂载视图必须 observe 代纪（AGENTS.md
+            // 契约）。本页自己的登录/登出已同步完状态，这条只在身份被别处改动时
+            // 生效——守卫让它在常规流程里恒为无操作。
+            cx.observe_global::<crate::ui::library::KugouAccountEpoch>(
+                |this: &mut Self, cx: &mut Context<Self>| {
+                    let logged_in = kugou::shared_client().logged_in();
+                    if this.logged_in == logged_in {
+                        return;
+                    }
+                    this.logged_in = logged_in;
+                    this.nickname = None;
+                    this.profile_failed = false;
+                    this.vip_line = Some(crate::ui::kugou::vip_status_line());
+                    if logged_in {
+                        this.fetch_profile(cx);
+                    } else {
+                        this.qr.close();
+                    }
+                    cx.notify();
+                },
+            )
+            .detach();
+
             let mut this = Self {
                 settings,
                 logged_in,
