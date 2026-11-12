@@ -625,13 +625,13 @@
   },
   "FILES_COLLAPSE_ALL": {
     "context": "files_view.rs",
-    "definedIn": "src/ui/library/files_view.rs:535",
+    "definedIn": "src/ui/library/files_view.rs:542",
     "plural": false,
     "description": null
   },
   "FILES_REFRESH": {
     "context": "files_view.rs",
-    "definedIn": "src/ui/library/files_view.rs:542",
+    "definedIn": "src/ui/library/files_view.rs:549",
     "plural": false,
     "description": null
   },
@@ -823,7 +823,7 @@
   },
   "KUGOU_DAILY_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:433",
+    "definedIn": "src/ui/library/kugou_ranks.rs:437",
     "plural": false,
     "description": null
   },
@@ -2389,7 +2389,7 @@
   },
   "TRAY_HIDE": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:610",
+    "definedIn": "src/tray/windows.rs:616",
     "plural": false,
     "description": null
   },
@@ -2425,7 +2425,7 @@
   },
   "TRAY_SHOW": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:612",
+    "definedIn": "src/tray/windows.rs:618",
     "plural": false,
     "description": null
   },
@@ -2557,7 +2557,7 @@
   },
   "UPDATE_RESTART_FAILED_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:429",
+    "definedIn": "src/updater.rs:437",
     "plural": false,
     "description": null
   },
