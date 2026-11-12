@@ -177,8 +177,7 @@ pub(crate) fn track_menu_for_table_shared(
 
     let context = context.clone();
     // 菜单打开期间构建器每次渲染都重跑，所以它的函数体只能读缓存/快照——
-    // 不得有阻塞查询或系统调用（TrackContextMenu::render 的艺术家查找是唯一剩下的
-    // 查询，留给专门的缓存改动）
+    // 不得有阻塞查询或系统调用。
     let builder: ContextMenuBuilder = Rc::new(move |_, cx| {
         // 用缓存的已点赞集合：这里跑 DB 查询会阻塞 UI 线程（见 is_song_liked 的文档）
         let is_liked = is_song_liked(cx, track.id);

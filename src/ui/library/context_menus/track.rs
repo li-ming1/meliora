@@ -11,7 +11,6 @@ use crate::{
             icons::{DISC, FOLDER_SEARCH, PLAY, PLAYLIST_ADD, PLAYLIST_REMOVE, PLUS, USERS},
             menu::{menu, menu_item, menu_separator},
         },
-        library_access::LibraryAccess,
         models::{Models, is_track_available_snapshot, toggle_like_by_id},
         util::reveal_path_for_file_manager,
     },
@@ -65,12 +64,13 @@ impl RenderOnce for TrackContextMenu {
         let track_for_reveal = self.track.clone();
         let track_for_rescan = self.track.clone();
         let can_go_to_artist = self.context.show_go_to_artist
-            && cx
-                .artist_ids_for_track(track_for_artist.id)
-                .is_ok_and(|ids| !ids.is_empty());
+            && track
+                .artist_names
+                .as_ref()
+                .is_some_and(|names| !names.0.is_empty());
         let can_go_to_album = track_for_album.album_id.is_some();
-        // 读的是可用性快照：这里每次渲染一次 `path.exists()` 系统调用，会在菜单
-        // 保持打开的每一帧阻塞 UI 线程
+        // 只读快照：菜单保持打开时每次重绘都会跑这里，绝不能做 DB 查询或
+        // `path.exists()` 之类的系统调用（艺术家项同理，按曲目字段判断）。
         let can_reveal_track = is_track_available_snapshot(cx, &track_for_reveal);
         let show_add_to = self.show_add_to;
         let play_from_here = self.context.play_from_here.clone();
