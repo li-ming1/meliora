@@ -312,6 +312,13 @@ impl Element for Resizable {
                     if !drag_state.is_dragging {
                         return;
                     }
+                    // 在窗口外松手时收不到 MouseUp：左键已抬起的移动事件就是
+                    // 缺失的释放信号，先清拖拽闩，否则不按键移动鼠标仍继续改宽
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        drop(drag_state);
+                        state_move.borrow_mut().is_dragging = false;
+                        return;
+                    }
 
                     // 左/上边缘要反转指针位移：在那里指针向外移动时面板是增大的。
                     let delta = axis_position(edge, ev.position) - drag_state.start_position;
