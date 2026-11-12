@@ -59,11 +59,20 @@ pub fn calculate_gain(
         None => settings.fallback_preamp_db,
     };
 
+    // 标签里的 inf/NaN 字面量（parse::<f64>() 接受）或与前置增益相加溢出，
+    // 都会让 10^(dB/20) 变成 0/∞——直通设备即整曲静音或爆音，按不调整处理。
+    if !gain_db.is_finite() {
+        return 1.0;
+    }
+
     // dB 转线性：10^(dB/20)
     let mut gain = 10.0_f64.powf(gain_db / 20.0);
 
     if let Some(peak) = selected_peak.filter(|peak| *peak > 0.0) {
         gain = gain.min(1.0 / peak);
+    }
+    if !gain.is_finite() {
+        return 1.0;
     }
     gain
 }
@@ -112,6 +121,25 @@ mod tests {
             None,
         );
         assert!((gain - 10.0_f64.powf(-6.0 / 20.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn non_finite_gain_falls_back_to_unity() {
+        // 标签里的 inf/NaN 字面量（parse::<f64>() 接受）不得直通设备
+        for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(
+                calculate_gain(
+                    &track_settings(0.0),
+                    ReplayGainAutoHint::PreferTrack,
+                    Some(bad),
+                    None,
+                    None,
+                    None,
+                ),
+                1.0,
+                "gain {bad} must not reach the device"
+            );
+        }
     }
 
     #[test]
