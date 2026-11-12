@@ -686,6 +686,10 @@ pub(crate) fn is_track_available_snapshot(cx: &App, track: &Track) -> bool {
 /// "启动期到底有没有重叠"这个此前只能靠推断的问题。
 static AVAILABILITY_PASSES: AtomicUsize = AtomicUsize::new(0);
 
+pub(crate) fn availability_pass_in_flight() -> bool {
+    AVAILABILITY_PASSES.load(Ordering::Relaxed) > 0
+}
+
 /// 在途计数的守卫：async 任务被取消或实体被 drop 时同样会递减，
 /// 不会把计数永久钉高。
 struct AvailabilityPassGuard;

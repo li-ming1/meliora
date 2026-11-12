@@ -183,7 +183,13 @@ impl SearchModel {
             let show_for_load = show.clone();
             cx.observe(&show_for_load, move |this, show, cx| {
                 if *show.read(cx) && !this.local_items_loaded {
-                    let cached_albums = cx.global::<Models>().available_albums.read(cx).clone();
+                    // 仅当没有在途的可用性重算时才复用全局快照：扫描刚结束时重算可能仍
+                    // 在途，此时 `available_albums` 里还是扫描前的旧集合。
+                    let cached_albums = if crate::ui::models::availability_pass_in_flight() {
+                        None
+                    } else {
+                        cx.global::<Models>().available_albums.read(cx).clone()
+                    };
                     this.load_local_items_async(cx, cached_albums);
                 }
             })
