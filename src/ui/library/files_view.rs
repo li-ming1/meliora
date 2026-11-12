@@ -72,8 +72,12 @@ fn set_scroll_top(handle: &UniformListScrollHandle, top: f32) {
 pub struct FilesView {
     tree: FileTree,
     flat: Arc<Vec<FlatRow>>,
-    /// 在途目录加载标记：仅用于回调幂等与 refresh_all 取消，不携带数据。
-    pending: FxHashSet<PathBuf>,
+    /// 在途目录加载：路径 → 加载令牌。令牌让「刷新后旧任务迟到落地」被丢弃
+    /// ——只用集合判断的话，刷新清空集合、新展开又把同路径插回，旧任务落地时
+    /// 仍能通过 contains，装上刷新前的条目并清掉新任务的标记。
+    pending: FxHashMap<PathBuf, u64>,
+    /// [`FilesView::pending`] 的单调令牌源。
+    load_token: u64,
     selected: FxHashSet<PathBuf>,
     anchor: Option<PathBuf>,
     scroll_handle: UniformListScrollHandle,
@@ -116,7 +120,8 @@ impl FilesView {
             FilesView {
                 tree,
                 flat,
-                pending: FxHashSet::default(),
+                pending: FxHashMap::default(),
+                load_token: 0,
                 selected: FxHashSet::default(),
                 anchor: None,
                 scroll_handle,
@@ -380,13 +385,15 @@ impl FilesView {
             async move { load_dir_entries(path, pool).await }
         });
 
-        self.pending.insert(path.clone());
+        self.load_token = self.load_token.wrapping_add(1);
+        let token = self.load_token;
+        self.pending.insert(path.clone(), token);
         self.rebuild_flat(cx);
 
         cx.spawn(async move |this, cx| {
             let entries = handle.await.unwrap_or_default();
             this.update(cx, |view: &mut FilesView, cx| {
-                if view.pending.contains(&path) {
+                if view.pending.get(&path) == Some(&token) {
                     view.install_entries(path, entries, cx);
                 }
             })
