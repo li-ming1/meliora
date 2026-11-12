@@ -114,19 +114,18 @@ pub fn elevated_menu_element(cx: &App, menu: impl IntoElement) -> AnyElement {
 
 /// 把已构建好的行/网格内容元素包进共享的右键菜单脚手架（此前是 `GridItem::render` 与
 /// `TableItem::render` 尾部近乎逐字重复的部分）：`context(id).with(content)`，其菜单树
-/// 只在菜单真正打开时才构建（[`TableData::get_context_menu`] 的契约），外加一个可选 overlay
-/// 作为 context 元素的兄弟节点渲染，以免嵌进菜单的 `deferred` 弹窗里。没有菜单时原样返回
+/// 只在菜单真正打开时才构建（[`TableData::get_context_menu`] 的契约）。没有菜单时原样返回
 /// 内容。
 ///
-/// `fill_container` 区分两个调用点变体：网格项把 context 元素拉伸到整个瓦片、overlay 包在
-/// `size_full` div 里；表格行保持自身宽度、overlay 包在 `w_full` 里。
+/// `fill_container` 区分两个调用点变体：网格项把 context 元素拉伸到整个瓦片；
+/// 表格行保持自身宽度。
 pub fn wrap_with_context_menu(
     id: impl Into<ElementId>,
     content: impl IntoElement,
-    context_menu: Option<(ContextMenuBuilder, Option<AnyElement>)>,
+    context_menu: Option<ContextMenuBuilder>,
     fill_container: bool,
 ) -> AnyElement {
-    let Some((menu_builder, overlay)) = context_menu else {
+    let Some(menu_builder) = context_menu else {
         return content.into_any_element();
     };
 
@@ -136,28 +135,13 @@ pub fn wrap_with_context_menu(
     } else {
         ctx
     };
-    let ctx = ctx
-        .with(content)
+    ctx.with(content)
         // 菜单树只在菜单打开时构建
         .menu_on_open(move |window, cx| {
             let menu = menu_builder(window, cx);
             elevated_menu_element(cx, menu)
-        });
-
-    match overlay {
-        Some(overlay) => {
-            if fill_container {
-                div()
-                    .size_full()
-                    .child(ctx)
-                    .child(overlay)
-                    .into_any_element()
-            } else {
-                div().w_full().child(ctx).child(overlay).into_any_element()
-            }
-        }
-        None => ctx.into_any_element(),
-    }
+        })
+        .into_any_element()
 }
 
 /// 列头拖拽重排用的拖拽载荷。
@@ -316,8 +300,7 @@ where
         None
     }
 
-    /// 返回该行右键菜单的构建器，外加一个可选 overlay（例如模态框），它渲染在 context 弹窗
-    /// 之外，以免嵌进 `deferred`。
+    /// 返回该行右键菜单的构建器。
     ///
     /// 构建器在菜单打开期间的每次渲染都会运行，所以其函数体只能读缓存与快照——绝不发起阻塞查询
     /// 或系统调用。`is_available` 是行视图在构造时已经解析过一次的可用性；实现必须捕获它，
@@ -329,7 +312,7 @@ where
         _context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         _is_available: bool,
-    ) -> Option<(ContextMenuBuilder, Option<AnyElement>)> {
+    ) -> Option<ContextMenuBuilder> {
         None
     }
 
@@ -343,7 +326,7 @@ where
         context: &Self::ContextMenuContext,
         grid_context: GridContext,
         is_available: bool,
-    ) -> Option<(ContextMenuBuilder, Option<AnyElement>)> {
+    ) -> Option<ContextMenuBuilder> {
         row.get_context_menu(window, cx, context, grid_context, is_available)
     }
 

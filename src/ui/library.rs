@@ -1034,12 +1034,7 @@ pub(crate) fn observe_scan_for_table<
         // `table rows loaded` 的 elapsed_ms 日志）。*进度*上刷新仍然保持禁用：
         // 扫描中途行集频繁变动，每次换 Arc 都会清空所有缓存的行视图。
         // ScanProgress 仍通过它自己的订阅者喂进度 UI。
-        let should_refresh = matches!(
-            e.read(cx),
-            ScanEvent::ScanCompleteIdle
-                | ScanEvent::ScanCompleteWatching
-                | ScanEvent::TargetedRescanComplete
-        );
+        let should_refresh = e.read(cx).is_complete_with_changes();
         if should_refresh {
             table.update(cx, |_, cx| {
                 cx.emit(crate::ui::components::table::TableEvent::NewRows)

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use cntp_i18n::tr;
-use gpui::{Entity, IntoElement, RenderOnce, Window};
+use gpui::{IntoElement, RenderOnce, Window};
 
 use crate::{
     library::types::Album,
@@ -16,28 +16,19 @@ use crate::{
 };
 
 use super::{
-    AlbumContextMenuContext, navigate_to_album_artists, play_album_next, play_album_now,
-    queue_album, rescan_album, shuffle_album,
+    AlbumContextMenuContext, navigate_to_album_artists, open_add_album_to_playlist,
+    play_album_next, play_album_now, queue_album, rescan_album, shuffle_album,
 };
 
 #[derive(IntoElement)]
 pub struct AlbumContextMenu {
     album: Rc<Album>,
     context: AlbumContextMenuContext,
-    show_add_to: Entity<bool>,
 }
 
 impl AlbumContextMenu {
-    pub fn new(
-        album: Rc<Album>,
-        show_add_to: Entity<bool>,
-        context: AlbumContextMenuContext,
-    ) -> Self {
-        Self {
-            album,
-            show_add_to,
-            context,
-        }
+    pub fn new(album: Rc<Album>, context: AlbumContextMenuContext) -> Self {
+        Self { album, context }
     }
 }
 
@@ -49,7 +40,7 @@ impl RenderOnce for AlbumContextMenu {
         let album_for_queue = self.album.clone();
         let album_for_artist = self.album.clone();
         let album_for_rescan = self.album.clone();
-        let show_add_to = self.show_add_to;
+        let album_id = self.album.id;
         let show_go_to_artist = self.context.show_go_to_artist;
         // 用缓存的可用性快照：这次 render 在菜单打开时运行，而旧的检查是每首曲目
         // 一次 block_on 查询加一次 stat
@@ -104,7 +95,7 @@ impl RenderOnce for AlbumContextMenu {
                 Some(PLAYLIST_ADD),
                 tr!("ADD_TO_PLAYLIST"),
                 move |_, _, cx| {
-                    show_add_to.write(cx, true);
+                    open_add_album_to_playlist(album_id, cx);
                 },
             ))
             .item(menu_separator())

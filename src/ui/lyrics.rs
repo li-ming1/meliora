@@ -9,7 +9,6 @@ use crate::ui::kugou::{OnlineLyric, fetch_online_lyric};
 use crate::sync::RecoveredRwLock;
 use crate::ui::design::ICON_MD;
 use crate::{
-    library::scan::ScanEvent,
     playback::{interface::PlaybackInterface, thread::PlaybackState},
     ui::{
         components::{
@@ -277,12 +276,7 @@ impl Lyrics {
             // （与 `build_models` 里的专辑缓存重置同理）。
             let scan_state = cx.global::<Models>().scan_state.clone();
             cx.observe(&scan_state, |this, scan_event, cx| {
-                if matches!(
-                    scan_event.read(cx),
-                    ScanEvent::ScanCompleteIdle
-                        | ScanEvent::ScanCompleteWatching
-                        | ScanEvent::TargetedRescanComplete
-                ) {
+                if scan_event.read(cx).is_complete_with_changes() {
                     this.lyric_cache.clear();
                     this.lyric_cache_order.clear();
                 }

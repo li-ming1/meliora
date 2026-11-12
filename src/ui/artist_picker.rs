@@ -9,7 +9,6 @@ use super::{
     models::{ArtistPickerState, Models},
     theme::Theme,
 };
-use crate::library::scan::ScanEvent;
 
 pub struct ArtistPickerView {
     model: Entity<ArtistPickerState>,
@@ -31,12 +30,7 @@ impl ArtistPickerView {
             let picker = model.clone();
             let scan_state = cx.global::<Models>().scan_state.clone();
             cx.observe(&scan_state, move |_, state, cx| {
-                if matches!(
-                    state.read(cx),
-                    ScanEvent::ScanCompleteIdle
-                        | ScanEvent::ScanCompleteWatching
-                        | ScanEvent::TargetedRescanComplete
-                ) {
+                if state.read(cx).is_complete_with_changes() {
                     picker.update(cx, |m, cx| {
                         if m.is_some() {
                             *m = None;

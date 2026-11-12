@@ -37,7 +37,7 @@ use crate::{
             is_track_available_snapshot,
         },
         theme::Theme,
-        util::prune_views,
+        util::{create_or_retrieve_view, prune_views},
     },
 };
 
@@ -58,33 +58,28 @@ fn availability_map(cx: &App, tracks: &[Track]) -> Arc<Vec<bool>> {
     )
 }
 
-/// 每首曲目构造一个 `TrackItem` 行。每行都携带完整的来源列表（供队列上下文使用），
-/// 艺术家名与曲目自身相同时隐藏；其余标志位对两个艺术家曲目列表完全一致。
-fn track_items(
+/// 按索引按需构造单个 `TrackItem` 行，供虚拟化列表懒建复用。
+fn make_track_item(
     cx: &mut App,
     tracks: &Arc<Vec<Track>>,
+    idx: usize,
     artist_name: Option<&DBString>,
-) -> Vec<Entity<TrackItem>> {
-    tracks
-        .iter()
-        .map(|track| {
-            TrackItem::new(
-                cx,
-                track.clone(),
-                ArtistNameVisibility::OnlyIfDifferent(artist_name.cloned()),
-                TrackItemLeftField::Art,
-                None,
-                None,
-                Some(tracks.clone()),
-                TrackItemOptions {
-                    is_start: false,
-                    vinyl_numbering: false,
-                    show_go_to_album: false,
-                    show_go_to_artist: false,
-                },
-            )
-        })
-        .collect()
+) -> Entity<TrackItem> {
+    TrackItem::new(
+        cx,
+        tracks[idx].clone(),
+        ArtistNameVisibility::OnlyIfDifferent(artist_name.cloned()),
+        TrackItemLeftField::Art,
+        None,
+        None,
+        Some(tracks.clone()),
+        TrackItemOptions {
+            is_start: false,
+            vinyl_numbering: false,
+            show_go_to_album: false,
+            show_go_to_artist: false,
+        },
+    )
 }
 
 /// 当前播放路径属于 `tracks` 时为真（可用性快照判定为不可用的行不算在播）。
@@ -127,8 +122,10 @@ pub struct ArtistDetailView {
     artist_id: i64,
     artist_name: Option<DBString>,
     album_ids: Arc<Vec<(u32, String)>>,
-    liked_track_items: Vec<Entity<TrackItem>>,
-    standalone_track_items: Vec<Entity<TrackItem>>,
+    liked_views: Entity<FxHashMap<usize, Entity<TrackItem>>>,
+    liked_render_counter: Entity<usize>,
+    standalone_views: Entity<FxHashMap<usize, Entity<TrackItem>>>,
+    standalone_render_counter: Entity<usize>,
     all_tracks: Arc<Vec<Track>>,
     all_tracks_available: Arc<Vec<bool>>,
     liked_tracks: Arc<Vec<Track>>,
@@ -182,13 +179,19 @@ impl ArtistDetailView {
 
             let grid_views = cx.new(|_| FxHashMap::default());
             let grid_render_counter = cx.new(|_| 0usize);
+            let liked_views = cx.new(|_| FxHashMap::default());
+            let liked_render_counter = cx.new(|_| 0usize);
+            let standalone_views = cx.new(|_| FxHashMap::default());
+            let standalone_render_counter = cx.new(|_| 0usize);
 
             let mut this = Self {
                 artist_id,
                 artist_name: None,
                 album_ids: Arc::new(Vec::new()),
-                liked_track_items: Vec::new(),
-                standalone_track_items: Vec::new(),
+                liked_views,
+                liked_render_counter,
+                standalone_views,
+                standalone_render_counter,
                 all_tracks: Arc::new(Vec::new()),
                 all_tracks_available: Arc::new(Vec::new()),
                 liked_tracks: Arc::new(Vec::new()),
@@ -221,12 +224,7 @@ impl ArtistDetailView {
             // 重扫完成即刷新打开中的详情（上游 bcea976），语义同 ReleaseView
             let scan_state = cx.global::<crate::ui::models::Models>().scan_state.clone();
             cx.observe(&scan_state, |this: &mut Self, e, cx| {
-                if matches!(
-                    e.read(cx),
-                    crate::library::scan::ScanEvent::ScanCompleteIdle
-                        | crate::library::scan::ScanEvent::ScanCompleteWatching
-                        | crate::library::scan::ScanEvent::TargetedRescanComplete
-                ) {
+                if e.read(cx).is_complete_with_changes() {
                     this.reload(cx);
                 }
             })
@@ -415,7 +413,9 @@ impl ArtistDetailView {
     fn set_liked_tracks(&mut self, liked_tracks: Arc<Vec<Track>>, cx: &mut Context<Self>) {
         self.liked_tracks = liked_tracks;
         self.liked_tracks_available = availability_map(cx, &self.liked_tracks);
-        self.liked_track_items = track_items(cx, &self.liked_tracks, self.artist_name.as_ref());
+        self.liked_views.update(cx, |views, _| views.clear());
+        self.liked_render_counter
+            .update(cx, |counter, _| *counter = 0);
 
         cx.notify();
     }
@@ -451,8 +451,9 @@ impl ArtistDetailView {
     ) {
         self.standalone_tracks = standalone_tracks;
         self.standalone_tracks_available = availability_map(cx, &self.standalone_tracks);
-        self.standalone_track_items =
-            track_items(cx, &self.standalone_tracks, self.artist_name.as_ref());
+        self.standalone_views.update(cx, |views, _| views.clear());
+        self.standalone_render_counter
+            .update(cx, |counter, _| *counter = 0);
 
         cx.notify();
     }
@@ -599,7 +600,7 @@ impl Render for ArtistDetailView {
         let has_available_standalone_tracks = self.standalone_tracks_available.iter().any(|&a| a);
 
         let liked_track_header =
-            if !self.liked_track_items.is_empty() {
+            if !self.liked_tracks.is_empty() {
                 Some(
                     div()
                         .border_t_1()
@@ -699,7 +700,7 @@ impl Render for ArtistDetailView {
                 None
             };
 
-        let standalone_track_header = if !self.standalone_track_items.is_empty() {
+        let standalone_track_header = if !self.standalone_tracks.is_empty() {
             Some(
                 div()
                     .border_t_1()
@@ -796,14 +797,14 @@ impl Render for ArtistDetailView {
             None
         };
 
-        // 虚拟化的曲目列表：高度设了上限，所以长列表内部滚动而不是把页面滚动撑长；
-        // 行在 uniform_list 闭包内经实体读取（闭包比 render 的借用活得更久）。
-        let liked_row_count = self.liked_track_items.len();
+        // 虚拟化的曲目列表：高度设了上限，且行视图按可见窗口懒建 + 修剪，
+        // 避免合辑/高产艺人打开时一次性创建上千个 TrackItem 实体。
+        let liked_row_count = self.liked_tracks.len();
         let liked_list_height =
             px(TRACK_ROW_HEIGHT * liked_row_count.min(MAX_VISIBLE_TRACK_ROWS) as f32);
         let liked_scroll_handle = self.liked_scroll_handle.clone();
 
-        let standalone_row_count = self.standalone_track_items.len();
+        let standalone_row_count = self.standalone_tracks.len();
         let standalone_list_height =
             px(TRACK_ROW_HEIGHT * standalone_row_count.min(MAX_VISIBLE_TRACK_ROWS) as f32);
         let standalone_scroll_handle = self.standalone_scroll_handle.clone();
@@ -1019,13 +1020,35 @@ impl Render for ArtistDetailView {
                                                 "artist-liked-tracks",
                                                 liked_row_count,
                                                 move |range, _, cx| {
-                                                    let view = liked_list_entity.read(cx);
-                                                    view.liked_track_items[range]
-                                                        .iter()
-                                                        .map(|item| {
+                                                    let (tracks, artist_name, views, counter) = {
+                                                        let view = liked_list_entity.read(cx);
+                                                        (
+                                                            view.liked_tracks.clone(),
+                                                            view.artist_name.clone(),
+                                                            view.liked_views.clone(),
+                                                            view.liked_render_counter.clone(),
+                                                        )
+                                                    };
+                                                    let center = range.start + range.len() / 2;
+                                                    prune_views(&views, &counter, center, cx);
+                                                    range
+                                                        .map(|idx| {
+                                                            let item = create_or_retrieve_view(
+                                                                &views,
+                                                                idx,
+                                                                |cx| {
+                                                                    make_track_item(
+                                                                        cx,
+                                                                        &tracks,
+                                                                        idx,
+                                                                        artist_name.as_ref(),
+                                                                    )
+                                                                },
+                                                                cx,
+                                                            );
                                                             div()
                                                                 .h(px(TRACK_ROW_HEIGHT))
-                                                                .child(item.clone())
+                                                                .child(item)
                                                         })
                                                         .collect()
                                                 },
@@ -1051,13 +1074,35 @@ impl Render for ArtistDetailView {
                                                 "artist-standalone-tracks",
                                                 standalone_row_count,
                                                 move |range, _, cx| {
-                                                    let view = standalone_list_entity.read(cx);
-                                                    view.standalone_track_items[range]
-                                                        .iter()
-                                                        .map(|item| {
+                                                    let (tracks, artist_name, views, counter) = {
+                                                        let view = standalone_list_entity.read(cx);
+                                                        (
+                                                            view.standalone_tracks.clone(),
+                                                            view.artist_name.clone(),
+                                                            view.standalone_views.clone(),
+                                                            view.standalone_render_counter.clone(),
+                                                        )
+                                                    };
+                                                    let center = range.start + range.len() / 2;
+                                                    prune_views(&views, &counter, center, cx);
+                                                    range
+                                                        .map(|idx| {
+                                                            let item = create_or_retrieve_view(
+                                                                &views,
+                                                                idx,
+                                                                |cx| {
+                                                                    make_track_item(
+                                                                        cx,
+                                                                        &tracks,
+                                                                        idx,
+                                                                        artist_name.as_ref(),
+                                                                    )
+                                                                },
+                                                                cx,
+                                                            );
                                                             div()
                                                                 .h(px(TRACK_ROW_HEIGHT))
-                                                                .child(item.clone())
+                                                                .child(item)
                                                         })
                                                         .collect()
                                                 },

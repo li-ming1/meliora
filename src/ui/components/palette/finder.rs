@@ -2,7 +2,7 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
 
 use cntp_i18n::{I18nString, trn};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Context, ElementId, Entity, EventEmitter, FontWeight,
+    AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, Rgba,
     SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, div, img, list,
     prelude::FluentBuilder, px,
@@ -88,12 +88,6 @@ pub trait PaletteItem {
     /// 右键菜单构建器：这一行每次渲染都会被调用，无论菜单是否真的打开；返回的构建器只在菜单
     /// 真正打开时运行。两者都只能读缓存与快照——绝不发起阻塞查询或系统调用。
     fn context_menu(&self, _window: &mut Window, _cx: &mut App) -> Option<ContextMenuBuilder> {
-        None
-    }
-    /// 提供一个渲染在右键菜单旁边的视图，用于曲目右键菜单里的"加入歌单"项。只在右键菜单打开时
-    /// 调用（`FinderItem::render` 的 `menu_on_open` 构建器里），所以从未用过右键菜单的行
-    /// 永远不会创建这些 entity。
-    fn context_menu_overlay(&self, _window: &mut Window, _cx: &mut App) -> Option<AnyView> {
         None
     }
 }
@@ -216,36 +210,37 @@ where
 
             let weak_self = cx.weak_entity();
             cx.spawn(async move |_, cx| {
+                // 通道通知驱动 + 收敛后深空闲：平时挂起在 `receiver.recv().await`（0Hz 唤醒，
+                // 消除首次打开搜索后的 40Hz 常驻空转），仅当 `matcher.tick` 报告后台仍在
+                // 匹配时才以 25ms 节拍推进，收敛后即回到阻塞等待。
+                let mut still_running = false;
                 loop {
-                    // palette entity 一没就退出；这个检查原本在 `needs_update` 里面，
-                    // 于是已关闭的 palette 会把轮询循环永远转下去。
+                    if still_running {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(25))
+                            .await;
+                    } else if receiver.recv().await.is_none() {
+                        return;
+                    }
+
+                    // 把所有更新通知取空，万一一次收到多条
+                    while receiver.try_recv().is_ok() {}
+
                     let Some(entity) = weak_self.upgrade() else {
                         return;
                     };
 
-                    // 把所有更新通知取空
-                    // 万一一次收到多条
-                    let mut needs_update = false;
-                    while receiver.try_recv().is_ok() {
-                        needs_update = true;
-                    }
+                    still_running = entity.update(cx, |this: &mut Self, cx| {
+                        let status = this.matcher.tick(10);
 
-                    if needs_update {
-                        entity.update(cx, |this: &mut Self, cx| {
-                            this.tick(10);
-
-                            let matches: Vec<Arc<T>> = this.get_matches();
-                            if !same_items(&matches, &this.last_match) {
-                                this.rebuild_display_list(&matches, cx);
-                                this.last_match = matches;
-                                cx.notify();
-                            }
-                        });
-                    }
-
-                    cx.background_executor()
-                        .timer(Duration::from_millis(25))
-                        .await;
+                        let matches: Vec<Arc<T>> = this.get_matches();
+                        if !same_items(&matches, &this.last_match) {
+                            this.rebuild_display_list(&matches, cx);
+                            this.last_match = matches;
+                            cx.notify();
+                        }
+                        status.running
+                    });
                 }
             })
             .detach();
@@ -1105,9 +1100,6 @@ where
     weak_parent: WeakEntity<Finder<T, MatcherFunc, OnAccept>>,
     item_data: Option<Arc<T>>,
     on_accept_override: OnAcceptOverride,
-    /// 右键菜单的 overlay 视图（例如 AddToPlaylist）。第一次打开右键菜单时惰性构建并存在条目上，
-    /// 好让模态框在菜单关闭后仍然存活。
-    context_overlay: Option<AnyView>,
 }
 
 #[derive(Clone)]
@@ -1169,7 +1161,6 @@ where
                 weak_parent,
                 item_data: Some(item_data),
                 on_accept_override: None,
-                context_overlay: None,
             }
         })
     }
@@ -1196,7 +1187,6 @@ where
                 weak_parent,
                 item_data: None,
                 on_accept_override: Some(extra.on_accept.clone()),
-                context_overlay: None,
             }
         })
     }
@@ -1329,40 +1319,14 @@ where
             .item_data
             .as_ref()
             .and_then(|v| v.context_menu(window, cx));
-        let overlay = self.context_overlay.clone();
 
-        let base = if let Some(menu_builder) = context_menu {
-            let item_data = self.item_data.clone();
-            let weak_item = cx.weak_entity();
+        if let Some(menu_builder) = context_menu {
             context((self.id.clone(), "context_menu"))
                 .with(item)
-                // 菜单树只在菜单打开时构建；overlay（例如 AddToPlaylist）也在这里、在打开时构建，
-                // 于是它解析到与菜单里"加入歌单"项写入的同一个 keyed state。它存在条目上，
-                // 好让模态框在菜单关闭后仍然存活（而没用过的行什么都不创建）。
-                .menu_on_open(move |window, cx| {
-                    let menu = menu_builder(window, cx);
-                    let overlay = item_data
-                        .as_ref()
-                        .and_then(|data| data.context_menu_overlay(window, cx));
-                    if let Some(this) = weak_item.upgrade() {
-                        this.update(cx, |this, cx| {
-                            if this.context_overlay != overlay {
-                                this.context_overlay = overlay;
-                                cx.notify();
-                            }
-                        });
-                    }
-                    menu
-                })
+                .menu_on_open(move |window, cx| menu_builder(window, cx))
                 .into_any_element()
         } else {
             item.into_any_element()
-        };
-
-        if let Some(overlay) = overlay {
-            div().child(base).child(overlay).into_any_element()
-        } else {
-            base
         }
     }
 }

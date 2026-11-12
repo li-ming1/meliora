@@ -714,11 +714,13 @@ impl<'a> ScanExecution<'a> {
         // mutations=0 且未删轨的完成 = 零改动扫描，此时 models/library 侧的
         // 整库可用性重算 + 缓存清空 + 三表重读全是白做。攒够真实分布再决定
         // 是否加门，不在没有数据的情况下改失效路径（§1/§39）。
+        let changed = self.mutations > 0 || self.art_changes > 0 || self.context.tracks_deleted;
         info!(
             mutations = self.mutations,
             art_changes = self.art_changes,
             art_reads = self.art_reads,
             tracks_deleted = self.context.tracks_deleted,
+            changed,
             targeted = matches!(self.context.mode, ScanMode::Targeted { .. }),
             watching,
             "[scan] completion fanout input"
@@ -726,7 +728,7 @@ impl<'a> ScanExecution<'a> {
         let _ = self
             .context
             .event_tx
-            .send(self.context.mode.completion_event(watching));
+            .send(self.context.mode.completion_event(watching, changed));
         // 最终重试（最后一次 commit_batch 的 run_retry）之后仍留在 pending 里的
         // 才是本扫描真正丢掉的歌手重算：中途批次失败但最终重试成功的项不重复计入。
         self.failures.artist_recompute += (self.active.caches.pending_albums.len()

@@ -147,9 +147,16 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     // 顺序性不变：落盘仍由 `persist_snapshot` 的写门串行化；两次快连点谁先
     // 落盘无所谓——注册表是缓存，陈旧只多一次 URL 刷新（与原
     // "racing writers" 语义一致）。
+    // 在后台任务内直接持读锁序列化为 JSON 字节，省掉 200 条 × 多段 String 的全表深克隆；
+    // 序列化本身不涉及 I/O，写锁/读锁临界区都在内存百微秒级。
     crate::RUNTIME.spawn(async move {
-        let snapshot = stream_map().read_recovered().clone();
-        STREAM_MAP_PERSISTENCE.persist_snapshot(stream_map_path(), &snapshot, "kugou");
+        let json = {
+            let guard = stream_map().read_recovered();
+            serde_json::to_vec(&*guard)
+        };
+        if let Ok(json) = json {
+            STREAM_MAP_PERSISTENCE.persist_serialized(stream_map_path(), json, "kugou");
+        }
     });
 }
 

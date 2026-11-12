@@ -201,8 +201,8 @@ impl Render for ScanStatus {
             | ScanEvent::PlaylistsUpdated(_)
             | ScanEvent::ScanProgress { .. }
             | ScanEvent::WaitingForMissingFolderDecision { .. } => Some(FOLDER_SEARCH),
-            ScanEvent::ScanCompleteWatching => Some(FOLDER_BOLT),
-            ScanEvent::ScanCompleteIdle | ScanEvent::TargetedRescanComplete => None,
+            ScanEvent::ScanCompleteWatching { .. } => Some(FOLDER_BOLT),
+            ScanEvent::ScanCompleteIdle { .. } | ScanEvent::TargetedRescanComplete { .. } => None,
         };
 
         div()
@@ -247,9 +247,9 @@ impl Render for ScanStatus {
             }))
             .text_color(theme.text_secondary)
             .child(match status {
-                ScanEvent::ScanCompleteIdle
-                | ScanEvent::ScanCompleteWatching
-                | ScanEvent::TargetedRescanComplete
+                ScanEvent::ScanCompleteIdle { .. }
+                | ScanEvent::ScanCompleteWatching { .. }
+                | ScanEvent::TargetedRescanComplete { .. }
                 | ScanEvent::Cleaning
                 | ScanEvent::PlaylistsUpdated(_) => SharedString::from(""),
                 ScanEvent::ScanProgress { current, total } => {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, Window};
+use rustc_hash::FxHashSet;
 // 订阅回调的 query 参数类型，只在 online_sources 的合并段订阅里出现。
 #[cfg(feature = "online_sources")]
 use gpui::SharedString;
@@ -10,7 +11,7 @@ use nucleo::Utf32String;
 use tracing::debug;
 
 use crate::{
-    library::{db, scan::ScanEvent},
+    library::db,
     ui::{
         app::Pool,
         availability::compute_available_albums,
@@ -52,20 +53,27 @@ pub struct SearchModel {
 /// 而不是换上一个空索引；可用性只是逐专辑的装饰，它失败时仍退回空集合。
 async fn load_search_items_off_thread(
     pool: sqlx::SqlitePool,
+    cached_available_albums: Option<Arc<FxHashSet<i64>>>,
 ) -> Result<Vec<Arc<SearchPaletteItem>>, String> {
-    let availability_rows = db::list_album_availability(&pool)
-        .await
-        .unwrap_or_else(|e| {
-            debug!("Failed to load album availability for search: {:?}", e);
-            Vec::new()
-        });
-    let available_albums =
-        tokio::task::spawn_blocking(move || compute_available_albums(availability_rows))
-            .await
-            .unwrap_or_else(|e| {
-                debug!("Failed to compute album availability for search: {:?}", e);
-                Default::default()
-            });
+    let available_albums = match cached_available_albums {
+        Some(cached) => cached,
+        None => {
+            let availability_rows = db::list_album_availability(&pool)
+                .await
+                .unwrap_or_else(|e| {
+                    debug!("Failed to load album availability for search: {:?}", e);
+                    Vec::new()
+                });
+            let computed =
+                tokio::task::spawn_blocking(move || compute_available_albums(availability_rows))
+                    .await
+                    .unwrap_or_else(|e| {
+                        debug!("Failed to compute album availability for search: {:?}", e);
+                        Default::default()
+                    });
+            Arc::new(computed)
+        }
+    };
 
     let albums = db::list_albums_search(&pool)
         .await
@@ -175,7 +183,8 @@ impl SearchModel {
             let show_for_load = show.clone();
             cx.observe(&show_for_load, move |this, show, cx| {
                 if *show.read(cx) && !this.local_items_loaded {
-                    this.load_local_items_async(cx);
+                    let cached_albums = cx.global::<Models>().available_albums.read(cx).clone();
+                    this.load_local_items_async(cx, cached_albums);
                 }
             })
             .detach();
@@ -184,14 +193,7 @@ impl SearchModel {
             let show_for_scan = show.clone();
 
             cx.observe(&scan_status, move |this, scan_event, cx| {
-                let state = scan_event.read(cx);
-
-                if matches!(
-                    *state,
-                    ScanEvent::ScanCompleteIdle
-                        | ScanEvent::ScanCompleteWatching
-                        | ScanEvent::TargetedRescanComplete
-                ) {
+                if scan_event.read(cx).is_complete_with_changes() {
                     debug!("Scan complete, refreshing search items");
 
                     // 文件监视器的重扫即使在面板关闭时也会触发：那时重建整个索引
@@ -216,7 +218,7 @@ impl SearchModel {
                         return;
                     }
 
-                    this.load_local_items_async(cx);
+                    this.load_local_items_async(cx, None);
                 }
             })
             .detach();
@@ -241,7 +243,11 @@ impl SearchModel {
     /// 成功才交换：新索引作为整体 `Arc` 赋值应用（在那之前旧的一直为 `merged_items`
     /// 服务），且只在 `Ok` 时——`Err` 的重建会让上一份索引保持安装，并让
     /// `local_items_loaded` 停在 false，好让下一次面板打开重试，而不是换成一段空的。
-    fn load_local_items_async(&mut self, cx: &mut Context<Self>) {
+    fn load_local_items_async(
+        &mut self,
+        cx: &mut Context<Self>,
+        cached_available_albums: Option<Arc<FxHashSet<i64>>>,
+    ) {
         self.load_generation += 1;
         let generation = self.load_generation;
         let pool = cx.global::<Pool>().0.clone();
@@ -254,7 +260,7 @@ impl SearchModel {
         cx.spawn(async move |this, cx| {
             let new_items = crate::RUNTIME
                 .spawn(async move {
-                    load_search_items_off_thread(pool)
+                    load_search_items_off_thread(pool, cached_available_albums)
                         .await
                         .map(|items| reuse_unchanged(&previous, items))
                 })

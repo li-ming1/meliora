@@ -56,7 +56,11 @@ use super::{
     global_actions::register_actions,
     header::Header,
     immersive::ImmersiveView,
-    library::{Library, sidebar::Sidebar},
+    library::{
+        Library,
+        add_to_playlist::{AddToPlaylist, AddToPlaylistHost},
+        sidebar::Sidebar,
+    },
     models::{self, CurrentTrack, Models, PlaybackInfo, build_models},
     right_sidebar::RightSidebar,
     search::SearchView,
@@ -81,6 +85,7 @@ pub(crate) struct MainWindow {
     pub missing_folder_dialog: Entity<MissingFolderDialog>,
     pub corrupt_settings_dialog: Entity<CorruptSettingsDialog>,
     pub palette: Entity<CommandPalette>,
+    pub add_to_playlist: Entity<AddToPlaylist>,
     pub image_cache: Entity<MelioraImageCache>,
     pub toast_layer: Entity<ToastLayer>,
 }
@@ -192,6 +197,7 @@ impl Render for MainWindow {
                     .child(self.search.clone())
                     .child(self.artist_picker.clone())
                     .child(self.palette.clone())
+                    .child(self.add_to_playlist.clone())
                     .when(show_about, |this| {
                         this.child(about_dialog(self.about_focus.clone(), &|_, cx| {
                             let show_about = cx.global::<Models>().show_about.clone();
@@ -414,6 +420,8 @@ fn build_main_window(
         "[startup] view command_palette"
     );
     cx.set_global(CommandPaletteHolder::new(palette.clone()));
+    let add_to_playlist = AddToPlaylist::new_shared(cx);
+    cx.set_global(AddToPlaylistHost(add_to_playlist.clone()));
 
     // 各子视图构造耗时累加在这里，闭包末尾汇总成一行（见下面的
     // `[startup] view tree breakdown`）。
@@ -553,6 +561,7 @@ fn build_main_window(
                 || CorruptSettingsDialog::new(cx),
             ),
             palette,
+            add_to_playlist,
             // 用一个非常小的全局图片缓存
             // 这纯粹是为了保证图片*迟早*都会从内存里被移除
             //

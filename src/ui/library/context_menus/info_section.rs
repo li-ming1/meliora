@@ -2,7 +2,7 @@ use std::{path::PathBuf, rc::Rc};
 
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
-use gpui::{Entity, IntoElement, RenderOnce, SharedString, Window};
+use gpui::{IntoElement, RenderOnce, SharedString, Window};
 
 use crate::{
     library::types::Track,
@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     like_toggle_icon_and_label, navigate_to_track_album, navigate_to_track_artist,
-    track_show_in_file_manager_label,
+    open_add_to_playlist, track_show_in_file_manager_label,
 };
 
 #[derive(IntoElement)]
@@ -30,7 +30,6 @@ pub struct InfoSectionContextMenu {
     /// 构造菜单绝不能在每个保持打开的帧都跑一次 DB 的 `block_on` 查询。
     can_go_to_artist: bool,
     is_liked: Option<i64>,
-    show_add_to: Option<Entity<bool>>,
     /// 只出现在线（酷狗）曲目上：标签加一个发后即忘的下载动作。
     /// 它顶替的是「在文件管理器中显示」——那对流媒体 URL 毫无意义。
     online_download: Option<OnlineDownloadAction>,
@@ -45,7 +44,6 @@ impl InfoSectionContextMenu {
         track: Option<Rc<Track>>,
         can_go_to_artist: bool,
         is_liked: Option<i64>,
-        show_add_to: Option<Entity<bool>>,
         online_download: Option<OnlineDownloadAction>,
     ) -> Self {
         Self {
@@ -53,7 +51,6 @@ impl InfoSectionContextMenu {
             track,
             can_go_to_artist,
             is_liked,
-            show_add_to,
             online_download,
         }
     }
@@ -126,24 +123,24 @@ impl RenderOnce for InfoSectionContextMenu {
                 let is_liked = self.is_liked;
                 let track_id = track_for_like.id;
                 let (like_icon, like_label) = like_toggle_icon_and_label(is_liked);
-                menu.item(menu_separator()).item(menu_item(
-                    "info_section_toggle_like",
-                    Some(like_icon),
-                    like_label,
-                    move |_, _, cx| {
-                        toggle_like_by_id(track_id, is_liked, cx);
-                    },
-                ))
-            })
-            .when_some(self.show_add_to, |menu, show_add_to| {
-                menu.item(menu_separator()).item(menu_item(
-                    "info_section_add_to_playlist",
-                    Some(PLAYLIST_ADD),
-                    tr!("ADD_TO_PLAYLIST"),
-                    move |_, _, cx| {
-                        show_add_to.write(cx, true);
-                    },
-                ))
+                menu.item(menu_separator())
+                    .item(menu_item(
+                        "info_section_toggle_like",
+                        Some(like_icon),
+                        like_label,
+                        move |_, _, cx| {
+                            toggle_like_by_id(track_id, is_liked, cx);
+                        },
+                    ))
+                    .item(menu_separator())
+                    .item(menu_item(
+                        "info_section_add_to_playlist",
+                        Some(PLAYLIST_ADD),
+                        tr!("ADD_TO_PLAYLIST"),
+                        move |_, _, cx| {
+                            open_add_to_playlist(vec![track_id], cx);
+                        },
+                    ))
             })
     }
 }

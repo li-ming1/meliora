@@ -14,9 +14,22 @@ pub enum ScanEvent {
     PlaylistsUpdated(Vec<i64>),
     WaitingForMissingFolderDecision { paths: Vec<Utf8PathBuf> },
     ScanProgress { current: u64, total: u64 },
-    ScanCompleteWatching,
-    ScanCompleteIdle,
-    TargetedRescanComplete,
+    ScanCompleteWatching { changed: bool },
+    ScanCompleteIdle { changed: bool },
+    TargetedRescanComplete { changed: bool },
+}
+
+impl ScanEvent {
+    /// 扫描完成且数据库（曲目、搬迁、删轨或封面链接）确实发生过写入时为 true；
+    /// 零变更完成时下游缓存与整库刷新可直接跳过。
+    pub fn is_complete_with_changes(&self) -> bool {
+        matches!(
+            self,
+            ScanEvent::ScanCompleteWatching { changed: true }
+                | ScanEvent::ScanCompleteIdle { changed: true }
+                | ScanEvent::TargetedRescanComplete { changed: true }
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -61,13 +74,13 @@ impl ScanMode {
         matches!(self, ScanMode::Full { is_force: true })
     }
 
-    pub(super) fn completion_event(&self, watching: bool) -> ScanEvent {
+    pub(super) fn completion_event(&self, watching: bool, changed: bool) -> ScanEvent {
         if watching {
-            ScanEvent::ScanCompleteWatching
+            ScanEvent::ScanCompleteWatching { changed }
         } else if matches!(self, ScanMode::Targeted { .. }) {
-            ScanEvent::TargetedRescanComplete
+            ScanEvent::TargetedRescanComplete { changed }
         } else {
-            ScanEvent::ScanCompleteIdle
+            ScanEvent::ScanCompleteIdle { changed }
         }
     }
 }

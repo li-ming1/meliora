@@ -8,8 +8,8 @@ use std::{rc::Rc, sync::Arc};
 
 use crate::ui::components::drag_drop::{DragPreview, TrackDragData};
 use crate::ui::components::icons::{STAR, STAR_FILLED, icon};
+use crate::ui::library::context_menus::play_track_next;
 use crate::ui::library::context_menus::track::TrackContextMenu;
-use crate::ui::library::context_menus::{add_to_playlist_state, play_track_next};
 use crate::ui::models::{
     HasLikedState, is_song_liked, is_track_available_snapshot, subscribe_liked_updates, toggle_like,
 };
@@ -162,7 +162,6 @@ impl Render for TrackItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::TrackRow);
         let track_id = self.track.id;
-        let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track_id, window, cx);
 
         let theme = cx.global::<Theme>();
 
@@ -197,196 +196,182 @@ impl Render for TrackItem {
             })),
         };
 
-        div()
-            .w_full()
-            .child(
-                context(("context", self.track.id as usize))
-                    .with(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .w_full()
-                            .id(self.track.id as usize)
-                            .when(is_available, |this| {
-                                this.on_click({
-                                    let track = self.track.clone();
-                                    let plid = self.pl_info.as_ref().map(|pl| pl.id);
-                                    let queue_context = self.queue_context.clone();
-                                    move |_, _, cx| {
-                                        play_from_track_listing(
-                                            cx,
-                                            &track,
-                                            plid,
-                                            queue_context.clone(),
-                                        )
-                                    }
-                                })
-                                .on_aux_click({
-                                    let track = self.track.clone();
-                                    move |ev, _, cx| {
-                                        if ev.is_middle_click() {
-                                            play_track_next(cx, &track);
-                                        }
-                                    }
-                                })
+        div().w_full().child(
+            context(("context", self.track.id as usize))
+                .with(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .id(self.track.id as usize)
+                        .when(is_available, |this| {
+                            this.on_click({
+                                let track = self.track.clone();
+                                let plid = self.pl_info.as_ref().map(|pl| pl.id);
+                                let queue_context = self.queue_context.clone();
+                                move |_, _, cx| {
+                                    play_from_track_listing(cx, &track, plid, queue_context.clone())
+                                }
                             })
-                            .when(!is_available, |this| this.cursor_default().opacity(0.5))
-                            .when(self.is_start, |this| {
-                                this.child(
-                                    div()
-                                        .text_color(theme.text_secondary)
-                                        .text_sm()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        // 22px（来自 track # 宽度）+ 18 + 13
-                                        .px(px(track_num_width.to_f64() as f32 + 18.0 + 13.0))
-                                        .border_b_1()
-                                        .w_full()
-                                        .border_color(theme.border_color)
-                                        .mt(px(18.0))
-                                        .pb(px(6.0))
-                                        .text_ellipsis()
-                                        .when_some(self.track.disc_number, |this, num| {
-                                            if self.vinyl_numbering && (1..=26).contains(&num) {
-                                                let side = (b'A' + (num - 1) as u8) as char;
-                                                // i18n 插值只接受字符串
-                                                let side = side.to_string();
-                                                this.child(tr!(
-                                                    "TRACK_SIDE",
-                                                    "Side {{side}}",
-                                                    side = side
-                                                ))
-                                            } else if let Some(subtitle) = &self.track.disc_subtitle
-                                            {
-                                                let subtitle = subtitle.0.as_str();
-
-                                                this.child(tr!(
-                                                    "TRACK_DISC_SUBTITLE",
-                                                    "Disc {{num}} - {{subtitle}}",
-                                                    num = num,
-                                                    subtitle = subtitle
-                                                ))
-                                            } else {
-                                                this.child(tr!(
-                                                    "TRACK_DISC",
-                                                    "Disc {{num}}",
-                                                    num = num
-                                                ))
-                                            }
-                                        }),
-                                )
+                            .on_aux_click({
+                                let track = self.track.clone();
+                                move |ev, _, cx| {
+                                    if ev.is_middle_click() {
+                                        play_track_next(cx, &track);
+                                    }
+                                }
                             })
-                            .child(
+                        })
+                        .when(!is_available, |this| this.cursor_default().opacity(0.5))
+                        .when(self.is_start, |this| {
+                            this.child(
                                 div()
-                                    .flex()
-                                    .flex_row()
+                                    .text_color(theme.text_secondary)
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    // 22px（来自 track # 宽度）+ 18 + 13
+                                    .px(px(track_num_width.to_f64() as f32 + 18.0 + 13.0))
                                     .border_b_1()
-                                    .h(px(39.0))
-                                    .id(("track", self.track.id as u64))
                                     .w_full()
                                     .border_color(theme.border_color)
-                                    .when(is_available, |this| this.cursor_pointer())
-                                    .when(!is_available, |this| this.cursor_default())
-                                    .px(px(18.0))
-                                    .py(px(6.0))
-                                    .group(self.hover_group.clone())
-                                    .when(is_available, |this| {
-                                        this.hover(|this| this.bg(theme.nav_button_hover))
-                                            .active(|this| this.bg(theme.nav_button_active))
-                                    })
-                                    // 只在不属于歌单时处理拖拽：歌单有自己的拖拽处理器
-                                    .when(is_available, |this| {
-                                        match self.drag_data.clone() {
-                                            Some(drag) => {
-                                                let display_name = drag.display_name.clone();
-                                                this.on_drag(drag, move |_, _, _, cx| {
-                                                    DragPreview::new(cx, display_name.clone())
-                                                })
-                                            }
-                                            // 歌单行没有自己的拖拽负载
-                                            None => this,
+                                    .mt(px(18.0))
+                                    .pb(px(6.0))
+                                    .text_ellipsis()
+                                    .when_some(self.track.disc_number, |this, num| {
+                                        if self.vinyl_numbering && (1..=26).contains(&num) {
+                                            let side = (b'A' + (num - 1) as u8) as char;
+                                            // i18n 插值只接受字符串
+                                            let side = side.to_string();
+                                            this.child(tr!(
+                                                "TRACK_SIDE",
+                                                "Side {{side}}",
+                                                side = side
+                                            ))
+                                        } else if let Some(subtitle) = &self.track.disc_subtitle {
+                                            let subtitle = subtitle.0.as_str();
+
+                                            this.child(tr!(
+                                                "TRACK_DISC_SUBTITLE",
+                                                "Disc {{num}} - {{subtitle}}",
+                                                num = num,
+                                                subtitle = subtitle
+                                            ))
+                                        } else {
+                                            this.child(tr!("TRACK_DISC", "Disc {{num}}", num = num))
                                         }
-                                    })
-                                    .when(is_current, |this| this.bg(theme.queue_item_current))
-                                    .when(!is_current, |this| this.bg(theme.background_primary))
-                                    .max_w_full()
-                                    .when(self.left_field == TrackItemLeftField::TrackNum, |this| {
-                                        this.child(
-                                            div()
-                                                .min_w(track_num_width)
-                                                .flex_shrink_0()
-                                                .text_align(TextAlign::Right)
-                                                .mr(px(13.0))
-                                                .text_color(theme.text_secondary)
-                                                // 数字取自预先构造好的 track_number_label；
-                                                // 对齐靠宽度上限保证
-                                                .child(self.track_number_label.clone()),
-                                        )
-                                    })
-                                    .when(self.left_field == TrackItemLeftField::Art, |this| {
-                                        this.child(
-                                            div()
-                                                .w(px(22.0))
-                                                .h(px(22.0))
-                                                .mr(px(12.0))
-                                                .my_auto()
-                                                .rounded(px(theme.radius_sm))
-                                                .bg(theme.album_art_background)
-                                                .when_some(self.album_art.clone(), |this, art| {
-                                                    this.child(
-                                                        img(art)
-                                                            .w(px(22.0))
-                                                            .h(px(22.0))
-                                                            .rounded(px(theme.radius_sm)),
-                                                    )
-                                                }),
-                                        )
-                                    })
-                                    .child(
+                                    }),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .border_b_1()
+                                .h(px(39.0))
+                                .id(("track", self.track.id as u64))
+                                .w_full()
+                                .border_color(theme.border_color)
+                                .when(is_available, |this| this.cursor_pointer())
+                                .when(!is_available, |this| this.cursor_default())
+                                .px(px(18.0))
+                                .py(px(6.0))
+                                .group(self.hover_group.clone())
+                                .when(is_available, |this| {
+                                    this.hover(|this| this.bg(theme.nav_button_hover))
+                                        .active(|this| this.bg(theme.nav_button_active))
+                                })
+                                // 只在不属于歌单时处理拖拽：歌单有自己的拖拽处理器
+                                .when(is_available, |this| {
+                                    match self.drag_data.clone() {
+                                        Some(drag) => {
+                                            let display_name = drag.display_name.clone();
+                                            this.on_drag(drag, move |_, _, _, cx| {
+                                                DragPreview::new(cx, display_name.clone())
+                                            })
+                                        }
+                                        // 歌单行没有自己的拖拽负载
+                                        None => this,
+                                    }
+                                })
+                                .when(is_current, |this| this.bg(theme.queue_item_current))
+                                .when(!is_current, |this| this.bg(theme.background_primary))
+                                .max_w_full()
+                                .when(self.left_field == TrackItemLeftField::TrackNum, |this| {
+                                    this.child(
                                         div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .overflow_x_hidden()
-                                            .text_ellipsis()
-                                            .mr_auto()
-                                            .child(self.track.title.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::NORMAL)
-                                            .text_sm()
-                                            .my_auto()
+                                            .min_w(track_num_width)
+                                            .flex_shrink_0()
+                                            .text_align(TextAlign::Right)
+                                            .mr(px(13.0))
                                             .text_color(theme.text_secondary)
-                                            .text_ellipsis()
-                                            .overflow_x_hidden()
-                                            .flex_shrink(1.0)
-                                            .ml(px(12.0))
-                                            .when(show_artist_name, |this| {
-                                                this.when_some(
-                                                    self.track.artist_names.clone(),
-                                                    |this, v| this.child(v.0),
+                                            // 数字取自预先构造好的 track_number_label；
+                                            // 对齐靠宽度上限保证
+                                            .child(self.track_number_label.clone()),
+                                    )
+                                })
+                                .when(self.left_field == TrackItemLeftField::Art, |this| {
+                                    this.child(
+                                        div()
+                                            .w(px(22.0))
+                                            .h(px(22.0))
+                                            .mr(px(12.0))
+                                            .my_auto()
+                                            .rounded(px(theme.radius_sm))
+                                            .bg(theme.album_art_background)
+                                            .when_some(self.album_art.clone(), |this, art| {
+                                                this.child(
+                                                    img(art)
+                                                        .w(px(22.0))
+                                                        .h(px(22.0))
+                                                        .rounded(px(theme.radius_sm)),
                                                 )
                                             }),
                                     )
-                                    .child(
-                                        div()
-                                            .id("like")
-                                            .my_auto()
-                                            .rounded_sm()
-                                            .ml(px(10.0))
-                                            .p(px(4.0))
-                                            .child(
-                                                icon(if is_liked { STAR_FILLED } else { STAR })
-                                                    .size(ICON_SM)
-                                                    .text_color(if is_liked {
-                                                        theme.liked_song
-                                                    } else {
-                                                        theme.text_secondary
-                                                    }),
+                                })
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .overflow_x_hidden()
+                                        .text_ellipsis()
+                                        .mr_auto()
+                                        .child(self.track.title.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_sm()
+                                        .my_auto()
+                                        .text_color(theme.text_secondary)
+                                        .text_ellipsis()
+                                        .overflow_x_hidden()
+                                        .flex_shrink(1.0)
+                                        .ml(px(12.0))
+                                        .when(show_artist_name, |this| {
+                                            this.when_some(
+                                                self.track.artist_names.clone(),
+                                                |this, v| this.child(v.0),
                                             )
-                                            .group(self.hover_group.clone())
-                                            .when(is_available, |this| {
-                                                this.hover(|this| {
-                                                    this.bg(theme.button_secondary_hover)
-                                                })
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("like")
+                                        .my_auto()
+                                        .rounded_sm()
+                                        .ml(px(10.0))
+                                        .p(px(4.0))
+                                        .child(
+                                            icon(if is_liked { STAR_FILLED } else { STAR })
+                                                .size(ICON_SM)
+                                                .text_color(if is_liked {
+                                                    theme.liked_song
+                                                } else {
+                                                    theme.text_secondary
+                                                }),
+                                        )
+                                        .group(self.hover_group.clone())
+                                        .when(is_available, |this| {
+                                            this.hover(|this| this.bg(theme.button_secondary_hover))
                                                 .active(|this| {
                                                     this.bg(theme.button_secondary_active)
                                                 })
@@ -394,41 +379,39 @@ impl Render for TrackItem {
                                                     cx.stop_propagation();
                                                     toggle_like(track_id, cx.entity(), cx);
                                                 }))
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .ml(px(10.0))
-                                            .flex_shrink_0()
-                                            .min_w(px(54.0))
-                                            .text_align(TextAlign::Right)
-                                            .child(self.duration_text.clone()),
-                                    ),
-                            ),
-                    )
-                    .menu_on_open({
-                        // 菜单树（TrackContextMenu 的艺术家 DB 查找、path stat、翻译）
-                        // 只在菜单打开时构建，绕开逐行重绘路径
-                        let track = self.track.clone();
-                        let track_menu_context = track_menu_context;
-                        let pl_info = self.pl_info;
-                        let is_liked = self.is_liked;
-                        move |_, cx| {
-                            elevated_menu_element(
-                                cx,
-                                TrackContextMenu::new(
-                                    track.clone(),
-                                    is_available,
-                                    is_liked,
-                                    track_menu_context.clone(),
-                                    pl_info,
-                                    show_add_to.clone(),
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .ml(px(10.0))
+                                        .flex_shrink_0()
+                                        .min_w(px(54.0))
+                                        .text_align(TextAlign::Right)
+                                        .child(self.duration_text.clone()),
                                 ),
-                            )
-                        }
-                    }),
-            )
-            .child(add_to)
+                        ),
+                )
+                .menu_on_open({
+                    // 菜单树（TrackContextMenu 的艺术家 DB 查找、path stat、翻译）
+                    // 只在菜单打开时构建，绕开逐行重绘路径
+                    let track = self.track.clone();
+                    let track_menu_context = track_menu_context;
+                    let pl_info = self.pl_info;
+                    let is_liked = self.is_liked;
+                    move |_, cx| {
+                        elevated_menu_element(
+                            cx,
+                            TrackContextMenu::new(
+                                track.clone(),
+                                is_available,
+                                is_liked,
+                                track_menu_context.clone(),
+                                pl_info,
+                            ),
+                        )
+                    }
+                }),
+        )
     }
 }
 

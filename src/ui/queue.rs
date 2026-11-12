@@ -24,7 +24,8 @@ use crate::{
             tooltip::build_tooltip,
         },
         library::{
-            ViewSwitchMessage, add_to_playlist::AddToPlaylist, context_menus::navigate_to_artists,
+            ViewSwitchMessage, add_to_playlist::open_add_to_playlist,
+            context_menus::navigate_to_artists,
         },
         library_access::LibraryAccess,
         queue_metadata,
@@ -195,8 +196,6 @@ pub struct QueueItem {
     /// 队列内重排拖拽的指纹账本（与列表共享同一实体）：拖拽开始时把本行
     /// 负载的坐标与槽位 uid 指纹记入账本，投放回调对账重验。
     drag_ledger: Entity<InternalDragLedger>,
-    add_to: Option<Entity<AddToPlaylist>>,
-    show_add_to: Option<Entity<bool>>,
     track_id: Option<i64>,
     is_liked: Option<i64>,
     /// 在视图构造时算一次即可：每帧对每条可见行做 `path.exists()` stat
@@ -309,10 +308,6 @@ impl QueueItem {
                 scroll_handle,
                 selection,
                 drag_ledger,
-                // AddToPlaylist 面板（及其 show 旗标）只在右键菜单真正需要它
-                // 的第一次才构建
-                add_to: None,
-                show_add_to: None,
                 track_id,
                 is_liked,
                 is_available,
@@ -334,21 +329,6 @@ impl QueueItem {
             self.was_selected = self.selection.read(cx).contains(idx);
             cx.notify();
         }
-    }
-
-    /// 打开（首次使用时创建）该行的「加入歌单」面板并载入 `track_ids`；
-    /// 单选行与多选右键菜单共用。
-    fn open_add_to_palette(&mut self, track_ids: Vec<i64>, cx: &mut Context<Self>) {
-        let show = self
-            .show_add_to
-            .get_or_insert_with(|| cx.new(|_| false))
-            .clone();
-        match &self.add_to {
-            Some(add_to) => add_to.read(cx).set_track_ids(track_ids),
-            None => self.add_to = Some(AddToPlaylist::new(cx, show.clone(), track_ids)),
-        }
-        show.write(cx, true);
-        cx.notify();
     }
 }
 
@@ -619,7 +599,6 @@ impl Render for QueueItem {
                                 selection_for_aux.update(cx, |s, cx| s.select(idx, cx));
                             }
                         })
-                        .when_some(self.add_to.clone(), |this, that| this.child(that))
                         .child(DropIndicator::with_state(
                             item_state.is_drop_target_before,
                             item_state.is_drop_target_after,
@@ -757,7 +736,6 @@ impl Render for QueueItem {
                             .filter_map(|&(_, id, _)| id)
                             .collect();
                         let add_to_ids = selected_track_ids.clone();
-                        let entity_for_add = queue_item_entity.clone();
 
                         // 缓存的 liked-ids 集合（见 is_song_liked）：菜单只需要
                         // 已收藏/未收藏这个布尔量来决定图标与标签，且取消收藏
@@ -777,9 +755,7 @@ impl Render for QueueItem {
                                     Some(PLAYLIST_ADD),
                                     tr!("ADD_TO_PLAYLIST"),
                                     move |_, _, cx| {
-                                        entity_for_add.update(cx, |item, cx| {
-                                            item.open_add_to_palette(add_to_ids.clone(), cx);
-                                        });
+                                        open_add_to_playlist(add_to_ids.clone(), cx);
                                     },
                                 ))
                                 .item(menu_separator())
@@ -837,7 +813,6 @@ impl Render for QueueItem {
                                 },
                             ))
                     } else {
-                        let entity_for_add = queue_item_entity.clone();
                         // 在菜单打开时快照该行内容（与上面的多选快照同一时刻）：
                         // 点击落地前队列可能已变化，所以移除回调重新校验，
                         // 而不是直接相信捕获的 `idx`。
@@ -913,9 +888,7 @@ impl Render for QueueItem {
                                     tr!("ADD_TO_PLAYLIST"),
                                     move |_, _, cx| {
                                         if let Some(track_id) = single_track_id {
-                                            entity_for_add.update(cx, |item, cx| {
-                                                item.open_add_to_palette(vec![track_id], cx);
-                                            });
+                                            open_add_to_playlist(vec![track_id], cx);
                                         }
                                     },
                                 ))

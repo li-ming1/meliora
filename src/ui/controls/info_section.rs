@@ -435,16 +435,8 @@ impl InfoSection {
 }
 
 impl Render for InfoSection {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render = crate::tally_render(crate::RenderedView::InfoSection);
-        let add_to_state = self.current_library_track.as_ref().map(|track| {
-            crate::ui::library::context_menus::add_to_playlist_state(
-                "info-section-menu-state",
-                track.id,
-                window,
-                cx,
-            )
-        });
 
         // 在线曲目没有音乐库曲目；复用当前队列条目存好的 cover_url，与队列
         // 缩略图的做法完全一致。默认集无在线源，本地曲目键直接短路。
@@ -707,9 +699,6 @@ impl Render for InfoSection {
         if menu_has_items
             && (self.current_track_path.is_some() || self.current_library_track.is_some())
         {
-            let show_add_to = add_to_state.as_ref().map(|(s, _)| s.clone());
-            let add_to = add_to_state.map(|(_, a)| a);
-
             // 在线曲目：把"在文件管理器中显示"换成下载动作
             #[cfg(feature = "kugou")]
             let online_download = self.online_track.clone().map(|track| match track {
@@ -726,22 +715,19 @@ impl Render for InfoSection {
             #[allow(clippy::type_complexity)]
             let online_download: Option<(SharedString, Rc<dyn Fn(&mut App)>)> = None;
 
-            div()
+            context("info-section-context")
+                .with(content)
                 .child(
-                    context("info-section-context").with(content).child(
-                        div()
-                            .bg(theme.elevated_background)
-                            .child(InfoSectionContextMenu::new(
-                                self.current_track_path.clone(),
-                                self.current_library_track.clone(),
-                                self.can_navigate_to_artist,
-                                self.is_liked,
-                                show_add_to,
-                                online_download,
-                            )),
-                    ),
+                    div()
+                        .bg(theme.elevated_background)
+                        .child(InfoSectionContextMenu::new(
+                            self.current_track_path.clone(),
+                            self.current_library_track.clone(),
+                            self.can_navigate_to_artist,
+                            self.is_liked,
+                            online_download,
+                        )),
                 )
-                .when_some(add_to, |d, add_to| d.child(add_to))
                 .into_any_element()
         } else {
             content.into_any_element()

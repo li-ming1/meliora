@@ -557,35 +557,25 @@ impl TableData<AlbumColumn> for Album {
 
     fn get_context_menu(
         &self,
-        window: &mut gpui::Window,
-        cx: &mut App,
+        _window: &mut gpui::Window,
+        _cx: &mut App,
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         _is_available: bool,
-    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
-        Some(album_menu_for_table_shared(
-            Arc::new(self.clone()),
-            context,
-            window,
-            cx,
-        ))
+    ) -> Option<ContextMenuBuilder> {
+        Some(album_menu_for_table_shared(Arc::new(self.clone()), context))
     }
 
     fn get_context_menu_shared(
         row: &Arc<Self>,
-        window: &mut gpui::Window,
-        cx: &mut App,
+        _window: &mut gpui::Window,
+        _cx: &mut App,
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         _is_available: bool,
-    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
+    ) -> Option<ContextMenuBuilder> {
         // 行以引用计数的形式进入 builder；深度克隆只在菜单真正打开时才发生
-        Some(album_menu_for_table_shared(
-            row.clone(),
-            context,
-            window,
-            cx,
-        ))
+        Some(album_menu_for_table_shared(row.clone(), context))
     }
 
     fn handle_middle_mouse(
@@ -860,38 +850,34 @@ impl TableData<TrackColumn> for Track {
 
     fn get_context_menu(
         &self,
-        window: &mut gpui::Window,
-        cx: &mut App,
+        _window: &mut gpui::Window,
+        _cx: &mut App,
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         is_available: bool,
-    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
+    ) -> Option<ContextMenuBuilder> {
         // `is_available` 在行构建时解析一次并被 builder 捕获：菜单树本身只在打开
         // 时才构建，因此每次重绘都重新 stat 文件既没必要也是错的。
         Some(track_menu_for_table_shared(
             Arc::new(self.clone()),
             is_available,
             context,
-            window,
-            cx,
         ))
     }
 
     fn get_context_menu_shared(
         row: &Arc<Self>,
-        window: &mut gpui::Window,
-        cx: &mut App,
+        _window: &mut gpui::Window,
+        _cx: &mut App,
         context: &Self::ContextMenuContext,
         _grid_context: GridContext,
         is_available: bool,
-    ) -> Option<(ContextMenuBuilder, Option<gpui::AnyElement>)> {
+    ) -> Option<ContextMenuBuilder> {
         // 行以引用计数的形式进入 builder；深度克隆只在菜单真正打开时才发生
         Some(track_menu_for_table_shared(
             row.clone(),
             is_available,
             context,
-            window,
-            cx,
         ))
     }
 

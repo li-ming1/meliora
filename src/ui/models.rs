@@ -218,7 +218,7 @@ pub fn build_models(
     let metadata: Entity<Metadata> = cx.new(|_| Metadata::default());
     let albumart: Entity<Option<Arc<RenderImage>>> = cx.new(|_| None);
     let queue: Entity<Queue> = cx.new(move |_| queue);
-    let scan_state: Entity<ScanEvent> = cx.new(|_| ScanEvent::ScanCompleteIdle);
+    let scan_state: Entity<ScanEvent> = cx.new(|_| ScanEvent::ScanCompleteIdle { changed: false });
     let initial_corrupt_path = cx.global::<SettingsGlobal>().initial_corrupt_path.clone();
     let settings_health: Entity<SettingsHealth> = cx.new(|_| match initial_corrupt_path {
         Some(path) => SettingsHealth::Corrupt { path },
@@ -342,12 +342,7 @@ pub fn build_models(
     // 前面。此后每次扫描完成仍在这里刷新。
     let scan_state = cx.global::<Models>().scan_state.clone();
     cx.observe(&scan_state, |scan_event, cx| {
-        if matches!(
-            scan_event.read(cx),
-            ScanEvent::ScanCompleteIdle
-                | ScanEvent::ScanCompleteWatching
-                | ScanEvent::TargetedRescanComplete
-        ) {
+        if scan_event.read(cx).is_complete_with_changes() {
             let album_cache = cx.global::<Models>().album_cache.clone();
             album_cache.update(cx, |cache, _| cache.clear());
             // 扫描同样是缩略图资产的唯一写入方：丢弃缩小后的缩略图缓存，让新增

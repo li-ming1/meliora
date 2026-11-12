@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use cntp_i18n::tr;
 use gpui::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, anchored, div, px,
+    App, AppContext, Context, Entity, Global, IntoElement, ParentElement, Render, SharedString,
+    Styled, Window, div, px,
 };
 use nucleo::Utf32String;
 use rustc_hash::FxHashSet;
@@ -158,10 +158,34 @@ impl PaletteItem for PlaylistEntry {
 type MatcherFunc = Box<dyn Fn(&Arc<PlaylistEntry>, &mut App) -> Utf32String + 'static>;
 type OnAccept = Box<dyn Fn(&Arc<PlaylistEntry>, &mut App) + 'static>;
 
+/// 全局共享的「添加到歌单」模态框宿主：由主窗口创建并渲染一次，所有列表/网格/队列/
+/// 搜索行的右键菜单直接更新它而不再按行分配实体树。
+pub struct AddToPlaylistHost(pub Entity<AddToPlaylist>);
+
+impl Global for AddToPlaylistHost {}
+
+/// 打开全局共享的「添加到歌单」浮层并加载给定曲目列表。
+pub(crate) fn open_add_to_playlist(track_ids: Vec<i64>, cx: &mut App) {
+    let Some(host) = cx.try_global::<AddToPlaylistHost>().map(|h| h.0.clone()) else {
+        return;
+    };
+    host.update(cx, |this, cx| this.open_tracks(track_ids, cx));
+}
+
+/// 打开全局共享的「添加到歌单」浮层，并在后台加载专辑内全部曲目 id。
+pub(crate) fn open_add_album_to_playlist(album_id: i64, cx: &mut App) {
+    let Some(host) = cx.try_global::<AddToPlaylistHost>().map(|h| h.0.clone()) else {
+        return;
+    };
+    host.update(cx, |this, cx| this.open_album(album_id, cx));
+}
+
 pub struct AddToPlaylist {
     show: Entity<bool>,
     palette: Entity<Palette<PlaylistEntry, MatcherFunc, OnAccept>>,
     track_list: SharedTrackList,
+    /// 专辑异步加载世代：关闭对话框或再次打开其他曲目/专辑时递增，过期结果不覆盖。
+    album_load_generation: u64,
 }
 
 /// accept 两条分支共用的收尾：等 DB 写任务，成功就广播歌单更新。单曲目（加入或
@@ -218,15 +242,21 @@ impl AddToPlaylist {
         cx.notify();
     }
 
+    pub fn new_shared(cx: &mut App) -> Entity<Self> {
+        let show = cx.new(|_| false);
+        Self::new(cx, show, Vec::new())
+    }
+
     pub fn new(cx: &mut App, show: Entity<bool>, track_ids: Vec<i64>) -> Entity<Self> {
         cx.new(|cx| {
             let track_list: SharedTrackList = Rc::new(RefCell::new(TrackList::from_ids(track_ids)));
 
             let track_list_for_observe = track_list.clone();
             cx.observe(&show, move |this: &mut Self, _, cx| {
-                // 关闭路径的 palette.reset 已由 render 的 on_exit 完成；
-                // 观察者只在打开（show 翻真）时重建列表
+                // 关闭路径的 palette.reset 已由 render 的 on_exit 或 open_accept 完成；
+                // 关闭时仍需 notify 自己让模态框节点撤掉，打开时重建列表。
                 if !*this.show.read(cx) {
+                    cx.notify();
                     return;
                 }
 
@@ -376,12 +406,53 @@ impl AddToPlaylist {
                 show,
                 palette,
                 track_list,
+                album_load_generation: 0,
             }
         })
     }
 
     pub fn set_track_ids(&self, track_ids: Vec<i64>) {
         *self.track_list.borrow_mut() = TrackList::from_ids(track_ids);
+    }
+
+    fn open_tracks(&mut self, track_ids: Vec<i64>, cx: &mut Context<Self>) {
+        self.album_load_generation = self.album_load_generation.wrapping_add(1);
+        self.set_track_ids(track_ids);
+        let was_open = *self.show.read(cx);
+        self.show.write(cx, true);
+        if was_open {
+            let track_list = self.track_list.clone();
+            self.rebuild_playlist_list(&track_list, cx);
+        }
+    }
+
+    fn open_album(&mut self, album_id: i64, cx: &mut Context<Self>) {
+        self.album_load_generation = self.album_load_generation.wrapping_add(1);
+        let generation = self.album_load_generation;
+        self.set_track_ids(Vec::new());
+        let was_open = *self.show.read(cx);
+        self.show.write(cx, true);
+        if was_open {
+            let track_list = self.track_list.clone();
+            self.rebuild_playlist_list(&track_list, cx);
+        }
+
+        let pool = cx.global::<Pool>().0.clone();
+        cx.spawn(async move |this, cx| {
+            let tracks = crate::RUNTIME
+                .spawn(async move { db::list_tracks_in_album(&pool, album_id).await })
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .map(|tracks| tracks.iter().map(|track| track.id).collect::<Vec<i64>>())
+                .unwrap_or_default();
+            let _ = this.update(cx, |this, _| {
+                if this.album_load_generation == generation {
+                    this.set_track_ids(tracks);
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -396,9 +467,13 @@ impl Render for AddToPlaylist {
                 palette.focus(window, cx);
             });
 
+            let weak = cx.weak_entity();
             modal()
                 .child(div().w(px(550.0)).h(px(300.0)).child(palette.clone()))
                 .on_exit(move |_, cx| {
+                    let _ = weak.update(cx, |this, _| {
+                        this.album_load_generation = this.album_load_generation.wrapping_add(1);
+                    });
                     show.update(cx, |show, cx| {
                         *show = false;
                         cx.update_entity(&palette, |palette, cx| {
@@ -409,7 +484,7 @@ impl Render for AddToPlaylist {
                 })
                 .into_any_element()
         } else {
-            anchored().into_any_element()
+            div().into_any_element()
         }
     }
 }

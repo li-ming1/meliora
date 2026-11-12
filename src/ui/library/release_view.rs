@@ -29,8 +29,8 @@ use crate::{
         library::{
             collection_summary::format_collection_summary,
             context_menus::{
-                AlbumContextMenuContext, add_album_to_playlist_state, album::AlbumContextMenu,
-                navigate_to_album_artists, queue_items_from_tracks,
+                AlbumContextMenuContext, album::AlbumContextMenu, navigate_to_album_artists,
+                queue_items_from_tracks,
             },
             detail_close_button,
             track_item::{ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions},
@@ -264,12 +264,7 @@ impl ReleaseView {
             // 增删曲目后，停留中的视图不得继续展示旧曲目列表
             let scan_state = cx.global::<crate::ui::models::Models>().scan_state.clone();
             cx.observe(&scan_state, |this: &mut Self, e, cx| {
-                if matches!(
-                    e.read(cx),
-                    crate::library::scan::ScanEvent::ScanCompleteIdle
-                        | crate::library::scan::ScanEvent::ScanCompleteWatching
-                        | crate::library::scan::ScanEvent::TargetedRescanComplete
-                ) {
+                if e.read(cx).is_complete_with_changes() {
                     this.reload(cx, None);
                 }
             })
@@ -450,7 +445,6 @@ impl ReleaseView {
         &self,
         theme: &Theme,
         state: HeaderState,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let HeaderState {
@@ -555,7 +549,7 @@ impl ReleaseView {
                                     },
                                 )
                                 .show_add_to_queue(false)
-                                .trailing(self.render_menu_button(window, cx)),
+                                .trailing(self.render_menu_button(cx)),
                             )
                             .child(self.render_like_button(theme)),
                     ),
@@ -601,12 +595,10 @@ impl ReleaseView {
         cx.notify();
     }
 
-    fn render_menu_button(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_menu_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let menu_open = self.menu_open;
 
-        let (show_add_to, add_to) =
-            add_album_to_playlist_state("album-menu-state", self.album.id, window, cx);
-        let menu_btn = div()
+        div()
             .relative()
             .flex()
             .child(
@@ -648,14 +640,12 @@ impl ReleaseView {
                                 .on_click(move |_, _, cx| close(cx))
                                 .child(AlbumContextMenu::new(
                                     album,
-                                    show_add_to,
                                     AlbumContextMenuContext::default(),
                                 )),
                         ),
                 )
-            });
-
-        div().child(menu_btn).child(add_to).into_any_element()
+            })
+            .into_any_element()
     }
 
     fn render_footer(&self, theme: &Theme) -> impl IntoElement {
@@ -847,7 +837,6 @@ impl Render for ReleaseView {
                             is_playing,
                             show_close_button: two_column,
                         },
-                        window,
                         cx,
                     ))
                     .children(self.track_listing.track_elements())

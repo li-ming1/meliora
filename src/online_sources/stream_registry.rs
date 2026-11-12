@@ -75,9 +75,20 @@ impl StreamMapPersistence {
         });
     }
 
+    /// 仅序列化一次：在外部已拿到字节缓冲区时直接去重并派生持久化写任务，
+    /// 避免在调用方读锁外做全表深克隆。
+    pub fn persist_serialized(&'static self, path: PathBuf, json: Vec<u8>, provider: &'static str) {
+        if let Some(json) = self.persist_if_changed(json) {
+            self.spawn_persist(path, json, move |err| {
+                tracing::warn!(%err, "failed to persist {provider} stream map");
+            });
+        }
+    }
+
     /// 各在线源 `remember_online_track` 的持久化尾部：序列化 → 去重 → 门控写，
     /// 单点维护。`provider` 仅进失败日志文案。序列化失败按既有语义
     /// 静默跳过（缓存是优化，显示不依赖它）。
+    #[allow(dead_code)]
     pub fn persist_snapshot(
         &'static self,
         path: PathBuf,
@@ -87,11 +98,7 @@ impl StreamMapPersistence {
         let Ok(json) = serde_json::to_vec(snapshot) else {
             return;
         };
-        if let Some(json) = self.persist_if_changed(json) {
-            self.spawn_persist(path, json, move |err| {
-                tracing::warn!(%err, "failed to persist {provider} stream map");
-            });
-        }
+        self.persist_serialized(path, json, provider);
     }
 }
 

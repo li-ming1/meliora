@@ -190,9 +190,10 @@ pub fn compute_availability_from_tracks(
     let mut paths = PathExistence::default();
 
     let mut albums = FxHashSet::default();
-    let mut tracks = FxHashSet::default();
+    let mut tracks = FxHashSet::with_capacity_and_hasher(track_rows.len(), Default::default());
     for (location, id, album_id) in &track_rows {
-        if paths.exists(location) {
+        // track.location 在表中唯一，目录缓存已在 `dirs` 内去重，无需再向 `known` 拷贝 10 万份路径字符串。
+        if paths.path_exists(Path::new(location)) {
             tracks.insert(*id);
             if *album_id > 0 {
                 albums.insert(*album_id);
@@ -200,17 +201,11 @@ pub fn compute_availability_from_tracks(
         }
     }
 
-    // 署名按 id 引用曲目：把 location 查出来而不是每条署名克隆一次——
-    // 无论多少个艺人共用这个文件，每个不同路径都只 stat 一次。
-    let locations: FxHashMap<i64, &str> = track_rows
-        .iter()
-        .map(|(location, id, _)| (*id, location.as_str()))
-        .collect();
+    // 第一遍已经算出全部可用曲目的 id 集合 `tracks`，第二遍直接 O(1) 查集合，
+    // 省掉 10 万条 `locations` 映射构建与重复路径探测。
     let mut artists = FxHashSet::default();
     for (track_id, artist_id) in &artist_credits {
-        if let Some(location) = locations.get(track_id)
-            && paths.exists(location)
-        {
+        if tracks.contains(track_id) {
             artists.insert(*artist_id);
         }
     }

@@ -26,11 +26,11 @@ use crate::{
             table::table_data::elevated_menu_element,
         },
         library::{
-            add_to_playlist::AddToPlaylist,
+            add_to_playlist::open_add_to_playlist,
             context_menus::track::TrackContextMenu,
             context_menus::{
-                TrackContextMenuContext, add_to_playlist_state, navigate_to_track_album_and_reveal,
-                play_items_next, play_items_now, queue_items,
+                TrackContextMenuContext, navigate_to_track_album_and_reveal, play_items_next,
+                play_items_now, queue_items,
             },
             files_view::{
                 BatchItems, FilesView, FlatRow, TrackRef, file_context_menu::FileContextMenu,
@@ -55,8 +55,6 @@ pub struct FileRowItem {
     /// 把整棵视图树钉在导航历史里无法释放。
     files_view: WeakEntity<FilesView>,
     is_liked: Option<i64>,
-    show_add_to: Entity<bool>,
-    add_to: Option<Entity<AddToPlaylist>>,
     /// 行右键菜单的稳定元素 id 哈希；路径在一行视图的生命周期内永不变化。
     path_hash: usize,
     /// 本行上次重绘时是否为「当前播放曲目」：切歌只让旧/新两行重绘。
@@ -116,8 +114,6 @@ impl FileRowItem {
                 flat_row,
                 files_view,
                 is_liked,
-                show_add_to: cx.new(|_| false),
-                add_to: None,
                 path_hash,
                 was_current,
             }
@@ -127,8 +123,6 @@ impl FileRowItem {
     fn render_batch_menu(
         audio_items: &Rc<Vec<(Arc<Path>, Option<TrackRef>)>>,
         track_ids: &Rc<Vec<i64>>,
-        entity_for_add: Entity<Self>,
-        show_add_to: Entity<bool>,
         cx: &mut App,
     ) -> AnyElement {
         // 缓存的 liked-ids 集合（见 is_song_liked）：批量菜单只需要点赞/未点赞这个布尔值
@@ -197,22 +191,7 @@ impl FileRowItem {
                         tr!("ADD_TO_PLAYLIST"),
                         {
                             move |_, _, cx| {
-                                entity_for_add.update(cx, |item, cx| {
-                                    match &item.add_to {
-                                        Some(add_to) => {
-                                            add_to.read(cx).set_track_ids((*track_ids).clone())
-                                        }
-                                        None => {
-                                            item.add_to = Some(AddToPlaylist::new(
-                                                cx,
-                                                item.show_add_to.clone(),
-                                                (*track_ids).clone(),
-                                            ));
-                                        }
-                                    }
-                                    cx.notify();
-                                });
-                                show_add_to.write(cx, true);
+                                open_add_to_playlist((*track_ids).clone(), cx);
                             }
                         },
                     ))
@@ -300,7 +279,7 @@ impl HasLikedState for FileRowItem {
 }
 
 impl Render for FileRowItem {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Arc 引用计数自增；行是从共享的扁平列表里 clone 出来的
         let FlatRow {
             path,
@@ -357,23 +336,6 @@ impl Render for FileRowItem {
             }
         };
 
-        // AddToPlaylist 的浮层实体尽早创建很廉价（它们的曲目 ids 首次打开时经 keyed
-        // state 加载）；菜单树则挪进 menu_on_open，于是逐条目的 DB 查询与 stat 只在
-        // 用户真的打开菜单时才跑。
-        let add_to_element: Option<AnyElement> = if batch_items
-            .as_ref()
-            .is_some_and(|(items, _)| !items.is_empty())
-        {
-            self.add_to.clone().map(|a| a.into_any_element())
-        } else if let Some(track) = &track_ref {
-            let (_, add_to) = add_to_playlist_state("files-track-menu", track.id, window, cx);
-            Some(add_to.into_any_element())
-        } else {
-            None
-        };
-
-        let show_add_to = self.show_add_to.clone();
-        let entity_for_menu = cx.entity();
         let is_liked = self.is_liked;
         // 在菜单打开时才解析（见下面的 menu_on_open），不是每行一次。
         let menu_track_id = track_ref.as_ref().map(|track| track.id);
@@ -518,53 +480,56 @@ impl Render for FileRowItem {
                 }
             });
 
-        let ctx = context(context_id)
-            .w_full()
-            .with(row_content)
-            .menu_on_open(move |window, cx| {
-                let menu = if let Some((audio_items, track_ids)) =
-                    batch_items.clone().filter(|(items, _)| !items.is_empty())
-                {
-                    Self::render_batch_menu(
-                        &audio_items,
-                        &track_ids,
-                        entity_for_menu.clone(),
-                        show_add_to.clone(),
-                        cx,
-                    )
-                } else if let Some(track_id) = menu_track_id {
-                    // 完整的曲目行 + 可用性 stat 在这里惰性加载（每次打开菜单一次 DB
-                    // 查询 + 一次 stat），而不是构造时每行一次。
-                    let is_file_available = is_track_path_available(&path_for_menu);
+        let ctx =
+            context(context_id)
+                .w_full()
+                .with(row_content)
+                .menu_on_open(move |_window, cx| {
+                    let menu = if let Some((audio_items, track_ids)) =
+                        batch_items.clone().filter(|(items, _)| !items.is_empty())
+                    {
+                        Self::render_batch_menu(&audio_items, &track_ids, cx)
+                    } else if let Some(track_id) = menu_track_id {
+                        // 完整的曲目行 + 可用性 stat 在这里惰性加载（每次打开菜单一次 DB
+                        // 查询 + 一次 stat），而不是构造时每行一次。
+                        let is_file_available = is_track_path_available(&path_for_menu);
 
-                    if let Ok(track) = cx.get_track_by_id(track_id) {
-                        let (menu_show_add_to, _) =
-                            add_to_playlist_state("files-track-menu", track.id, window, cx);
+                        if let Ok(track) = cx.get_track_by_id(track_id) {
+                            let play_from_here = Rc::new({
+                                let files_view = files_view_for_menu.clone();
+                                let path = path_for_menu.clone();
+                                move |cx: &mut App, _: &Track| {
+                                    files_view.update(cx, |view, cx| {
+                                        view.play_folder(path.to_path_buf(), cx);
+                                    });
+                                }
+                            });
 
-                        let play_from_here = Rc::new({
-                            let files_view = files_view_for_menu.clone();
-                            let path = path_for_menu.clone();
-                            move |cx: &mut App, _: &Track| {
-                                files_view.update(cx, |view, cx| {
-                                    view.play_folder(path.to_path_buf(), cx);
-                                });
-                            }
-                        });
-
-                        TrackContextMenu::new(
-                            Rc::new((*track).clone()),
-                            is_file_available,
-                            is_liked,
-                            TrackContextMenuContext {
-                                show_go_to_album: track.album_id.is_some(),
-                                show_go_to_artist: true,
-                                play_from_here: Some(play_from_here),
-                            },
-                            None,
-                            menu_show_add_to,
-                        )
-                        .into_any_element()
+                            TrackContextMenu::new(
+                                Rc::new((*track).clone()),
+                                is_file_available,
+                                is_liked,
+                                TrackContextMenuContext {
+                                    show_go_to_album: track.album_id.is_some(),
+                                    show_go_to_artist: true,
+                                    play_from_here: Some(play_from_here),
+                                },
+                                None,
+                            )
+                            .into_any_element()
+                        } else {
+                            FileContextMenu::new(
+                                path_for_menu.clone(),
+                                is_dir,
+                                is_audio,
+                                is_file_available,
+                                files_view_for_menu.clone(),
+                            )
+                            .into_any_element()
+                        }
                     } else {
+                        let is_file_available = is_track_path_available(&path_for_menu);
+
                         FileContextMenu::new(
                             path_for_menu.clone(),
                             is_dir,
@@ -573,30 +538,11 @@ impl Render for FileRowItem {
                             files_view_for_menu.clone(),
                         )
                         .into_any_element()
-                    }
-                } else {
-                    let is_file_available = is_track_path_available(&path_for_menu);
+                    };
 
-                    FileContextMenu::new(
-                        path_for_menu.clone(),
-                        is_dir,
-                        is_audio,
-                        is_file_available,
-                        files_view_for_menu.clone(),
-                    )
-                    .into_any_element()
-                };
+                    elevated_menu_element(cx, menu)
+                });
 
-                elevated_menu_element(cx, menu)
-            });
-
-        div()
-            .w_full()
-            .child(if let Some(add_to) = add_to_element {
-                ctx.child(add_to).into_any_element()
-            } else {
-                ctx.into_any_element()
-            })
-            .into_any_element()
+        div().w_full().child(ctx).into_any_element()
     }
 }

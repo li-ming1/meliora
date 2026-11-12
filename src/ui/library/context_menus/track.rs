@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
-use gpui::{Entity, IntoElement, RenderOnce, SharedString, Window};
+use gpui::{IntoElement, RenderOnce, SharedString, Window};
 
 use crate::{
     library::types::Track,
@@ -18,8 +18,8 @@ use crate::{
 
 use super::{
     PlaylistMenuInfo, TrackContextMenuContext, like_toggle_icon_and_label, navigate_to_track_album,
-    navigate_to_track_artist, play_track_next, play_track_now, queue_track, remove_from_playlist,
-    rescan_track, track_show_in_file_manager_label,
+    navigate_to_track_artist, open_add_to_playlist, play_track_next, play_track_now, queue_track,
+    remove_from_playlist, rescan_track, track_show_in_file_manager_label,
 };
 use crate::ui::app::Pool;
 
@@ -30,7 +30,6 @@ pub struct TrackContextMenu {
     is_liked: Option<i64>,
     context: TrackContextMenuContext,
     playlist_info: Option<PlaylistMenuInfo>,
-    show_add_to: Entity<bool>,
 }
 
 impl TrackContextMenu {
@@ -40,7 +39,6 @@ impl TrackContextMenu {
         is_liked: Option<i64>,
         context: TrackContextMenuContext,
         playlist_info: Option<PlaylistMenuInfo>,
-        show_add_to: Entity<bool>,
     ) -> Self {
         Self {
             track,
@@ -48,7 +46,6 @@ impl TrackContextMenu {
             is_liked,
             context,
             playlist_info,
-            show_add_to,
         }
     }
 }
@@ -72,7 +69,6 @@ impl RenderOnce for TrackContextMenu {
         // 只读快照：菜单保持打开时每次重绘都会跑这里，绝不能做 DB 查询或
         // `path.exists()` 之类的系统调用（艺术家项同理，按曲目字段判断）。
         let can_reveal_track = is_track_available_snapshot(cx, &track_for_reveal);
-        let show_add_to = self.show_add_to;
         let play_from_here = self.context.play_from_here.clone();
         let playlist_info = self.playlist_info;
         let is_available = self.is_available;
@@ -184,7 +180,7 @@ impl RenderOnce for TrackContextMenu {
                     Some(PLAYLIST_ADD),
                     tr!("ADD_TO_PLAYLIST", "Add to playlist"),
                     move |_, _, cx| {
-                        show_add_to.write(cx, true);
+                        open_add_to_playlist(vec![like_track_id], cx);
                     },
                 )
                 .disabled(!is_available),

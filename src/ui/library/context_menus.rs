@@ -6,7 +6,7 @@ use std::{path::PathBuf, rc::Rc, sync::Arc};
 
 use camino::Utf8PathBuf;
 use cntp_i18n::{I18nString, tr};
-use gpui::{AnyElement, App, AppContext, Entity, IntoElement, Pixels, Point, SharedString, Window};
+use gpui::{App, Entity, Pixels, Point, SharedString};
 
 use crate::sync::RecoveredRwLock;
 use crate::{
@@ -21,7 +21,6 @@ use crate::{
         queue::QueueItemData,
         thread::PlaybackState,
     },
-    ui::app::Pool,
     ui::{
         availability::is_track_available,
         components::{
@@ -30,7 +29,7 @@ use crate::{
         },
         library::{
             ViewSwitchMessage,
-            add_to_playlist::AddToPlaylist,
+            add_to_playlist::{open_add_album_to_playlist, open_add_to_playlist},
             context_menus::{album::AlbumContextMenu, track::TrackContextMenu},
         },
         library_access::LibraryAccess,
@@ -100,101 +99,29 @@ impl Default for AlbumContextMenuContext {
     }
 }
 
-pub(crate) struct AddToPlaylistState {
-    pub show: Entity<bool>,
-    pub add_to: Entity<AddToPlaylist>,
-}
-
-/// 为给定曲目创建或取回 `AddToPlaylist` 的 keyed state，返回 show 开关与歌单实体。
-pub(crate) fn add_to_playlist_state(
-    key: &'static str,
-    track_id: i64,
-    window: &mut Window,
-    cx: &mut App,
-) -> (Entity<bool>, Entity<AddToPlaylist>) {
-    let menu_state = window.use_keyed_state((key, track_id as usize), cx, |_, cx| {
-        let show = cx.new(|_| false);
-        let add_to = AddToPlaylist::new(cx, show.clone(), vec![track_id]);
-        AddToPlaylistState { show, add_to }
-    });
-    let state = menu_state.read(cx);
-    (state.show.clone(), state.add_to.clone())
-}
-
-/// 为给定专辑创建或取回 `AddToPlaylist` 的 keyed state，返回 show 开关与歌单实体。
-/// 专辑的曲目 ids 是在子菜单首次打开时于后台加载，而不是在这里——这个初始化器在网格
-/// 滚动时每个新见到的专辑行都要跑一次，在那里每专辑一次 `block_on` 查询会把滚动拖住。
-pub(crate) fn add_album_to_playlist_state(
-    key: &'static str,
-    album_id: i64,
-    window: &mut Window,
-    cx: &mut App,
-) -> (Entity<bool>, Entity<AddToPlaylist>) {
-    let menu_state = window.use_keyed_state((key, album_id as usize), cx, |_, cx| {
-        let show = cx.new(|_| false);
-        let add_to = AddToPlaylist::new(cx, show.clone(), Vec::new());
-
-        let loaded = Rc::new(std::cell::Cell::new(false));
-        let loaded_for_load = loaded;
-        let add_to_for_load = add_to.clone();
-        cx.observe(&show, move |_, show, cx| {
-            if !*show.read(cx) || loaded_for_load.get() {
-                return;
-            }
-            loaded_for_load.set(true);
-            let pool = cx.global::<Pool>().0.clone();
-            let add_to_for_task = add_to_for_load.clone();
-            cx.spawn(async move |_this, cx| {
-                let tracks = crate::RUNTIME
-                    .spawn(async move { db::list_tracks_in_album(&pool, album_id).await })
-                    .await
-                    .ok()
-                    .and_then(|result| result.ok())
-                    .map(|tracks| tracks.iter().map(|track| track.id).collect::<Vec<i64>>())
-                    .unwrap_or_default();
-                add_to_for_task.update(cx, |add_to, _| add_to.set_track_ids(tracks));
-            })
-            .detach();
-        })
-        .detach();
-
-        AddToPlaylistState { show, add_to }
-    });
-    let state = menu_state.read(cx);
-    (state.show.clone(), state.add_to.clone())
-}
-
 /// 为表格行构造曲目右键菜单。行以 `Arc` 引用计数进入构建器；完整的 `Track`
 /// （含 PathBuf）只在菜单真正打开时才深拷贝，而不是表格渲染时每行每帧一次。
 pub(crate) fn track_menu_for_table_shared(
     track: Arc<Track>,
     is_available: bool,
     context: &TrackContextMenuContext,
-    window: &mut Window,
-    cx: &mut App,
-) -> (ContextMenuBuilder, Option<AnyElement>) {
-    let (show_add_to, add_to) = add_to_playlist_state("track-menu-state", track.id, window, cx);
-
+) -> ContextMenuBuilder {
     let context = context.clone();
     // 菜单打开期间构建器每次渲染都重跑，所以它的函数体只能读缓存/快照——
     // 不得有阻塞查询或系统调用。
-    let builder: ContextMenuBuilder = Rc::new(move |_, cx| {
+    Rc::new(move |_, cx| {
         // 用缓存的已点赞集合：这里跑 DB 查询会阻塞 UI 线程（见 is_song_liked 的文档）
         let is_liked = is_song_liked(cx, track.id);
         // 深拷贝推迟到菜单打开时；每帧成本只是 Arc 引用计数
         let track = Rc::new((*track).clone());
-        TrackContextMenu::new(
+        gpui::IntoElement::into_any_element(TrackContextMenu::new(
             track,
             is_available,
             is_liked,
             context.clone(),
             None,
-            show_add_to.clone(),
-        )
-        .into_any_element()
-    });
-
-    (builder, Some(add_to.into_any_element()))
+        ))
+    })
 }
 
 /// 为表格行构造专辑右键菜单；引用计数 vs 深拷贝的取舍见
@@ -202,19 +129,12 @@ pub(crate) fn track_menu_for_table_shared(
 pub(crate) fn album_menu_for_table_shared(
     album: Arc<Album>,
     context: &AlbumContextMenuContext,
-    window: &mut Window,
-    cx: &mut App,
-) -> (ContextMenuBuilder, Option<AnyElement>) {
-    let (show_add_to, add_to) =
-        add_album_to_playlist_state("album-menu-state", album.id, window, cx);
-
+) -> ContextMenuBuilder {
     let context = *context;
-    let builder: ContextMenuBuilder = Rc::new(move |_, _| {
+    Rc::new(move |_, _| {
         let album = Rc::new((*album).clone());
-        AlbumContextMenu::new(album, show_add_to.clone(), context).into_any_element()
-    });
-
-    (builder, Some(add_to.into_any_element()))
+        gpui::IntoElement::into_any_element(AlbumContextMenu::new(album, context))
+    })
 }
 
 pub fn play_from_track(cx: &mut App, track: &Track, queue_items: Vec<QueueItemData>) {

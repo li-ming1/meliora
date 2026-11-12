@@ -118,7 +118,9 @@ pub async fn http_cover_bytes(url: &str) -> anyhow::Result<Option<bytes::Bytes>>
     if content_len.is_some_and(|len| len > COVER_MAX_BYTES) {
         return Ok(None);
     }
-    let mut collected = Vec::with_capacity(content_len.unwrap_or(0) as usize);
+    // 响应缺失 Content-Length（chunked 传输）时给 64KiB 起步容量，避免从 0 开始多次倍增 realloc。
+    let mut collected =
+        Vec::with_capacity(content_len.map(|len| len as usize).unwrap_or(64 * 1024));
     loop {
         match response.chunk().await {
             Ok(Some(chunk)) => {

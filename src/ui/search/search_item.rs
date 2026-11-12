@@ -1,7 +1,7 @@
 use std::{rc::Rc, sync::Arc};
 
 use cntp_i18n::{I18nString, tr};
-use gpui::{AnyView, App, IntoElement, SharedString, Window, div};
+use gpui::{App, IntoElement, SharedString, Window, div};
 use rustc_hash::FxHashMap;
 
 use crate::ui::{
@@ -11,9 +11,8 @@ use crate::ui::{
         palette::{FinderItemLeft, PaletteItem},
     },
     library::context_menus::{
-        AlbumContextMenuContext, TrackContextMenuContext, add_album_to_playlist_state,
-        add_to_playlist_state, album::AlbumContextMenu, play_album_next, play_track_next,
-        track::TrackContextMenu,
+        AlbumContextMenuContext, TrackContextMenuContext, album::AlbumContextMenu, play_album_next,
+        play_track_next, track::TrackContextMenu,
     },
     library_access::LibraryAccess,
     models::is_song_liked,
@@ -269,8 +268,6 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Album { id, .. } => {
                 let id = *id;
                 Some(Rc::new(move |window, cx| {
-                    let (show_add_to, _) =
-                        add_album_to_playlist_state("pi_context_album_add_to", id, window, cx);
                     let album =
                         window.use_keyed_state(("pi_context_album", id as usize), cx, |_, cx| {
                             cx.get_album_by_id(id)
@@ -279,7 +276,6 @@ impl PaletteItem for SearchPaletteItem {
                     if let Ok(album) = album.read(cx) {
                         AlbumContextMenu::new(
                             Rc::new((**album).clone()),
-                            show_add_to,
                             AlbumContextMenuContext {
                                 show_go_to_artist: true,
                             },
@@ -293,8 +289,6 @@ impl PaletteItem for SearchPaletteItem {
             SearchPaletteItem::Track { id, .. } => {
                 let id = *id;
                 Some(Rc::new(move |window, cx| {
-                    let (show_add_to, _) =
-                        add_to_playlist_state("pi_context_add_to", id, window, cx);
                     let track =
                         window.use_keyed_state(("pi_context_track", id as usize), cx, |_, cx| {
                             cx.get_track_by_id(id)
@@ -313,31 +307,12 @@ impl PaletteItem for SearchPaletteItem {
                                 play_from_here: None,
                             },
                             None,
-                            show_add_to,
                         )
                         .into_any_element()
                     } else {
                         div().into_any_element()
                     }
                 }))
-            }
-            _ => None,
-        }
-    }
-
-    /// 只在上下文菜单打开时构建（见
-    /// `PaletteItem::context_menu_overlay`）；该实体是按 key 存放的窗口状态，
-    /// 所以反复打开会复用它。
-    fn context_menu_overlay(&self, window: &mut Window, cx: &mut App) -> Option<AnyView> {
-        match self {
-            SearchPaletteItem::Track { id, .. } => {
-                let (_, add_to) = add_to_playlist_state("pi_context_add_to", *id, window, cx);
-                Some(add_to.into())
-            }
-            SearchPaletteItem::Album { id, .. } => {
-                let (_, add_to) =
-                    add_album_to_playlist_state("pi_context_album_add_to", *id, window, cx);
-                Some(add_to.into())
             }
             _ => None,
         }
