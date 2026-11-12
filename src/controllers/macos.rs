@@ -148,13 +148,12 @@ impl MacMediaPlayerController {
                 error!("Failed to create NSImage from album art");
                 return;
             };
-            // 这里很可能在漏内存
-            // 唯一不漏的情形是：它进入 macOS 之后被 OS 丢掉
-            // 而更可能的是，即使被丢掉，我们也没有办法回收它
-            // TODO: 把这一团乱弄清楚
-            let image = NonNull::new(Retained::into_raw(image)).unwrap();
-
-            let request_handler = RcBlock::new(move |_cg: CGSize| image);
+            // block 自己持有 NSImage：`RcBlock::new` 把闭包拷到堆上，artwork
+            // 释放时 block 的 dispose 会 drop 闭包，图像随之恰好 release 一次。
+            // 先前用 `Retained::into_raw` 折成裸指针则无人认领这个 +1——每首带
+            // 封面的曲目漏一张整幅解码图（~4MB）。handler 返回的是 +0 借出指针，
+            // ObjC 侧不会对它 release。
+            let request_handler = RcBlock::new(move |_cg: CGSize| NonNull::from(&*image));
             let bounds_size = CGSize::new(size.width as f64, size.height as f64);
             let artwork = MPMediaItemArtwork::initWithBoundsSize_requestHandler(
                 MPMediaItemArtwork::alloc(),
