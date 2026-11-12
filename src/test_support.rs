@@ -254,7 +254,9 @@ pub(crate) fn bench_summarize_n(name: &str, warmup: usize, runs: usize, mut f: i
             samples[0],
             samples[runs / 2],
             samples[runs * 9 / 10],
-            samples[runs.min(100) - 1],
+            // p99 取第 99 百分位；旧写法 samples[runs.min(100) - 1] 在 runs>100 时
+            // 落到第 100 小样本（runs=1000 即 p10），分布类结论会系统性失真
+            samples[(runs * 99 / 100).min(runs - 1)],
             mean,
         );
     } else {
