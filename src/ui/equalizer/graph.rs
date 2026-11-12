@@ -1226,6 +1226,8 @@ impl Element for EqGraph {
 
             {
                 let state = state.clone();
+                let config = config.clone();
+                let on_band_change = on_band_change.clone();
                 let on_drag_active = on_drag_active.clone();
                 let on_select = on_select.clone();
                 window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
@@ -1239,6 +1241,29 @@ impl Element for EqGraph {
                     state.borrow_mut().last_push = None;
                     if let Some(drag_active) = &on_drag_active {
                         (drag_active.borrow_mut())(false, cx);
+                    }
+                    // 松手补发最终值：拖动期推送合并到约 30Hz，快速甩动时最后一拍
+                    // 之后的位移否则永远到不了配置与 DSP（knob/slider 都会 flush）
+                    if drag.moved
+                        && let Some(on_change) = &on_band_change
+                        && let Some(band) = config.bands.get(drag.index)
+                    {
+                        let scale = if drag.shift { 0.1 } else { 1.0 };
+                        let width: f32 = plot.size.width.into();
+                        let dx: f32 = (ev.position.x - drag.start.x).into();
+                        let dy: f32 = (ev.position.y - drag.start.y).into();
+                        let start_x = freq_to_x_unclamped(drag.start_frequency as f32, width);
+                        let frequency = x_to_freq(start_x + dx * scale, width) as f64;
+                        let gain_db = if band.kind.has_gain() {
+                            let height: f32 = plot.size.height.into();
+                            (drag.start_gain_db
+                                - f64::from(dy * scale) * 2.0 * f64::from(DB_WINDOW)
+                                    / f64::from(height))
+                            .clamp(-MAX_GAIN_DB, MAX_GAIN_DB)
+                        } else {
+                            band.gain_db
+                        };
+                        (on_change.borrow_mut())(drag.index, frequency, gain_db, cx);
                     }
                     // 从未离开已选中圆点的一次点击会取消选中，但双击的第二次 mouseup
                     // 不行——它会重新打开编辑器
