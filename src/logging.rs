@@ -297,6 +297,11 @@ impl FileWriter {
             // 过去一次瞬时错误（杀毒软件占用、文件系统短暂抖动）会让本次会话
             // 余下时间的文件日志彻底失效且不留原因。改成重开落盘通道：抖动只为
             // 当前这一条在途记录买单；只有路径再也打不开时才彻底放弃。
+            // 重开前先补建目录：file-rotate 在建不出目录时内部 expect panic，
+            // 而这里是持锁的日志路径，release（panic=abort）下会直接带走进程。
+            if let Some(parent) = self.path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
             *state = new_log_rotate(&self.path);
         }
     }
