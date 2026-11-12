@@ -36,11 +36,11 @@ use windows::{
                 AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW,
                 DefWindowProcW, DestroyMenu, DestroyWindow, FindWindowExW, GetCursorPos,
                 GetSystemMetrics, GetWindowThreadProcessId, HICON, HMENU, HWND_MESSAGE, IMAGE_ICON,
-                IsWindowVisible, LR_SHARED, LoadImageW, MF_SEPARATOR, MF_STRING, PostMessageW,
-                RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_HIDE,
-                SW_RESTORE, SetForegroundWindow, ShowWindowAsync, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-                TrackPopupMenu, WINDOW_EX_STYLE, WM_DESTROY, WM_LBUTTONUP, WM_MBUTTONUP, WM_NULL,
-                WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+                IsIconic, IsWindowVisible, LR_SHARED, LoadImageW, MF_SEPARATOR, MF_STRING,
+                PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
+                SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindowAsync,
+                TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_DESTROY,
+                WM_LBUTTONUP, WM_MBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -367,8 +367,14 @@ pub(super) fn show_window(window: &mut gpui::Window) {
     // 重新排队，届时没有任何借用。激活由调用方在下一拍补做（窗口那时才真的
     // 可见，SetForegroundWindow 才有效）。
     unsafe {
-        // SW_RESTORE 同时覆盖"隐藏中"与"最小化中"两种状态。
-        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        // 最小化用 SW_RESTORE；最大化时不能用它——MSDN 规定 SW_RESTORE 会把
+        // 目标还原到最大化之前的尺寸，最大化 + 关闭到托盘的用户每次唤回都会
+        // 缩水。非最小化一律 SW_SHOW，保留最大化状态。
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        } else {
+            let _ = ShowWindowAsync(hwnd, SW_SHOW);
+        }
     }
 }
 
