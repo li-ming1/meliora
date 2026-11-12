@@ -58,7 +58,11 @@ pub struct UpdatePlaylist {
 impl UpdatePlaylist {
     pub fn new(cx: &mut App, show: Entity<bool>) -> Entity<Self> {
         cx.new(|cx| {
-            cx.observe(&show, move |this: &mut Self, _, cx| {
+            cx.observe(&show, move |this: &mut Self, show, cx| {
+                // 只有"打开"才需要重载列表；关闭时再跑一次同步查询纯属白付
+                if !*show.read(cx) {
+                    return;
+                }
                 this.palette.update(cx, |this, cx| {
                     // 查询失败时保留调色板当前的列表，而不是让观察者 panic
                     let Ok(playlists) = cx.list_all_playlists() else {
