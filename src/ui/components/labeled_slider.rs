@@ -5,7 +5,10 @@ use gpui::{
     StyleRefinement, Styled, Window, div, px, relative,
 };
 
-use crate::ui::{components::slider::slider, theme::Theme};
+use crate::ui::{
+    components::slider::{SLIDER_CHANGE_INTERVAL, slider},
+    theme::Theme,
+};
 
 type ChangeHandler = dyn FnMut(f32, &mut Window, &mut App);
 type ValueFormatter = dyn Fn(f32) -> SharedString;
@@ -101,6 +104,9 @@ impl RenderOnce for LabeledSlider {
             .w_full()
             .h(px(8.0))
             .rounded(px(theme.radius_sm))
+            // 默认 1ms 档会让拖动期近乎每个鼠标事件都写设置模型 + notify +
+            // 排保存；33ms 与其余滑条一致，并启用松手时的最终 flush
+            .change_interval(SLIDER_CHANGE_INTERVAL)
             .value(normalized);
         let slider = if let Some(on_change) = on_change {
             let on_change_click = on_change.clone();
