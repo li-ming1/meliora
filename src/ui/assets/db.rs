@@ -114,11 +114,12 @@ fn load_table_asset(
 /// thumb 生效。原来那句"stored full-ish / multi-hundred-KB RGBA buffers"是按更旧的存储
 /// 形态写的，留着会让后人以为这里有一条大的降幅可拿。
 ///
-/// 另一件由同一次实测暴露、**尚未处理**的事：专辑网格单元最小 192 CSS px
-/// （`uniform_grid.rs` 的 `DEFAULT_MIN_ITEM_WIDTH = 192`，1.25 DPR 下 ≥240 设备像素）却用 `/thumb`
-/// （`library/types/table.rs` 里 `Album::get_image_path` 建的那条 URI）= 70px 源，等于 3.4× 放大。修法应照圆盘那条
-/// `fetch_display_cover_bytes_capped`（显示×4 封顶）给网格档换成 `/full`
-/// （库里是 256-1024px JPEG），属可见质量改动，未擅自改。
+/// 澄清历史与现实：此前注释曾推测专辑网格使用的是 `/thumb`（70px BMP 放大），
+/// 但经代码审查（`ui/components/table/grid_item.rs`），网格项 `GridItem` 实际消费的是
+/// `row.get_full_image_key()`，即 `ManagedImageKey::Album(id).thumb_max(256)`。在
+/// `managed_image.rs` 中，`thumb_size > STORED_THUMB_PX (72)` 会走 `find_album_art.sql`
+/// 全尺寸图并按 256px 受界解码入 GPU 图集，清晰度与纹素 1:1，并不存在 70px 强行放大的问题；
+/// 只有表格普通行（`TableItem` 的 22×22px 小方块）才走这里的 `!db://album/{id}/thumb`。
 const THUMB_MAX_PX: u32 = 128;
 
 /// 缩略图资产缓存条目上限。当代扫描器写的 thumb 是 70×70 BMP（实测 19,722 B/张），
