@@ -331,6 +331,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn album_image_contract_distinguishes_table_thumb_and_grid_full_key() {
+        use crate::library::types::{Album, DBString};
+        use crate::ui::components::managed_image::ManagedImageKey;
+        use crate::ui::components::table::table_data::TableData;
+
+        let album = Album {
+            id: 42,
+            title: DBString::from("测试专辑"),
+            artist_display_override: None,
+            release_date: None,
+            date_precision: None,
+            label: None,
+            catalog_number: None,
+            isrc: None,
+            vinyl_numbering: false,
+        };
+
+        // TableItem 消费 get_image_path：22px 列表小行使用 70px 缩略图
+        assert_eq!(
+            album.get_image_path().map(|s| s.to_string()),
+            Some("!db://album/42/thumb".to_string())
+        );
+
+        // GridItem 消费 get_full_image_key：网格卡片使用全尺寸封面键 + 256px 受界解码
+        assert_eq!(album.get_full_image_key(), Some(ManagedImageKey::Album(42)));
+    }
+
     /// 判"扫描器直存 JPEG + 读侧闸门"这条待拍板项的每 miss 单价（GPUI_HARDCORE_PERFORMANCE.md
     /// §44 第二十九轮留的缺口：转码那步值多少毫秒）。输入是他库里 20 张**真实**
     /// `artwork.thumb` BMP 字节的逐字节副本（先导出到临时目录，避免测试碰运行时库文件）。
