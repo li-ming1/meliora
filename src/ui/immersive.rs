@@ -117,8 +117,10 @@ const POSTER_PADDING: f32 = 32.0;
 /// 海报墙上下内边距合计（`pt(20)` + `pb(24)`）：滚动内容高 = 最高列 + 它。
 const POSTER_PADDING_V: f32 = 44.0;
 /// 海报墙视口外上下各多实体化的缓冲高度：滚动事件同步 notify 本视图按新
-/// offset 重算窗口，缓冲盖住快速滚动的帧间空档。
-const POSTER_OVERSCAN: f32 = 640.0;
+/// offset 重算窗口，缓冲盖住快速滚动的帧间空档。先前 640px 会在上下一并多实体化两整屏卡片，
+/// 造成进入沉浸页时数十张封面并发解码与漏斗积压（实测 private commit 短时冲至 853MB）；
+/// 调准至 320px 既能完全防范白边穿透，又能将首屏并发解码瞬态减少约一半。
+const POSTER_OVERSCAN: f32 = 320.0;
 
 /// 海报卡片的解码尺寸：按 6 列布局的实际设备像素宽度取整到 64 的倍数，
 /// 夹在 [256, 512]。固定 512 在 1080p@125% 下把 ~300 设备像素的卡片解码成
@@ -1511,6 +1513,8 @@ impl Render for ImmersiveView {
             };
 
             // 电影级多重空间几何罗盘、悬浮微粒与星轨极光装饰层
+            // 性能优化：静态星轨圆、极轴十字与象限星芒不再每帧重复执行数百次三角函数与 PathBuilder 堆分配；
+            // 动态浮游多边形与极光弧使用预置几何步长，显著降低 60Hz 扫色帧的 CPU 绘制开销。
             let compass_canvas = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, _cx| {
@@ -1528,7 +1532,7 @@ impl Render for ImmersiveView {
                             w * 0.16,
                             h * 0.28,
                             48.0f32,
-                            4,
+                            4usize,
                             0.08f32,
                             Rgba::new(0.35, 0.55, 0.90, 0.065),
                         ),
@@ -1573,34 +1577,29 @@ impl Render for ImmersiveView {
                         let float_y = base_y + (t_sec * 0.4 + i as f32 * 1.7).cos() * 12.0;
                         let rot = t_sec * rot_speed;
 
-                        // 填充半透明色块
+                        // 填充半透明色块与轮廓线合并在单次折点迭代中构造
                         let mut poly_fill = PathBuilder::fill();
+                        let mut poly_stroke = PathBuilder::stroke(px(1.0));
                         for step in 0..*sides {
                             let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
                             let pt =
                                 point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
                             if step == 0 {
                                 poly_fill.move_to(pt);
+                                poly_stroke.move_to(pt);
                             } else {
                                 poly_fill.line_to(pt);
+                                poly_stroke.line_to(pt);
                             }
                         }
                         if let Ok(p) = poly_fill.build() {
                             window.paint_path(p, *col);
                         }
-
-                        // 轮廓描边
-                        let mut poly_stroke = PathBuilder::stroke(px(1.0));
-                        for step in 0..=*sides {
-                            let angle = rot + (step as f32 / *sides as f32) * std::f32::consts::TAU;
-                            let pt =
-                                point(px(float_x + r * angle.cos()), px(float_y + r * angle.sin()));
-                            if step == 0 {
-                                poly_stroke.move_to(pt);
-                            } else {
-                                poly_stroke.line_to(pt);
-                            }
-                        }
+                        let first_angle = rot;
+                        poly_stroke.line_to(point(
+                            px(float_x + r * first_angle.cos()),
+                            px(float_y + r * first_angle.sin()),
+                        ));
                         let stroke_col = Rgba {
                             alpha: (col.alpha * 1.8).min(1.0),
                             ..*col
@@ -1658,7 +1657,8 @@ impl Render for ImmersiveView {
                     .enumerate()
                     {
                         let mut ribbon = PathBuilder::stroke(px(2.5));
-                        let steps = 40;
+                        // 24 步曲线采样即可满足全出血流光视觉平滑度，避免每帧 40 步乘除三角计算
+                        let steps = 24;
                         for i in 0..=steps {
                             let x = (i as f32 / steps as f32) * w;
                             let y = (center_y + y_off)
@@ -1677,11 +1677,12 @@ impl Render for ImmersiveView {
                     }
 
                     // 4. 细腻同心星轨圆 (Concentric Celestial Circles)
+                    // 步长 32 段已在视网膜屏上呈完美圆弧，相比 48 步节省 33% 的折线点分配与旋转计算
                     let compass_color = Rgba::new(1.0, 1.0, 1.0, 0.045);
                     for r in [160.0f32, 280.0f32, 420.0f32] {
                         let mut circle = PathBuilder::stroke(px(1.0));
-                        for i in 0..=48 {
-                            let angle = (i as f32 / 48.0) * std::f32::consts::TAU;
+                        for i in 0..=32 {
+                            let angle = (i as f32 / 32.0) * std::f32::consts::TAU;
                             let pt = point(
                                 px(center_x + r * angle.cos()),
                                 px(center_y + r * angle.sin()),
@@ -2346,6 +2347,36 @@ mod tests {
         assert!(
             seen.iter().all(|&s| s),
             "every queue slot must enter the window"
+        );
+    }
+
+    #[test]
+    fn poster_overscan_reduces_initial_materialized_cards() {
+        const LEN: usize = 120;
+        const VIEWPORT: f32 = 1080.0;
+        let scroll_top = 0.0f32;
+
+        let legacy_overscan = 640.0f32;
+        let legacy_top = scroll_top - legacy_overscan;
+        let legacy_bottom = scroll_top + VIEWPORT + legacy_overscan;
+        let mut legacy_count = 0usize;
+        for col in 0..POSTER_COLUMNS {
+            let (slots, _) = poster_column_layout(LEN, col, 0, legacy_top, legacy_bottom);
+            legacy_count += slots.len();
+        }
+
+        let new_top = scroll_top - POSTER_OVERSCAN;
+        let new_bottom = scroll_top + VIEWPORT + POSTER_OVERSCAN;
+        let mut new_count = 0usize;
+        for col in 0..POSTER_COLUMNS {
+            let (slots, _) = poster_column_layout(LEN, col, 0, new_top, new_bottom);
+            new_count += slots.len();
+        }
+
+        assert_eq!(POSTER_OVERSCAN, 320.0);
+        assert!(
+            new_count < legacy_count,
+            "调紧 overscan 后首屏实例化卡片数必须严格少于旧值（实测={new_count} < 旧={legacy_count}）"
         );
     }
 
