@@ -724,9 +724,11 @@ impl ImmersiveView {
         }
         self.prefetched_art = Some((next_key.clone(), target_w, target_h));
         let pool = cx.global::<Pool>().0.clone();
-        // 句柄留存在案：deactivate 据此 abort（若再切歌则被新预取覆盖，
-        // 旧任务自然跑完，与既往"丢弃句柄"行为一致且写回的是当前曲目条
-        // 目，无害）。
+        // 快速切歌时旧预取的下一首已经失效：主动 abort 旧在途任务，避免多条废弃的
+        // 2048/4096 管线在后台并发解码与抢占 DECODE_PERMITS，导致内存瞬态爬坡。
+        if let Some(old_task) = self.prefetch_task.take() {
+            old_task.abort();
+        }
         self.prefetch_task = Some(crate::RUNTIME.spawn(async move {
             // 背景先行：它是切歌丝滑的关键路径。两条预取各付一次完整
             // 4096 解码，用户若在中间切歌，至少背景已就绪。
