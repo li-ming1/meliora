@@ -2449,6 +2449,29 @@ mod tests {
         assert!(new_circle_pts < old_circle_pts);
     }
 
+    #[tokio::test]
+    async fn aborting_stale_prefetch_prevents_abandoned_task_pipeline() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let executed = std::sync::Arc::new(AtomicBool::new(false));
+        let executed_clone = executed.clone();
+
+        // 模拟连续切歌：第一个预取任务被 abort，第二个新任务顺利跑完
+        let mut task = Some(tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            executed_clone.store(true, Ordering::Relaxed);
+        }));
+
+        if let Some(old_task) = task.take() {
+            old_task.abort();
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(70)).await;
+        assert!(
+            !executed.load(Ordering::Relaxed),
+            "被 abort 的废弃预取任务不得继续执行完成"
+        );
+    }
+
     #[test]
     fn kinetic_char_text_paired_allocation_bench() {
         use crate::test_support::alloc_guard::count_allocations;
