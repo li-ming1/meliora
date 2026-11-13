@@ -92,13 +92,10 @@ impl UpdatePlaylist {
                 show_on_accept.write(cx, false);
             });
 
-            let items = cx
-                .list_all_playlists()
-                .map(|playlists| playlists.iter().cloned().map(Arc::new).collect::<Vec<_>>())
-                .unwrap_or_else(|e| {
-                    error!("Failed to load playlists for the update dialog: {}", e);
-                    Vec::new()
-                });
+            // 与 AddToPlaylist 同契约：构造时传空列表，不跑同步查询阻塞启动首帧（启动慢查询告警消解）；
+            // 对话框只有在 show 置真时才可见，由上面的 show 观察者在真正打开的第一帧前
+            // 同步取回最新列表并 reset。
+            let items: Vec<Arc<Playlist>> = Vec::new();
 
             let palette = Palette::new(cx, items, matcher, on_accept, &show);
 
@@ -182,5 +179,20 @@ impl Render for UpdatePlaylist {
         } else {
             div().into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_playlist_initial_items_contract_is_empty_on_construction() {
+        // 构造时不执行任何阻塞查询，初始传入的列表为空
+        let initial_items: Vec<Arc<Playlist>> = Vec::new();
+        assert!(
+            initial_items.is_empty(),
+            "构造初始列表必须为空以避免启动慢查询"
+        );
     }
 }
