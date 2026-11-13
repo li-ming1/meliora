@@ -27,9 +27,9 @@ use crate::ui::online_track_row::OnlineTrackDisplay;
 pub enum SearchPaletteItem {
     Album {
         id: i64,
-        title: String,
-        artist: String,
-        artists: String,
+        title: SharedString,
+        artist: SharedString,
+        artists: SharedString,
         available: bool,
         /// 预计算的模糊匹配文本，构造时算一次，好让面板匹配器永不在 UI 线程上
         /// 格式化字符串。
@@ -37,13 +37,13 @@ pub enum SearchPaletteItem {
     },
     Artist {
         id: i64,
-        name: String,
+        name: SharedString,
         search_text: Arc<str>,
     },
     Track {
         id: i64,
-        title: String,
-        artists: String,
+        title: SharedString,
+        artists: SharedString,
         album_id: Option<i64>,
         search_text: Arc<str>,
     },
@@ -139,7 +139,7 @@ impl SearchPaletteItem {
             let search_text: Arc<str> = name.clone().into();
             items.push(Arc::new(SearchPaletteItem::Artist {
                 id,
-                name,
+                name: name.into(),
                 search_text,
             }));
         }
@@ -149,9 +149,9 @@ impl SearchPaletteItem {
             let search_text: Arc<str> = format!("{} {} {}", title, artist, artists).into();
             items.push(Arc::new(SearchPaletteItem::Album {
                 id,
-                title,
-                artist,
-                artists,
+                title: title.into(),
+                artist: artist.into(),
+                artists: artists.into(),
                 available,
                 search_text,
             }));
@@ -161,8 +161,8 @@ impl SearchPaletteItem {
             let search_text: Arc<str> = format!("{} {}", title, artists).into();
             items.push(Arc::new(SearchPaletteItem::Track {
                 id,
-                title,
-                artists,
+                title: title.into(),
+                artists: artists.into(),
                 album_id,
                 search_text,
             }));
@@ -195,9 +195,9 @@ impl PaletteItem for SearchPaletteItem {
 
     fn middle_content(&self, _cx: &mut App) -> SharedString {
         match self {
-            SearchPaletteItem::Album { title, .. } => title.clone().into(),
-            SearchPaletteItem::Artist { name, .. } => name.clone().into(),
-            SearchPaletteItem::Track { title, .. } => title.clone().into(),
+            SearchPaletteItem::Album { title, .. } => title.clone(),
+            SearchPaletteItem::Artist { name, .. } => name.clone(),
+            SearchPaletteItem::Track { title, .. } => title.clone(),
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { track, .. } => Self::online_title(&track.title),
         }
@@ -205,8 +205,8 @@ impl PaletteItem for SearchPaletteItem {
 
     fn right_content(&self, _cx: &mut App) -> Option<SharedString> {
         match self {
-            SearchPaletteItem::Album { artist, .. } => Some(artist.clone().into()),
-            SearchPaletteItem::Track { artists, .. } => Some(artists.clone().into()),
+            SearchPaletteItem::Album { artist, .. } => Some(artist.clone()),
+            SearchPaletteItem::Track { artists, .. } => Some(artists.clone()),
             SearchPaletteItem::Artist { .. } => None,
             #[cfg(feature = "kugou")]
             SearchPaletteItem::KugouTrack { track, .. } => Some(track.detail_label()),
@@ -398,8 +398,8 @@ mod reuse_tests {
     fn track(id: i64, title: &str) -> Arc<SearchPaletteItem> {
         Arc::new(SearchPaletteItem::Track {
             id,
-            title: title.to_owned(),
-            artists: "someone".to_owned(),
+            title: title.into(),
+            artists: "someone".into(),
             album_id: Some(1),
             search_text: title.into(),
         })
@@ -434,8 +434,8 @@ mod reuse_tests {
             merged[2].as_ref(),
             &SearchPaletteItem::Track {
                 id: 3,
-                title: "c".to_owned(),
-                artists: "someone".to_owned(),
+                title: "c".into(),
+                artists: "someone".into(),
                 album_id: Some(1),
                 search_text: "c".into(),
             }
@@ -458,9 +458,9 @@ mod reuse_tests {
         let old = vec![track(7, "x")];
         let new = vec![Arc::new(SearchPaletteItem::Album {
             id: 7,
-            title: "x".to_owned(),
-            artist: "someone".to_owned(),
-            artists: "someone".to_owned(),
+            title: "x".into(),
+            artist: "someone".into(),
+            artists: "someone".into(),
             available: true,
             search_text: "x".into(),
         })];
@@ -473,5 +473,40 @@ mod reuse_tests {
         let old: Vec<Arc<SearchPaletteItem>> = Vec::new();
         let new = vec![track(1, "a")];
         assert_eq!(reuse_unchanged(&old, new).len(), 1);
+    }
+
+    #[test]
+    fn search_item_content_access_is_zero_allocation_for_shared_strings() {
+        use crate::test_support::alloc_guard::count_allocations;
+
+        let item = SearchPaletteItem::Track {
+            id: 1,
+            title: "歌曲标题".into(),
+            artists: "歌手".into(),
+            album_id: Some(42),
+            search_text: "歌曲标题 歌手".into(),
+        };
+
+        let (_, allocs) = count_allocations(|| {
+            // 模拟 Finder 在渲染列表中展示标题与副标题
+            let mut total_bytes = 0usize;
+            for _ in 0..100 {
+                let mid = match &item {
+                    SearchPaletteItem::Track { title, .. } => title.clone(),
+                    _ => unreachable!(),
+                };
+                let right = match &item {
+                    SearchPaletteItem::Track { artists, .. } => Some(artists.clone()),
+                    _ => unreachable!(),
+                };
+                total_bytes += mid.len() + right.as_ref().map(|s| s.len()).unwrap_or(0);
+            }
+            total_bytes
+        });
+
+        assert_eq!(
+            allocs, 0,
+            "基于 SharedString 的内容访问在渲染时应为 0 堆分配"
+        );
     }
 }

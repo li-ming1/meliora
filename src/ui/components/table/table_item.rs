@@ -205,7 +205,9 @@ where
                         .text_ellipsis()
                         .border_b_1()
                         .border_color(theme.border_color)
-                        .when_some(column_data.clone(), |div, string| div.child(string)),
+                        .when_some(column_data.as_ref(), |div, string| {
+                            div.child(string.clone())
+                        }),
                 );
             }
         }
