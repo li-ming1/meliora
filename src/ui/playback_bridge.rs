@@ -90,10 +90,7 @@ pub fn start_broadcast(interface: &mut PlaybackInterface, app: &mut App) {
                         });
                     }
                     PlaybackEvent::PositionChanged(v) => {
-                        playback_info.position.update(cx, |m, cx| {
-                            *m = v;
-                            cx.notify()
-                        });
+                        update_if_changed(&playback_info.position, cx, v);
 
                         record_and_flush(&stats, stats_pool.clone(), |recorder| {
                             recorder.on_position(v);
