@@ -221,3 +221,37 @@ where
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::alloc_guard::count_allocations;
+
+    #[core::prelude::v1::test]
+    fn table_item_cell_borrow_avoids_unnecessary_option_allocation() {
+        let sample_cells: Vec<Option<SharedString>> = (0..5)
+            .map(|i| {
+                if i % 2 == 0 {
+                    Some(SharedString::from(format!("Cell {i}")))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 验证对 Option<&SharedString> 的借用不会产生新的堆分配
+        let (_, allocs) = count_allocations(|| {
+            let mut total_len = 0usize;
+            for _ in 0..100 {
+                for cell in &sample_cells {
+                    if let Some(s) = cell.as_ref() {
+                        total_len += s.len();
+                    }
+                }
+            }
+            total_len
+        });
+
+        assert_eq!(allocs, 0, "单元格借用访问必须为 0 次堆分配");
+    }
+}
