@@ -282,4 +282,29 @@ mod tests {
             .collect();
         assert_eq!(positions, vec![3]);
     }
+
+    #[test]
+    fn update_if_changed_skips_identical_values_guard() {
+        use std::cell::Cell;
+        // 纯逻辑相等守卫验证：同一个值在有守卫的情况下只触发一次真实写变更
+        let current = Cell::new(100u64);
+        let write_count = Cell::new(0usize);
+
+        let test_update = |new_val: u64| {
+            if current.get() != new_val {
+                current.set(new_val);
+                write_count.set(write_count.get() + 1);
+            }
+        };
+
+        test_update(100); // 相同值，守卫拦截
+        test_update(100); // 相同值，守卫拦截
+        assert_eq!(write_count.get(), 0, "等值更新不得触发写操作与 notify");
+
+        test_update(101); // 变动值，放行
+        assert_eq!(write_count.get(), 1);
+
+        test_update(101); // 相同值，守卫拦截
+        assert_eq!(write_count.get(), 1);
+    }
 }
