@@ -2381,6 +2381,73 @@ mod tests {
     }
 
     #[test]
+    fn compass_canvas_optimized_steps_reduce_path_builder_vertices() {
+        use gpui::PathBuilder;
+
+        // 极光流光弧：旧 40 步 vs 新 24 步
+        let mut old_ribbon_pts = 0usize;
+        let mut old_ribbon = PathBuilder::stroke(gpui::px(2.5));
+        for i in 0..=40 {
+            old_ribbon_pts += 1;
+            let pt = gpui::point(gpui::px(i as f32), gpui::px((i as f32).sin()));
+            if i == 0 {
+                old_ribbon.move_to(pt);
+            } else {
+                old_ribbon.line_to(pt);
+            }
+        }
+        let _ = old_ribbon.build();
+
+        let mut new_ribbon_pts = 0usize;
+        let mut new_ribbon = PathBuilder::stroke(gpui::px(2.5));
+        for i in 0..=24 {
+            new_ribbon_pts += 1;
+            let pt = gpui::point(gpui::px(i as f32), gpui::px((i as f32).sin()));
+            if i == 0 {
+                new_ribbon.move_to(pt);
+            } else {
+                new_ribbon.line_to(pt);
+            }
+        }
+        let _ = new_ribbon.build();
+
+        assert_eq!(old_ribbon_pts, 41);
+        assert_eq!(new_ribbon_pts, 25);
+        assert!(new_ribbon_pts < old_ribbon_pts);
+
+        // 同心星轨圆：旧 48 步 vs 新 32 步
+        let mut old_circle_pts = 0usize;
+        let mut old_circle = PathBuilder::stroke(gpui::px(1.0));
+        for i in 0..=48 {
+            old_circle_pts += 1;
+            let pt = gpui::point(gpui::px(i as f32), gpui::px((i as f32).cos()));
+            if i == 0 {
+                old_circle.move_to(pt);
+            } else {
+                old_circle.line_to(pt);
+            }
+        }
+        let _ = old_circle.build();
+
+        let mut new_circle_pts = 0usize;
+        let mut new_circle = PathBuilder::stroke(gpui::px(1.0));
+        for i in 0..=32 {
+            new_circle_pts += 1;
+            let pt = gpui::point(gpui::px(i as f32), gpui::px((i as f32).cos()));
+            if i == 0 {
+                new_circle.move_to(pt);
+            } else {
+                new_circle.line_to(pt);
+            }
+        }
+        let _ = new_circle.build();
+
+        assert_eq!(old_circle_pts, 49);
+        assert_eq!(new_circle_pts, 33);
+        assert!(new_circle_pts < old_circle_pts);
+    }
+
+    #[test]
     fn kinetic_char_text_paired_allocation_bench() {
         use crate::test_support::alloc_guard::count_allocations;
 
