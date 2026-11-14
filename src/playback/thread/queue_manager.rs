@@ -19,7 +19,7 @@ use crate::{
 // 的 gate 保持一致。use 树嵌套段上不能挂 `#[cfg]`（rustc 判为解析错误），
 // 故按全仓惯例拆为独立 use 语句。
 #[cfg(feature = "online_sources")]
-use crate::playback::queue::PersistedDisplay;
+use crate::playback::queue::{OnlineIdentity, PersistedDisplay};
 
 mod session;
 mod undo;
@@ -704,6 +704,8 @@ impl QueueManager {
             return self.jump(index);
         }
 
+        self.reconcile_original_queue_paths();
+
         let Some(original_item) = self.original_queue.get(index).cloned() else {
             return JumpResult::OutOfBounds;
         };
@@ -837,10 +839,68 @@ impl QueueManager {
         result
     }
 
+    /// 把 `original_queue` 镜像里在线条目的路径对齐到队列当前值。镜像与队列的
+    /// 配对（dequeue 配对移除、take_from_original_matching、取消洗牌光标定位、
+    /// jump_unshuffled）用含 path 的 `QueueItemData::eq`，而 URL 刷新回写
+    /// （thread.rs 换曲刷新、app.rs 启动刷新、kugou play_track 直改——后两处在
+    /// UI 侧，拿不到镜像）只改队列侧：不对齐则取消洗牌时当前曲定位落到
+    /// unwrap_or(0) 的错位槽、被删曲目在镜像留幽灵（取消洗牌后复活）、
+    /// jump_unshuffled 失配 OutOfBounds、undo 无谓重开在播曲目。在镜像消费点
+    /// 前对齐一次即可自愈一切写回路径（含未来新增的写回点），代价 O(在线条目
+    /// 数)，仅在用户动作频率的调用点执行；会话快照与 undo 快照不主动对齐
+    /// （首次消费自愈）。
+    ///
+    /// identity 含每曲唯一的 hash，全等匹配不做哨兵展开（mix_song_id==0 的
+    /// 哨兵语义针对按 id 单独匹配的场景，见 ui/kugou.rs queue_item_is_same_
+    /// kugou_track）。
+    #[cfg(feature = "online_sources")]
+    fn reconcile_original_queue_paths(&mut self) {
+        if !self.shuffle {
+            return;
+        }
+        self.align_mirror_paths_to_queue();
+    }
+
+    /// 对齐核：不带 shuffle 守卫。取消洗牌分支在 `self.shuffle` 旗标已翻转
+    /// **之后**才执行（toggle_shuffle 第一行就取反），那里的镜像按定义存在，
+    /// 必须直接调本方法而非带守卫的 [`Self::reconcile_original_queue_paths`]。
+    #[cfg(feature = "online_sources")]
+    fn align_mirror_paths_to_queue(&mut self) {
+        let fresh: FxHashMap<OnlineIdentity, PathBuf> = self
+            .queue
+            .read_recovered()
+            .iter()
+            .filter_map(|item| Some((item.online_identity()?.clone(), item.get_path().clone())))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        let mirror = Arc::make_mut(&mut self.original_queue);
+        for item in mirror.iter_mut() {
+            let Some(identity) = item.online_identity() else {
+                continue;
+            };
+            if let Some(path) = fresh.get(identity)
+                && item.get_path().as_path() != path.as_path()
+            {
+                item.replace_path(path.clone());
+            }
+        }
+    }
+
+    /// 非 online 构建无在线身份，镜像路径不会与队列漂移；占位让调用点无条件。
+    #[cfg(not(feature = "online_sources"))]
+    fn reconcile_original_queue_paths(&mut self) {}
+
+    #[cfg(not(feature = "online_sources"))]
+    fn align_mirror_paths_to_queue(&mut self) {}
+
     /// 移除队列里指定下标的条目。
     pub fn dequeue(&mut self, index: usize) -> DequeueResult {
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
+
+        self.reconcile_original_queue_paths();
 
         // 移除本身在写锁内完成；随后的下一可播项扫描会做 path.exists() 同步
         // stat（UNC/SMB 上一次可达百 ms 级），必须放在写锁外——这把写锁被
@@ -982,6 +1042,8 @@ impl QueueManager {
 
         let previous_queue_next = self.queue_next;
         let previous_shuffle = self.shuffle;
+
+        self.reconcile_original_queue_paths();
 
         // 批量移除本身在写锁内完成；随后的下一可播项扫描会做 path.exists()
         // 同步 stat，必须放在写锁外（同 `dequeue`，见 `next()` 的三段化）。
@@ -1384,6 +1446,11 @@ impl QueueManager {
 
                 ShuffleResult::Shuffled
             } else {
+                // 取消洗牌用镜像定位当前曲，先对齐 URL 刷新造成的路径漂移。
+                // 注意此时 self.shuffle 已被翻转成 false（toggle_shuffle 首行
+                // 取反），必须走不带守卫的对齐核。
+                self.align_mirror_paths_to_queue();
+
                 let mut queue = self.queue.write_recovered();
 
                 let current_item = Self::cursor_item(&queue, self.queue_next);
@@ -1499,6 +1566,139 @@ mod tests {
             queue_next: manager.queue_next,
             shuffle: manager.shuffle,
         }
+    }
+
+    /// 在线条目夹具：路径用 http 流 URL（path_playable 对 http(s) 免存在检查，
+    /// 本地路径夹具在 Windows 上不可播会让 jump 断言翻车），刷新后的 URL 也用
+    /// http 形态贴近真实写回。
+    #[cfg(feature = "online_sources")]
+    pub(super) fn online_item(id: i64, hash: &str) -> QueueItemData {
+        serde_json::from_value::<QueueItemData>(json!({
+            "db_id": id,
+            "db_album_id": id / 10,
+            "path": format!("http://stream.example/meliora-undo-{id}.mp3"),
+        }))
+        .expect("valid queue item")
+        .with_online_identity(crate::online_sources::OnlineIdentity::Kugou {
+            hash: hash.to_string(),
+            mix_song_id: id,
+            album_id: id / 10,
+        })
+    }
+
+    #[test]
+    #[cfg(feature = "online_sources")]
+    fn unshuffle_locates_refreshed_current_item_in_mirror() {
+        // 回归：URL 刷新回写（thread 换曲刷新 / UI 直改）只改队列侧条目路径，
+        // 镜像仍是旧 URL——取消洗牌用含 path 的 PartialEq 定位当前曲，失配后
+        // unwrap_or(0) 把光标错落到第 0 项、EOF 后从错误槽位前进。reconcile
+        // 后按 identity 对齐镜像，定位恢复正确且刷新后的 URL 随镜像落位。
+        let mut manager = manager_with_queue(vec![
+            online_item(1, "hash-a"),
+            online_item(2, "hash-b"),
+            online_item(3, "hash-c"),
+        ]);
+        manager.jump(1);
+        manager.toggle_shuffle();
+
+        let refreshed = std::path::PathBuf::from("http://stream.example/meliora-undo-2-fresh.mp3");
+        {
+            let mut guard = manager.queue.write().expect("queue lock");
+            let entries = Arc::make_mut(&mut guard);
+            let idx = entries
+                .iter()
+                .position(|item| item.get_db_id() == Some(2))
+                .expect("current item stays before the cursor slot");
+            entries[idx].replace_path(refreshed.clone());
+        }
+
+        manager.toggle_shuffle();
+
+        let state = snapshot(&manager);
+        assert_eq!(
+            state.queue_next, 2,
+            "当前曲（db_id 2）在原序下标 1，光标应落 2 而非失配后的 unwrap_or(0)+1"
+        );
+        let current = state
+            .queue
+            .get(state.queue_next - 1)
+            .expect("cursor lands on a real item");
+        assert_eq!(current.get_db_id(), Some(2));
+        assert_eq!(
+            current.get_path().as_path(),
+            refreshed.as_path(),
+            "镜像对齐后取消洗牌应保留刷新后的 URL"
+        );
+        assert_eq!(state.queue.len(), 3);
+    }
+
+    #[test]
+    #[cfg(feature = "online_sources")]
+    fn dequeue_pairs_refreshed_item_out_of_mirror() {
+        // 回归：URL 刷新后删除曲目，镜像配对按含 path 的 PartialEq 失配——
+        // 已删曲目留幽灵，取消洗牌时复活。reconcile 后配对命中、镜像同步移除。
+        let mut manager =
+            manager_with_queue(vec![online_item(1, "hash-a"), online_item(2, "hash-b")]);
+        manager.toggle_shuffle();
+
+        let idx = {
+            let queue = manager.queue.read().expect("queue lock");
+            queue
+                .iter()
+                .position(|item| item.get_db_id() == Some(1))
+                .expect("a in queue")
+        };
+        {
+            let mut guard = manager.queue.write().expect("queue lock");
+            let entries = Arc::make_mut(&mut guard);
+            entries[idx].replace_path(std::path::PathBuf::from(
+                "http://stream.example/meliora-undo-1-fresh.mp3",
+            ));
+        }
+
+        manager.dequeue(idx);
+
+        let state = snapshot(&manager);
+        assert!(
+            !state
+                .original_queue
+                .iter()
+                .any(|item| item.get_db_id() == Some(1)),
+            "镜像不得残留已删除条目（幽灵会在取消洗牌时复活）"
+        );
+        assert_eq!(state.original_queue.len(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "online_sources")]
+    fn jump_unshuffled_finds_refreshed_item() {
+        // 回归：URL 刷新后 jump_unshuffled 拿镜像条目（旧 URL）在队列里找当前
+        // 路径，失配 OutOfBounds。reconcile 后按原序命中刷新后的条目。
+        let mut manager = manager_with_queue(vec![
+            online_item(1, "hash-a"),
+            online_item(2, "hash-b"),
+            online_item(3, "hash-c"),
+        ]);
+        manager.jump(1);
+        manager.toggle_shuffle();
+
+        {
+            let mut guard = manager.queue.write().expect("queue lock");
+            let entries = Arc::make_mut(&mut guard);
+            let idx = entries
+                .iter()
+                .position(|item| item.get_db_id() == Some(2))
+                .expect("current item stays before the cursor slot");
+            entries[idx].replace_path(std::path::PathBuf::from(
+                "http://stream.example/meliora-undo-2-fresh.mp3",
+            ));
+        }
+
+        // b 在原序下标 1：洗牌只动光标之后，镜像对齐后按原序定位命中。
+        assert!(matches!(
+            manager.jump_unshuffled(1),
+            JumpResult::Jumped { .. }
+        ));
     }
 
     pub(super) fn queue_ids(manager: &QueueManager) -> Vec<i64> {

@@ -11,7 +11,9 @@ use std::path::Path;
 /// 的流 URL。
 ///
 /// 由 `playback::queue` 下沉而来（第①步；该模块再导出它，以保持既有使用点不变）。
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Hash/Eq 供队列镜像对齐（queue_manager reconcile_original_queue_paths）按 identity
+/// 建键：字段全为 String/i64，派生与手写 PartialEq 同语义，无行为变化。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum OnlineIdentity {
     /// 酷狗：`song_url(hash, mix_song_id, album_id, quality, free_part)`。
     Kugou {
