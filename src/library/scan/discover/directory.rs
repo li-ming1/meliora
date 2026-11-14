@@ -566,7 +566,7 @@ mod allocation_bench {
         // 查找侧口径必须与插入侧一致
         let key = normalized_stem("ABΣ", true);
         assert_eq!(key, "abς");
-        assert!(map.get(key.as_ref()).is_some());
+        assert!(map.contains_key(key.as_ref()));
     }
 
     #[test]
