@@ -152,6 +152,12 @@ pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
             return false;
         }
     }
+    // 前缀自身以分隔符结尾（卷根 "d:\"、"//"）时，分量边界已由前缀末字符
+    // 天然保证——否则根前缀之下的子路径（"d:\music\..." 的下一个字节 'm'）
+    // 会被误判为非分量边界，盘根目标的定向重扫索引恒空。
+    if matches!(folded_prefix.chars().last(), Some('/') | Some('\\')) {
+        return true;
+    }
     // 前缀必须恰好在路径分量边界处结束
     key_chars.next().is_none_or(|c| c == '/' || c == '\\')
 }
@@ -168,10 +174,16 @@ pub fn folded_starts_with(folded_key: &str, folded_prefix: &str) -> bool {
 /// `discover/targeted.rs::index_records_under` 的 (记录×目标) 循环。
 pub fn folded_starts_with_byte(folded_key: &str, folded_prefix: &str) -> bool {
     let key = folded_key.as_bytes();
-    if !key.starts_with(folded_prefix.as_bytes()) {
+    let prefix = folded_prefix.as_bytes();
+    if !key.starts_with(prefix) {
         return false;
     }
-    key.get(folded_prefix.len())
+    // 前缀自身以分隔符结尾（卷根 "d:\"、"//"）时，分量边界已由前缀末字节
+    // 天然保证——与字符级 [`folded_starts_with`] 同步修复保持等价。
+    if matches!(prefix.last(), Some(b'/') | Some(b'\\')) {
+        return true;
+    }
+    key.get(prefix.len())
         .is_none_or(|&b| b == b'/' || b == b'\\')
 }
 
@@ -509,6 +521,12 @@ mod bench {
         assert_eq!(sigma_prefix, "/music/ας");
         assert_agree(&sigma_key, &sigma_prefix);
         assert_agree("/music/ΑΣ/x", "/music/ας");
+        // 卷根前缀（自身以分隔符结尾）：分量边界由前缀末字符天然保证，
+        // 根前缀之下的子路径不得被误判为非分量边界
+        assert_agree("d:\\music\\x", "d:\\");
+        assert_agree("/music/x", "/");
+        assert!(folded_starts_with_byte("d:\\music\\x", "d:\\"));
+        assert!(folded_starts_with_byte("/music/x", "/"));
     }
 
     #[test]

@@ -422,6 +422,17 @@ impl Element for Slider {
                 let mut hover_changed = false;
 
                 if state.dragging {
+                    // 防御粘滞拖拽：拖拽期间鼠标捕获被第三方抢走时 WM_CAPTURE
+                    // CHANGED 不被处理、MouseUpEvent 永远不到，dragging 会卡在
+                    // true——此后松开按钮的普通移动仍持续改音量/跳转定位。OS 的
+                    // pressed_button 在捕获丢失后如实报告"无按下键"，据此提前
+                    // 结束拖拽（根治需上游处理 WM_CAPTURECHANGED）。
+                    if ev.pressed_button.is_none() {
+                        state.dragging = false;
+                        state.hover_ratio = None;
+                        cx_state.notify();
+                        return None;
+                    }
                     let value = normalized_value(ev.position, bounds);
                     let value_changed = state.drag_value != value;
                     state.drag_value = value;

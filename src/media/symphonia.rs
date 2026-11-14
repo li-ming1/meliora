@@ -807,6 +807,19 @@ impl MediaStream for SymphoniaStream {
                     }
                     continue;
                 }
+                Err(Error::ResetRequired) => {
+                    // symphonia 契约：解码器参数已变（变参数流，典型是链式 OGG
+                    // /流中途改参数的容器），reset 后重试同一包即可续播——此前
+                    // 落入 fatal 兜底整曲终止。计入连续错误上限防畸形流空转。
+                    decoder.reset();
+                    consecutive_decode_errors += 1;
+                    if consecutive_decode_errors >= MAX_CONSECUTIVE_DECODE_ERRORS {
+                        return Err(PlaybackReadError::DecodeFatal(
+                            "too many consecutive decode errors".to_string(),
+                        ));
+                    }
+                    continue;
+                }
                 Err(e) => {
                     return Err(PlaybackReadError::DecodeFatal(e.to_string()));
                 }

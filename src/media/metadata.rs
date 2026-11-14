@@ -278,8 +278,12 @@ fn parse_fixed_digits<T: FromStr>(value: &str, len: usize) -> Option<T> {
 ///
 /// 这样能为 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 保留原始精度。
 /// 若值不像 ISO 格式，返回 `Ok(None)`，让通用解析器仍能处理
-/// `May 25, 2021` 这类自由格式标签。若值看起来像 ISO 但不合法，返回
-/// `Err(())`，这样通用解析器就不会擅自补出一个日或改变精度。
+/// `May 25, 2021` 这类自由格式标签。判定门槛是「首段是否 4 位年」：纯数字的
+/// 美式/欧式日期（`06/24/2021`、`24.06.2021`）首段非 4 位年，同样返回
+/// `Ok(None)` 放行——此前它们被按 Err 整号拦死，dateparser 本可解析的
+/// date/year 全丢。只有首段是 4 位年且分段形态合法、但值非法（`1995-13`、
+/// `1995-06-31`）才返回 `Err(())`，这样通用解析器就不会擅自补出一个日或
+/// 改变精度。
 fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> {
     let value = value.trim();
 
@@ -299,12 +303,17 @@ fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> 
     }
 
     match (second, third) {
-        (None, None) => parse_fixed_digits::<u16>(first, 4)
-            .map(ParsedReleaseDate::Year)
-            .map(Some)
-            .ok_or(()),
+        (None, None) => match parse_fixed_digits::<u16>(first, 4) {
+            Some(year) => Ok(Some(ParsedReleaseDate::Year(year))),
+            // 非 4 位年的单段纯数字（如 "20210624"）：不是 ISO 形态，放行。
+            None => Ok(None),
+        },
         (Some(month), None) => {
-            let year = parse_fixed_digits::<u16>(first, 4).ok_or(())?;
+            let year = match parse_fixed_digits::<u16>(first, 4) {
+                Some(year) => year,
+                // 首段不是 4 位年：不是 ISO 形态，放行给通用解析器。
+                None => return Ok(None),
+            };
             let month = match parse_fixed_digits::<u8>(month, 2) {
                 Some(month @ 1..=12) => month,
                 _ => return Err(()),
@@ -313,7 +322,11 @@ fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> 
             Ok(Some(ParsedReleaseDate::YearMonth(year, month)))
         }
         (Some(month), Some(day)) => {
-            let year = parse_fixed_digits::<u16>(first, 4).ok_or(())?;
+            let year = match parse_fixed_digits::<u16>(first, 4) {
+                Some(year) => year,
+                // 首段不是 4 位年：不是 ISO 形态，放行给通用解析器。
+                None => return Ok(None),
+            };
             let month = parse_fixed_digits::<u8>(month, 2).ok_or(())?;
             let day = parse_fixed_digits::<u8>(day, 2).ok_or(())?;
 
@@ -641,6 +654,20 @@ mod tests {
     #[test]
     fn rejects_malformed_release_dates() {
         assert_eq!(parse_release_date("not-a-date"), None);
+    }
+
+    #[test]
+    fn parses_non_iso_numeric_dates_via_generic_parser() {
+        // 回归：美式/欧式纯数字日期此前被 ISO 挡板按 Err 整号拦死（首段非
+        // 4 位年），dateparser 本可解析的 date/year 全丢。放行后走通用解析器。
+        assert!(matches!(
+            parse_release_date("06/24/2021"),
+            Some(ParsedReleaseDate::FullDate(_))
+        ));
+        assert!(matches!(
+            parse_release_date("24.06.2021"),
+            Some(ParsedReleaseDate::FullDate(_))
+        ));
     }
 
     #[test]

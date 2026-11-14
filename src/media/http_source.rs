@@ -748,7 +748,21 @@ impl Read for HttpRangeSource {
                 }
                 Ok(Ok(Some(_))) => continue,
                 Ok(Ok(None)) => {
+                    // 响应体正常耗尽 ≠ 真 EOF：无 Content-Length 定界的响应
+                    // （chunked / 连接关闭定界——开放尾 Range 响应在部分
+                    // CDN/代理上是这种形态）上，服务端提前断开与正常结束无法
+                    // 由传输层区分。total_len 已知而 pos 未达时按错误返回，走
+                    // 填充线程的零位移 seek 重连路径续传而非把歌截短；反复提前
+                    // 关闭经既有退避升级为跳曲。带 Content-Length 的响应由
+                    // 传输层在字节数不足时报 Ok(Err)，到不了这里。
                     self.body = None;
+                    if let Some(len) = self.total_len
+                        && self.pos < len
+                    {
+                        return Err(io::Error::other(
+                            "remote stream ended before the advertised length was read",
+                        ));
+                    }
                     return Ok(0);
                 }
                 Ok(Err(e)) => {

@@ -289,6 +289,9 @@ pub fn spawn_background_cache_task(
 
         let mut writer = tokio::io::BufWriter::new(file);
         let mut total_written = 0u64;
+        // 服务端声明的体长（chunked 等无定界响应为 None）：rename 前的完整性
+        // 闸据此比对实际写入字节数。
+        let expected_len = response.content_length();
 
         loop {
             let chunk = match tokio::time::timeout(STREAM_IO_TIMEOUT, response.chunk()).await {
@@ -342,6 +345,22 @@ pub fn spawn_background_cache_task(
         drop(writer);
 
         if total_written < 1024 {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return;
+        }
+
+        // 完整性闸：响应声明了 Content-Length 而实际字节数不符（服务端提前
+        // 正常关闭、代理截断——chunked/连接关闭定界上传输层无法区分）时丢弃
+        // 半截文件。否则截断条目转正后会被 find_cached_audio_in 当合格缓存
+        // 命中，之后每次播放都播到半截 EOF 直至 30 天清扫。拿不到声明长度
+        // 的响应无法校验，属可接受残留。
+        if let Some(expected) = expected_len
+            && total_written != expected
+        {
+            warn!(
+                total_written,
+                expected, "Audio cache download truncated; discarding"
+            );
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return;
         }

@@ -1020,7 +1020,7 @@ impl ImmersiveView {
                     div()
                         .text_size(px(16.0))
                         .text_color(theme.text_secondary)
-                        .child("播放列表为空"),
+                        .child(tr!("IMMERSIVE_QUEUE_EMPTY", "Queue is empty")),
                 )
                 .into_any_element();
         }

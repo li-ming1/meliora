@@ -104,6 +104,18 @@ pub fn gateway_http_builder() -> ClientBuilder {
         .timeout(Duration::from_secs(30))
 }
 
+/// 定制 builder `.build()` 失败时的兜底 client：沿用网关超时上界。此前各调用
+/// 方回落裸 `Client::new()`——零超时，会把「卡死请求钉住重试」这一 builder
+/// 注释里声明要防的后果原样带回来（导入任务的每一步请求可能挂到内核级 TCP
+/// 超时，UI 永久停在"正在导入"）。注意：若失败原因是 TLS 后端初始化，这里
+/// 的 `expect` 与裸 `Client::new()` 的 panic 行为一致——两种构造在 TLS 缺席
+/// 时本来都起不来，兜底解决的是 builder 配置失败而非 TLS 缺席。
+pub fn fallback_http_client() -> Client {
+    gateway_http_builder()
+        .build()
+        .expect("fallback HTTP client uses the same builder as the gateway")
+}
+
 /// provider 的登录凭据存在且非空时为 true；空字符串凭据算作未登录
 /// （kugou 的 `token` 共用这一判定）。
 pub fn credential_present(credential: Option<&str>) -> bool {

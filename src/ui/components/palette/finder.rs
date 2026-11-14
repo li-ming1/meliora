@@ -1,6 +1,6 @@
 use std::{cell::Cell, marker::PhantomData, rc::Rc, sync::Arc, time::Duration};
 
-use cntp_i18n::{I18nString, trn};
+use cntp_i18n::{I18nString, tr, trn};
 use gpui::{
     AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, Rgba,
@@ -865,19 +865,26 @@ where
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(if is_searching {
-                                    SharedString::from(format!(
-                                        "未找到与 \"{}\" 相关的结果",
-                                        query_text
-                                    ))
+                                    tr!(
+                                        "SEARCH_NO_RESULTS_FOR_QUERY",
+                                        "No results for \"{{query}}\"",
+                                        query = query_text
+                                    )
                                 } else {
-                                    SharedString::from("键入歌曲名、专辑或歌手以搜索曲库与在线音乐")
+                                    tr!(
+                                        "SEARCH_EMPTY_HINT",
+                                        "Type a song, album, or artist to search the library and online music"
+                                    )
                                 }),
                         )
                         .child(div().text_xs().text_color(theme.text_secondary).child(
                             if is_searching {
-                                SharedString::from("尝试缩短关键词，或检查是否有输入错误")
+                                tr!("SEARCH_NO_RESULTS_HINT", "Try a shorter keyword, or check for typos")
                             } else {
-                                SharedString::from("支持拼音首字母检索与全网即时匹配")
+                                tr!(
+                                    "SEARCH_EMPTY_HINT_SECONDARY",
+                                    "Pinyin initial search and instant online matching supported"
+                                )
                             },
                         )),
                 )

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fs::Metadata,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -7,7 +8,6 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::{FutureExt, stream::FuturesUnordered};
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     task::spawn_blocking,
@@ -257,24 +257,18 @@ fn normalized_file_name(path: &Utf8Path, case_insensitive: bool) -> Option<Strin
     })
 }
 
-/// 与 [`normalized_file_name`] 同口径的零分配查表版：大小写敏感时直接借用
-/// 原 stem；否则把 lowercase 写进调用方的栈缓冲。短 stem（绝大多数曲目名）
-/// 不触碰堆，配合 `HashMap<String, _>::get(&str)` 的 Borrow<str> 零分配查询。
-fn normalized_stem<'a>(
-    stem: &'a str,
-    case_insensitive: bool,
-    buf: &'a mut SmallVec<[u8; 96]>,
-) -> &'a str {
-    if !case_insensitive {
-        return stem;
+/// 与 [`normalized_file_name`] 同口径的小写化：大小写敏感时直接借用原 stem，
+/// 否则整串 `str::to_lowercase`——Unicode Final_Sigma（词尾 Σ→ς）语义与插入侧
+/// 完全一致。此前是逐字符 `char::to_lowercase` 的零分配版，词尾 Σ 会 lowercase
+/// 成 σ 而插入侧是 ς，同一文件名两口径查表必然 miss、sidecar 歌词被静默判
+/// Absent；逐字符版复刻 Final_Sigma 需要前置 cased 字母判定，脆弱不值当。
+/// 每目录每文件仅一次调用，分配代价可忽略，正确性优先。
+fn normalized_stem(stem: &str, case_insensitive: bool) -> Cow<'_, str> {
+    if case_insensitive {
+        Cow::Owned(stem.to_lowercase())
+    } else {
+        Cow::Borrowed(stem)
     }
-    for ch in stem.chars() {
-        for lowered in ch.to_lowercase() {
-            let mut encoded = [0u8; 4];
-            buf.extend_from_slice(lowered.encode_utf8(&mut encoded).as_bytes());
-        }
-    }
-    std::str::from_utf8(&buf[..]).expect("lowercase of valid UTF-8 is valid UTF-8")
 }
 
 /// 列举出来的一条目录项 → `PendingDirectoryEntry`。原先七条"记录并跳过"的分支
@@ -403,13 +397,12 @@ fn materialize_scan_entry(
     } else if lyrics_timestamps.is_empty() {
         (None, SidecarLyrics::Absent)
     } else {
-        let mut stem_buf = SmallVec::<[u8; 96]>::new();
         let stem = naming
             .file_stem()
-            .map(|s| normalized_stem(s, case_insensitive, &mut stem_buf));
+            .map(|s| normalized_stem(s, case_insensitive));
         let lyrics_timestamp = stem.and_then(|s| {
             lyrics_timestamps
-                .get(s)
+                .get(s.as_ref())
                 .copied()
                 .and_then(SidecarTimes::latest)
         });
@@ -553,33 +546,27 @@ mod allocation_bench {
     }
 
     #[test]
-    fn stem_normalization_paired_allocation_bench() {
-        const N: usize = 1000;
-        let mut map: FxHashMap<String, SidecarTimes> = FxHashMap::default();
-        map.insert("晴天".into(), SidecarTimes::default());
+    fn stem_normalization_matches_insert_side_casefold() {
+        // 回归：lookup 侧此前用逐字符 char::to_lowercase 的零分配版，不实现
+        // Unicode Final_Sigma；插入侧 normalized_file_name 用 str::to_lowercase
+        // 实现——词尾 Σ 且前置 cased 字母（如 "ABΣ"）时插入侧是 ς、查找侧是 σ，
+        // 同一文件名两口径查表必然 miss，sidecar 歌词被静默判 Absent。注意
+        // 前置未分大小写字符（如汉字"晴天"）时两侧都是 σ，分歧只在 cased 前缀。
+        // 现在两侧同源（str::to_lowercase），零分配属性让位于正确性（每目录
+        // 每文件仅一次调用）。
+        let map: FxHashMap<String, SidecarTimes> = [("abς".to_string(), SidecarTimes::default())]
+            .into_iter()
+            .collect();
 
-        let mut old_counts = Vec::new();
-        let mut new_counts = Vec::new();
-        for _ in 0..2 {
-            let (_, allocations) = count_allocations(|| {
-                for _ in 0..N {
-                    let key = normalized_file_name(Utf8Path::new("晴天"), true);
-                    std::hint::black_box(map.get(key.as_deref().unwrap()));
-                }
-            });
-            old_counts.push(allocations);
-            let (_, allocations) = count_allocations(|| {
-                for _ in 0..N {
-                    let mut buf = SmallVec::<[u8; 96]>::new();
-                    let key = normalized_stem("晴天", true, &mut buf);
-                    std::hint::black_box(map.get(key));
-                }
-            });
-            new_counts.push(allocations);
-        }
-        eprintln!("stem lookup allocations/{N}: legacy={old_counts:?} stack={new_counts:?}");
-        assert!(old_counts.iter().all(|&n| n >= N as u64));
-        assert!(new_counts.iter().all(|&n| n == 0));
+        // 插入侧口径：str::to_lowercase 的 Final_Sigma 把词尾 Σ 映射成 ς
+        let insert_key = normalized_file_name(Utf8Path::new("ABΣ"), true);
+        assert_eq!(insert_key.as_deref(), Some("abς"));
+        assert!(map.contains_key(insert_key.as_deref().unwrap()));
+
+        // 查找侧口径必须与插入侧一致
+        let key = normalized_stem("ABΣ", true);
+        assert_eq!(key, "abς");
+        assert!(map.get(key.as_ref()).is_some());
     }
 
     #[test]

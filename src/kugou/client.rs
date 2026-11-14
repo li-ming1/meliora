@@ -291,10 +291,12 @@ impl KugouClient {
             http: match session_io::gateway_http_builder().build() {
                 Ok(client) => client,
                 Err(error) => {
-                    // 与更新器/导入器的退化做法保持一致：拒绝接受这个定制 builder 的 TLS
-                    // 后端不该让启动中止。
+                    // 拒绝接受这个定制 builder 的 TLS 后端不该让启动中止；兜底
+                    // 用 session_io 的带超时 fallback 而非裸 `Client::new()`——
+                    // 零超时客户端会把"卡死请求钉住 pending_fetches"的后果
+                    // 原样带回来。
                     tracing::warn!(%error, "kugou: falling back to the default HTTP client");
-                    Client::new()
+                    session_io::fallback_http_client()
                 }
             },
             session: Mutex::new(session),

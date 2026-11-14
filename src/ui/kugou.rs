@@ -206,7 +206,9 @@ pub fn claim_daily_vip_async() {
 /// 例如 "VIP · till 2026-08-24" 或 "No VIP"。还没有缓存详情时回退到 "No VIP"。
 pub fn vip_status_line() -> SharedString {
     let Some(detail) = kugou::shared_client().vip_detail() else {
-        return "No VIP".into();
+        // 本键的带默认值定义点只有这一处；后文重复出现一律走无默认引用形式
+        // （i18n 生成器 last-wins，重复定义会在每次构建打 error 噪声）。
+        return tr!("KUGOU_NO_VIP", "No VIP").into();
     };
 
     // 生效的产品住在 `data.busi_vip[]` 下；本端点顶层的 `is_vip` 即便 `busi_vip`
@@ -223,7 +225,7 @@ pub fn vip_status_line() -> SharedString {
         .filter(|item| item.get("is_vip").and_then(Value::as_i64) == Some(1))
         .collect();
     if active.is_empty() {
-        return "No VIP".into();
+        return tr!("KUGOU_NO_VIP").into();
     }
 
     // 到期日优先取 "concept"（svip）那个产品，取不到再回退到第一个生效的。
@@ -237,7 +239,7 @@ pub fn vip_status_line() -> SharedString {
         .map(str::to_string);
 
     match end {
-        Some(end) => SharedString::from(format!("VIP · till {end}")),
+        Some(end) => tr!("KUGOU_VIP_TILL", "VIP · till {{end}}", end = end).into(),
         None => "VIP".into(),
     }
 }

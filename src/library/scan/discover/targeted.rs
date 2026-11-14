@@ -41,6 +41,20 @@ struct RescanState {
     folded_index: FoldedIndex,
 }
 
+/// [`RECONCILE_UNDER_PREFIX_SQL`] 的两分支区间假设 `$1` 不以分隔符结尾（区间
+/// 是 `$1||'/'..$1||'0'` 与 `$1||'\'..$1||']'`）。卷根经 canonicalize 后自带
+/// 尾分隔符（"D:\"），原样绑定会让根前缀的区间不含任何子路径——剥掉尾分隔
+/// 符后两分支恰好覆盖全部子路径（"D:" 的 `'\'..']'` 分支截住所有子项）。非
+/// 根前缀 canonicalize 后本就不带尾分隔符，原样通过；Unix 根 "/" 剥成空串后
+/// 两个区间在 ASCII 序上同样成立。配套：折叠索引侧的
+/// [`folded_starts_with_byte`] 已对分隔符结尾的前缀跳过边界检查。
+fn under_prefix_key(target: &Utf8Path) -> Utf8PathBuf {
+    match target.as_str().strip_suffix(['/', '\\']) {
+        Some(stripped) => Utf8PathBuf::from(stripped),
+        None => target.to_path_buf(),
+    }
+}
+
 impl RescanState {
     /// 遍历开始前持锁构建一次折叠索引，emit 阶段锁内只剩 classify 的哈希查询。
     async fn new(scan_record: Arc<Mutex<ScanRecord>>, targets: &FxHashSet<Utf8PathBuf>) -> Self {
@@ -378,7 +392,7 @@ pub async fn reconcile_rescan_paths(
             && let Some(descendants) = fetch_reconciliation_locations(
                 pool,
                 RECONCILE_UNDER_PREFIX_SQL,
-                target,
+                &under_prefix_key(target),
                 "prefix query",
             )
             .await

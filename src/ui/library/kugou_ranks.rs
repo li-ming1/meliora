@@ -481,7 +481,7 @@ impl KugouRanksView {
                                         } else {
                                             ButtonIntent::Secondary
                                         })
-                                        .child("列表")
+                                        .child(tr!("KUGOU_RECOMMEND_LIST_VIEW", "List"))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.recommend_view_mode = RecommendViewMode::List;
                                             cx.notify();
@@ -500,7 +500,7 @@ impl KugouRanksView {
                                         } else {
                                             ButtonIntent::Secondary
                                         })
-                                        .child("舞台")
+                                        .child(tr!("KUGOU_RECOMMEND_STAGE_VIEW", "Stage"))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.recommend_view_mode = RecommendViewMode::Stage;
                                             cx.notify();

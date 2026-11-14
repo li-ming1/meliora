@@ -24,11 +24,15 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 static IMPORT_HTTP: OnceLock<Client> = OnceLock::new();
 fn http() -> &'static Client {
     // 网关超时（连接 10s / 总计 30s）单点维护在 session_io；build 失败的
-    // 兜底是本调用方自己的策略（kugou client 是 panic，这里是无参 Client）。
+    // 兜底走 session_io 的带超时 fallback——裸 `Client::new()` 零超时，会让
+    // 导入任务的每一步请求挂到内核级 TCP 超时，UI 永久停在"正在导入"。
     IMPORT_HTTP.get_or_init(|| {
         crate::session_io::gateway_http_builder()
             .build()
-            .unwrap_or_else(|_| Client::new())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "kugou import: falling back to the timeout HTTP client");
+                crate::session_io::fallback_http_client()
+            })
     })
 }
 
@@ -271,7 +275,26 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
             .map(str::to_string)
             .collect()
     } else {
-        netease_song_names(&headers, &ids).await
+        let (names, failed_chunks) = netease_song_names(&headers, &ids).await;
+        let total_chunks = ids.len().div_ceil(NETEASE_SONG_DETAIL_CHUNK);
+        if total_chunks > 0 && failed_chunks >= total_chunks {
+            // 全部块拉取失败＝网络/服务侧故障，与真正的私密歌单（ids 为空、
+            // 走上一分支的 NO_SONGS 文案）区分开——此前网络故障也被折叠成
+            // 「歌单可能是私密」的误导提示。
+            return Err(tr!(
+                "KUGOU_IMPORT_NETEASE_FETCH_FAILED",
+                "Failed to fetch songs from NetEase Cloud Music; check the network connection"
+            )
+            .to_string());
+        }
+        if failed_chunks > 0 {
+            tracing::warn!(
+                failed = failed_chunks,
+                total = total_chunks,
+                "netease playlist import: some song detail chunks failed; their songs are skipped"
+            );
+        }
+        names
     };
 
     let songs = dedupe(songs);
@@ -288,10 +311,14 @@ async fn netease(raw: &str) -> Result<ExternalPlaylist, String> {
 /// 每次 `/api/v3/song/detail` 请求所带的 id 数。
 const NETEASE_SONG_DETAIL_CHUNK: usize = 400;
 
-async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
+/// 返回 `(歌名列表, 失败块数)`——失败块数供调用方区分「全部失败＝网络故障」
+/// 与「部分失败＝静默丢歌但可从日志归因」。
+async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> (Vec<String>, usize) {
     let mut out = Vec::new();
+    let mut failed_chunks = 0usize;
     for (chunk_idx, chunk) in ids.chunks(NETEASE_SONG_DETAIL_CHUNK).enumerate() {
         let Some(body) = netease_song_detail(headers, chunk_idx, chunk).await else {
+            failed_chunks += 1;
             continue;
         };
         if let Some(songs) = body.get("songs").and_then(Value::as_array) {
@@ -303,17 +330,19 @@ async fn netease_song_names(headers: &HeaderMap, ids: &[i64]) -> Vec<String> {
                     .map(str::to_string)
             }));
         } else {
+            failed_chunks += 1;
             tracing::warn!(
                 chunk = chunk_idx,
                 "netease song detail response missing songs array"
             );
         }
     }
-    out
+    (out, failed_chunks)
 }
 
 /// 为一块 id 发一次 `/api/v3/song/detail` 请求。每次失败都带块序号记日志并按 `None` 上报：
-/// 一块坏掉最多损失它自己的那些歌，而不是整次导入。
+/// 一块坏掉最多损失它自己的那些歌，而不是整次导入。失败块数由调用方聚合——全部块失败时
+/// 归因为网络故障（而非"歌单可能是私密"），部分失败时留在日志里。
 async fn netease_song_detail(
     headers: &HeaderMap,
     chunk_idx: usize,

@@ -804,6 +804,17 @@ impl Element for Scrollbar {
                         return;
                     }
 
+                    // 防御粘滞拖拽：拖拽期间鼠标捕获被第三方抢走时 WM_CAPTURE
+                    // CHANGED 不被处理、MouseUpEvent 永远不到，state.dragging
+                    // 会卡在 true——此后松开按钮的普通移动仍驱动滚动。OS 的
+                    // pressed_button 在捕获丢失后如实报告"无按下键"，据此提前
+                    // 退出拖拽（根治需上游处理 WM_CAPTURECHANGED，见 UPSTREAM
+                    // _NOTES）。
+                    if ev.pressed_button.is_none() {
+                        state.dragging = false;
+                        return;
+                    }
+
                     state.last_interaction_time = Some(Instant::now());
                     if let Some(handler) = on_interaction_move.as_ref() {
                         handler(window, _cx);
