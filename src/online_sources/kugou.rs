@@ -253,7 +253,7 @@ pub fn remember_online_track(url: String, track: KugouTrackInfo) {
     // 的 10-20%。挪走之后写锁临界区也只剩三次比较级操作，与播放线程读者的
     // 竞争面同步缩小。
     //
-    // 顺序性不变：落盘仍由 `persist_snapshot` 的写门串行化；两次快连点谁先
+    // 顺序性不变：落盘仍由 persist_serialized → spawn_persist 的写门串行化；两次快连点谁先
     // 落盘无所谓——注册表是缓存，陈旧只多一次 URL 刷新（与原
     // "racing writers" 语义一致）。
     // 在后台任务内直接持读锁序列化为 JSON 字节，省掉 200 条 × 多段 String 的全表深克隆；

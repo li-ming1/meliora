@@ -1430,7 +1430,7 @@ impl Render for Queue {
                                     });
                                 })
                             }))
-                            .tooltip(build_tooltip(tr!("CLOSE", "Close"))),
+                            .tooltip(build_tooltip(tr!("CLOSE"))),
                     ),
             )
             .child(

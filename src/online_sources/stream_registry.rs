@@ -84,22 +84,6 @@ impl StreamMapPersistence {
             });
         }
     }
-
-    /// 各在线源 `remember_online_track` 的持久化尾部：序列化 → 去重 → 门控写，
-    /// 单点维护。`provider` 仅进失败日志文案。序列化失败按既有语义
-    /// 静默跳过（缓存是优化，显示不依赖它）。
-    #[allow(dead_code)]
-    pub fn persist_snapshot(
-        &'static self,
-        path: PathBuf,
-        snapshot: &impl serde::Serialize,
-        provider: &'static str,
-    ) {
-        let Ok(json) = serde_json::to_vec(snapshot) else {
-            return;
-        };
-        self.persist_serialized(path, json, provider);
-    }
 }
 
 #[cfg(test)]

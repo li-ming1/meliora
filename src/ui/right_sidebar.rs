@@ -97,7 +97,7 @@ impl RightSidebar {
                                             div()
                                                 .text_sm()
                                                 .font_weight(FontWeight::BOLD)
-                                                .child(tr!("LYRICS", "Lyrics")),
+                                                .child(tr!("LYRICS")),
                                         )
                                         .child(
                                             nav_button("close-lyrics", CROSS)
@@ -106,7 +106,7 @@ impl RightSidebar {
                                                         *v = false;
                                                     });
                                                 })
-                                                .tooltip(build_tooltip(tr!("CLOSE", "Close"))),
+                                                .tooltip(build_tooltip(tr!("CLOSE"))),
                                         ),
                                 )
                                 .child(div().flex_1().h_full().overflow_hidden().child(lyrics)),
