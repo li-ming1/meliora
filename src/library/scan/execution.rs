@@ -15,6 +15,7 @@ use tokio::{
         mpsc::{Receiver, UnboundedSender, WeakSender},
     },
     task::JoinHandle,
+    time::timeout,
 };
 use tracing::{error, info, warn};
 
@@ -43,6 +44,16 @@ use crate::{
 
 const BATCH_SIZE: usize = 50;
 
+/// 各 worker join 的超时上限。健康路径上这些 join 都是毫秒级——process_events 的
+/// 完成/取消出口要么已排空流水线（meta_rx 返回 None 要求全部 sender 落地），
+/// 要么已 close() 三条接收通道（cancel 路径）；只有断连/挂起的 SMB/NFS 挂载点
+/// 会让 DirectoryReadPolicy::read 的 `spawn_blocking(read_scan_directory)`
+/// （discover/directory.rs）在 read_dir 里卡死——cancel_flag 无人观测、JoinHandle
+/// 永不就绪。超时即把该 worker 就地分离：spawn_blocking 阻塞线程泄漏一处
+/// （仅挂死场景发生、每 worker 至多一个、有界），换取完成扇出放行、扫描锁释放
+/// ——此前整次扫描会永久停在「正在扫描」且无法取消。
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// 中途检查点要把整张记录表序列化一遍，代价是每次写入 O(库规模)（10 万条记录实测
 /// ~0.3 s，见 record.rs::tests::bench_checkpoint_serialization；其中持锁的 postcard
 /// 那一趟只占 ~10 ms，大头是 zlib）。若每个 50 文件的批次都写一次，快速扫描就会被它
@@ -63,6 +74,11 @@ struct ScanFailures {
     transaction: u64,
     /// 某个 discovery 工作线程 panic（`JoinError`）而没有返回计数。
     worker_panic: u64,
+    /// join 超时（[`WORKER_JOIN_TIMEOUT`]）的工作线程数：JoinHandle 在超时内未
+    /// 就绪，指向挂死文件系统上的阻塞读。与 `worker_panic` 分开计数——卡死≠
+    /// panic，统计口径不能混；被分离的线程持有 `scan_record` 等共享克隆属预期
+    /// （见 `stop_and_join_workers` 的容忍性契约）。
+    worker_hang: u64,
     /// 因为开不出事务而被丢弃的单个文件数。
     file: u64,
     /// 最终重试后仍留在 pending 里的歌手重算项（专辑 + 曲目）：这些条目本扫描
@@ -74,31 +90,38 @@ impl ScanFailures {
     fn is_empty(&self) -> bool {
         self.transaction == 0
             && self.worker_panic == 0
+            && self.worker_hang == 0
             && self.file == 0
             && self.artist_recompute == 0
     }
 
-    /// 每次扫描只弹一条 toast，信息量最大的类别优先：工作线程 panic 意味着扫描不完整，
-    /// 文件计数说明丢了多少，歌手重算计数说明多少条目已入库但署名链接缺失，事务计数
-    /// 只在以上都没命中时（光一次 `COMMIT` 失败）兜底。完整拆分留在日志里。
+    /// 每次扫描只弹一条 toast，信息量最大的类别优先：工作线程 panic 或 join 超时
+    /// （挂死 FS，被就地分离）都意味着扫描不完整，文件计数说明丢了多少，歌手重算
+    /// 计数说明多少条目已入库但署名链接缺失，事务计数只在以上都没命中时（光一次
+    /// `COMMIT` 失败）兜底。完整拆分留在日志里。
     fn report(&self) {
         if self.is_empty() {
             return;
         }
 
         error!(
-            "Scan finished degraded: {} panicked workers, {} files dropped, \
+            "Scan finished degraded: {} panicked workers, {} hung workers, {} files dropped, \
              {} transaction failures, {} artist recompute failures",
-            self.worker_panic, self.file, self.transaction, self.artist_recompute
+            self.worker_panic, self.worker_hang, self.file, self.transaction, self.artist_recompute
         );
 
         // 占位符刻意不叫 `count`——`tr!` 把这个名字留给单复数选择，
         // 并把它标成 `isize` 类型。
-        if self.worker_panic > 0 {
+        // worker_hang 与 worker_panic 在 toast 里合并展示为「扫描任务失败」：
+        // 对用户的处置建议相同（重新扫描），分口径只保留在计数与日志里。
+        // 合并和必须先落到局部变量再传给 tr!：宏展开对值表达式直接追加
+        // `.to_string()` 且不加括号，二项式会被优先级拆成 `u64 + String` 编译错。
+        let failed_workers = self.worker_panic + self.worker_hang;
+        if failed_workers > 0 {
             emit_toast(Toast::error(tr!(
                 "SCAN_FAILED_WORKER",
                 "Library scan stopped early — {{failed}} scan workers failed. Please scan again.",
-                failed = self.worker_panic
+                failed = failed_workers
             )));
         } else if self.file > 0 {
             emit_toast(Toast::error(tr!(
@@ -527,29 +550,88 @@ impl<'a> ScanExecution<'a> {
         });
     }
 
+    /// 置位 cancel_flag 后逐个 join 四组 worker；每个 join 受 [`WORKER_JOIN_TIMEOUT`]
+    /// 约束，超时即就地分离并计入 `worker_hang`。join 组串行执行（慢盘模式下
+    /// metadata 组按磁盘数展开），挂死 discover 会连带卡住全部下游流水线，最坏
+    /// 等待按 worker 数线性、仍是有界放行——此前是无界挂死。
+    ///
+    /// 超时放行后的迟到事件容忍性（读码核对，2026-11-14）：
+    /// · 取消路径：meta_rx/decode_fail_rx/relocate_rx 已在 Cancel 分支 close()，
+    ///   分离 worker 的迟到发送直接失败并让流水线退出，不干扰 finish_cancelled；
+    /// · 完成路径：能走到这里说明 meta_rx 已返回 None——全部 sender 落地、流水线
+    ///   排空，仅剩 discover 尚在收尾或 artwork 已 panic 的窗口；迟到的
+    ///   relocation / decode-failure 只有 drain_relocations / drain_decode_failures
+    ///   时点前入队的能被 try_recv 抓到，其余随 receiver 掉落——代价是这些条目
+    ///   下次扫描重读，无损库一致性（scan_checkpoint 与 pending_commit 只由执行侧
+    ///   独占写入）；
+    /// · scan_record 与 FolderArtObservations 均为 Arc + 互斥锁内可变性：
+    ///   take_scan_record 的 try_unwrap 失败分支本就为「仍有克隆在外」设计（复制
+    ///   而非失败），分离 worker 的迟到写入只是不再进快照，无 UB、无死锁。
     async fn stop_and_join_workers(&mut self) {
         self.active.cancel_flag.store(true, Ordering::Relaxed);
 
         if !self.discovery_complete {
-            if let Err(error) = (&mut self.active.discover_handle).await {
-                error!("discover task panicked: {:?}", error);
-                self.failures.worker_panic += 1;
+            match timeout(WORKER_JOIN_TIMEOUT, &mut self.active.discover_handle).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    error!("discover task panicked: {:?}", error);
+                    self.failures.worker_panic += 1;
+                }
+                // 正常 join 毫秒级；走到这里即挂死 FS 上的阻塞读——handle 未消费、
+                // 任务就地分离，阻塞线程泄漏一处（有界），完成扇出继续。
+                Err(_elapsed) => {
+                    error!(
+                        "discover task did not join within {:?}; detaching a hung worker",
+                        WORKER_JOIN_TIMEOUT
+                    );
+                    self.failures.worker_hang += 1;
+                }
             }
             self.discovery_complete = true;
         }
-        if let Some(task) = self.active.slow_discover_task.take()
-            && let Err(error) = task.await
-        {
-            error!("slow discover task panicked: {:?}", error);
-            self.failures.worker_panic += 1;
-        }
-        for task in self.active.metadata_tasks.drain(..) {
-            if let Err(error) = task.await {
-                error!("Metadata pipeline task failed: {:?}", error);
+        if let Some(task) = self.active.slow_discover_task.take() {
+            match timeout(WORKER_JOIN_TIMEOUT, task).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    error!("slow discover task panicked: {:?}", error);
+                    self.failures.worker_panic += 1;
+                }
+                Err(_elapsed) => {
+                    error!(
+                        "slow discover task did not join within {:?}; detaching a hung worker",
+                        WORKER_JOIN_TIMEOUT
+                    );
+                    self.failures.worker_hang += 1;
+                }
             }
         }
-        if let Err(error) = (&mut self.active.artwork_handle).await {
-            error!("Artwork pipeline task failed: {:?}", error);
+        for task in self.active.metadata_tasks.drain(..) {
+            match timeout(WORKER_JOIN_TIMEOUT, task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    error!("Metadata pipeline task failed: {:?}", error);
+                }
+                Err(_elapsed) => {
+                    error!(
+                        "Metadata pipeline task did not join within {:?}; detaching a hung worker",
+                        WORKER_JOIN_TIMEOUT
+                    );
+                    self.failures.worker_hang += 1;
+                }
+            }
+        }
+        match timeout(WORKER_JOIN_TIMEOUT, &mut self.active.artwork_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                error!("Artwork pipeline task failed: {:?}", error);
+            }
+            Err(_elapsed) => {
+                error!(
+                    "Artwork pipeline task did not join within {:?}; detaching a hung worker",
+                    WORKER_JOIN_TIMEOUT
+                );
+                self.failures.worker_hang += 1;
+            }
         }
     }
 
