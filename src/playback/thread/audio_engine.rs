@@ -1760,7 +1760,9 @@ mod tests {
     #[test]
     fn drain_device_input_after_resampler_flush_empties_ring_to_device() {
         let _guard = crate::playback::tests::harness::engine_lock();
-        crate::playback::tests::harness::configure_dummy_device(48_000, "f32", 2);
+        // 位格式只认大写 token（dummy.rs get_bit_format 的匹配表），小写值会让
+        // get_default_format 报 SampleFmt → create_stream 误报 NoDevice。
+        crate::playback::tests::harness::configure_dummy_device(48_000, "F32", 2);
 
         let mut device = DeviceController::new();
         device.initialize_provider_by_name("dummy");

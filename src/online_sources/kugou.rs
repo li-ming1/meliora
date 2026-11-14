@@ -426,9 +426,7 @@ pub async fn fetch_stream_url(
     per_request_timeout: Option<Duration>,
 ) -> Option<String> {
     let mut ladder = quality_ladder(quality).iter().rev();
-    let Some(requested) = ladder.next().copied() else {
-        return None;
-    };
+    let requested = ladder.next().copied()?;
 
     match song_url_bounded(
         client,
