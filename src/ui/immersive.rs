@@ -236,6 +236,10 @@ pub struct ImmersiveView {
     /// 音量百分比文本：只在整数百分比跨档时重建。
     cached_volume_pct: i64,
     cached_volume_text: SharedString,
+    /// 采样率徽章文本：只在 sample_rate 变化时重建（同 cached_volume_pct 纪律）；
+    /// 0 = 无徽章哨兵（徽章门控 sample_rate > 0）。
+    cached_sample_rate: u32,
+    cached_badge_text: SharedString,
     /// 频谱柱元素的复用缓冲：每帧 clear 后保留容量。
     spectrum_bar_buffer: Vec<AnyElement>,
     playback_state: Entity<PlaybackState>,
@@ -443,6 +447,8 @@ impl ImmersiveView {
                 stage_time_labels: CachedTimeText::unseeded(),
                 cached_volume_pct: i64::MIN,
                 cached_volume_text: SharedString::default(),
+                cached_sample_rate: 0,
+                cached_badge_text: SharedString::default(),
                 spectrum_bar_buffer: Vec::new(),
                 playback_state: info.playback_state.clone(),
                 playing: false,
@@ -1515,8 +1521,10 @@ impl Render for ImmersiveView {
             };
 
             // 电影级多重空间几何罗盘、悬浮微粒与星轨极光装饰层
-            // 性能优化：静态星轨圆、极轴十字与象限星芒不再每帧重复执行数百次三角函数与 PathBuilder 堆分配；
-            // 动态浮游多边形与极光弧使用预置几何步长，显著降低 60Hz 扫色帧的 CPU 绘制开销。
+            // 7f112a33b5 的收敛是采样步数下调（极光弧 40→24、星轨圆 48→32）与折点
+            // 循环合并；静态 8 个 path（星轨圆×3/极轴十字/象限星芒×4）仍每帧逐点
+            // 构建，静态缓存需 [frame] immersive 窗口 A/B 出数后再议——勿据本段
+            // 推断已有预构建几何。
             let compass_canvas = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, _cx| {
@@ -1745,6 +1753,30 @@ impl Render for ImmersiveView {
                 },
             );
 
+            // 采样率徽章文本：按 sample_rate 整值键缓存，命中帧复用 SharedString，
+            // 只有值变化才 format!（同 cached_volume_pct 纪律）；在 render 主体
+            // 预计算、徽章位只消费——避免在 console_hovered 门控的双层 .when
+            // 闭包里变更借用 self。
+            let sample_rate_badge = if sample_rate > 0 {
+                if sample_rate == self.cached_sample_rate {
+                    self.cached_badge_text.clone()
+                } else {
+                    let rate_khz = sample_rate as f32 / 1000.0;
+                    let rebuilt = SharedString::from(if sample_rate >= 88_200 {
+                        format!("{rate_khz:.1}k Hi-Res")
+                    } else if sample_rate.is_multiple_of(1000) {
+                        format!("{}k", sample_rate / 1000)
+                    } else {
+                        format!("{rate_khz:.1}k")
+                    });
+                    self.cached_sample_rate = sample_rate;
+                    self.cached_badge_text = rebuilt.clone();
+                    rebuilt
+                }
+            } else {
+                SharedString::default()
+            };
+
             // 右侧中控感应区与手机式精致控制卡片（靠近右侧自动显现，移出自动隐藏）
             let right_console = div()
                 .id("stage-right-hover-zone")
@@ -1831,14 +1863,6 @@ impl Render for ImmersiveView {
                                             )
                                             .when(sample_rate > 0, |container| {
                                                 let is_hires = sample_rate >= 88_200;
-                                                let rate_khz = sample_rate as f32 / 1000.0;
-                                                let badge_text = if is_hires {
-                                                    format!("{rate_khz:.1}k Hi-Res")
-                                                } else if sample_rate.is_multiple_of(1000) {
-                                                    format!("{}k", sample_rate / 1000)
-                                                } else {
-                                                    format!("{rate_khz:.1}k")
-                                                };
                                                 let (badge_bg, badge_border, badge_text_col) =
                                                     if is_hires {
                                                         (
@@ -1866,7 +1890,7 @@ impl Render for ImmersiveView {
                                                         .text_size(px(10.0))
                                                         .font_weight(FontWeight::BOLD)
                                                         .text_color(badge_text_col)
-                                                        .child(badge_text),
+                                                        .child(sample_rate_badge),
                                                 )
                                             }),
                                     ),

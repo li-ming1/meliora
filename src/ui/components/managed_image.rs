@@ -953,7 +953,7 @@ type ImageBridge = Arc<OnceLock<Option<Arc<RenderImage>>>>;
 /// 解码结果的缓存去向（[`ManagedImageKey::retrieve`] 第三参）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ImageCacheMode {
-    /// 常规封面：进共享的 `RENDER_CACHE`（32 条 LRU，条目 ≤512px）。
+    /// 常规封面：进共享的 `RENDER_CACHE`（16 条 LRU，条目 ≤512px）。
     RenderCache,
     /// 解码即弃：一次性图像（取色等从不绘制的用途）——像素只被调用方
     /// 短暂持有，零缓存条目、零图集瓦片。

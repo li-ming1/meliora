@@ -1030,10 +1030,12 @@ pub fn setup_theme_with_options(cx: &mut App, data_dir: PathBuf, theme_options: 
                                     if event_affects_theme_options(themes_dir_touched, &affected) {
                                         let theme_options = discover_theme_options(&data_dir);
                                         theme_options_model.update(cx, move |current, cx| {
+                                            // 列表未变时不标失效：gpui 的 update 本身不触发
+                                            // 观察者，notify 才会（app.rs 内容级 diff 先例同型）。
                                             if *current != theme_options {
                                                 *current = theme_options;
+                                                cx.notify();
                                             }
-                                            cx.notify();
                                         });
                                     }
 
