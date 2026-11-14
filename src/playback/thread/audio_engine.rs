@@ -1324,6 +1324,11 @@ impl AudioEngine {
                             &mut self.eq,
                             &mut self.tap,
                         );
+                        // 尾巴已进输入环：先排一轮腾容量，再让本周期末尾的
+                        // resample_and_route 写首包，两段写入不叠加在同一个
+                        // 250ms 排死线窗口里。尾巴被弃（速率/声道不符）或为
+                        // 空时这里只是环空检查，零成本直通。
+                        Self::drain_device_input_after_resampler_flush(&mut self.device, p);
                     }
                 } else {
                     let duration = self.media.frame_duration().unwrap_or(1024);
@@ -1352,6 +1357,9 @@ impl AudioEngine {
                                 &mut self.eq,
                                 &mut self.tap,
                             );
+                            // 同上：尾巴先排水再写首包，两段写入不叠加在同一个
+                            // 250ms 排死线窗口里。
+                            Self::drain_device_input_after_resampler_flush(&mut self.device, p);
                         }
                         let resampler = match Resampler::new(
                             rate,
@@ -1502,6 +1510,37 @@ impl AudioEngine {
         if flushed > 0 {
             info!("flushed {flushed} tail frames from the previous resampler");
             Self::route_resampler_output(p, mixer, eq, tap);
+        }
+    }
+
+    /// 重采样器交接窗口的纯排水：把 device_input 环里已有的帧尽量提交给设备，
+    /// 为紧随其后的写入腾出容量。仿 [`AudioEngine::flush_tail_to_device`] 的
+    /// 多轮 consume 循环但不复用其本体（stop 专用语义），也不带
+    /// `consume_to_device` 的设备重建/退避语义——本函数在
+    /// `process_decode_resample`（open() priming 与引擎周期共用）的换曲分支
+    /// 调用，失败只告警并保留环内残余，交给后续周期的正常排水重试。
+    ///
+    /// 缘由：旧重采样器冲刷尾巴与新曲首包输出在同一周期背靠背写入同一
+    /// device_input 环，两段之和可超过环容量且两段写入之间无人排水——
+    /// `write_bounded_planar` 的 250ms 排死线内环满无人取，超时即丢弃新曲
+    /// 首包的一段音频（route_resampler_output 的 error! 分支）。常态常数块
+    /// 流的尾巴仅 ~output_delay 帧（rubato fft_size_out/2，44.1↔48k 约 160
+    /// 帧），tail+首包 ≤ 容量恒成立；可达角是变长块流收尾（leftover×ratio
+    /// 可上万帧）叠加异率大块新曲。
+    fn drain_device_input_after_resampler_flush(
+        device: &mut DeviceController,
+        p: &mut AudioPipeline,
+    ) {
+        // 多轮提交：单趟 consume_from 未必能消费完整块（与 flush_tail_to_device
+        // 同型）。环空即止：常态下这里只付一次 available 检查。
+        for _ in 0..8 {
+            if p.device_input.potentially_available() == 0 {
+                break;
+            }
+            if let Err(err) = device.consume_from(&mut p.device_input) {
+                warn!("failed to drain device input across resampler handoff: {err}");
+                break;
+            }
         }
     }
 
@@ -1713,5 +1752,50 @@ mod tests {
         }
 
         assert!(out_peak < 0.01);
+    }
+
+    /// 排水助手把 device_input 环里已有的帧提交给设备（dummy 后端单趟排空），
+    /// 环清空后的再次调用是环空检查直通。交接窗口「尾巴先排水再写首包」
+    /// 契约的基础路径。
+    #[test]
+    fn drain_device_input_after_resampler_flush_empties_ring_to_device() {
+        let _guard = crate::playback::tests::harness::engine_lock();
+        crate::playback::tests::harness::configure_dummy_device(48_000, "f32", 2);
+
+        let mut device = DeviceController::new();
+        device.initialize_provider_by_name("dummy");
+        device.create_stream(None).expect("dummy stream");
+
+        let mut p = AudioPipeline::new(2, 2, 48_000, 48_000, 64, 0);
+        let mut eq = EqualizerProcessor::new(48_000.0, 2);
+        let dry = sine(1_000.0, 64, 48_000.0);
+        let (mut tap, _consumer) = spectrum_tap();
+        p.resampler_output = vec![dry.clone(), dry];
+        AudioEngine::route_resampler_output(&mut p, &mut None, &mut eq, &mut tap);
+        assert_eq!(p.device_input.potentially_available(), 64);
+
+        AudioEngine::drain_device_input_after_resampler_flush(&mut device, &mut p);
+        assert_eq!(p.device_input.potentially_available(), 0);
+
+        // 环空后的再次调用只付一次 available 检查，不触碰设备也不改状态。
+        AudioEngine::drain_device_input_after_resampler_flush(&mut device, &mut p);
+        assert_eq!(p.device_input.potentially_available(), 0);
+    }
+
+    /// 排水失败（此处为无流）时残余留在环内交给后续周期重试——交接窗口的
+    /// 排水绝不丢帧，与 route_resampler_output 超时丢弃路径相反的纪律。
+    #[test]
+    fn drain_device_input_failure_keeps_frames_in_ring() {
+        let mut device = DeviceController::new(); // 无 provider 无流
+        let mut p = AudioPipeline::new(2, 2, 48_000, 48_000, 64, 0);
+        let mut eq = EqualizerProcessor::new(48_000.0, 2);
+        let dry = sine(1_000.0, 64, 48_000.0);
+        let (mut tap, _consumer) = spectrum_tap();
+        p.resampler_output = vec![dry.clone(), dry];
+        AudioEngine::route_resampler_output(&mut p, &mut None, &mut eq, &mut tap);
+        assert_eq!(p.device_input.potentially_available(), 64);
+
+        AudioEngine::drain_device_input_after_resampler_flush(&mut device, &mut p);
+        assert_eq!(p.device_input.potentially_available(), 64);
     }
 }

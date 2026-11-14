@@ -1176,6 +1176,8 @@ impl QueueManager {
         // pristine 升序 (idx, item)，契约不变。
         let move_set: FxHashSet<usize> = indices.iter().copied().collect();
         let mut original_items: SmallVec<[(usize, QueueItemData); 2]> = SmallVec::new();
+        // 恒等守卫的基准快照：整队 Arc 引用计数递增，零拷贝；重建后与之比对。
+        let before = Arc::clone(&queue);
         {
             let queue = Arc::make_mut(&mut queue);
             let mut kept = Vec::with_capacity(queue.len() - move_set.len());
@@ -1191,6 +1193,21 @@ impl QueueManager {
                 original_items.iter().map(|(_, item)| item.clone()),
             );
             *queue = kept;
+        }
+
+        // 恒等守卫（后置判定）：选中块拖回自己的间隙时，分区重建产出与原队列
+        // 完全相同的序列（queue.rs 四边界测试钉住的坐标层恒等形状，含尾部钳位
+        // 变体）——与单选 from==to→Unchanged 对称：不校准位置、不写会话、不推
+        // undo，否则 Ctrl+Z 会先吃掉一步看不见的动作，且每次原位拖放多付一次
+        // 防抖会话写。选后置逐位比对而非前置坐标推演：天然命中全部恒等形状，
+        // 而判错形状的代价是吞真 undo，宁保守勿激进。比对放在 persist 之前，
+        // 恒等拖放零副作用。比对走 QueueItemData::PartialEq（db_id/db_album_id/
+        // path 内容相等，刻意排除 uid）：本函数只重排既有条目、不换内容，内容
+        // 序列相同即用户视角无变化；同内容相邻项互换落入恒等分支属有意接受
+        // （视觉与会话快照均无差异）。
+        if **queue == *before {
+            drop(queue);
+            return MoveItemsResult::Unchanged;
         }
 
         // 校准当前位置
@@ -1457,6 +1474,24 @@ mod tests {
         )
     }
 
+    /// 带会话接收端的夹具：watch 的 rx 不丢弃，供断言「某操作是否真的触发了
+    /// 会话发送」。`QueueManager::new` 不发初始快照，`watch::Sender::send_modify`
+    /// 恒置 changed，所以 `has_changed()` 是可靠的发送探针。
+    fn manager_with_queue_and_session_watch(
+        items: Vec<QueueItemData>,
+    ) -> (QueueManager, watch::Receiver<PlaybackSessionData>) {
+        let queue = Arc::new(RwLock::new(Arc::new(items)));
+        let (storage_tx, storage_rx) = watch::channel(PlaybackSessionData::default());
+
+        let manager = QueueManager::new(
+            queue,
+            PlaybackSettings::default(),
+            PlaybackSessionData::default(),
+            storage_tx,
+        );
+        (manager, storage_rx)
+    }
+
     pub(super) fn snapshot(manager: &QueueManager) -> QueueManagerState {
         QueueManagerState {
             queue: manager.queue.read().expect("poisoned queue lock").clone(),
@@ -1658,6 +1693,81 @@ mod tests {
 
         assert_eq!(res, MoveItemsResult::Moved);
         assert_eq!(queue_ids(&manager), vec![3, 4, 5, 1, 2]);
+    }
+
+    // ─── 恒等多选拖放零副作用（REG-4） ────────────────────────────────────
+    // queue.rs 的四边界测试钉住的是坐标层语义（apply_multi_move 端到端恒等）；
+    // 这里钉住 move_items 本体的对称行为：重建序列与原队列逐位相同时，与单选
+    // from==to→Unchanged 一致——不写会话、不推 undo。
+
+    /// 选中块拖回自己的间隙（四边界恒等形状的 move_items 对应物）。防抖窗口
+    /// 空闲（构造后未发过任何会话），带 bug 时 persist_session_with_queue 会
+    /// 立即发送，`has_changed()` 因此能辨别守卫是否真的挡住了会话写。
+    #[test]
+    fn move_items_identity_block_skips_session_and_undo() {
+        let (mut manager, mut session_rx) =
+            manager_with_queue_and_session_watch(vec![item(1), item(2), item(3), item(4), item(5)]);
+        session_rx.borrow_and_update();
+
+        let res = manager.move_items(vec![1, 2], 1);
+
+        assert_eq!(res, MoveItemsResult::Unchanged);
+        assert!(
+            !session_rx.has_changed().unwrap(),
+            "恒等拖放不得触发会话发送"
+        );
+        assert_eq!(queue_ids(&manager), vec![1, 2, 3, 4, 5]);
+        assert!(matches!(manager.undo_last_action(), UndoResult::None));
+    }
+
+    /// 恒等的钳位变体：尾部块拖向队尾之外，insert_at 被钳回块原位——整队
+    /// 恒等同样零副作用（后置逐位比对天然覆盖，不依赖坐标推演）。
+    #[test]
+    fn move_items_identity_tail_clamp_skips_session_and_undo() {
+        let (mut manager, mut session_rx) =
+            manager_with_queue_and_session_watch(vec![item(1), item(2), item(3), item(4), item(5)]);
+        session_rx.borrow_and_update();
+
+        let res = manager.move_items(vec![3, 4], 99);
+
+        assert_eq!(res, MoveItemsResult::Unchanged);
+        assert!(
+            !session_rx.has_changed().unwrap(),
+            "恒等拖放不得触发会话发送"
+        );
+        assert_eq!(queue_ids(&manager), vec![1, 2, 3, 4, 5]);
+        assert!(matches!(manager.undo_last_action(), UndoResult::None));
+    }
+
+    /// 当前曲目落在选中块内时，恒等拖放不得动 queue_next（无守卫时坐标推演
+    /// 会把它重写成同一个值——状态等价但 res 谎报 MovedCurrent），整快照
+    /// （队列 / 位置 / 随机态）逐位不变。
+    #[test]
+    fn move_items_identity_with_current_in_block_preserves_snapshot() {
+        let mut manager = manager_with_queue(vec![item(1), item(2), item(3), item(4), item(5)]);
+        manager.set_position(2); // 当前 = 下标 2（item 3，在选中块内）
+        let before = snapshot(&manager);
+
+        let res = manager.move_items(vec![1, 2], 1);
+
+        assert_eq!(res, MoveItemsResult::Unchanged);
+        assert_eq!(snapshot(&manager), before);
+        assert!(matches!(manager.undo_last_action(), UndoResult::None));
+    }
+
+    /// 对照：非恒等多选仍推 undo 并立即写会话——恒等守卫不得吞掉真动作。
+    #[test]
+    fn move_items_real_move_still_records_undo_and_session() {
+        let (mut manager, mut session_rx) =
+            manager_with_queue_and_session_watch(vec![item(1), item(2), item(3), item(4), item(5)]);
+        session_rx.borrow_and_update();
+
+        let res = manager.move_items(vec![1, 2], 0);
+
+        assert_eq!(res, MoveItemsResult::Moved);
+        assert!(session_rx.has_changed().unwrap(), "真移动必须触发会话发送");
+        assert_eq!(queue_ids(&manager), vec![2, 3, 1, 4, 5]);
+        assert!(!matches!(manager.undo_last_action(), UndoResult::None));
     }
 
     /// 路径确实存在于磁盘上的队列项：`item_is_playable`（本地文件走
