@@ -1,4 +1,4 @@
-use std::{cell::Cell, path::PathBuf, sync::Arc};
+use std::{cell::Cell, path::Path, sync::Arc};
 
 use gpui::{
     Anchor, App, AppContext, Bounds, Context, Div, DragMoveEvent, ElementId, Entity, Hsla,
@@ -37,7 +37,11 @@ impl DragData {
 pub struct TrackDragData {
     pub track_id: Option<i64>,
     pub album_id: Option<i64>,
-    pub path: PathBuf,
+    /// 共享 `Arc<Path>`（不是 `PathBuf`）：拖拽会话期间每帧都从缓存基底克隆这个
+    /// 载荷（queue.rs / table_item.rs / grid_item.rs），`PathBuf::clone` 会重新分配
+    /// 并复制路径字节，`Arc` 把逐帧克隆降为引用计数。消费点只有冷投放（queue.rs
+    /// 构造 `QueueItemData`），经 `to_path_buf` 物化。
+    pub path: Arc<Path>,
     pub display_name: SharedString,
     /// 来源列表 ID，仅当从可重排列表（如歌单或队列）拖出时提供。
     pub source_list_id: Option<ElementId>,
@@ -49,7 +53,7 @@ pub struct TrackDragData {
 }
 
 impl TrackDragData {
-    pub fn new(path: impl Into<PathBuf>, display_name: impl Into<SharedString>) -> Self {
+    pub fn new(path: impl Into<Arc<Path>>, display_name: impl Into<SharedString>) -> Self {
         Self {
             track_id: None,
             album_id: None,
@@ -64,7 +68,7 @@ impl TrackDragData {
     pub fn from_track(
         track_id: i64,
         album_id: Option<i64>,
-        path: impl Into<PathBuf>,
+        path: impl Into<Arc<Path>>,
         display_name: impl Into<SharedString>,
     ) -> Self {
         Self {

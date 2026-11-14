@@ -480,8 +480,9 @@ impl Render for QueueItem {
                         )
                         .when(is_available, |div| {
                             // 拖拽负载基底只在显示名变化（元数据加载）时重建；
-                            // 每帧只克隆它并重新盖上实时索引与选中状态，
-                            // 不再重新分配路径与名称。
+                            // 每帧只克隆它并重新盖上实时索引与选中状态——
+                            // 名称（SharedString）与路径（Arc<Path>）均为引用
+                            // 计数克隆，逐帧重盖章不重新分配字节。
                             if self
                                 .drag_base
                                 .as_ref()
@@ -1580,7 +1581,7 @@ impl Render for Queue {
                                 );
                             } else {
                                 let queue_item = QueueItemData::new(
-                                    drag_data.path.clone(),
+                                    drag_data.path.to_path_buf(),
                                     drag_data.track_id,
                                     drag_data.album_id,
                                 );
@@ -1972,7 +1973,7 @@ mod tests {
         corrected_multi_drop_target, resolve_internal_drag_core,
     };
     use crate::ui::components::drag_drop::{DropPosition, TrackDragData, calculate_move_target};
-    use std::sync::Arc;
+    use std::{path::Path, sync::Arc};
 
     /// 模拟 queue_manager::move_items 的"先移除全部选中、再从 to 起连续插回"语义
     /// （queue_manager.rs:1119 契约；含超出尾端的钳位）。
@@ -2111,7 +2112,7 @@ mod tests {
     /// （投放时按不可验证取消）。单拖的指纹就是 source 自己。
     #[test]
     fn drag_fingerprints_build_rejects_snapshot_mismatch() {
-        let multi = TrackDragData::new("a.mp3", "A")
+        let multi = TrackDragData::new(Path::new("a.mp3"), "A")
             .with_reorder_info(QUEUE_LIST_ID, 2)
             .with_additional_indices(vec![3, 4]);
         // 同伴指纹数量与负载坐标不符
@@ -2124,7 +2125,8 @@ mod tests {
         assert_eq!(entry.additional.as_ref(), &[3, 4]);
         assert_eq!(entry.uids.as_ref(), &[30, 40, 50]);
         // 单拖（无 additional）：指纹就是 source 本人，不需要同伴快照
-        let single = TrackDragData::new("a.mp3", "A").with_reorder_info(QUEUE_LIST_ID, 0);
+        let single =
+            TrackDragData::new(Path::new("a.mp3"), "A").with_reorder_info(QUEUE_LIST_ID, 0);
         let entry = build_drag_fingerprints(&single, 7, None).expect("应可记账");
         assert_eq!(entry.uids.as_ref(), &[7]);
     }
