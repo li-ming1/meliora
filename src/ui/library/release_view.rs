@@ -79,23 +79,18 @@ fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
     tracks.iter().all(|track| liked.contains(&track.id))
 }
 
-/// 发行视图预先构造好的曲目行。常规专辑首屏一次性构造全部实体；大盒装（如超过 32 首）
-/// 保留空槽按需构造，避免打开古典/精选百曲大盒装时并发挂载数百个子实体。
+/// 发行视图预先构造好的曲目行：行实体在加载完成时（`apply_loaded` → `TrackListing::new`）
+/// 一次性创建，render 每帧只是复用已有实体转成元素。不要在这里做"迭代或滚动到才装配"
+/// 的惰性化——gpui 的 `ParentElement::children` 会立即 extend 消费整个迭代器（gpui
+/// checkout element.rs:202-208），唯一调用点又不是虚拟列表，首帧即装配全部槽位，惰性
+/// 只多付一个 RefCell 重入 panic 面而没有收益（2026-11-14 回退 c69dcd56f9，审计 REG-6）；
+/// 真正的按需装配要走 uniform_list 虚拟化，单独立项评估。
 struct TrackListing {
-    tracks: std::cell::RefCell<Vec<Option<Entity<TrackItem>>>>,
+    tracks: Arc<Vec<Entity<TrackItem>>>,
     original_tracks: Arc<Vec<Track>>,
-    artist_name_visibility: ArtistNameVisibility,
-    max_track_num_str: Option<SharedString>,
-    vinyl_numbering: bool,
-    show_go_to_album: bool,
-    show_go_to_artist: bool,
 }
 
 impl TrackListing {
-    /// 触发按需惰性化的曲目数阈值。小于等于 32 首的常规专辑全量预装，
-    /// 大于 32 首的大盒装首批只预装前 32 首，后续槽位在迭代或滚动到时即时装配。
-    const EAGER_LOAD_THRESHOLD: usize = 32;
-
     fn new(
         cx: &mut App,
         tracks: Arc<Vec<Track>>,
@@ -111,48 +106,36 @@ impl TrackListing {
             .max()
             .map(|n| format!("{}", n).into());
 
-        let total = tracks.len();
-        let eager_count = total.min(Self::EAGER_LOAD_THRESHOLD);
-        let mut slots = Vec::with_capacity(total);
-
-        for index in 0..eager_count {
-            let track = &tracks[index];
-            let is_start = index == 0
-                || track.track_number == Some(1)
-                || tracks
-                    .get(index.wrapping_sub(1))
-                    .is_some_and(|t| t.disc_number != track.disc_number);
-
-            let item = TrackItem::new(
-                cx,
-                track.clone(),
-                artist_name_visibility.clone(),
-                TrackItemLeftField::TrackNum,
-                None,
-                max_track_num_str.clone(),
-                None,
-                TrackItemOptions {
-                    is_start,
-                    vinyl_numbering,
-                    show_go_to_album,
-                    show_go_to_artist,
-                },
-            );
-            slots.push(Some(item));
-        }
-
-        for _ in eager_count..total {
-            slots.push(None);
-        }
-
         Self {
-            tracks: std::cell::RefCell::new(slots),
+            tracks: Arc::new({
+                let tracks_for_closure = tracks.clone();
+                tracks
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, track)| {
+                        TrackItem::new(
+                            cx,
+                            track.clone(),
+                            artist_name_visibility.clone(),
+                            TrackItemLeftField::TrackNum,
+                            None,
+                            max_track_num_str.clone(),
+                            None,
+                            TrackItemOptions {
+                                is_start: index == 0
+                                    || track.track_number == Some(1)
+                                    || tracks_for_closure
+                                        .get(index - 1)
+                                        .is_some_and(|t| t.disc_number != track.disc_number),
+                                vinyl_numbering,
+                                show_go_to_album,
+                                show_go_to_artist,
+                            },
+                        )
+                    })
+                    .collect()
+            }),
             original_tracks: tracks,
-            artist_name_visibility,
-            max_track_num_str,
-            vinyl_numbering,
-            show_go_to_album,
-            show_go_to_artist,
         }
     }
 
@@ -160,50 +143,14 @@ impl TrackListing {
         &self.original_tracks
     }
 
-    /// 获取或即时装配指定索引处的曲目行实体。
-    fn get_or_create(&self, cx: &mut App, index: usize) -> Option<Entity<TrackItem>> {
-        let mut slots = self.tracks.borrow_mut();
-        if let Some(existing) = slots.get(index).and_then(|opt| opt.as_ref()) {
-            return Some(existing.clone());
-        }
-
-        let track = self.original_tracks.get(index)?;
-        let is_start = index == 0
-            || track.track_number == Some(1)
-            || self
-                .original_tracks
-                .get(index.wrapping_sub(1))
-                .is_some_and(|t| t.disc_number != track.disc_number);
-
-        let item = TrackItem::new(
-            cx,
-            track.clone(),
-            self.artist_name_visibility.clone(),
-            TrackItemLeftField::TrackNum,
-            None,
-            self.max_track_num_str.clone(),
-            None,
-            TrackItemOptions {
-                is_start,
-                vinyl_numbering: self.vinyl_numbering,
-                show_go_to_album: self.show_go_to_album,
-                show_go_to_artist: self.show_go_to_artist,
-            },
-        );
-
-        if index < slots.len() {
-            slots[index] = Some(item.clone());
-        }
-        Some(item)
-    }
-
-    /// 把曲目行作为惰性迭代器返回：在 render 中按需从槽位获取或装配，
-    /// 避免每帧一次 `Vec<AnyElement>` 分配。
-    fn track_elements<'a>(&'a self, cx: &'a mut App) -> impl Iterator<Item = AnyElement> + 'a {
-        (0..self.original_tracks.len()).filter_map(move |i| {
-            self.get_or_create(cx, i)
-                .map(|item| item.into_any_element())
-        })
+    /// 把曲目行转成元素返回：调用方的 `.children(...)` 立即消费这个迭代器（契约见
+    /// [`TrackListing`] 文档），每帧仍然物化全部行——直传迭代器省掉的只是调用侧
+    /// 一次中间 `Vec<AnyElement>` 分配，不是按需装配。
+    fn track_elements(&self) -> impl Iterator<Item = AnyElement> + '_ {
+        self.tracks
+            .iter()
+            .cloned()
+            .map(|track| track.into_any_element())
     }
 }
 
@@ -898,7 +845,7 @@ impl Render for ReleaseView {
                         },
                         cx,
                     ))
-                    .children(self.track_listing.track_elements(cx))
+                    .children(self.track_listing.track_elements())
                     .when(
                         self.release_info.is_some()
                             || self.album.release_date.is_some()
@@ -907,15 +854,5 @@ impl Render for ReleaseView {
                     ),
             )
             .child(floating_scrollbar("release_scrollbar", scroll_handle).right(px(4.0)))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[core::prelude::v1::test]
-    fn track_listing_threshold_is_32() {
-        assert_eq!(TrackListing::EAGER_LOAD_THRESHOLD, 32);
     }
 }
