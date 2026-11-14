@@ -279,9 +279,9 @@ fn parse_fixed_digits<T: FromStr>(value: &str, len: usize) -> Option<T> {
 /// 这样能为 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 保留原始精度。
 /// 若值不像 ISO 格式，返回 `Ok(None)`，让通用解析器仍能处理
 /// `May 25, 2021` 这类自由格式标签。判定门槛是「首段是否 4 位年」：纯数字的
-/// 美式/欧式日期（`06/24/2021`、`24.06.2021`）首段非 4 位年，同样返回
-/// `Ok(None)` 放行——此前它们被按 Err 整号拦死，dateparser 本可解析的
-/// date/year 全丢。只有首段是 4 位年且分段形态合法、但值非法（`1995-13`、
+/// 非年首段日期（美式 `06/24/2021`、欧式 `24.06.2021`）同样返回 `Ok(None)`
+/// 放行——此前它们被按 Err 整号拦死，dateparser 可解析的（美式）date/year
+/// 全丢。只有首段是 4 位年且分段形态合法、但值非法（`1995-13`、
 /// `1995-06-31`）才返回 `Err(())`，这样通用解析器就不会擅自补出一个日或
 /// 改变精度。
 fn parse_iso_release_date(value: &str) -> Result<Option<ParsedReleaseDate>, ()> {
@@ -658,16 +658,16 @@ mod tests {
 
     #[test]
     fn parses_non_iso_numeric_dates_via_generic_parser() {
-        // 回归：美式/欧式纯数字日期此前被 ISO 挡板按 Err 整号拦死（首段非
-        // 4 位年），dateparser 本可解析的 date/year 全丢。放行后走通用解析器。
+        // 回归：美式纯数字日期此前被 ISO 挡板按 Err 整号拦死（首段非 4 位年），
+        // dateparser 本可解析的 date/year 全丢。放行后走通用解析器。
+        // 注意边界：dateparser 实测解析 "06/24/2021"（美式）但不解析
+        // "24.06.2021"（欧式点分）——后者修复前后都是 None（先挡板 Err 后
+        // dateparser 不认），放行只是归还机会，不承诺解析成功。
         assert!(matches!(
             parse_release_date("06/24/2021"),
             Some(ParsedReleaseDate::FullDate(_))
         ));
-        assert!(matches!(
-            parse_release_date("24.06.2021"),
-            Some(ParsedReleaseDate::FullDate(_))
-        ));
+        assert_eq!(parse_release_date("24.06.2021"), None);
     }
 
     #[test]
