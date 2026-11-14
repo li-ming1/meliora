@@ -351,8 +351,9 @@ pub fn quality_ladder(requested: &str) -> &'static [&'static str] {
 /// （playback/thread.rs 的 `STREAM_REFRESH_TIMEOUT`），而网关 client 单请求 30s、
 /// 失败再打一次 128k 兜底——最坏 60s：慢网下外层总在 6s 超时返回 `None`，内层
 /// spawn 继续跑完但结果被整体丢弃（新 URL 白拿，下次重试再付一遍）。压到 3s/请求
-/// 后两连发 ≤6s 内收敛，让 6s 预算内真正可能成功。非实时路径（用户点歌等）传
-/// `None` 维持网关 30s 档。
+/// 后：首档网络错误两连发 ≤6s 收敛；顺降路径（首档 Ok 无 URL → 中段档 Err →
+/// 128 兜底）最坏三连发 3×3s=9s，第三发可能被外层 6s 总预算掐断——顺降路径不
+/// 承诺预算内收敛。非实时路径（用户点歌等）传 `None` 维持网关 30s 档。
 const REALTIME_URL_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 带（可选）单请求时限的 `song_url`：超时折算成 [`kugou::KugouError::local`]，
@@ -377,6 +378,38 @@ async fn song_url_bounded(
             )),
         },
         None => call.await,
+    }
+}
+
+/// 首档与梯队中段网络错误共用的 128 兜底单发：直接落 [`FALLBACK_QUALITY`] 再试
+/// 一次判终，不逐档续试——「最坏超时次数不放大」由两条错误路径共同维持。
+async fn fallback_quality_url_once(
+    client: &kugou::KugouClient,
+    hash: &str,
+    mix_song_id: i64,
+    album_id: i64,
+    per_request_timeout: Option<Duration>,
+) -> Option<String> {
+    match song_url_bounded(
+        client,
+        hash,
+        mix_song_id,
+        album_id,
+        FALLBACK_QUALITY,
+        per_request_timeout,
+    )
+    .await
+    {
+        Ok(resp) => extract_song_url(&resp.body),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                hash,
+                quality = FALLBACK_QUALITY,
+                "kugou: fallback URL request failed"
+            );
+            None
+        }
     }
 }
 
@@ -424,27 +457,14 @@ pub async fn fetch_stream_url(
             if requested == FALLBACK_QUALITY {
                 return None;
             }
-            return match song_url_bounded(
+            return fallback_quality_url_once(
                 client,
                 hash,
                 mix_song_id,
                 album_id,
-                FALLBACK_QUALITY,
                 per_request_timeout,
             )
-            .await
-            {
-                Ok(resp) => extract_song_url(&resp.body),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        hash,
-                        quality = FALLBACK_QUALITY,
-                        "kugou: fallback URL request failed"
-                    );
-                    None
-                }
-            };
+            .await;
         }
     }
 
@@ -471,13 +491,26 @@ pub async fn fetch_stream_url(
                 }
             }
             Err(error) => {
+                // 与首档错误同策略：中段档位的网络/超时失败不逐档续试，直接落 128
+                // 兜底一次判终；已在 128 档则无路可退（REG-1：原先 warn + return
+                // None 会放弃本可播的 128 终档，与首档「网络失败落 128」不对称）。
                 tracing::warn!(
                     %error,
                     hash,
                     quality = candidate,
                     "kugou: URL request failed during fallback"
                 );
-                return None;
+                if *candidate == FALLBACK_QUALITY {
+                    return None;
+                }
+                return fallback_quality_url_once(
+                    client,
+                    hash,
+                    mix_song_id,
+                    album_id,
+                    per_request_timeout,
+                )
+                .await;
             }
         }
     }
@@ -621,25 +654,34 @@ pub(crate) fn store_liked_entries(entries: Vec<(String, i64)>, generation: u64) 
     let mut fileids_guard = liked_fileids().write_recovered();
     *set_guard = hashes;
     *fileids_guard = fileids;
+    // INIT 旗标必须留在双写守卫域内置位（与上方文档逐字对齐）：挪到 drop 之后，
+    // invalidate 的「清空 + INIT=false」就能完整插进双写完成与旗标置位之间，把
+    // 缓存钉死在「已初始化但为空」，惰性刷新整个会话不再自愈（CONC-1）。
+    LIKED_SET_INIT.store(true, Ordering::Relaxed);
     drop(fileids_guard);
     drop(set_guard);
-    LIKED_SET_INIT.store(true, Ordering::Relaxed);
 }
 
 /// 账号身份变了（登录/登出/换号）时清空喜欢缓存：hash 集、hash→fileid 映射与
 /// init 旗标一并复位（并发形态照 `store_liked_entries`：毒化可恢复写锁 + Relaxed
 /// 旗标）。喜欢列表是以登录用户为键的服务端状态——星标是否点亮、unlike 要用的
 /// fileid 都只对当前账号有效，换号后残留会让星标按旧账号点亮、取消喜欢删到旧
-/// 账号的列表。世代递增在写守卫内完成（见 `store_liked_entries` 的互斥说明）；
-/// 在途抓取拿不了这把锁，靠世代在落地前自行丢弃。
+/// 账号的列表。清空、世代递增、fileids 清空与 INIT=false 全程持双写守卫
+/// （set→fileids，与 `store_liked_entries` 同序，两条路径由此真正互斥）：旧写法
+/// 把 fileids/INIT 留在守卫域外，在途 store 落在「双写完成与 INIT=false 之间」
+/// 会把缓存钉死在「已初始化但为空」，惰性刷新整个会话不再自愈（CONC-1，
+/// 2026-11-14）。在途抓取拿不了这把锁，靠世代在落地前自行丢弃。
 pub(crate) fn invalidate_liked_cache() {
-    {
-        let mut guard = liked_set().write_recovered();
-        guard.clear();
-        LIKED_GENERATION.fetch_add(1, Ordering::Relaxed);
-    }
-    liked_fileids().write_recovered().clear();
+    let mut set_guard = liked_set().write_recovered();
+    set_guard.clear();
+    LIKED_GENERATION.fetch_add(1, Ordering::Relaxed);
+    // fileids 清空与 INIT=false 收进同一段 set 写守卫（fileids 嵌套内层，锁序
+    // set→fileids 与 store 同序；全仓普查仅此两处嵌套取锁，无其它锁序）。
+    let mut fileids_guard = liked_fileids().write_recovered();
+    fileids_guard.clear();
     LIKED_SET_INIT.store(false, Ordering::Relaxed);
+    drop(fileids_guard);
+    drop(set_guard);
 }
 
 /// 编译期 provider 注册表里的酷狗条目（A-1 第②步）；各方法体委托给上面的自由函数。
@@ -747,18 +789,24 @@ mod liked_cache_tests {
     /// 世代守卫（A1）：换号/登出时 invalidate 清空缓存并递增世代，在途抓取随后
     /// 带着旧世代完成——必须整份丢弃，不得把旧账号的喜欢集回填进已清空的缓存、
     /// 也不得置 init 旗标（否则星标按旧账号点亮，且不再自动重拉）。
+    /// 同时钉住 CONC-1 的两条路径终态：store 落地后两份缓存与 INIT 旗标同步就位；
+    /// invalidate 后 INIT=false 且 set/fileids 两份缓存全空——「已初始化但为空」
+    /// 的钉死态正是本断言要堵的回归口（真实并发交错不可串行构造，只钉终态）。
     /// 串行执行依赖：本文件唯一触碰这些全局的测试；并行测试间无共享。
     #[test]
     fn stale_generation_store_is_discarded_after_invalidate() {
-        // 基线：当前世代的结果正常落地。
+        // 基线：当前世代的结果正常落地（两份缓存 + INIT 旗标同步就位）。
         store_liked_entries(vec![("hash-a".into(), 11)], liked_generation());
         assert!(LIKED_SET_INIT.load(Ordering::Relaxed));
         assert!(liked_set_contains("hash-a"));
+        assert!(liked_fileids().read_recovered().contains_key("hash-a"));
 
-        // 换号：清空 + 世代递增。
+        // 换号：清空 + 世代递增，两份缓存与 INIT 旗标一并复位。
         invalidate_liked_cache();
         assert!(!LIKED_SET_INIT.load(Ordering::Relaxed));
         assert!(!liked_set_contains("hash-a"));
+        assert!(liked_set().read_recovered().is_empty());
+        assert!(liked_fileids().read_recovered().is_empty());
 
         // invalidate 之前开工的在途抓取此刻完成（携带旧世代）：整份丢弃。
         let stale_generation = liked_generation() - 1;
@@ -776,6 +824,7 @@ mod liked_cache_tests {
         // 下一次刷新携带新世代：正常落地。
         store_liked_entries(vec![("hash-new".into(), 33)], liked_generation());
         assert!(liked_set_contains("hash-new"));
+        assert!(liked_fileids().read_recovered().contains_key("hash-new"));
         assert!(LIKED_SET_INIT.load(Ordering::Relaxed));
     }
 }
