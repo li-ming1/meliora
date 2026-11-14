@@ -19,7 +19,9 @@ online = ["dep:zed-reqwest", "dep:sha2"]
 atlas-probe = []
 # Shared plumbing for any online source: HTTP-range streaming playback, cover
 # cache, online-aware queue items. Enabled by each provider feature below.
-online_sources = []
+# 其门控代码（media/http_source.rs 的 shared_http_client 等）无条件引用
+# zed-reqwest，故 feature 必须自持该依赖，不得依赖 provider feature 顺带开启。
+online_sources = ["dep:zed-reqwest"]
 kugou = ["online", "online_sources", "dep:md-5", "dep:num-bigint-dig", "dep:qrcode"]
 default = []
 
@@ -58,7 +60,9 @@ futures = "0.3"
 gpui = { package = "gpui-unofficial", path = "vendor/gpui-unofficial-shim" }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "ae7c41157feb180ce096cd1afdb2d6b48850b539", features = ["wayland", "x11", "font-kit"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
-indexmap = { version = "2", features = ["serde"] }
+# serde feature 不在本仓声明：全仓 IndexMap 均为非序列化的列布局数据，
+# serde impl 由 gpui_collections 传递提供，需要序列化时按需再加。
+indexmap = "2"
 intx = "0.1"
 lofty = "0.25"
 md-5 = { version = "0.11", optional = true }
@@ -114,9 +118,13 @@ thiserror = "2"
 # tokio::io extension traits directly (scan record, session storage,
 # playlist persistence) and must not depend on other crates' feature
 # unification to expose them.
+# net 同为显式声明：测试代码直接 bind tokio::net::TcpListener
+# （media/download.rs、updater.rs），此前靠 zed-reqwest 的传递
+# feature unification 暴露。
 tokio = { version = "1", features = [
     "fs",
     "io-util",
+    "net",
     "rt-multi-thread",
     "macros",
     "time",
