@@ -82,12 +82,17 @@ async fn merge_stale_track(
     .execute(&mut *conn)
     .await?;
 
-    let stale_album: Option<(i64,)> = sqlx::query_as(include_str!(
+    // album_id 列可空（无专辑曲目的 standalone 行存 NULL）：按 i64 解码会在
+    // NULL 处 ColumnDecode、? 上抛令整次大小写合并永久失败（每次重扫重复报错，
+    // 新旧行长期并存）。与 database.rs 的 previous_album 同款按可空解码；
+    // 无专辑的过期行本就没有专辑歌手链接要重建，None 直接跳过重算。
+    let stale_album: Option<(Option<i64>,)> = sqlx::query_as(include_str!(
         "../../../../queries/scan/get_album_id_at_track.sql"
     ))
     .bind(stale_id)
     .fetch_optional(&mut *conn)
     .await?;
+    let stale_album_id = stale_album.and_then(|(id,)| id);
 
     sqlx::query(include_str!("../../../../queries/scan/delete_track.sql"))
         .bind(old.as_str())
@@ -95,7 +100,7 @@ async fn merge_stale_track(
         .await?;
 
     // 被删掉的那一行可能是某位歌手唯一的署名来源
-    if let Some((album_id,)) = stale_album {
+    if let Some(album_id) = stale_album_id {
         recompute_album_artists(conn, matcher, album_id).await?;
     }
 

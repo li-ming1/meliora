@@ -187,14 +187,17 @@ async fn cleanup_track(
 ) -> bool {
     let album_id = match cleanup_query(
         "reading track for cleanup",
-        sqlx::query_as(include_str!(
+        // album_id 列可空（无专辑曲目的 standalone 行存 NULL）：按 i64 解码会在
+        // NULL 处 ColumnDecode，Err 被 cleanup_query 记日志后整条清理静默失败、
+        // 僵尸行永不追平。与 database.rs 的 previous_album 同款按可空解码。
+        sqlx::query_as::<_, (Option<i64>,)>(include_str!(
             "../../../../queries/scan/get_album_id_at_location.sql"
         ))
         .bind(path.as_str())
         .fetch_optional(&mut **tx)
         .await,
     ) {
-        Some(album) => album.map(|(id,)| id),
+        Some(album) => album.and_then(|(id,)| id),
         None => return false,
     };
 

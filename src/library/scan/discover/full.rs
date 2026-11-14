@@ -690,6 +690,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_stale_tracks_removes_missing_standalone_track() {
+        // 回归：standalone 曲目（无专辑 tag，track.album_id 存 NULL）此前按
+        // i64 解码可空列必然 ColumnDecode，cleanup_track 静默失败——僵尸行
+        // 永不追平、每次全量扫描重复报 ERROR。修复后按可空解码正常清理。
+        let (dir, pool) = create_test_pool("cleanup-standalone-test").await;
+        let path = dir.utf8_join("track.flac");
+        std::fs::write(dir.join("track.flac"), b"").unwrap();
+        let mut meta = track_metadata("Album", "Artist", "Track", 1);
+        meta.album = None;
+        insert_track_row(&pool, &path, meta).await;
+
+        std::fs::remove_file(dir.join("track.flac")).unwrap();
+
+        let mut scan_record = record_of(&[&path]);
+        let updated = cleanup_stale_tracks(&pool, &mut scan_record, &[], &[]).await;
+        assert!(updated.is_empty());
+        assert!(!scan_record.records.contains_key(&path));
+        assert_eq!(count_tracks_at(&pool, &path).await, 0);
+    }
+
+    #[tokio::test]
     async fn cleanup_with_exclusions_keeps_missing_tracks_under_excluded_roots() {
         let (dir, pool) = create_test_pool("cleanup-test").await;
         let path = write_track(&dir, "track.flac");

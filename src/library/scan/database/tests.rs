@@ -280,6 +280,55 @@ async fn relocate_track_merges_into_existing_row() {
 }
 
 #[tokio::test]
+async fn relocate_track_merges_standalone_track_row() {
+    // 回归：standalone 曲目（无专辑 tag，track.album_id 存 NULL）的大小写合并
+    // 此前在 merge_stale_track 的可空列解码处 ColumnDecode、Err 上抛令整次
+    // relocate 失败——新旧行长期并存、每次重扫重复报错。修复后正常合并。
+    let (dir, pool) = create_test_pool("db-relocate-standalone-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let stale_path = dir.utf8_join("TRACK.FLAC");
+    let current_path = dir.utf8_join("Track.flac");
+
+    let mut meta = track_metadata("Album", "Artist", "Track", 1);
+    meta.album = None;
+    insert_metadata(&mut conn, &meta, &stale_path)
+        .await
+        .unwrap();
+    insert_metadata(&mut conn, &meta, &current_path)
+        .await
+        .unwrap();
+    drop(conn);
+
+    let playlist_id = add_track_to_playlist(&pool, &stale_path, "Playlist").await;
+    let (kept_id,): (i64,) = sqlx::query_as("SELECT id FROM track WHERE location = $1")
+        .bind(current_path.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let updated = relocate_track(
+        &mut conn,
+        &mut ArtistMatcher::new(),
+        &stale_path,
+        &current_path,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    assert_eq!(updated, vec![playlist_id]);
+    assert_eq!(count_rows(&pool, "track").await, 1);
+
+    let (track_id,): (i64,) = sqlx::query_as("SELECT track_id FROM playlist_item")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(track_id, kept_id);
+}
+
+#[tokio::test]
 async fn update_metadata_allows_same_album_different_disc_in_different_folder() {
     let (dir, pool) = create_test_pool("db-test").await;
     let mut conn = pool.acquire().await.unwrap();
