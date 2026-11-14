@@ -25,7 +25,9 @@ use crate::{
 
 /// 合并成一批防抖事件的文件系统活动。
 const DEBOUNCE_WINDOW: Duration = Duration::from_secs(2);
-/// 单个事件批次触及的目录超过这个数就改为全量扫描。
+/// 单个事件批次触及的目录超过这个数就改为全量扫描。上限在 affected_targets 的
+/// 分类循环内执行（越限即提前返回哨兵），风暴批次不必为注定被丢弃的结果逐条
+/// 付文件系统探测。
 const STORM_TARGET_CAP: usize = 200;
 /// 监视器状态刷新的频率，同时重试当初监视不上的根目录。
 const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
@@ -214,20 +216,21 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
         .iter()
         .flat_map(|e| e.event.paths.iter().cloned())
         .collect();
-    let (targets, force_rescan) = affected_targets(&paths);
+    let Some((targets, force_rescan)) = affected_targets(&paths) else {
+        // 风暴哨兵：目标数越过 STORM_TARGET_CAP，直接升级全量扫描。
+        // force_rescan 无需消费——ScanCommand::Scan 没有 respect_record 口径。
+        let _ = try_send_command(cmd_tx, ScanCommand::Scan);
+        return;
+    };
     if targets.is_empty() {
         return;
     }
 
-    let command = if targets.len() > STORM_TARGET_CAP {
-        ScanCommand::Scan
-    } else {
-        ScanCommand::RescanPaths {
-            paths: targets.into_iter().collect(),
-            respect_record: !force_rescan,
-            // 移入的文件夹不会为其内容发事件——要递归进去找
-            recursive: true,
-        }
+    let command = ScanCommand::RescanPaths {
+        paths: targets.into_iter().collect(),
+        respect_record: !force_rescan,
+        // 移入的文件夹不会为其内容发事件——要递归进去找
+        recursive: true,
     };
 
     if !try_send_command(cmd_tx, command) {
@@ -237,7 +240,12 @@ fn handle_debounced(result: DebounceEventResult, cmd_tx: &WeakSender<ScanCommand
 
 /// 把事件路径映射成重扫目标：媒体/封面/歌词用父文件夹，目录用自身。那个旗标报告
 /// 是否有路径属于专辑封面，它会让随后的重扫忽略扫描记录。
-fn affected_targets(paths: &[PathBuf]) -> (FxHashSet<Utf8PathBuf>, bool) {
+///
+/// `None` 是风暴哨兵：目标集合越过 [`STORM_TARGET_CAP`] 的第一时间就地放行，
+/// 剩余路径不再逐条分类探测（它们的结果反正会被全量扫描升级整体丢弃）。判定
+/// 口径与旧的「循环结束后统一比对 len」精确等价——集合只增不减，越限即不可能
+/// 回落，提前返回不改变升级判定结果。
+fn affected_targets(paths: &[PathBuf]) -> Option<(FxHashSet<Utf8PathBuf>, bool)> {
     let mut targets = FxHashSet::default();
     let mut force_rescan = false;
     let mut non_utf8: usize = 0;
@@ -262,19 +270,28 @@ fn affected_targets(paths: &[PathBuf]) -> (FxHashSet<Utf8PathBuf>, bool) {
             if let Some(parent) = path.parent() {
                 targets.insert(parent.to_path_buf());
             }
-            continue;
-        }
-
-        match path.as_std_path().try_exists() {
-            Ok(true) => {
-                if path.is_dir() {
+        } else {
+            match path.as_std_path().try_exists() {
+                Ok(true) => {
+                    if path.is_dir() {
+                        targets.insert(path);
+                    }
+                }
+                Ok(false) => {
                     targets.insert(path);
                 }
+                Err(_) => {}
             }
-            Ok(false) => {
-                targets.insert(path);
+        }
+
+        if targets.len() > STORM_TARGET_CAP {
+            if non_utf8 > 0 {
+                warn!(
+                    "Dropped {} non-UTF-8 watcher event path(s) before storm cutoff",
+                    non_utf8
+                );
             }
-            Err(_) => {}
+            return None;
         }
     }
 
@@ -282,7 +299,7 @@ fn affected_targets(paths: &[PathBuf]) -> (FxHashSet<Utf8PathBuf>, bool) {
         warn!("Dropped {} non-UTF-8 watcher event path(s)", non_utf8);
     }
 
-    (targets, force_rescan)
+    Some((targets, force_rescan))
 }
 
 fn is_album_art(path: &Path) -> bool {
@@ -450,7 +467,7 @@ mod tests {
                 std::fs::write(&file, contents).unwrap();
             }
 
-            let (targets, force_rescan) = affected_targets(std::slice::from_ref(&file));
+            let (targets, force_rescan) = affected_targets(std::slice::from_ref(&file)).unwrap();
             let mut expected = FxHashSet::default();
             // `affected_targets` 把事件映射到普通的父目录（不做规范化），所以在
             // Windows 上要拿同一目录的非 verbatim 拼写来比对
@@ -469,7 +486,7 @@ mod tests {
         let file = dir.join("notes.txt");
         std::fs::write(&file, b"").unwrap();
 
-        assert!(affected_targets(&[file]).0.is_empty());
+        assert!(affected_targets(&[file]).unwrap().0.is_empty());
     }
 
     #[test]
@@ -477,7 +494,7 @@ mod tests {
         register_test_media_providers();
         let dir = TestDir::new("watch-test");
 
-        let targets = affected_targets(&[dir.join("artist")]).0;
+        let targets = affected_targets(&[dir.join("artist")]).unwrap().0;
         assert_eq!(targets.len(), 1);
         assert!(targets.contains(&dir.utf8_join("artist")));
     }
@@ -489,7 +506,7 @@ mod tests {
         let sub = dir.join("album");
         std::fs::create_dir(&sub).unwrap();
 
-        let targets = affected_targets(std::slice::from_ref(&sub)).0;
+        let targets = affected_targets(std::slice::from_ref(&sub)).unwrap().0;
         assert_eq!(targets.len(), 1);
         assert!(targets.contains(&Utf8PathBuf::try_from(sub).unwrap()));
     }
@@ -561,6 +578,49 @@ mod tests {
                 DebouncedEvent::new(
                     Event::new(EventKind::Create(CreateKind::Folder))
                         .add_path(PathBuf::from(format!("/music/dir{i}"))),
+                    Instant::now(),
+                )
+            })
+            .collect();
+
+        handle_for_test(Ok(events), &tx);
+        assert!(matches!(rx.blocking_recv(), Some(ScanCommand::Scan)));
+    }
+
+    /// 哨兵等价性回归：提前返回的判定口径仍是「去重后 target 数 > cap」。
+    /// 恰好 cap 个目标不动用升级；cap+1 个媒体文件事件（扩展名分类，零文件系统
+    /// 探测）在媒体分支内越过上限就地放行哨兵，同样升级全量扫描。
+    #[test]
+    fn storm_sentinel_matches_deduped_target_count_exactly() {
+        register_test_media_providers();
+        let (tx, mut rx) = channel(1);
+        let events: Vec<DebouncedEvent> = (0..STORM_TARGET_CAP)
+            .map(|i| {
+                DebouncedEvent::new(
+                    Event::new(EventKind::Create(CreateKind::Folder))
+                        .add_path(PathBuf::from(format!("/music/dir{i}"))),
+                    Instant::now(),
+                )
+            })
+            .collect();
+
+        handle_for_test(Ok(events), &tx);
+        match rx.blocking_recv() {
+            Some(ScanCommand::RescanPaths { paths, .. }) => {
+                assert_eq!(paths.len(), STORM_TARGET_CAP)
+            }
+            other => panic!(
+                "expected a targeted rescan at the cap boundary, got {:?}",
+                other
+            ),
+        }
+
+        let (tx, mut rx) = channel(1);
+        let events: Vec<DebouncedEvent> = (0..=STORM_TARGET_CAP)
+            .map(|i| {
+                DebouncedEvent::new(
+                    Event::new(EventKind::Create(CreateKind::File))
+                        .add_path(PathBuf::from(format!("/music/dir{i}/track.flac"))),
                     Instant::now(),
                 )
             })

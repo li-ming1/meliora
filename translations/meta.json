@@ -1921,25 +1921,25 @@
   },
   "SCAN_FAILED_ARTIST_RECOMPUTE": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:111",
+    "definedIn": "src/library/scan/execution.rs:134",
     "plural": false,
     "description": null
   },
   "SCAN_FAILED_FILES": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:105",
+    "definedIn": "src/library/scan/execution.rs:128",
     "plural": false,
     "description": null
   },
   "SCAN_FAILED_TRANSACTION": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:117",
+    "definedIn": "src/library/scan/execution.rs:140",
     "plural": false,
     "description": null
   },
   "SCAN_FAILED_WORKER": {
     "context": "execution.rs",
-    "definedIn": "src/library/scan/execution.rs:99",
+    "definedIn": "src/library/scan/execution.rs:122",
     "plural": false,
     "description": null
   },
