@@ -104,6 +104,9 @@ fn open_or_focus_settings_window(cx: &mut App, section: Option<SettingsSectionKi
                 SettingsWindow::new(section, cx)
             },
         )
+        // 失败不向调用方上抛（全局动作 / 侧栏 / 托盘「设置…」都没有失败通道），
+        // 但至少留一行错误日志——口径同 desktop-lyrics 悬浮窗的开窗失败。
+        .map_err(|error| tracing::error!(?error, "settings: failed to open window"))
         .ok();
     // 登记 `[frame]` 探针的按窗口归因标签。均衡器与统计页都在这扇窗里，而它此前只能以
     // `win-<id>` 出现（2026-10-17 真机实测：该窗 frames 186-214/30s、draw_p50 5235µs、
@@ -200,6 +203,11 @@ impl SettingsSectionKind {
         }
     }
 
+    // 唯一调用点在 settings_active_section_label 里，而后者只被 main.rs 的 `[frame]`
+    // 探针消费（log_frame_aggregate 整体 cfg(not(test))）——测试构建会把这条链编译掉，
+    // 本函数随之报死代码。告警是 test 趟伪影，release 趟链路活着（`[frame] periodic
+    // win=settings section=` 分页帧归因），绝不能按死代码删除。
+    #[cfg_attr(test, allow(dead_code))]
     fn from_index(index: u8) -> Option<Self> {
         match index {
             0 => Some(Self::Interface),
@@ -248,6 +256,10 @@ static SETTINGS_ACTIVE_SECTION_INDEX: std::sync::atomic::AtomicU8 =
 
 /// 供 main.rs 的 `[frame]` 探针读取：当前激活分区的稳定 id（interface /
 /// library / playback / equalizer / stats / kugou / about）。
+// 唯一调用点在 main.rs log_frame_aggregate 的 `win == "settings"` 分支里，而该
+// 函数整体 cfg(not(test))——测试构建报的死代码是 test 趟伪影，release 趟支撑
+// `[frame] periodic win=settings section=` 分页帧归因，不能删。
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn settings_active_section_label() -> &'static str {
     let index = SETTINGS_ACTIVE_SECTION_INDEX.load(std::sync::atomic::Ordering::Relaxed);
     SettingsSectionKind::from_index(index).map_or("closed", |kind| kind.id())
