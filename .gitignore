@@ -15,7 +15,9 @@ AGENTS.md
 
 # 本机性能准则与诊断工具（仅本地使用，勿提交）
 GPUI_HARDCORE_PERFORMANCE.md
-tools/
+tools/*
+# 例外：字体子集化派生脚本入仓可复跑（SIZE-1 裁决的维护性纪律）
+!tools/subset_bundled_fonts.py
 
 # IDE / 编辑器
 .idea/
