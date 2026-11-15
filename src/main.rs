@@ -10,6 +10,7 @@ use gpui::set_trace_enabled;
 // --tests 配置下就是一条未使用告警。
 #[cfg(not(test))]
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{LazyLock, OnceLock, RwLock};
 
 use crate::media::{
@@ -387,6 +388,12 @@ fn atlas_probe_snapshot() -> [u64; 15] {
     out
 }
 
+/// 启动期快照的可执行文件路径（[`spawn_replacement`] 用）：Linux 的
+/// /proc/self/exe 解析运行中 inode 的当前 dentry，镜像被更新交换改名后会
+/// 返回 `.old` 路径——见 spawn_replacement 的文档注释（第四轮 B4-1）。
+#[cfg(any(feature = "online", not(test)))]
+static SPAWN_EXE_SNAPSHOT: OnceLock<PathBuf> = OnceLock::new();
+
 /// 用原始 CLI 参数启动一份当前可执行文件的新副本。spawn 失败时返回 `false`
 /// （调用方降级继续跑）。由内存硬上限阀门（立即以哨兵退出码退出）和更新器的
 /// "重启以应用"（走 gpui 退出，让 `on_app_quit` 的落盘仍然执行）共用；会话态存在
@@ -396,8 +403,14 @@ fn atlas_probe_snapshot() -> [u64; 15] {
 /// 而不是触发 dead_code。
 #[cfg(any(feature = "online", not(test)))]
 pub(crate) fn spawn_replacement() -> bool {
-    std::env::current_exe()
-        .ok()
+    // 用启动期快照而非现取 current_exe：更新交换把运行中镜像改名 `.old` 后，
+    // Linux 的 /proc/self/exe 解析的是运行中 inode 的**当前** dentry 路径——
+    // 会返回 .old，"重启以应用"拉起旧版本（第四轮 B4-1；Windows 的
+    // GetModuleFileNameW / macOS 的 _NSGetExecutablePath 返回启动时路径字符串，
+    // 不受影响）。快照在 main() 顶部完成，必先于任何 swap_install。
+    SPAWN_EXE_SNAPSHOT
+        .get()
+        .filter(|exe| !exe.as_os_str().is_empty())
         .and_then(|exe| {
             std::process::Command::new(exe)
                 .args(std::env::args_os().skip(1))
@@ -1214,6 +1227,10 @@ fn enforce_single_instance() -> anyhow::Result<Option<std::time::Duration>> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // 启动期快照可执行文件路径（spawn_replacement 用）：必须在任何
+    // swap_install 之前完成，见 spawn_replacement 的文档注释（第四轮 B4-1）。
+    #[cfg(any(feature = "online", not(test)))]
+    let _ = SPAWN_EXE_SNAPSHOT.set(std::env::current_exe().unwrap_or_default());
     let result = main_inner();
     if let Err(error) = &result {
         // 日志可能尚未初始化（例如数据目录不可写）；error! 可能只是空转，

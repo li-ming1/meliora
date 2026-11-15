@@ -13,12 +13,8 @@ use crate::sync::RecoveredMutex;
 use crate::{
     playback::{events::PlaybackEvent, interface::PlaybackInterface, thread::PlaybackState},
     power::PowerManager,
-    ui::models::{CurrentTrack, ImageEvent, Models, PlaybackInfo},
+    ui::models::{CurrentTrack, ImageEvent, MIN_REMEMBERED_VOLUME, Models, PlaybackInfo},
 };
-
-/// 音量回声只有高于这条下限才更新 `prev_volume`：被记住的值必须在开关音量时
-/// 仍然可见于 UI，即便用户把它一路拖到 `0`。
-const MIN_REMEMBERED_VOLUME: f64 = 0.05;
 
 /// [`start_broadcast`] 派生的空闲图集瓦片排空的节奏：让已逐出的瓦片在暂停期间
 /// 也被回收（事件循环只在有事件到达时才排空）。

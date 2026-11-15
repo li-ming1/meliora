@@ -17,7 +17,7 @@ use cntp_i18n::tr;
 use gpui::{App, AppContext, Entity, Global};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     settings::SettingsGlobal,
@@ -642,8 +642,25 @@ fn swap_install(exe_path: &Path, staged_path: &Path) -> Result<(), String> {
     std::fs::rename(exe_path, &old_path)
         .map_err(|error| format!("cannot back up the current executable: {error}"))?;
     if let Err(error) = std::fs::rename(staged_path, exe_path) {
-        // 把备份滚回去，让安装保持可运行。
-        let _ = std::fs::rename(&old_path, exe_path);
+        // 把备份滚回去，让安装保持可运行。回滚失败时降级为逐字节拷贝——
+        // rename 被 AV 锁住 freshly-written 文件而失败的场景，copy 走不同的
+        // 内核路径通常仍可成功。两次都失败时 exe 路径悬空（下次启动需手动
+        // 把 .old 改回），概率极低但必须留 error 诊断（模块文档承诺降级路径
+        // 绝不把用户困住）。
+        let rollback = std::fs::rename(&old_path, exe_path).or_else(|rollback_error| {
+            warn!(
+                %rollback_error,
+                "swap_install: rename rollback failed; trying copy fallback"
+            );
+            std::fs::copy(&old_path, exe_path).map(|_| ())
+        });
+        if let Err(reset_error) = rollback {
+            error!(
+                %reset_error,
+                %error,
+                "swap_install: rollback failed; the install path is left dangling"
+            );
+        }
         return Err(format!("cannot move the staged update into place: {error}"));
     }
     Ok(())

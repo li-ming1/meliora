@@ -166,6 +166,12 @@ impl Global for PlaybackInfo {}
 /// 30fps 持续重绘"压到 4Hz，视觉无差（2026-10-07 桌面歌词专项实测项）。
 pub const POSITION_DISPLAY_QUANTUM_MS: u64 = 250;
 
+/// 音量回声只有高于这条下限才更新 `prev_volume`：被记住的值必须在开关音量
+/// 时仍然可见于 UI，即便用户把它一路拖到 `0`。playback_bridge 的运行时守卫
+/// 与 build_models 的启动种子共用（第四轮 B4-2：静音状态退出后裸种 0.0 会让
+/// 重启后的静音开关失灵）。
+pub(crate) const MIN_REMEMBERED_VOLUME: f64 = 0.05;
+
 #[derive(Debug, Clone)]
 pub struct Queue {
     pub data: Arc<RwLock<Arc<Vec<QueueItemData>>>>,
@@ -367,7 +373,10 @@ pub fn build_models(
     let repeating: Entity<RepeatState> = cx.new(|_| initial_repeat);
     let stop_after_current: Entity<bool> = cx.new(|_| false);
     let volume: Entity<f64> = cx.new(|_| storage_data.volume);
-    let prev_volume: Entity<f64> = cx.new(|_| storage_data.volume);
+    // 回归（第四轮 B4-2）：静音状态退出时 storage 里 volume=0.0，裸种会让重
+    // 启后的 prev_volume 也是 0.0——静音开关 toggle 拿不到可见旧值，点击无
+    // 效。套用与运行时（playback_bridge）相同的可见性下限。
+    let prev_volume: Entity<f64> = cx.new(|_| storage_data.volume.max(MIN_REMEMBERED_VOLUME));
     let sample_rate: Entity<u32> = cx.new(|_| 0);
 
     cx.set_global(PlaybackInfo {

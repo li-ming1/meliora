@@ -362,6 +362,9 @@ impl AddToPlaylist {
                         // 接受时再取选中曲目（对齐主 accept）：对话框打开后
                         // 选集仍可能被专辑流程后台补齐
                         let create_track_ids = track_list_for_accept.borrow().ids().to_vec();
+                        // 对话框关闭句柄给成功分支（provider 闭包是 Fn，show_clone2
+                        // 本体不能被 async 块 move 走）
+                        let show_for_close = show_clone2.clone();
 
                         cx.spawn(async move |cx| {
                             let task = crate::RUNTIME.spawn(async move {
@@ -380,9 +383,19 @@ impl AddToPlaylist {
                             {
                                 Ok(playlist_id) => {
                                     announce_playlist_update(&playlist_tracker, cx, playlist_id);
+                                    // 成功才关对话框：撞名/失败分支保持打开让用户
+                                    // 改名重试——下方的 write(false) 此前在 detach
+                                    // 之后无条件执行，:385 注释声称的"撞名时留着"
+                                    // 意图从未落地。（本 fork 的 AsyncApp::update
+                                    // 直接返回 R、应用消失时内部 panic——此处更新
+                                    // 失败即窗口已死，无需兜底。）
+                                    cx.update(|app| {
+                                        show_for_close.write(app, false);
+                                    });
                                 }
-                                // 撞名时对话框会留着（on_accept 不写 show=false），
-                                // 但此前连解释都没有；其它失败沿用既有的只记日志。
+                                // 撞名时对话框保持打开（成功分支才关闭），弹
+                                // toast 让用户改名重试；其它失败同样保持打开、
+                                // 沿用既有的只记日志。
                                 Err(PlaylistTaskFailure::Db(err))
                                     if is_duplicate_playlist_name(&err) =>
                                 {
@@ -392,8 +405,6 @@ impl AddToPlaylist {
                             }
                         })
                         .detach();
-
-                        show_clone2.write(cx, false);
                     }),
                 }]
             });
@@ -418,24 +429,19 @@ impl AddToPlaylist {
     fn open_tracks(&mut self, track_ids: Vec<i64>, cx: &mut Context<Self>) {
         self.album_load_generation = self.album_load_generation.wrapping_add(1);
         self.set_track_ids(track_ids);
-        let was_open = *self.show.read(cx);
+        // write(true) 无条件 notify，show 观察者在同一次 effect 冲刷里重建列表
+        // （构造处注释声明的机制）——此前 was_open 手动分支是冗余的第二次
+        // rebuild，且各含一次 UI 线程阻塞查询（重开场景观察者已覆盖）。
         self.show.write(cx, true);
-        if was_open {
-            let track_list = self.track_list.clone();
-            self.rebuild_playlist_list(&track_list, cx);
-        }
     }
 
     fn open_album(&mut self, album_id: i64, cx: &mut Context<Self>) {
         self.album_load_generation = self.album_load_generation.wrapping_add(1);
         let generation = self.album_load_generation;
         self.set_track_ids(Vec::new());
-        let was_open = *self.show.read(cx);
+        // 同 open_tracks：重开场景的列表重建由 show 观察者覆盖；后台补齐落地
+        // 后的重建见下方 spawn 回调（round 19 REG-2 / 第四轮 C4-1）。
         self.show.write(cx, true);
-        if was_open {
-            let track_list = self.track_list.clone();
-            self.rebuild_playlist_list(&track_list, cx);
-        }
 
         let pool = cx.global::<Pool>().0.clone();
         cx.spawn(async move |this, cx| {
@@ -446,9 +452,18 @@ impl AddToPlaylist {
                 .and_then(|result| result.ok())
                 .map(|tracks| tracks.iter().map(|track| track.id).collect::<Vec<i64>>())
                 .unwrap_or_default();
-            let _ = this.update(cx, |this, _| {
+            let _ = this.update(cx, |this, cx| {
                 if this.album_load_generation == generation {
                     this.set_track_ids(tracks);
+                    // 回归（round 19 REG-2 确认项，第四轮 C4-1 补修——round 19
+                    // 裁决漏列）：补齐只写共享列表、行不重建，行内 has_track
+                    // 恒为空列表快照——单曲专辑已在歌单时行文案恒「加入」而
+                    // accept 实查活列表执行「移出」，用户意图反转。对话框仍
+                    // 开才重建；代纪守卫已覆盖补齐与再次打开的竞态。
+                    if *this.show.read(cx) {
+                        let track_list = this.track_list.clone();
+                        this.rebuild_playlist_list(&track_list, cx);
+                    }
                 }
             });
         })
