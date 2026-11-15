@@ -1529,8 +1529,11 @@ impl Render for ImmersiveView {
             // 电影级多重空间几何罗盘、悬浮微粒与星轨极光装饰层
             // 7f112a33b5 的收敛是采样步数下调（极光弧 40→24、星轨圆 48→32）与折点
             // 循环合并；静态 8 个 path（星轨圆×3/极轴十字/象限星芒×4）仍每帧逐点
-            // 构建，静态缓存需 [frame] immersive 窗口 A/B 出数后再议——勿据本段
-            // 推断已有预构建几何。
+            // 构建。静态缓存已终审不立项（2026-11-15 FR 镜头：immersive 活跃窗
+            // draw_p50 1772µs 反低于非沉浸 2478µs，收益上界 ~30µs/帧低于探针
+            // 噪声 ±300µs）；若仍要 A/B：MELIORA_FRAME_TRACE=1 双版 exe 各
+            // ≥30min 沉浸页比对 win=main draw_p50 与 tally immersive 行，差值
+            // 落在 ±300µs 噪声带内即按性能准则回滚。勿据本段推断已有预构建几何。
             let compass_canvas = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, _cx| {
