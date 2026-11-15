@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_BACK_TO_POSTER_WALL": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:2008",
+    "definedIn": "src/ui/immersive.rs:2011",
     "plural": false,
     "description": null
   },
@@ -679,7 +679,7 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1340",
+    "definedIn": "src/ui/immersive.rs:1343",
     "plural": false,
     "description": null
   },
@@ -1647,6 +1647,12 @@
     "context": "file_row.rs",
     "definedIn": "src/ui/library/files_view/file_row.rs:146",
     "plural": true,
+    "description": null
+  },
+  "POSTER_NOW_PLAYING": {
+    "context": "immersive.rs",
+    "definedIn": "src/ui/immersive.rs:1156",
+    "plural": false,
     "description": null
   },
   "PREVIOUS_TRACK": {

@@ -1152,7 +1152,10 @@ impl ImmersiveView {
                                                     .text_size(px(10.0))
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(theme.button_primary)
-                                                    .child("NOW PLAYING"),
+                                                    .child(tr!(
+                                                        "POSTER_NOW_PLAYING",
+                                                        "NOW PLAYING"
+                                                    )),
                                             ),
                                     )
                                 })

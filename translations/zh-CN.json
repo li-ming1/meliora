@@ -188,6 +188,7 @@
   "PLAY_N_NOW": {
     "other": "立即播放 {{count}} 首曲目"
   },
+  "POSTER_NOW_PLAYING": "正在播放",
   "PREVIOUS_TRACK": "上一首",
   "QUEUE_SUMMARY_TRACKS": {
     "other": "{{count}} 首歌曲"

@@ -21,6 +21,7 @@
 //! `word_progress`/`lerp_color` 管线）；无词行整行主题色；无歌词时显示
 //! 占位。
 
+use cntp_i18n::tr;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -541,7 +542,8 @@ impl Render for DesktopLyricsView {
             None => div()
                 .text_size(px(24.0))
                 .text_color(unsung)
-                .child("♪ 暂无歌词")
+                // ♪ 装饰前缀留在代码侧，词条只管文案本体。
+                .child(format!("♪ {}", tr!("NO_LYRICS", "No lyrics")))
                 .into_any_element(),
         };
 
