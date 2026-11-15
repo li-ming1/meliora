@@ -78,8 +78,8 @@ pub type MediaUrlRefresh = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 /// 单次封面下载（`http_cover_bytes`）的请求级上限。
 const COVER_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// `http_cover_bytes` 收集响应体的硬上限。正常封面（4096px 档）只有几
-/// MB，超限只可能是异常/重定向 CDN 响应；Content-Length 超限在收集开始
+/// `http_cover_bytes` 收集响应体的硬上限。正常封面（2048px 档，现行阶梯
+/// 最大档）只有几 MB，超限只可能是异常/重定向 CDN 响应；Content-Length 超限在收集开始
 /// 前拒绝，头缺失（chunked）时在收集途中截断，而不是收集完再丢弃——写
 /// 盘路径的容量检查发生在收集之后，拦不住内存峰值。
 const COVER_MAX_BYTES: u64 = 64 * 1024 * 1024;

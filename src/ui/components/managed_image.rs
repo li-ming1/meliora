@@ -895,8 +895,8 @@ impl ManagedImageKey {
             ManagedImageKey::HttpCoverLarge(url) => {
                 // 缩略图类消费（圆盘标签 512 等）阶梯封顶显示×4：512 显示
                 // 用 2048 源已是 4× 过采样，观感与 4096 无差、解码成本
-                // 1/4；thumb 0（背景全尺寸路径）cap=0 即不封顶，保持
-                // 4096 阶梯。
+                // 1/4；thumb 0（背景全尺寸路径）cap=0 即不封顶，取阶梯
+                // 最大档（现值 2048）。
                 let cap = thumb_size.saturating_mul(4);
                 let bytes =
                     crate::online_sources::cover_art::fetch_display_cover_bytes_capped(url, cap)
@@ -2124,7 +2124,8 @@ mod bench {
         // **全部**命中 4096 档（压缩字节 p50 1.36MB / max 3.04MB），AGENTS.md
         // 记的"4096 级仅 ~2%"是 2026-10-06 的 98 样本读数，与本机 29h 语料不符。
         // 4096 既是解码缓冲的最大项（67MB），也是管线瞬态的上界，不测它等于
-        // 用偏样本给回归基线定尺。
+        // 用偏样本给回归基线定尺。4096 档已于 2026-11-14 从在线阶梯移除，
+        // 此处 4096 源仅作压力上界，测试循环本身合法保留。
         for source_px in [4096u32, 2048, 1280] {
             let jpeg = synthetic_jpeg(source_px);
             println!(
@@ -2144,7 +2145,8 @@ mod bench {
 
         // 沉浸页背景管线：全尺寸源 → cover 裁剪 → 去噪 → 重采样 → unsharp，
         // 目标是 1920x1080 设备像素。
-        // 4096 与上面同一理由：在线封面的背景档实测全部解析到 4096。
+        // 4096 与上面同一理由：在线封面的背景档实测全部解析到 4096
+        // （该档已删，此处 4096 源仅作压力上界）。
         for source_px in [4096u32, 2048, 1280] {
             let source = synthetic_source(source_px);
             bench_summarize_n(

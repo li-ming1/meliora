@@ -80,8 +80,9 @@ pub fn is_http_path(path: &Path) -> bool {
 /// 需要全貌。与 reqwest 错误的 `without_url()`（token 在 query 里）同一卫生
 /// 口径。
 ///
-/// 不用于封面 URL：封面路径的尺寸档位（`/stdmusic/4096/`）是"背景还是糊"类
-/// 投诉的判读依据（AGENTS.md 沉浸页背景图内存契约），且不构成取流能力。
+/// 不用于封面 URL：封面路径的尺寸档位（`/stdmusic/2048/`，4096 档已于
+/// 2026-11-14 移除）是"背景还是糊"类投诉的判读依据（AGENTS.md 沉浸页背景图
+/// 内存契约），且不构成取流能力。
 pub fn redact_media_path(path: &str) -> Cow<'_, str> {
     // 前缀判定必须按字节比较：str 数字切片（path[..7]）在非 char boundary
     // 处 panic——本地路径如 D:\音乐\x.mp3 的字节 7 落在多字节字符中间，而
