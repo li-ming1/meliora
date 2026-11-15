@@ -94,7 +94,9 @@ pub struct Album {
     pub vinyl_numbering: bool,
 }
 
-#[derive(sqlx::FromRow, Clone, Debug)]
+// PartialEq 供 release_view 的行装配守卫深比较整份曲目列表（retag 同 id 不同
+// 内容时不误判「未变化」；字段全为可比较类型，DBString 按内容比较）。
+#[derive(sqlx::FromRow, Clone, Debug, PartialEq)]
 pub struct Track {
     pub id: i64,
     pub title: DBString,

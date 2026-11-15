@@ -1,9 +1,10 @@
-use std::{rc::Rc, sync::Arc, time::Duration};
+use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
 
 use crate::ui::design::ICON_MD;
 use cntp_i18n::tr;
 use gpui::*;
 use prelude::FluentBuilder;
+use rustc_hash::FxHashMap;
 
 use crate::{
     library::{
@@ -41,7 +42,7 @@ use crate::{
         },
         scroll_follow::SmoothScrollFollow,
         theme::Theme,
-        util::reduced_motion_enabled,
+        util::{create_or_retrieve_view, prune_views, reduced_motion_enabled},
     },
 };
 
@@ -49,6 +50,36 @@ const RELEASE_SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(250);
 
 /// 发行页头部里专辑封面盒子及其图像的固定尺寸。
 const COVER_SIZE_PX: f32 = 160.0;
+
+/// 变高虚拟化列表的过绘带（视口上下额外渲染的像素）：约一行主行高
+/// （主行 39px + 边界取整；先例 lyrics.rs 用 60px 行高/400px 过绘，本页行矮）。
+const LIST_OVERDRAW_PX: f32 = 40.0;
+
+/// 未测量条目的统一高度提示：滚动条在首次绘制收敛真实高度之前按它近似
+/// （先例 lyrics.rs 的 `reset_with_uniform_height` 60px）。
+const ROW_HEIGHT_HINT_PX: f32 = 40.0;
+
+/// 列表条目总数：头部占 0、曲目 i 在条目 i+1、页脚在条目 n+1（空专辑即
+/// 头部 + 页脚两条，与占位头部始终可见的既有行为一致）。
+fn release_list_item_count(track_count: usize) -> usize {
+    track_count + 2
+}
+
+/// 曲目索引 → 列表条目：头部占条目 0，所以曲目 i 在条目 i+1。
+fn track_list_index(track_index: usize) -> usize {
+    track_index + 1
+}
+
+/// 判定第 `index` 首曲目是否渲染组头：专辑首曲 / 每张碟的 1 号轨 / 碟号变化处。
+/// 纯函数（原判定内联在行实体构造闭包里，提出来供测试与按需装配共用）。
+fn track_is_group_start(tracks: &[Track], index: usize) -> bool {
+    let track = &tracks[index];
+    index == 0
+        || track.track_number == Some(1)
+        || tracks
+            .get(index - 1)
+            .is_some_and(|t| t.disc_number != track.disc_number)
+}
 
 /// 后台加载落地前显示的占位：此刻只知道 id，所以头部渲染为空、曲目列表保持空白，
 /// 其余字段等 `reload` 完成时填入。在我们脚下被删除的专辑（例如清理扫描）同样永远
@@ -79,27 +110,31 @@ fn compute_all_liked(cx: &App, tracks: &[Track]) -> bool {
     tracks.iter().all(|track| liked.contains(&track.id))
 }
 
-/// 发行视图预先构造好的曲目行：行实体在加载完成时（`apply_loaded` → `TrackListing::new`）
-/// 一次性创建，render 每帧只是复用已有实体转成元素。不要在这里做"迭代或滚动到才装配"
-/// 的惰性化——gpui 的 `ParentElement::children` 会立即 extend 消费整个迭代器（gpui
-/// checkout element.rs:202-208），唯一调用点又不是虚拟列表，首帧即装配全部槽位，惰性
-/// 只多付一个 RefCell 重入 panic 面而没有收益（2026-11-14 回退 c69dcd56f9，审计 REG-6）；
-/// 真正的按需装配要走 uniform_list 虚拟化，单独立项评估。
+/// 曲目行的按需装配参数：行实体不再在加载完成时全量预建——render 的
+/// `gpui::list()` 变高虚拟化（先例 lyrics.rs / finder.rs）只对「可见 + 过绘」
+/// 条目运行 `render_item`，行实体按需建进 `ReleaseView::row_views`，滚出
+/// VIEW_KEEP_AROUND 带之外由 `prune_views` 修剪。本结构只存构建行所需的定型
+/// 参数，render 每帧克隆进条目闭包的只是 Arc 引用计数。不用 `uniform_list`：
+/// 行高不恒定（组头行在 39px 主行上方追加 ~45px 组头 div），而本仓 gpui
+/// checkout 无 ItemHeight 枚举，uniform_list 会把单个条目的测量高度强钳到全
+/// 列表（条目 0 恒为 ~84px 组头行 → 全列表按 84px 计，行间出空洞）——
+/// GPUI_HARDCORE_PERFORMANCE.md §38「未虚拟化」的旧口径随本次迁移作废。
+/// `show_go_to_album`/`show_go_to_artist` 原是构造参数，但两个调用点的实值
+/// 恒为 false/true，直接定死，免得行装配守卫还得比对它们。
 struct TrackListing {
-    tracks: Arc<Vec<Entity<TrackItem>>>,
-    original_tracks: Arc<Vec<Track>>,
+    tracks: Arc<Vec<Track>>,
+    artist_name_visibility: ArtistNameVisibility,
+    vinyl_numbering: bool,
+    /// 找出最大的曲目号并交给 track item 用于测量宽度。
+    max_track_num_str: Option<SharedString>,
 }
 
 impl TrackListing {
     fn new(
-        cx: &mut App,
         tracks: Arc<Vec<Track>>,
         artist_name_visibility: ArtistNameVisibility,
         vinyl_numbering: bool,
-        show_go_to_album: bool,
-        show_go_to_artist: bool,
     ) -> Self {
-        // 找出最大的曲目号并交给 track item 用于测量宽度
         let max_track_num_str = tracks
             .iter()
             .filter_map(|t| t.track_number)
@@ -107,50 +142,31 @@ impl TrackListing {
             .map(|n| format!("{}", n).into());
 
         Self {
-            tracks: Arc::new({
-                let tracks_for_closure = tracks.clone();
-                tracks
-                    .iter()
-                    .enumerate()
-                    .map(move |(index, track)| {
-                        TrackItem::new(
-                            cx,
-                            track.clone(),
-                            artist_name_visibility.clone(),
-                            TrackItemLeftField::TrackNum,
-                            None,
-                            max_track_num_str.clone(),
-                            None,
-                            TrackItemOptions {
-                                is_start: index == 0
-                                    || track.track_number == Some(1)
-                                    || tracks_for_closure
-                                        .get(index - 1)
-                                        .is_some_and(|t| t.disc_number != track.disc_number),
-                                vinyl_numbering,
-                                show_go_to_album,
-                                show_go_to_artist,
-                            },
-                        )
-                    })
-                    .collect()
-            }),
-            original_tracks: tracks,
+            tracks,
+            artist_name_visibility,
+            vinyl_numbering,
+            max_track_num_str,
         }
     }
 
-    fn tracks(&self) -> &Arc<Vec<Track>> {
-        &self.original_tracks
-    }
-
-    /// 把曲目行转成元素返回：调用方的 `.children(...)` 立即消费这个迭代器（契约见
-    /// [`TrackListing`] 文档），每帧仍然物化全部行——直传迭代器省掉的只是调用侧
-    /// 一次中间 `Vec<AnyElement>` 分配，不是按需装配。
-    fn track_elements(&self) -> impl Iterator<Item = AnyElement> + '_ {
-        self.tracks
-            .iter()
-            .cloned()
-            .map(|track| track.into_any_element())
+    /// 按需构建第 `index` 首曲目的行实体（只在 `render_item` 为可见/过绘条目
+    /// 装配时调用；行实体的建造成本是一次快照集合查找 + 元素树，无 DB/stat）。
+    fn build_row(&self, index: usize, cx: &mut App) -> Entity<TrackItem> {
+        TrackItem::new(
+            cx,
+            self.tracks[index].clone(),
+            self.artist_name_visibility.clone(),
+            TrackItemLeftField::TrackNum,
+            None,
+            self.max_track_num_str.clone(),
+            None,
+            TrackItemOptions {
+                is_start: track_is_group_start(&self.tracks, index),
+                vinyl_numbering: self.vinyl_numbering,
+                show_go_to_album: false,
+                show_go_to_artist: true,
+            },
+        )
     }
 }
 
@@ -160,23 +176,43 @@ pub struct ReleaseView {
     tracks: Arc<Vec<Track>>,
     /// 逐曲目的可用性，加载时算一次，而不是每帧 N 次 stat。
     tracks_available: Arc<Vec<bool>>,
-    track_listing: TrackListing,
+    track_listing: Arc<TrackListing>,
+    /// 按列表条目缓存（键 = 条目 idx，曲目 i 在条目 i+1）的行实体：虚拟化后只在
+    /// `render_item` 装配可见/过绘条目时创建，滚出 VIEW_KEEP_AROUND 带即被
+    /// `prune_views` 修剪（先例 finder.rs 的 views_model / artist_detail_view 的
+    /// grid_views）。
+    row_views: Entity<FxHashMap<usize, Entity<TrackItem>>>,
+    /// 上一次装配到达的条目，供 `prune_views` 计算修剪带（先例 finder.rs）。
+    render_counter: Entity<usize>,
+    /// 变高虚拟化列表状态（`gpui::list`；先例 lyrics.rs）。条目映射见
+    /// [`release_list_item_count`]；条目内容变化时在 `apply_loaded` 里
+    /// `reset_with_uniform_height`，行装配守卫判定未变时保留滚动位置与已测行高。
+    list_state: ListState,
     /// 每次加载都自增，使晚于新一轮完成的慢加载不能覆盖它（与 `Table::reload_rows`
     /// 同一个守卫）。
     load_generation: u64,
     collection_summary: SharedString,
     release_info: Option<SharedString>,
     img_path: SharedString,
-    scroll_handle: ScrollHandle,
+    /// 抽象滚动句柄（List 变体）：offset 语义与 `Regular` 相同（负 y，0 = 顶部），
+    /// 导航历史的原始 offset 原样往返。
+    scroll_handle: ScrollableHandle,
     pending_scroll: Option<usize>,
+    /// 导航历史要恢复的原始 offset y：列表首次布局前 `set_offset_from_scrollbar`
+    /// 会因 `last_layout_bounds` 为 None 静默早退（list.rs 的实现），故存到这里，
+    /// 借 PendingLayout 重试环等 viewport 就绪的帧再写入。
+    pending_restore: Option<f32>,
     scroll_follow: SmoothScrollFollow,
     scroll_frame_scheduled: bool,
     all_liked: bool,
     /// 加载时算好并缓存：`tracks_available` 一旦建就不可变，于是头部不再每次渲染
     /// 都重扫一遍。
     has_available_tracks: bool,
-    /// 当前播放的曲目是否属于本专辑。由 `PlaybackInfo::current_track` 推导；
-    /// 在曲目变更时（下面的观察者）与加载时重算——绝不每帧重算。
+    /// 当前播放的曲目是否属于本专辑。由 `PlaybackInfo::current_track` 推导，在
+    /// 曲目变更时（下面的观察者）与加载时重算——字段本身非每帧重算。它只驱动
+    /// 头部播放控件的高亮；行内高亮的承重墙是 track_item.rs 里每行每帧对
+    /// current_track 的读取（唤醒窗口并随整帧重渲生效），观察者的 `!=` 守卫
+    /// 拦不住、也不需要拦换曲重渲帧。
     current_track_in_album: bool,
     menu_open: bool,
     track_ids: std::rc::Rc<[i64]>,
@@ -213,9 +249,12 @@ impl ReleaseView {
             })
             .detach();
 
-            // 头部在当前曲目属于本专辑时高亮它。就在这里于曲目变更时重算（带 `!=` 守卫），
-            // 于是 render 从不扫描曲目列表——也让高亮不再因曲目变更而失真，
-            // 而这一件事本视图其他任何地方都没观察过。
+            // 头部播放控件在当前曲目属于本专辑时高亮。就在这里于曲目变更时重算
+            // （带 `!=` 守卫），字段本身不必每帧重算。行内高亮不依赖这个守卫——
+            // 它由 TrackItem::render 每帧读 current_track 唤醒窗口并随整帧重渲
+            // 生效（track_item.rs 的 is_current 读取），行实体虚拟化后该机制在活
+            // 行上自动收敛；删除那个每帧读取就必须同时为行引入 current_track 观察，
+            // 否则同专辑切歌时行内高亮停更。
             let current_track = cx.global::<PlaybackInfo>().current_track.clone();
             cx.observe(&current_track, |this: &mut Self, _, cx| {
                 let in_album = this.compute_current_track_in_album(cx);
@@ -234,24 +273,29 @@ impl ReleaseView {
             let placeholder = Arc::new(placeholder_album(album_id));
             let collection_summary = format_collection_summary(0, 0);
 
+            // 占位期条目数就是 2（头部 + 页脚）：头部（空盒封面 + 空标题）必须
+            // 在后台加载落地前可见，与既有占位行为一致。
+            let list_state = ListState::new(2, ListAlignment::Top, px(LIST_OVERDRAW_PX));
+
             let mut this = Self {
                 album: placeholder,
                 artist_name: None,
                 tracks: Arc::new(Vec::new()),
                 tracks_available: Arc::new(Vec::new()),
-                track_listing: TrackListing::new(
-                    cx,
+                track_listing: Arc::new(TrackListing::new(
                     Arc::new(Vec::new()),
                     ArtistNameVisibility::OnlyIfDifferent(None),
                     false,
-                    false,
-                    true,
-                ),
+                )),
+                row_views: cx.new(|_| FxHashMap::default()),
+                render_counter: cx.new(|_| 0),
+                list_state: list_state.clone(),
                 collection_summary,
                 release_info: None,
                 img_path: SharedString::from(format!("!db://album/{album_id}/full")),
-                scroll_handle: ScrollHandle::new(),
+                scroll_handle: ScrollableHandle::List { state: list_state },
                 pending_scroll: None,
+                pending_restore: None,
                 scroll_follow: SmoothScrollFollow::new(RELEASE_SCROLL_ANIMATION_DURATION),
                 scroll_frame_scheduled: false,
                 all_liked: false,
@@ -278,12 +322,11 @@ impl ReleaseView {
 
             // 恢复导航历史记忆的滚动位置（上游 e15e8ba）；「跳转到曲目」的
             // 目标滚动优先，带 target 的入口不恢复。存取两侧都是原始 offset
-            // 原样往返，不做符号归一。
-            if target_track_id.is_none()
-                && let Some(y) = initial_scroll_offset
-            {
-                this.scroll_handle
-                    .set_offset(gpui::point(gpui::px(0.), gpui::px(y)));
+            // 原样往返，不做符号归一。虚拟化列表在首次布局前 set_offset 会静默
+            // 早退（last_layout_bounds 为 None），故存进 pending_restore，借
+            // PendingLayout 重试环等 viewport 就绪后再写入。
+            if target_track_id.is_none() {
+                this.pending_restore = initial_scroll_offset;
             }
 
             this
@@ -370,6 +413,8 @@ impl ReleaseView {
     ) {
         // 专辑取回失败时保留占位：在我们脚下被删除的专辑（例如清理扫描）会渲染一张
         // 空发行页，而不是把 UI 线程 panic 掉。
+        let prev_artist_name = self.artist_name.clone();
+        let prev_vinyl_numbering = self.album.vinyl_numbering;
         if let Some(album) = album {
             self.artist_name = album.artist_display_override.clone();
             self.release_info = match (&album.label, &album.catalog_number) {
@@ -397,22 +442,40 @@ impl ReleaseView {
             });
             self.album = album;
         }
-        self.tracks = tracks.clone();
         self.track_ids = tracks.iter().map(|track| track.id).collect();
-        self.tracks_available = Arc::new(
+        let new_available = Arc::new(
             tracks
                 .iter()
                 .map(|track| is_track_available_snapshot(cx, track))
                 .collect(),
         );
-        self.track_listing = TrackListing::new(
-            cx,
-            tracks.clone(),
-            ArtistNameVisibility::OnlyIfDifferent(self.artist_name.clone()),
-            self.album.vinyl_numbering,
-            false,
-            true,
-        );
+        // 行装配守卫（album_ids 式，先例 artist_detail_view.rs / Table 的
+        // clear_row_views）：曲目内容、可用性、艺人名可见性与 vinyl 模式全部未变
+        // 时保留行实体缓存与列表状态——`reset_with_uniform_height` 会丢掉滚动
+        // 位置与已测行高，重扫无变更触发的 reload 不得把读者弹回顶部。头部/页脚
+        // 不在守卫范围内：它们每次渲染都从 self 现场构建，没有缓存可陈旧。
+        let listing_changed = self.tracks != tracks
+            || self.tracks_available != new_available
+            || prev_artist_name != self.artist_name
+            || prev_vinyl_numbering != self.album.vinyl_numbering;
+        self.tracks = tracks.clone();
+        self.tracks_available = new_available;
+        if listing_changed {
+            self.track_listing = Arc::new(TrackListing::new(
+                tracks.clone(),
+                ArtistNameVisibility::OnlyIfDifferent(self.artist_name.clone()),
+                self.album.vinyl_numbering,
+            ));
+            self.row_views.update(cx, |views, _| views.clear());
+            self.render_counter.update(cx, |counter, _| *counter = 0);
+            // 曲目集合变化等于一张新列表：用统一行高提示重建，滚动条在首次绘制
+            // 收敛真实高度之前大致正确（先例 lyrics.rs 的 reset_with_uniform_height）。
+            // reset 同时把视图送回顶部——「跳转到曲目」的 pending_scroll 随后接管。
+            self.list_state.reset_with_uniform_height(
+                release_list_item_count(tracks.len()),
+                px(ROW_HEIGHT_HINT_PX),
+            );
+        }
         self.collection_summary = format_collection_summary(
             tracks.len() as i64,
             tracks.iter().map(|track| track.duration).sum(),
@@ -550,7 +613,7 @@ impl ReleaseView {
                                     current_track_in_album,
                                     is_playing,
                                     {
-                                        let tracks = self.track_listing.tracks().clone();
+                                        let tracks = self.track_listing.tracks.clone();
                                         move |_cx| queue_items_from_tracks(&tracks)
                                     },
                                 )
@@ -730,6 +793,19 @@ impl ReleaseView {
         cx: &mut Context<Self>,
         reduced_motion: bool,
     ) {
+        // 导航历史的原始 offset 恢复：viewport 尚未布局时排下一帧再试——
+        // 恢复不能死等外部 notify（首帧布局后未必再有渲染帧）。
+        if let Some(y) = self.pending_restore {
+            let viewport = self.scroll_handle.bounds();
+            if viewport.size.height > px(0.0) {
+                self.scroll_handle
+                    .set_offset(gpui::point(gpui::px(0.0), gpui::px(y)));
+                self.pending_restore = None;
+            } else {
+                self.schedule_scroll_frame(window, cx);
+            }
+        }
+
         if let Some(pending_scroll) = self.pending_scroll {
             match self.compute_follow_target(pending_scroll) {
                 FollowTarget::PendingLayout => {
@@ -740,18 +816,19 @@ impl ReleaseView {
                     self.pending_scroll = None;
                 }
                 FollowTarget::Target(target_scroll_top) => {
-                    let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
-                    self.scroll_follow
-                        .follow_to(&scroll_handle, target_scroll_top, reduced_motion);
+                    self.scroll_follow.follow_to(
+                        &self.scroll_handle,
+                        target_scroll_top,
+                        reduced_motion,
+                    );
                     self.pending_scroll = None;
                 }
             }
         }
 
-        let scroll_handle: ScrollableHandle = self.scroll_handle.clone().into();
         let changed = self
             .scroll_follow
-            .advance_or_snap(&scroll_handle, reduced_motion);
+            .advance_or_snap(&self.scroll_handle, reduced_motion);
 
         if self.scroll_follow.is_active() {
             self.schedule_scroll_frame(window, cx);
@@ -768,7 +845,14 @@ impl ReleaseView {
             return FollowTarget::PendingLayout;
         }
 
-        let Some(item_bounds) = self.scroll_handle.bounds_for_item(track_index + 1) else {
+        // 列表条目映射：头部占 0，曲目 i 在条目 i+1。
+        let list_ix = track_list_index(track_index);
+        let Some(item_bounds) = self.list_state.bounds_for_item(list_ix) else {
+            // 虚拟化后目标行可能尚未测量（滚出可见带的 Unmeasured 条目，
+            // `bounds_for_item` 只对已测量条目有值）：先 reveal 粗定位把它拉进
+            // 渲染窗口（sum_tree 游标按行高提示可跨越未测量条目），下一帧行被
+            // 测量后再走下面的平滑路径精确落位（先例 lyrics.rs 的跟随路径）。
+            self.list_state.scroll_to_reveal_item(list_ix);
             return FollowTarget::PendingLayout;
         };
 
@@ -800,8 +884,10 @@ impl Render for ReleaseView {
             .read(cx);
         let reduced_motion = settings.interface.reduced_motion;
         let full_width = settings.interface.effective_full_width();
-        let two_column = settings.interface.two_column_library;
-        if self.pending_scroll.is_some() || self.scroll_follow.is_active() {
+        if self.pending_scroll.is_some()
+            || self.pending_restore.is_some()
+            || self.scroll_follow.is_active()
+        {
             if reduced_motion {
                 // 减弱动效下仍需一趟来敲定待定布局，并把在途的滚动动画吸附到终值；
                 // 只是之后不再安排新的动画帧。
@@ -811,48 +897,170 @@ impl Render for ReleaseView {
             }
         }
 
-        let theme = cx.global::<Theme>().clone();
-
-        let is_playing =
-            cx.global::<PlaybackInfo>().playback_state.read(cx) == &PlaybackState::Playing;
-
-        let scroll_handle = self.scroll_handle.clone();
+        let list_state = self.list_state.clone();
+        let this_entity = cx.entity();
+        let row_views = self.row_views.clone();
+        let render_counter = self.render_counter.clone();
+        let listing = self.track_listing.clone();
+        let footer_ix = release_list_item_count(self.track_listing.tracks.len()) - 1;
+        let show_footer = self.release_info.is_some()
+            || self.album.release_date.is_some()
+            || self.album.isrc.is_some();
+        // 每次渲染只 prune 一次（首条目触发；闭包随渲染每帧重建，Cell 天然
+        // 逐帧复位），render_counter 仍逐条目推进，band 演化与 finder.rs 一致。
+        let prune_gate = Cell::new(false);
 
         div()
             .image_cache(meliora_cache(("release", self.album.id as u64), 1))
             .flex()
             .flex_col()
             .w_full()
-            .max_h_full()
+            .h_full()
             .relative()
             .overflow_hidden()
             .when(!full_width, capped_table_width)
             .child(
                 div()
                     .id("release-view")
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll_handle)
                     .w_full()
+                    .flex_grow_1()
                     .flex_shrink(1.0)
                     .overflow_x_hidden()
-                    .child(self.render_header(
-                        &theme,
-                        HeaderState {
-                            has_available_tracks: self.has_available_tracks,
-                            current_track_in_album: self.current_track_in_album,
-                            is_playing,
-                            show_close_button: two_column,
-                        },
-                        cx,
-                    ))
-                    .children(self.track_listing.track_elements())
-                    .when(
-                        self.release_info.is_some()
-                            || self.album.release_date.is_some()
-                            || self.album.isrc.is_some(),
-                        |this| this.child(self.render_footer(&theme)),
+                    // 变高虚拟化：滚动由 List 自身处理（paint 阶段注册滚轮事件），
+                    // 外层不再 overflow_y_scroll / track_scroll；高度链必须
+                    // definite——外层 h_full（库容器本就 h_full），本层 flex_grow
+                    // 拿满剩余空间，列表 h_full 解析为本层高度。
+                    .child(
+                        list(list_state, move |idx, _, cx| {
+                            if prune_gate.replace(true) {
+                                render_counter.update(cx, |m, _| *m = idx);
+                            } else {
+                                prune_views(&row_views, &render_counter, idx, cx);
+                            }
+                            if idx == 0 {
+                                // 头部：render_menu_button 的 listener 需要
+                                // &mut Context，经实体 update 取——此时本视图的
+                                // render lease 早已释放（先例 lyrics.rs 条目闭包
+                                // 的 read/update 时序注释）。
+                                return this_entity.update(cx, |this, cx| {
+                                    let theme = cx.global::<Theme>().clone();
+                                    let is_playing =
+                                        cx.global::<PlaybackInfo>().playback_state.read(cx)
+                                            == &PlaybackState::Playing;
+                                    let two_column = cx
+                                        .global::<crate::settings::SettingsGlobal>()
+                                        .model
+                                        .read(cx)
+                                        .interface
+                                        .two_column_library;
+                                    this.render_header(
+                                        &theme,
+                                        HeaderState {
+                                            has_available_tracks: this.has_available_tracks,
+                                            current_track_in_album: this.current_track_in_album,
+                                            is_playing,
+                                            show_close_button: two_column,
+                                        },
+                                        cx,
+                                    )
+                                    .into_any_element()
+                                });
+                            }
+                            if idx == footer_ix {
+                                return if show_footer {
+                                    // 页脚是只读渲染，read 足够（与头部不同，
+                                    // 它不装 listener）。
+                                    let this = this_entity.read(cx);
+                                    let theme = cx.global::<Theme>().clone();
+                                    this.render_footer(&theme).into_any_element()
+                                } else {
+                                    // 页脚字段全空：零高度占位条目，保持条目映射
+                                    // 恒定（头部=0、页脚=n+1）不随内容漂移。
+                                    div().into_any_element()
+                                };
+                            }
+                            // 曲目行：条目 idx ↔ 曲目索引 idx-1；行实体按需建进
+                            // row_views（键 = 条目 idx），带外由 prune_views 修剪。
+                            let track_ix = idx - 1;
+                            create_or_retrieve_view(
+                                &row_views,
+                                idx,
+                                |cx| listing.build_row(track_ix, cx),
+                                cx,
+                            )
+                            .into_any_element()
+                        })
+                        .w_full()
+                        .h_full(),
                     ),
             )
-            .child(floating_scrollbar("release_scrollbar", scroll_handle).right(px(4.0)))
+            .child(
+                floating_scrollbar("release_scrollbar", self.scroll_handle.clone()).right(px(4.0)),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    // 不用 `use super::*`：顶层 `use gpui::*` 会把 gpui re-export 的 `test`
+    // 属性宏（gpui.rs 经 gpui_macros 无条件再导出）一起带进来，`#[test]` 就
+    // 解析成它而不是 builtin，同步测试函数展开即递归爆栈。
+    use super::{Track, release_list_item_count, track_is_group_start, track_list_index};
+    use crate::library::types::DBString;
+
+    fn track(id: i64, track_number: Option<i32>, disc_number: Option<i32>) -> Track {
+        Track {
+            id,
+            title: DBString::from(""),
+            album_id: None,
+            track_number,
+            disc_number,
+            duration: 0,
+            location: PathBuf::from(format!("/library/{id}.flac")),
+            artist_names: None,
+            disc_subtitle: None,
+        }
+    }
+
+    #[test]
+    fn group_start_invariants() {
+        // 专辑首曲恒为组头，即使曲号/碟号都缺；无碟号的后续曲目不触发
+        let tracks = vec![track(1, None, None), track(2, None, None)];
+        assert!(track_is_group_start(&tracks, 0));
+        assert!(!track_is_group_start(&tracks, 1));
+
+        // 每张碟的 1 号轨触发——同碟畸形重复的 1 号轨也触发（与旧内联判定一致）
+        let tracks = vec![
+            track(1, Some(1), Some(1)),
+            track(2, Some(2), Some(1)),
+            track(3, Some(1), Some(1)),
+        ];
+        assert!(track_is_group_start(&tracks, 2));
+
+        // 碟号变化处触发，碟内推进不触发
+        let tracks = vec![
+            track(1, Some(9), Some(1)),
+            track(2, Some(10), Some(1)),
+            track(3, Some(1), Some(2)),
+            track(4, Some(2), Some(2)),
+        ];
+        assert!(!track_is_group_start(&tracks, 1));
+        assert!(track_is_group_start(&tracks, 2));
+        assert!(!track_is_group_start(&tracks, 3));
+    }
+
+    #[test]
+    fn list_item_mapping_invariants() {
+        // 条目映射不变量：头部=0、曲目 i 在条目 i+1、页脚=n+1，总数 = n + 2。
+        // 空专辑（含占位期）恒为 2 条——头部在后台加载落地前必须可见。
+        assert_eq!(release_list_item_count(0), 2);
+        let n = 69;
+        assert_eq!(release_list_item_count(n), n + 2);
+        assert_eq!(track_list_index(0), 1);
+        assert_eq!(track_list_index(n - 1), n);
+        // 页脚紧跟最后一曲且是最后一个条目
+        assert_eq!(track_list_index(n - 1) + 1, release_list_item_count(n) - 1);
     }
 }
