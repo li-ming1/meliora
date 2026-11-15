@@ -164,7 +164,12 @@ fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashS
 
     let mut available: FxHashSet<i64> = FxHashSet::default();
     for (id, locations) in locations_by_id {
-        if locations.iter().any(|location| paths.exists(location)) {
+        // track.location 全库唯一、每条至多查询一次，`any` 命中即停——
+        // 与 compute_availability_from_tracks 同理，不向 `known` 拷贝路径字符串。
+        if locations
+            .iter()
+            .any(|location| paths.path_exists(Path::new(location)))
+        {
             available.insert(id);
         }
     }

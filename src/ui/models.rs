@@ -45,9 +45,6 @@ use crate::{
 // 这里再导出，供现有的 `ui::models::SettingsHealth` 使用者继续用。
 pub use crate::settings::SettingsHealth;
 
-// 是，这看着有点傻
-impl EventEmitter<Metadata> for Metadata {}
-
 #[derive(Debug, PartialEq, Clone)]
 pub struct ImageEvent(pub Arc<[u8]>);
 

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, Entity, Render, RenderImage, Rgba};
+use gpui::{App, Entity, Render, RenderImage, Rgba, SharedString};
 use rustc_hash::FxHashMap;
 use tracing::debug;
 
@@ -214,6 +214,20 @@ pub fn volume_toggle_target(volume: f64, prev_volume: f64) -> (f64, &'static str
     } else {
         (0.0, VOLUME)
     }
+}
+
+/// 采样率徽章文本的三分支构造（沉浸页与播放栏 InfoSection 两处共用）：
+/// ≥88.2k 追加 Hi-Res 标记、整千走整数 k、其余保留一位小数。纯函数；
+/// 热路径调用方（沉浸页）自持按采样率整值键的缓存，本函数只管格式。
+pub fn sample_rate_badge_text(sample_rate: u32) -> SharedString {
+    let rate_khz = sample_rate as f32 / 1000.0;
+    SharedString::from(if sample_rate >= 88_200 {
+        format!("{rate_khz:.1}k Hi-Res")
+    } else if sample_rate.is_multiple_of(1000) {
+        format!("{}k", sample_rate / 1000)
+    } else {
+        format!("{rate_khz:.1}k")
+    })
 }
 
 /// 已格式化时间标签的整秒缓存。这些标签每秒才变一次，而周围的视图在位置 tick 上

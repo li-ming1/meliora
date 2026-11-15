@@ -1,7 +1,8 @@
 //! 全屏沉浸聆听视图，版式仿高保真歌词演示：封面作为清晰裁剪带背景铺满整屏
 //! （见 `managed_image::backdrop_pipeline::backdrop_sharp_fill` — 按窗口纵横比
 //! 居中裁剪、中值去噪、Lanczos 重采样到精确设备像素尺寸并 unsharp 补锐；酷狗
-//! 阶梯现以 4096 打头，让缩采样像圆盘小封面那样平均掉噪声；一道竖向 + 一道
+//! 阶梯以 2048 打头（4096 档已于 2026-11-14 移除），缩采样像圆盘小封面那样
+//! 平均掉噪声；一道竖向 + 一道
 //! 横向渐变划出阅读区），左侧静止的圆盘尺寸圆形封面（「黑胶」已不再旋转——
 //! 见下面的动画纪律）压在曲名之上，配一张磨砂玻璃播放卡（可拖动进度、走带、
 //! 音量），右半是歌词栏，带逐字卡拉OK计时与点击定位。
@@ -29,8 +30,9 @@
 //!   的四轮比选中胜出：模糊填充（三档强度、带与不带亮度压暗）逐轮被否——
 //!   指令是背景清晰度须与圆盘小封面齐平，故管线为居中裁剪 → 中值去噪
 //!   （干掉 1:1 级重采样会直接上屏的 JPEG 块边）→ Lanczos → 阈值 unsharp，
-//!   酷狗阶梯以 4096 打头，有该档的封面缩采样约 0.47×（圆盘级平均）。
-//!   在线封面走阶梯（4096 → 2048 → 1280 → 480 → 原图），最大变体缺失时优雅
+//!   酷狗阶梯以 2048 打头（4096 档 2026-11-14 起移除，避免 67MB 级单图瞬态），
+//!   对常见屏幕仍属超采样平均（圆盘级观感）。
+//!   在线封面走阶梯（2048 → 1280 → 480 → 原图），最大变体缺失时优雅
 //!   降级，而不是静默把 256px 缩略图铺满整屏。
 
 use std::{
@@ -71,7 +73,7 @@ use crate::{
         queue_metadata,
         scroll_follow::ease_out_cubic,
         theme::Theme,
-        util::{CachedTimeText, reduced_motion_enabled, seek_to_fraction},
+        util::{CachedTimeText, reduced_motion_enabled, sample_rate_badge_text, seek_to_fraction},
     },
 };
 
@@ -520,8 +522,9 @@ impl ImmersiveView {
     }
 
     fn activate(&mut self, cx: &mut Context<Self>) {
-        // 进入重模式先让位：背景管线即将支付 ~105MB 瞬态（4096² 解码 +
-        // 裁剪带，2026-10-02 硬上限重启复盘），普通界面的封面瓦片收缩到
+        // 进入重模式先让位：背景管线即将支付重管线瞬态（2026-10-02 复盘按
+        // 当时的 4096² 解码口径记 ~105MB；2026-11-14 起阶梯以 2048 打头，
+        // 瞬态更小），普通界面的封面瓦片收缩到
         // 半个近期窗口，驱动侧提交经回收漏斗年龄门（5s/1s，2026-11-04
         // 决议）秒量级归还。保留的是 LRU 尾部——当前曲目封面大概率在
         // 内，沉浸页圆盘标签不受影响；退出后浏览库视图时被逐出的封面按
@@ -707,7 +710,7 @@ impl ImmersiveView {
         if !self.active {
             return;
         }
-        // 内存压力下不预取：省掉一整条 4096 重管线 + 一个背景缓存槽。
+        // 内存压力下不预取：省掉一整条 2048 源重管线 + 一个背景缓存槽。
         // 切歌照常即时解码（arm_backdrop 不受压力旗标影响），代价只是
         // 换歌瞬间多付 ~1s 解码——压力态下这是正确的取舍。不写预取记忆，
         // 压力清除后下次 resolve 自然恢复预取。
@@ -731,13 +734,13 @@ impl ImmersiveView {
         self.prefetched_art = Some((next_key.clone(), target_w, target_h));
         let pool = cx.global::<Pool>().0.clone();
         // 快速切歌时旧预取的下一首已经失效：主动 abort 旧在途任务，避免多条废弃的
-        // 2048/4096 管线在后台并发解码与抢占 DECODE_PERMITS，导致内存瞬态爬坡。
+        // 2048 源管线在后台并发解码与抢占 DECODE_PERMITS，导致内存瞬态爬坡。
         if let Some(old_task) = self.prefetch_task.take() {
             old_task.abort();
         }
         self.prefetch_task = Some(crate::RUNTIME.spawn(async move {
             // 背景先行：它是切歌丝滑的关键路径。两条预取各付一次完整
-            // 4096 解码，用户若在中间切歌，至少背景已就绪。
+            // 2048 源解码，用户若在中间切歌，至少背景已就绪。
             let _ = next_key
                 .retrieve(
                     pool.clone(),
@@ -1761,14 +1764,7 @@ impl Render for ImmersiveView {
                 if sample_rate == self.cached_sample_rate {
                     self.cached_badge_text.clone()
                 } else {
-                    let rate_khz = sample_rate as f32 / 1000.0;
-                    let rebuilt = SharedString::from(if sample_rate >= 88_200 {
-                        format!("{rate_khz:.1}k Hi-Res")
-                    } else if sample_rate.is_multiple_of(1000) {
-                        format!("{}k", sample_rate / 1000)
-                    } else {
-                        format!("{rate_khz:.1}k")
-                    });
+                    let rebuilt = sample_rate_badge_text(sample_rate);
                     self.cached_sample_rate = sample_rate;
                     self.cached_badge_text = rebuilt.clone();
                     rebuilt
@@ -2008,7 +2004,10 @@ impl Render for ImmersiveView {
                                                             Rgba::new(1.0, 1.0, 1.0, 0.95),
                                                         ),
                                                     )
-                                                    .tooltip(build_tooltip("返回海报墙"))
+                                                    .tooltip(build_tooltip(tr!(
+                                                        "IMMERSIVE_BACK_TO_POSTER_WALL",
+                                                        "Back to Poster Wall"
+                                                    )))
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.stage_mode =
                                                             ImmersiveStageMode::PosterWall;

@@ -25,6 +25,7 @@ use crate::{
         },
         queue_metadata,
         theme::Theme,
+        util::sample_rate_badge_text,
     },
 };
 use cntp_i18n::tr;
@@ -643,14 +644,7 @@ impl Render for InfoSection {
                                         )
                                         .when(sample_rate > 0, |container| {
                                             let is_hires = sample_rate >= 88_200;
-                                            let rate_khz = sample_rate as f32 / 1000.0;
-                                            let badge_text = if is_hires {
-                                                format!("{rate_khz:.1}k Hi-Res")
-                                            } else if sample_rate.is_multiple_of(1000) {
-                                                format!("{}k", sample_rate / 1000)
-                                            } else {
-                                                format!("{rate_khz:.1}k")
-                                            };
+                                            let badge_text = sample_rate_badge_text(sample_rate);
                                             let (badge_bg, badge_border, badge_text_col) =
                                                 if is_hires {
                                                     (
