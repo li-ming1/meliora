@@ -152,4 +152,26 @@ mod tests {
             "http://host/…"
         );
     }
+
+    #[test]
+    fn error_text_embeds_redacted_url_not_full_stream_url() {
+        // http_source.rs 错误构造口径：整串 URL 经 redact_media_path 后才嵌
+        // 入 anyhow 文本——取流 URL 全文（路径段即凭据）不得落进错误链，
+        // MediaError 包装与下游 ?err Debug 字段都原样携带，日志层截不住。
+        let text = "https://fs.example.com/20261021/aabbcc/sig_mx722192798.flac?sign=secret";
+        let err = anyhow::anyhow!(
+            "failed to open '{}': request failed",
+            redact_media_path(text)
+        );
+        let rendered = format!("{err}");
+        assert!(rendered.contains("https://fs.example.com/….flac"));
+        assert!(!rendered.contains("aabbcc"));
+        assert!(!rendered.contains("sig_mx722192798"));
+        assert!(!rendered.contains("sign=secret"));
+
+        // 本地路径原样语义保留（排查需要全貌）
+        let local = r"D:\music\a b.flac";
+        let err = anyhow::anyhow!("invalid track URL '{}': x", redact_media_path(local));
+        assert!(format!("{err}").contains(local));
+    }
 }

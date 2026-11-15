@@ -486,11 +486,16 @@ fn open_http_media_with_cache(
         .as_os_str()
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("track path is not valid UTF-8"))?;
-    let url = Url::parse(text).map_err(|e| anyhow::anyhow!("invalid track URL '{text}': {e}"))?;
+    // 错误文本在源头脱敏：URL 路径段本身就是取流能力（2026-10-21 决议），
+    // 而 MediaError 包装与下游 ?err Debug 字段都原样携带内嵌文本，日志层
+    // 截不住。本地路径原样返回（排查需要全貌），见 media.rs 契约注释。
+    let display = crate::media::redact_media_path(text);
+    let url =
+        Url::parse(text).map_err(|e| anyhow::anyhow!("invalid track URL '{display}': {e}"))?;
     let ext = url_extension(&url);
 
     let source = HttpRangeSource::connect(url, refresh)
-        .map_err(|e| anyhow::anyhow!("failed to open '{text}': {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to open '{display}': {e}"))?;
 
     // 连接成功才布防：打不开的 URL 不再白付一整曲下载（全速后台 GET）。
     if populate_cache {
@@ -574,7 +579,10 @@ impl HttpRangeSource {
             })
             .map_err(|_| format!("request timed out after {STREAM_IO_TIMEOUT:?}"))?
             .and_then(|response| response.error_for_status())
-            .map_err(|e| format!("request failed: {e}"))?;
+            // reqwest 错误的 Display 自带 `for url (<URL>)`，转 String 前先
+            // without_url() 剥掉，否则取流 URL 全文嵌进错误文本（同上游
+            // kugou/client.rs 的卫生口径）。
+            .map_err(|e| format!("request failed: {}", e.without_url()))?;
 
         let range_supported = response.status() == StatusCode::PARTIAL_CONTENT;
         let total_len = if range_supported {
@@ -670,7 +678,9 @@ impl HttpRangeSource {
                     io::ErrorKind::PermissionDenied,
                     format!("remote URL rejected (HTTP {status})"),
                 ),
-                _ => io::Error::other(format!("HTTP request failed: {e}")),
+                // 4xx 分支只写 status 已干净；其余分支必须 without_url()
+                // 剥掉 reqwest Display 自带的 URL 全文再转 String。
+                _ => io::Error::other(format!("HTTP request failed: {}", e.without_url())),
             })
     }
 
