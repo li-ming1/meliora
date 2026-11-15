@@ -126,12 +126,12 @@ pub enum ShuffleResult {
     Unshuffled { new_position: usize },
 }
 
-/// 短生命周期的操作结果；大小不对称无关紧要，因为调用方查看完取值就立刻丢弃。
-#[allow(clippy::large_enum_variant)]
+/// 短生命周期的操作结果。
 #[derive(Debug, Clone)]
 pub enum ReplaceResult {
-    /// 队列已替换，含要播放的第一个条目。
-    Replaced { first_item: Option<QueueItemData> },
+    /// 队列已替换且存在可播条目；起始槽位由调用方经 `first_playable_index`
+    /// 自行扫描，不在此携带载荷。
+    Replaced,
     /// 替换之后队列为空。
     Empty,
 }
@@ -1180,9 +1180,9 @@ impl QueueManager {
         res
     }
 
-    /// 把一个条目从一个位置移到另一个位置。需要记入 undo 历史时把
-    /// `user_initiated` 置为 `true`。
-    pub fn move_item(&mut self, from: usize, to: usize, user_initiated: bool) -> MoveResult {
+    /// 把一个条目从一个位置移到另一个位置。与 dequeue/insert 同型，undo
+    /// 记录无条件进行。
+    pub fn move_item(&mut self, from: usize, to: usize) -> MoveResult {
         if from == to {
             return MoveResult::Unchanged;
         }
@@ -1231,14 +1231,12 @@ impl QueueManager {
         drop(queue);
         self.persist_session_with_queue();
 
-        if user_initiated {
-            self.push_undo_action(UndoAction::Moved {
-                original: from,
-                new: to,
-                previous_queue_next,
-                previous_shuffle,
-            });
-        }
+        self.push_undo_action(UndoAction::Moved {
+            original: from,
+            new: to,
+            previous_queue_next,
+            previous_shuffle,
+        });
 
         res
     }
@@ -1252,7 +1250,7 @@ impl QueueManager {
             return MoveItemsResult::Unchanged;
         }
         if indices.len() == 1 {
-            let result = self.move_item(indices[0], to, true);
+            let result = self.move_item(indices[0], to);
             return match result {
                 MoveResult::Moved => MoveItemsResult::Moved,
                 MoveResult::MovedCurrent { new_position } => {
@@ -1380,8 +1378,9 @@ impl QueueManager {
         } else {
             (Arc::new(items), Arc::new(Vec::new()))
         };
-        let first_item =
-            Self::first_playable_index_in(&new_queue).map(|idx| new_queue[idx].clone());
+        // 只判有没有可播条目，不克隆条目本体——首槽下标由调用方自行扫描，
+        // 两侧判定共享同一谓词恒等价。
+        let has_playable = Self::first_playable_index_in(&new_queue).is_some();
 
         let mut queue = self.queue.write_recovered();
 
@@ -1406,8 +1405,8 @@ impl QueueManager {
         self.queue_next = 0;
         self.persist_session_with_queue();
 
-        if first_item.is_some() {
-            ReplaceResult::Replaced { first_item }
+        if has_playable {
+            ReplaceResult::Replaced
         } else {
             ReplaceResult::Empty
         }
@@ -2197,13 +2196,13 @@ mod tests {
         assert_eq!(manager.queue_next, 0);
 
         // 移动第一项原先会走 `from == current` 分支
-        let res = manager.move_item(0, 2, true);
+        let res = manager.move_item(0, 2);
         assert!(matches!(res, MoveResult::Moved));
         assert_eq!(manager.queue_next, 0);
         assert_eq!(queue_ids(&manager), vec![2, 3, 1]);
 
         // 把任意项移到下标 0 原先会走 `to <= current` 分支
-        let res = manager.move_item(2, 0, true);
+        let res = manager.move_item(2, 0);
         assert!(matches!(res, MoveResult::Moved));
         assert_eq!(manager.queue_next, 0);
         assert_eq!(queue_ids(&manager), vec![1, 2, 3]);

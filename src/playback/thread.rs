@@ -1064,7 +1064,7 @@ impl PlaybackThread {
 
     /// 把队列里的一个条目从一个位置挪到另一个位置。
     fn move_item(&mut self, from: usize, to: usize) {
-        match self.queue.move_item(from, to, true) {
+        match self.queue.move_item(from, to) {
             MoveResult::Moved => {
                 self.send_event(PlaybackEvent::QueueUpdated);
             }
@@ -1365,11 +1365,11 @@ impl PlaybackThread {
         self.set_stop_after_current(false);
 
         match self.queue.replace_queue(paths) {
-            ReplaceResult::Replaced { first_item } => {
+            ReplaceResult::Replaced => {
                 self.refresh_rg_auto_hint();
-                if first_item.is_some()
-                    && let Some(first_index) = self.queue.first_playable_index()
-                {
+                // 队列已替换完成，直接扫描首个可播槽位起播；此前先看返回值里的
+                // 条目再重复扫一遍是同谓词恒等判断。
+                if let Some(first_index) = self.queue.first_playable_index() {
                     self.jump(first_index);
                 }
             }
@@ -1386,7 +1386,7 @@ impl PlaybackThread {
         self.set_stop_after_current(false);
 
         match self.queue.replace_queue(paths) {
-            ReplaceResult::Replaced { .. } => {
+            ReplaceResult::Replaced => {
                 self.refresh_rg_auto_hint();
                 // 所请求的槽位可能已经没了（恢复的歌单变短，或洗牌映射不再包含它）。
                 // 游标留空在过去会让正在播的东西继续播、而 UI 丢了位置；这里像

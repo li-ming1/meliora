@@ -369,7 +369,7 @@ mod tests {
 
         let before = snapshot(&manager);
 
-        manager.move_item(0, 3, true);
+        manager.move_item(0, 3);
 
         assert_undo_round_trip(&mut manager, before);
     }
@@ -420,7 +420,7 @@ mod tests {
         let before = snapshot(&manager);
 
         manager.insert_item(0, item(9));
-        manager.move_item(0, 2, true);
+        manager.move_item(0, 2);
 
         assert!(!matches!(manager.undo_last_action(), UndoResult::None));
         assert!(!matches!(manager.undo_last_action(), UndoResult::None));
