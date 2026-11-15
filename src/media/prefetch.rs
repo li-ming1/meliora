@@ -171,13 +171,17 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                     dead
                 };
                 if dead {
+                    // fatal 描述源健康度而非流位置（与守卫 buf/eof 的 epoch
+                    // 不同层，粘滞语义本就跨 epoch）：死 URL 上任何 seek 都只
+                    // 会再次被拒，无恢复能力。若按 epoch 门控，"死 URL + 失败
+                    // 读在途 + buffer 非空时 seek" 的竞态会让填充线程无痕退
+                    // 出——不设 fatal 也不留存活线程，consumer 每次 read 吃满
+                    // 停滞预算才报错。eof/buf 的 epoch 门控保持不变。
                     let mut st = shared.state.lock_recovered();
-                    if st.epoch == my_epoch {
-                        st.fatal = Some(format!(
-                            "remote URL rejected and could not be refreshed: {e}"
-                        ));
-                        shared.signal.notify_all();
-                    }
+                    st.fatal = Some(format!(
+                        "remote URL rejected and could not be refreshed: {e}"
+                    ));
+                    shared.signal.notify_all();
                     return;
                 }
                 consecutive_errors += 1;

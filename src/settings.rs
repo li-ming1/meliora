@@ -446,6 +446,10 @@ pub fn flush_pending_settings() {
         info!("settings exit flush drop: file changed externally during window");
         return;
     }
+    // 与防抖收口（commit_if_current）同款：覆盖前留档无法解析的旧文件——
+    // 退出 flush 与防抖是同锁串行的兄弟通道，漏了这一步会在这里把"本已
+    // 损坏但可手工修复"的文件无备份抹掉（51aa1e3bfb 契约）。
+    backup_unparseable_settings(&pending.path);
     let generation = pending.generation;
     let result = write_settings_file(&pending.snapshot, &pending.path, generation, "flush");
     if result.is_ok() {
@@ -470,7 +474,27 @@ pub(crate) fn patch_desktop_lyrics_pos_on_exit(path: &Path, pos: [f64; 2]) -> bo
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return false;
     };
-    value["interface"]["desktop_lyrics_pos"] = serde_json::json!([pos[0], pos[1]]);
+    // serde_json 的 IndexMut 对"根/interface 为数组、字符串、数字、布尔"会
+    // panic（panic=abort 下即进程死亡）——本函数的意图是任何怪文件都优雅
+    // 退出，故逐层判型：Null 保留原有的自动建对象语义，其余非对象形态与
+    // 解析失败同出口返回 false。
+    if value.is_null() {
+        value = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let Some(root) = value.as_object_mut() else {
+        return false;
+    };
+    let interface = root.entry("interface").or_insert(serde_json::Value::Null);
+    if interface.is_null() {
+        *interface = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let Some(interface) = interface.as_object_mut() else {
+        return false;
+    };
+    interface.insert(
+        "desktop_lyrics_pos".to_string(),
+        serde_json::json!([pos[0], pos[1]]),
+    );
     let Ok(pretty) = serde_json::to_string_pretty(&value) else {
         return false;
     };
@@ -478,7 +502,13 @@ pub(crate) fn patch_desktop_lyrics_pos_on_exit(path: &Path, pos: [f64; 2]) -> bo
     let generation = SETTINGS_SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     let tmp = path.with_extension(format!("json.tmpprobe{generation}"));
     File::create(&tmp)
-        .and_then(|mut file| file.write_all(pretty.as_bytes()))
+        .and_then(|mut file| {
+            file.write_all(pretty.as_bytes())?;
+            // 与 write_settings_file 的原子写标准一致：rename 前先落盘，
+            // 否则断电时 NTFS 可能元数据已落而数据未刷，settings.json 截断
+            file.sync_all()?;
+            Ok(())
+        })
         .and_then(|()| fs::rename(&tmp, path))
         // 目标文件原样保留，只清理残留临时文件
         .inspect_err(|_| {

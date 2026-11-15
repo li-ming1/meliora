@@ -39,8 +39,9 @@ use crate::{
 /// `Column::ident`）。显示名随界面语言漂移，用它做键曾让切换语言后三张表的
 /// 列宽/列序静默重置。列内键按「稳定键直认，否则当前 locale 显示名反查」
 /// 解析，解析不了的条目丢弃；表键对不上任何已知表的条目原样保留。跨语言
-/// 保存的遗留条目（存时 locale ≠ 载时 locale）解析不了，随保存时的整表写
-/// 回自然清出——与上游 hummingbird 同一局限。
+/// 保存的遗留条目（存时 locale ≠ 载时 locale）解析后按「稳定键条目优先」
+/// 落地——遗留条目只在表键未被稳定键条目占据时写入；否则两条各写一次的
+/// 胜者由 HashMap 迭代序随机决定（约 50% 概率陈旧快照覆盖用户当前设置）。
 pub fn migrate_legacy_table_settings(settings: &mut HashMap<String, TableSettings>) {
     for (key, mut entry) in std::mem::take(settings) {
         let table_key = migrate_legacy_table_entry::<Album, AlbumColumn>(&key, &mut entry)
@@ -51,7 +52,12 @@ pub fn migrate_legacy_table_settings(settings: &mut HashMap<String, TableSetting
 
         match table_key {
             Some(table_key) => {
-                settings.insert(table_key.to_owned(), entry);
+                // 遗留条目（key ≠ 稳定键）不覆盖已落地的稳定键条目。此前版本
+                // 的遗留条目不清出也不会被覆盖剔除——persist_settings 只
+                // insert 不 remove，"随保存时的整表写回自然清出"与实现不符。
+                if key == table_key || !settings.contains_key(table_key) {
+                    settings.insert(table_key.to_owned(), entry);
+                }
             }
             None => {
                 settings.insert(key, entry);

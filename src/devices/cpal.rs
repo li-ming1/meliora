@@ -158,7 +158,12 @@ fn cpal_config_from_info(format: &FormatInfo) -> Result<cpal::StreamConfig, ()> 
 
     let target_frames = frames_for_duration(format.sample_rate, DEVICE_BUFFER_TARGET);
     let buffer_size = match format.buffer_size {
-        BufferSize::Range(min, max) => cpal::BufferSize::Fixed(target_frames.clamp(min, max)),
+        // 宿主/驱动上报畸形 Range（min > max）时 std clamp 会 panic——panic=
+        // abort 下即进程死亡。排序后钳位保持语义（仍落在 [min,max] 交集），
+        // 对外部元数据防御。
+        BufferSize::Range(min, max) => {
+            cpal::BufferSize::Fixed(target_frames.clamp(min.min(max), min.max(max)))
+        }
         BufferSize::Fixed(size) => cpal::BufferSize::Fixed(size),
         BufferSize::Unknown => cpal::BufferSize::Default,
     };
@@ -606,6 +611,14 @@ where
         .map_err(|e| {
             // 超时路径透传实际写入量：诊断停滞场景时不再只看到总量口径。
             warn!(written = e.written, "ring write timed out");
+            // 【已知缺口（2026-11-14 第三轮深读）】超时残留的部分写入不保证
+            // 帧对齐（writable 按可用槽位截断）：环内错位 r 个样本会让此后
+            // 帧的声道角色旋转（立体声 L/R 互换），直到环整体排空或 reset。
+            // 触发链窄：设备停顿 >250ms 死线 + 引擎退避窗内恢复 + 部分写入。
+            // 朴素的"错位即 self.reset()"被 device_drift 测试证伪——reset 以
+            // 可能过时的 config 重建流，与 drift 守卫的重建互相打架；正确的
+            // 修法需要 pipeline 写入原语的帧对齐语义或引擎侧 defer 窗口与
+            // drift 的协同设计，专项处理。
             SubmissionError::WriteTimeout
         })?;
         // 样本已进环形缓冲：此后回调饥饿就是真欠载，要被计数。

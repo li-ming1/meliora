@@ -45,9 +45,13 @@ fn main() -> Result<()> {
         println!("cargo:rustc-link-arg-bins=/IGNORE:4286");
     }
 
-    // 可选的本地 .env：从不自动创建，只有手动建了才会被读取
+    // 可选的本地 .env：从不自动创建，只有手动建了才会被读取。
+    // rerun-if-changed 必须无条件发射：cargo 只核对上一轮实际发射过的路径，
+    // 门在 if let Ok 里会让 .env 的"从无到有"对构建完全不可见（创建后要等
+    // 某次无关重编才被读到）。缺失路径由 cargo 按最近存在祖先目录的 mtime
+    // 追踪，dev 场景代价可接受。
+    println!("cargo:rerun-if-changed=.env");
     if let Ok(envfile) = std::fs::read_to_string(".env") {
-        println!("cargo:rerun-if-changed=.env");
         dotenvy::from_read(envfile.as_bytes())?;
         let mut vars = dotenvy::from_read_iter(envfile.as_bytes());
         while let Some((key, _)) = vars.next().transpose()? {

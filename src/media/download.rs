@@ -90,6 +90,10 @@ pub async fn http_download_to_file(
     let tmp = partial_path(dest);
     let mut total = 0u64;
     let result = async {
+        // 服务端声明的体长（chunked 等无定界响应为 None）：rename 前的完整
+        // 性闸据此比对实际写入字节数——与 http_source 的 total_len 闸、
+        // audio_cache 的 Content-Length 闸同构。
+        let declared_len = response.content_length();
         let mut file = tokio::io::BufWriter::with_capacity(
             // 固定 ~64KB：落盘系统调用粒度与网络块到达节奏解耦。
             64 * 1024,
@@ -115,6 +119,14 @@ pub async fn http_download_to_file(
         file.shutdown()
             .await
             .map_err(|err| format!("write audio: {err}"))?;
+        if let Some(expected) = declared_len
+            && total != expected
+        {
+            // 服务端提前正常关闭/代理截断（连接关闭定界上传输层无法区分）：
+            // 丢弃半截文件而非转正——截断产物魔数合法，会被既有"已下载过"
+            // 的幂等判定跳过，重下永不发生。
+            return Err(format!("download truncated: {total}/{expected} bytes"));
+        }
         Ok::<(), String>(())
     }
     .await;

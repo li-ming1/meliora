@@ -102,8 +102,12 @@ impl RightSidebar {
                                         .child(
                                             nav_button("close-lyrics", CROSS)
                                                 .on_click(move |_, _, cx| {
-                                                    show_lyrics_model.update(cx, |v, _| {
+                                                    show_lyrics_model.update(cx, |v, cx| {
                                                         *v = false;
+                                                        // gpui 的 update 不自动通知：暂停/静止时
+                                                        // 没有其它失效源，不补会表现为"点了没
+                                                        // 反应"（controls.rs 同款惯例）
+                                                        cx.notify();
                                                     });
                                                 })
                                                 .tooltip(build_tooltip(tr!("CLOSE"))),
@@ -171,8 +175,14 @@ impl RightSidebar {
                                                             .cursor_pointer()
                                                             .hover(|s| s.text_color(theme.text))
                                                             .on_click(move |_, _, cx| {
-                                                                show_queue_model
-                                                                    .update(cx, |v, _| *v = false);
+                                                                show_queue_model.update(
+                                                                    cx,
+                                                                    |v, cx| {
+                                                                        *v = false;
+                                                                        // update 不自动通知，见 close-lyrics
+                                                                        cx.notify();
+                                                                    },
+                                                                );
                                                             })
                                                             .child(tr!("LYRICS", "Lyrics")),
                                                     ),
@@ -189,8 +199,14 @@ impl RightSidebar {
                                                     .child(
                                                         nav_button("close-sidebar", CROSS)
                                                             .on_click(move |_, _, cx| {
-                                                                show_lyrics_model
-                                                                    .update(cx, |v, _| *v = false);
+                                                                show_lyrics_model.update(
+                                                                    cx,
+                                                                    |v, cx| {
+                                                                        *v = false;
+                                                                        // update 不自动通知，见 close-lyrics
+                                                                        cx.notify();
+                                                                    },
+                                                                );
                                                             })
                                                             .tooltip(build_tooltip(tr!(
                                                                 "CLOSE", "Close"

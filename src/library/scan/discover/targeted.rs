@@ -42,11 +42,16 @@ struct RescanState {
 }
 
 /// [`RECONCILE_UNDER_PREFIX_SQL`] 的两分支区间假设 `$1` 不以分隔符结尾（区间
-/// 是 `$1||'/'..$1||'0'` 与 `$1||'\'..$1||']'`）。卷根经 canonicalize 后自带
-/// 尾分隔符（"D:\"），原样绑定会让根前缀的区间不含任何子路径——剥掉尾分隔
-/// 符后两分支恰好覆盖全部子路径（"D:" 的 `'\'..']'` 分支截住所有子项）。非
-/// 根前缀 canonicalize 后本就不带尾分隔符，原样通过；Unix 根 "/" 剥成空串后
-/// 两个区间在 ASCII 序上同样成立。配套：折叠索引侧的
+/// 是 `$1||'/'..$1||'0'` 与 `$1||'\'..$1||']'`），尾分隔符原样绑定会让区间不
+/// 含任何子路径——剥掉后两分支恰好覆盖全部子路径。
+///
+/// 可达性（2026-11-15 第三轮审计修正）：canonicalize **成功**的目标必然存在，
+/// 走 folder 查询进不了这里；真正带尾分隔符到达本函数的路径是
+/// `canonicalize_or_keep` 的 `canonical.join(tail)` 分支（join 保留 tail 的尾
+/// 分隔符，如调用方传 `"D:\Music\Album\"`）。**已知局限**：失联盘根（"D:\"）
+/// 原样保留普通形态，而库内 location 是 verbatim 形态（"\\?\D:\…"），SQLite
+/// BINARY 比较恒不匹配——前缀查询静默返回空，过期行由全量扫描的 cleanup
+/// （`fold_path` 剥 `\\?\`）兜底，仅延迟清理。配套：折叠索引侧的
 /// [`folded_starts_with_byte`] 已对分隔符结尾的前缀跳过边界检查。
 fn under_prefix_key(target: &Utf8Path) -> Utf8PathBuf {
     match target.as_str().strip_suffix(['/', '\\']) {
@@ -427,6 +432,35 @@ mod tests {
         discover::{file_scan_timestamp, helpers::*},
         fs_case::is_case_insensitive,
     };
+
+    #[test]
+    fn under_prefix_key_strips_trailing_separator() {
+        // 守卫 7064b69ad8 的剥尾修复：尾分隔符原样绑定会让
+        // list_tracks_under_prefix.sql 的两分支区间（`$1||'/'..$1||'0'` 与
+        // `$1||'\'..$1||']'`）不含任何子路径，前缀查询静默返回空。
+        use camino::Utf8Path;
+
+        let cases: &[(&str, &str)] = &[
+            // join(tail) 分支保留尾分隔符的可达形态
+            ("D:\\Music\\Album\\", "D:\\Music\\Album"),
+            ("/music/album/", "/music/album"),
+            // 无尾分隔符原样通过
+            ("D:\\Music\\Album", "D:\\Music\\Album"),
+            ("/music/album", "/music/album"),
+            ("album", "album"),
+            // 根前缀剥成裸盘符/空串（失联盘根另有 verbatim 形态局限，见
+            // under_prefix_key 文档）
+            ("D:\\", "D:"),
+            ("/", ""),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                under_prefix_key(Utf8Path::new(input)),
+                Utf8PathBuf::from(*expected),
+                "under_prefix_key({input:?}) diverged"
+            );
+        }
+    }
 
     #[test]
     fn rescan_discover_deduplicates_paths() {

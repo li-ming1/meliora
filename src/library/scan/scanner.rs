@@ -313,7 +313,10 @@ struct ScanPreparation {
     tracks_deleted: bool,
 }
 
-/// 在阻塞线程上检查根目录可用性，免得死掉的网络挂载拖住扫描循环或它的 Stop 处理。
+/// 在阻塞线程上检查根目录可用性，免得死掉的网络挂载占住 worker 线程池。
+/// 注意口径：本调用在 `Scanner::run` 里被串行 await，等待期间 command_rx 里
+/// 的 Stop 只能排队——Stop 是被延迟而非被保护；探针自身无超时，延迟上界由
+/// OS 挂载超时决定（full.rs 的 `missing_paths` 同窗口）。
 /// 返回 (available, missing)。
 async fn split_available_roots(paths: &[Utf8PathBuf]) -> (Vec<Utf8PathBuf>, Vec<Utf8PathBuf>) {
     let paths = paths.to_vec();

@@ -165,6 +165,16 @@ impl Sidebar {
             cx.observe(&animated_sidebar_width, |_, _, cx| cx.notify())
                 .detach();
 
+            // 酷狗账号药丸以登录用户为键（kugou_pill 读 cached_user_profile）：
+            // 登录/登出不写 Settings 实体，只递增 KugouAccountEpoch——按
+            // 2026-10-31 契约第 5 条挂载视图必须 observe（同 kugou_ranks/
+            // kugou_playlists）。代纪只在账号事件递增，变更即 notify。
+            #[cfg(feature = "kugou")]
+            cx.observe_global::<crate::ui::library::KugouAccountEpoch>(
+                |_: &mut Self, cx: &mut Context<Self>| cx.notify(),
+            )
+            .detach();
+
             Self {
                 playlists: PlaylistList::new(cx, nav_model.clone()),
                 nav_model,
