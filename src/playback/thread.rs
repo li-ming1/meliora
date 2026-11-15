@@ -1640,7 +1640,7 @@ impl PlaybackThread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::playback::tests::harness::{configure_dummy_device, write_wav_i16};
+    use crate::playback::tests::harness::{configure_dummy_device, engine_lock, write_wav_i16};
     use crate::test_support::{TestDir, register_test_media_providers};
 
     /// 组装一个真实的 PlaybackThread（真实通道 + QueueManager + 引擎），引擎
@@ -1768,6 +1768,12 @@ mod tests {
     /// 的是线程消费侧的处理分支。
     #[test]
     fn device_backoff_cycles_do_not_advance_queue() {
+        // 与 error_handling 的 F4 引擎侧测试同款进程内互斥：fault 闩锁在流打开
+        // 时读一次进程级 env（dummy.rs open_device），并行测试 configure_dummy_device
+        // 的清理清单若落在 set_var 与 open_device 之间，流就闩不上故障——短 wav
+        // 被真实消费到 EOF、走 Eof 臂跳曲（2026-11-15 全量复现的 Some(1)）。
+        // 锁贯穿全程，guard 存活到 remove_var 之后。
+        let _guard = engine_lock();
         register_test_media_providers();
         configure_dummy_device(44_100, "S16", 2);
         // 硬故障 knob（open_device 时读取）：每个 consume 周期都失败

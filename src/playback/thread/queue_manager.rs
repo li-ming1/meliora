@@ -933,7 +933,7 @@ impl QueueManager {
 
     /// 洗牌克隆的漂移对齐（同上，对 shuffle 后的 Vec 就地生效）。
     #[cfg(feature = "online_sources")]
-    fn align_shuffled_clone_with_live(&self, queue_vec: &mut Vec<QueueItemData>) {
+    fn align_shuffled_clone_with_live(&self, queue_vec: &mut [QueueItemData]) {
         let fresh = self.fresh_live_paths();
         if !fresh.is_empty() {
             Self::sync_item_paths(queue_vec, &fresh);
@@ -941,7 +941,7 @@ impl QueueManager {
     }
 
     #[cfg(not(feature = "online_sources"))]
-    fn align_shuffled_clone_with_live(&self, _queue_vec: &mut Vec<QueueItemData>) {}
+    fn align_shuffled_clone_with_live(&self, _queue_vec: &mut [QueueItemData]) {}
 
     /// 移除队列里指定下标的条目。
     pub fn dequeue(&mut self, index: usize) -> DequeueResult {

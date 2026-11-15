@@ -54,9 +54,9 @@ pub fn available_paths(paths: Vec<PathBuf>) -> FxHashSet<PathBuf> {
 /// 后面有更新的点击时就自我丢弃——同步时代的「最后一次点击为准」顺序就此恢复。
 pub static BATCH_ACTION_TICKET: AtomicU64 = AtomicU64::new(0);
 
-/// 路径 → 「它还存在吗」的记忆表，底下是一本按目录的列表缓存。
-/// 每一组可用性集合都从同一批曲目路径分组而来，所以跨集合共享一本缓存就意味着
-/// 每个不同路径只查一次。
+/// 路径 → 「它还存在吗」的探针，按父目录缓存一次枚举。
+/// 同一批可用性集合都从同一批曲目路径分组而来，同一父目录的条目共享
+/// 一次 `read_dir`，每个不同路径至多补一次 stat。
 ///
 /// 这枚探针是**目录枚举，不是逐文件 stat**。在 Windows 上实测：100,000 个真实
 /// 文件散布在 2,000 个目录里，`Path::exists` 每路径 245.8us（整组 24.6s），
@@ -76,7 +76,6 @@ pub static BATCH_ACTION_TICKET: AtomicU64 = AtomicU64::new(0);
 /// `Path::exists()` 会跟随链接、目标不可达时答 false。
 #[derive(Default)]
 struct PathExistence {
-    known: FxHashMap<String, bool>,
     /// 父目录 -> 枚举结果。`Listed` 存的是该目录实际存在的条目名
     /// （Windows 名称大小写不敏感 ⇒ 存折叠后的小写）。
     dirs: FxHashMap<PathBuf, DirListing>,
@@ -95,15 +94,6 @@ enum DirListing {
 }
 
 impl PathExistence {
-    fn exists(&mut self, location: &str) -> bool {
-        if let Some(&exists) = self.known.get(location) {
-            return exists;
-        }
-        let exists = self.path_exists(Path::new(location));
-        self.known.insert(location.to_owned(), exists);
-        exists
-    }
-
     /// 与 `Path::exists()` 同答复的探针：先枚举并缓存父目录，命中清单即视为存在
     /// （零系统调用），只有"清单里没有"才补一次 stat 确认。
     fn path_exists(&mut self, path: &Path) -> bool {
@@ -165,7 +155,8 @@ fn available_ids(rows: Vec<(i64, String)>, paths: &mut PathExistence) -> FxHashS
     let mut available: FxHashSet<i64> = FxHashSet::default();
     for (id, locations) in locations_by_id {
         // track.location 全库唯一、每条至多查询一次，`any` 命中即停——
-        // 与 compute_availability_from_tracks 同理，不向 `known` 拷贝路径字符串。
+        // 与 compute_availability_from_tracks 同理，目录缓存已在 `dirs` 内去重，
+        // 不再按路径字符串另建记忆表。
         if locations
             .iter()
             .any(|location| paths.path_exists(Path::new(location)))
@@ -197,7 +188,7 @@ pub fn compute_availability_from_tracks(
     let mut albums = FxHashSet::default();
     let mut tracks = FxHashSet::with_capacity_and_hasher(track_rows.len(), Default::default());
     for (location, id, album_id) in &track_rows {
-        // track.location 在表中唯一，目录缓存已在 `dirs` 内去重，无需再向 `known` 拷贝 10 万份路径字符串。
+        // track.location 在表中唯一，目录缓存已在 `dirs` 内去重，每条路径至多补一次 stat。
         if paths.path_exists(Path::new(location)) {
             tracks.insert(*id);
             if *album_id > 0 {
@@ -363,7 +354,10 @@ mod tests {
                 let enum_pass = |hits: &mut usize| {
                     let t0 = std::time::Instant::now();
                     let mut cache = PathExistence::default();
-                    *hits = probes.iter().filter(|p| cache.exists(p)).count();
+                    *hits = probes
+                        .iter()
+                        .filter(|p| cache.path_exists(Path::new(p)))
+                        .count();
                     t0.elapsed().as_micros()
                 };
                 let (mut h1, mut h2) = (0usize, 0usize);
