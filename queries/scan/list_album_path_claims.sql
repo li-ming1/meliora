@@ -1,6 +1,5 @@
--- artwork_source rides along so examine_folder_art can tell whether a directory
--- with no cover still has something to learn: an album whose incumbent is
--- embedded art (0) and whose folder holds no cover cannot change this scan.
+-- artwork_source 随行返回，让 examine_folder_art 能判定无封面的目录是否仍有可学之处：
+-- 现任封面来源为内嵌(0) 且文件夹里没有封面文件的专辑，本轮扫描对其无可作为。
 SELECT ap.album_id, ap.path, al.artwork_source
 FROM album_path ap
 JOIN album al ON al.id = ap.album_id

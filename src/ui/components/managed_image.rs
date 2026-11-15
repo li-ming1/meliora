@@ -70,7 +70,9 @@ static DECODE_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
 
 /// 端到端串行化沉浸页背景重管线（全尺寸解码 → 裁剪带 → 重采样 → 锐化）。单条管线瞬态峰值
-/// ~105 MB 堆——仅 4096² RGBA 源就占 67 MB，其裁剪带再占 ~38 MB——而 `arm_backdrop`
+/// ~105 MB 堆——仅 4096² RGBA 源就占 67 MB，其裁剪带再占 ~38 MB（均为 2026-10-02 事故时
+/// 4096² 源的当时口径；2026-11-14 起阶梯以 2048 打头，在线源单管线瞬态显著更小，本地大图
+/// 源仍可达该量级）——而 `arm_backdrop`
 /// （当前曲）与 `prefetch_next_track_art`（下一曲）每次切歌各启动一条。它们原本自由重叠：
 /// `DECODE_PERMITS` 只闸解码步，锐化段在任何上限之外裸跑，快切时被取代的任务还在后台跑完。
 /// 两三条并发管线在重度模式平台期之上叠出 ~250 MB 瞬态，把 private commit 连续两个采样
