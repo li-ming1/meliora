@@ -96,8 +96,9 @@ pub struct UserProfile {
 
 /// 在线网关共享 HTTP client 的 builder：每个请求都有上界（连接 10s / 总计
 /// 30s），于是一个卡住的网关请求不会拖住待完成的抓取或登录轮询。返回
-/// builder 而非成品 `Client`，因为 client 保留自己的 `.build()` 失败策略
-/// （kugou 是 panic）。
+/// builder 而非成品 `Client`，因为消费方保留自己的 `.build()` 失败策略
+/// （kugou client/import 对失败均为 warn + 回落 `fallback_http_client`；
+/// fallback 自身仅在 TLS 后端缺席时 panic）。
 pub fn gateway_http_builder() -> ClientBuilder {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))

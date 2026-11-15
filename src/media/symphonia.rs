@@ -123,7 +123,8 @@ fn map_standard_tag(std_tag: &StandardTag) -> Option<MetadataTag> {
         StandardTag::IdentCatalogNumber(s) => Some(MetadataTag::Catalog((**s).clone())),
         StandardTag::IdentIsrc(s) => Some(MetadataTag::Isrc((**s).clone())),
         StandardTag::SortAlbum(s) => Some(MetadataTag::SortAlbum((**s).clone())),
-        StandardTag::SortAlbumArtist(s) => Some(MetadataTag::ArtistSort((**s).clone())),
+        StandardTag::SortAlbumArtist(s) => Some(MetadataTag::AlbumArtistSort((**s).clone())),
+        StandardTag::SortArtist(s) => Some(MetadataTag::ArtistSort((**s).clone())),
         StandardTag::MusicBrainzAlbumId(s) => Some(MetadataTag::MbidAlbum((**s).clone())),
         StandardTag::Lyrics(s) => Some(MetadataTag::Lyrics((**s).clone())),
         StandardTag::ReplayGainTrackGain(s) => {

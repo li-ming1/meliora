@@ -861,8 +861,8 @@ impl AudioEngine {
         };
         let (target_rate, device_channels) = match self.pipeline.as_ref() {
             Some(p) => (p.target_rate, p.device_channel_count),
-            // initialize/open 的建流路径管线必空（open 在 476-477 已清管线，
-            // 528 用新 current_format 重搭），活管线只随本方法所在的
+            // initialize/open 的建流路径管线必空（open 建流时先清空管线、
+            // 再按新 current_format 重搭），活管线只随本方法所在的
             // recreate_stream 走到这里。
             None => return,
         };
