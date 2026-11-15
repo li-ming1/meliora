@@ -349,6 +349,40 @@ async fn update_metadata_allows_same_album_different_disc_in_different_folder() 
 }
 
 #[tokio::test]
+async fn insert_track_drops_out_of_range_track_number_instead_of_wrapping() {
+    let (dir, pool) = create_test_pool("db-test").await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let normal_path = track_path(&dir, "", "normal.flac");
+    let normal = track_metadata("Album", "Artist", "Normal", 3);
+    insert_metadata(&mut conn, &normal, &normal_path)
+        .await
+        .unwrap();
+
+    // 2^31 + 1：旧 `as i32` 会按低 32 位回绕成负数入库；守卫应放弃编号落 NULL。
+    let huge_path = track_path(&dir, "", "huge.flac");
+    let mut huge = track_metadata("Album", "Artist", "Huge", 1);
+    huge.track_current = Some(2147483649);
+    insert_metadata(&mut conn, &huge, &huge_path).await.unwrap();
+    drop(conn);
+
+    let (normal_number,): (Option<i32>,) =
+        sqlx::query_as("SELECT track_number FROM track WHERE location = $1")
+            .bind(normal_path.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(normal_number, Some(3));
+    let (huge_number,): (Option<i32>,) =
+        sqlx::query_as("SELECT track_number FROM track WHERE location = $1")
+            .bind(huge_path.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(huge_number, None);
+}
+
+#[tokio::test]
 async fn update_metadata_upserts_and_deletes_lyrics() {
     let (dir, pool) = create_test_pool("db-test").await;
     let mut conn = pool.acquire().await.unwrap();

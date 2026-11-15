@@ -885,6 +885,27 @@ impl AudioEngine {
         }
     }
 
+    /// 推进设备重建退避阶梯：连续失败数递增，推迟窗口从
+    /// [`DEVICE_RECREATE_BACKOFF_INITIAL`] 翻倍、钳位到
+    /// [`DEVICE_RECREATE_BACKOFF_MAX`]，并把 `(now + 窗口, failures)` 写回
+    /// `device_recreate_defer`。retry_missing_stream 与 consume_to_device 的
+    /// WriteTimeout 两条故障入口共用同一阶梯，防止单侧调参让两条入口的退避
+    /// 节奏分叉。返回 `(failures, defer)` 供调用方记日志。
+    fn advance_device_recreate_defer(
+        &mut self,
+        now: std::time::Instant,
+    ) -> (u32, std::time::Duration) {
+        let failures = self
+            .device_recreate_defer
+            .map(|(_, failures)| failures + 1)
+            .unwrap_or(0);
+        let defer = DEVICE_RECREATE_BACKOFF_INITIAL
+            .saturating_mul(1_u32 << failures.min(4))
+            .min(DEVICE_RECREATE_BACKOFF_MAX);
+        self.device_recreate_defer = Some((now + defer, failures));
+        (failures, defer)
+    }
+
     /// 设备流缺失时的自愈。`open`/`process_cycle` 的所有 reset/play/重建都以
     /// `has_stream` 为前置，缺了这条路径就永久静音（每曲报 Ok+Playing、空转
     /// 到跳歌）。退避与 WriteTimeout 共用，避免设备长期不可用时每周期重试。
@@ -895,14 +916,7 @@ impl AudioEngine {
         {
             return;
         }
-        let failures = self
-            .device_recreate_defer
-            .map(|(_, failures)| failures + 1)
-            .unwrap_or(0);
-        let defer = DEVICE_RECREATE_BACKOFF_INITIAL
-            .saturating_mul(1_u32 << failures.min(4))
-            .min(DEVICE_RECREATE_BACKOFF_MAX);
-        self.device_recreate_defer = Some((now + defer, failures));
+        let (failures, defer) = self.advance_device_recreate_defer(now);
         warn!(
             failures,
             ?defer,
@@ -1109,14 +1123,7 @@ impl AudioEngine {
             }
             warn!(parent: &s, ?err, "Failed to consume from pipeline: {err}");
 
-            let failures = self
-                .device_recreate_defer
-                .map(|(_, failures)| failures + 1)
-                .unwrap_or(0);
-            let defer = DEVICE_RECREATE_BACKOFF_INITIAL
-                .saturating_mul(1_u32 << failures.min(4))
-                .min(DEVICE_RECREATE_BACKOFF_MAX);
-            self.device_recreate_defer = Some((now + defer, failures));
+            let (failures, defer) = self.advance_device_recreate_defer(now);
             warn!(parent: &s, failures, ?defer, "Recreating device and retrying...");
 
             if let Err(e) = self.recreate_stream() {

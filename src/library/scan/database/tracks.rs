@@ -241,13 +241,15 @@ pub(super) async fn insert_track(
         Option<String>,
         Option<String>,
     );
+    // 编号解析链无上限（u64）：超 i32 的轨号/盘号用 `as` 会按低 32 位回绕成
+    // 负数入库，污染 find_tracks_number_asc 排序——超界放弃编号落 NULL。
     let result: Result<CreateTrackReturningRow, sqlx::Error> =
         sqlx::query_as(include_str!("../../../../queries/scan/create_track.sql"))
             .bind(name)
             .bind(name)
             .bind(album_id)
-            .bind(metadata.track_current.map(|x| x as i32))
-            .bind(metadata.disc_current.map(|x| x as i32))
+            .bind(metadata.track_current.and_then(|x| i32::try_from(x).ok()))
+            .bind(metadata.disc_current.and_then(|x| i32::try_from(x).ok()))
             .bind(length as i32)
             .bind(path.as_str())
             .bind(&metadata.genre)

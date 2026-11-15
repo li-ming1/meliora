@@ -71,8 +71,9 @@ impl MprisControllerServer {
             mpris_data.set_album_artist(metadata.album_artist.clone().map(|v| [v]));
             mpris_data.set_genre(metadata.genre.clone().map(|v| [v]));
             mpris_data.set_audio_bpm(metadata.bpm.map(|v| v as i32));
-            mpris_data.set_track_number(metadata.track_current.map(|v| v as i32));
-            mpris_data.set_disc_number(metadata.disc_current.map(|v| v as i32));
+            // 与入库守卫同口径：超 i32 的编号回绕成负数，不该经 MPRIS 暴露。
+            mpris_data.set_track_number(metadata.track_current.and_then(|v| i32::try_from(v).ok()));
+            mpris_data.set_disc_number(metadata.disc_current.and_then(|v| i32::try_from(v).ok()));
             mpris_data.set_length(data.last_duration.map(|v| Time::from_secs(v as i64)));
             mpris_data.set_art_url(data.last_album_art.clone());
             mpris_data.set_lyrics(metadata.lyrics.clone());
