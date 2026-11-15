@@ -277,7 +277,7 @@
   },
   "ALBUMS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:281",
+    "definedIn": "src/ui/library/sidebar.rs:291",
     "plural": false,
     "description": null
   },
@@ -289,7 +289,7 @@
   },
   "ARTISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:293",
+    "definedIn": "src/ui/library/sidebar.rs:303",
     "plural": false,
     "description": null
   },
@@ -319,7 +319,7 @@
   },
   "CLOSE": {
     "context": "right_sidebar.rs",
-    "definedIn": "src/ui/right_sidebar.rs:196",
+    "definedIn": "src/ui/right_sidebar.rs:212",
     "plural": false,
     "description": null
   },
@@ -343,7 +343,7 @@
   },
   "COLLAPSE_SIDEBAR": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:393",
+    "definedIn": "src/ui/library/sidebar.rs:403",
     "plural": false,
     "description": null
   },
@@ -355,61 +355,61 @@
   },
   "COLUMN_ALBUM": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:652",
+    "definedIn": "src/library/types/table.rs:658",
     "plural": false,
     "description": null
   },
   "COLUMN_ALBUMS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:916",
+    "definedIn": "src/library/types/table.rs:922",
     "plural": false,
     "description": null
   },
   "COLUMN_ARTIST": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:401",
+    "definedIn": "src/library/types/table.rs:407",
     "plural": false,
     "description": null
   },
   "COLUMN_CATALOG_NUMBER": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:404",
+    "definedIn": "src/library/types/table.rs:410",
     "plural": false,
     "description": null
   },
   "COLUMN_DATE": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:402",
+    "definedIn": "src/library/types/table.rs:408",
     "plural": false,
     "description": null
   },
   "COLUMN_LABEL": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:403",
+    "definedIn": "src/library/types/table.rs:409",
     "plural": false,
     "description": null
   },
   "COLUMN_LENGTH": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:654",
+    "definedIn": "src/library/types/table.rs:660",
     "plural": false,
     "description": null
   },
   "COLUMN_NAME": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:915",
+    "definedIn": "src/library/types/table.rs:921",
     "plural": false,
     "description": null
   },
   "COLUMN_TITLE": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:400",
+    "definedIn": "src/library/types/table.rs:406",
     "plural": false,
     "description": null
   },
   "COLUMN_TRACKS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:917",
+    "definedIn": "src/library/types/table.rs:923",
     "plural": false,
     "description": null
   },
@@ -595,7 +595,7 @@
   },
   "EXPAND_SIDEBAR": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:391",
+    "definedIn": "src/ui/library/sidebar.rs:401",
     "plural": false,
     "description": null
   },
@@ -619,7 +619,7 @@
   },
   "FILES": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:314",
+    "definedIn": "src/ui/library/sidebar.rs:324",
     "plural": false,
     "description": null
   },
@@ -1147,7 +1147,7 @@
   },
   "KUGOU_PLAYLISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:341",
+    "definedIn": "src/ui/library/sidebar.rs:351",
     "plural": false,
     "description": null
   },
@@ -1213,7 +1213,7 @@
   },
   "KUGOU_RANKS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:350",
+    "definedIn": "src/ui/library/sidebar.rs:360",
     "plural": false,
     "description": null
   },
@@ -1363,7 +1363,7 @@
   },
   "LYRICS": {
     "context": "right_sidebar.rs",
-    "definedIn": "src/ui/right_sidebar.rs:177",
+    "definedIn": "src/ui/right_sidebar.rs:187",
     "plural": false,
     "description": null
   },
@@ -2125,7 +2125,7 @@
   },
   "SIDEBAR_LIBRARY": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:272",
+    "definedIn": "src/ui/library/sidebar.rs:282",
     "plural": false,
     "description": null
   },
@@ -2137,7 +2137,7 @@
   },
   "SIDEBAR_PLAYLISTS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:321",
+    "definedIn": "src/ui/library/sidebar.rs:331",
     "plural": false,
     "description": null
   },
@@ -2359,19 +2359,19 @@
   },
   "TABLE_ALBUMS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:449",
+    "definedIn": "src/library/types/table.rs:455",
     "plural": false,
     "description": null
   },
   "TABLE_ARTISTS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:956",
+    "definedIn": "src/library/types/table.rs:962",
     "plural": false,
     "description": null
   },
   "TABLE_TRACKS": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:699",
+    "definedIn": "src/library/types/table.rs:705",
     "plural": false,
     "description": null
   },
@@ -2419,7 +2419,7 @@
   },
   "TRACKS": {
     "context": "sidebar.rs",
-    "definedIn": "src/ui/library/sidebar.rs:305",
+    "definedIn": "src/ui/library/sidebar.rs:315",
     "plural": false,
     "description": null
   },
@@ -2437,7 +2437,7 @@
   },
   "TRACK_NUMBER": {
     "context": "table.rs",
-    "definedIn": "src/library/types/table.rs:650",
+    "definedIn": "src/library/types/table.rs:656",
     "plural": false,
     "description": null
   },
