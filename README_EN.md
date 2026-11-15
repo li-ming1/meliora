@@ -50,7 +50,7 @@ Meliora is a continuation and rewrite of [hummingbird](https://github.com/hummin
 
 Press `F`, flip the sidebar toggle next to the lyrics button, or double-click the now-playing cover to enter a fullscreen immersive player where the current cover fills the entire screen (`Esc` exits):
 
-- **Full-bleed cover backdrop**: resampled precisely to the window's device pixels (4096px source preferred, median denoise, thresholded sharpening) — as sharp as the vinyl-disc label; track changes crossfade the backdrop over 400ms, and a prefetched next track swaps in with zero decode wait
+- **Full-bleed cover backdrop**: resampled precisely to the window's device pixels (2048px source preferred, median denoise, thresholded sharpening) — as sharp as the vinyl-disc label; track changes crossfade the backdrop over 400ms, and a prefetched next track swaps in with zero decode wait
 - **Vinyl disc + following lyrics**: lyrics follow playback line by line; scroll to browse freely, with automatic return after you stop; KRC word-by-word highlighting with translation lines
 - **Per-track accent color**: extracted automatically from the cover to tint the lyrics; animations degrade gracefully when the system "reduce motion" setting is on
 
@@ -112,13 +112,17 @@ cargo build --release --features kugou
 
 Note: `default = []` — a plain build includes none of the features above.
 
-### One-shot Windows build
+### Windows build
 
-On Windows, prefer the in-repo `build-release.cmd`: it prepends your local MSVC / Windows SDK / CMake paths to PATH and builds a release (defaults to `--features kugou`):
+The in-repo `build-release.cmd` does not exist in a fresh clone — it is the maintainer's machine-specific script, excluded by `.gitignore`; only the template [build-release.cmd.example](build-release.cmd.example) is committed:
 
-```powershell
-.\build-release.cmd
+- With a standard toolchain layout, build directly with cargo (icon embedding needs `rc.exe` from the Windows SDK, which a standard install discovers automatically):
+
+```bash
+cargo build --release --features kugou
 ```
+
+- Only a non-standard layout (e.g. VS not registered with vswhere, SDK/CMake outside default locations) needs the script: copy the template to `build-release.cmd` and, together with [.cargo/config.toml.example](.cargo/config.toml.example) (copied to `.cargo/config.toml`), fill the placeholders with your real local paths, then run `.\build-release.cmd` — it prepends those paths to PATH and builds a release (defaults to `--features kugou`).
 
 ### Run & data
 

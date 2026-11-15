@@ -3,7 +3,9 @@ name: Check
 # push-to-main 编译门禁：本地只编 Windows，macOS/Linux 平台代码历来到发布日
 # 才第一次编译（v0.0.6 因此三轮 CI 失败）。这里在提交当天用 cargo check
 # （不链接、每目标数分钟）把四类非 Windows 目标过一遍，kugou feature 与
-# release.yml 的构建组合保持一致。
+# release.yml 的构建组合保持一致；default = [] 面单独 check 一遍——kugou
+# 的包集虽是真超集，但 cfg(not(online_sources)) 分支只在无 feature 时编译
+# （第 20 轮 PB-1 的 E0592 就是被恒带的 --features kugou 掩蔽的）。
 on:
   push:
     branches: [main]
@@ -82,5 +84,9 @@ jobs:
           key: ${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: cargo check
+      - name: cargo check (kugou)
         run: cargo check --locked --target ${{ matrix.target }} --features kugou
+
+      # default = [] 面与公开 README 的「基础构建」命令一致，必须保持可编译。
+      - name: cargo check (default)
+        run: cargo check --locked --target ${{ matrix.target }}

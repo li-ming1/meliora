@@ -62,7 +62,7 @@ Meliora 是 [hummingbird](https://github.com/hummingbird-player/hummingbird) 的
 
 一键进入系统全屏的沉浸播放页（快捷键 `F`、侧边栏歌词按钮旁的开关，或双击播放信息栏封面；沉浸页内按 `Esc` 退出），当前封面铺满整面背景：
 
-- **全出血封面背景**：按窗口设备像素精确重采样（4096 源优先、中值去噪、阈值锐化），清晰度与圆盘小封面同级；切歌以 400ms crossfade 换背景，下一首预取命中时零解码等待
+- **全出血封面背景**：按窗口设备像素精确重采样（2048 源优先、中值去噪、阈值锐化），清晰度与圆盘小封面同级；切歌以 400ms crossfade 换背景，下一首预取命中时零解码等待
 
 - **圆盘唱片 + 歌词跟随**：歌词随播放逐行跟随，滚轮自由浏览、停留后自动回位；KRC 逐字高亮，翻译对照显示
 
@@ -128,13 +128,17 @@ cargo build --release --features kugou
 
 注意：`default = []`，默认构建不包含以上任何 feature。
 
-### Windows 一键构建
+### Windows 构建
 
-Windows 下推荐使用仓库内的 `build-release.cmd`，它自动把本机 MSVC / Windows SDK / CMake 路径加入 PATH，再构建 release（默认已带 `--features kugou`）：
+`build-release.cmd` 是维护者本机的私有脚本，**不入库**（被 `.gitignore` 排除），克隆后并不存在；仓库只提供模板 [build-release.cmd.example](build-release.cmd.example)：
 
-```powershell
-.\build-release.cmd
+- 标准布局的工具链直接用 cargo 构建（图标嵌入需要 SDK 中的 `rc.exe`，标准安装下可自动发现）：
+
+```bash
+cargo build --release --features kugou
 ```
+
+- 非标准布局（如 VS 未注册进 vswhere、SDK/CMake 不在默认位置）才需要该脚本：把模板复制为 `build-release.cmd`，连同 [.cargo/config.toml.example](.cargo/config.toml.example)（复制为 `.cargo/config.toml`）按本机真实路径填写占位符，再运行 `.\build-release.cmd`——它自动把各路径加入 PATH 并构建 release（默认已带 `--features kugou`）。
 
 ### 运行与数据
 

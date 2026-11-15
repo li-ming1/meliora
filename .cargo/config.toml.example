@@ -15,7 +15,7 @@ CMAKE_GENERATOR = "NMake Makefiles"
 
 # 把下面的占位符替换为本机实际路径（推荐直接硬编码完整路径）。
 # 注意：cargo 配置里的 ${VAR} 插值读取的是进程环境变量，不是上面的 [env] 表——
-# 若要改用 ${VAR} 引用，必须先在 build-release.cmd 里 set 这些变量再构建。
+# 若要改用 ${VAR} 引用，必须先在构建脚本（复制 build-release.cmd.example 所得）里 set 这些变量再构建。
 VCToolsInstallDir = "<MSVC_INSTALL_DIR>"
 WindowsSdkDir = "<WINDOWS_SDK_DIR>"
 WindowsSDKVersion = "<SDK_VERSION>"
