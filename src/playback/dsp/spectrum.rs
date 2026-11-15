@@ -59,14 +59,15 @@ impl SpectrumTap {
     /// 平坦曲线没有余量可提醒。
     pub fn push_post(&mut self, planes: &[Vec<f64>], frames: usize, track_peak: bool) {
         let _tapped = push(&mut self.post, &self.viewers, planes, frames);
-        if !track_peak {
+        // 未被观看（viewers 空）时不跟踪峰值：削波指示器只在 EQ 视图消费时
+        // 才有意义（unwatched_tap_leaves_the_peak_alone 钉住）。track_peak 的
+        // watched 分支以 planes 的真实块长为界扫描，与推入对齐量解耦——pre
+        // 环接近满/被 UI 抽干时 tapped < 块长，环丢的只是拷贝、planes 本身
+        // 持有全部帧；按 tapped 扫描会让削波指示在遮挡期整段漏报（第四轮
+        // A4-1）。pre 环写满（tapped == 0）时推入被跳过，扫描照常执行。
+        if !track_peak || self.viewers.load(Ordering::Relaxed) == 0 {
             return;
         }
-        // 分声道取峰值：极端声像的削波不许藏进单声道下混里。
-        // 峰值扫描以 planes 的真实块长为界，与推入对齐量解耦——pre 环接近
-        // 满/被 UI 抽干时 tapped < 块长，环丢的只是拷贝、planes 本身持有
-        // 全部帧；按 tapped 扫描会让削波指示在遮挡期整段漏报（第四轮审计
-        // A4-1）。pre 环写满（tapped == 0）时推入被跳过，扫描照常执行。
         let block = common_frame_count(planes);
         if block == 0 {
             return;
