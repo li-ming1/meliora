@@ -553,7 +553,9 @@ impl QueueManager {
         });
 
         // 应用，保持旧的锁内顺序：先队列内容，再 undo 历史，最后光标。
-        if let Some(new_queue) = new_queue {
+        if let Some(mut new_queue) = new_queue {
+            // 回绕洗牌克隆写回前的漂移对齐（第五轮 5A-2）
+            self.align_snapshot_paths_with_live(&mut new_queue);
             let mut queue = self.queue.write_recovered();
             *queue = new_queue;
             drop(queue);
@@ -660,7 +662,9 @@ impl QueueManager {
                 .clone()
         });
 
-        if let Some(new_queue) = new_queue {
+        if let Some(mut new_queue) = new_queue {
+            // 回绕洗牌克隆写回前的漂移对齐（第五轮 5A-2）
+            self.align_snapshot_paths_with_live(&mut new_queue);
             let mut queue = self.queue.write_recovered();
             *queue = new_queue;
             drop(queue);
@@ -866,17 +870,30 @@ impl QueueManager {
     /// 必须直接调本方法而非带守卫的 [`Self::reconcile_original_queue_paths`]。
     #[cfg(feature = "online_sources")]
     fn align_mirror_paths_to_queue(&mut self) {
-        let fresh: FxHashMap<OnlineIdentity, PathBuf> = self
-            .queue
-            .read_recovered()
-            .iter()
-            .filter_map(|item| Some((item.online_identity()?.clone(), item.get_path().clone())))
-            .collect();
+        let fresh = self.fresh_live_paths();
         if fresh.is_empty() {
             return;
         }
         let mirror = Arc::make_mut(&mut self.original_queue);
-        for item in mirror.iter_mut() {
+        Self::sync_item_paths(mirror, &fresh);
+    }
+
+    /// 活队列当前 identity→path 映射（在线条目专属；identity 含每曲唯一
+    /// hash，全等匹配不做哨兵展开）。
+    #[cfg(feature = "online_sources")]
+    fn fresh_live_paths(&self) -> FxHashMap<OnlineIdentity, PathBuf> {
+        self.queue
+            .read_recovered()
+            .iter()
+            .filter_map(|item| Some((item.online_identity()?.clone(), item.get_path().clone())))
+            .collect()
+    }
+
+    /// 按 identity 把活队列的当前路径同步进 `items`（就地，路径不同才写）。
+    /// 顺序永远不由本方法决定——洗牌/回绕语义管顺序，内容路径以活队列为准。
+    #[cfg(feature = "online_sources")]
+    fn sync_item_paths(items: &mut [QueueItemData], fresh: &FxHashMap<OnlineIdentity, PathBuf>) {
+        for item in items.iter_mut() {
             let Some(identity) = item.online_identity() else {
                 continue;
             };
@@ -894,6 +911,37 @@ impl QueueManager {
 
     #[cfg(not(feature = "online_sources"))]
     fn align_mirror_paths_to_queue(&mut self) {}
+
+    /// 洗牌/回绕写回的漂移对齐（第五轮 5A-2）：快照基的洗牌克隆写回前，把
+    /// UI 侧路径刷新（app.rs 启动刷新、kugou play_track 直改——「播放线程是
+    /// 队列唯一变更方」不变量的两处已知例外）在快照→应用窗口内落地的新 URL
+    /// 按 identity 同步进来，否则写回会静默丢弃窗口期刷新、下次播放用过期
+    /// URL 失败一轮。顺序由洗牌语义决定，内容路径以活队列为准；无漂移时
+    /// 零开销（一次读锁 + 空映射短路）。
+    #[cfg(feature = "online_sources")]
+    fn align_snapshot_paths_with_live(&self, new_queue: &mut Arc<Vec<QueueItemData>>) {
+        let fresh = self.fresh_live_paths();
+        if fresh.is_empty() {
+            return;
+        }
+        let items = Arc::make_mut(new_queue);
+        Self::sync_item_paths(items, &fresh);
+    }
+
+    #[cfg(not(feature = "online_sources"))]
+    fn align_snapshot_paths_with_live(&self, _new_queue: &mut Arc<Vec<QueueItemData>>) {}
+
+    /// 洗牌克隆的漂移对齐（同上，对 shuffle 后的 Vec 就地生效）。
+    #[cfg(feature = "online_sources")]
+    fn align_shuffled_clone_with_live(&self, queue_vec: &mut Vec<QueueItemData>) {
+        let fresh = self.fresh_live_paths();
+        if !fresh.is_empty() {
+            Self::sync_item_paths(queue_vec, &fresh);
+        }
+    }
+
+    #[cfg(not(feature = "online_sources"))]
+    fn align_shuffled_clone_with_live(&self, _queue_vec: &mut Vec<QueueItemData>) {}
 
     /// 移除队列里指定下标的条目。
     pub fn dequeue(&mut self, index: usize) -> DequeueResult {
@@ -1438,6 +1486,9 @@ impl QueueManager {
                 }
 
                 self.original_queue = snapshot;
+                // 洗牌克隆写回前的漂移对齐（第五轮 5A-2）：快照→写回窗口内
+                // UI 侧路径刷新按 identity 同步进洗牌结果。
+                self.align_shuffled_clone_with_live(&mut queue_vec);
                 let mut queue = self.queue.write_recovered();
                 *queue = Arc::new(queue_vec);
                 drop(queue);

@@ -303,6 +303,7 @@ impl CpalDevice {
             dither: DITHER_SEED,
             // 最坏情况：一整个管线中转缓冲区，交织排列
             interleave_buffer: Vec::with_capacity(DEFAULT_BUFFER_FRAMES * channels as usize),
+            misalign: 0,
             underruns,
             primed,
             underruns_reported: 0,
@@ -375,6 +376,11 @@ where
     /// 喂养逐样本 TPDF 抖动的 xorshift 状态（非零）。
     pub dither: u64,
     pub interleave_buffer: Vec<T>,
+    /// 环形缓冲写指针相对回调帧栅格的错位样本数（0 = 对齐）。WriteTimeout
+    /// 的部分写入会让它非零——此后回调按帧读取把声道角色永久旋转（立体声
+    /// 即 L/R 互换）。consume_from 在下一次写入前按它丢弃新批次头部的样本
+    /// 补齐栅格（F-1 专项，见写入处注释）；reset/重建流时归零。
+    pub misalign: usize,
     pub underruns: Arc<AtomicU64>,
     /// 在生产者首次成功提交之前一直是清除态（`reset` 时再次清除）：实时回调
     /// 只在该位为真时统计欠载，于是 open->prime 之间的静音空档不算饥饿。
@@ -468,11 +474,18 @@ where
         self.ring_buf = prod;
         self.device_errored = device_errored;
         self.interleave_buffer.clear();
+        // 新环从零开始，帧对齐不变量复位（F-1 自愈簿记）。
+        self.misalign = 0;
         self.stream_started_at = Instant::now();
         self.idle_since = None;
         self.logged_first_submit = false;
         // 重建后的流尚未布防，直到样本重新流动。
         self.primed.store(false, Ordering::Relaxed);
+        // 同步欠载基线：stop 后回调在 primed 仍为 true 期间会把停止间隙的
+        // 静音填充计成欠载，这些幻影计数不归属新曲——reset 时按当前值吸收，
+        // 避免新曲首个 consume_from 把幻影差额整批误告警（只影响诊断口径，
+        // 无音频行为变化）。
+        self.underruns_reported = self.underruns.load(Ordering::Relaxed);
 
         if pause_pending && let Err(e) = self.stream.pause() {
             return Err(ResetError::Unknown(e.to_string()));
@@ -603,24 +616,43 @@ where
         }
         self.dither = dither;
 
-        write_bounded_planar(
+        // 帧对齐自愈（第四轮 F-1 专项）：上一次 WriteTimeout 的部分写入可能
+        // 在环内留下错位样本（见 misalign），此后回调按帧读取会把声道角色永
+        // 久旋转（立体声即 L/R 互换）。修复 = 按当前错位从本批头部丢弃恰好
+        // 补齐栅格的样本数：代价是拼帧瞬态的少量内容毛刺（故障恢复场景下不
+        // 可闻），换来错位永久恢复——比朴素的 reset（以可能过时的 config 重
+        // 建流、与 drift 守卫的重建互相打架，7064b69ad8 已回退该方案）安全。
+        // 错位 ≤ channels-1 个样本，丢弃量为 0 时零开销。
+        let drop_samples = if self.interleave_buffer.is_empty() {
+            0
+        } else {
+            (self.interleave_buffer.len() + self.misalign) % channel_count
+        }
+        .min(self.interleave_buffer.len());
+        if drop_samples > 0 {
+            self.interleave_buffer.drain(..drop_samples);
+        }
+
+        let write_result = write_bounded_planar(
             std::slice::from_mut(&mut self.ring_buf),
             &[&self.interleave_buffer],
             self.interleave_buffer.len(),
-        )
-        .map_err(|e| {
-            // 超时路径透传实际写入量：诊断停滞场景时不再只看到总量口径。
-            warn!(written = e.written, "ring write timed out");
-            // 【已知缺口（2026-11-14 第三轮深读）】超时残留的部分写入不保证
-            // 帧对齐（writable 按可用槽位截断）：环内错位 r 个样本会让此后
-            // 帧的声道角色旋转（立体声 L/R 互换），直到环整体排空或 reset。
-            // 触发链窄：设备停顿 >250ms 死线 + 引擎退避窗内恢复 + 部分写入。
-            // 朴素的"错位即 self.reset()"被 device_drift 测试证伪——reset 以
-            // 可能过时的 config 重建流，与 drift 守卫的重建互相打架；正确的
-            // 修法需要 pipeline 写入原语的帧对齐语义或引擎侧 defer 窗口与
-            // drift 的协同设计，专项处理。
-            SubmissionError::WriteTimeout
-        })?;
+        );
+        // 写指针按实际落环样本数推进；超时的部分写入把错位记入 misalign，
+        // 由下一次 consume_from 的头部丢弃自愈（见上方帧对齐自愈注释）。
+        let submitted = match write_result {
+            // Ok 契约即全量落环（write_bounded_planar 返回 Ok 时 written ==
+            // total）：落环样本数就是头部丢弃后的 interleave_buffer.len()，
+            // 与 Err 臂 e.written 同口径进 misalign 簿记。
+            Ok(()) => self.interleave_buffer.len(),
+            Err(e) => {
+                // 超时路径透传实际写入量：诊断停滞场景时不再只看到总量口径。
+                warn!(written = e.written, "ring write timed out");
+                self.misalign = (self.misalign + e.written) % channel_count.max(1);
+                return Err(SubmissionError::WriteTimeout);
+            }
+        };
+        self.misalign = (self.misalign + submitted) % channel_count.max(1);
         // 样本已进环形缓冲：此后回调饥饿就是真欠载，要被计数。
         self.primed.store(true, Ordering::Relaxed);
 

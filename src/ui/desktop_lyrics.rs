@@ -460,8 +460,8 @@ impl DesktopLyricsView {
         if idx == 0 { None } else { Some(idx - 1) }
     }
 
-    /// 行切换或当前行仍在逐字飞行中才重绘；尾音窗口与上一帧输出相同，
-    /// 不再 notify。
+    /// 行切换或当前行仍在逐字飞行中才重绘；无逐字词条（纯文本行）或尾音窗口结束后的间奏期，
+    /// 与上一帧输出逐字节相同，直接早退不再触发无谓的 notify。
     fn track_line(&mut self, pos_ms: u64, cx: &mut Context<Self>) {
         let new_line = self.line_at(pos_ms);
         let sweeping = new_line.is_some_and(|i| {
@@ -469,9 +469,11 @@ impl DesktopLyricsView {
                 .as_ref()
                 .and_then(|p| p.get(i))
                 .is_some_and(|line| {
-                    line.words
-                        .last()
-                        .is_some_and(|word| pos_ms < word.time_ms + word.duration_ms)
+                    !line.words.is_empty()
+                        && line
+                            .words
+                            .last()
+                            .is_some_and(|word| pos_ms < word.time_ms + word.duration_ms)
                 })
         });
         if sweeping || new_line != self.current_line {
@@ -634,4 +636,54 @@ impl Render for DesktopLyricsView {
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn last_known_position() -> Option<[f64; 2]> {
     LAST_KNOWN_POS.lock().ok().and_then(|guard| *guard)
+}
+
+#[cfg(test)]
+mod tests {
+    #[core::prelude::v1::test]
+    fn track_line_pure_text_line_without_words_is_not_sweeping() {
+        use crate::ui::lyrics::lrc::{LrcLine, LrcWord};
+
+        // 构造包含两行的歌词列表：第一行是纯文本（无逐字 words），第二行含逐字 words
+        let lines = [
+            LrcLine {
+                time_ms: 1000,
+                text: "纯文本行".into(),
+                translation: None,
+                words: Vec::new(),
+            },
+            LrcLine {
+                time_ms: 2000,
+                text: "卡拉OK行".into(),
+                translation: None,
+                words: vec![LrcWord {
+                    time_ms: 2000,
+                    duration_ms: 500,
+                    text: "卡拉OK".into(),
+                }],
+            },
+        ];
+
+        let is_sweeping = |new_line: Option<usize>, pos_ms: u64| -> bool {
+            new_line.is_some_and(|i| {
+                lines.get(i).is_some_and(|line| {
+                    !line.words.is_empty()
+                        && line
+                            .words
+                            .last()
+                            .is_some_and(|word| pos_ms < word.time_ms + word.duration_ms)
+                })
+            })
+        };
+
+        // 在第 1 行（纯文本行）内：sweeping 必须为 false，避免位置 tick 白白 notify
+        assert!(!is_sweeping(Some(0), 1200));
+        assert!(!is_sweeping(Some(0), 1800));
+
+        // 在第 2 行（卡拉OK行）内且在逐字飞行期间（2000..2500ms）：sweeping 必须为 true
+        assert!(is_sweeping(Some(1), 2200));
+
+        // 在第 2 行尾音结束后的间奏期（>2500ms）：sweeping 恢复为 false，避免继续重绘
+        assert!(!is_sweeping(Some(1), 2600));
+    }
 }
