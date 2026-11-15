@@ -125,7 +125,6 @@ cargo build --release --features kugou
 | `online` | 在线服务基础依赖（HTTP 客户端） |
 | `online_sources` | 在线曲目公共管道：HTTP-range 流式播放、封面缓存、在线队列项，由上面的 provider feature 自动开启 |
 | `console` | [tokio-console](https://github.com/tokio-rs/console) 运行时诊断 |
-| `runtime_shaders` | GPUI 着色器改为运行时编译（调试着色器用） |
 
 注意：`default = []`，默认构建不包含以上任何 feature。
 

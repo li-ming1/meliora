@@ -109,7 +109,6 @@ cargo build --release --features kugou
 | `online` | Base dependency for online services (HTTP client) |
 | `online_sources` | Shared online-track plumbing: HTTP-range streaming, cover cache, online queue items; auto-enabled by the provider features above |
 | `console` | [tokio-console](https://github.com/tokio-rs/console) runtime diagnostics |
-| `runtime_shaders` | Compile GPUI shaders at runtime (for shader debugging) |
 
 Note: `default = []` — a plain build includes none of the features above.
 

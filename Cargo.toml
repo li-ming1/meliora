@@ -8,7 +8,6 @@ readme = "README.md"
 categories = ["multimedia::audio"]
 
 [features]
-runtime_shaders = ["gpui_platform/runtime_shaders"]
 console = ["dep:console-subscriber", "tokio/tracing"]
 online = ["dep:zed-reqwest", "dep:sha2"]
 # Exposes the [mem] probe's `atlas=` field (main.rs atlas_probe_snapshot).
@@ -80,7 +79,7 @@ rubato = "5"
 rust-embed = "8"
 rustc-hash = "2"
 same-file = "1"
-serde = { version = "1", features = ["derive", "rc"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Update artifact integrity (updater.rs): sha256 of the downloaded bare
 # binary against the release's checksums.txt. Pulled in by `online` only.
@@ -237,13 +236,6 @@ zbus = "5"
 
 [profile.dev]
 split-debuginfo = "unpacked"
-
-[profile.dev-optimized]
-inherits = "release"
-debug = "full"
-strip = "none"
-lto = "none"
-opt-level = "s"
 
 [profile.release]
 # Speed over size: the decode/resample/image paths are realtime-adjacent and
