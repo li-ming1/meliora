@@ -781,8 +781,10 @@ fn spawn_memory_probe() {
     const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
     /// 看门狗的软 private-commit 预算（MiB）。按 2026-09-27 浸泡实测调校
     /// （110+ 次切歌、封面浏览、歌词+队列打开）：持续平台期 ~370-385 MB，突发峰值
-    /// ~440 MB 且数分钟内回落。越过 420 MB 后的 purge 已无法用实时活动解释——那
-    /// 意味着棘轮式增长（或新泄漏），所以每次采样强制 purge，并每第 4 次采样告警。
+    /// ~440 MB 且数分钟内回落。420 上方含正常连听平台（2026-11 连听实测 ≥420 占
+    /// 21.9-26.7% 采样、非单调、tiles_leaked 全库为 0）——判读异常看连续超线
+    /// 长度（streak）、purge 实回收（reclaimed_mb）、tiles_leaked 与单调爬坡，
+    /// 单点越线不是信号（2026-11-15 修订，取代「越线即棘轮/新泄漏」旧判据）。
     const MEMORY_SOFT_CAP_MB: u64 = 420;
     /// 硬 private-commit 上限（MiB）。泄漏修复给每条已知增长路径都封了界，但
     /// "无论运行多久都不可能超过"需要一套对*未知*未来 bug 强制生效的机制，而且
@@ -824,6 +826,14 @@ fn spawn_memory_probe() {
         // 压力 shed 的记账：连续越线采样数，以及上升沿（上一个采样还在线内）。
         let mut over_cap_streak: u32 = 0;
         let mut was_over_cap = false;
+        // 看门狗 purge 分级记账（2026-11-15）：连续超线采样数、平台期累计回收
+        // 与 private 包络（长平台 info 汇总的字段）、「上次 collect 回收为 0」
+        // 的降频旗标。更新与清零点都在探针循环内的看门狗段。
+        let mut watchdog_streak: u32 = 0;
+        let mut watchdog_reclaimed_total_mb: u64 = 0;
+        let mut watchdog_platform_min_mb = u64::MAX;
+        let mut watchdog_platform_max_mb: u64 = 0;
+        let mut watchdog_collect_dry = false;
         // 启动分级：interval 首个 tick 立即完成，t=0 全量枚举 image-cache 目录
         // （数千文件的 metadata）会与首帧窗口争盘，先推迟 60s 再进入采样循环
         // （间隔 30s，对内存观测无实质损失；看门狗晚 60s 相对 300s 最小存活
@@ -914,31 +924,65 @@ fn spawn_memory_probe() {
                     .unwrap_or(0);
             }
             let scheduled_collect = tick_count.is_multiple_of(10);
-            // 内存上限看门狗：越过软 private-commit 预算后，改为每次采样都 purge，
-            // 不再等 5 分钟节奏，并在日志里说明。该预算高于实测稳态（歌词+队列+网格
-            // 全开时 ~300 MB）、低于已知抖动漂移，所以越线意味着激进的 page-reset
-            // 选项没能压住的碎片（或新泄漏）。
+            // 内存上限看门狗（purge 两级节流，2026-11-15）：2026-11 连听实测
+            // 420 已是常态线（≥420 占 21.9-26.7% 采样），且 96% 的超线 collect
+            // 回收为 0——逐采样整堆扫描变纯开销。上升沿与「上次实回收 > 0」时
+            // 逐采样 collect（真实棘轮形态在首次越线即响应）；连续空回收后降频
+            // 为每 4 个采样（~2 分钟）重试一次。
             let watchdog_purge = private >= MEMORY_SOFT_CAP_MB;
-            let mi_collect_reclaim_mb = if scheduled_collect || watchdog_purge {
+            let watchdog_rising = watchdog_purge && !was_over_cap;
+            // 连续超线采样数与平台期 private 包络：长平台 info 汇总的字段；
+            // 回落到线下即清零。
+            if watchdog_purge {
+                watchdog_streak += 1;
+                watchdog_platform_min_mb = watchdog_platform_min_mb.min(private);
+                watchdog_platform_max_mb = watchdog_platform_max_mb.max(private);
+            } else {
+                watchdog_streak = 0;
+                watchdog_reclaimed_total_mb = 0;
+                watchdog_platform_min_mb = u64::MAX;
+                watchdog_platform_max_mb = 0;
+                watchdog_collect_dry = false;
+            }
+            let watchdog_collect = watchdog_purge
+                && (watchdog_rising || !watchdog_collect_dry || tick_count.is_multiple_of(4));
+            let mi_collect_reclaim_mb = if scheduled_collect || watchdog_collect {
                 // mi_collect(true) 是整堆扫描（10-06 实测一次回收 206MB 的就是它）。
                 // 探针跑在只有 2 个 worker 的 RUNTIME 上，同步执行等于长期占住一半
                 // 异步产能数十至上百 ms，而软顶看门狗触发时正是最需要响应的时候——
                 // 交阻塞池，与本探针内 covers_mb 的既有做法一致。
-                Some(
-                    crate::RUNTIME
-                        .spawn_blocking(move || mimalloc_force_collect_reclaim_mb(mi_commit_mb))
-                        .await
-                        .unwrap_or(0),
-                )
+                let reclaimed = crate::RUNTIME
+                    .spawn_blocking(move || mimalloc_force_collect_reclaim_mb(mi_commit_mb))
+                    .await
+                    .unwrap_or(0);
+                if watchdog_purge {
+                    // 超线期记账：累计回收进平台期汇总；空回收即挂起降频旗标，
+                    // 下一采样起退到每 4 采样重试，直到某次重试换回非 0。
+                    watchdog_reclaimed_total_mb += reclaimed;
+                    watchdog_collect_dry = reclaimed == 0;
+                }
+                Some(reclaimed)
             } else {
                 None
             };
-            if watchdog_purge && tick_count.is_multiple_of(4) {
+            if watchdog_rising {
                 tracing::warn!(
                     private_mb = private,
                     soft_cap_mb = MEMORY_SOFT_CAP_MB,
                     reclaimed_mb = mi_collect_reclaim_mb,
                     "mem watchdog: private commit over soft cap, forced mimalloc purge"
+                );
+            } else if watchdog_purge && watchdog_streak.is_multiple_of(10) {
+                // 长平台期汇总（每 10 采样 ≈5 分钟一行）：逐采样 warn 已实测为
+                // 噪声（96% 回收 0），降为 info；判读异常看 streak 长度、累计
+                // 回收与本包络的单调爬坡，单点越线不是信号。
+                tracing::info!(
+                    private_mb = private,
+                    streak = watchdog_streak,
+                    reclaimed_total_mb = watchdog_reclaimed_total_mb,
+                    plateau_min_mb = watchdog_platform_min_mb,
+                    plateau_max_mb = watchdog_platform_max_mb,
+                    "mem watchdog: sustained over-cap plateau; purge throttled while reclaim is empty"
                 );
             }
             // 压力 shed：软顶是硬阀门计数所依据的预警线（间隔 30 s 的连续两次采样）。
