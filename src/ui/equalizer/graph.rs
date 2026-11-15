@@ -138,6 +138,10 @@ struct GraphState {
     hover: Option<Hover>,
     q_flash: Option<(Instant, usize)>,
     last_add: Option<(Instant, usize)>,
+    /// 滚轮调 Q 的帧内累进（自上次 paint 以来的累计档数，按频段分记）：
+    /// paint 快照的 band.q 在同一帧批次内不刷新——逐事件从快照基重算会互相
+    /// 覆盖、中间增量丢失（第五轮 5B-2）。paint 时清零，下一批从新快照起算。
+    q_scroll_acc: Option<(usize, f32)>,
     /// 拖拽最后一次向下游推送的值，用于推送合并。
     last_push: Option<(Instant, usize, f64, f64)>,
     cache: Option<CurveCache>,
@@ -1000,6 +1004,10 @@ impl Element for EqGraph {
 
         window.with_optional_element_state(id, move |v, window| {
             let state: Rc<RefCell<GraphState>> = v.flatten().unwrap_or_default();
+            // paint 重新捕获了含最新已应用 Q 的 self.config 快照：滚轮累进账
+            // 本就此清零，下一批滚轮事件从新快照起算（与 q_scroll_acc 字段注
+            // 释配对；账本挂在 gpui element state 上跨帧存续）。
+            state.borrow_mut().q_scroll_acc = None;
 
             {
                 let state = state.clone();
@@ -1307,7 +1315,16 @@ impl Element for EqGraph {
                     } else {
                         ev.delta.pixel_delta(px(1.0)).y.into()
                     };
-                    (on_scroll_q.borrow_mut())(target, scroll_q(band.q, f64::from(notches)), cx);
+                    // 帧内累进（第五轮 5B-2）：同帧批次的多个滚轮事件都以
+                    // paint 快照的 band.q 为基，逐事件绝对重算会互相覆盖——
+                    // 累计自上次 paint 以来的档数再一次性换算。
+                    let acc = match state.borrow().q_scroll_acc {
+                        Some((idx, acc)) if idx == target => acc,
+                        _ => 0.0,
+                    };
+                    let total = acc + notches;
+                    state.borrow_mut().q_scroll_acc = Some((target, total));
+                    (on_scroll_q.borrow_mut())(target, scroll_q(band.q, f64::from(total)), cx);
                     state.borrow_mut().q_flash = Some((Instant::now(), target));
                     window.refresh();
                 });

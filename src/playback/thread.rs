@@ -935,13 +935,21 @@ impl PlaybackThread {
             QueueNavigationResult::Changed {
                 index,
                 path,
-                reshuffled: _,
+                reshuffled,
             } => {
                 info!("Opening previous file in queue at index {}", index);
                 // queue.previous 已把光标移到新条目：open 之前丢弃为旧"下一曲"
                 // 预备/在途的预备（L-prepared 爪1）。Unchanged 臂光标未动、
                 // next 未变，不加。
                 self.drop_stale_prepared_after_navigation();
+
+                // 与 next() 同款：列表循环 + 光标在队首的回绕会整体重排队列，
+                // 不补发 QueueUpdated 队列面板停留在洗牌前旧序、高亮错位
+                // （第五轮 5A-1）。
+                if reshuffled == Reshuffled::Reshuffled {
+                    self.send_event(PlaybackEvent::QueueUpdated);
+                }
+
                 self.open_or_log(&path);
                 self.send_event(PlaybackEvent::QueuePositionChanged(index));
             }

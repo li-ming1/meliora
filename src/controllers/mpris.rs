@@ -199,8 +199,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn can_go_next(&self) -> fdo::Result<bool> {
-        // TODO: 这里应该能实现得更好
-        Ok(true)
+        self.can_control_playback_int().await
     }
 
     async fn previous(&self) -> fdo::Result<()> {
@@ -209,8 +208,7 @@ impl PlayerInterface for MprisControllerServer {
     }
 
     async fn can_go_previous(&self) -> fdo::Result<bool> {
-        // TODO: 这里应该能实现得更好
-        Ok(true)
+        self.can_control_playback_int().await
     }
 
     async fn play_pause(&self) -> fdo::Result<()> {

@@ -29,6 +29,12 @@ use crate::{
     },
 };
 
+/// profile 拉取瞬态失败的补试上限：86fc0b8b49 的分区缓存让设置窗存活期内
+/// 不再重建实体，失败态此前会固化到重开设置窗；上限 3 次、间隔 10s 给网络
+/// 抖动一个自愈窗口，避免无限重试风暴（I-4，第四轮审计）。
+const PROFILE_FETCH_RETRY_CAP: u32 = 3;
+const PROFILE_FETCH_RETRY_DELAY: Duration = Duration::from_secs(10);
+
 pub struct KugouSettings {
     settings: Entity<Settings>,
     logged_in: bool,
@@ -36,6 +42,8 @@ pub struct KugouSettings {
     /// 人类可读的 VIP 状态行（"VIP · till 2026-08-24" / "No VIP"）。
     vip_line: Option<SharedString>,
     profile_failed: bool,
+    /// 已连续失败的补试次数：成功归零，达到 [`PROFILE_FETCH_RETRY_CAP`] 停手。
+    profile_retries: u32,
     qr: QrLogin,
     download_dir: DownloadDirField,
 }
@@ -61,6 +69,9 @@ impl KugouSettings {
                     this.logged_in = logged_in;
                     this.nickname = None;
                     this.profile_failed = false;
+                    // 身份变化即重置补试账本：旧账号的失败预算不该吃掉新账号
+                    // 的自愈窗口（与 I-4 重试配对）。
+                    this.profile_retries = 0;
                     this.vip_line = Some(crate::ui::kugou::vip_status_line());
                     if logged_in {
                         this.fetch_profile(cx);
@@ -78,6 +89,7 @@ impl KugouSettings {
                 nickname: None,
                 vip_line: Some(crate::ui::kugou::vip_status_line()),
                 profile_failed: false,
+                profile_retries: 0,
                 qr: QrLogin::new(),
                 download_dir: DownloadDirField::new(),
             };
@@ -106,8 +118,29 @@ impl KugouSettings {
                     Ok(Ok(profile)) => {
                         this.nickname = Some(profile.nickname.into());
                         this.profile_failed = false;
+                        this.profile_retries = 0;
                     }
-                    _ => this.profile_failed = true,
+                    _ => {
+                        this.profile_failed = true;
+                        this.profile_retries += 1;
+                        // 瞬态失败重试（I-4）：分区缓存让失败态在设置窗存活期
+                        // 内固化——上限内按 10s 间隔补试，条件守卫覆盖等待期间
+                        // 登出/重开的竞态；上限耗尽后停手（登出/登入或重开设
+                        // 置窗手动触发）。
+                        if this.profile_retries <= PROFILE_FETCH_RETRY_CAP {
+                            let delay = PROFILE_FETCH_RETRY_DELAY;
+                            cx.spawn(async move |this, cx| {
+                                tokio::time::sleep(delay).await;
+                                this.update(cx, |this, cx| {
+                                    if this.profile_failed && kugou::shared_client().logged_in() {
+                                        this.fetch_profile(cx);
+                                    }
+                                })
+                                .ok();
+                            })
+                            .detach();
+                        }
+                    }
                 }
                 // refresh_vip_detail 已把响应缓存在会话上，于是 VIP 行现在可以从它
                 // 渲染——除非这次抓取本身失败，那不能读成 "No VIP"。

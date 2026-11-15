@@ -442,6 +442,14 @@ impl Render for EqualizerView {
                 let view = view.clone();
                 move |frequency, gain_db, cx| {
                     view.update(cx, |this, cx| {
+                        // 满员守卫：graph 的新增门按 paint 时快照判容量，同一帧
+                        // 批次内的第二次新增走到这里时 push 会被 mutate 的
+                        // truncate 删掉——返回的 index 会别名到既有频段并被
+                        // 误选中、误拖拽（第五轮 5B-1）。满员时返回尾下标之外
+                        // 的哨兵并跳过选中。
+                        if this.config.bands.len() >= MAX_EQ_BANDS {
+                            return usize::MAX;
+                        }
                         let band = EqBandSettings {
                             frequency,
                             gain_db,

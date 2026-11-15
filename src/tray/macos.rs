@@ -220,8 +220,14 @@ pub(super) fn show_window(window: &mut gpui::Window) {
     let Some(ns_window) = ns_window(window) else {
         return;
     };
-    // app-kit 0.3 起窗口显隐均为安全方法。
-    ns_window.makeKeyAndOrderFront(None);
+    // 对齐 windows.rs 的最小化处理（SW_RESTORE ↔ deminiaturize）：
+    // makeKeyAndOrderFront 不解最小化，最小化态下经托盘 show 会"点了没反应"。
+    // AppKit 行为待真机确认（本机不可编译；AGENTS.md 托盘验证约束：CI 三平台）。
+    if ns_window.isMiniaturized() {
+        ns_window.deminiaturize(None);
+    } else {
+        ns_window.makeKeyAndOrderFront(None);
+    }
     ns_window.orderFrontRegardless();
 }
 

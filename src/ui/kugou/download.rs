@@ -114,9 +114,16 @@ async fn unique_stem(
                 let tolerance = expected as f64 * 0.01;
                 (meta.len() as f64 - expected as f64).abs() <= tolerance
             }
-            None => read_audio_head(&path)
-                .await
-                .is_some_and(|head| audio_magic_matches(ext, head)),
+            // 魔数在文件头，尾部截断必过——补一道与下载路径同款的最小体积
+            // 下限（<1KB 不可能是有效音频），把"截断产物被判已下载"的窗口压
+            // 到 >1KB 的尾部截断（无声明体积 + 连接关闭定界的残余暴露面，
+            // 第四轮 H-2）。
+            None => {
+                meta.len() >= 1024
+                    && read_audio_head(&path)
+                        .await
+                        .is_some_and(|head| audio_magic_matches(ext, head))
+            }
         };
         if already_present {
             return (candidate, true);

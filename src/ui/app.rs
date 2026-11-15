@@ -1110,6 +1110,12 @@ fn refresh_restored_online_urls(
             let display = queue
                 .read_recovered()
                 .get(idx)
+                // 读 display 的同时校验身份：自快照以来 idx 若已换成别的歌，
+                // 它的展示元数据会随 refresh_online_url 污染 identity 的注册
+                // 表条目——下方的写回守卫拦得住路径覆盖、拦不住已发生的登
+                // 记（第五轮 5A-4）。身份不符即跳过本条，快照里少刷一条的
+                // 代价由播放线程的按需刷新兜底。
+                .filter(|item| item.online_identity() == Some(&identity))
                 .and_then(|item| item.persisted_display())
                 .unwrap_or((None, None, None, None));
 

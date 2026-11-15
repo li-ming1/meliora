@@ -253,15 +253,17 @@ pub struct StatsSettings {
     /// 每次 Top 查询启动时递增；跑完的查询若快照已不再匹配，说明它被更新的
     /// tab/范围切换顶掉了，应丢弃而不是覆盖更新的数据行。
     top_generation: u64,
-    /// 最后一批已应用数据的 `(天行, 总秒数, 小时桶秒数, 本地日)`。两个 schema 事实
+    /// 最后一批已应用数据的 `(天行, 总秒数, 小时桶秒数, 本地日, 时区偏移)`。三个 schema 事实
     /// 让"指纹一致"成为*精确*一致而非大概一致：`listen_event` 带
     /// `CHECK (seconds > 0)`（migrations/20260908000000_listen_stats.sql），且
     /// `src/`、`queries/`、`migrations/` 里没有任何地方 UPDATE 或 DELETE 它——于是
     /// 每次插入都严格抬高秒数总和，总和在一次真实变化后不可能相等。天那个分量覆盖
-    /// 跨零点：数据静止时 `today_label`/`streak_label` 也由它派生。
-    /// 一旦这两个事实变了（放宽 CHECK、加保留期清理），这个守卫就不再可证明，必须
+    /// 跨零点：数据静止时 `today_label`/`streak_label` 也由它派生。时区偏移分量封住
+    /// 会话中途改时区/跨 DST 的洞：分桶 SQL 按 localtime 实时求值，时区平移可在
+    /// 总和不变的前提下重排跨零点事件的日桶（第五轮 5C-1）。
+    /// 一旦前两个事实变了（放宽 CHECK、加保留期清理），这个守卫就不再可证明，必须
     /// 改成按内容比较。
-    applied_fingerprint: Option<(usize, i64, i64, NaiveDate)>,
+    applied_fingerprint: Option<(usize, i64, i64, NaiveDate, i32)>,
 }
 
 impl StatsSettings {
@@ -359,6 +361,7 @@ impl StatsSettings {
                         daily.iter().map(|(_, total)| *total).sum::<i64>(),
                         hours.iter().sum::<i64>(),
                         Local::now().date_naive(),
+                        Local::now().offset().local_minus_utc(),
                     );
                     // 数量 + 各项总和都匹配即为精确匹配（只追加的表），于是一无所变的
                     // tick 不重新解析日期、不重建热力图、也不请求重绘。
