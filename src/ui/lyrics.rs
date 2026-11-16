@@ -243,13 +243,16 @@ impl Lyrics {
                         }
                     } else if visible
                         && this.last_active_line.is_some_and(|line| {
-                            // 激活行带逐字歌词：最后一个词仍在飞行才需要按字
-                            // 进度重绘（position 每 ~33ms 广播一次）；尾音
-                            // 窗口渲染输出与上一帧相同，不再 notify。
-                            parsed
-                                .get(line)
-                                .and_then(|l| l.words.last())
-                                .is_some_and(|last| pos_ms < last.time_ms + last.duration_ms)
+                            // 激活行带逐字歌词：当前存在正在活跃变色的字才按字进度重绘
+                            //（position 每 ~33ms 广播一次）；词间呼吸停顿与尾音窗口后
+                            // 各字形像素逐字节相同，直接停火不再 notify。
+                            parsed.get(line).is_some_and(|l| {
+                                !l.words.is_empty()
+                                    && l.words.iter().any(|w| {
+                                        pos_ms >= w.time_ms
+                                            && pos_ms < w.time_ms.saturating_add(w.duration_ms)
+                                    })
+                            })
                         })
                     {
                         cx.notify();

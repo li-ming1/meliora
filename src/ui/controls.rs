@@ -464,8 +464,13 @@ impl Scrubber {
             let position_model = cx.global::<PlaybackInfo>().position.clone();
             let duration_model = cx.global::<PlaybackInfo>().duration.clone();
             // 进度条每拍实际移动亚像素、时间标签整秒缓存——按 250ms 档
-            // 量化 notify，压掉"播放中主窗口 30fps 持续重绘"泵。
+            // 量化 notify，压掉"播放中主窗口 30fps 持续重绘"泵；
+            // 沉浸全屏模式下底层控制栏完全不可见（沉浸页自带全屏底栏进度），
+            // 直接短路早退，避免看不见的常规进度条持续唤醒主窗口重绘。
             cx.observe(&position_model, |this: &mut Self, pos, cx| {
+                if *cx.global::<crate::ui::models::Models>().immersive.read(cx) {
+                    return;
+                }
                 let quantum = *pos.read(cx) / POSITION_DISPLAY_QUANTUM_MS;
                 if quantum != this.drawn_position_quantum {
                     this.drawn_position_quantum = quantum;
