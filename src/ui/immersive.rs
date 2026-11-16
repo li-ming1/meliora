@@ -245,13 +245,10 @@ pub struct ImmersiveView {
     /// 频谱柱元素的复用缓冲：每帧 clear 后保留容量。
     spectrum_bar_buffer: Vec<AnyElement>,
     playback_state: Entity<PlaybackState>,
-    /// 镜像 `*playback_state == Playing`，由 playback_state 观察者维护，
-    /// 是暂停态扫色泵停转（needs_animation_frame 第三子句）的判据。初值
-    /// false 靠 StateChanged 事后补正：启动次序下起播事件先经 playback
-    /// bridge 的通道排队，主窗口（含本视图）构造完成后才 drain（app.rs
-    /// PlaybackThread::start → start_broadcast → ensure_main_window 全在
-    /// 同一同步流程里），观察者必能接上。
+    /// 镜像 `*playback_state == Playing`，由 playback_state 观察者维护。
     playing: bool,
+    /// 镜像当前播放进度（ms），由 position 观察者同步维护，供动感歌词动画帧停火判定使用。
+    current_position_ms: u64,
     current_track: Entity<Option<CurrentTrack>>,
     queue: Entity<Queue>,
     /// 侧栏的歌词模型——共享它，在线抓取才能复用。
@@ -336,31 +333,17 @@ impl ImmersiveView {
                     return;
                 }
                 let pos_ms = *pos.read(cx);
+                this.current_position_ms = pos_ms;
                 let mut needs_repaint = this.track_lyric_line(pos_ms);
-                // 卡拉OK逐字色随 tick 扫动——但只在 KineticLyrics 舞台且当前行
-                // 最后一个字仍在途时。舞台门控必须保留：parse_lyrics 会为所有
-                // LRC 行拟合逐字 words，任何带歌词曲目演唱期间该检查几乎恒真，
-                // 而 PosterWall 的 NOW PLAYING 卡只消费行文本（行粒度更新由
-                // track_lyric_line 覆盖），逐字 tick 不改变其任何像素，30Hz
-                // notify 只会徒劳触发每帧全队列克隆的海报墙重建。进度条住在
-                // 自己的实体里并自行观察位置。
-                if !needs_repaint
-                    && this.stage_mode == ImmersiveStageMode::KineticLyrics
-                    && this.current_line.is_some_and(|i| {
-                        this.parsed
-                            .as_ref()
-                            .and_then(|parsed| parsed.get(i))
-                            .and_then(|line| line.words.last())
-                            .is_some_and(|last| pos_ms < last.time_ms + last.duration_ms)
-                    })
-                {
+                // 仅当切行或当前行存在活跃飞行的逐字变色时才重绘；
+                // 纯文本行、字间呼吸停顿或尾音结束后的间奏期，各字形像素完全静止，直接停火。
+                if !needs_repaint && this.has_active_lyric_animation() {
                     needs_repaint = true;
                 }
                 // 暂停态兜底：本观察者只在位置真实变化（update_ts 对时间戳
                 // 不变早退；PositionChanged 仅真实变化或 seek force）时触发，
                 // 暂停下的 seek 恒得单帧重绘——泵停转后行内 seek 落在末字
-                // 窗口之外（上面逐字判定为否）时再无其它重绘来源，不补就会
-                // 留下旧扫色。播放态不进此分支，判定仍由上面各条款负责。
+                // 窗口之外时再无其它重绘来源，不补就会留下旧扫色。
                 if !needs_repaint && !this.playing {
                     needs_repaint = true;
                 }
@@ -454,6 +437,7 @@ impl ImmersiveView {
                 spectrum_bar_buffer: Vec::new(),
                 playback_state: info.playback_state.clone(),
                 playing: false,
+                current_position_ms: 0,
                 current_track: info.current_track.clone(),
                 queue,
                 lyrics,
@@ -959,14 +943,34 @@ impl ImmersiveView {
         true
     }
 
+    /// 当前是否处于动感歌词的活跃变色与弹跳动画中：
+    /// 仅当沉浸页激活、正在播放、处于动感歌词模式，且当前行存在至少一个正在时间窗口内
+    /// 变色与弹跳的字时才为 true。
+    /// 纯文本行、无歌词、词前等待、字间呼吸停顿与段落间奏期均返回 false，彻底阻断全屏空转重绘。
+    fn has_active_lyric_animation(&self) -> bool {
+        if !self.active || !self.playing || self.stage_mode != ImmersiveStageMode::KineticLyrics {
+            return false;
+        }
+        let Some(parsed) = &self.parsed else {
+            return false;
+        };
+        let Some(active_idx) = self.current_line else {
+            return false;
+        };
+        let Some(line) = parsed.get(active_idx) else {
+            return false;
+        };
+        if line.words.is_empty() {
+            return false;
+        }
+        let pos_ms = self.current_position_ms;
+        line.words
+            .iter()
+            .any(|w| pos_ms >= w.time_ms && pos_ms < w.time_ms.saturating_add(w.duration_ms))
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        self.backdrop_fade_started.is_some()
-            // 暂停态停转扫色泵：KineticLyrics 的逐字扫色由 render 按
-            // position_ms 现算（word_progress），无墙钟插值，暂停时位置
-            // 不动，advance_animations 的自续 schedule+notify 只是白付整
-            // 帧重绘。恢复播放经 playback_state 观察者 notify 自然重启。
-            // 前一条款是自终止动画（走完即 None），不受影响。
-            || (self.active && self.playing && self.stage_mode == ImmersiveStageMode::KineticLyrics)
+        self.backdrop_fade_started.is_some() || self.has_active_lyric_animation()
     }
 
     fn schedule_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2627,5 +2631,61 @@ mod tests {
         );
         assert_eq!(legacy_allocations, 2 * ROUNDS as u64);
         assert_eq!(inline_allocations, 0);
+    }
+
+    #[test]
+    fn kinetic_animation_stops_during_gaps_and_plain_text() {
+        use crate::ui::lyrics::lrc::{LrcLine, LrcWord};
+
+        let lines = vec![
+            LrcLine {
+                time_ms: 1000,
+                text: "纯文本行".into(),
+                translation: None,
+                words: Vec::new(),
+            },
+            LrcLine {
+                time_ms: 2000,
+                text: "动感 歌词".into(),
+                translation: None,
+                words: vec![
+                    LrcWord {
+                        time_ms: 2000,
+                        duration_ms: 400,
+                        text: "动感".into(),
+                    },
+                    LrcWord {
+                        time_ms: 2800,
+                        duration_ms: 500,
+                        text: "歌词".into(),
+                    },
+                ],
+            },
+        ];
+
+        let is_animating = |line_idx: usize, pos_ms: u64| -> bool {
+            lines.get(line_idx).is_some_and(|line| {
+                !line.words.is_empty()
+                    && line.words.iter().any(|w| {
+                        pos_ms >= w.time_ms && pos_ms < w.time_ms.saturating_add(w.duration_ms)
+                    })
+            })
+        };
+
+        // 纯文本行：无逐字变色动画，必须停火
+        assert!(!is_animating(0, 1200));
+
+        // 第 1 词飞行中（2000..2400ms）：必须判定为动画中
+        assert!(is_animating(1, 2200));
+
+        // 词间呼吸停顿期（2400..2800ms）：无像素变色物理变化，必须停火
+        assert!(!is_animating(1, 2500));
+        assert!(!is_animating(1, 2700));
+
+        // 第 2 词飞行中（2800..3300ms）：恢复动画
+        assert!(is_animating(1, 3000));
+
+        // 尾音全部结束（>3300ms）：必须停火
+        assert!(!is_animating(1, 3500));
     }
 }
