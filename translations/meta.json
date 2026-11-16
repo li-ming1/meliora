@@ -835,7 +835,7 @@
   },
   "KUGOU_DAILY_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:450",
+    "definedIn": "src/ui/library/kugou_ranks.rs:459",
     "plural": false,
     "description": null
   },
@@ -1117,13 +1117,13 @@
   },
   "KUGOU_NO_RANKS": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:217",
+    "definedIn": "src/ui/library/kugou_ranks.rs:226",
     "plural": false,
     "description": null
   },
   "KUGOU_NO_RECOMMEND": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:281",
+    "definedIn": "src/ui/library/kugou_ranks.rs:290",
     "plural": false,
     "description": null
   },
@@ -1225,13 +1225,13 @@
   },
   "KUGOU_RECOMMEND_LIST_VIEW": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:484",
+    "definedIn": "src/ui/library/kugou_ranks.rs:493",
     "plural": false,
     "description": null
   },
   "KUGOU_RECOMMEND_STAGE_VIEW": {
     "context": "kugou_ranks.rs",
-    "definedIn": "src/ui/library/kugou_ranks.rs:503",
+    "definedIn": "src/ui/library/kugou_ranks.rs:512",
     "plural": false,
     "description": null
   },

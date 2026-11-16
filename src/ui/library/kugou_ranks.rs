@@ -17,10 +17,11 @@ use gpui::{
 
 use crate::{
     kugou,
+    playback::{interface::PlaybackInterface, thread::PlaybackState},
     ui::{
         components::{
             button::{ButtonIntent, ButtonStyle, button},
-            icons::{HEART, HEART_FILLED, PLAY, icon},
+            icons::{HEART, HEART_FILLED, PAUSE, PLAY, icon},
             managed_image::{ManagedImageKey, managed_image},
             scrollbar::floating_scrollbar,
         },
@@ -28,6 +29,7 @@ use crate::{
             KugouRank, KugouTrackInfo, parse_rank_tracks, parse_ranks, parse_recommend_tracks,
         },
         library::{EscapeBack, kugou_view_common, view_header::view_header},
+        models::PlaybackInfo,
         online_common::{
             CachedRoot, LoadMoreSpec, cached_root, clear_root, online_list_container,
             page_scroll_container, store_root,
@@ -158,6 +160,13 @@ impl KugouRanksView {
                 },
             )
             .detach();
+
+            if cx.has_global::<PlaybackInfo>() {
+                let playback_state = cx.global::<PlaybackInfo>().playback_state.clone();
+                let current_track = cx.global::<PlaybackInfo>().current_track.clone();
+                cx.observe(&playback_state, |_, _, cx| cx.notify()).detach();
+                cx.observe(&current_track, |_, _, cx| cx.notify()).detach();
+            }
 
             view.load_ranks(cx);
             view
@@ -741,6 +750,24 @@ impl KugouRanksView {
         let focus_track = &tracks[focus];
         let liked = self.is_liked(&focus_track.hash);
 
+        let (is_playing_focus_track, is_paused_focus_track) = if cx.has_global::<PlaybackInfo>() {
+            let info = cx.global::<PlaybackInfo>();
+            let state = *info.playback_state.read(cx);
+            let current = info.current_track.read(cx);
+            let is_same = current.as_ref().is_some_and(|ct| {
+                crate::ui::kugou::online_track_matching_path(ct.get_path()).is_some_and(|t| {
+                    (t.mix_song_id != 0 && t.mix_song_id == focus_track.mix_song_id)
+                        || (!t.hash.is_empty() && t.hash == focus_track.hash)
+                })
+            });
+            (
+                is_same && state == PlaybackState::Playing,
+                is_same && state == PlaybackState::Paused,
+            )
+        } else {
+            (false, false)
+        };
+
         // 左右轮播槽位：展示 [-2, -1, 0, 1, 2] 视差卡片
         let offsets: [isize; 5] = [-2, -1, 0, 1, 2];
         let cards = offsets.into_iter().filter_map(|d| {
@@ -916,12 +943,18 @@ impl KugouRanksView {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(theme.button_primary_hover))
                                     .child(
-                                        icon(PLAY)
+                                        icon(if is_playing_focus_track { PAUSE } else { PLAY })
                                             .size(px(22.0))
                                             .text_color(theme.button_primary_text),
                                     )
                                     .on_click(move |_, _, cx| {
-                                        crate::ui::kugou::play_track_now(cx, &play_track);
+                                        if is_playing_focus_track {
+                                            cx.global::<PlaybackInterface>().pause();
+                                        } else if is_paused_focus_track {
+                                            cx.global::<PlaybackInterface>().play();
+                                        } else {
+                                            crate::ui::kugou::play_track_now(cx, &play_track);
+                                        }
                                     }),
                             )
                             .child(
