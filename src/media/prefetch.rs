@@ -18,18 +18,14 @@ use std::time::{Duration, Instant};
 
 use symphonia::core::io::MediaSource;
 
-/// 向前填充至多这么多字节：约 35 秒 FLAC（~1 Mbps）、约 105 秒 320 kbps
-/// 或约 4 分钟 128 kbps 音频；播放一首曲子时实时占用约 4 MB。
-/// 它与填充重连节奏一并定标，好让服务端瞬时卡停被无痕吸收：缓冲能撑过
-/// 重连窗口，解码器到达缓冲底部之前新的 ranged 请求就把缓冲填回去了。
-/// 定标史：256 KB 只够约 2 秒 FLAC——一次 13 秒的服务端暂停在一个会话里
-/// 记下 981 次回调欠载（2026-10-03），升到 1 MB；1 MB（约 8 秒 FLAC）又在
-/// 2026-10-24 被击穿——CDN 滴流期风暴与平静交替（供流在实时线附近震荡），
-/// 「producer had nothing to submit idle_ms=5743」+ 单 run 累计 24k 欠载，
-/// 实际干旱约 14-22 秒（缓冲深度 + 生产者空闲），4 MB 按其 2 倍余量定标。
-/// 注意 STALL_BUDGET 只管断连不管滴流：低于实时速率的供流永不触发跳曲，
-/// 只能靠缓冲深度吸收。
-const HIGH_WATER_BYTES: usize = 4 * 1024 * 1024;
+/// 向前填充的高水位：约 50 秒 FLAC（~1 Mbps）或约 2.5 分钟 320 kbps 音频。
+/// 达到高水位后填充线程主动挂起底层数据源连接（若数据源支持），释放空闲连接，
+/// 避免服务端 Keep-Alive 超时强制 RST/FIN 断连与被动重连抖动。
+const HIGH_WATER_BYTES: usize = 6 * 1024 * 1024;
+/// 后台恢复填充的低水位触发阈值：约 16 秒 FLAC 或约 50 秒 320 kbps 音频。
+/// 当消费导致未读缓冲跌破该线时，提前唤醒填充线程发起下一次续传。
+/// 留有 2 MB 安全垫，足以完全吸收网络重连与握手延迟，杜绝解码器欠载。
+const LOW_WATER_BYTES: usize = 2 * 1024 * 1024;
 /// 单次填充步长，在任何锁之外取，因此卡停的读取永不阻塞 consumer。
 const FILL_CHUNK: usize = 16 * 1024;
 
@@ -61,6 +57,11 @@ pub trait FillSource: Read + Seek + Send {
     fn url_dead(&self) -> bool {
         false
     }
+
+    /// 当填充缓冲达到高水位并准备进入长休眠时通知源。
+    /// 支持主动挂起的源（如 HTTP Range 源）可在此主动断开空闲连接，
+    /// 避免服务端超时 RST 产生被动报错。默认无操作。
+    fn suspend_idle(&mut self) {}
 }
 
 /// 每次 seek 都会自增：已在途的、来自旧流位置的填充结果被丢弃，
@@ -80,6 +81,8 @@ struct FillState {
     pending_seek: Option<u64>,
     eof: bool,
     shutdown: bool,
+    /// 是否正处于积极填充周期：起播或跌破低水位后置 true，填满高水位后置 false。
+    filling: bool,
     /// 源永久不可用时由填充线程设置：下一次 consumer 读取会立刻把它当作
     /// IO 错误返回，而不是在注定不会成功的重试上耗完整个卡停预算。
     fatal: Option<String>,
@@ -90,6 +93,7 @@ impl FillState {
         self.buf.clear();
         self.read_pos = 0;
         self.eof = false;
+        self.filling = true;
     }
 }
 
@@ -129,9 +133,10 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                     return;
                 }
                 if let Some(target) = st.pending_seek.take() {
+                    st.filling = true;
                     break (st.epoch, Some(target));
                 }
-                if st.buf.len() - st.read_pos < HIGH_WATER_BYTES && !st.eof {
+                if st.filling && st.buf.len() - st.read_pos < HIGH_WATER_BYTES && !st.eof {
                     break (st.epoch, None);
                 }
                 st = shared.signal.wait_recovered(st);
@@ -151,15 +156,28 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                 let mut st = shared.state.lock_recovered();
                 if st.epoch == my_epoch {
                     st.eof = true;
+                    st.filling = false;
                     shared.signal.notify_all();
                 }
             }
             Ok(n) => {
                 consecutive_errors = 0;
-                let mut st = shared.state.lock_recovered();
-                if st.epoch == my_epoch {
-                    st.buf.extend_from_slice(&chunk[..n]);
-                    shared.signal.notify_all();
+                let (reached_high_water, is_same_epoch) = {
+                    let mut st = shared.state.lock_recovered();
+                    if st.epoch == my_epoch {
+                        st.buf.extend_from_slice(&chunk[..n]);
+                        if st.buf.len() - st.read_pos >= HIGH_WATER_BYTES {
+                            st.filling = false;
+                        }
+                        shared.signal.notify_all();
+                        (!st.filling, true)
+                    } else {
+                        (false, false)
+                    }
+                };
+                if is_same_epoch && reached_high_water {
+                    let mut source = shared.source.lock_recovered();
+                    source.suspend_idle();
                 }
             }
             Err(e) => {
@@ -227,6 +245,7 @@ impl<S: MediaSource + FillSource + 'static> PrefetchSource<S> {
                 pending_seek: None,
                 eof: false,
                 shutdown: false,
+                filling: true,
                 fatal: None,
             }),
             signal: Condvar::new(),
@@ -275,17 +294,12 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
                     st.read_pos = 0;
                 }
                 self.pos += n as u64;
-                // 只有当本次抽取让缓冲从"不低于高水位"跨到"低于高水位"时才唤醒
-                // 填充线程：这是唯一能解开停在 `signal.wait` 上的填充线程的跃迁
-                // （它的谓词是 `available < HIGH_WATER`，每次 wait 前都在 state 锁内
-                // 重新检查，所以一次跨界绝不会被漏掉）。抽取后仍低于水位的读取，
-                // 填充线程本来就在填；抽取后仍高于水位的读取，对等待中的填充线程
-                // 毫无改变。于是稳态下每个补满周期只有一次 notify，
-                // 而不是每次解码读取一次。
-                if available >= HIGH_WATER_BYTES
-                    && st.buf.len() - st.read_pos < HIGH_WATER_BYTES
-                    && !st.eof
-                {
+                // 双水位滞回：只有当消费导致可用缓冲跌破低水位，且当前处于挂起状态时，
+                // 才重新开启填充周期并唤醒填充线程。高低水位之间留有 4 MB 的消费窗口，
+                // 稳态下全曲仅需少数几次按需拉取，彻底消灭连接闲置超时。
+                let remaining = st.buf.len() - st.read_pos;
+                if remaining < LOW_WATER_BYTES && !st.filling && !st.eof {
+                    st.filling = true;
                     self.shared.signal.notify_all();
                 }
                 return Ok(n);
@@ -303,6 +317,12 @@ impl<S: Read + Seek + Send> Read for PrefetchSource<S> {
                 let n = self.shared.source.lock_recovered().read(buf)?;
                 self.pos += n as u64;
                 return Ok(n);
+            }
+            // 纵深防御：缓冲抽空等待数据供给时，确保填充线程处于积极填充态，
+            // 避免因任何瞬态竞态让填充线程停留在挂起态而导致消费者空耗卡停预算。
+            if !st.filling && !st.eof {
+                st.filling = true;
+                self.shared.signal.notify_all();
             }
             let now = Instant::now();
             if now >= deadline {
@@ -389,6 +409,7 @@ mod tests {
         data: Vec<u8>,
         pos: usize,
         fail_reads: Arc<AtomicUsize>,
+        suspends: Arc<AtomicUsize>,
     }
 
     impl FakeSource {
@@ -397,6 +418,7 @@ mod tests {
                 data: (0..len).map(|i| i as u8).collect(),
                 pos: 0,
                 fail_reads,
+                suspends: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -434,7 +456,11 @@ mod tests {
         }
     }
 
-    impl FillSource for FakeSource {}
+    impl FillSource for FakeSource {
+        fn suspend_idle(&mut self) {
+            self.suspends.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     fn open(len: usize, fail_reads: Arc<AtomicUsize>) -> PrefetchSource<FakeSource> {
         PrefetchSource::with_budget(
@@ -529,5 +555,59 @@ mod tests {
             .expect_err("persistent failure must surface");
         assert!(started.elapsed() >= Duration::from_millis(1900));
         assert!(err.to_string().contains("stalled"), "{err}");
+    }
+
+    #[test]
+    fn dual_watermark_suspends_at_high_water_and_resumes_at_low_water() {
+        // 创建超过两倍高水位的源（16MB）：
+        const TOTAL: usize = 16 * 1024 * 1024;
+        let suspends = Arc::new(AtomicUsize::new(0));
+        let fake = FakeSource {
+            data: (0..TOTAL).map(|i| (i % 256) as u8).collect(),
+            pos: 0,
+            fail_reads: Arc::new(AtomicUsize::new(0)),
+            suspends: Arc::clone(&suspends),
+        };
+        let mut source =
+            PrefetchSource::with_budget(fake, Duration::from_secs(2), Duration::from_millis(1));
+
+        // 等待填充线程达到高水位并主动挂起：
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while suspends.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            suspends.load(Ordering::SeqCst) >= 1,
+            "达到高水位必须触发 suspend_idle"
+        );
+
+        // 此时已挂起。消费 2MB（从 6MB 降至 4MB，仍高于低水位 2MB）：
+        let mut sink = vec![0u8; 2 * 1024 * 1024];
+        source.read_exact(&mut sink).expect("read should succeed");
+
+        // 短暂等待，验证依然没有新的拉取周期（未跌破低水位不唤醒）：
+        let before_low_water_suspends = suspends.load(Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            suspends.load(Ordering::SeqCst),
+            before_low_water_suspends,
+            "未跌破低水位前不应过早开启新填充"
+        );
+
+        // 再消费 2.5MB（剩余缓冲约 1.5MB < LOW_WATER_BYTES=2MB）：
+        let mut sink2 = vec![0u8; 2560 * 1024];
+        source.read_exact(&mut sink2).expect("read should succeed");
+
+        // 此时跌破低水位，填充线程必须被唤醒并将缓冲再次推满高水位并再次 suspend：
+        let resume_deadline = Instant::now() + Duration::from_secs(2);
+        while suspends.load(Ordering::SeqCst) == before_low_water_suspends
+            && Instant::now() < resume_deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            suspends.load(Ordering::SeqCst) > before_low_water_suspends,
+            "跌破低水位后必须重新唤醒并补满到高水位后再次 suspend"
+        );
     }
 }

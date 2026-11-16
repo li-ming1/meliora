@@ -41,8 +41,10 @@ macro_rules! make_unknown_error {
 /// 请求淡出到真正暂停流之间的等待时长。必须超过增益斜坡长度（15 ms）再加几个
 /// 回调周期，才能保证音频线程以零增益把缓冲区排空。
 const PAUSE_FADE_WAIT: Duration = Duration::from_millis(50);
-/// 目标回调缓冲区大小。
-const DEVICE_BUFFER_TARGET: Duration = Duration::from_millis(20);
+/// 目标回调缓冲区大小。放宽至 80 ms（约 3500~3840 帧）以吸收 Windows DWM 窗口复合、
+/// mimalloc 回收与高负荷系统调度带来的微秒级抖动，彻底消除实时音频回调欠载（underrun）。
+/// 播放器在开流与暂停时自带平滑淡入淡出，80 ms 不会带来任何可感知的操作迟滞。
+const DEVICE_BUFFER_TARGET: Duration = Duration::from_millis(80);
 /// 内部环形缓冲目标。它必须大于设备缓冲区，解码器才能吸收调度抖动而不至于把流
 /// 拖到欠载。100 ms 只要生产者停顿超过一个缓冲区就会欠载（开曲、在线流抓取、
 /// 封面解码突发）；250 ms 能吸收这些而代价很小（约 1 MB）——seek/pause 路径经

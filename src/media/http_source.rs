@@ -830,6 +830,18 @@ impl crate::media::prefetch::FillSource for HttpRangeSource {
     fn url_dead(&self) -> bool {
         self.url_dead
     }
+
+    fn suspend_idle(&mut self) {
+        // 仅当服务端支持 Range 续传时主动断开空闲连接：
+        // 丢弃尚未被消费的局部 chunk，使下一次 read 从精确的 self.pos 位置平滑发起
+        // Range: bytes={pos}- 续传。这消除了服务端 Keep-Alive 超时强制 RST 引发
+        // 的 decoding response body 报错，避免不必要的惩罚性重连睡眠。
+        if self.range_supported {
+            self.body = None;
+            self.pending.clear();
+            self.pending_offset = 0;
+        }
+    }
 }
 
 #[cfg(test)]
