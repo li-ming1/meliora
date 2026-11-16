@@ -359,6 +359,10 @@ fn persist_position(pos: [f64; 2], cx: &mut App) {
 /// persist 的旧位置（AGENTS.md 已知限制的修复）。
 static LAST_KNOWN_POS: std::sync::Mutex<Option<[f64; 2]>> = std::sync::Mutex::new(None);
 
+/// 卡拉OK逐字扫色重绘量化档位（约 40fps 上限）：足以保证人眼极其平滑连贯的字形颜色渐变，
+/// 同时压制音频时钟高频推进带来的微秒级无效重绘，平抑 GPU 唤醒。
+const SWEEP_DISPLAY_QUANTUM_MS: u64 = 25;
+
 pub struct DesktopLyricsView {
     lyrics: Entity<Lyrics>,
     parsed: Option<Arc<Vec<LrcLine>>>,
@@ -382,6 +386,8 @@ pub struct DesktopLyricsView {
     /// 用 Rust 状态而非 `.hover()` 样式 refinement，因为关闭按钮要整体
     /// 按此条件渲染（未渲染的元素没有 hitbox，不会隐形吃点击）。
     hovered: bool,
+    /// 上次触发逐字扫色重绘的 position 量化值（`SWEEP_DISPLAY_QUANTUM_MS` 粒度）。
+    last_sweep_quantum: u64,
 }
 
 impl DesktopLyricsView {
@@ -396,6 +402,7 @@ impl DesktopLyricsView {
             last_bounds: None,
             move_armed: false,
             hovered: false,
+            last_sweep_quantum: 0,
         };
         view.sync_from_lyrics(cx);
 
@@ -450,6 +457,7 @@ impl DesktopLyricsView {
         self.synced_generation = generation;
         self.parsed = lyrics.parsed_lines();
         self.accent = accent;
+        self.last_sweep_quantum = 0;
         let pos_ms = *cx.global::<PlaybackInfo>().position.read(cx);
         self.current_line = self.line_at(pos_ms);
         cx.notify();
@@ -461,24 +469,28 @@ impl DesktopLyricsView {
         if idx == 0 { None } else { Some(idx - 1) }
     }
 
-    /// 行切换或当前行仍在逐字飞行中才重绘；无逐字词条（纯文本行）或尾音窗口结束后的间奏期，
-    /// 与上一帧输出逐字节相同，直接早退不再触发无谓的 notify。
+    /// 行切换或当前行存在活跃飞行的逐字变色时才重绘；
+    /// 词前等待、字间停顿或尾音结束后的间奏期，字形颜色逐像素相同，直接停火；
+    /// 变色中的字按 `SWEEP_DISPLAY_QUANTUM_MS` 量化档位节流重绘，压掉音频时钟的微抖动。
     fn track_line(&mut self, pos_ms: u64, cx: &mut Context<Self>) {
         let new_line = self.line_at(pos_ms);
-        let sweeping = new_line.is_some_and(|i| {
-            self.parsed
-                .as_ref()
-                .and_then(|p| p.get(i))
-                .is_some_and(|line| {
-                    !line.words.is_empty()
-                        && line
-                            .words
-                            .last()
-                            .is_some_and(|word| pos_ms < word.time_ms + word.duration_ms)
-                })
-        });
-        if sweeping || new_line != self.current_line {
+        let line_changed = new_line != self.current_line;
+
+        let active_word_sweeping = new_line
+            .and_then(|i| self.parsed.as_ref()?.get(i))
+            .is_some_and(|line| {
+                !line.words.is_empty()
+                    && line.words.iter().any(|w| {
+                        pos_ms >= w.time_ms && pos_ms < w.time_ms.saturating_add(w.duration_ms)
+                    })
+            });
+
+        let quantum = pos_ms / SWEEP_DISPLAY_QUANTUM_MS;
+        let quantum_advanced = active_word_sweeping && quantum != self.last_sweep_quantum;
+
+        if line_changed || quantum_advanced {
             self.current_line = new_line;
+            self.last_sweep_quantum = quantum;
             cx.notify();
         }
     }
@@ -646,7 +658,7 @@ mod tests {
     fn track_line_pure_text_line_without_words_is_not_sweeping() {
         use crate::ui::lyrics::lrc::{LrcLine, LrcWord};
 
-        // 构造包含两行的歌词列表：第一行是纯文本（无逐字 words），第二行含逐字 words
+        // 构造歌词：第 0 行纯文本，第 1 行含两个字且中间有 300ms 停顿间隙
         let lines = [
             LrcLine {
                 time_ms: 1000,
@@ -656,36 +668,47 @@ mod tests {
             },
             LrcLine {
                 time_ms: 2000,
-                text: "卡拉OK行".into(),
+                text: "卡拉 OK".into(),
                 translation: None,
-                words: vec![LrcWord {
-                    time_ms: 2000,
-                    duration_ms: 500,
-                    text: "卡拉OK".into(),
-                }],
+                words: vec![
+                    LrcWord {
+                        time_ms: 2000,
+                        duration_ms: 300,
+                        text: "卡拉".into(),
+                    },
+                    LrcWord {
+                        time_ms: 2600,
+                        duration_ms: 400,
+                        text: "OK".into(),
+                    },
+                ],
             },
         ];
 
         let is_sweeping = |new_line: Option<usize>, pos_ms: u64| -> bool {
-            new_line.is_some_and(|i| {
-                lines.get(i).is_some_and(|line| {
-                    !line.words.is_empty()
-                        && line
-                            .words
-                            .last()
-                            .is_some_and(|word| pos_ms < word.time_ms + word.duration_ms)
-                })
+            new_line.and_then(|i| lines.get(i)).is_some_and(|line| {
+                !line.words.is_empty()
+                    && line.words.iter().any(|w| {
+                        pos_ms >= w.time_ms && pos_ms < w.time_ms.saturating_add(w.duration_ms)
+                    })
             })
         };
 
-        // 在第 1 行（纯文本行）内：sweeping 必须为 false，避免位置 tick 白白 notify
+        // 在第 0 行（纯文本行）内：sweeping 必须为 false
         assert!(!is_sweeping(Some(0), 1200));
         assert!(!is_sweeping(Some(0), 1800));
 
-        // 在第 2 行（卡拉OK行）内且在逐字飞行期间（2000..2500ms）：sweeping 必须为 true
-        assert!(is_sweeping(Some(1), 2200));
+        // 在第 1 词飞行中（2000..2300ms）：sweeping 必须为 true
+        assert!(is_sweeping(Some(1), 2150));
 
-        // 在第 2 行尾音结束后的间奏期（>2500ms）：sweeping 恢复为 false，避免继续重绘
-        assert!(!is_sweeping(Some(1), 2600));
+        // 在第 1 词唱完但第 2 词尚未开始的停顿空隙（2300..2600ms）：
+        // 界面字形颜色逐像素相同，sweeping 必须停火（false）！
+        assert!(!is_sweeping(Some(1), 2450));
+
+        // 在第 2 词飞行中（2600..3000ms）：sweeping 恢复为 true
+        assert!(is_sweeping(Some(1), 2700));
+
+        // 尾音全部结束（>3000ms）：sweeping 停火
+        assert!(!is_sweeping(Some(1), 3100));
     }
 }

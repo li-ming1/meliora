@@ -257,6 +257,10 @@ pub fn handle_close_request(window: &mut Window, cx: &mut App) -> bool {
     if tray_available() && close_to_tray(cx) {
         platform_hide_window(window);
         note_platform_window(window);
+        // 主窗口完全隐藏到托盘：UI 不可见，主动排空活动封面瓦片与大图背景，
+        // 推进回收漏斗（封面 5s / 大图 1s 年龄门），为后台播放常驻省出 40~60MB 显存与堆提交。
+        crate::ui::components::managed_image::render_cache_shrink(0);
+        crate::ui::components::managed_image::backdrop_cache_shrink(0);
         return false;
     }
     cx.quit();
@@ -369,6 +373,8 @@ fn show_main_window(cx: &mut App) {
 fn hide_main_window(cx: &mut App) {
     if let Some(handle) = crate::ui::app::find_main_window(cx) {
         let _ = handle.update(cx, |_, window, _| platform_hide_window(window));
+        crate::ui::components::managed_image::render_cache_shrink(0);
+        crate::ui::components::managed_image::backdrop_cache_shrink(0);
     }
 }
 
