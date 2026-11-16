@@ -3,13 +3,13 @@
 //! UI 仍经 `crate::ui::kugou` 的再导出调用这些。整体受 `kugou` cargo feature 门控。
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::SharedString;
@@ -413,11 +413,120 @@ async fn fallback_quality_url_once(
     }
 }
 
+/// 酷狗在线播放直链的短期内存缓存容量（上限 64 首）。
+const STREAM_URL_CACHE_CAP: usize = 64;
+/// 酷狗在线播放直链的有效时限（TTL 30 分钟）。
+/// 服务端签名有效期通常为数小时至 24 小时，30 分钟足够覆盖单曲循环与队列回退，
+/// 同时绝对安全。
+const STREAM_URL_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct StreamUrlKey {
+    hash: String,
+    quality: String,
+}
+
+struct StreamUrlCacheEntry {
+    url: String,
+    fetched_at: Instant,
+}
+
+struct StreamUrlCache {
+    entries: HashMap<StreamUrlKey, StreamUrlCacheEntry>,
+    order: VecDeque<StreamUrlKey>,
+}
+
+impl StreamUrlCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(STREAM_URL_CACHE_CAP),
+            order: VecDeque::with_capacity(STREAM_URL_CACHE_CAP),
+        }
+    }
+
+    fn get(&mut self, key: &StreamUrlKey) -> Option<String> {
+        if let Some(entry) = self.entries.get(key) {
+            if entry.fetched_at.elapsed() < STREAM_URL_CACHE_TTL {
+                return Some(entry.url.clone());
+            }
+            self.entries.remove(key);
+            self.order.retain(|k| k != key);
+        }
+        None
+    }
+
+    fn insert(&mut self, key: StreamUrlKey, url: String) {
+        if self.entries.contains_key(&key) {
+            self.order.retain(|k| k != &key);
+        } else if self.order.len() >= STREAM_URL_CACHE_CAP {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(
+            key,
+            StreamUrlCacheEntry {
+                url,
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    fn invalidate_hash(&mut self, hash: &str) {
+        self.entries.retain(|k, _| k.hash != hash);
+        self.order.retain(|k| k.hash != hash);
+    }
+}
+
+static STREAM_URL_CACHE: OnceLock<RwLock<StreamUrlCache>> = OnceLock::new();
+
+fn stream_url_cache() -> &'static RwLock<StreamUrlCache> {
+    STREAM_URL_CACHE.get_or_init(|| RwLock::new(StreamUrlCache::new()))
+}
+
 /// 按请求的 `quality` 为酷狗曲目取一个可播放 URL，更高档位不可用时（例如没有 VIP）退化到
 /// 标准 128 kbps 片段。完全没取回可播放 URL 时返回 `None`。实时播放与会话恢复期的 URL
 /// 刷新共用；`per_request_timeout` 是单请求时限档位（REALTIME_URL_REQUEST_TIMEOUT），
 /// 传 `None` 维持网关 30s 档。
 pub async fn fetch_stream_url(
+    client: &kugou::KugouClient,
+    hash: &str,
+    mix_song_id: i64,
+    album_id: i64,
+    quality: &str,
+    per_request_timeout: Option<Duration>,
+) -> Option<String> {
+    let key = StreamUrlKey {
+        hash: hash.to_string(),
+        quality: quality.to_string(),
+    };
+
+    // 命中未过期的内存直链缓存：直接返回，零网络往返秒开起播！
+    {
+        if let Some(cached) = stream_url_cache().write_recovered().get(&key) {
+            tracing::debug!(hash, quality, "kugou: stream URL hit memory cache");
+            return Some(cached);
+        }
+    }
+
+    let url = fetch_stream_url_network(
+        client,
+        hash,
+        mix_song_id,
+        album_id,
+        quality,
+        per_request_timeout,
+    )
+    .await?;
+
+    stream_url_cache()
+        .write_recovered()
+        .insert(key, url.clone());
+    Some(url)
+}
+
+async fn fetch_stream_url_network(
     client: &kugou::KugouClient,
     hash: &str,
     mix_song_id: i64,
@@ -722,6 +831,9 @@ impl super::OnlineSourceProvider for KugouSource {
         let mix_song_id = *mix_song_id;
         let album_id = *album_id;
         let kugou_quality = ctx.kugou_quality.to_string();
+        // 流播放中途被拒触发强制刷新：先让该曲目的内存直链缓存失效，
+        // 确保本次刷新必定打向服务端换取真正全新的签名 URL。
+        stream_url_cache().write_recovered().invalidate_hash(&hash);
         // spawn 出去的拉取用一份克隆；原件进下面的注册表条目。
         let fetch_hash = hash.clone();
         // 实时档单请求时限：本刷新的主要消费者是播放钩子的 6s 总预算
@@ -958,5 +1070,41 @@ mod url_parse_tests {
                 "".into(),
             )
         );
+    }
+
+    #[test]
+    fn stream_url_cache_stores_hits_and_invalidates() {
+        let mut cache = StreamUrlCache::new();
+        let key_flac = StreamUrlKey {
+            hash: "test_hash_1".into(),
+            quality: "flac".into(),
+        };
+        let key_320 = StreamUrlKey {
+            hash: "test_hash_1".into(),
+            quality: "320".into(),
+        };
+        let key_other = StreamUrlKey {
+            hash: "test_hash_2".into(),
+            quality: "flac".into(),
+        };
+
+        // 初始未命中
+        assert_eq!(cache.get(&key_flac), None);
+
+        // 插入不同档位
+        cache.insert(key_flac.clone(), "http://cdn/flac.mp3".into());
+        cache.insert(key_320.clone(), "http://cdn/320.mp3".into());
+        cache.insert(key_other.clone(), "http://cdn/other.mp3".into());
+
+        // 命中验证
+        assert_eq!(cache.get(&key_flac), Some("http://cdn/flac.mp3".into()));
+        assert_eq!(cache.get(&key_320), Some("http://cdn/320.mp3".into()));
+        assert_eq!(cache.get(&key_other), Some("http://cdn/other.mp3".into()));
+
+        // 按 hash 失效：test_hash_1 的全部档位应同时失效，test_hash_2 不受影响
+        cache.invalidate_hash("test_hash_1");
+        assert_eq!(cache.get(&key_flac), None);
+        assert_eq!(cache.get(&key_320), None);
+        assert_eq!(cache.get(&key_other), Some("http://cdn/other.mp3".into()));
     }
 }
