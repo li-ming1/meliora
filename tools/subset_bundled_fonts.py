@@ -12,8 +12,11 @@
 # （87b90867ef 先例）。回退方式：git checkout -- assets/fonts/。
 #
 # 依赖：python -m pip install fonttools
-# 用法：python tools/subset_bundled_fonts.py
+# 用法：
+#   python tools/subset_bundled_fonts.py          # 重新生成并原位替换字体
+#   python tools/subset_bundled_fonts.py --check  # 门禁检查当前字体是否与词条对齐
 
+import hashlib
 import json
 import os
 import pathlib
@@ -87,7 +90,7 @@ def compact_ranges(cps: list[int]) -> list[tuple[int, int]]:
 
 def subset_font(path: pathlib.Path, unicodes: str, tmp_out: pathlib.Path) -> None:
     """等价 pyftsubset：经 python -m fontTools.subset 调用，参数与 CLI 同源。
-    先写临时文件再原位替换，替换失败时源字体仍在 git 中可回退。"""
+    先写临时文件，由调用方决定是原子替换原文件还是仅作门禁哈希比对。"""
     subprocess.run(
         [
             sys.executable,
@@ -99,22 +102,49 @@ def subset_font(path: pathlib.Path, unicodes: str, tmp_out: pathlib.Path) -> Non
             *SUBSET_ARGS,
         ],
         check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-    os.replace(tmp_out, path)
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    check_only = "--check" in sys.argv
     codepoints = derive_codepoints()
     ranges = compact_ranges(codepoints)
     unicodes = ",".join(f"U+{a:04X}-{b:04X}" if b > a else f"U+{a:04X}" for a, b in ranges)
-    print(f"派生码点 {len(codepoints)} 个 / {len(ranges)} 个区间")
+    print(f"派生码点 {len(codepoints)} 个 / {len(ranges)} 个区间 (模式: {'检查' if check_only else '刷新'})")
 
+    stale_fonts = []
     for path in sorted(FONTS.glob("*.ttf")):
         before = path.stat().st_size
+        before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         tmp = path.with_suffix(".ttf.subset.tmp")
-        subset_font(path, unicodes, tmp)
-        after = path.stat().st_size
-        print(f"{path.name:26} {before:>9} -> {after:>7} B  ({before - after:+8d})")
+        try:
+            subset_font(path, unicodes, tmp)
+            after_hash = hashlib.sha256(tmp.read_bytes()).hexdigest()
+            after = tmp.stat().st_size
+            if check_only:
+                if before_hash != after_hash:
+                    stale_fonts.append(path.name)
+                    print(f"❌ {path.name:26} 字体与当前词条未对齐 (当前 {before} B -> 派生应为 {after} B)")
+                else:
+                    print(f"✓ {path.name:26} 字体与词条完全对齐 ({after} B)")
+                if tmp.exists():
+                    tmp.unlink()
+            else:
+                os.replace(tmp, path)
+                print(f"{path.name:26} {before:>9} -> {after:>7} B  ({before - after:+8d})")
+        finally:
+            if check_only and tmp.exists():
+                tmp.unlink()
+
+    if check_only and stale_fonts:
+        print(f"\n错误: 以下字体文件未同步最新词条派生集: {', '.join(stale_fonts)}", file=sys.stderr)
+        print("请运行 'python tools/subset_bundled_fonts.py' 刷新字体后提交！", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,20 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  font-subset-check:
+    name: Check font subsets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install fonttools
+        run: pip install fonttools
+      - name: Verify font subset completeness
+        run: python tools/subset_bundled_fonts.py --check
+
   check:
     strategy:
       fail-fast: false

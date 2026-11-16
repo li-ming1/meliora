@@ -210,7 +210,13 @@ fn fill_loop<S: FillSource>(shared: Arc<Shared<S>>, retry_backoff: Duration) {
                         "media stream fill failed; reconnecting"
                     );
                 }
-                thread::sleep(retry_backoff * consecutive_errors.min(10));
+                // 可响应式中断退避：退避期间若用户拖拽 seek、切歌或关停流，立即响应退出或重定位，
+                // 彻底避免原本不可中断的 thread::sleep 让切歌/seek 在网络抖动期白白卡住多达 2 秒。
+                let backoff = retry_backoff * consecutive_errors.min(10);
+                let st = shared.state.lock_recovered();
+                if !st.shutdown && st.pending_seek.is_none() {
+                    let _ = shared.signal.wait_timeout_recovered(st, backoff);
+                }
             }
         }
     }
