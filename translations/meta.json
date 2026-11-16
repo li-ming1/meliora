@@ -667,7 +667,7 @@
   },
   "IMMERSIVE_BACK_TO_POSTER_WALL": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:2018",
+    "definedIn": "src/ui/immersive.rs:2025",
     "plural": false,
     "description": null
   },
@@ -679,13 +679,13 @@
   },
   "IMMERSIVE_EXIT": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1347",
+    "definedIn": "src/ui/immersive.rs:1354",
     "plural": false,
     "description": null
   },
   "IMMERSIVE_QUEUE_EMPTY": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1030",
+    "definedIn": "src/ui/immersive.rs:1037",
     "plural": false,
     "description": null
   },
@@ -1651,7 +1651,7 @@
   },
   "POSTER_NOW_PLAYING": {
     "context": "immersive.rs",
-    "definedIn": "src/ui/immersive.rs:1160",
+    "definedIn": "src/ui/immersive.rs:1167",
     "plural": false,
     "description": null
   },

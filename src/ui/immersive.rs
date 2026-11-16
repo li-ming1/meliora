@@ -86,6 +86,10 @@ const BACKDROP_RETRY: Duration = Duration::from_millis(500);
 /// RECLAIM_DELAY_LARGE（1s）：淡出期间旧背景元素仍在绘制，其图集瓦片
 /// 靠那条短年龄门兜底（门到时淡出早已结束、旧元素已卸载）。
 const BACKDROP_FADE: Duration = Duration::from_millis(400);
+/// 沉浸页下一首大图背景预取的稳定播放防抖时长。
+/// 切歌后等待当前曲目稳定播放 3 秒才启动下一首大图解码：在用户快速连续切歌、
+/// 试听时彻底消灭无意义的大图重管线并发堆叠，避免瞬态占用叠加冲破 500MB 硬上限。
+const BACKDROP_PREFETCH_DELAY: Duration = Duration::from_secs(3);
 
 /// 进入或离开沉浸模式：翻转 [`Models::immersive`] 并同步切换主窗口的 OS 全屏
 /// 状态。所有入口（快捷键、侧栏开关、信息区双击、退出按钮）都汇入这里。
@@ -723,6 +727,9 @@ impl ImmersiveView {
             old_task.abort();
         }
         self.prefetch_task = Some(crate::RUNTIME.spawn(async move {
+            // 开播 3 秒稳定播放防抖：快速切歌/试听期间直接 abort，不占用 CPU 与百兆内存管线。
+            tokio::time::sleep(BACKDROP_PREFETCH_DELAY).await;
+
             // 背景先行：它是切歌丝滑的关键路径。两条预取各付一次完整
             // 2048 源解码，用户若在中间切歌，至少背景已就绪。
             let _ = next_key
