@@ -68,6 +68,9 @@ pub(crate) fn invalidate_online_account_caches(cx: &mut App) {
     // 喜欢缓存（星标 + unlike 用的 fileid）同属账号键：登录成功（on_login）与登出
     // 都经本函数，换号后旧账号的喜欢状态不再点亮星标、不再误删旧账号列表。
     crate::online_sources::kugou::invalidate_liked_cache();
+    // 直链缓存同理：条目是旧账号会话签发的签名 URL，换号后若命中会 403/无声。
+    // 清空后新账号的首次播放会重新取自己的 URL（30min TTL 内也不会复用旧凭据）。
+    crate::online_sources::kugou::invalidate_stream_url_cache();
     // 代际信号递增：挂载中的在线歌单/榜单/发现页视图 observe 它按新登录态
     // 重建展示数据——设置是独立窗口，主窗的 kugou 页在换号期间仍挂载，
     // 只清缓存不发事件会让它滞留旧账号的歌单、榜单与星标。

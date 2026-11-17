@@ -348,13 +348,23 @@ pub fn quality_ladder(requested: &str) -> &'static [&'static str] {
 }
 
 /// 实时播放路径的单请求时限档位。播放侧钩子给整个刷新 6s 总预算
-/// （playback/thread.rs 的 `STREAM_REFRESH_TIMEOUT`），而网关 client 单请求 30s、
-/// 失败再打一次 128k 兜底——最坏 60s：慢网下外层总在 6s 超时返回 `None`，内层
-/// spawn 继续跑完但结果被整体丢弃（新 URL 白拿，下次重试再付一遍）。压到 3s/请求
-/// 后：首档网络错误两连发 ≤6s 收敛；顺降路径（首档 Ok 无 URL → 中段档 Err →
-/// 128 兜底）最坏三连发 3×3s=9s，第三发可能被外层 6s 总预算掐断——顺降路径不
-/// 承诺预算内收敛。非实时路径（用户点歌等）传 `None` 维持网关 30s 档。
+/// （playback/thread.rs 的 `STREAM_REFRESH_TIMEOUT`）。压到 3s/请求后，单档或
+/// 一次兜底都 ≤ 两连发（≤6s）；但顺降路径（首档 Ok 无 URL → 中段档 Err → 128
+/// 兜底）最坏三连发 3×3s=9s，单靠单请求时限挡不住整轮超预算。
+/// 因此实时路径另由 [`REALTIME_FETCH_BUDGET`] 给整轮拉取封顶。
+/// 非实时路径（用户点歌等）传 `None` 维持网关 30s 档。
 const REALTIME_URL_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 实时取流的整轮预算（含所有顺降档与缓存写入）。必须严格小于播放钩子的
+/// 6s 总预算（[`REALTIME_URL_REQUEST_TIMEOUT`] 处引用），留 ~1s 余量给
+/// `refresh_url` 拿到 URL 后的注册表登记等后续工作。
+///
+/// 关键收益：整轮在 5s 内**收敛并回写缓存**。此前外层 6s 超时后，内层 spawn
+/// 仍在跑，拿到的新 URL 虽写进了本缓存，但 `refresh_url` 的 `.await` 已被外层
+/// timeout 取消、`remember_online_track` 不再执行——而下次刷新开头又会
+/// `invalidate_hash` 把这条白拿的 URL 清掉，于是重试再付一遍网络往返。
+/// 整轮封顶让结果要么在预算内被完整消费、要么明确失败，不再"白拿"。
+const REALTIME_FETCH_BUDGET: Duration = Duration::from_secs(5);
 
 /// 带（可选）单请求时限的 `song_url`：超时折算成 [`kugou::KugouError::local`]，
 /// 走调用方同一条失败/兜底路径。时限到期时 future 被 drop，底层的 HTTP 请求随之
@@ -477,12 +487,27 @@ impl StreamUrlCache {
         self.entries.retain(|k, _| k.hash != hash);
         self.order.retain(|k| k.hash != hash);
     }
+
+    fn invalidate_all(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 static STREAM_URL_CACHE: OnceLock<RwLock<StreamUrlCache>> = OnceLock::new();
 
 fn stream_url_cache() -> &'static RwLock<StreamUrlCache> {
     STREAM_URL_CACHE.get_or_init(|| RwLock::new(StreamUrlCache::new()))
+}
+
+/// 清空全部直链缓存。账号身份变化（登录/登出/换号）时必须调用：缓存里可能留有旧账号
+/// 会话签发的 URL，命中后表现为 403/无声，或至少是跨账号的陈旧凭据复用。
+///
+/// 与 UI 层的 `invalidate_online_account_caches` 钩子配套——那个钩子清歌单/榜单/liked
+/// 与代际信号，但原先漏了这一层。本函数与之同在 UI 线程同步调用，拿的是
+/// `RecoveredRwLock`（不中毒），无需 await。
+pub(crate) fn invalidate_stream_url_cache() {
+    stream_url_cache().write_recovered().invalidate_all();
 }
 
 /// 按请求的 `quality` 为酷狗曲目取一个可播放 URL，更高档位不可用时（例如没有 VIP）退化到
@@ -510,15 +535,33 @@ pub async fn fetch_stream_url(
         }
     }
 
-    let url = fetch_stream_url_network(
+    let network = fetch_stream_url_network(
         client,
         hash,
         mix_song_id,
         album_id,
         quality,
         per_request_timeout,
-    )
-    .await?;
+    );
+    // 实时路径加整轮封顶：顺降最坏 3×3s=9s 会越过播放钩子的 6s 预算，导致外层
+    // timeout 提前取消 refresh_url，新 URL 白拿却被下次 invalidate 清掉。5s 整轮
+    // 预算让结果在预算内收敛并被完整消费；非实时点歌路径（None）不设整轮上限。
+    let url = if per_request_timeout.is_some() {
+        match tokio::time::timeout(REALTIME_FETCH_BUDGET, network).await {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                tracing::warn!(
+                    hash,
+                    quality,
+                    budget_ms = REALTIME_FETCH_BUDGET.as_millis() as u64,
+                    "kugou: realtime stream URL fetch exceeded its total budget"
+                );
+                return None;
+            }
+        }
+    } else {
+        network.await?
+    };
 
     stream_url_cache()
         .write_recovered()
@@ -1106,5 +1149,50 @@ mod url_parse_tests {
         assert_eq!(cache.get(&key_flac), None);
         assert_eq!(cache.get(&key_320), None);
         assert_eq!(cache.get(&key_other), Some("http://cdn/other.mp3".into()));
+    }
+
+    /// 换号清空（方向 1）：invalidate_all 必须连 order 队列一起清空——只清 entries
+    /// 会让后续 insert 因 order.len() 触顶而误逐出别的条目。
+    #[test]
+    fn stream_url_cache_invalidate_all_clears_entries_and_order() {
+        let mut cache = StreamUrlCache::new();
+        for i in 0..STREAM_URL_CACHE_CAP {
+            cache.insert(
+                StreamUrlKey {
+                    hash: format!("hash_{i}"),
+                    quality: "128".into(),
+                },
+                format!("http://cdn/{i}.mp3"),
+            );
+        }
+        assert_eq!(cache.entries.len(), STREAM_URL_CACHE_CAP);
+        assert_eq!(cache.order.len(), STREAM_URL_CACHE_CAP);
+
+        cache.invalidate_all();
+        assert!(cache.entries.is_empty());
+        assert!(cache.order.is_empty());
+
+        // 清空后新插入不应因残留 order 而异常
+        let key = StreamUrlKey {
+            hash: "fresh_account".into(),
+            quality: "128".into(),
+        };
+        cache.insert(key.clone(), "http://cdn/fresh.mp3".into());
+        assert_eq!(cache.get(&key), Some("http://cdn/fresh.mp3".into()));
+    }
+
+    /// 预算层级契约（方向 2）：单请求 < 整轮 < 播放钩子外层预算（6s）。
+    /// 任一被改动破坏这个序，顺降路径就会重新出现"外层 timeout 先触发、新 URL 白拿"。
+    #[test]
+    fn realtime_url_budget_ordering() {
+        let playback_hook_budget = Duration::from_secs(6);
+        assert!(
+            REALTIME_URL_REQUEST_TIMEOUT < REALTIME_FETCH_BUDGET,
+            "single-request timeout must be shorter than the whole-fetch budget"
+        );
+        assert!(
+            REALTIME_FETCH_BUDGET < playback_hook_budget,
+            "whole-fetch budget must leave headroom for the playback hook's 6s outer timeout"
+        );
     }
 }
