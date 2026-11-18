@@ -143,7 +143,14 @@ fn close_window(_: &CloseWindow, cx: &mut App) {
         _ = cx.update_window(window_id, |_, window, cx| {
             // 主窗走托盘关闭决策（close_to_tray 隐藏/退出），与 ✕ / Alt+F4
             // 收敛同一决策；直接 remove_window 会绕过它真销毁主窗。
+            // Linux 没有托盘（main.rs 的 mod tray 被 cfg 门控）、也无 close_to_tray
+            // 语义，回退到直接移除——即本改动之前的行为。
+            #[cfg(any(windows, target_os = "macos"))]
             crate::tray::close_for_shortcut(window, cx);
+            #[cfg(not(any(windows, target_os = "macos")))]
+            window.remove_window();
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let _ = cx;
         })
     });
 }
