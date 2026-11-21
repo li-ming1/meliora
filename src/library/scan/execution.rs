@@ -72,7 +72,9 @@ const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
 struct ScanFailures {
     /// `BEGIN`/`COMMIT` 被拒：整批被丢弃，那些曲目要等后续扫描才会被索引。
     transaction: u64,
-    /// 某个 discovery 工作线程 panic（`JoinError`）而没有返回计数。
+    /// 某个扫描工作线程 panic（`JoinError`）而没有返回计数——discover /
+    /// slow_discover / metadata / artwork 四组 join 的 `Ok(Err)` 分支同口径计数，
+    /// 让 SCAN_FAILED_WORKER toast 覆盖全部流水线段。
     worker_panic: u64,
     /// join 超时（[`WORKER_JOIN_TIMEOUT`]）的工作线程数：JoinHandle 在超时内未
     /// 就绪，指向挂死文件系统上的阻塞读。与 `worker_panic` 分开计数——卡死≠
@@ -610,6 +612,10 @@ impl<'a> ScanExecution<'a> {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     error!("Metadata pipeline task failed: {:?}", error);
+                    // metadata 任务死亡会让下游以 Ok(()) 干净退出，扫描看似完整
+                    // 实则截断——必须与 discover 同款计入 panic，否则 toast 机制
+                    // 对这组 worker 失明。
+                    self.failures.worker_panic += 1;
                 }
                 Err(_elapsed) => {
                     error!(
@@ -624,6 +630,10 @@ impl<'a> ScanExecution<'a> {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 error!("Artwork pipeline task failed: {:?}", error);
+                // artwork 死亡会级联掐断 raw_meta_rx → metadata → discover 提前
+                // 终结，commit_final_batch 仍走成功路径；计入 panic 才能弹
+                // SCAN_FAILED_WORKER toast。
+                self.failures.worker_panic += 1;
             }
             Err(_elapsed) => {
                 error!(
