@@ -2389,37 +2389,37 @@
   },
   "TEST_TOAST_EMIT_ERROR": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:237",
+    "definedIn": "src/ui/global_actions.rs:244",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_ERROR": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:225",
+    "definedIn": "src/ui/global_actions.rs:232",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_INFO": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:209",
+    "definedIn": "src/ui/global_actions.rs:216",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_RETRY": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:229",
+    "definedIn": "src/ui/global_actions.rs:236",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_SUCCESS": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:214",
+    "definedIn": "src/ui/global_actions.rs:221",
     "plural": false,
     "description": null
   },
   "TEST_TOAST_WARNING": {
     "context": "global_actions.rs",
-    "definedIn": "src/ui/global_actions.rs:219",
+    "definedIn": "src/ui/global_actions.rs:226",
     "plural": false,
     "description": null
   },

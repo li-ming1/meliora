@@ -91,6 +91,16 @@ impl PlaybackSessionStorageWorker {
                 let _ = fs::remove_file(&tmp_path).await;
                 continue;
             }
+            // rename 前先 sync_all（对齐 settings.rs / session_io.rs 的全仓原子写
+            // 标准）：掉电窗口内 NTFS 可能 rename 元数据已落而数据未刷，下次启动
+            // 读到截断文件即静默回落空会话。playback_session.json 承载整条队列与
+            // 播放位，是硬阀门 exit(70)/更新重启交接的兜底文件，队列不可再生；
+            // 写入由 watch 通道驱动的后台 worker 执行，无热路径，值得多付一次刷盘。
+            if let Err(e) = file.sync_all().await {
+                error!("Failed to sync playback session file: {}", e);
+                let _ = fs::remove_file(&tmp_path).await;
+                continue;
+            }
             if let Err(e) = file.shutdown().await {
                 error!("Failed to close playback session file: {}", e);
                 let _ = fs::remove_file(&tmp_path).await;
