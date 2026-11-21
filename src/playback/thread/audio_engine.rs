@@ -505,12 +505,15 @@ impl AudioEngine {
 
         let mut recreation_required = false;
 
-        if self.state != EngineState::Playing
-            && self.device.has_stream()
-            && let Err(err) = self.device.reset()
-        {
-            warn!("Failed to reset device, forcing recreation: {:?}", err);
-            recreation_required = true;
+        if self.state != EngineState::Playing && self.device.has_stream() {
+            // B 型风暴（每 0.2-0.5s 一次静音重建）的归属日志：reset 此前无任何
+            // 输出，风暴期只能看到 first-samples 反复重打而无法裁决触发源
+            // （R24 日志横切断案，2026-11-21）。
+            info!("device stream reset (reason=open-transition)");
+            if let Err(err) = self.device.reset() {
+                warn!("Failed to reset device, forcing recreation: {:?}", err);
+                recreation_required = true;
+            }
         }
 
         if self.device.has_stream()
@@ -628,6 +631,7 @@ impl AudioEngine {
                 // 后端（Windows WASAPI）在暂停后会静默停止产出音频，直到流被重建。
                 // 跳转定位路径本就会重建，这就是拖动进度条能把哑掉的播放"叫醒"的原因。
                 if self.device.has_stream() {
+                    info!("device stream reset (reason=resume)");
                     if let Err(err) = self.device.reset() {
                         warn!(
                             "Failed to reset stream on resume, recreating device instead... {:?}",
@@ -754,6 +758,7 @@ impl AudioEngine {
     /// 以及重采样器/混音器/均衡器状态，好让跳转后的音频干净且立即播出。
     fn flush_for_seek(&mut self) {
         if self.device.has_stream() {
+            info!("device stream reset (reason=seek)");
             if let Err(err) = self.device.reset() {
                 warn!("Failed to reset device on seek: {:?}", err);
             } else if let Err(err) = self.device.play() {
