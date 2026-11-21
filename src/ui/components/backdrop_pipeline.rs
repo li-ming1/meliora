@@ -10,13 +10,6 @@ use gpui::RenderImage;
 use image::Frame;
 use smallvec::smallvec;
 
-/// 重采样后背景的最长边——对齐 1920 宽全屏。已达到或超过此尺寸的源原样直通：它们以 ~1:1
-/// 或缩采样绘制，其细节本身就是可获得的最大锐度，任何滤波（包括为 JPEG 块准备的中值）只会
-/// 融化真实的 1-2px 细节——这正是实测到的"真 2048 背景比圆盘标签更糊"的缘由，圆盘从不跑
-/// enhance。低于此值的都先中值去噪、Lanczos 放大到该尺寸再锐化，于是 GPU 永远不放大纹理。
-pub(super) const ENHANCE_TARGET_PX: u32 = 1920;
-/// 放大之后应用的 unsharp-mask 强度（见 [`sharpen_rgba`]）。
-const ENHANCE_SHARPEN_AMOUNT: f32 = 0.6;
 /// 以输出像素计的 unsharp-mask 模糊 sigma：7.5× Lanczos 放大下边缘过渡跨越若干像素，
 /// 所以光晕半径必须随倍数走，不能停在 1px。
 const ENHANCE_SHARPEN_SIGMA: f32 = 1.5;
@@ -143,47 +136,11 @@ pub(super) fn backdrop_sharp_fill(
     Ok(Arc::new(RenderImage::new(smallvec![Frame::new(out)])))
 }
 
-/// 定长背景增强——窗口设备像素目标未知时使用的 [`ImageCacheMode::Backdrop(None)`] 兜底
-/// （精确目标路径是 [`backdrop_sharp_fill`]）。返回新的 `RenderImage`：已达到或超过
-/// [`ENHANCE_TARGET_PX`] 的源原样直通；更小的源依次做 3×3 中值去噪（化掉 JPEG 块阶——7.5×
-/// 放大后每个块会涂抹到 60px）、Lanczos 重采样到显示尺寸、再一次阈值 unsharp 补回边缘锐度。
-/// 只动 RGB 通道，alpha 不碰。
-pub(super) fn enhance_render_image(image: &Arc<RenderImage>) -> Option<Arc<RenderImage>> {
-    let bytes = image.as_bytes(0)?;
-    let size = image.size(0);
-    let (width, height) = (u32::from(size.width), u32::from(size.height));
-    if width == 0 || height == 0 {
-        return Some(Arc::clone(image));
-    }
-    if width.max(height) >= ENHANCE_TARGET_PX {
-        return Some(Arc::clone(image));
-    }
-    let mut rgba = image::RgbaImage::from_raw(width, height, bytes.to_vec())?;
-    denoise_rgba(&mut rgba);
-    let long_side = rgba.width().max(rgba.height());
-    let scale = f64::from(ENHANCE_TARGET_PX) / f64::from(long_side);
-    let new_width = ((f64::from(rgba.width()) * scale) as u32).max(1);
-    let new_height = ((f64::from(rgba.height()) * scale) as u32).max(1);
-    rgba = image::imageops::resize_parallel(
-        &rgba,
-        new_width,
-        new_height,
-        image::imageops::FilterType::Lanczos3,
-        backdrop_resize_threads(new_height),
-    );
-    sharpen_rgba(&mut rgba);
-    Some(Arc::new(RenderImage::new(smallvec![Frame::new(rgba)])))
-}
-
 /// 对 RGB 原地做阈值 unsharp-mask：差值超过阈值时 `out = src + amount·(src − blur(src))`。
-/// 运行在中值（化掉 JPEG 块边）与 Lanczos 放大之后，所以只提升真实边缘——它替换掉的无序
+/// 运行在中值（化掉 JPEG 块边）与重采样之后，所以只提升真实边缘——它替换掉的无序
 /// unsharp 曾把块阶直接放大成"黑框框"网格。alpha 不碰。
-pub(super) fn sharpen_rgba(image: &mut image::RgbaImage) {
-    sharpen_rgba_with(image, ENHANCE_SHARPEN_AMOUNT, ENHANCE_SHARPEN_SIGMA);
-}
-
-/// [`sharpen_rgba`] 的参数化内核：`amount` 缩放 unsharp 响应，`sigma` 设定以输出像素计的
-/// 光晕半径。
+///
+/// `amount` 缩放 unsharp 响应，`sigma` 设定以输出像素计的光晕半径。
 ///
 /// 模糊基保持 `imageops::blur`。曾把它和下面中值的 `sort_unstable` 一起换成
 /// `fast_blur`（Kovesi 三重盒式，u8 域）+ `select_nth_unstable`：前者确实把
@@ -197,7 +154,7 @@ pub(super) fn sharpen_rgba(image: &mut image::RgbaImage) {
 /// 而且**跨进程的 bench 序列不可直接比**——第一次跑只有 2048/1280 两个用例，
 /// 加了 4096 之后同进程后半段的用例普遍变慢，我就是这样把一次回归读成了
 /// −28~31% 的收益。对照必须同环境、同序列、同进程。
-fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
+pub(super) fn sharpen_rgba_with(image: &mut image::RgbaImage, amount: f32, sigma: f32) {
     let blurred = image::imageops::blur(image, sigma);
     for (src, blur) in image.pixels_mut().zip(blurred.pixels()) {
         for c in 0..3 {
@@ -759,8 +716,7 @@ mod bench {
 
     use super::*;
 
-    /// 端到端目标：1920×1080 全屏设备像素（数值恰为 ENHANCE_TARGET_PX，但
-    /// 语义是窗口目标尺寸的代表档，二者只是巧合同值）。
+    /// 端到端目标：1920×1080 全屏设备像素（"对齐 1920 宽全屏"的代表档）。
     const TARGET_W: u32 = 1920;
     const TARGET_H: u32 = 1080;
 

@@ -26,13 +26,13 @@ use crate::{
 };
 
 // 沉浸页背景纯 CPU 渲染管线（v4 清晰裁剪带），自本文件拆出的自包含图像
-// 处理段（`backdrop_sharp_fill` / `enhance_render_image` / 去噪 / 锐化）。
+// 处理段（`backdrop_sharp_fill` / 去噪 / 锐化）。
 // 文件位置经 `#[path]` 钉在本目录——Rust 2018 子模块默认会找
 // managed_image/backdrop_pipeline.rs，而这里按仓库目录惯例平铺。
 #[path = "backdrop_pipeline.rs"]
 mod backdrop_pipeline;
 
-use self::backdrop_pipeline::{backdrop_sharp_fill, enhance_render_image};
+use self::backdrop_pipeline::backdrop_sharp_fill;
 
 /// 曲目同目录封面文件名白名单：3 个词干 × 3 个扩展名，只查一层目录、名字大小写不敏感。
 /// 取代原 `globwalk` 通配——候选相同、readdir 顺序相同，且每次查找不再编译 glob。
@@ -676,8 +676,8 @@ fn render_cache_insert(key: ManagedImageKey, thumb: u32, image: Arc<RenderImage>
 impl ManagedImageKey {
     /// 拉取并解码封面，按 [`ImageCacheMode`] 记忆化，因此滚回视野的封面复用同一个
     /// `RenderImage`，而不是每个元素实例都付一次新解码 + 图集上传。Backdrop 模式还会在
-    /// 插入缓存之前完成锐利裁剪带渲染（见 `backdrop_sharp_fill`；定长兜底仍用
-    /// [`enhance_render_image`]），于是缓存里的图永远"拿来即绘"，元素绘制的是缓存持有的
+    /// 插入缓存之前完成锐利裁剪带渲染（见 `backdrop_sharp_fill`），于是缓存里的图永远
+    /// "拿来即绘"，元素绘制的是缓存持有的
     /// 那个确切 Arc——每张封面一次解码、一次增强、一套像素。`ImageCacheMode::None`
     /// 服务解码即弃的调用方：从不绘制的一次性图像（取色器），或瓦片寿命由元素自身约束的。
     pub(crate) async fn retrieve(
@@ -779,37 +779,6 @@ impl ManagedImageKey {
                     "immersive backdrop decoded"
                 );
                 resampled
-            }
-            (ImageCacheMode::Backdrop(None), _) => {
-                // 定长兜底路径与主路径同纪律：去噪+重采样是数十到百余 ms 级
-                // 同步 CPU，必须 spawn_blocking——内联会占住 RUNTIME 仅有的
-                // 2 个 async worker，拖慢 UI 线程 blocking_query 的排队。
-                // gate permit 与主路径同款移入闭包（2026-10-31 契约 4）：
-                // 上面对 Backdrop(_) 两种变体都取了闸，帧在 await 点被
-                // abort 时不可取消的 enhance 须继续持闸跑完——permit 绑在
-                // 帧上会提前归还、闸门被取消旁路。本分支经 `backdrop_cached`
-                // （目标未知/为零兜底）结构可达，正常因 render 总先写非零
-                // 目标而不走，属活跃代码体上的潜伏风险，仍按同一契约封死。
-                let enhanced = crate::RUNTIME
-                    .spawn_blocking({
-                        let decoded = decoded.clone();
-                        move || {
-                            let _backdrop_pipeline = backdrop_pipeline_gate;
-                            enhance_render_image(&decoded).unwrap_or_else(|| decoded.clone())
-                        }
-                    })
-                    .await
-                    .unwrap_or_else(|_| decoded.clone());
-                // 旧路径观测点：与上面同目的。
-                let size = enhanced.size(0);
-                info!(
-                    target: "backdrop",
-                    key = ?self,
-                    width = u32::from(size.width),
-                    height = u32::from(size.height),
-                    "immersive backdrop decoded (fixed-size path)"
-                );
-                enhanced
             }
             _ => decoded,
         };
@@ -966,8 +935,10 @@ pub(crate) enum ImageCacheMode {
     /// 该尺寸（cover 裁剪 → 中值去噪 → 重采样 → 阈值 unsharp），缓
     /// 存里永远是"拿来即绘"且与屏幕 1:1 的成图（2026-09-29 实测定案：
     /// 2048 纹理按 0.94 非整数比例双线性采样本身就会带来半像素级模糊，
-    /// 唯一根治法是让纹理与屏幕逐像素对齐）；`None` 为旧的定长解码路径。
-    /// 逐出走同一回收漏斗。
+    /// 唯一根治法是让纹理与屏幕逐像素对齐）；`None` 变体已无生产者
+    /// （定长兜底链的 `backdrop_cached` 自 8baa5d3263 起零调用点，2026-11-21
+    /// 随死代码清理移除），Option 形态仅为最小改动保留——若出现将走 `_`
+    /// 臂原样直通解码图。逐出走同一回收漏斗。
     Backdrop(Option<(u32, u32)>),
 }
 
@@ -1292,17 +1263,6 @@ impl ManagedImage {
         self
     }
 
-    /// 沉浸页全屏背景专用：独立的容量 2 LRU（[`BACKDROP_CACHE_CAP`]，
-    /// 41fadb0775 自容量 3 clamp 而来——只覆盖当前首与预取/过渡的下一首，
-    /// 切歌后废弃大图即时逐出漏斗，省 ~16-35MB 堆内存与 GPU 纹理分配），
-    /// 解码后在入缓存前完成增强
-    /// （`retrieve` 内部）。同一首歌切走再切回、重进沉浸页都命中同一份
-    /// `RenderImage` 与图集瓦片——零解码零重传，交换只隔一帧。
-    pub fn backdrop_cached(mut self) -> Self {
-        self.cache = ImageCacheMode::Backdrop(None);
-        self
-    }
-
     /// 背景的设备像素精确模式：解码后清晰裁剪带渲染到 `(w, h)`（全尺寸
     /// 裁剪 → 中值去噪 → Lanczos → 阈值 unsharp，见 [`backdrop_sharp_fill`]），
     /// 绘制时 GPU 以 1:1 采样（无重采样模糊）。thumb_size 打包目标尺寸，
@@ -1526,7 +1486,9 @@ mod tests {
     }
 
     // 背景管线段已原样拆入子模块 backdrop_pipeline：这里补齐测试引用的
-    // 函数与常量名（测试体一律不动）。
+    // 函数名。enhance_render_image 定长兜底链已随死代码清理移除（其两个
+    // 专属测试一并删除）；sharpen_rgba_boosts_edge_contrast 改调参数化
+    // 内核 sharpen_rgba_with（包装器随死链移除），契约不变。
     use super::backdrop_pipeline::*;
     use image::{Frame, GenericImage, RgbaImage};
     use smallvec::smallvec;
@@ -1568,23 +1530,6 @@ mod tests {
     }
 
     #[test]
-    fn enhance_render_image_passes_display_size_sources_through() {
-        // 真 2048 源以 ~1:1 绘制——它的细节就是可获得的最大锐度。任何滤波（含块边中值）
-        // 都会融化真实的 1-2px 细节，看起来比未增强的圆盘标签更糊，所以它必须原样返回同一张图，
-        // 零拷贝。
-        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
-            2048,
-            2,
-            |x, y| image::Rgba([((x * 3 + y) % 255) as u8, 60, 90, 255])
-        ))]));
-        let enhanced = enhance_render_image(&image).unwrap();
-        assert!(
-            Arc::ptr_eq(&image, &enhanced),
-            "display-size sources must pass through untouched"
-        );
-    }
-
-    #[test]
     fn sharpen_rgba_boosts_edge_contrast() {
         // 对比度为封面真实量级（180 级）的软垂直阶跃：锐化必须增大跨越边缘的最陡相邻像素差，
         // 且不碰 alpha。
@@ -1606,7 +1551,10 @@ mod tests {
             max
         };
         let before = max_diff(&image);
-        sharpen_rgba(&mut image);
+        // 直接调参数化内核（0.6/σ1.5 = backdrop_sharp_fill 的放大档参数）：
+        // sharpen_rgba 包装器已随 enhance_render_image 死链移除，本测试钉的
+        // 仍是同一活内核的契约。
+        sharpen_rgba_with(&mut image, 0.6, 1.5);
         let after = max_diff(&image);
         assert!(
             after > before,
@@ -1614,25 +1562,6 @@ mod tests {
         );
         // alpha 处处保持 255。
         assert!(image.pixels().all(|p| p.0[3] == 255));
-    }
-
-    #[test]
-    fn enhance_render_image_upscales_small_sources() {
-        // 480px 在线缩略图拉伸到整窗会发糊；增强段必须在上传前把它重采样到显示尺寸目标，
-        // 让 GPU 以 ~1:1 缩放。
-        let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::from_fn(
-            480,
-            360,
-            |x, y| image::Rgba([((x * 7 + y) % 255) as u8, 60, 90, 255])
-        ))]));
-        let enhanced = enhance_render_image(&image).unwrap();
-        let size = enhanced.size(0);
-        assert_eq!(
-            u32::from(size.width),
-            ENHANCE_TARGET_PX,
-            "long side must reach the target"
-        );
-        assert_eq!(u32::from(size.height), 1440, "aspect ratio preserved");
     }
 
     #[test]
@@ -2161,12 +2090,8 @@ mod bench {
             );
         }
 
-        // 定长兜底路径（目标尺寸未知的首帧）：增强段只在源很小时做实事——2048 源原样直通，
-        // 所以探针用它真正服务的那个 480px 阶梯回退尺寸。
-        let source = synthetic_source(480);
-        bench_summarize_n("enhance_render_image 480 (fallback)", 2, 10, || {
-            let _ = enhance_render_image(&source).unwrap();
-        });
+        // 定长兜底路径（enhance_render_image 480 段）已随死代码清理移除：
+        // 该链自 8baa5d3263 起无生产者，不可达路径的计时读数无判读价值。
     }
 
     #[test]
