@@ -613,21 +613,25 @@ impl PlaybackThread {
                 kugou_quality,
                 display: display.clone(),
             };
-            let fresh = crate::RUNTIME
+            let refreshed = crate::RUNTIME
                 .block_on(async {
                     tokio::time::timeout(
                         STREAM_REFRESH_TIMEOUT,
                         crate::online_sources::refresh_online_url(&identity, &ctx),
                     )
                     .await
-                    .ok()
-                    .flatten()
-                })
-                .map(PathBuf::from);
+                });
+            let fresh = refreshed.ok().flatten().map(PathBuf::from);
             if fresh.is_none() {
+                // 两种 None 归因不同：Err(_) = 刷新调用在 STREAM_REFRESH_TIMEOUT 内
+                // 超时；Ok(None) = 无 provider 认领 identity 或 provider 产不出
+                // URL——启动竞态（登录态未就绪先开曲）正属后者。原 `.ok().flatten()`
+                // 把两者合并成同一条 WARN，无法归因（R24 LOG-4 案件，2026-11-21）。
+                let reason = if refreshed.is_err() { "timeout" } else { "no-provider-url" };
                 warn!(
                     identity = ?identity,
                     title = ctx.display.0.as_deref().unwrap_or("?"),
+                    reason,
                     "failed to refresh expired stream URL"
                 );
             }
