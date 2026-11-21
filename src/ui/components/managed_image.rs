@@ -688,6 +688,22 @@ impl ManagedImageKey {
     ) -> anyhow::Result<Option<Arc<RenderImage>>> {
         let backdrop_target = match cache {
             ImageCacheMode::RenderCache => {
+                // 硬不变量：RenderCache 模式必须带非零 thumb。构造器默认
+                // thumb_size=0 + RenderCache 是全管线最贵形态——每次渲染付
+                // 一次全尺寸解码（3000px 封面 ~36MB 瞬态）且零缓存条目、
+                // 全尺寸图集瓦片驻留到元素卸载；「可见元素必显式设
+                // .thumb()/.thumb_max()」此前只靠全部调用点的约定维持，漏
+                // 设 builder 即静默按最贵形态运行、[mem] 曲线只表现为
+                // non_heap 随滚动爬升而无 cache 条目对应。裸 assert! 而非
+                // debug_assert!：本仓 release-only、无 debug-assertions 开
+                // 关，后者永不触发。Backdrop 模式的 thumb=0 不受此断言约
+                // 束——那是「背景不封顶取阶梯最大档」的刻意设计；下方
+                // thumb_size > 0 门在此断言之后属纵深防御，保留。
+                assert!(
+                    thumb_size > 0,
+                    "RenderCache 模式 thumb_size=0：构造点漏设 .thumb()/.thumb_max()，\
+                     正按全尺寸解码 + 零缓存的最贵形态运行"
+                );
                 if thumb_size > 0
                     && let Some(image) = render_cache_lookup(self, thumb_size)
                 {
