@@ -892,8 +892,12 @@ async fn report_zero_change_artwork_finalize_storm() {
 
         // 清理用的存活扫描会分页走完每一条曲目行（页大小是
         // discover::full::CLEANUP_PAGE_SIZE，对该模块私有）。
+        // 起点必须是 -1 而非 0：查询谓词是 WHERE id > $1，而本测试播种用显式 id
+        // 从 0 起（test_support.rs seed_library；生产 create_track 不插 id，rowid
+        // 从 1 起，故生产同款分页无此问题）——起点 0 把 id=0 那一行永久排除在
+        // 所有页之外，seen 恒少 1（R24 实测 59999/60000 panic 的根因）。
         let started = std::time::Instant::now();
-        let mut last = 0i64;
+        let mut last = -1i64;
         let mut seen = 0usize;
         loop {
             let page: Vec<(i64, String)> = sqlx::query_as(include_str!(
