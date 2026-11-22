@@ -295,13 +295,13 @@
   },
   "ARTIST_ALBUMS": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:903",
+    "definedIn": "src/ui/library/artist_detail_view.rs:912",
     "plural": false,
     "description": null
   },
   "ARTIST_LIKED_TRACKS": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:619",
+    "definedIn": "src/ui/library/artist_detail_view.rs:628",
     "plural": false,
     "description": null
   },
@@ -613,7 +613,7 @@
   },
   "EXPORT_PLAYLIST_TO_M3U": {
     "context": "playlist_view.rs",
-    "definedIn": "src/ui/library/playlist_view.rs:411",
+    "definedIn": "src/ui/library/playlist_view.rs:420",
     "plural": false,
     "description": null
   },
@@ -2167,7 +2167,7 @@
   },
   "SORT_ASCENDING": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:662",
+    "definedIn": "src/ui/library/artist_detail_view.rs:671",
     "plural": false,
     "description": null
   },
@@ -2179,7 +2179,7 @@
   },
   "SORT_DESCENDING": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:667",
+    "definedIn": "src/ui/library/artist_detail_view.rs:676",
     "plural": false,
     "description": null
   },
@@ -2191,19 +2191,19 @@
   },
   "SORT_RECENTLY_ADDED": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:678",
+    "definedIn": "src/ui/library/artist_detail_view.rs:687",
     "plural": false,
     "description": null
   },
   "SORT_RELEASE_ORDER": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:686",
+    "definedIn": "src/ui/library/artist_detail_view.rs:695",
     "plural": false,
     "description": null
   },
   "SORT_TITLE": {
     "context": "artist_detail_view.rs",
-    "definedIn": "src/ui/library/artist_detail_view.rs:682",
+    "definedIn": "src/ui/library/artist_detail_view.rs:691",
     "plural": false,
     "description": null
   },
@@ -2461,7 +2461,7 @@
   },
   "TRAY_HIDE": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:616",
+    "definedIn": "src/tray/windows.rs:631",
     "plural": false,
     "description": null
   },
@@ -2497,7 +2497,7 @@
   },
   "TRAY_SHOW": {
     "context": "windows.rs",
-    "definedIn": "src/tray/windows.rs:618",
+    "definedIn": "src/tray/windows.rs:633",
     "plural": false,
     "description": null
   },
