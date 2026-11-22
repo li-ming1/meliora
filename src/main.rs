@@ -780,6 +780,58 @@ fn log_frame_aggregate(collector: &mut gpui::profiler::FrameTimingCollector) {
     }
 }
 
+/// 硬 private-commit 上限（MiB）。泄漏修复给每条已知增长路径都封了界，但
+/// "无论运行多久都不可能超过"需要一套对*未知*未来 bug 强制生效的机制，而且
+/// 进程内没有任何操作能回收 glyph 图集页（逐出会触发 2026-09-08 的悬空场景
+/// 崩溃类）。所以最终阀门是重启进程：连续两个 30 s 采样越线（两次采样之间
+/// 提交量至少持续 30 s 高于上限）即为持续越线——spawn 替换 exe（会话态存在
+/// playback_session.json，设置随改随存）并退出。修复后的采样间增速是个位数 MB，
+/// 因此无论何种 bug，这个界都能守住到 ~10 MB 以内。带最小存活时间守卫，防止
+/// 启动瞬态造成循环重启；两个值都可用环境变量覆盖以便测试。三个常量提为模块
+/// 级是为让测试断言真实值而非硬编码副本（R30 深审：cap=270 端到端是人工活测，
+/// 决策逻辑零自动化覆盖）。
+const MEMORY_HARD_CAP_MB: u64 = 500;
+const HARD_CAP_CONSECUTIVE_SAMPLES: u32 = 2;
+const HARD_CAP_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 读环境变量覆盖（非法/缺失回落默认值；`0` 合法——MIN_UPTIME=0 关闭存活守卫）。
+/// 仅探针（cfg(not(test))）调用，测试构建下 dead——env 测试会引入全局环境污染
+/// （unsafe set_var + 并行污染），不做，allow 之。
+#[cfg_attr(test, allow(dead_code))]
+fn env_override(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// 硬上限阀门的决策状态机（纯函数化以便测试）。
+#[derive(Default)]
+struct HardCapValve {
+    breaches: u32,
+}
+
+impl HardCapValve {
+    /// 喂入一个采样，返回是否达到重启条件：连续
+    /// [`HARD_CAP_CONSECUTIVE_SAMPLES`] 次越线且存活超过 `min_uptime_secs`。
+    /// 线内采样清零计数（单次越线可能是突发峰值，自回落）；存活守卫窗内的
+    /// 连续越线**不清零**——守卫窗一过，已累计的计数继续生效。
+    fn feed(
+        &mut self,
+        private_mb: u64,
+        hard_cap_mb: u64,
+        uptime_secs: u64,
+        min_uptime_secs: u64,
+    ) -> bool {
+        if private_mb >= hard_cap_mb {
+            self.breaches += 1;
+        } else {
+            self.breaches = 0;
+        }
+        self.breaches >= HARD_CAP_CONSECUTIVE_SAMPLES && uptime_secs >= min_uptime_secs
+    }
+}
+
 #[cfg(not(test))]
 fn spawn_memory_probe() {
     // 最近 10 分钟内的净提交增长被视为一次 "step"。
@@ -793,27 +845,10 @@ fn spawn_memory_probe() {
     /// 长度（streak）、purge 实回收（reclaimed_mb）、tiles_leaked 与单调爬坡，
     /// 单点越线不是信号（2026-11-15 修订，取代「越线即棘轮/新泄漏」旧判据）。
     const MEMORY_SOFT_CAP_MB: u64 = 420;
-    /// 硬 private-commit 上限（MiB）。泄漏修复给每条已知增长路径都封了界，但
-    /// "无论运行多久都不可能超过"需要一套对*未知*未来 bug 强制生效的机制，而且
-    /// 进程内没有任何操作能回收 glyph 图集页（逐出会触发 2026-09-08 的悬空场景
-    /// 崩溃类）。所以最终阀门是重启进程：连续两个 30 s 采样越线（两次采样之间
-    /// 提交量至少持续 30 s 高于上限）即为持续越线——spawn 替换 exe（会话态存在
-    /// playback_session.json，设置随改随存）并退出。修复后的采样间增速是个位数 MB，
-    /// 因此无论何种 bug，这个界都能守住到 ~10 MB 以内。带最小存活时间守卫，防止
-    /// 启动瞬态造成循环重启；两个值都可用环境变量覆盖以便测试。
-    const MEMORY_HARD_CAP_MB: u64 = 500;
-    const HARD_CAP_CONSECUTIVE_SAMPLES: u32 = 2;
-    const HARD_CAP_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(300);
     /// 压力旗标清除前相对软顶的滞回余量：shed 之后缓存会按需回填，只有降到
     /// cap − 30 MB 才清除，旗标才不会在边界反复抖动。
     const PRESSURE_CLEAR_MARGIN_MB: u64 = 30;
 
-    fn env_override(name: &str, default: u64) -> u64 {
-        std::env::var(name)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default)
-    }
     let hard_cap_mb = env_override("MELIORA_MEMORY_HARD_CAP_MB", MEMORY_HARD_CAP_MB);
     let hard_cap_min_uptime = env_override(
         "MELIORA_MEMORY_HARD_CAP_MIN_UPTIME_SECS",
@@ -822,7 +857,7 @@ fn spawn_memory_probe() {
 
     crate::RUNTIME.spawn(async move {
         let started_at = std::time::Instant::now();
-        let mut hard_cap_breaches: u32 = 0;
+        let mut hard_cap_valve = HardCapValve::default();
         let mut tick = tokio::time::interval(SAMPLE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut baseline: Option<(std::time::Instant, u64)> = None;
@@ -1079,14 +1114,14 @@ fn spawn_memory_probe() {
             }
 
             // 硬上限阀门：提交量持续越过硬上限就重启进程（见 MEMORY_HARD_CAP_MB）。
-            // 单次采样可能是突发峰值；连续两次才说明它不会自行回落。
-            if private >= hard_cap_mb {
-                hard_cap_breaches += 1;
-            } else {
-                hard_cap_breaches = 0;
-            }
-            let hard_cap_restart = hard_cap_breaches >= HARD_CAP_CONSECUTIVE_SAMPLES
-                && started_at.elapsed().as_secs() >= hard_cap_min_uptime;
+            // 单次采样可能是突发峰值；连续两次才说明它不会自行回落。决策状态机
+            // 已抽为 HardCapValve（测试见 main.rs 底部 tests 模块）。
+            let hard_cap_restart = hard_cap_valve.feed(
+                private,
+                hard_cap_mb,
+                started_at.elapsed().as_secs(),
+                hard_cap_min_uptime,
+            );
             if hard_cap_restart {
                 tracing::error!(
                     private_mb = private,
@@ -1378,4 +1413,88 @@ fn main_inner() -> anyhow::Result<()> {
     crate::media::audio_cache::prune_audio_cache_background();
 
     crate::ui::app::run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HARD_CAP_CONSECUTIVE_SAMPLES, HARD_CAP_MIN_UPTIME, HardCapValve, MEMORY_HARD_CAP_MB,
+    };
+
+    /// 阀门核心语义：单次越线不重启（突发峰值自回落），连续
+    /// [`HARD_CAP_CONSECUTIVE_SAMPLES`] 次越线且存活过守卫窗才重启。
+    #[test]
+    fn hard_cap_valve_requires_two_consecutive_breaches() {
+        let mut valve = HardCapValve::default();
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        assert!(valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+    }
+
+    /// 线内采样清零计数：随后的单次越线不再触发（突发峰值自回落语义）。
+    #[test]
+    fn hard_cap_valve_resets_on_in_band_sample() {
+        let mut valve = HardCapValve::default();
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB - 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+    }
+
+    /// 上界语义：恰好等于上限也算越线（>=）。
+    #[test]
+    fn hard_cap_valve_boundary_is_inclusive() {
+        let mut valve = HardCapValve::default();
+        assert!(!valve.feed(MEMORY_HARD_CAP_MB, MEMORY_HARD_CAP_MB, 400, 300));
+        assert!(valve.feed(MEMORY_HARD_CAP_MB, MEMORY_HARD_CAP_MB, 400, 300));
+    }
+
+    /// 存活守卫：窗内连续越线不重启且计数不清零，窗一过继续生效；
+    /// env 覆盖 0 关闭守卫（任意 uptime 都满足）。
+    #[test]
+    fn hard_cap_valve_min_uptime_guard_and_zero_disable() {
+        let mut valve = HardCapValve::default();
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            100,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        assert!(valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            HARD_CAP_MIN_UPTIME.as_secs(),
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+
+        let mut valve = HardCapValve::default();
+        assert!(!valve.feed(MEMORY_HARD_CAP_MB + 30, MEMORY_HARD_CAP_MB, 0, 0));
+        assert!(valve.feed(MEMORY_HARD_CAP_MB + 30, MEMORY_HARD_CAP_MB, 0, 0));
+        // 上界语义钉住真实常量
+        assert_eq!(HARD_CAP_CONSECUTIVE_SAMPLES, 2);
+        assert_eq!(MEMORY_HARD_CAP_MB, 500);
+    }
 }
