@@ -1435,7 +1435,7 @@
   },
   "PALETTE_SHOW_MORE": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:1084",
+    "definedIn": "src/ui/components/palette/finder.rs:1095",
     "plural": true,
     "description": null
   },
@@ -2023,25 +2023,25 @@
   },
   "SEARCH_EMPTY_HINT": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:875",
+    "definedIn": "src/ui/components/palette/finder.rs:886",
     "plural": false,
     "description": null
   },
   "SEARCH_EMPTY_HINT_SECONDARY": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:885",
+    "definedIn": "src/ui/components/palette/finder.rs:896",
     "plural": false,
     "description": null
   },
   "SEARCH_NO_RESULTS_FOR_QUERY": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:869",
+    "definedIn": "src/ui/components/palette/finder.rs:880",
     "plural": false,
     "description": null
   },
   "SEARCH_NO_RESULTS_HINT": {
     "context": "finder.rs",
-    "definedIn": "src/ui/components/palette/finder.rs:882",
+    "definedIn": "src/ui/components/palette/finder.rs:893",
     "plural": false,
     "description": null
   },
@@ -2629,7 +2629,7 @@
   },
   "UPDATE_RESTART_FAILED_TOAST": {
     "context": "updater.rs",
-    "definedIn": "src/updater.rs:437",
+    "definedIn": "src/updater.rs:455",
     "plural": false,
     "description": null
   },
