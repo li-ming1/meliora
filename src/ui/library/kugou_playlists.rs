@@ -384,6 +384,7 @@ impl KugouPlaylistsView {
                         let response = client
                             .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
                             .await?;
+                        crate::ui::kugou::require_tracks_payload(&response.body)?;
                         let mut page_tracks = parse_tracks(&response.body, "/data/info");
                         page_tracks.reverse();
                         let page_tracks: Vec<_> = page_tracks.into_iter().map(Arc::new).collect();
@@ -404,6 +405,7 @@ impl KugouPlaylistsView {
                                 .playlist_tracks(listid, total_pages, TRACKS_PER_PAGE)
                                 .await?
                         };
+                        crate::ui::kugou::require_tracks_payload(&response.body)?;
                         let mut page_tracks = parse_tracks(&response.body, "/data/info");
                         page_tracks.reverse();
                         let page_tracks: Vec<_> = page_tracks.into_iter().map(Arc::new).collect();

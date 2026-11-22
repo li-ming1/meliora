@@ -362,6 +362,24 @@ pub fn parse_tracks(body: &Value, list_pointer: &str) -> Vec<KugouTrackInfo> {
     })
 }
 
+/// 载荷变形哨兵（契约 5，照 `liked_entries_raw` 的先例）：`/data/info` 缺失或
+/// 非数组 = 取数失败而非列表为空。同一端点（playlist_tracks）的成功响应恒带
+/// 该数组（空歌单也是空数组），缺失即服务端/网络故障——建视图的取数落成空
+/// Vec 会把瞬时故障表述成 "This playlist is empty" 且无重试入口。
+pub fn require_tracks_payload(body: &Value) -> Result<(), kugou::KugouError> {
+    if body
+        .pointer("/data/info")
+        .and_then(Value::as_array)
+        .is_some()
+    {
+        Ok(())
+    } else {
+        Err(kugou::KugouError::local(
+            "playlist tracks payload malformed (/data/info missing)",
+        ))
+    }
+}
+
 /// 解析榜单列表（`/data/info`）。没有 rankid 的条目会被跳过。
 pub fn parse_ranks(body: &Value) -> Vec<KugouRank> {
     parse_pointer_list(body, "/data/info", |item| {
