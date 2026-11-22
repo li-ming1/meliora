@@ -830,6 +830,12 @@ impl HardCapValve {
         }
         self.breaches >= HARD_CAP_CONSECUTIVE_SAMPLES && uptime_secs >= min_uptime_secs
     }
+
+    /// 强制回收救回后清零阀门重新监控（breach 分支的 collect 复测收回即免重启，
+    /// 后续越线需要重新累计满连续次数）。
+    fn reset(&mut self) {
+        self.breaches = 0;
+    }
 }
 
 #[cfg(not(test))]
@@ -1122,6 +1128,35 @@ fn spawn_memory_probe() {
                 started_at.elapsed().as_secs(),
                 hard_cap_min_uptime,
             );
+            // 最后机会收口（R34 第 10 次重启取证）：看门狗的空回收降频节流可能
+            // 恰好跳过本采样（本次 4410 上升沿干燥 reclaimed=1 → 4440 被节流跳
+            // 过），而两次采样之间刚释放的管线/解码 churn 页正等待 purge 收回
+            // （commit 758 vs working 315 = 未去提交的空闲页）——重启前强制
+            // collect 复测：收回即免重启并清零阀门重新监控；仍越线才是真持续
+            // （collect 只回收空闲页，活内存收不动，真泄漏照常重启）。代价 =
+            // 重启路径上一次整堆扫描（毫秒级）。
+            let hard_cap_restart = if hard_cap_restart {
+                let reclaimed = crate::RUNTIME
+                    .spawn_blocking(move || mimalloc_force_collect_reclaim_mb(private))
+                    .await
+                    .unwrap_or(0);
+                let after = private.saturating_sub(reclaimed);
+                if after < hard_cap_mb {
+                    tracing::warn!(
+                        before_mb = private,
+                        after_mb = after,
+                        reclaimed_mb = reclaimed,
+                        "memory hard cap: forced collect reclaimed the churn; \
+                         restart cancelled, valve reset"
+                    );
+                    hard_cap_valve.reset();
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
             if hard_cap_restart {
                 tracing::error!(
                     private_mb = private,
@@ -1496,5 +1531,37 @@ mod tests {
         // 上界语义钉住真实常量
         assert_eq!(HARD_CAP_CONSECUTIVE_SAMPLES, 2);
         assert_eq!(MEMORY_HARD_CAP_MB, 500);
+    }
+
+    /// collect 救回后的 reset：清零阀门重新监控——重置后需要重新累计满连续
+    /// 次数（单次越线不再立即重启）。
+    #[test]
+    fn hard_cap_valve_reset_restarts_monitoring() {
+        let mut valve = HardCapValve::default();
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        assert!(valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        valve.reset();
+        assert!(!valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
+        assert!(valve.feed(
+            MEMORY_HARD_CAP_MB + 30,
+            MEMORY_HARD_CAP_MB,
+            400,
+            HARD_CAP_MIN_UPTIME.as_secs()
+        ));
     }
 }
