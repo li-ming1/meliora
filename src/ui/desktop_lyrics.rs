@@ -554,8 +554,10 @@ impl Render for DesktopLyricsView {
             None => div()
                 .text_size(px(24.0))
                 .text_color(unsung)
-                // ♪ 装饰前缀留在代码侧，词条只管文案本体。
-                .child(format!("♪ {}", tr!("NO_LYRICS", "No lyrics")))
+                // ♪ 装饰前缀留在代码侧，词条只管文案本体。默认串只在规范定义点
+                // （lyrics.rs）携带——同键第二处带默认会触发生成器
+                // DuplicateDefinition 告警（BLD-2，2026-11-22）。
+                .child(format!("♪ {}", tr!("NO_LYRICS")))
                 .into_any_element(),
         };
 
