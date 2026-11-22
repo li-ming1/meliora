@@ -48,7 +48,7 @@ use crate::{
             ArtistNameVisibility, TrackItem, TrackItemLeftField, TrackItemOptions,
         },
         library_access::LibraryAccess,
-        models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaylistEvent},
+        models::{LIKED_SONGS_PLAYLIST_ID, Models, PlaybackInfo, PlaylistEvent},
         theme::Theme,
         util::{create_or_retrieve_view, prune_views, reduced_motion_enabled},
     },
@@ -403,6 +403,15 @@ impl PlaylistView {
             .detach();
 
             let focus_handle = cx.focus_handle();
+
+            // 换曲时整视图重渲：TrackItem 的 is_current 读取（track_item.rs）每
+            // 渲染读一次全局但不观察——没有这里的父级单观察，自动切歌后行内高亮
+            // 停更到下一次任意重渲染（release_view 与 kugou_ranks 的同一契约；
+            // SongChanged 级事件频次低，虚拟化钳住重渲成本）。
+            if cx.has_global::<PlaybackInfo>() {
+                let current_track = cx.global::<PlaybackInfo>().current_track.clone();
+                cx.observe(&current_track, |_, _, cx| cx.notify()).detach();
+            }
 
             cx.register_command(
                 CommandSpec::new(
