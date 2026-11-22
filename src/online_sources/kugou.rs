@@ -355,7 +355,9 @@ pub fn quality_ladder(requested: &str) -> &'static [&'static str] {
 /// 非实时路径（用户点歌等）传 `None` 维持网关 30s 档。
 const REALTIME_URL_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// 实时取流的整轮预算（含所有顺降档与缓存写入）。必须严格小于播放钩子的
+/// 实时取流的整轮预算（覆盖全部顺降档的网络段；timeout 只包 network future，
+/// 取回后的缓存写入/注册表登记是内存 µs 级，落在预算外仍在 6s 总预算内）。
+/// 必须严格小于播放钩子的
 /// 6s 总预算（[`REALTIME_URL_REQUEST_TIMEOUT`] 处引用），留 ~1s 余量给
 /// `refresh_url` 拿到 URL 后的注册表登记等后续工作。
 ///
@@ -503,11 +505,34 @@ fn stream_url_cache() -> &'static RwLock<StreamUrlCache> {
 /// 清空全部直链缓存。账号身份变化（登录/登出/换号）时必须调用：缓存里可能留有旧账号
 /// 会话签发的 URL，命中后表现为 403/无声，或至少是跨账号的陈旧凭据复用。
 ///
+/// 直链缓存世代：换号清空时递增（与 invalidate_all 同守卫域）。在途 fetch 开工前
+/// 捕获、落地前比对——挡「在途 fetch 在清空之后回填旧账号会话签发的 URL」的竞态，
+/// 与 liked 缓存的 LIKED_GENERATION 同型双防线（那边 2026-10-25 终审确立；直链
+/// 缓存侧 R26 深审补齐——原先只靠「换号时 UI 线程同步清」的调用时序，播放线程的
+/// 并发 fetch 与清空之间没有互斥交接点，点歌档在途窗口最长可达 ~2min）。
+static STREAM_URL_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// 守卫式写入：世代比对与插入同持一把写锁。清空侧在同一把锁内递增世代，两条
+/// 路径由此真正互斥；世代失配（换号落在取流期间）返回 false，调用方把结果整体
+/// 丢弃——旧账号签发的 URL 按本模块 invalidate 的既有口径就是潜在 403/无声。
+fn stream_url_cache_store_if_current(key: StreamUrlKey, url: String, generation: u64) -> bool {
+    let mut cache = stream_url_cache().write_recovered();
+    if STREAM_URL_GENERATION.load(Ordering::Relaxed) != generation {
+        return false;
+    }
+    cache.insert(key, url);
+    true
+}
+
 /// 与 UI 层的 `invalidate_online_account_caches` 钩子配套——那个钩子清歌单/榜单/liked
 /// 与代际信号，但原先漏了这一层。本函数与之同在 UI 线程同步调用，拿的是
 /// `RecoveredRwLock`（不中毒），无需 await。
 pub(crate) fn invalidate_stream_url_cache() {
-    stream_url_cache().write_recovered().invalidate_all();
+    let mut cache = stream_url_cache().write_recovered();
+    cache.invalidate_all();
+    // 世代递增与清空同守卫域：与 store_if_current 的比对在同一把锁上互斥，
+    // 在途 fetch 的旧账号结果落地前自行丢弃（liked 缓存 CONC-1 修复确立的形态）。
+    STREAM_URL_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 按请求的 `quality` 为酷狗曲目取一个可播放 URL，更高档位不可用时（例如没有 VIP）退化到
@@ -535,6 +560,9 @@ pub async fn fetch_stream_url(
         }
     }
 
+    // 开工前捕获世代：换号清空落在网络取回期间的话，这份旧账号会话签发的
+    // URL 在落地前会被世代比对整体丢弃（照 liked 缓存同型双防线）。
+    let generation = STREAM_URL_GENERATION.load(Ordering::Relaxed);
     let network = fetch_stream_url_network(
         client,
         hash,
@@ -563,10 +591,16 @@ pub async fn fetch_stream_url(
         network.await?
     };
 
-    stream_url_cache()
-        .write_recovered()
-        .insert(key, url.clone());
-    Some(url)
+    if stream_url_cache_store_if_current(key, url.clone(), generation) {
+        Some(url)
+    } else {
+        tracing::debug!(
+            hash,
+            quality,
+            "kugou: stale-account stream URL discarded after account switch"
+        );
+        None
+    }
 }
 
 async fn fetch_stream_url_network(
@@ -1194,5 +1228,52 @@ mod url_parse_tests {
             REALTIME_FETCH_BUDGET < playback_hook_budget,
             "whole-fetch budget must leave headroom for the playback hook's 6s outer timeout"
         );
+    }
+
+    /// 世代守卫契约（方向 3）：在途 fetch 携带开工前捕获的世代，换号清空之后落地
+    /// 必须被整体丢弃且不回填缓存——否则旧账号会话签发的 URL 驻留 30min TTL，
+    /// 首次命中即 403/无声（与 liked 缓存 LIKED_GENERATION 同型双防线）。
+    #[test]
+    fn stream_url_cache_generation_guard_discards_stale_account_results() {
+        invalidate_stream_url_cache(); // 复位全局缓存并推进世代
+        let generation = STREAM_URL_GENERATION.load(Ordering::Relaxed);
+        let key = StreamUrlKey {
+            hash: "gen_guard".into(),
+            quality: "128".into(),
+        };
+
+        // 同世代写入：正常落地
+        assert!(stream_url_cache_store_if_current(
+            key.clone(),
+            "http://cdn/a.mp3".into(),
+            generation
+        ));
+        assert_eq!(
+            stream_url_cache().write_recovered().get(&key),
+            Some("http://cdn/a.mp3".into())
+        );
+
+        // 模拟换号清空：世代推进后，携旧世代的结果被丢弃且不回填缓存
+        invalidate_stream_url_cache();
+        assert!(!stream_url_cache_store_if_current(
+            key.clone(),
+            "http://cdn/stale.mp3".into(),
+            generation
+        ));
+        assert_eq!(stream_url_cache().write_recovered().get(&key), None);
+
+        // 新世代（新账号会话）的结果照常落地
+        let fresh = STREAM_URL_GENERATION.load(Ordering::Relaxed);
+        assert!(stream_url_cache_store_if_current(
+            key.clone(),
+            "http://cdn/b.mp3".into(),
+            fresh
+        ));
+        assert_eq!(
+            stream_url_cache().write_recovered().get(&key),
+            Some("http://cdn/b.mp3".into())
+        );
+
+        invalidate_stream_url_cache(); // 清场，不给全局缓存留测试垃圾
     }
 }
