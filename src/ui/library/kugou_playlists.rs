@@ -197,15 +197,19 @@ impl KugouPlaylistsView {
                 .try_global::<crate::ui::library::KugouAccountEpoch>()
                 .map(|epoch| epoch.0)
                 .unwrap_or(0);
-            cx.observe_global::<crate::ui::library::KugouAccountEpoch>(move |this, cx| {
-                let current = cx
-                    .try_global::<crate::ui::library::KugouAccountEpoch>()
-                    .map(|epoch| epoch.0)
-                    .unwrap_or(0);
-                if current != account_epoch {
-                    this.reset_for_account_switch(cx);
-                }
-            })
+            // 契约 5 的显式标注形态（同 kugou_ranks/sidebar/settings 三处先例）：
+            // 不标注时靠推断收敛，类型一旦漂移报错点远离声明处。
+            cx.observe_global::<crate::ui::library::KugouAccountEpoch>(
+                move |this: &mut Self, cx: &mut Context<Self>| {
+                    let current = cx
+                        .try_global::<crate::ui::library::KugouAccountEpoch>()
+                        .map(|epoch| epoch.0)
+                        .unwrap_or(0);
+                    if current != account_epoch {
+                        this.reset_for_account_switch(cx);
+                    }
+                },
+            )
             .detach();
 
             view
