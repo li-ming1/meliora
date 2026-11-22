@@ -119,6 +119,86 @@ pub enum DisplayEntry<T> {
     ShowMore(I18nString, usize),
 }
 
+/// 分类展示规则（纯函数，与 `Finder` 的三个泛型参数解耦以便测试）：未分类条
+/// 目前置、按首次出现序分组、每组折叠到 [`MAX_VISIBLE_PER_CATEGORY`] 并尾随
+/// ShowMore（`expand_all` 或该组已在 `expanded_categories` 里时全展开）。
+/// 本函数在匹配集每次变化时都跑（连打字符即每秒数次）。
+fn build_display_list<T: PaletteItem>(
+    matches: &[Arc<T>],
+    expanded_categories: &[I18nString],
+    expand_all: bool,
+) -> Vec<DisplayEntry<T>> {
+    let mut category_order: Vec<I18nString> = Vec::new();
+    let mut category_counts: Vec<usize> = Vec::new();
+    let mut has_uncategorized = false;
+
+    // 分类只查一次并缓存：`category()` 内部是 `tr!`（全局 RwLock 读 + 哈希
+    // 查表 + I18nString 构造），而下面共有三趟全量扫描——各自重取就是
+    // n×(2+k) 次（n ≤ MAX_MATCHES=100、k≈4-5 ≈ 700 次/重建）。
+    let cats: Vec<Option<I18nString>> = matches.iter().map(|item| item.category()).collect();
+
+    for cat in cats.iter() {
+        if let Some(cat) = cat {
+            if let Some(pos) = category_order.iter().position(|c| c == cat) {
+                category_counts[pos] += 1;
+            } else {
+                category_order.push(cat.clone());
+                category_counts.push(1);
+            }
+        } else {
+            has_uncategorized = true;
+        }
+    }
+
+    if category_order.is_empty() {
+        return matches
+            .iter()
+            .map(|item| DisplayEntry::Item(item.clone()))
+            .collect();
+    }
+
+    let mut display_list = Vec::with_capacity(matches.len() + category_order.len());
+
+    if has_uncategorized {
+        for (item, cat) in matches.iter().zip(cats.iter()) {
+            if cat.is_none() {
+                display_list.push(DisplayEntry::Item(item.clone()));
+            }
+        }
+    }
+
+    for (cat_idx, cat) in category_order.iter().enumerate() {
+        display_list.push(DisplayEntry::Header(cat.clone()));
+        let total = category_counts[cat_idx];
+        let is_expanded = expand_all || expanded_categories.iter().any(|c| c == cat);
+        let limit = if is_expanded || total <= MAX_VISIBLE_PER_CATEGORY {
+            total
+        } else {
+            MAX_VISIBLE_PER_CATEGORY
+        };
+
+        let mut emitted = 0;
+        for (item, item_cat) in matches.iter().zip(cats.iter()) {
+            if item_cat.as_ref() == Some(cat) {
+                if emitted < limit {
+                    display_list.push(DisplayEntry::Item(item.clone()));
+                }
+                emitted += 1;
+
+                if emitted >= total {
+                    break;
+                }
+            }
+        }
+
+        if !is_expanded && total > MAX_VISIBLE_PER_CATEGORY {
+            display_list.push(DisplayEntry::ShowMore(cat.clone(), total));
+        }
+    }
+
+    display_list
+}
+
 pub struct Finder<T, MatcherFunc, OnAccept>
 where
     T: Send + Sync + PartialEq + PaletteItem + 'static,
@@ -335,76 +415,7 @@ where
         expanded_categories: &[I18nString],
         expand_all: bool,
     ) -> Vec<DisplayEntry<T>> {
-        let mut category_order: Vec<I18nString> = Vec::new();
-        let mut category_counts: Vec<usize> = Vec::new();
-        let mut has_uncategorized = false;
-
-        // 分类只查一次并缓存：`category()` 内部是 `tr!`（全局 RwLock 读 + 哈希
-        // 查表 + I18nString 构造），而下面共有三趟全量扫描——各自重取就是
-        // n×(2+k) 次（n ≤ MAX_MATCHES=100、k≈4-5 ≈ 700 次/重建）。本函数在
-        // 匹配集每次变化时都跑（连打字符即每秒数次）。
-        let cats: Vec<Option<I18nString>> = matches.iter().map(|item| item.category()).collect();
-
-        for cat in cats.iter() {
-            if let Some(cat) = cat {
-                if let Some(pos) = category_order.iter().position(|c| c == cat) {
-                    category_counts[pos] += 1;
-                } else {
-                    category_order.push(cat.clone());
-                    category_counts.push(1);
-                }
-            } else {
-                has_uncategorized = true;
-            }
-        }
-
-        if category_order.is_empty() {
-            return matches
-                .iter()
-                .map(|item| DisplayEntry::Item(item.clone()))
-                .collect();
-        }
-
-        let mut display_list = Vec::with_capacity(matches.len() + category_order.len());
-
-        if has_uncategorized {
-            for (item, cat) in matches.iter().zip(cats.iter()) {
-                if cat.is_none() {
-                    display_list.push(DisplayEntry::Item(item.clone()));
-                }
-            }
-        }
-
-        for (cat_idx, cat) in category_order.iter().enumerate() {
-            display_list.push(DisplayEntry::Header(cat.clone()));
-            let total = category_counts[cat_idx];
-            let is_expanded = expand_all || expanded_categories.iter().any(|c| c == cat);
-            let limit = if is_expanded || total <= MAX_VISIBLE_PER_CATEGORY {
-                total
-            } else {
-                MAX_VISIBLE_PER_CATEGORY
-            };
-
-            let mut emitted = 0;
-            for (item, item_cat) in matches.iter().zip(cats.iter()) {
-                if item_cat.as_ref() == Some(cat) {
-                    if emitted < limit {
-                        display_list.push(DisplayEntry::Item(item.clone()));
-                    }
-                    emitted += 1;
-
-                    if emitted >= total {
-                        break;
-                    }
-                }
-            }
-
-            if !is_expanded && total > MAX_VISIBLE_PER_CATEGORY {
-                display_list.push(DisplayEntry::ShowMore(cat.clone(), total));
-            }
-        }
-
-        display_list
+        build_display_list(matches, expanded_categories, expand_all)
     }
 
     fn total_items(&self) -> usize {
@@ -1340,7 +1351,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::common_prefix;
+    use super::{
+        DisplayEntry, FinderItemLeft, MAX_VISIBLE_PER_CATEGORY, PaletteItem, build_display_list,
+        common_prefix,
+    };
+    use cntp_i18n::I18nString;
+    use gpui::{App, SharedString};
     use std::sync::Arc;
 
     use nucleo::{
@@ -1424,5 +1440,123 @@ mod tests {
                 .score(haystack.slice(..), &mut matcher)
                 .is_some()
         );
+    }
+
+    // ---- build_display_list 分类展示规则（纯函数，R29/R30 两轮深审点名零测试）----
+
+    /// 最小 PaletteItem fixture：只带分类与序号，content 三件套给哑实现
+    /// （build_display_list 只消费 category()）。
+    struct TestItem {
+        id: usize,
+        category: Option<I18nString>,
+    }
+
+    impl PaletteItem for TestItem {
+        fn left_content(&self, _cx: &mut App) -> Option<FinderItemLeft> {
+            None
+        }
+        fn middle_content(&self, _cx: &mut App) -> SharedString {
+            SharedString::from(format!("item{}", self.id))
+        }
+        fn right_content(&self, _cx: &mut App) -> Option<SharedString> {
+            None
+        }
+        fn category(&self) -> Option<I18nString> {
+            self.category.clone()
+        }
+    }
+
+    fn item(id: usize, category: &str) -> Arc<TestItem> {
+        Arc::new(TestItem {
+            id,
+            category: Some(I18nString::from(category.to_string())),
+        })
+    }
+
+    fn uncat(id: usize) -> Arc<TestItem> {
+        Arc::new(TestItem { id, category: None })
+    }
+
+    fn cat(entries: &[DisplayEntry<TestItem>], name: &str) -> bool {
+        entries
+            .iter()
+            .any(|e| matches!(e, DisplayEntry::Header(c) if c.as_ref() == name))
+    }
+
+    /// 无分类条目：直接平铺 Item 列表，无 Header 无 ShowMore。
+    #[test]
+    fn uncategorized_matches_render_flat() {
+        let matches = vec![uncat(0), uncat(1)];
+        let out = build_display_list(&matches, &[], false);
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], DisplayEntry::Item(_)));
+        assert!(matches!(out[1], DisplayEntry::Item(_)));
+    }
+
+    /// 未分类条目前置、分类按首次出现序分组、组内保持匹配序。
+    #[test]
+    fn categories_group_in_first_seen_order_with_uncategorized_first() {
+        // 匹配序：A1, 无分类, B1, A2 —— 展示序：无分类 → Header(A) A1 A2 → Header(B) B1
+        let matches = vec![item(1, "A"), uncat(0), item(3, "B"), item(2, "A")];
+        let out = build_display_list(&matches, &[], false);
+        assert!(cat(&out, "A") && cat(&out, "B"));
+        let ids: Vec<usize> = out
+            .iter()
+            .filter_map(|e| match e {
+                DisplayEntry::Item(i) => Some(i.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![0, 1, 2, 3], "未分类前置 + 组内保持匹配序");
+        assert!(matches!(out.first(), Some(DisplayEntry::Item(i)) if i.id == 0));
+    }
+
+    /// 超过 MAX_VISIBLE_PER_CATEGORY 的组折叠并尾随 ShowMore(组名, 总数)。
+    #[test]
+    fn oversized_category_folds_with_show_more() {
+        let matches: Vec<_> = (0..8).map(|i| item(i, "A")).collect();
+        let out = build_display_list(&matches, &[], false);
+        let items = out
+            .iter()
+            .filter(|e| matches!(e, DisplayEntry::Item(_)))
+            .count();
+        assert_eq!(items, MAX_VISIBLE_PER_CATEGORY);
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, DisplayEntry::ShowMore(_, 8))),
+            "折叠组尾随 ShowMore(组名, 总数)"
+        );
+        // 展开同组：全量出、无 ShowMore
+        let expanded = vec![I18nString::from("A")];
+        let out = build_display_list(&matches, &expanded, false);
+        assert_eq!(
+            out.iter()
+                .filter(|e| matches!(e, DisplayEntry::Item(_)))
+                .count(),
+            8
+        );
+        assert!(!out.iter().any(|e| matches!(e, DisplayEntry::ShowMore(..))));
+        // expand_all 等效于把所有组放进 expanded_categories
+        let out = build_display_list(&matches, &[], true);
+        assert_eq!(
+            out.iter()
+                .filter(|e| matches!(e, DisplayEntry::Item(_)))
+                .count(),
+            8
+        );
+    }
+
+    /// 不超过上限的组即使未展开也全量出、无 ShowMore。
+    #[test]
+    fn small_categories_never_fold() {
+        let matches = vec![item(0, "A"), item(1, "A"), item(2, "B")];
+        let out = build_display_list(&matches, &[], false);
+        assert_eq!(
+            out.iter()
+                .filter(|e| matches!(e, DisplayEntry::Item(_)))
+                .count(),
+            3
+        );
+        assert!(!out.iter().any(|e| matches!(e, DisplayEntry::ShowMore(..))));
     }
 }
