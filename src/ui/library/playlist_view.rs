@@ -1047,6 +1047,23 @@ impl Render for PlaylistView {
                                                 else {
                                                     return;
                                                 };
+                                                // 契约 4 的歌单侧落地：from_idx 是拖拽
+                                                // 开始冻结的索引，reload 后当下该索引
+                                                // 处的行可能已换人——载荷里的 track_id
+                                                // 是拖拽开始冻结的身份，与当下行不符就
+                                                // 取消本次移动（取消而非混算坐标，与队
+                                                // 列 InternalDragLedger 同语义）。
+                                                if let Some(frozen_track_id) =
+                                                    drag_data.track_id
+                                                    && frozen_track_id != source_row.track_id
+                                                {
+                                                    tracing::debug!(
+                                                        frozen_track_id,
+                                                        found_track_id = source_row.track_id,
+                                                        "playlist drag cancelled: row at source index changed mid-drag"
+                                                    );
+                                                    return;
+                                                }
                                                 let item_id = source_row.playlist_item_id;
 
                                                 let new_position = if to_idx < playlist_track_ids.len() {
