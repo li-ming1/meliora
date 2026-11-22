@@ -613,21 +613,29 @@ impl PlaybackThread {
                 kugou_quality,
                 display: display.clone(),
             };
-            let refreshed = crate::RUNTIME
-                .block_on(async {
-                    tokio::time::timeout(
-                        STREAM_REFRESH_TIMEOUT,
-                        crate::online_sources::refresh_online_url(&identity, &ctx),
-                    )
-                    .await
-                });
+            let refreshed = crate::RUNTIME.block_on(async {
+                tokio::time::timeout(
+                    STREAM_REFRESH_TIMEOUT,
+                    crate::online_sources::refresh_online_url(&identity, &ctx),
+                )
+                .await
+            });
+            // 归因旗标必须在 `.ok()` 消费前取：Result::ok 按值吃掉 self，之后再
+            // is_err() 即 borrow-after-move——f9f4b2e6fc 提交时漏了这一步，
+            // E0382，kugou 面自该提交起编译不过（R24 测试轮与 exe 都落在它之前
+            // 的内容上，故未暴露；R25 中间 check 抓获）。
+            let refreshed_timed_out = refreshed.is_err();
             let fresh = refreshed.ok().flatten().map(PathBuf::from);
             if fresh.is_none() {
                 // 两种 None 归因不同：Err(_) = 刷新调用在 STREAM_REFRESH_TIMEOUT 内
                 // 超时；Ok(None) = 无 provider 认领 identity 或 provider 产不出
                 // URL——启动竞态（登录态未就绪先开曲）正属后者。原 `.ok().flatten()`
                 // 把两者合并成同一条 WARN，无法归因（R24 LOG-4 案件，2026-11-21）。
-                let reason = if refreshed.is_err() { "timeout" } else { "no-provider-url" };
+                let reason = if refreshed_timed_out {
+                    "timeout"
+                } else {
+                    "no-provider-url"
+                };
                 warn!(
                     identity = ?identity,
                     title = ctx.display.0.as_deref().unwrap_or("?"),
