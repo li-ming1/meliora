@@ -76,6 +76,24 @@ fn previous_word_boundary(content: &str, offset: usize) -> usize {
         .map_or(0, |range| range.start)
 }
 
+/// 下一个字形簇边界（UAX#29）：组合字符与 ZWJ emoji 家族整体一跳，光标移动与
+/// 删除按簇导航绝不劈开簇——历史多字节 panic 事故类（R6）所在的层，测试与词
+/// 边界同型提为自由函数。offset 本身不必是边界。
+fn next_grapheme_boundary(content: &str, offset: usize) -> usize {
+    content
+        .grapheme_indices(true)
+        .find_map(|(idx, _)| (idx > offset).then_some(idx))
+        .unwrap_or(content.len())
+}
+
+fn previous_grapheme_boundary(content: &str, offset: usize) -> usize {
+    content
+        .grapheme_indices(true)
+        .rev()
+        .find_map(|(idx, _)| (idx < offset).then_some(idx))
+        .unwrap_or(0)
+}
+
 fn word_range_for_offset(content: &str, offset: usize) -> Range<usize> {
     if content.is_empty() {
         return 0..0;
@@ -135,6 +153,12 @@ impl LastEmittedContent {
 
 pub struct TextInput {
     focus_handle: FocusHandle,
+    /// 上一帧的聚焦态（prepaint 每帧对账）：聚焦→失焦翻转沿清掉可能残留的
+    /// IME 组合态——Windows 平台失焦杀组合而不回调 unmark_text 的形态会让
+    /// marked_range 残留，下一次 replace_text_in_range(None,..) 优先取它就把
+    /// 文本插进旧位置，且 last_emitted 基线脱钩后普通输入会把残留组合串一次
+    /// 性补发为查询（R29 深审）。
+    was_focused: bool,
     scroll_handle: ScrollHandle,
     pub content: SharedString,
     last_emitted: LastEmittedContent,
@@ -497,18 +521,11 @@ impl TextInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+        previous_grapheme_boundary(&self.content, offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+        next_grapheme_boundary(&self.content, offset)
     }
 
     fn word_range_for_offset(&self, offset: usize) -> Range<usize> {
@@ -900,9 +917,45 @@ impl Element for TextElement {
             line
         };
 
-        let theme = cx.global::<Theme>();
-
         let cursor_pos = line.x_for_index(cursor);
+
+        // 聚焦态每帧对账（失焦清组合态）+ 光标跟随横向滚动（A1+A2，R29 深审）。
+        // 必须先于 theme 的不可变借用（cx.global），否则 update 的可变借用冲突。
+        let focused = self.input.read(cx).focus_handle.is_focused(window);
+        self.input.update(cx, |input, cx| {
+            // 失焦翻转沿：组合态被平台杀掉而没有 unmark_text 回调时，残留的
+            // marked_range 与脱钩的 last_emitted 基线在此一并清掉、补发对账。
+            if input.was_focused && !focused {
+                input.marked_range = None;
+                input.emit_content_change(cx);
+            }
+            input.was_focused = focused;
+
+            // 光标跟随横向滚动：文本超出可视宽度后不把光标滚进视口就是盲打
+            // （长路径输入/长重命名是明示场景）。ScrollHandle 此前只 track 不
+            // scroll；本函数每帧重跑，覆盖所有光标移动与编辑入口。仅在聚焦时
+            // 调整，避免失焦后滚轮手动浏览被每帧拉回光标处。
+            if focused {
+                let handle = &input.scroll_handle;
+                let viewport_width = handle.bounds().size.width;
+                if viewport_width > px(0.) {
+                    // 容器首帧 bounds 未就位时不猜。
+                    let margin = px(16.0);
+                    let mut offset_x = handle.offset().x;
+                    if cursor_pos < offset_x + margin {
+                        offset_x = cursor_pos - margin;
+                    } else if cursor_pos > offset_x + viewport_width - margin {
+                        offset_x = cursor_pos + margin - viewport_width;
+                    }
+                    offset_x = offset_x.clamp(px(0.), handle.max_offset().x);
+                    if offset_x != handle.offset().x {
+                        handle.set_offset(point(offset_x, px(0.)));
+                    }
+                }
+            }
+        });
+
+        let theme = cx.global::<Theme>();
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
@@ -996,6 +1049,7 @@ impl TextInput {
             let content = content.unwrap_or_else(|| "".into());
             TextInput {
                 focus_handle,
+                was_focused: false,
                 last_emitted: LastEmittedContent::new(&content),
                 content,
                 placeholder: placeholder.unwrap_or_else(|| "".into()),
@@ -1298,5 +1352,46 @@ mod tests {
         assert_eq!(previous_word_boundary(content, 5), 0);
         assert_eq!(previous_word_boundary(content, emoji_end), emoji_start);
         assert_eq!(previous_word_boundary(content, world_start), emoji_start);
+    }
+
+    /// 组合字符（e + U+0301）的字形簇导航：整簇一跳，绝不停在簇中间的组合符
+    /// 字节上——backspace/Ctrl+左右劈开簇是历史多字节事故类（R6）的形态。
+    #[test]
+    fn next_grapheme_boundary_combining_mark() {
+        // "é" = e(1B) + U+0301(2B)，一个字形簇 3 字节；随后 "a"(1B)
+        let content = "e\u{0301}a";
+        assert_eq!(next_grapheme_boundary(content, 0), 3);
+        assert_eq!(next_grapheme_boundary(content, 1), 3);
+        assert_eq!(next_grapheme_boundary(content, 3), 4);
+        assert_eq!(next_grapheme_boundary(content, 4), 4);
+    }
+
+    /// ZWJ emoji 家族（👨‍👩‍👧 = 4B+3B+4B+3B+4B，一个字形簇）整体导航。
+    #[test]
+    fn grapheme_boundary_zwj_family_stays_whole() {
+        let family = "👨\u{200D}👩\u{200D}👧";
+        assert_eq!(family.chars().count(), 5);
+        let content = format!("{family}!");
+
+        assert_eq!(next_grapheme_boundary(&content, 0), family.len());
+        assert_eq!(
+            next_grapheme_boundary(&content, family.len()),
+            content.len()
+        );
+        assert_eq!(
+            previous_grapheme_boundary(&content, content.len()),
+            family.len()
+        );
+        assert_eq!(previous_grapheme_boundary(&content, family.len()), 0);
+    }
+
+    /// CJK 每字独立成簇（UTF-8 3 字节/字）。
+    #[test]
+    fn grapheme_boundary_cjk_is_per_char() {
+        let content = "你好";
+        assert_eq!(next_grapheme_boundary(content, 0), 3);
+        assert_eq!(next_grapheme_boundary(content, 3), 6);
+        assert_eq!(previous_grapheme_boundary(content, 6), 3);
+        assert_eq!(previous_grapheme_boundary(content, 3), 0);
     }
 }
