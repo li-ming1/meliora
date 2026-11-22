@@ -418,10 +418,28 @@ pub fn start_download(cx: &mut App) {
     .detach();
 }
 
-/// 启动刚装好的新二进制，并走 gpui 退出，让 `on_app_quit` 的落盘（统计、存储）
+/// 启动刚装好的新二进制，并走 gpui 退出，让 `on_app_quit` 的落盘（存储、settings）
 /// 仍然执行。
 pub fn restart_to_apply(cx: &mut App) {
     if crate::spawn_replacement() {
+        // 统计尾行必须先于关池落盘：cx.quit() 之后的 on_app_quit 用同一个池写
+        // 行，而下面 close_pool_for_exit 之后任何 acquire 都是 PoolClosed——
+        // 先关池后退出会让最后一行（≤60s 半行）必丢（R30 main.rs 深审，原注释
+        // 承诺统计落盘却被自己前一步破坏）。照 exit(70) 分支的次序：
+        // on_state(Stopped) 收口半行 → take_pending → 写行 → 关池 → 退出。
+        // settings/storage 仍由 on_app_quit 落盘（不依赖池），session 由
+        // watch worker 持续写。主线程上 block_on 安全（本函数已有同款先例）。
+        if let Some((stats, pool)) = crate::EXIT_STATS_FLUSH.get() {
+            use crate::sync::RecoveredMutex;
+            let pending_rows = {
+                let mut recorder = stats.0.lock_recovered();
+                recorder.on_state(crate::playback::thread::PlaybackState::Stopped);
+                recorder.take_pending()
+            };
+            if !pending_rows.is_empty() {
+                crate::RUNTIME.block_on(crate::stats::queries::write_rows(pool, pending_rows));
+            }
+        }
         // 与硬上限阀门同一收口：先确定性关池再退出，子进程建池不会撞
         // SQLITE_IOERR_TRUNCATE(1546)（见 db.rs close_pool_for_exit）。
         let pool = cx

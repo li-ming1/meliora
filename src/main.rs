@@ -124,6 +124,12 @@ fn tune_mimalloc_page_reset() {
 
     const MI_OPTION_PAGE_RESET: c_int = 10;
     const MI_OPTION_ABANDONED_PAGE_PURGE: c_int = 11;
+    // 幂等闸：本函数设计为每进程一次（main_inner）；二次调用会把已置 1/1 的
+    // 选项回读判成「未应用」而把旗标打回 false（探针误报 page_reset0=false，
+    // R30 main.rs 深审）。旗标已真即幂等退出。
+    if MIMALLOC_PAGE_RESET_APPLIED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     // 两者出厂都是禁用；回读非零说明表布局与预期不符，改动它会误伤无关选项。
     let mut applied = unsafe { mi_option_get(MI_OPTION_PAGE_RESET) } == 0
         && unsafe { mi_option_get(MI_OPTION_ABANDONED_PAGE_PURGE) } == 0;
@@ -427,7 +433,8 @@ pub(crate) fn spawn_replacement() -> bool {
 /// 落盘）不会执行，recorder 未满 60s 的半行就此丢失。app.rs 在 StatsHandle
 /// 与 Pool 就绪后把两者登记进来，阀门退出分支照同一写法补落。OnceLock 的
 /// 写入必然早于任何可能的触发（登记在启动装配 ~1s，阀门要求 ≥300s 存活）。
-static EXIT_STATS_FLUSH: OnceLock<(crate::stats::StatsHandle, sqlx::SqlitePool)> = OnceLock::new();
+pub(crate) static EXIT_STATS_FLUSH: OnceLock<(crate::stats::StatsHandle, sqlx::SqlitePool)> =
+    OnceLock::new();
 
 /// 登记入口（app.rs 启动装配调用一次；重复调用保留首个）。
 pub(crate) fn register_exit_stats_flush(stats: crate::stats::StatsHandle, pool: sqlx::SqlitePool) {
