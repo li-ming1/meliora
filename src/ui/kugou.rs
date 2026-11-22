@@ -667,18 +667,27 @@ fn like_response_ok(body: &Value) -> bool {
 pub fn like_track(cx: &mut App, track: &KugouTrackInfo) {
     let track = track.clone();
     cx.spawn(async move |cx| {
+        // 契约 3 双防线之 generation 侧（开工前捕获）：换号落在请求在途期间的
+        // 话，spawn 会拿新账号 token 把歌加进新账号的喜欢列表，旧账号的 hash
+        // 也会污染已清空的本地集合。失配整单放弃（R29 补齐存量写入点的第二道）。
+        let generation = liked_generation();
         let client = kugou::shared_client();
         let name = track.title.to_string();
         let hash = track.hash.clone();
         let album_id = track.album_id;
         let mixsongid = track.mix_song_id;
-        let request = crate::RUNTIME
-            .spawn(async move {
-                client
-                    .playlist_add_songs(2, &[(name, hash, album_id, mixsongid)])
-                    .await
-            })
-            .await;
+        let request = if liked_generation() != generation {
+            tracing::warn!(hash = %hash, "kugou like cancelled: account switched mid-flight");
+            Ok(Err(kugou::KugouError::local("account switched")))
+        } else {
+            crate::RUNTIME
+                .spawn(async move {
+                    client
+                        .playlist_add_songs(2, &[(name, hash, album_id, mixsongid)])
+                        .await
+                })
+                .await
+        };
 
         // 先判定结果：本地缓存的 insert 要在 async 上下文里经串行锁
         // （liked_load_lock）落地，而 toast 的 cx.update 是同步闭包，两步拆开。
@@ -688,7 +697,12 @@ pub fn like_track(cx: &mut App, track: &KugouTrackInfo) {
             // 刚点亮的 hash（INIT 已 true，不会自动重拉）——insert 必须等锁释放后
             // 落地，与整表替换串行化。
             let _guard = liked_load_lock().lock().await;
-            liked_set().write_recovered().insert(track.hash.clone());
+            // 世代比对与 insert 同持 set 写守卫（invalidate 的清空+递增也持同一
+            // 把锁——两条路径由此真正互斥，照 store_liked_entries 的原子点）。
+            let mut set = liked_set().write_recovered();
+            if liked_generation() == generation {
+                set.insert(track.hash.clone());
+            }
         }
 
         cx.update(|_cx| match request {
@@ -775,6 +789,11 @@ pub async fn online_track_is_liked(hash: &str) -> bool {
 pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
     let track = track.clone();
     cx.spawn(async move |cx| {
+        // 契约 3 双防线之 generation 侧（开工前捕获）：换号落在 fileid 解析或
+        // 请求在途期间的话，playlist_remove_songs 会拿新账号 token 去删旧账号
+        // 解析出的 fileid——把那首歌从新账号的喜欢列表里删掉。失配整单放弃
+        // （R29 补齐存量写入点的第二道）。
+        let generation = liked_generation();
         let client = kugou::shared_client();
         let hash = track.hash.clone();
         // fileid 通常就在上一次整份收藏抓取预热好的缓存里；只有未命中
@@ -812,20 +831,25 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
             }
         };
 
-        let request = match fileid {
-            Some(fid) => crate::RUNTIME
-                .spawn(async move { client.playlist_remove_songs(2, &[fid]).await })
-                .await
-                .map(|result| result.map(|_| true)),
-            // 在抓到的分页里没找到（或抓取本身失败、没产出候选）；按移除成功处理。
-            // 列表超出 10 页抓取窗口时服务端可能仍留着这条收藏，所以在日志里留痕。
-            None => {
-                tracing::warn!(
-                    hash = %hash,
-                    "kugou unlike: fileid not found in fetched liked pages; \
-                     treating as already removed (cache may be incomplete)"
-                );
-                Ok(Ok(true))
+        let request = if liked_generation() != generation {
+            tracing::warn!(hash = %hash, "kugou unlike cancelled: account switched mid-flight");
+            Ok(Err(kugou::KugouError::local("account switched")))
+        } else {
+            match fileid {
+                Some(fid) => crate::RUNTIME
+                    .spawn(async move { client.playlist_remove_songs(2, &[fid]).await })
+                    .await
+                    .map(|result| result.map(|_| true)),
+                // 在抓到的分页里没找到（或抓取本身失败、没产出候选）；按移除成功处理。
+                // 列表超出 10 页抓取窗口时服务端可能仍留着这条收藏，所以在日志里留痕。
+                None => {
+                    tracing::warn!(
+                        hash = %hash,
+                        "kugou unlike: fileid not found in fetched liked pages; \
+                         treating as already removed (cache may be incomplete)"
+                    );
+                    Ok(Ok(true))
+                }
             }
         };
 
@@ -836,8 +860,13 @@ pub fn unlike_track(cx: &mut App, track: &KugouTrackInfo) {
             // 锁序（A1）：remove 也要与在途整份抓取串行——抓取的快照早于服务端
             // 移除时，整表替换会把刚移除的 hash 写回来（星标复亮）。
             let _guard = liked_load_lock().lock().await;
-            liked_set().write_recovered().remove(&hash);
-            liked_fileids().write_recovered().remove(&hash);
+            // 世代比对与 remove 同持 set 写守卫（invalidate 的清空+递增也持同一
+            // 把锁——两条路径由此真正互斥，照 store_liked_entries 的原子点）。
+            let mut set = liked_set().write_recovered();
+            if liked_generation() == generation {
+                set.remove(&hash);
+                liked_fileids().write_recovered().remove(&hash);
+            }
         }
 
         cx.update(|_cx| match request {
