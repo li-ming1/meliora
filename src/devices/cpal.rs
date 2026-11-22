@@ -7,7 +7,7 @@ use crate::{
         format::{BufferSize, ChannelSpec, FormatInfo, SampleFormat},
         resample::SampleFrom,
         traits::{Device, DeviceProvider, OutputStream},
-        util::{AtomicF64, DitherLsb, GainRamp, Scale, soft_limit, tpdf},
+        util::{AtomicF64, DitherLsb, GAIN_RAMP_MS, GainRamp, Scale, soft_limit, tpdf},
     },
     media::pipeline::{
         ChannelConsumers, DEFAULT_BUFFER_FRAMES, RING_WRITE_DEADLINE, read_available,
@@ -38,9 +38,16 @@ macro_rules! make_unknown_error {
     };
 }
 
-/// 请求淡出到真正暂停流之间的等待时长。必须超过增益斜坡长度（15 ms）再加几个
-/// 回调周期，才能保证音频线程以零增益把缓冲区排空。
-const PAUSE_FADE_WAIT: Duration = Duration::from_millis(50);
+/// 请求淡出到真正暂停流之间的等待窗，随生效设备缓冲周期推导。设备缓冲里可能
+/// 刚灌满一整段全增益音频（Fixed 缓冲宿主上，下一次回调要等宿主把整段播完才会
+/// 来），等窗必须 ≥「两个缓冲周期」+ 增益斜坡：第一个周期排空在途段，第二个
+/// 周期给音频线程把环内数据拉到零增益，斜坡收尾后硬暂停切的是静音。等窗更短
+/// 会在半途切断非静音音频（可闻咔哒）——2bf9a9592e 把缓冲目标 20→80 ms 时，
+/// 旧的 50 ms 常量恰好打破这个不变量（R26 深审抓获；等窗内的额外静音不可感知，
+/// 淡出在第一个周期末已完成）。
+fn pause_fade_wait(device_buffer: Duration) -> Duration {
+    device_buffer + device_buffer + Duration::from_secs_f64(GAIN_RAMP_MS / 1000.0)
+}
 /// 目标回调缓冲区大小。放宽至 80 ms（约 3500~3840 帧）以吸收 Windows DWM 窗口复合、
 /// mimalloc 回收与高负荷系统调度带来的微秒级抖动，彻底消除实时音频回调欠载（underrun）。
 /// 播放器在开流与暂停时自带平滑淡入淡出，80 ms 不会带来任何可感知的操作迟滞。
@@ -270,6 +277,14 @@ impl CpalDevice {
     {
         let config =
             cpal_config_from_info(&format).map_err(|_| OpenError::InvalidConfigProvider)?;
+        // 生效设备缓冲周期：Fixed（宿主自报，或 Range 钳位后已物化为 Fixed）按帧数
+        // 换算；Default（宿主自选周期，通常远小于目标）退回目标值。
+        let device_buffer = match config.buffer_size {
+            cpal::BufferSize::Fixed(frames) => Duration::from_micros(
+                (u64::from(frames) * 1_000_000) / u64::from(config.sample_rate),
+            ),
+            cpal::BufferSize::Default => DEVICE_BUFFER_TARGET,
+        };
         let channels = format.channels.count();
         let ring_buffer_frames = frames_for_duration(config.sample_rate, RING_BUFFER_TARGET);
         let buffer_size = ring_buffer_frames as usize * channels as usize;
@@ -315,6 +330,7 @@ impl CpalDevice {
             logged_first_submit: false,
             device_errored,
             device_error_message,
+            device_buffer,
             pause_at: None,
         }))
     }
@@ -401,6 +417,9 @@ where
     /// 最近一次 cpal 错误：由实时错误回调写入，由生产者读出（并打日志）。
     /// 定容量字节槽：把分配和日志都挪出音频线程。
     device_error_message: Arc<Mutex<Option<DeviceErrorMessage>>>,
+    /// 生效设备缓冲周期：Fixed 宿主按宿主/钳位后的帧数换算，Default 宿主退回
+    /// [`DEVICE_BUFFER_TARGET`]。暂停淡出等窗随它推导（见 [`pause_fade_wait`]）。
+    device_buffer: Duration,
     /// 表示流正在淡出，需在该时刻之前暂停。
     pause_at: Option<Instant>,
 }
@@ -442,7 +461,7 @@ where
 
     fn pause(&mut self) -> Result<(), StateError> {
         self.target_gain.store(0.0, Ordering::Relaxed);
-        self.pause_at = Some(Instant::now() + PAUSE_FADE_WAIT);
+        self.pause_at = Some(Instant::now() + pause_fade_wait(self.device_buffer));
         Ok(())
     }
 
@@ -672,6 +691,39 @@ make_unknown_error!(cpal::Error, FindError);
 mod tests {
     use super::*;
     use crate::devices::resample::SampleInto;
+
+    /// 暂停淡出等窗不变量：必须覆盖「两个设备缓冲周期 + 增益斜坡」。等窗更短时，
+    /// Fixed 缓冲宿主上 poll() 到期的硬暂停会切断非静音音频（可闻咔哒）——
+    /// 2bf9a9592e 把缓冲目标 20→80 ms 时旧的 50 ms 常量正是这样被打破的。
+    #[test]
+    fn pause_fade_wait_covers_device_buffer_drain_and_ramp() {
+        let ramp = Duration::from_secs_f64(GAIN_RAMP_MS / 1000.0);
+        for buffer in [
+            Duration::from_millis(80),
+            Duration::from_millis(100),
+            Duration::from_millis(500),
+        ] {
+            let wait = pause_fade_wait(buffer);
+            assert!(
+                wait >= buffer + buffer + ramp,
+                "fade wait {wait:?} must cover two {buffer:?} periods plus the {ramp:?} ramp"
+            );
+        }
+        // 80ms 目标与 15ms 斜坡下的具体值：175ms。
+        assert_eq!(
+            pause_fade_wait(DEVICE_BUFFER_TARGET),
+            Duration::from_millis(175)
+        );
+    }
+
+    /// 80ms 目标缓冲的帧数换算钉住（2bf9a9592e 的核心行为变化此前无测试）。
+    #[test]
+    fn frames_for_duration_pins_80ms_buffer_conversion() {
+        assert_eq!(frames_for_duration(48_000, DEVICE_BUFFER_TARGET), 3840);
+        assert_eq!(frames_for_duration(44_100, DEVICE_BUFFER_TARGET), 3528);
+        // 极小输入的下防：至少 1 帧，永不 0。
+        assert_eq!(frames_for_duration(1, Duration::from_micros(1)), 1);
+    }
 
     /// 欠载尾部填充必须在每个被派发的样本格式下都回读为数字静音。
     /// `T::default()` 只对带符号与 float 目标成立：无符号格式把静音放在中位，
