@@ -421,7 +421,22 @@ pub(super) fn focus_main_window() {
 /// 前台锁处理：本进程（用户刚启动、是前台）授权目标进程设置前台。
 pub(super) fn activate_existing_instance() -> bool {
     unsafe {
-        let Ok(hwnd) = FindWindowExW(Some(HWND_MESSAGE), None, TRAY_CLASS, PCWSTR::null()) else {
+        // 首实例的托盘壳要等主窗创建后的延迟任务才注册（装配窗口 ~1-2s）：
+        // 二次启动撞进窗口期时 FindWindowExW 查空——短暂重试几轮越过装配窗
+        // 口，而不是把用户引到误导性的「已在运行」对话框然后 exit(0)（R30
+        // main.rs 深审；互斥量在 main_inner 一开始就被首实例占住，查到即是
+        // 真在运行）。重试耗尽仍查空才回落对话框。
+        let mut hwnd = None;
+        for _ in 0..7 {
+            match FindWindowExW(Some(HWND_MESSAGE), None, TRAY_CLASS, PCWSTR::null()) {
+                Ok(found) => {
+                    hwnd = Some(found);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(300)),
+            }
+        }
+        let Some(hwnd) = hwnd else {
             return false;
         };
         let mut pid = 0u32;
