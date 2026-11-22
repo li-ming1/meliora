@@ -1203,7 +1203,7 @@ fn spawn_memory_probe() {
                     std::process::exit(70);
                 }
                 tracing::error!("memory hard cap: replacement spawn failed; continuing degraded");
-                hard_cap_breaches = 0;
+                hard_cap_valve.reset();
             } else {
                 let purge0 =
                     MIMALLOC_PURGE_DELAY_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
