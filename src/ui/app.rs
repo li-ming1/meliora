@@ -891,9 +891,12 @@ pub fn run() -> anyhow::Result<()> {
         // drain 是 UI 职责，playback 层只保留纯命令发送端。
         super::playback_bridge::start_broadcast(&mut playback_interface, cx);
 
-        if !parse_args_and_prepare(&playback_interface)
-            && let Some(pos) = initial_position
-        {
+        // 被动重启的子进程原样继承 argv：不再重排 CLI 文件参数——否则会话恢复
+        // 的队列之上会重复排入启动时的同一批文件（R30 main.rs 深审 handoff 缺口）。
+        // 主动启动照旧解析；没有 CLI 文件时走 initial_position 的恢复跳转。
+        let cli_queued = std::env::var_os(crate::RESTART_HANDOFF_ENV).is_none()
+            && parse_args_and_prepare(&playback_interface);
+        if !cli_queued && let Some(pos) = initial_position {
             playback_interface.jump(pos);
             if !resume_playback {
                 playback_interface.pause();
