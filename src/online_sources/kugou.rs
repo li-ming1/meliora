@@ -468,10 +468,10 @@ impl StreamUrlCache {
     fn insert(&mut self, key: StreamUrlKey, url: String) {
         if self.entries.contains_key(&key) {
             self.order.retain(|k| k != &key);
-        } else if self.order.len() >= STREAM_URL_CACHE_CAP {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
+        } else if self.order.len() >= STREAM_URL_CACHE_CAP
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.entries.remove(&oldest);
         }
         self.order.push_back(key.clone());
         self.entries.insert(

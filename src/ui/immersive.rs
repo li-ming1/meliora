@@ -2644,7 +2644,7 @@ mod tests {
     fn kinetic_animation_stops_during_gaps_and_plain_text() {
         use crate::ui::lyrics::lrc::{LrcLine, LrcWord};
 
-        let lines = vec![
+        let lines = [
             LrcLine {
                 time_ms: 1000,
                 text: "纯文本行".into(),
