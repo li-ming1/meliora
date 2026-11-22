@@ -28,13 +28,22 @@ const WINDOWS_RESERVED_DEVICES: [&str; 22] = [
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// 剥掉 Windows 文件名中的非法字符，并给保留设备名的 stem（CON、COM1-9 …）
-/// 加下划线前缀——即使后面跟着扩展名，Win32 仍会把它们解析成设备。
+/// 下载文件名单组件主干的安全字节上限。NTFS 单文件名上限 255 个 UTF-16 码元、
+/// ext4 255 字节，超限时 create 直接失败——在线元数据里出现过超长拼接标题，
+/// 钳位让下载优雅降级而不是报一条难懂的 create 错误。200 字节给扩展名、
+/// ` (n)` 去重序号与 `.N.part` 半成品后缀留足余量，正常标题永不触达。
+const MAX_FILENAME_STEM_BYTES: usize = 200;
+
+/// 剥掉 Windows 文件名中的非法字符与 C0 控制字符（Win32 对文件名任何位置的
+/// 0x00-0x1F 一律拒绝，NT 对象层却允许——落到 create 就是一条难懂的报错），
+/// 并给保留设备名的 stem（CON、COM1-9 …）加下划线前缀——即使后面跟着扩展名，
+/// Win32 仍会把它们解析成设备。超长主干按字符边界钳到 [`MAX_FILENAME_STEM_BYTES`]。
 pub fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
             c => c,
         })
         .collect();
@@ -42,14 +51,23 @@ pub fn sanitize_filename(raw: &str) -> String {
     if trimmed.is_empty() {
         return "track".into();
     }
-    let stem = trimmed.split('.').next().unwrap_or_default();
+    let clamped = if trimmed.len() <= MAX_FILENAME_STEM_BYTES {
+        trimmed
+    } else {
+        let mut end = MAX_FILENAME_STEM_BYTES;
+        while !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        &trimmed[..end]
+    };
+    let stem = clamped.split('.').next().unwrap_or_default();
     if WINDOWS_RESERVED_DEVICES
         .iter()
         .any(|name| stem.eq_ignore_ascii_case(name))
     {
-        format!("_{trimmed}")
+        format!("_{clamped}")
     } else {
-        trimmed.to_string()
+        clamped.to_string()
     }
 }
 
@@ -287,6 +305,30 @@ mod tests {
         assert_eq!(sanitize_filename("my.CON"), "my.CON");
         assert_eq!(sanitize_filename("a<b:c"), "a_b_c");
         assert_eq!(sanitize_filename(""), "track");
+    }
+
+    /// C0 控制字符（0x00-0x1F）被替换为下划线：Win32 对文件名任何位置的它们
+    /// 一律拒绝，在线元数据损坏时落到 create 就是一条难懂的报错。
+    #[test]
+    fn control_characters_are_replaced() {
+        assert_eq!(sanitize_filename("ti\u{0001}tle"), "ti_tle");
+        assert_eq!(sanitize_filename("a\u{001F}b"), "a_b");
+        assert_eq!(sanitize_filename("x\u{0000}y"), "x_y");
+    }
+
+    /// 超长主干按字符边界钳位：NTFS 255 码元 / ext4 255 字节的组件上限会让
+    /// create 直接失败，钳位让下载优雅降级；CJK 每字 3 字节，不得劈开字符。
+    #[test]
+    fn overlong_stems_are_clamped_on_char_boundary() {
+        let long_ascii = "a".repeat(400);
+        let clamped = sanitize_filename(&long_ascii);
+        assert_eq!(clamped.len(), MAX_FILENAME_STEM_BYTES);
+
+        let cjk = "曲".repeat(150);
+        let clamped = sanitize_filename(&cjk);
+        assert!(clamped.len() <= MAX_FILENAME_STEM_BYTES);
+        assert!(clamped.is_char_boundary(clamped.len()));
+        assert_eq!(clamped.chars().count(), 66); // 66×3=198 ≤ 200 < 67×3=201
     }
 
     #[test]
