@@ -16,3 +16,5 @@ assets/fonts/* linguist-vendored
 assets/icon.rc linguist-vendored
 migrations/*.sql linguist-vendored
 queries/*.sql linguist-vendored
+# 字体子集化派生脚本：入仓是为可复跑（漏跑则缺字形），不计入语言统计
+tools/subset_bundled_fonts.py linguist-vendored
